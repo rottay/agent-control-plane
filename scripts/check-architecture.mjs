@@ -260,6 +260,28 @@ const P2A_WRITE_SET = [
   "packages/runtime/src/constants.ts",
 ];
 
+/**
+ * The exact P2B additions: one shared core, one driver, and their evidence.
+ *
+ * P2B implements the lifecycle engine and the SQLite supervisor. The Restate
+ * driver, the daemon, the launchd template and any observation route are not
+ * here, and no eighth path is authorized.
+ */
+const P2B_WRITE_SET = [
+  "packages/runtime/src/errors.ts",
+  "packages/runtime/src/core/coordinates.ts",
+  "packages/runtime/src/core/coordinates.test.ts",
+  "packages/runtime/src/core/events.ts",
+  "packages/runtime/src/core/events.test.ts",
+  "packages/runtime/src/core/lifecycle.ts",
+  "packages/runtime/src/core/lifecycle.test.ts",
+  "packages/runtime/src/toy/repository.ts",
+  "packages/runtime/src/toy/repository.test.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor-child.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor.test.ts",
+];
+
 const RETIRED = new Set(RETIRED_PATHS);
 
 const WRITE_SET = [
@@ -268,6 +290,7 @@ const WRITE_SET = [
   ...P1B_SHARED_WRITE_SET,
   ...P1_WRITE_SET,
   ...P2A_WRITE_SET,
+  ...P2B_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /**
@@ -422,7 +445,7 @@ const AUTHORITY_LITERALS = {
     "authority",
     "no side effects",
     "fails closed",
-    "P2A is not P2 completion",
+    "P2B is not P2 completion",
     "no product adoption",
   ],
   "packages/api-contracts/README.md": [
@@ -1010,8 +1033,8 @@ const P1B_DEPENDENCY_LAW = [
   },
   {
     manifest: "packages/runtime/package.json",
-    dependencies: ["@acp/contracts", "@restatedev/restate-sdk"],
-    devDependencies: [],
+    dependencies: ["@acp/contracts", "@acp/ledger", "@restatedev/restate-sdk"],
+    devDependencies: ["vitest"],
     // The server package pulls @scarf/scarf, whose postinstall is a network
     // beacon. The 1.7.7 server is an external pinned binary, never a dependency.
     forbidden: ["@restatedev/restate-server", "@scarf/scarf", "@restatedev/restate"],
@@ -1148,10 +1171,36 @@ if (lockText === null) {
   notes.push("lockfile carries no restate server and no install-time telemetry");
 }
 
-// The P2A scaffold executes nothing. Restricting its import specifiers is the
-// cheapest honest proof: without node builtins it cannot open a socket, spawn a
-// process or touch the filesystem, whatever its source says it intends to do.
-const RUNTIME_ALLOWED_IMPORTS = new Set(["@acp/contracts", "@restatedev/restate-sdk"]);
+// What the durability plane may import.
+//
+// The list is the cheapest honest proof of what this package can do at all: a
+// module that cannot import a socket API cannot open a socket, whatever its
+// prose says it intends. Production sources get the narrow list; tests get two
+// more, because a kill/restart drill has to spawn and kill a real process, and
+// an in-process exception would prove nothing about durability.
+const RUNTIME_ALLOWED_PACKAGES = new Set([
+  "@acp/contracts",
+  "@acp/ledger",
+  "@restatedev/restate-sdk",
+]);
+const RUNTIME_ALLOWED_BUILTINS = new Set(["node:crypto", "node:fs", "node:path", "node:url"]);
+const RUNTIME_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os"]);
+
+// Anything that could listen, connect or fan out. None of these belongs in a
+// local durability plane, and P2 adds no network surface of any kind.
+const RUNTIME_FORBIDDEN_BUILTINS = [
+  "node:net",
+  "node:http",
+  "node:https",
+  "node:http2",
+  "node:tls",
+  "node:dgram",
+  "node:dns",
+  "node:cluster",
+  "node:worker_threads",
+  "node:sqlite",
+];
+
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const runtimeSources = present.filter(
@@ -1159,27 +1208,65 @@ if (tracked.status === 0) {
       relativePath.startsWith("packages/runtime/src/") && relativePath.endsWith(".ts"),
   );
   if (runtimeSources.length === 0) {
-    fail("packages/runtime/src has no tracked sources; the scaffold purity check is inert");
+    fail("packages/runtime/src has no tracked sources; the import purity check is inert");
   }
+
+  let productionSources = 0;
   const specifier = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
   for (const relativePath of runtimeSources) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
+    const isTest = relativePath.endsWith(".test.ts");
+    if (!isTest) productionSources += 1;
+
     let match = specifier.exec(content);
     while (match !== null) {
       const name = match[1] ?? "";
-      if (!name.startsWith("./") && !RUNTIME_ALLOWED_IMPORTS.has(name)) {
+      const relative = name.startsWith("./") || name.startsWith("../");
+      const allowed =
+        relative ||
+        RUNTIME_ALLOWED_PACKAGES.has(name) ||
+        RUNTIME_ALLOWED_BUILTINS.has(name) ||
+        (isTest && RUNTIME_TEST_ONLY_IMPORTS.has(name));
+
+      if (!allowed) {
         fail(
           relativePath +
             " imports " +
             name +
-            "; the P2A scaffold may import only @acp/contracts, the Restate SDK and its own modules",
+            "; the durability plane may import only its own modules, the workspace" +
+            " contracts and ledger, the Restate SDK, and a named set of node builtins",
+        );
+      }
+      if (RUNTIME_FORBIDDEN_BUILTINS.includes(name)) {
+        fail(
+          relativePath +
+            " imports " +
+            name +
+            "; the durability plane opens no socket and speaks to no network",
         );
       }
       match = specifier.exec(content);
     }
   }
-  notes.push(runtimeSources.length + " runtime scaffold sources import no node builtin");
+
+  // A production source that spawned a process would be a daemon, which is P2D
+  // and is not authorised yet.
+  for (const relativePath of runtimeSources) {
+    if (relativePath.endsWith(".test.ts")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    if (/from\s+["']node:child_process["']/.test(content)) {
+      fail(relativePath + " spawns a process; only the drills may do that in P2");
+    }
+  }
+
+  notes.push(
+    runtimeSources.length +
+      " runtime sources import only what the durability plane is allowed (" +
+      productionSources +
+      " production, no network, no process spawn outside drills)",
+  );
 }
 
 // launchd is last, and never automatic. A template may exist and be linted; an

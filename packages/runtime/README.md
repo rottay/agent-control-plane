@@ -4,23 +4,31 @@ The durability and supervisor plane of the Agent Control Plane.
 
 ## Scope
 
-**This is P2A: a contract freeze.** The package exports frozen types and
-constants and nothing else. There is no state machine, no driver, no daemon, no
-Restate service, no listener and no filesystem access.
+**This is P2B: one shared lifecycle engine and its first driver.** The
+`SQLITE_SUPERVISOR` walks the plan over the append-only ledger and recovers from
+real process kills. There is no Restate driver, no daemon, no `launchd` template
+and no observation route yet.
 
-Importing this package has no side effects. The architecture fence asserts that:
-a scaffold that quietly bound a socket or created a directory would be a working
-capability nobody authorised, and it would be indistinguishable from progress.
+Importing this package has **no side effects**. It binds no socket, starts no
+listener, spawns no process and creates no directory. Filesystem work happens
+only inside an explicitly invoked drill, under a root this package resolves for
+itself. The architecture fence asserts both.
 
-**P2A is not P2 completion**, and it is **no product adoption**. Nothing here is
+**P2B is not P2 completion**, and it is **no product adoption**. Nothing here is
 connected to, observed from or used by any real operation.
 
-## Why the package exists before the code does
+## One core, two drivers
 
-Two drivers will advance one state machine: the SQLite supervisor and the
-Restate driver. Freezing what they must agree on first is what stops them from
-each inventing their own answer to the same question, which is the integration
-cost P1 already paid once.
+`src/core/lifecycle.ts` holds the single plan. The supervisor walks it today and
+the Restate driver will walk the same one in P2C. Neither encodes a transition
+of its own: two copies of a state machine drift, and the drift is only ever
+discovered when the two disagree about a recovery.
+
+The supervisor holds **no cursor**. Every decision about what to do next is read
+back out of the ledger, which is what makes "the ledger is the authority" true
+rather than aspirational. `RUNNING` is the one ambiguous state, because both the
+intent and its outcome land there; the tie is broken by asking the ledger
+whether the outcome event exists, which is evidence rather than memory.
 
 ## The laws frozen here
 
@@ -73,6 +81,20 @@ Data roots are repository-relative, git-ignored segments — never captured
 absolute paths, which name a home directory, a user account and a machine
 layout.
 
+### The drill boundary
+
+The runtime does **not** accept a target directory. It accepts a scenario
+identifier and resolves it, itself, under `.acp-local/drills/`. A caller cannot
+name a path, so a caller cannot name someone else's path. The identifier
+grammar admits no dot and no separator, so no traversal segment can be spelled
+at all, and containment is checked twice: once on the resolved string and once
+through `realpathSync`, because those differ the moment a symlink is involved.
+
+The toy effect is a single atomic marker write keyed by operation id. Re-running
+it writes identical bytes; a marker with *different* content is never
+overwritten, because that is somebody else's write and replacing it would
+destroy the only evidence that something unexpected happened.
+
 ## External tools
 
 `@restatedev/restate-sdk` is pinned at `1.16.9` and is a normal dependency; its
@@ -88,7 +110,14 @@ command that verifies platform and SHA-256 — never by an install hook.
 
 ## Tests
 
-There is no test project for this package yet, and that is deliberate: it
-exports types and constants, which its own compilation already proves. The
-public data contracts it references are covered by the `contracts` project. P2B
-adds the project together with the first driver test.
+`pnpm test` runs the `runtime` project, which includes three kill/restart drills
+against fresh, owned toy roots: killed after the intent, after the effect, and
+after the outcome. The children are real processes terminated with `SIGKILL`. An
+exception caught in-process would prove nothing, because the page cache, the
+open database handle and every object survive a thrown error, which is exactly
+what a crash does not leave behind.
+
+Each drill asserts the same things after restart: final state `CHECKPOINTED`,
+the effect applied exactly once, `verifyIntegrity().ok`, no duplicate
+idempotency keys, a third run that moves neither the event count nor the chain
+head, and rebuilt projections equal to the live ones.

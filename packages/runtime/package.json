@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Durability and supervisor contracts for the Agent Control Plane. P2A: frozen types and constants only, no driver and no behaviour.",
+  "description": "Durability and supervisor plane for the Agent Control Plane. One shared lifecycle engine and the SQLite supervisor driver over the append-only ledger.",
   "license": "UNLICENSED",
   "exports": {
     ".": {
@@ -21,6 +21,10 @@
   },
   "dependencies": {
     "@acp/contracts": "workspace:*",
+    "@acp/ledger": "workspace:*",
     "@restatedev/restate-sdk": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
   }
 }

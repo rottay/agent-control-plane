@@ -1,17 +1,16 @@
 /**
  * Public surface of the Agent Control Plane runtime package.
  *
- * Scope note. This is P2A: the durability and supervisor contract freeze. The
- * package exports frozen types and constants and nothing else. There is no
- * state machine, no driver, no daemon, no listener, no Restate service and no
- * filesystem access here.
+ * Scope note. This is P2B: one shared lifecycle engine and its first driver,
+ * `SQLITE_SUPERVISOR`, over the append-only ledger. The Restate driver, the
+ * daemon, the launchd template and any observation route are not here.
  *
- * Importing this module has no side effects. It binds nothing, spawns nothing
- * and reads nothing. That is deliberate and is asserted by the architecture
- * fence: a scaffold that quietly opened a socket or created a directory would
- * be a working capability nobody authorised.
+ * Importing this module has no side effects. It binds no socket, starts no
+ * listener, spawns no process and creates no directory. Filesystem work happens
+ * only inside an explicitly invoked drill, under a root this package resolves
+ * itself; the architecture fence asserts both.
  *
- * P2A is not P2 completion, and it is no product adoption.
+ * P2B is not P2 completion, and it is no product adoption.
  */
 
 export {
@@ -48,3 +47,54 @@ export type {
   ReplayForbiddenSource,
   StepBeat,
 } from "./contracts.js";
+
+export {
+  PostconditionUnknownError,
+  ReconciliationError,
+  RuntimeError,
+  SupervisorError,
+  LifecyclePlanError,
+  ToyBoundaryError,
+} from "./errors.js";
+export type { RuntimeErrorCode } from "./errors.js";
+
+export {
+  ACP_UUID_NAMESPACE,
+  deriveEventCoordinate,
+  deriveOperationCoordinate,
+  deterministicUuid,
+  eventName,
+  operationDigest,
+  operationName,
+} from "./core/coordinates.js";
+
+export { buildEvent, operationForStep } from "./core/events.js";
+export type { BuildEventInput } from "./core/events.js";
+
+export {
+  INTENT_STEP,
+  LIFECYCLE_PLAN,
+  OUTCOME_STEP,
+  PLAN_TERMINAL_STATE,
+  planStep,
+  validatePlan,
+} from "./core/lifecycle.js";
+export type { PlanStep } from "./core/lifecycle.js";
+
+export {
+  DRILL_ROOT_SEGMENTS,
+  applyEffect,
+  drillRoot,
+  probeEffect,
+  removeScenarioRoot,
+  resolveScenarioRoot,
+  scenarioLedgerPath,
+} from "./toy/repository.js";
+export type { ScenarioRoot } from "./toy/repository.js";
+
+export { SqliteSupervisor } from "./drivers/sqlite-supervisor.js";
+export type {
+  FaultPoint,
+  RunResult,
+  SqliteSupervisorOptions,
+} from "./drivers/sqlite-supervisor.js";

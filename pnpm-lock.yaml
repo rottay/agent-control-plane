@@ -123,9 +123,16 @@ importers:
       '@acp/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@acp/ledger':
+        specifier: workspace:*
+        version: link:../ledger
       '@restatedev/restate-sdk':
         specifier: 'catalog:'
         version: 1.16.9
+    devDependencies:
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@22.19.2)(lightningcss@1.33.0)
 
   packages/server:
     dependencies:
