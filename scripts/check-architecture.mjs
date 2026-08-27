@@ -859,19 +859,25 @@ const P1B_DEPENDENCY_LAW = [
   {
     manifest: "packages/cli/package.json",
     dependencies: ["@acp/api-contracts", "@acp/ledger"],
-    devDependencies: [],
+    devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
   {
     manifest: "packages/server/package.json",
-    dependencies: ["@acp/api-contracts", "@acp/ledger"],
-    devDependencies: [],
+    dependencies: ["@acp/api-contracts", "@acp/ledger", "fastify"],
+    devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
   {
     manifest: "packages/ui/package.json",
     dependencies: ["@acp/api-contracts", "react", "react-dom"],
-    devDependencies: ["@types/react", "@types/react-dom", "@vitejs/plugin-react", "vite"],
+    devDependencies: [
+      "@types/react",
+      "@types/react-dom",
+      "@vitejs/plugin-react",
+      "vite",
+      "vitest",
+    ],
     forbidden: ["@acp/ledger", "@acp/contracts", "better-sqlite3", "sqlite3", "node:sqlite"],
   },
 ];

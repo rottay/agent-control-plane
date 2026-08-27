@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Read-only observation server for the Agent Control Plane. P1B scaffold: the surface is described, nothing is served.",
+  "description": "Read-only observation server for the Agent Control Plane. Serves every frozen GET route over Fastify, loopback only.",
   "license": "UNLICENSED",
   "exports": {
     ".": {
@@ -21,6 +21,10 @@
   },
   "dependencies": {
     "@acp/api-contracts": "workspace:*",
-    "@acp/ledger": "workspace:*"
+    "@acp/ledger": "workspace:*",
+    "fastify": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
   }
 }

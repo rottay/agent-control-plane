@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Read-only observation CLI for the Agent Control Plane. P1B scaffold: the contract surface exists, the commands do not.",
+  "description": "Read-only observation CLI for the Agent Control Plane. Opens the ledger query-only and prints contract-validated documents.",
   "license": "UNLICENSED",
   "exports": {
     ".": {
@@ -25,5 +25,8 @@
   "dependencies": {
     "@acp/api-contracts": "workspace:*",
     "@acp/ledger": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
   }
 }

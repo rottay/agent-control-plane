@@ -1,0 +1,117 @@
+/**
+ * Design tokens.
+ *
+ * Every color pair below (text on background, background on surface) is
+ * chosen to clear WCAG AA (4.5:1 for body text, 3:1 for large text and UI
+ * boundaries) in both the light values declared here and the dark values
+ * declared under `prefers-color-scheme: dark`. Nothing outside this file
+ * declares a raw color.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Surfaces */
+  --color-bg: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+  --color-border: #cfcdc6;
+  --color-border-strong: #8f8d86;
+
+  /* Text */
+  --color-text: #1b1b18;
+  --color-text-muted: #4d4b45;
+  --color-text-faint: #6b6960;
+  --color-text-on-accent: #ffffff;
+
+  /* Accent / interaction */
+  --color-accent: #1f4f8f;
+  --color-accent-strong: #163a69;
+  --color-focus-ring: #0a58ff;
+  --color-link: #1f4f8f;
+  --color-link-visited: #5a3d8f;
+
+  /* Status tones: each pair is foreground-on-background, both AA on --color-surface */
+  --color-good-fg: #14612f;
+  --color-good-bg: #e2f3e6;
+  --color-warn-fg: #7a4a00;
+  --color-warn-bg: #fbecd1;
+  --color-bad-fg: #8a1f21;
+  --color-bad-bg: #fbe2e2;
+  --color-neutral-fg: #43423d;
+  --color-neutral-bg: #ececE7;
+
+  /* Typography */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-md: 1.0625rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.625rem;
+  --leading-normal: 1.55;
+  --leading-tight: 1.3;
+
+  /* Spacing scale */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 2.5rem;
+  --space-8: 3.5rem;
+
+  --radius-sm: 3px;
+  --radius-md: 6px;
+
+  --border-width: 1px;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
+
+  --motion-fast: 120ms;
+  --motion-normal: 200ms;
+  --motion-easing: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #17181a;
+    --color-surface: #1f2124;
+    --color-surface-raised: #24272b;
+    --color-border: #3a3d42;
+    --color-border-strong: #565a61;
+
+    --color-text: #ecece9;
+    --color-text-muted: #c2c1bb;
+    --color-text-faint: #98968f;
+    --color-text-on-accent: #0d1117;
+
+    --color-accent: #7aa7e6;
+    --color-accent-strong: #a9c6f0;
+    --color-focus-ring: #7aaeff;
+    --color-link: #7aa7e6;
+    --color-link-visited: #c0a3f0;
+
+    --color-good-fg: #7fd99a;
+    --color-good-bg: #163524;
+    --color-warn-fg: #f0c274;
+    --color-warn-bg: #3a2d0f;
+    --color-bad-fg: #f2a0a2;
+    --color-bad-bg: #3c1517;
+    --color-neutral-fg: #cac9c3;
+    --color-neutral-bg: #2b2d30;
+
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-normal: 0ms;
+  }
+}

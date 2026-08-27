@@ -210,10 +210,17 @@ as the single place a reader looks for how the suite is composed. The contracts
 and ledger projects are preserved exactly, including the ledger's source alias
 and its extended timeouts; `api-contracts` is added with the same alias.
 
-There is no project for the cli, server or ui packages. A project that collects
-zero test files reports a green suite for code nobody has written, which is a
-worse signal than an absent one. Each lane adds its project together with its
-first test.
+At P1B there was no project for the cli, server or ui packages: a project that
+collects zero test files reports a green suite for code nobody has written,
+which is a worse signal than an absent one. P1 integration added all three,
+each together with the suite that justifies it.
+
+Each lane necessarily built its suite behind a package-local config, because
+the root config is integrator owned and outside every lane write-set. Those
+configs were deleted at integration and their projects moved here. That
+sequence is the rule, not an accident of this phase: a suite that runs only
+under a command nobody types is not a gate, so a lane's tests are not
+considered delivered until the root config executes them.
 
 Type-aware lint coverage widens from `.ts` to `.ts` and `.tsx`, so the UI is
 linted under exactly the same strict rule set as everything else. The only
@@ -233,11 +240,19 @@ Versions are pinned exactly, in the workspace catalog for anything more than one
 package could share, and the packages stay private. This repository publishes
 nothing.
 
-An HTTP framework is deliberately **not** installed. The server scaffold does
-not serve, so a framework in the graph today would be a dependency nothing uses
-and a claim nothing backs. The server lane adds it, together with the fence
-change that authorises it, which is the point: a lane cannot widen its own
-dependency surface without an integrator edit to a shared file.
+An HTTP framework was deliberately **not** installed at P1B: the scaffold did
+not serve, so a framework in the graph would have been a dependency nothing
+used and a claim nothing backed. The server lane added `fastify` in P1,
+together with the fence change that authorises it, which is the point: a lane
+cannot widen its own dependency surface without an integrator edit to a shared
+file. The same rule produced the `vitest` devDependency each of the three lane
+packages now declares.
+
+Raw SQLite access remains forbidden to these packages. Where a test must
+corrupt a database on purpose to prove the surface fails closed, it uses the
+`node:sqlite` builtin rather than a second driver dependency, so no package
+acquires a native module it does not otherwise need and no test resolves a
+dependency it has not declared.
 
 ## Ownership and the lane envelope
 

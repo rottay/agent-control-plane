@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Local read-only observation UI for the Agent Control Plane. P1B scaffold: an intentional shell, no live data.",
+  "description": "Local read-only observation UI for the Agent Control Plane. Browser-safe, contract-driven, no live writes.",
   "license": "UNLICENSED",
   "scripts": {
     "dev": "vite",
@@ -19,6 +19,7 @@
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "vitest": "3.2.4"
   }
 }
