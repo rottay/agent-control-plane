@@ -3,8 +3,12 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0 — bootstrap and authority.** Contracts and fences only. There is no
-ledger, no orchestrator, no adapter and no UI in this phase.
+Status: **P0 complete. P1A source ready.** Contracts, fences and the append-only
+event ledger. There is no orchestrator, no adapter, no CLI and no UI yet.
+
+**P1A is not P1 completion.** P1 also requires a minimal CLI and a local
+read-only UI, and neither exists. Nor is P1A product adoption of any kind: see
+the isolation section below.
 
 ## Authority
 
@@ -84,6 +88,27 @@ secret-shaped values are rejected anywhere inside a checkpoint, event or account
 record; and continuity is carried by digests, receipts and the next safe action,
 never by replaying a provider transcript.
 
+## What P1A adds
+
+`packages/ledger` implements the authority decided in ADR 0001: an append-only
+`ControlPlaneEvent` log in SQLite WAL, with derived, rebuildable read models.
+See `packages/ledger/README.md` for the API and
+`docs/architecture/0002-sqlite-event-ledger.md` for the decision.
+
+| Guarantee | How it is enforced |
+| --- | --- |
+| Append-only | `BEFORE UPDATE` and `BEFORE DELETE` triggers abort unconditionally; no raw connection is exposed |
+| Tamper evidence | canonical JSON plus a SHA-256 chain, re-verified end to end by `verifyIntegrity()` |
+| Idempotency | exact replay writes nothing and returns the original; same key with different content fails closed |
+| Stale writes | a transition must declare the state the task is actually in |
+| Derived read models | one projection implementation shared by the live path and by replay, so a rebuild is byte-equivalent |
+| Atomicity | event, projection and head metadata move together, or not at all |
+| Schema drift | ordered migrations under checksum, verified on every open; read-only never migrates |
+
+`better-sqlite3` is the one native dependency and the only name on the
+install-time build allow-list. `pnpm check:architecture` asserts that it stays
+the only one.
+
 ## Repository layout
 
 ```
@@ -92,6 +117,7 @@ scripts/check-architecture.mjs     authority and write-set fence
 docs/ROADMAP.md                    canonical authority (byte-exact copy)
 docs/architecture/                 architecture decision records
 packages/contracts/                frozen runtime contracts
+packages/ledger/                   append-only event ledger and read models
 ```
 
 ## Secrets

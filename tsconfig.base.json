@@ -28,5 +28,5 @@
     "forceConsistentCasingInFileNames": true
   },
   "files": [],
-  "references": [{ "path": "./packages/contracts" }]
+  "references": [{ "path": "./packages/contracts" }, { "path": "./packages/ledger" }]
 }

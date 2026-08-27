@@ -1,10 +1,20 @@
 packages:
   - "packages/*"
 
-# P0 law: no package may execute install-time scripts. The allow-list is empty
-# and must stay empty unless the owner authorises a named exception.
-onlyBuiltDependencies: []
+# P0 law: no package may execute install-time scripts. The allow-list stays
+# empty unless the owner authorises a named exception.
+#
+# P1A exception, adjudicated by the DT and asserted by
+# scripts/check-architecture.mjs: better-sqlite3 is the ledger engine and is the
+# only native module in the graph. The published 13.0.3 tarball ships prebuilt
+# binaries and declares no install script, so this entry authorises a source
+# build only as a fallback on a platform without a prebuild. No second name may
+# be added here without a new owner authorisation.
+onlyBuiltDependencies:
+  - better-sqlite3
 
 # Single source of truth for shared runtime dependency versions.
 catalog:
   zod: 4.1.13
+  better-sqlite3: 13.0.3
+  "@types/better-sqlite3": 9.6.0
