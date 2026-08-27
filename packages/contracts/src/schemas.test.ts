@@ -12,9 +12,18 @@ import {
   Checkpoint,
   CommitAuthorizationReceipt,
   ControlPlaneEvent,
+  DRIVER_HEALTH_STATES,
+  DRIVER_MODES,
+  DriverHealth,
+  DriverMode,
+  DriverStatus,
   EVENT_PAYLOAD_MAX_BYTES,
   EXCEPTIONAL_STATES,
   LIFECYCLE_STATES,
+  RECONCILIATION_VERDICTS,
+  RESUMABLE_VERDICTS,
+  ReconciliationReport,
+  ReconciliationVerdict,
   TaskEnvelope,
   WORKER_ROLES,
   WorkerIdentityString,
@@ -808,5 +817,236 @@ describe("no-push architecture fence", () => {
   it("refuses even when no ref lines are supplied on stdin", () => {
     const result = spawnSync(hookPath, [], { input: "", encoding: "utf8", cwd: REPO_ROOT });
     expect(result.status).not.toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Durability and supervisor plane
+// ---------------------------------------------------------------------------
+
+const driverStatus = (overrides: Record<string, unknown> = {}): unknown => ({
+  contractVersion: CONTRACT_VERSION,
+  mode: "SQLITE_SUPERVISOR",
+  health: "OK",
+  observedAt: AT,
+  ledgerHeadSequence: 12,
+  ledgerHeadSha256: SHA256,
+  dataRoot: ".acp-local/drills",
+  activeSince: AT,
+  detail: null,
+  ...overrides,
+});
+
+const reconciliation = (overrides: Record<string, unknown> = {}): unknown => ({
+  contractVersion: CONTRACT_VERSION,
+  reportId: TASK_ID,
+  mode: "RESTATE",
+  verdict: "CONSISTENT",
+  observedAt: AT,
+  ledgerHeadSequence: 12,
+  ledgerHeadSha256: SHA256,
+  resolvedByLedger: true,
+  safeToResume: true,
+  discrepancies: [],
+  detail: null,
+  ...overrides,
+});
+
+const discrepancy = {
+  taskId: TASK_ID,
+  attempt: 1,
+  transitionId: "run.started",
+  detail: "driver claims sequence 13 which the ledger has no record of",
+};
+
+describe("driver mode and health", () => {
+  it("freezes both driver modes as first-class", () => {
+    expect([...DRIVER_MODES]).toEqual(["SQLITE_SUPERVISOR", "RESTATE"]);
+    for (const mode of DRIVER_MODES) {
+      expect(DriverMode.safeParse(mode).success).toBe(true);
+    }
+    expect(DriverMode.safeParse("FALLBACK").success).toBe(false);
+    expect(DriverMode.safeParse("restate").success).toBe(false);
+  });
+
+  it("keeps driver health distinct from a worker probe result", () => {
+    expect([...DRIVER_HEALTH_STATES]).toEqual(["OK", "DEGRADED", "UNAVAILABLE", "UNKNOWN"]);
+    // FAILED belongs to HealthProbe; a driver that is not running is not failed.
+    expect(DriverHealth.safeParse("FAILED").success).toBe(false);
+  });
+});
+
+describe("DriverStatus", () => {
+  it("accepts a healthy supervisor status", () => {
+    expect(DriverStatus.safeParse(driverStatus()).success).toBe(true);
+  });
+
+  it("rejects an unknown key", () => {
+    expect(DriverStatus.safeParse(driverStatus({ pid: 4242 })).success).toBe(false);
+  });
+
+  it("refuses anything but a repository-relative ignored data root", () => {
+    const unsafe = [
+      "/Users/someone/.acp-local",
+      "~/.acp-local",
+      "../../.acp-local",
+      ".acp-local/../../etc",
+      "C:\\acp-local",
+      "",
+    ];
+    for (const dataRoot of unsafe) {
+      const result = DriverStatus.safeParse(driverStatus({ dataRoot }));
+      expect(dataRoot + ":" + String(result.success)).toBe(dataRoot + ":false");
+    }
+    expect(DriverStatus.safeParse(driverStatus({ dataRoot: "restate-data" })).success).toBe(
+      true,
+    );
+  });
+
+  it("requires a reason whenever the driver is not OK", () => {
+    for (const health of ["DEGRADED", "UNAVAILABLE", "UNKNOWN"]) {
+      const silent = driverStatus({ health, activeSince: null, detail: null });
+      expect(health + ":" + String(DriverStatus.safeParse(silent).success)).toBe(
+        health + ":false",
+      );
+      const explained = driverStatus({
+        health,
+        activeSince: null,
+        detail: "the driver is not running",
+      });
+      expect(health + ":" + String(DriverStatus.safeParse(explained).success)).toBe(
+        health + ":true",
+      );
+    }
+  });
+
+  it("refuses an unavailable driver that claims to be active", () => {
+    const bad = driverStatus({ health: "UNAVAILABLE", detail: "not running", activeSince: AT });
+    expect(DriverStatus.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses a malformed ledger head", () => {
+    expect(DriverStatus.safeParse(driverStatus({ ledgerHeadSha256: "nope" })).success).toBe(
+      false,
+    );
+    expect(DriverStatus.safeParse(driverStatus({ ledgerHeadSequence: -1 })).success).toBe(
+      false,
+    );
+  });
+
+  it("refuses credential and transcript shaped fields", () => {
+    expect(DriverStatus.safeParse(driverStatus({ apiKey: "x" })).success).toBe(false);
+    expect(DriverStatus.safeParse(driverStatus({ transcript: [] })).success).toBe(false);
+  });
+
+  it("survives a JSON round trip unchanged", () => {
+    const parsed = DriverStatus.parse(driverStatus());
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
+  });
+});
+
+describe("ReconciliationReport", () => {
+  it("accepts a consistent, ledger-headed report", () => {
+    expect(ReconciliationReport.safeParse(reconciliation()).success).toBe(true);
+  });
+
+  it("freezes the verdict set and the two resumable verdicts", () => {
+    expect([...RECONCILIATION_VERDICTS]).toEqual([
+      "CONSISTENT",
+      "DRIVER_BEHIND",
+      "DRIVER_AHEAD",
+      "DIVERGED",
+      "INDETERMINATE",
+    ]);
+    expect([...RESUMABLE_VERDICTS]).toEqual(["CONSISTENT", "DRIVER_BEHIND"]);
+    expect(ReconciliationVerdict.safeParse("MERGED").success).toBe(false);
+  });
+
+  it("permits resuming for exactly the two verdicts the ledger explains", () => {
+    for (const verdict of RECONCILIATION_VERDICTS) {
+      const resumable = (RESUMABLE_VERDICTS as readonly string[]).includes(verdict);
+      const report = reconciliation({
+        verdict,
+        safeToResume: resumable,
+        detail: verdict === "CONSISTENT" ? null : "classified by reconciliation",
+        discrepancies: verdict === "CONSISTENT" ? [] : [discrepancy],
+      });
+      expect(verdict + ":" + String(ReconciliationReport.safeParse(report).success)).toBe(
+        verdict + ":true",
+      );
+    }
+  });
+
+  it("fails closed: no halting verdict may claim it is safe to resume", () => {
+    for (const verdict of ["DRIVER_AHEAD", "DIVERGED", "INDETERMINATE"]) {
+      const bad = reconciliation({
+        verdict,
+        safeToResume: true,
+        detail: "classified",
+        discrepancies: [discrepancy],
+      });
+      expect(verdict + ":" + String(ReconciliationReport.safeParse(bad).success)).toBe(
+        verdict + ":false",
+      );
+    }
+  });
+
+  it("refuses a resumable verdict that withholds permission to resume", () => {
+    const bad = reconciliation({ verdict: "CONSISTENT", safeToResume: false });
+    expect(ReconciliationReport.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses a reconciliation resolved by anything but the ledger", () => {
+    expect(
+      ReconciliationReport.safeParse(reconciliation({ resolvedByLedger: false })).success,
+    ).toBe(false);
+  });
+
+  it("refuses a consistent verdict that carries discrepancies", () => {
+    const bad = reconciliation({ discrepancies: [discrepancy] });
+    expect(ReconciliationReport.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses a halting verdict that names nothing", () => {
+    for (const verdict of ["DRIVER_AHEAD", "DIVERGED"]) {
+      const bad = reconciliation({
+        verdict,
+        safeToResume: false,
+        detail: "classified",
+        discrepancies: [],
+      });
+      expect(verdict + ":" + String(ReconciliationReport.safeParse(bad).success)).toBe(
+        verdict + ":false",
+      );
+    }
+  });
+
+  it("requires an explanation for every verdict other than CONSISTENT", () => {
+    const bad = reconciliation({
+      verdict: "DRIVER_BEHIND",
+      safeToResume: true,
+      detail: null,
+      discrepancies: [discrepancy],
+    });
+    expect(ReconciliationReport.safeParse(bad).success).toBe(false);
+  });
+
+  it("keeps discrepancies to coordinates, never event content", () => {
+    const leaky = reconciliation({
+      verdict: "DIVERGED",
+      safeToResume: false,
+      detail: "classified",
+      discrepancies: [{ ...discrepancy, payload: { blob: "x" } }],
+    });
+    expect(ReconciliationReport.safeParse(leaky).success).toBe(false);
+  });
+
+  it("refuses credential shaped fields", () => {
+    expect(ReconciliationReport.safeParse(reconciliation({ token: "x" })).success).toBe(false);
+  });
+
+  it("survives a JSON round trip unchanged", () => {
+    const parsed = ReconciliationReport.parse(reconciliation());
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
   });
 });

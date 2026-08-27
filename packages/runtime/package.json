@@ -1,0 +1,26 @@
+{
+  "name": "@acp/runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Durability and supervisor contracts for the Agent Control Plane. P2A: frozen types and constants only, no driver and no behaviour.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@acp/contracts": "workspace:*",
+    "@restatedev/restate-sdk": "catalog:"
+  }
+}

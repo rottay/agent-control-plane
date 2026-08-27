@@ -6,6 +6,9 @@ settings:
 
 catalogs:
   default:
+    '@restatedev/restate-sdk':
+      specifier: 1.16.9
+      version: 1.16.9
     '@types/better-sqlite3':
       specifier: 9.6.0
       version: 9.6.0
@@ -114,6 +117,15 @@ importers:
       vitest:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(lightningcss@1.33.0)
+
+  packages/runtime:
+    dependencies:
+      '@acp/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@restatedev/restate-sdk':
+        specifier: 'catalog:'
+        version: 1.16.9
 
   packages/server:
     dependencies:
@@ -419,6 +431,12 @@ packages:
 
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
+
+  '@restatedev/restate-sdk-core@1.16.9':
+    resolution: {integrity: sha512-x5doeVm2o7XNk5t+yeWBf2e/DEZpdri5C4A3b29b56zdOW0AQ7MexeYLGQUttDTdxP3/zYiwdxo03DKzG9wXqg==}
+
+  '@restatedev/restate-sdk@1.16.9':
+    resolution: {integrity: sha512-fR5FE1aHgD7dSlyYhOmxTB2zX6VcFSALSXyQGyhzdqtqZwt5QpdlUTDwu6oFIex8vWdlEh8lq35ljcOzvQKZYw==}
 
   '@rolldown/binding-android-arm-eabi@1.2.6':
     resolution: {integrity: sha512-b+jTcARdTiFLI6jB4a5XjTm0RWd6KcRfQj/I2356fxUZemiho9zQLxo0RtCuMDAyKcLo6cEltkgbQp6d1+sjjQ==}
@@ -1806,6 +1824,12 @@ snapshots:
   '@oxc-project/types@0.147.0': {}
 
   '@pinojs/redact@0.4.0': {}
+
+  '@restatedev/restate-sdk-core@1.16.9': {}
+
+  '@restatedev/restate-sdk@1.16.9':
+    dependencies:
+      '@restatedev/restate-sdk-core': 1.16.9
 
   '@rolldown/binding-android-arm-eabi@1.2.6':
     optional: true

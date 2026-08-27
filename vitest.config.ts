@@ -29,6 +29,14 @@ import { defineConfig } from 'vitest/config';
  * a lane write-set; those configs are gone and their projects live here, so
  * `pnpm check` actually executes every suite in the repository. A suite that
  * only runs under a command nobody types is not a gate.
+ *
+ * P2A adds `@acp/runtime` to the TypeScript solution but deliberately adds no
+ * project here. That package currently exports frozen types and constants and
+ * nothing executable, so it has nothing to assert that its own compilation does
+ * not already prove. Its contracts are covered by the `contracts` project,
+ * which owns the schemas. An empty project would report a green suite for
+ * behaviour nobody has written; P2B adds the project together with the first
+ * driver test, exactly as the three P1 lanes did.
  */
 
 const contractsSource = fileURLToPath(

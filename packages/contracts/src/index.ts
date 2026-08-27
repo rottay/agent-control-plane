@@ -38,6 +38,15 @@ export {
   ConfidenceLevel,
   LocalAuthReference,
   AccountRecord,
+  DRIVER_MODES,
+  DRIVER_HEALTH_STATES,
+  RECONCILIATION_VERDICTS,
+  RESUMABLE_VERDICTS,
+  DriverMode,
+  DriverHealth,
+  DriverStatus,
+  ReconciliationVerdict,
+  ReconciliationReport,
   formatWorkerIdentity,
   parseWorkerIdentity,
   isLifecycleState,
@@ -49,3 +58,4 @@ export {
 } from "./schemas.js";
 
 export type { GuardViolation } from "./schemas.js";
+export type { ReconciliationDiscrepancy } from "./schemas.js";

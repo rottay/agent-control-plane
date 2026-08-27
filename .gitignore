@@ -31,6 +31,12 @@ data/
 restate-data/
 restate-server-data/
 
+# --- Local-only working root (P2) ------------------------------------------
+# Pinned external tools, disposable toy repositories and drill databases, pid
+# and log files. Everything the durability plane writes lives under here, and
+# none of it is evidence: it is reproducible from the ledger or discardable.
+.acp-local/
+
 # --- Logs -------------------------------------------------------------------
 logs/
 *.log

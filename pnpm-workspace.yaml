@@ -15,6 +15,14 @@ packages:
 # That was verified rather than assumed: no package in the added graph declares
 # a preinstall, install or postinstall script, so the allow-list stays exactly
 # one name long.
+#
+# P2A adds the Restate TypeScript SDK and adds NOTHING here either. The SDK's
+# whole graph is itself plus @restatedev/restate-sdk-core, neither of which
+# declares an install script. The Restate SERVER is deliberately absent: the
+# @restatedev/restate-server npm package depends on @scarf/scarf, whose
+# postinstall is a network beacon. The 1.7.7 server is acquired as an external
+# pinned binary under the ignored .acp-local/tools/ by an explicit operator
+# command with platform and SHA-256 verification, never by an install hook.
 onlyBuiltDependencies:
   - better-sqlite3
 
@@ -30,3 +38,4 @@ catalog:
   "@types/react-dom": 19.2.5
   vite: 8.2.2
   "@vitejs/plugin-react": 6.1.0
+  "@restatedev/restate-sdk": 1.16.9
