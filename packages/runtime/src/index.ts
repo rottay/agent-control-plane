@@ -98,3 +98,35 @@ export type {
   RunResult,
   SqliteSupervisorOptions,
 } from "./drivers/sqlite-supervisor.js";
+
+export {
+  appendPlanStep,
+  applyIntentEffect,
+  assertClaimedState,
+  assertInvocationContinuity,
+  closeIntent,
+  currentState,
+  nextStep,
+} from "./core/step-executor.js";
+export type {
+  BeatContext,
+  BeatResult,
+  EffectPort,
+  LedgerPort,
+} from "./core/step-executor.js";
+
+export { RESTATE_MODE, RestateDriver, createAcpTaskObject, reconcile } from "./drivers/restate-driver.js";
+export type { ObjectDependencies, ReconcileInput } from "./drivers/restate-driver.js";
+
+export { startEndpoint } from "./drivers/restate-endpoint.js";
+export type { EndpointHandle, StartEndpointOptions } from "./drivers/restate-endpoint.js";
+
+export {
+  deriveInvocation,
+  readCacheThroughHandler,
+  registerDeployment,
+  submitAdvance,
+} from "./restate/submit.js";
+export type { SubmitResult } from "./restate/submit.js";
+
+export type { RestateCacheState, RestateDriverOptions, LedgerLike } from "./contracts.js";

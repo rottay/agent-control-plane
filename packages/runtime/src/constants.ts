@@ -103,3 +103,37 @@ export const DATA_ROOTS: readonly string[] = Object.freeze([
   DATA_ROOT_TOOLS,
   DATA_ROOT_DRILLS,
 ]);
+
+// ---------------------------------------------------------------------------
+// Restate object and cache
+// ---------------------------------------------------------------------------
+
+/**
+ * The one Virtual Object, keyed by task id.
+ *
+ * One object per task is what gives the plane a single writer per task without
+ * a lease: Restate serialises handler invocations for one key, so two
+ * submissions for the same task cannot interleave.
+ */
+export const RESTATE_OBJECT_NAME = "AcpTask";
+
+/** The handler the ingress submits to. */
+export const RESTATE_HANDLER_ADVANCE = "advance";
+
+/** The read-only handler that exposes the cache for reconciliation. */
+export const RESTATE_HANDLER_READ_CACHE = "readCache";
+
+/**
+ * The ONE state key the object is allowed to hold.
+ *
+ * `ctx.stateKeys()` returning anything else is itself a finding: the object's
+ * state is a cache of ledger-derived values, and a second key would be a second
+ * account of what happened.
+ */
+export const RESTATE_STATE_KEY_CACHE = "acpCache";
+
+/** Repository-relative path of the tracked server pin. Never a URL at runtime. */
+export const RESTATE_SERVER_SHA256_PIN_PATH = "scripts/restate-server.pin.json";
+
+/** The pinned server version the drills run against. */
+export const RESTATE_SERVER_INSTALL_DIR = ".acp-local/tools/restate-server-" + RESTATE_SERVER_VERSION;

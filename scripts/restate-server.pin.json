@@ -1,0 +1,26 @@
+{
+  "comment": [
+    "Pinned external Restate server release. Deliberately not an npm dependency;",
+    "docs/architecture/0005-restate-driver-and-adoption.md records why.",
+    "The binary is acquired by an explicit operator command, never by a lifecycle",
+    "hook, and this file is the content authority: the digest below is what the",
+    "archive must hash to, and binarySha256 is what the extracted binary must",
+    "hash to. Pinning only the archive would leave the binary self-attested: a",
+    "substituted binary with a matching receipt would pass.",
+    "A platform absent from this file is refused. There is no trust-on-first-use."
+  ],
+  "version": "1.7.7",
+  "release": "https://github.com/restatedev/restate/releases/tag/v1.7.7",
+  "publishedAt": "2026-08-26",
+  "assetHost": "github.com",
+  "assetPathPrefix": "/restatedev/restate/releases/download/v1.7.7/",
+  "redirectHost": "release-assets.githubusercontent.com",
+  "platforms": {
+    "darwin-arm64": {
+      "asset": "restate-server-aarch64-apple-darwin.tar.xz",
+      "url": "https://github.com/restatedev/restate/releases/download/v1.7.7/restate-server-aarch64-apple-darwin.tar.xz",
+      "sha256": "96106ce887475dc0d7c1aebe12ea4ca75f8ed26a00f36b4659c8372508b4f7fa",
+      "binarySha256": "a88181219dde14e579a2ca0b4553f1cc374c33a6ccc9ff8eec3002b299daf549"
+    }
+  }
+}

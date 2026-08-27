@@ -198,3 +198,50 @@ export interface OrchestrationDriver {
     from: TaskState,
   ): Promise<ControlPlaneEvent | null>;
 }
+
+// ---------------------------------------------------------------------------
+// Restate driver
+// ---------------------------------------------------------------------------
+
+/**
+ * The Virtual Object's entire durable state.
+ *
+ * A CACHE, never a fact. Both fields are copies of something the ledger already
+ * knows, and deleting all of it loses nothing: the data-root-deletion drill
+ * exists to prove exactly that. Nothing may be added here without an ADR,
+ * because a field that is NOT derivable from the ledger would make Restate a
+ * second authority, whatever the documents say.
+ */
+export interface RestateCacheState {
+  readonly lastAppliedSequence: number;
+  readonly lastAppliedEventSha256: string;
+}
+
+/** Everything the Restate driver needs to reach a ledger and a server. */
+export interface RestateDriverOptions {
+  readonly ledger: LedgerLike;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** Loopback ingress base, e.g. `http://127.0.0.1:8080`. */
+  readonly ingressUrl: string;
+  /** Loopback admin base, e.g. `http://127.0.0.1:9070`. */
+  readonly adminUrl: string;
+  /** Reads the object's cache through a shared handler, never admin state. */
+  readonly readCache?: (() => Promise<RestateCacheState | null>) | undefined;
+}
+
+/**
+ * The ledger surface the driver reads.
+ *
+ * Structurally satisfied by `Ledger`; declared here so this file stays free of
+ * a value import and the driver cannot reach a mutator it was never given.
+ */
+export interface LedgerLike {
+  status(): {
+    readonly headSequence: number;
+    readonly headEventSha256: string;
+    readonly eventCount: number;
+  };
+  verifyIntegrity(): { readonly ok: boolean; readonly problems: readonly unknown[] };
+  getEventBySequence(sequence: number): { readonly eventSha256: string } | null;
+}

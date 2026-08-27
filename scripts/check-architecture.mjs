@@ -282,6 +282,27 @@ const P2B_WRITE_SET = [
   "packages/runtime/src/drivers/sqlite-supervisor.test.ts",
 ];
 
+/**
+ * The exact P2C additions: the Restate driver and its external server pin.
+ *
+ * P2C is single-writer, so there is no lane envelope. No thirteenth path is
+ * authorized.
+ */
+const P2C_WRITE_SET = [
+  "docs/architecture/0005-restate-driver-and-adoption.md",
+  "packages/runtime/src/core/step-executor.ts",
+  "packages/runtime/src/core/step-executor.test.ts",
+  "packages/runtime/src/drivers/restate-driver.ts",
+  "packages/runtime/src/drivers/restate-endpoint.ts",
+  "packages/runtime/src/drivers/restate-driver.test.ts",
+  "packages/runtime/src/drivers/restate-drills.test.ts",
+  "packages/runtime/src/drivers/restate-child.ts",
+  "packages/runtime/src/restate/server-handle.ts",
+  "packages/runtime/src/restate/submit.ts",
+  "scripts/acquire-restate-server.mjs",
+  "scripts/restate-server.pin.json",
+];
+
 const RETIRED = new Set(RETIRED_PATHS);
 
 const WRITE_SET = [
@@ -291,6 +312,7 @@ const WRITE_SET = [
   ...P1_WRITE_SET,
   ...P2A_WRITE_SET,
   ...P2B_WRITE_SET,
+  ...P2C_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /**
@@ -304,7 +326,7 @@ const WRITE_SET = [
  * of them.
  */
 const ROADMAP_SHA256 =
-  "ac22401fe334126c0b5f37f235a645f21c2f8a4f890dd7a1a394dc6d65c5c5e8";
+  "dc2ccc422716a7e71fa9fec9063df9541692fb6d4c777b4d96ff1e597b944100";
 
 /**
  * The Estado line P1 closure is allowed to have produced.
@@ -320,7 +342,7 @@ const ROADMAP_SHA256 =
  * authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / NEXT_P2 / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2C_COMPLETE / NEXT_P2D / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -343,6 +365,7 @@ const ROADMAP_LITERALS = [
  */
 const FORBIDDEN_ROADMAP_LITERALS = [
   "P1_DONE",
+  "P2_COMPLETE",
   "PRODUCT_CUTOVER_AUTHORIZED",
   "CUTOVER_AUTHORIZED",
 ];
@@ -447,6 +470,18 @@ const AUTHORITY_LITERALS = {
     "fails closed",
     "P2B is not P2 completion",
     "no product adoption",
+  ],
+  "docs/architecture/0005-restate-driver-and-adoption.md": [
+    "derived",
+    "authority",
+    "127.0.0.1",
+    "cache",
+    "fails closed",
+    "no merge policy",
+    "adoption criterion",
+    "P2C is not P2 completion",
+    "no product adoption",
+    "no partial cutover",
   ],
   "packages/api-contracts/README.md": [
     "browser-safe",
@@ -564,7 +599,7 @@ if (tracked.status !== 0) {
     present.length +
       " repository files scanned against the write-set (" +
       WRITE_SET.length +
-      " exact paths across P0, P1A, P1B and P1; " +
+      " exact paths across P0 through P2C; " +
       inEnvelope +
       " inside the lane envelope which is " +
       (laneEnvelopeOpen ? "open" : "closed") +
@@ -588,7 +623,7 @@ if (roadmap === null) {
         ROADMAP_SHA256,
     );
   } else {
-    notes.push("docs/ROADMAP.md matches the pinned P1 closure digest");
+    notes.push("docs/ROADMAP.md matches the pinned P2C digest");
   }
 
   // The digest alone would let a re-pin smuggle in a rewritten roadmap, so the
@@ -596,7 +631,9 @@ if (roadmap === null) {
   if (!roadmap.includes(ROADMAP_STATUS_LITERAL)) {
     fail("docs/ROADMAP.md no longer carries the authorized P1A status line");
   } else {
-    notes.push("roadmap status is P0 and P1 complete, next P2, no product cutover");
+    notes.push(
+      "roadmap status is P0, P1 and P2C complete, next P2D, no product cutover",
+    );
   }
   for (const literal of ROADMAP_LITERALS) {
     if (!roadmap.includes(literal)) {
@@ -1184,7 +1221,30 @@ const RUNTIME_ALLOWED_PACKAGES = new Set([
   "@restatedev/restate-sdk",
 ]);
 const RUNTIME_ALLOWED_BUILTINS = new Set(["node:crypto", "node:fs", "node:path", "node:url"]);
-const RUNTIME_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os"]);
+const RUNTIME_TEST_ONLY_IMPORTS = new Set([
+  "vitest",
+  "node:child_process",
+  "node:os",
+  "node:timers/promises",
+]);
+
+/**
+ * The one file allowed to open a listener, and the one builtin that can.
+ *
+ * P2 used to add no network surface at all. P2C changes that by design: the ADR
+ * pins three loopback ports, and something has to bind one of them. Rather than
+ * relax the ban repository-wide, the allowance is scoped to a single file, and
+ * the two checks below make that file prove it binds loopback.
+ */
+const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint.ts";
+
+/**
+ * Test-only modules: they spawn processes, which production code may not.
+ *
+ * `server-handle.ts` starts the external server; a production module reaching
+ * it would be a daemon, which is P2D and is not authorised.
+ */
+const RUNTIME_TEST_ONLY_MODULES = ["packages/runtime/src/restate/server-handle.js"];
 
 // Anything that could listen, connect or fan out. None of these belongs in a
 // local durability plane, and P2 adds no network surface of any kind.
@@ -1192,7 +1252,6 @@ const RUNTIME_FORBIDDEN_BUILTINS = [
   "node:net",
   "node:http",
   "node:https",
-  "node:http2",
   "node:tls",
   "node:dgram",
   "node:dns",
@@ -1223,10 +1282,20 @@ if (tracked.status === 0) {
     while (match !== null) {
       const name = match[1] ?? "";
       const relative = name.startsWith("./") || name.startsWith("../");
+      // File-scoped, not repository-wide: exactly one file may open a listener,
+      // and exactly one module may spawn the external server.
+      const http2Here = name === "node:http2" && relativePath === HTTP2_ALLOWED_FILE;
+      const spawnHere =
+        name === "node:child_process" &&
+        RUNTIME_TEST_ONLY_MODULES.some((module) =>
+          relativePath === module.replace(/\.js$/, ".ts"),
+        );
       const allowed =
         relative ||
         RUNTIME_ALLOWED_PACKAGES.has(name) ||
         RUNTIME_ALLOWED_BUILTINS.has(name) ||
+        http2Here ||
+        spawnHere ||
         (isTest && RUNTIME_TEST_ONLY_IMPORTS.has(name));
 
       if (!allowed) {
@@ -1246,6 +1315,14 @@ if (tracked.status === 0) {
             "; the durability plane opens no socket and speaks to no network",
         );
       }
+      if (name === "node:http2" && !http2Here) {
+        fail(
+          relativePath +
+            " imports node:http2; only " +
+            HTTP2_ALLOWED_FILE +
+            " may open a listener, and the fence says so by name",
+        );
+      }
       match = specifier.exec(content);
     }
   }
@@ -1254,6 +1331,11 @@ if (tracked.status === 0) {
   // and is not authorised yet.
   for (const relativePath of runtimeSources) {
     if (relativePath.endsWith(".test.ts")) continue;
+    // The server handle is classified test-only: it spawns the external server,
+    // and check 16 below asserts no production module reaches it.
+    if (RUNTIME_TEST_ONLY_MODULES.some((module) => relativePath === module.replace(/\.js$/, ".ts"))) {
+      continue;
+    }
     const content = readIfPresent(relativePath);
     if (content === null) continue;
     if (/from\s+["']node:child_process["']/.test(content)) {
@@ -1287,6 +1369,187 @@ if (tracked.status === 0) {
     }
   }
   notes.push("no file invokes launchctl load or bootstrap");
+}
+
+// --- 16. P2C: the one listener, the one spawner, the one pin --------------
+
+// The endpoint must prove it binds loopback, and must not reach for the SDK
+// helpers that cannot. `NodeEndpoint.listen(port)` binds every interface, so a
+// bare `serve(` or a numeric `.listen(` here would silently undo the ADR's pin.
+// Made unrepeatable by the fence rather than remembered by a reviewer.
+const endpointSource = readIfPresent(HTTP2_ALLOWED_FILE);
+if (endpointSource === null) {
+  fail("the endpoint file is missing: " + HTTP2_ALLOWED_FILE);
+} else {
+  // Comments are stripped first: this file necessarily NAMES the forbidden
+  // helpers in order to explain why it does not use them, and a check that
+  // cannot tell code from prose would fail on its own documentation.
+  const endpointCode = endpointSource
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+  if (!endpointCode.includes("host: LOOPBACK_HOST")) {
+    fail(HTTP2_ALLOWED_FILE + " does not pin the listener to LOOPBACK_HOST");
+  }
+  if (/\bserve\s*\(/.test(endpointCode)) {
+    fail(HTTP2_ALLOWED_FILE + " calls serve(), which cannot bind loopback");
+  }
+  if (/\.listen\s*\(\s*\d/.test(endpointCode)) {
+    fail(HTTP2_ALLOWED_FILE + " calls listen(<number>), which binds every interface");
+  }
+  notes.push("the endpoint pins loopback and calls neither serve() nor a numeric listen");
+}
+
+// No production module may reach the server handle, transitively or otherwise.
+// It spawns the external server; a production path to it would be a daemon.
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const testOnly = new Set(
+    RUNTIME_TEST_ONLY_MODULES.map((module) => module.replace(/\.js$/, ".ts")),
+  );
+  const productionRuntime = present.filter(
+    (relativePath) =>
+      relativePath.startsWith("packages/runtime/src/") &&
+      relativePath.endsWith(".ts") &&
+      !relativePath.endsWith(".test.ts") &&
+      !testOnly.has(relativePath),
+  );
+
+  const importsOf = (relativePath) => {
+    const content = readIfPresent(relativePath);
+    if (content === null) return [];
+    const found = [];
+    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["'](\.[^"']+)["']/g;
+    let match = pattern.exec(content);
+    while (match !== null) {
+      const target = (match[1] ?? "").replace(/\.js$/, ".ts");
+      const base = relativePath.split("/").slice(0, -1);
+      for (const segment of target.split("/")) {
+        if (segment === ".") continue;
+        if (segment === "..") base.pop();
+        else base.push(segment);
+      }
+      found.push(base.join("/"));
+      match = pattern.exec(content);
+    }
+    return found;
+  };
+
+  const seen = new Set(productionRuntime);
+  const queue = [...productionRuntime];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    for (const next of importsOf(current)) {
+      if (testOnly.has(next)) {
+        fail(
+          current +
+            " reaches " +
+            next +
+            "; that module spawns the external server and is test-only in P2",
+        );
+        continue;
+      }
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  notes.push(
+    productionRuntime.length + " production runtime modules reach no process-spawning module",
+  );
+}
+
+// Names that must never enter the graph, matched as whole tokens so the
+// permitted SDK does not trip the ban on its own parent package.
+const P2C_FORBIDDEN_NAMES = [
+  ["@scarf/scarf", /@scarf\/scarf/],
+  ["@restatedev/restate-server", /@restatedev\/restate-server/],
+  ["the @restatedev/restate CLI", /@restatedev\/restate(?![-\w])/],
+  ["testcontainers", /testcontainers/i],
+];
+const P2C_NAME_EXEMPT = new Set([
+  "scripts/check-architecture.mjs",
+  "scripts/acquire-restate-server.mjs",
+  "docs/architecture/0004-durability-and-supervisor.md",
+  "docs/architecture/0005-restate-driver-and-adoption.md",
+  "packages/runtime/README.md",
+  "packages/runtime/src/constants.ts",
+  "pnpm-workspace.yaml",
+]);
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  for (const relativePath of present) {
+    if (P2C_NAME_EXEMPT.has(relativePath)) continue;
+    if (relativePath === "pnpm-lock.yaml") continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    for (const [label, pattern] of P2C_FORBIDDEN_NAMES) {
+      if (pattern.test(content)) {
+        fail(relativePath + " names " + label + ", which may not enter this graph");
+      }
+    }
+  }
+  notes.push("no tracked file names the server package, its telemetry dependency or containers");
+}
+
+// The acquisition script must never fetch at import time.
+const acquireSource = readIfPresent("scripts/acquire-restate-server.mjs");
+if (acquireSource === null) {
+  fail("scripts/acquire-restate-server.mjs is missing");
+} else {
+  if (!/const invoked = process\.argv\[1\]/.test(acquireSource)) {
+    fail("the acquisition script does not guard its run behind an explicit invocation check");
+  } else {
+    notes.push("the acquisition script fetches only when invoked as an entry point");
+  }
+}
+
+// The pin is the content authority for a binary that never passes through the
+// package manager, so the fence parses it rather than grepping it for the word
+// UNPINNED. Both digests must be established: pinning the archive alone leaves
+// the extracted binary attested by nothing but its own receipt, which is what a
+// substituted binary would also carry.
+const PIN_DIGEST = /^[0-9a-f]{64}$/;
+const pinSource = readIfPresent("scripts/restate-server.pin.json");
+if (pinSource === null) {
+  fail("scripts/restate-server.pin.json is missing");
+} else {
+  let pin = null;
+  try {
+    pin = JSON.parse(pinSource);
+  } catch {
+    fail("scripts/restate-server.pin.json is not valid JSON");
+  }
+  if (pin !== null) {
+    const platforms = pin.platforms;
+    const keys =
+      platforms !== null && typeof platforms === "object" ? Object.keys(platforms) : [];
+    if (keys.length === 0) {
+      fail("the server pin establishes no platform, so it pins nothing");
+    } else {
+      let established = true;
+      for (const key of keys) {
+        for (const field of ["sha256", "binarySha256"]) {
+          const digest = platforms[key]?.[field];
+          if (typeof digest !== "string" || !PIN_DIGEST.test(digest)) {
+            fail(
+              "the server pin's " +
+                key +
+                "." +
+                field +
+                " is not an established 64-lowercase-hex digest; there is no " +
+                "trust-on-first-use here",
+            );
+            established = false;
+          }
+        }
+      }
+      if (established) {
+        notes.push("the Restate server pin establishes both archive and binary digests");
+      }
+    }
+  }
 }
 
 for (const note of notes) {
