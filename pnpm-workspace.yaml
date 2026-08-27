@@ -10,6 +10,11 @@ packages:
 # binaries and declares no install script, so this entry authorises a source
 # build only as a fallback on a platform without a prebuild. No second name may
 # be added here without a new owner authorisation.
+#
+# P1B adds the browser toolchain (Vite, Rolldown, React) and adds NOTHING here.
+# That was verified rather than assumed: no package in the added graph declares
+# a preinstall, install or postinstall script, so the allow-list stays exactly
+# one name long.
 onlyBuiltDependencies:
   - better-sqlite3
 
@@ -18,3 +23,9 @@ catalog:
   zod: 4.1.13
   better-sqlite3: 13.0.3
   "@types/better-sqlite3": 9.6.0
+  react: 19.2.8
+  react-dom: 19.2.8
+  "@types/react": 19.2.18
+  "@types/react-dom": 19.2.5
+  vite: 8.2.2
+  "@vitejs/plugin-react": 6.1.0

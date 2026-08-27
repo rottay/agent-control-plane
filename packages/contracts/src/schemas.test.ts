@@ -590,6 +590,24 @@ describe("transcript continuity", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkpoint size budget", () => {
+  it("measures UTF-8 bytes of the JSON encoding, quotes included", () => {
+    // JSON.stringify("é") is the three character text "é" wrapped in quotes.
+    // Two ASCII quotes plus the two UTF-8 bytes of é is four.
+    expect(serializedByteLength("é")).toBe(4);
+  });
+
+  it("counts an astral plane character as its four UTF-8 bytes", () => {
+    // Two quotes plus the four UTF-8 bytes of the emoji.
+    expect(serializedByteLength("😀")).toBe(6);
+    // {"a":"😀"} is six ASCII characters of structure plus the four byte emoji
+    // and its two quotes.
+    expect(serializedByteLength({ a: "😀" })).toBe(12);
+  });
+
+  it("returns zero for values JSON cannot represent", () => {
+    expect(serializedByteLength(undefined)).toBe(0);
+  });
+
   it("accepts a compact checkpoint", () => {
     const value = checkpoint();
     expect(serializedByteLength(value)).toBeLessThan(CHECKPOINT_MAX_BYTES);

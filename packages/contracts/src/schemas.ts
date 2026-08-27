@@ -262,8 +262,13 @@ export function findTranscriptViolations(value: unknown): GuardViolation[] {
 export function serializedByteLength(value: unknown): number {
   // JSON.stringify yields undefined for undefined, functions and symbols, which
   // this overload does not surface in its type. Narrow at runtime instead.
+  //
+  // TextEncoder rather than Buffer: this module is reused by the browser-safe
+  // observation contract, and Buffer is a Node global. TextEncoder is a Web
+  // platform API available in both runtimes, and it measures the same UTF-8
+  // bytes, so the checkpoint budget is unchanged.
   const json: unknown = JSON.stringify(value);
-  return typeof json === "string" ? Buffer.byteLength(json, "utf8") : 0;
+  return typeof json === "string" ? new TextEncoder().encode(json).byteLength : 0;
 }
 
 type RefinementContext = z.core.$RefinementCtx;

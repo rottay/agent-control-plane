@@ -1,5 +1,6 @@
 // @ts-check
 import js from '@eslint/js';
+import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 /**
@@ -7,8 +8,13 @@ import tseslint from 'typescript-eslint';
  *
  * Type-aware rules run only over workspace package sources, which are the files
  * covered by a tsconfig project. Root-level tooling files (this config, the
- * vitest workspace, the architecture fence) are linted with syntactic rules
+ * vitest config, the architecture fence) are linted with syntactic rules
  * only, so the lint step never depends on a build having run first.
+ *
+ * P1B widens type-aware coverage from `.ts` to `.ts` and `.tsx`, so the UI is
+ * linted under exactly the same strict rule set as every other package. The
+ * only concession the UI gets is a browser global set, scoped to its own source
+ * directory. No rule is relaxed anywhere to accommodate it.
  */
 export default tseslint.config(
   {
@@ -30,7 +36,7 @@ export default tseslint.config(
   // Workspace package sources: full type-aware linting.
   {
     name: 'acp/packages-typed',
-    files: ['packages/**/*.ts'],
+    files: ['packages/**/*.ts', 'packages/**/*.tsx'],
     extends: [
       ...tseslint.configs.strictTypeChecked,
       ...tseslint.configs.stylisticTypeChecked,
@@ -58,10 +64,23 @@ export default tseslint.config(
     },
   },
 
+  // The UI runs in a browser and needs browser globals to be declared. This is
+  // a declaration of the environment, not a relaxation: every strict rule above
+  // still applies to these files, including no-console.
+  {
+    name: 'acp/ui-browser',
+    files: ['packages/ui/src/**/*.ts', 'packages/ui/src/**/*.tsx'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+      },
+    },
+  },
+
   // Tests may assert on shapes that strict type-aware rules would reject.
   {
     name: 'acp/tests',
-    files: ['packages/**/*.test.ts'],
+    files: ['packages/**/*.test.ts', 'packages/**/*.test.tsx'],
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',

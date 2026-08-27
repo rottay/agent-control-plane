@@ -25,6 +25,17 @@
  *  10. no file outside the authority documents claims product integration or
  *      cutover authority.
  *
+ * P1B adds three more, all of which exist because P1B is the last single-writer
+ * phase before three lanes run in parallel:
+ *
+ *  11. the four new packages depend on exactly what they were authorized to,
+ *      and the browser package names no ledger and no database driver anywhere;
+ *  12. the retired Vitest workspace file is actually gone, so the deletion is
+ *      enforced rather than merely performed once;
+ *  13. the lane envelope is scoped to three named prefixes and expires by
+ *      itself when the roadmap stops saying P1_INCOMPLETE;
+ *  14. no tracked file, lane files included, carries credential material.
+ *
  * Every check is read-only. This script never writes, stages or commits.
  */
 
@@ -88,29 +99,103 @@ const P1A_WRITE_SET = [
   "packages/ledger/src/ledger.test.ts",
 ];
 
-const WRITE_SET = [...P0_WRITE_SET, ...P1A_WRITE_SET];
+/**
+ * The exact P1B shared additions.
+ *
+ * P1B builds the shared foundation only: the browser-safe observation contract,
+ * the scaffolds and boundary of the three lane packages, and the test topology
+ * that replaces the deprecated Vitest workspace file. No twenty-fourth path is
+ * authorized here either.
+ */
+const P1B_SHARED_WRITE_SET = [
+  "vitest.config.ts",
+  "docs/architecture/0003-read-only-observation-plane.md",
+  "packages/api-contracts/package.json",
+  "packages/api-contracts/tsconfig.json",
+  "packages/api-contracts/README.md",
+  "packages/api-contracts/src/index.ts",
+  "packages/api-contracts/src/version.ts",
+  "packages/api-contracts/src/routes.ts",
+  "packages/api-contracts/src/schemas.ts",
+  "packages/api-contracts/src/schemas.test.ts",
+  "packages/cli/package.json",
+  "packages/cli/tsconfig.json",
+  "packages/cli/src/index.ts",
+  "packages/server/package.json",
+  "packages/server/tsconfig.json",
+  "packages/server/src/index.ts",
+  "packages/ui/package.json",
+  "packages/ui/tsconfig.json",
+  "packages/ui/tsconfig.node.json",
+  "packages/ui/vite.config.ts",
+  "packages/ui/index.html",
+  "packages/ui/src/main.tsx",
+  "packages/ui/src/App.tsx",
+];
+
+/**
+ * Paths an earlier phase created and a later phase deliberately removed.
+ *
+ * P0 authorized vitest.workspace.ts. P1B retires it: `defineWorkspace` is
+ * deprecated in Vitest 3 and the topology moved to vitest.config.ts. The path
+ * stays listed in P0_WRITE_SET because that list is the historical record of
+ * what P0 was authorized to create, and it is named here so the fence both
+ * stops requiring it and starts requiring its absence. A deletion that is only
+ * performed once is not enforced.
+ */
+const RETIRED_PATHS = ["vitest.workspace.ts"];
+
+/**
+ * The P1B lane envelope.
+ *
+ * P1B is the last single-writer phase before the CLI, server and UI lanes run
+ * as isolated writers. Each lane needs room to create files this phase cannot
+ * enumerate in advance, so the fence tolerates paths under exactly these three
+ * prefixes, and nowhere else.
+ *
+ * This is deliberately three named prefixes rather than a general packages/
+ * permission: a wildcard over packages/ would silently authorize edits to the
+ * contracts, the ledger and the observation contract, which are integrator
+ * owned and single-writer by law.
+ *
+ * The envelope is also temporary. It is open only while docs/ROADMAP.md still
+ * says P1_INCOMPLETE, so it closes by itself when P1 completes rather than
+ * waiting for someone to remember to close it. Files inside the envelope are
+ * still subject to every content check below: the envelope widens where a lane
+ * may write, never what it may write.
+ */
+const P1B_LANE_ENVELOPES = ["packages/cli/", "packages/server/", "packages/ui/"];
+
+const RETIRED = new Set(RETIRED_PATHS);
+
+const WRITE_SET = [...P0_WRITE_SET, ...P1A_WRITE_SET, ...P1B_SHARED_WRITE_SET].filter(
+  (relativePath) => !RETIRED.has(relativePath),
+);
 
 /**
  * docs/ROADMAP.md is pinned by digest so it cannot drift.
  *
- * P1A is authorized to change exactly one line of it, the Estado line, and the
- * pin is re-anchored here to the resulting file. Because a re-pin is only as
- * trustworthy as the reviewer who approved it, the roadmap is additionally
- * checked for the structural literals below: a rewritten roadmap that happened
- * to carry a matching digest would still have to keep saying all of them.
+ * Each phase is authorized to change exactly one line of it, the Estado line,
+ * and the pin is re-anchored here to the resulting file. Because a re-pin is
+ * only as trustworthy as the reviewer who approved it, the roadmap is
+ * additionally checked for the structural literals below: a rewritten roadmap
+ * that happened to carry a matching digest would still have to keep saying all
+ * of them.
  */
 const ROADMAP_SHA256 =
-  "28947242b4bc53f1f239ed5aea72457e9cb6cac5e71b25473001dead7ab02dc2";
+  "6706a58e00f64bd18bfde762a812272863cb7d05d1615568c532b218d7901855";
 
 /**
- * The Estado line P1A is allowed to have produced.
+ * The Estado line P1B is allowed to have produced.
  *
- * P0 is complete and P1A is source ready. P1 as a whole is explicitly NOT
- * complete: the CLI and the read-only UI are still outstanding, and no status
- * line may imply otherwise.
+ * P0 and P1A are complete and the P1B shared foundation is source ready. P1 as
+ * a whole is explicitly NOT complete: the server, the CLI and the read-only UI
+ * are still outstanding, and no status line may imply otherwise. The literal is
+ * exact, so a status that drops P1_INCOMPLETE also closes the lane envelope
+ * below rather than quietly widening it.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1A_SOURCE_READY / P1_INCOMPLETE / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1A_COMPLETE / P1B_SHARED_SOURCE_READY / P1_INCOMPLETE / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -197,6 +282,25 @@ const AUTHORITY_LITERALS = {
     "verifyIntegrity",
     "P1A is not P1 completion",
   ],
+  "docs/architecture/0003-read-only-observation-plane.md": [
+    "browser",
+    "read-only",
+    "127.0.0.1",
+    "GET",
+    "redact",
+    "error envelope",
+    "cursor",
+    "P1B is not P1 completion",
+    "no product adoption",
+    "no partial",
+    "lane envelope",
+  ],
+  "packages/api-contracts/README.md": [
+    "browser-safe",
+    "P1B is not P1 completion",
+    "no product adoption",
+    "GET only",
+  ],
 };
 
 /** Files that must never exist in the repository, in any directory. */
@@ -229,6 +333,13 @@ function readIfPresent(relativePath) {
   }
 }
 
+// The roadmap gates the lane envelope, so it is read before the write-set is
+// checked rather than after. The envelope is open only while P1 is explicitly
+// incomplete; the moment the status line stops saying so, the exact write-set
+// is the only thing that passes again.
+const roadmap = readIfPresent("docs/ROADMAP.md");
+const laneEnvelopeOpen = roadmap !== null && roadmap.includes("P1_INCOMPLETE");
+
 // --- 1. required paths -----------------------------------------------------
 
 for (const relativePath of WRITE_SET) {
@@ -240,6 +351,25 @@ for (const relativePath of WRITE_SET) {
   }
 }
 
+// A retired path must be absent. Otherwise a deletion is a one-off event rather
+// than a rule, and the file can quietly come back on the next branch.
+let allRetiredAbsent = true;
+for (const relativePath of RETIRED_PATHS) {
+  let stillPresent = true;
+  try {
+    statSync(join(REPO_ROOT, relativePath));
+  } catch {
+    stillPresent = false;
+  }
+  if (stillPresent) {
+    allRetiredAbsent = false;
+    fail("retired path is present again: " + relativePath);
+  }
+}
+if (allRetiredAbsent) {
+  notes.push("retired path absent: " + RETIRED_PATHS.join(", "));
+}
+
 // --- 2. write-set conformance ---------------------------------------------
 
 const tracked = git(["ls-files", "--cached", "--others", "--exclude-standard"]);
@@ -248,24 +378,51 @@ if (tracked.status !== 0) {
 } else {
   const allowed = new Set(WRITE_SET);
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  let inEnvelope = 0;
+  let retiredInIndex = 0;
   for (const relativePath of present) {
-    if (!allowed.has(relativePath)) {
-      fail("path is outside the exact P0 plus P1A write-set: " + relativePath);
+    if (allowed.has(relativePath)) continue;
+
+    const envelope = P1B_LANE_ENVELOPES.find((prefix) => relativePath.startsWith(prefix));
+    if (envelope !== undefined && laneEnvelopeOpen) {
+      inEnvelope += 1;
+      continue;
     }
+
+    if (RETIRED.has(relativePath)) {
+      // The file is gone from the working tree, which check 1 verified, but git
+      // still lists it from the index until the deletion is committed. That is a
+      // pending deletion, not a violation, and check 1 is what would catch the
+      // file actually coming back.
+      retiredInIndex += 1;
+      continue;
+    }
+
+    fail(
+      "path is outside the exact P0 plus P1A plus P1B write-set" +
+        (envelope === undefined
+          ? ""
+          : " and the P1B lane envelope is closed because the roadmap no longer says P1_INCOMPLETE") +
+        ": " +
+        relativePath,
+    );
   }
   notes.push(
     present.length +
-      " repository files, all within the write-set (" +
-      P0_WRITE_SET.length +
-      " P0 plus " +
-      P1A_WRITE_SET.length +
-      " P1A)",
+      " repository files scanned against the write-set (" +
+      WRITE_SET.length +
+      " exact paths across P0, P1A and P1B; " +
+      inEnvelope +
+      " inside the lane envelope which is " +
+      (laneEnvelopeOpen ? "open" : "closed") +
+      "; " +
+      retiredInIndex +
+      " retired path(s) still in the git index pending an uncommitted deletion)",
   );
 }
 
 // --- 3. roadmap authority digest ------------------------------------------
 
-const roadmap = readIfPresent("docs/ROADMAP.md");
 if (roadmap === null) {
   fail("docs/ROADMAP.md is missing");
 } else {
@@ -278,7 +435,7 @@ if (roadmap === null) {
         ROADMAP_SHA256,
     );
   } else {
-    notes.push("docs/ROADMAP.md matches the pinned P1A digest");
+    notes.push("docs/ROADMAP.md matches the pinned P1B digest");
   }
 
   // The digest alone would let a re-pin smuggle in a rewritten roadmap, so the
@@ -286,7 +443,9 @@ if (roadmap === null) {
   if (!roadmap.includes(ROADMAP_STATUS_LITERAL)) {
     fail("docs/ROADMAP.md no longer carries the authorized P1A status line");
   } else {
-    notes.push("roadmap status is P0 complete, P1A source ready, P1 incomplete");
+    notes.push(
+      "roadmap status is P0 and P1A complete, P1B shared source ready, P1 incomplete",
+    );
   }
   for (const literal of ROADMAP_LITERALS) {
     if (!roadmap.includes(literal)) {
@@ -593,6 +752,219 @@ if (tracked.status === 0) {
     }
   }
   notes.push(scanned + " non-authority files carry no product reference");
+}
+
+// --- 12. no credential material in any tracked file ----------------------
+
+// The existing credential checks look at file names. This one looks at content,
+// and it deliberately covers everything the write-set and the lane envelope
+// allow, so a lane file gets exactly the same scrutiny as a shared one. The
+// patterns are anchored on the shape of live credential material, not on the
+// word "secret": a document that discusses secrets is fine, a file that carries
+// one is not.
+const CREDENTIAL_MATERIAL_PATTERNS = [
+  ["private key block", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ["aws access key id", /\bAKIA[0-9A-Z]{16}\b/],
+  ["github token", /\bgh[pousr]_[A-Za-z0-9]{16,}\b/],
+  ["github fine grained token", /\bgithub_pat_[A-Za-z0-9_]{20,}\b/],
+  ["slack token", /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/],
+  ["provider api key", /\bsk-[A-Za-z0-9]{20,}\b/],
+  ["json web token", /\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/],
+];
+
+/**
+ * The single exemption, and why it is narrow enough to be one.
+ *
+ * The contracts test suite proves that findCredentialViolations actually
+ * rejects credential shaped values, and the only honest way to prove that is to
+ * hand it credential shaped values. A scanner that failed the test asserting
+ * the scanner works would force the guard's own evidence to be deleted.
+ *
+ * The exemption is bounded structurally rather than trusted: an exempt path
+ * must be a test file AND must actually call the credential scanner. The check
+ * is a call-site regex rather than a substring search: a file that merely names
+ * findCredentialViolations in a comment or an import list is not exercising it,
+ * and a substring match would let a file keep the exemption by mentioning the
+ * function it no longer tests. A production source file can never take this
+ * route at all.
+ */
+const CREDENTIAL_FIXTURE_EXEMPT = new Set(["packages/contracts/src/schemas.test.ts"]);
+
+/** An actual invocation, not a mention. */
+const CREDENTIAL_SCANNER_CALL_SITE = /\bfindCredentialViolations\s*\(/;
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  let scanned = 0;
+  let laneFiles = 0;
+  let exempted = 0;
+  for (const relativePath of present) {
+    // The lockfile is generated and carries integrity digests, not credentials.
+    if (relativePath === "pnpm-lock.yaml") continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    scanned += 1;
+    if (P1B_LANE_ENVELOPES.some((prefix) => relativePath.startsWith(prefix))) {
+      laneFiles += 1;
+    }
+    if (CREDENTIAL_FIXTURE_EXEMPT.has(relativePath)) {
+      if (!relativePath.endsWith(".test.ts")) {
+        fail(
+          relativePath +
+            " claims the credential fixture exemption but is not a test file",
+        );
+      } else if (!CREDENTIAL_SCANNER_CALL_SITE.test(content)) {
+        fail(
+          relativePath +
+            " claims the credential fixture exemption but no longer exercises the credential scanner",
+        );
+      } else {
+        exempted += 1;
+      }
+      continue;
+    }
+    for (const [name, pattern] of CREDENTIAL_MATERIAL_PATTERNS) {
+      if (pattern.test(content)) {
+        fail(relativePath + " carries credential material (" + name + ")");
+      }
+    }
+  }
+  notes.push(
+    scanned -
+      exempted +
+      " files carry no credential material, including " +
+      laneFiles +
+      " under the lane prefixes; " +
+      exempted +
+      " guard-fixture exemption(s) verified",
+  );
+}
+
+// --- 13. the P1B packages depend on exactly what they were authorized to --
+
+// P1B exists to settle the dependency direction before three lanes run in
+// parallel. Settling it in prose would be worth nothing: a lane that needs one
+// more package would simply add it. Asserting the exact sets here means a lane
+// cannot widen its own dependency surface without an integrator edit to this
+// file, which is the whole point of pinning the foundation first.
+const P1B_DEPENDENCY_LAW = [
+  {
+    manifest: "packages/api-contracts/package.json",
+    dependencies: ["@acp/contracts", "zod"],
+    devDependencies: ["vitest"],
+    // The observation contract is the package the browser links. It may never
+    // reach the ledger or a database driver, not even transitively by name.
+    forbidden: ["@acp/ledger", "better-sqlite3"],
+  },
+  {
+    manifest: "packages/cli/package.json",
+    dependencies: ["@acp/api-contracts", "@acp/ledger"],
+    devDependencies: [],
+    forbidden: ["better-sqlite3"],
+  },
+  {
+    manifest: "packages/server/package.json",
+    dependencies: ["@acp/api-contracts", "@acp/ledger"],
+    devDependencies: [],
+    forbidden: ["better-sqlite3"],
+  },
+  {
+    manifest: "packages/ui/package.json",
+    dependencies: ["@acp/api-contracts", "react", "react-dom"],
+    devDependencies: ["@types/react", "@types/react-dom", "@vitejs/plugin-react", "vite"],
+    forbidden: ["@acp/ledger", "@acp/contracts", "better-sqlite3", "sqlite3", "node:sqlite"],
+  },
+];
+
+for (const law of P1B_DEPENDENCY_LAW) {
+  const text = readIfPresent(law.manifest);
+  if (text === null) {
+    fail("required manifest is missing: " + law.manifest);
+    continue;
+  }
+
+  let manifest = null;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    fail(law.manifest + " is not valid JSON");
+  }
+  if (manifest === null) continue;
+
+  const actual = Object.keys(manifest.dependencies ?? {}).sort();
+  const actualDev = Object.keys(manifest.devDependencies ?? {}).sort();
+  const expected = [...law.dependencies].sort();
+  const expectedDev = [...law.devDependencies].sort();
+
+  if (actual.join(",") !== expected.join(",")) {
+    fail(
+      law.manifest +
+        " dependencies must be exactly [" +
+        expected.join(", ") +
+        "], found: [" +
+        actual.join(", ") +
+        "]",
+    );
+  }
+  if (actualDev.join(",") !== expectedDev.join(",")) {
+    fail(
+      law.manifest +
+        " devDependencies must be exactly [" +
+        expectedDev.join(", ") +
+        "], found: [" +
+        actualDev.join(", ") +
+        "]",
+    );
+  }
+  if (manifest.private !== true) {
+    fail(law.manifest + " must stay private; this repository publishes nothing");
+  }
+
+  // Name based, over the whole manifest text, so a forbidden package cannot be
+  // reintroduced through peerDependencies, optionalDependencies or an override.
+  for (const name of law.forbidden) {
+    if (text.includes('"' + name + '"')) {
+      fail(law.manifest + " names the forbidden dependency " + name);
+    }
+  }
+}
+notes.push(P1B_DEPENDENCY_LAW.length + " P1B package dependency surfaces are exact");
+
+// --- 14. the browser package links no ledger and no database driver -------
+
+// The manifest check above is necessary but not sufficient: an import can name
+// a package the manifest does not declare, and pnpm's node_modules layout would
+// still resolve it in some configurations. The source is checked directly.
+const UI_FORBIDDEN_IMPORTS = [
+  "@acp/ledger",
+  "better-sqlite3",
+  "node:sqlite",
+  "sqlite3",
+];
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const uiFiles = present.filter((relativePath) => relativePath.startsWith("packages/ui/"));
+  if (uiFiles.length === 0) {
+    fail("packages/ui has no tracked files; the browser purity check is inert");
+  }
+  for (const relativePath of uiFiles) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    for (const name of UI_FORBIDDEN_IMPORTS) {
+      if (content.includes(name)) {
+        fail(
+          relativePath +
+            " references " +
+            name +
+            "; the browser package may depend on @acp/api-contracts only",
+        );
+      }
+    }
+  }
+  notes.push(
+    uiFiles.length + " browser package files name no ledger and no database driver",
+  );
 }
 
 // --- report ----------------------------------------------------------------

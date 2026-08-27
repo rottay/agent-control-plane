@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Agent Control Plane — observation</title>
+    <style>
+      :root {
+        --acp-space: 1rem;
+        --acp-rule: color-mix(in srgb, currentColor 18%, transparent);
+        color-scheme: light dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      code,
+      kbd,
+      samp {
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+        font-size: 0.875em;
+      }
+      .acp-shell {
+        display: grid;
+        gap: calc(var(--acp-space) * 2);
+        margin: 0 auto;
+        max-width: 62rem;
+        padding: calc(var(--acp-space) * 2) var(--acp-space);
+      }
+      .acp-shell > header,
+      .acp-shell > footer {
+        border-block: 1px solid var(--acp-rule);
+        padding-block: var(--acp-space);
+      }
+      .acp-shell h1 {
+        font-size: 1.35rem;
+        margin: 0 0 0.25rem;
+      }
+      .acp-shell h2 {
+        font-size: 1.05rem;
+        margin: 0 0 0.5rem;
+      }
+      .acp-shell h3 {
+        font-size: 0.95rem;
+        margin: 0 0 0.25rem;
+      }
+      .acp-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem var(--acp-space);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .acp-views {
+        display: grid;
+        gap: var(--acp-space);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .acp-views > li {
+        border-inline-start: 2px solid var(--acp-rule);
+        padding-inline-start: var(--acp-space);
+      }
+      .acp-status {
+        border: 1px solid var(--acp-rule);
+        padding: var(--acp-space);
+      }
+      .acp-status p:first-of-type {
+        margin-top: 0;
+      }
+      .acp-status p:last-of-type {
+        margin-bottom: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

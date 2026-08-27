@@ -1,0 +1,29 @@
+{
+  "name": "@acp/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only observation CLI for the Agent Control Plane. P1B scaffold: the contract surface exists, the commands do not.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "acp": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@acp/api-contracts": "workspace:*",
+    "@acp/ledger": "workspace:*"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@acp/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only observation server for the Agent Control Plane. P1B scaffold: the surface is described, nothing is served.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@acp/api-contracts": "workspace:*",
+    "@acp/ledger": "workspace:*"
+  }
+}

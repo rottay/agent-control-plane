@@ -28,5 +28,12 @@
     "forceConsistentCasingInFileNames": true
   },
   "files": [],
-  "references": [{ "path": "./packages/contracts" }, { "path": "./packages/ledger" }]
+  "references": [
+    { "path": "./packages/contracts" },
+    { "path": "./packages/ledger" },
+    { "path": "./packages/api-contracts" },
+    { "path": "./packages/server" },
+    { "path": "./packages/cli" },
+    { "path": "./packages/ui" }
+  ]
 }

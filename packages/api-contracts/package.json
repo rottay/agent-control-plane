@@ -1,0 +1,29 @@
+{
+  "name": "@acp/api-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-safe read-only observation API contract for the Agent Control Plane. Strict, versioned, free of ledger and database access.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@acp/contracts": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
+  }
+}
