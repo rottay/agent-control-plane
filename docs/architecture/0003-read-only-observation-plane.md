@@ -16,14 +16,16 @@ contract package `packages/api-contracts`, and the package boundary, dependency
 direction, test topology and lint coverage of the three lanes that will build on
 it (`packages/cli`, `packages/server`, `packages/ui`).
 
-**P1B is not P1 completion.** P1 also requires a working read-only server, a
-minimal CLI and a local UI that actually renders ledger state. None of those
-exist. The three lane packages are scaffolds that report
-`NOT_IMPLEMENTED_P1B_SHARED_FOUNDATION` and implement nothing.
+**P1B is not P1 completion.** When this ADR was written the three lane
+packages were scaffolds that reported `NOT_IMPLEMENTED_P1B_SHARED_FOUNDATION`
+and implemented nothing. P1 has since closed: the server serves every frozen
+GET route, the CLI reads the ledger query-only, and the UI renders the
+observation surface. The decisions below are what those three were built
+against, and they held.
 
-P1B is also **no product adoption**. Nothing here observes, connects to or is
-used by any real operation. Adoption still happens exactly once, after the P8
-certification and under a separate P9 authorisation. There is **no partial
+P1 completion is still **no product adoption**. Nothing here observes, connects
+to or is used by any real operation. Adoption still happens exactly once, after
+the P8 certification and under a separate P9 authorisation. There is **no partial
 cutover**: a subsystem that works in isolation is not thereby in service.
 
 ## Context
@@ -313,5 +315,7 @@ neither the ledger nor a database driver anywhere, that the retired Vitest
 workspace file is gone and the new config is present, and that no file outside
 the authority documents references the product environment.
 
-P1 continues with the three lanes. P1 is complete when the server serves the
-contract, the CLI reads it and the UI renders it, and not before.
+P1 is complete: the server serves the contract, the CLI reads it and the UI
+renders it, under an independent verifier's receipt. The lane envelope closed
+with it, and every path the three lanes created is now named individually in
+the fence. P2 runs the durability and supervisor work.

@@ -3,12 +3,14 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0 complete. P1A source ready.** Contracts, fences and the append-only
-event ledger. There is no orchestrator, no adapter, no CLI and no UI yet.
+Status: **P0 and P1 complete. Next: P2.** Contracts, fences, the append-only
+event ledger, and a read-only observation plane over it: a loopback HTTP server,
+a CLI and a local UI. There is no orchestrator and no provider adapter yet.
 
-**P1A is not P1 completion.** P1 also requires a minimal CLI and a local
-read-only UI, and neither exists. Nor is P1A product adoption of any kind: see
-the isolation section below.
+**P1A is not P1 completion**, and neither was P1B. P1 closed only once the
+server served the frozen contract, the CLI read it and the UI rendered it, each
+under an independent verifier's receipt. Completion is still not product
+adoption of any kind: see the isolation section below.
 
 ## Authority
 

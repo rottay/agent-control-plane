@@ -206,6 +206,7 @@ decision, that the native build allow-list names exactly one package, that the
 ledger dependency surface is exactly what was authorized, and that no file
 outside the authority documents references the product environment.
 
-P1 continues with the CLI and the read-only UI. P2 runs the Restate drills that
-decide whether the conditional orchestrator is adopted or the single-process
-fallback becomes permanent.
+P1 is complete: the CLI and the read-only UI read this ledger through the
+observation contract, and neither can write to it. P2 runs the Restate drills
+that decide whether the conditional orchestrator is adopted or the
+single-process fallback becomes permanent.

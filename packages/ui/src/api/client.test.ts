@@ -143,4 +143,39 @@ describe("query construction", () => {
     expect(calledPath).toContain("taskId=123e4567-e89b-12d3-a456-426614174000");
     expect(calledPath).toContain("toState=RUNNING");
   });
+
+  /**
+   * The property the dev and preview proxies exist to serve.
+   *
+   * `packages/ui/vite.config.ts` forwards `/api` to the observation server on
+   * loopback precisely so this client never needs a base URL. Asserting the
+   * config object itself is not reachable from here: the file sits outside
+   * this project's `rootDir` of `./src` and this project compiles with
+   * `types: []` to keep Node out of the browser build, so importing it would
+   * mean widening one of the two settings that hold the browser boundary. The
+   * invariant that matters is asserted directly instead -- every request this
+   * client issues is a same-origin path under `/api/v1`, with no scheme, no
+   * host and no protocol-relative prefix for a proxy to be bypassed by.
+   */
+  it("only ever issues same-origin /api/v1 paths", async () => {
+    const page = {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      items: [],
+      page: { nextCursor: null, hasMore: false, limit: 50, returned: 0 },
+    };
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, page));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await fetchTasks({});
+    await fetchEvents({});
+
+    expect(fetchSpy.mock.calls.length).toBeGreaterThan(0);
+    for (const call of fetchSpy.mock.calls) {
+      const target = String((call as unknown[])[0]);
+      expect(target.startsWith("/api/v1/")).toBe(true);
+      expect(target.startsWith("//")).toBe(false);
+      expect(target).not.toMatch(/^[a-z][a-z0-9+.-]*:/i);
+    }
+  });
 });

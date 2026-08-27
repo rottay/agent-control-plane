@@ -7,11 +7,11 @@ The browser-safe contract for the Agent Control Plane observation surface.
 This package describes what a reader of the control plane is allowed to see. It
 describes nothing about how that surface is served and implements none of it.
 
-**P1B is not P1 completion.** P1 also requires a working read-only server, a
-minimal CLI and a local UI, and none of those exist yet. This package is also
-**no product adoption**: nothing here is connected to, observed from or used by
-any real operation, and adoption still happens once, after P8 certification and
-a separate P9 authorisation.
+**P1B is not P1 completion**, and this package shipped before the server, the
+CLI and the UI existed. All three now consume it and P1 has closed. Completion
+is still **no product adoption**: nothing here is connected to, observed from or
+used by any real operation, and adoption still happens once, after P8
+certification and a separate P9 authorisation.
 
 ## The boundary this package exists to hold
 

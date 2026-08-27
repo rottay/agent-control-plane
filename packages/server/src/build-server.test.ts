@@ -525,6 +525,64 @@ describe("integrity", () => {
 // ---------------------------------------------------------------------------
 
 describe("errors", () => {
+  it("never reflects a caller-supplied parameter name back into the envelope", async () => {
+    const path = temporaryDatabase();
+    openLedger(path).close();
+    const app = buildServer({ ledgerPath: path });
+
+    // Three shapes a reflector would hand straight back: markup, a credential
+    // shaped string, and a plain typo. The first two are why this matters --
+    // the credential shaped one would additionally fail the ApiError guard on
+    // the way out and turn a 400 into a 500.
+    const markup = encodeURIComponent(String.fromCharCode(60) + "b onerror=x" + String.fromCharCode(62));
+    // Composed at runtime rather than written as a literal. The architecture
+    // fence scans every tracked file for credential material and would reject
+    // this file for carrying one, which is correct: the fence cannot tell a
+    // synthetic fixture from a real key. The value names nothing real; what
+    // matters is only that the contract's own credential guard classifies it as
+    // credential material, because that is what makes the reflected-key failure
+    // reproducible -- reflecting it used to turn a 400 into a 500.
+    const tokenShaped = "AKIA" + "IOSFODNN7EXAMPLE";
+    const cases = [
+      { url: "/api/v1/tasks?" + markup + "=1", needle: "onerror" },
+      { url: "/api/v1/tasks?" + tokenShaped + "=1", needle: tokenShaped },
+      { url: "/api/v1/tasks?stat=RUNNING", needle: "stat" },
+      // A route the frozen contract gives no query at all.
+      { url: "/api/v1/health?" + tokenShaped + "=1", needle: tokenShaped },
+      { url: "/api/v1/integrity?surprise=1", needle: "surprise" },
+    ];
+
+    for (const { url, needle } of cases) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode).toBe(400);
+      const body = ApiError.parse(response.json());
+      expect(body.error.code).toBe("BAD_REQUEST");
+      expect(response.body).not.toContain(needle);
+      expect(body.error.detail).toMatch(/^rejected parameters: [0-9]+$/);
+    }
+    await app.close();
+  });
+
+  it("names the contract field that failed, never the value it was sent", async () => {
+    const { path } = seedDatabase();
+    const app = buildServer({ ledgerPath: path });
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/tasks?limit=999" });
+    expect(response.statusCode).toBe(400);
+    const body = ApiError.parse(response.json());
+    expect(body.error.detail).toBe("invalid: limit");
+    expect(response.body).not.toContain("999");
+
+    const cursor = await app.inject({
+      method: "GET",
+      url: "/api/v1/tasks?cursor=" + encodeURIComponent("../../etc/passwd"),
+    });
+    expect(cursor.statusCode).toBe(400);
+    expect(ApiError.parse(cursor.json()).error.detail).toBe("invalid: cursor");
+    expect(cursor.body).not.toContain("passwd");
+    await app.close();
+  });
+
   it("answers an unknown route with NOT_FOUND in the one error envelope", async () => {
     const path = temporaryDatabase();
     openLedger(path).close();

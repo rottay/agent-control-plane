@@ -166,11 +166,91 @@ const RETIRED_PATHS = ["vitest.workspace.ts"];
  */
 const P1B_LANE_ENVELOPES = ["packages/cli/", "packages/server/", "packages/ui/"];
 
+/**
+ * The exact P1 lane additions, enumerated at P1 closure.
+ *
+ * While P1 was in flight these paths were tolerated by the lane envelope above,
+ * because no one could enumerate in advance what three parallel writers would
+ * need to create. P1 is complete, so the envelope has closed itself: the
+ * roadmap no longer says P1_INCOMPLETE, and every one of these files is now
+ * named individually. A sixty-fifth lane path is no longer authorized by
+ * anything.
+ */
+const P1_WRITE_SET = [
+  "packages/cli/README.md",
+  "packages/cli/src/cli.test.ts",
+  "packages/cli/src/cli.ts",
+  "packages/cli/src/format.ts",
+  "packages/cli/src/observation.ts",
+  "packages/server/src/aggregates.ts",
+  "packages/server/src/build-server.test.ts",
+  "packages/server/src/build-server.ts",
+  "packages/server/src/constants.ts",
+  "packages/server/src/database-identity.ts",
+  "packages/server/src/errors.ts",
+  "packages/server/src/ledger-source.ts",
+  "packages/server/src/mappers.ts",
+  "packages/server/src/query-schemas.ts",
+  "packages/server/src/routes.ts",
+  "packages/server/src/start.ts",
+  "packages/ui/src/api/client.test.ts",
+  "packages/ui/src/api/client.ts",
+  "packages/ui/src/api/queryString.ts",
+  "packages/ui/src/components/AppShell.test.tsx",
+  "packages/ui/src/components/AppShell.tsx",
+  "packages/ui/src/components/AsyncSection.test.tsx",
+  "packages/ui/src/components/AsyncSection.tsx",
+  "packages/ui/src/components/BarBreakdown.test.tsx",
+  "packages/ui/src/components/BarBreakdown.tsx",
+  "packages/ui/src/components/DataTable.test.tsx",
+  "packages/ui/src/components/DataTable.tsx",
+  "packages/ui/src/components/FilterBar.test.tsx",
+  "packages/ui/src/components/FilterBar.tsx",
+  "packages/ui/src/components/IdValue.test.tsx",
+  "packages/ui/src/components/IdValue.tsx",
+  "packages/ui/src/components/Pagination.test.tsx",
+  "packages/ui/src/components/Pagination.tsx",
+  "packages/ui/src/components/SkipLink.tsx",
+  "packages/ui/src/components/StatusBadge.test.tsx",
+  "packages/ui/src/components/StatusBadge.tsx",
+  "packages/ui/src/components/TimelineList.test.tsx",
+  "packages/ui/src/components/TimelineList.tsx",
+  "packages/ui/src/format/chain.test.ts",
+  "packages/ui/src/format/chain.ts",
+  "packages/ui/src/format/format.test.ts",
+  "packages/ui/src/format/format.ts",
+  "packages/ui/src/format/statusTone.test.ts",
+  "packages/ui/src/format/statusTone.ts",
+  "packages/ui/src/hooks/useAsyncResource.ts",
+  "packages/ui/src/routing/hashRoute.test.ts",
+  "packages/ui/src/routing/hashRoute.ts",
+  "packages/ui/src/routing/useHashRoute.ts",
+  "packages/ui/src/styles/base.css",
+  "packages/ui/src/styles/components.css",
+  "packages/ui/src/styles/index.css",
+  "packages/ui/src/styles/layout.css",
+  "packages/ui/src/styles/tokens.css",
+  "packages/ui/src/views/EventsView.tsx",
+  "packages/ui/src/views/IntegrityView.tsx",
+  "packages/ui/src/views/NotFoundView.test.tsx",
+  "packages/ui/src/views/NotFoundView.tsx",
+  "packages/ui/src/views/OverviewView.tsx",
+  "packages/ui/src/views/StatusView.tsx",
+  "packages/ui/src/views/TaskDetailView.tsx",
+  "packages/ui/src/views/TasksListView.tsx",
+  "packages/ui/src/views/WorkerDetailView.tsx",
+  "packages/ui/src/views/WorkersListView.tsx",
+  "packages/ui/src/views/views.test.tsx",
+];
+
 const RETIRED = new Set(RETIRED_PATHS);
 
-const WRITE_SET = [...P0_WRITE_SET, ...P1A_WRITE_SET, ...P1B_SHARED_WRITE_SET].filter(
-  (relativePath) => !RETIRED.has(relativePath),
-);
+const WRITE_SET = [
+  ...P0_WRITE_SET,
+  ...P1A_WRITE_SET,
+  ...P1B_SHARED_WRITE_SET,
+  ...P1_WRITE_SET,
+].filter((relativePath) => !RETIRED.has(relativePath));
 
 /**
  * docs/ROADMAP.md is pinned by digest so it cannot drift.
@@ -183,19 +263,23 @@ const WRITE_SET = [...P0_WRITE_SET, ...P1A_WRITE_SET, ...P1B_SHARED_WRITE_SET].f
  * of them.
  */
 const ROADMAP_SHA256 =
-  "6706a58e00f64bd18bfde762a812272863cb7d05d1615568c532b218d7901855";
+  "ac22401fe334126c0b5f37f235a645f21c2f8a4f890dd7a1a394dc6d65c5c5e8";
 
 /**
- * The Estado line P1B is allowed to have produced.
+ * The Estado line P1 closure is allowed to have produced.
  *
- * P0 and P1A are complete and the P1B shared foundation is source ready. P1 as
- * a whole is explicitly NOT complete: the server, the CLI and the read-only UI
- * are still outstanding, and no status line may imply otherwise. The literal is
- * exact, so a status that drops P1_INCOMPLETE also closes the lane envelope
- * below rather than quietly widening it.
+ * P1 is complete: the server serves the frozen contract, the CLI reads it and
+ * the UI renders it, all three under an independent verifier's receipt. The
+ * literal is exact, and because it no longer contains P1_INCOMPLETE it is also
+ * what closes the lane envelope below.
+ *
+ * What completion does NOT mean is stated in the same line and must stay there:
+ * NO_PRODUCT_CUTOVER. A finished observation plane is still not in service.
+ * Adoption happens once, after P8 certification and under a separate P9
+ * authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1A_COMPLETE / P1B_SHARED_SOURCE_READY / P1_INCOMPLETE / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / NEXT_P2 / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -208,9 +292,15 @@ const ROADMAP_LITERALS = [
   "no almacenar secretos en el repositorio, ledger o artifacts",
 ];
 
-/** Status claims that would overstate what has actually been delivered. */
+/**
+ * Status claims that would overstate what has actually been delivered.
+ *
+ * P1_COMPLETE left this list at P1 closure, because it is now true and carries
+ * a verifier receipt. The cutover literals never leave it: no phase status may
+ * ever assert cutover authority, which is granted by the owner at P9 and by
+ * nothing else.
+ */
 const FORBIDDEN_ROADMAP_LITERALS = [
-  "P1_COMPLETE",
   "P1_DONE",
   "PRODUCT_CUTOVER_AUTHORIZED",
   "CUTOVER_AUTHORIZED",
@@ -411,7 +501,7 @@ if (tracked.status !== 0) {
     present.length +
       " repository files scanned against the write-set (" +
       WRITE_SET.length +
-      " exact paths across P0, P1A and P1B; " +
+      " exact paths across P0, P1A, P1B and P1; " +
       inEnvelope +
       " inside the lane envelope which is " +
       (laneEnvelopeOpen ? "open" : "closed") +
@@ -435,7 +525,7 @@ if (roadmap === null) {
         ROADMAP_SHA256,
     );
   } else {
-    notes.push("docs/ROADMAP.md matches the pinned P1B digest");
+    notes.push("docs/ROADMAP.md matches the pinned P1 closure digest");
   }
 
   // The digest alone would let a re-pin smuggle in a rewritten roadmap, so the
@@ -443,9 +533,7 @@ if (roadmap === null) {
   if (!roadmap.includes(ROADMAP_STATUS_LITERAL)) {
     fail("docs/ROADMAP.md no longer carries the authorized P1A status line");
   } else {
-    notes.push(
-      "roadmap status is P0 and P1A complete, P1B shared source ready, P1 incomplete",
-    );
+    notes.push("roadmap status is P0 and P1 complete, next P2, no product cutover");
   }
   for (const literal of ROADMAP_LITERALS) {
     if (!roadmap.includes(literal)) {

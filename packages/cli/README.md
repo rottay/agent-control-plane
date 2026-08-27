@@ -8,10 +8,10 @@ which puts SQLite itself into query-only mode, and no code path in this package
 calls `append()` or `rebuildReadModel()`. A CLI that could repair a ledger would
 be a CLI that could rewrite recorded history.
 
-Scope note. This is the CLI lane of P1. It observes a ledger and nothing else.
-There is no daemon, no orchestrator, no lease engine, no provider adapter and no
-account switching here. P1 is not complete, and nothing in this package is
-adopted into any real operation.
+Scope note. This is the CLI of the P1 observation plane. It observes a ledger
+and nothing else. There is no daemon, no orchestrator, no lease engine, no
+provider adapter and no account switching here. P1 is complete, but completion
+is not adoption: nothing in this package is used by any real operation.
 
 ## Usage
 
