@@ -1,0 +1,62 @@
+name: ci
+
+# This workflow is frozen in P0 as a contract. The repository has no remote and
+# is never pushed, so it does not run today. If the owner ever publishes this
+# repository, CI must run exactly the same gate a local writer runs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep installs deterministic and quiet.
+  CI: "true"
+  PNPM_HOME: ${{ github.workspace }}/.pnpm-home
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.2
+          run_install: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Report toolchain
+        run: |
+          node --version
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Arm the mechanical Git fence
+        run: git config core.hooksPath .githooks
+
+      - name: Check
+        run: pnpm check

@@ -1,0 +1,32 @@
+#!/bin/sh
+#
+# Agent Control Plane mechanical no-push fence.
+#
+# Roadmap law: "negar ... y cualquier push". There is no argument, environment
+# variable, ref pattern or remote that makes this hook allow a push. It is
+# unconditional on purpose: a fence with an escape hatch is not a fence.
+#
+# Enable once per clone with:
+#   git config core.hooksPath .githooks
+#
+# scripts/check-architecture.mjs verifies both that this hook still denies and
+# that core.hooksPath is set to .githooks.
+
+set -eu
+
+# Drain stdin so git never blocks writing the ref list into a closed pipe.
+while IFS= read -r _line; do :; done 2>/dev/null || true
+
+printf "%s\n" "----------------------------------------------------------------" >&2
+printf "%s\n" "PUSH DENIED by the Agent Control Plane pre-push fence." >&2
+printf "%s\n" "" >&2
+printf "%s\n" "This repository is under the P0 authority regime:" >&2
+printf "%s\n" "  - local commits are allowed only with a CommitAuthorizationReceipt;" >&2
+printf "%s\n" "  - no push is authorized, to any remote, for any ref, ever;" >&2
+printf "%s\n" "  - no remote is configured, and none may be added by an agent." >&2
+printf "%s\n" "" >&2
+printf "%s\n" "Only the owner may publish this repository, and only by removing" >&2
+printf "%s\n" "this fence deliberately as a separate, reviewed decision." >&2
+printf "%s\n" "----------------------------------------------------------------" >&2
+
+exit 1

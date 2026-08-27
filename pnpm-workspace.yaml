@@ -1,0 +1,10 @@
+packages:
+  - "packages/*"
+
+# P0 law: no package may execute install-time scripts. The allow-list is empty
+# and must stay empty unless the owner authorises a named exception.
+onlyBuiltDependencies: []
+
+# Single source of truth for shared runtime dependency versions.
+catalog:
+  zod: 4.1.13

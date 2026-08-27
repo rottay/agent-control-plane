@@ -1,0 +1,28 @@
+{
+  "name": "@acp/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Frozen runtime contracts for the Agent Control Plane. Provider neutral, strict, versioned.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
+  }
+}

@@ -1,0 +1,64 @@
+# --- Dependencies -----------------------------------------------------------
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+
+# --- Build output -----------------------------------------------------------
+dist/
+build/
+out/
+*.tsbuildinfo
+.tsbuild/
+
+# --- Test / coverage --------------------------------------------------------
+coverage/
+.vitest/
+*.lcov
+
+# --- Local databases (ledger + read models are local-only artifacts) --------
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+data/
+.local-db/
+
+# --- Restate local runtime data --------------------------------------------
+.restate/
+restate-data/
+restate-server-data/
+
+# --- Logs -------------------------------------------------------------------
+logs/
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# --- Provider config roots (isolated per-account CLI homes) -----------------
+.provider-roots/
+.config-roots/
+.claude-home/
+.codex-home/
+.kimi-home/
+
+# --- Credential stores: never committed, in any location --------------------
+# Narrow on purpose: the roadmap forbids secrets in the repo, but P0 evidence
+# (receipts, audits, fixtures) must stay trackable. Do not broaden to *.json.
+accounts.local.json
+**/accounts.local.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# --- OS / editor noise ------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
