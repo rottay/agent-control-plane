@@ -2822,6 +2822,10 @@ const ADAPTERS_PUBLIC_EXPORTS = [
   // P4B
   "CLAUDE_STREAM_PROTOCOL",
   "claudeAdapter",
+  // P4C
+  "KIMI_ACP_PROTOCOL",
+  "KIMI_ACP_PROTOCOL_VERSION",
+  "kimiAdapter",
 ];
 
 /** The environment allowlist, pinned so a fourth variable cannot appear. */

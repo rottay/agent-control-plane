@@ -96,3 +96,8 @@ export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./ses
 // warranty about the provider's protocol is what no authorized evidence could
 // establish.
 export { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "./providers/claude.js";
+
+// P4C: the Kimi ACP descriptor, built against stable ACP v1 NDJSON. Codex
+// arrives in P4D. Live conformance is unclaimed and every Kimi capability
+// leaves P4 `UNKNOWN`.
+export { KIMI_ACP_PROTOCOL, KIMI_ACP_PROTOCOL_VERSION, kimiAdapter } from "./providers/kimi.js";
