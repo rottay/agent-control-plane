@@ -90,3 +90,9 @@ export { admitBinary } from "./process/spawn.js";
 
 export type { AdapterSession } from "./session.js";
 export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./session.js";
+
+// P4B: the Claude headless descriptor. Kimi and Codex arrive in P4C and P4D.
+// Every Claude capability leaves P4 `UNKNOWN`: the adapter is complete, the
+// warranty about the provider's protocol is what no authorized evidence could
+// establish.
+export { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "./providers/claude.js";

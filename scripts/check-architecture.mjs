@@ -2819,6 +2819,9 @@ const ADAPTERS_PUBLIC_EXPORTS = [
   "descriptorEnablesWrites",
   "isReadOnlyIdentity",
   "startSession",
+  // P4B
+  "CLAUDE_STREAM_PROTOCOL",
+  "claudeAdapter",
 ];
 
 /** The environment allowlist, pinned so a fourth variable cannot appear. */
@@ -2888,6 +2891,20 @@ if (tracked.status === 0) {
       fail(relativePath + " calls the spawner; only " + ADAPTERS_SPAWN_CALLER + " may");
     }
 
+    // Provider modules are pure descriptors and parsers. Reaching into the
+    // session controller or the process modules — even for a pure predicate —
+    // makes a provider a participant in the boundary it is deliberately kept
+    // outside of, and it is how three providers would end up with three
+    // opinions about stopping a process.
+    if (relativePath.startsWith("packages/adapters/src/providers/")) {
+      if (/from\s*["'][^"']*session\.js["']/.test(code)) {
+        fail(relativePath + " imports the session controller; providers stay pure");
+      }
+      if (/from\s*["'][^"']*\/process\//.test(code)) {
+        fail(relativePath + " imports a process module; providers stay pure");
+      }
+    }
+
     if (relativePath === ADAPTERS_SPAWN_SITE) {
       // `shell:` would hand argv to a shell; `...process.env` would inherit an
       // ambient environment the allowlist was built to replace; `maxBuffer` is
@@ -2926,7 +2943,7 @@ if (adaptersIndex !== null) {
   const exported = new Set();
   for (const block of adaptersIndex.matchAll(/export\s*(?:type\s*)?\{([^}]*)\}/g)) {
     for (const raw of (block[1] ?? "").split(",")) {
-      const name = raw.trim().split(/\s+as\s+/)[0]?.trim();
+      const name = raw.trim().split(/\s+as\s+/).pop()?.trim();
       if (name !== undefined && name !== "") exported.add(name);
     }
   }
