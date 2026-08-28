@@ -335,7 +335,7 @@ export default defineConfig({
         test: {
           name: 'daemon',
           root: './packages/daemon',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

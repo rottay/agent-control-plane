@@ -152,6 +152,40 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C7 (daemon): the packaged entry and its config contract, the
+  // child-process fixture (kept in src/, ruling C7-R1 — not a src->test
+  // split), the process boundary, the launchd rendering and validation
+  // surface, and every colocated and integration test, now under
+  // src/<domain>/index.ts and the mirrored test tree.
+  "packages/daemon/src/bin/acp-daemon.test.ts",
+  "packages/daemon/src/bin/acp-daemon.ts",
+  "packages/daemon/src/bin/config-file.ts",
+  "packages/daemon/src/constants.ts",
+  "packages/daemon/src/daemon-child.ts",
+  "packages/daemon/src/daemon-drills.test.ts",
+  "packages/daemon/src/errors.ts",
+  "packages/daemon/src/identity-probe.test.ts",
+  "packages/daemon/src/identity-probe.ts",
+  "packages/daemon/src/import-purity.test.ts",
+  "packages/daemon/src/launchd/launchd-drills.test.ts",
+  "packages/daemon/src/launchd/launchd-lifecycle.test.ts",
+  "packages/daemon/src/launchd/render.test.ts",
+  "packages/daemon/src/launchd/render.ts",
+  "packages/daemon/src/launchd/validate.test.ts",
+  "packages/daemon/src/launchd/validate.ts",
+  "packages/daemon/src/lifecycle.test.ts",
+  "packages/daemon/src/lifecycle.ts",
+  "packages/daemon/src/log.test.ts",
+  "packages/daemon/src/log.ts",
+  "packages/daemon/src/mode-restate.ts",
+  "packages/daemon/src/mode-sqlite.ts",
+  "packages/daemon/src/paths.test.ts",
+  "packages/daemon/src/paths.ts",
+  "packages/daemon/src/signals.ts",
+  "packages/daemon/src/singleton.test.ts",
+  "packages/daemon/src/singleton.ts",
+  "packages/daemon/src/status.test.ts",
+  "packages/daemon/src/status.ts",
   // P5N cohort C6 (adapters): the contract, the normalized-event taxonomy,
   // the process boundary, the three provider descriptors' tests, and the
   // fake-provider fixture (relocated from src/ to test/), now under
@@ -399,26 +433,26 @@ const P2D_WRITE_SET = [
   "packages/daemon/tsconfig.json",
   "packages/daemon/README.md",
   "packages/daemon/src/index.ts",
-  "packages/daemon/src/constants.ts",
-  "packages/daemon/src/errors.ts",
-  "packages/daemon/src/paths.ts",
-  "packages/daemon/src/paths.test.ts",
-  "packages/daemon/src/singleton.ts",
-  "packages/daemon/src/singleton.test.ts",
-  "packages/daemon/src/identity-probe.ts",
-  "packages/daemon/src/identity-probe.test.ts",
-  "packages/daemon/src/status.ts",
-  "packages/daemon/src/status.test.ts",
-  "packages/daemon/src/log.ts",
-  "packages/daemon/src/log.test.ts",
-  "packages/daemon/src/lifecycle.ts",
-  "packages/daemon/src/lifecycle.test.ts",
-  "packages/daemon/src/mode-sqlite.ts",
-  "packages/daemon/src/mode-restate.ts",
-  "packages/daemon/src/signals.ts",
-  "packages/daemon/src/daemon-child.ts",
-  "packages/daemon/src/daemon-drills.test.ts",
-  "packages/daemon/src/import-purity.test.ts",
+  "packages/daemon/src/constants/index.ts",
+  "packages/daemon/src/errors/index.ts",
+  "packages/daemon/src/paths/index.ts",
+  "packages/daemon/test/paths/index.test.ts",
+  "packages/daemon/src/singleton/index.ts",
+  "packages/daemon/test/singleton/index.test.ts",
+  "packages/daemon/src/identity-probe/index.ts",
+  "packages/daemon/test/identity-probe/index.test.ts",
+  "packages/daemon/src/status/index.ts",
+  "packages/daemon/test/status/index.test.ts",
+  "packages/daemon/src/log/index.ts",
+  "packages/daemon/test/log/index.test.ts",
+  "packages/daemon/src/lifecycle/index.ts",
+  "packages/daemon/test/lifecycle/index.test.ts",
+  "packages/daemon/src/mode-sqlite/index.ts",
+  "packages/daemon/src/mode-restate/index.ts",
+  "packages/daemon/src/signals/index.ts",
+  "packages/daemon/src/daemon-child/index.ts",
+  "packages/daemon/test/drills/index.test.ts",
+  "packages/daemon/test/index.test.ts",
   "docs/architecture/0006-daemon-process-lifecycle.md",
   "packages/runtime/src/restate/server-handle.ts",
   "packages/runtime/src/index.ts",
@@ -441,11 +475,11 @@ const P2D_WRITE_SET = [
 const P2E_WRITE_SET = [
   "packages/daemon/launchd/com.rottay.agent-control-plane.plist.template",
   "packages/daemon/launchd/README.md",
-  "packages/daemon/src/launchd/render.ts",
-  "packages/daemon/src/launchd/render.test.ts",
-  "packages/daemon/src/launchd/validate.ts",
-  "packages/daemon/src/launchd/validate.test.ts",
-  "packages/daemon/src/launchd/launchd-drills.test.ts",
+  "packages/daemon/src/launchd/render/index.ts",
+  "packages/daemon/test/launchd/render/index.test.ts",
+  "packages/daemon/src/launchd/validate/index.ts",
+  "packages/daemon/test/launchd/validate/index.test.ts",
+  "packages/daemon/test/launchd/drills/index.test.ts",
   "docs/architecture/0007-launchd-template-and-p2-closure.md",
   "packages/daemon/src/index.ts",
   "packages/daemon/README.md",
@@ -461,13 +495,13 @@ const P2E_WRITE_SET = [
  * claim and its evidence never land at the same instant.
  */
 const P2F_STAGE_A_WRITE_SET = [
-  "packages/daemon/src/bin/acp-daemon.ts",
-  "packages/daemon/src/bin/config-file.ts",
-  "packages/daemon/src/bin/acp-daemon.test.ts",
-  "packages/daemon/src/launchd/launchd-lifecycle.test.ts",
+  "packages/daemon/src/bin/acp-daemon/index.ts",
+  "packages/daemon/src/bin/config-file/index.ts",
+  "packages/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/daemon/test/launchd/lifecycle/index.test.ts",
   "docs/architecture/0008-packaged-entry-and-launchd-lifecycle.md",
   "packages/daemon/package.json",
-  "packages/daemon/src/daemon-child.ts",
+  "packages/daemon/src/daemon-child/index.ts",
   "packages/daemon/README.md",
   "packages/daemon/launchd/README.md",
   "docs/architecture/0006-daemon-process-lifecycle.md",
@@ -839,6 +873,24 @@ const P5N_C6_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C7: daemon, the seventh tree normalized. As with C1-C6 the
+ * relocated source paths are not listed here — they are carried by
+ * P2D_WRITE_SET, P2E_WRITE_SET and P2F_STAGE_A_WRITE_SET, rewritten 1:1 — so
+ * this array declares only the test tree's own tsconfig.json and the
+ * config/manifest/doc files the cohort edits. Ruling C7-R1 rescinded the v1
+ * emit-project machinery entirely: there is no test/daemon-child/tsconfig.json
+ * and no second tsconfig here.
+ */
+const P5N_C7_WRITE_SET = [
+  "packages/daemon/test/tsconfig.json",
+  "packages/daemon/package.json",
+  "packages/daemon/README.md",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -872,6 +924,7 @@ const WRITE_SET = [
   ...P5N_C4_WRITE_SET,
   ...P5N_C5_WRITE_SET,
   ...P5N_C6_WRITE_SET,
+  ...P5N_C7_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -2043,7 +2096,7 @@ const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint.ts";
  */
 const SPAWN_ALLOWED_FILES = new Map([
   ["packages/runtime/src/restate/server-handle.ts", "the pinned Restate server"],
-  ["packages/daemon/src/identity-probe.ts", "reading process identity via /bin/ps"],
+  ["packages/daemon/src/identity-probe/index.ts", "reading process identity via /bin/ps"],
   ["packages/adapters/src/process/spawn/index.ts", "the single provider spawn authority"],
 ]);
 
@@ -2167,7 +2220,7 @@ const LAUNCHCTL_EXEMPT = new Set([
  * disable — stay forbidden everywhere, including here. The four permitted verbs
  * are the ones a disposable lifecycle needs and no more.
  */
-const LAUNCH_DRILL_FILE = "packages/daemon/src/launchd/launchd-lifecycle.test.ts";
+const LAUNCH_DRILL_FILE = "packages/daemon/test/launchd/lifecycle/index.test.ts";
 const LAUNCH_PERMITTED_VERBS = ["bootstrap", "kickstart", "print", "bootout"];
 const LAUNCH_FORBIDDEN_VERBS = ["load", "unload", "enable", "disable"];
 const DRILL_LABEL_PREFIX = "com.rottay.acp-drill-";
@@ -2312,7 +2365,7 @@ if (runtimeIndex !== "") {
 }
 
 // The identity probe: an absolute binary, fixed argv, no shell, bounded.
-const PROBE_FILE = "packages/daemon/src/identity-probe.ts";
+const PROBE_FILE = "packages/daemon/src/identity-probe/index.ts";
 const probeCode = stripComments(readIfPresent(PROBE_FILE) ?? "");
 if (probeCode === "") {
   fail(PROBE_FILE + " is missing");
@@ -2324,7 +2377,7 @@ if (probeCode === "") {
     fail(PROBE_FILE + " must not use exec(), which runs a shell");
   }
   if (/shell\s*:/.test(probeCode)) fail(PROBE_FILE + " must not pass a shell option");
-  if (!/"\/bin\/ps"/.test(probeCode + (readIfPresent("packages/daemon/src/constants.ts") ?? ""))) {
+  if (!/"\/bin\/ps"/.test(probeCode + (readIfPresent("packages/daemon/src/constants/index.ts") ?? ""))) {
     fail(PROBE_FILE + " must invoke an absolute /bin/ps so PATH cannot choose the program");
   }
   if (!/LC_ALL/.test(probeCode)) fail(PROBE_FILE + " must pin LC_ALL=C for a stable date format");
@@ -2339,7 +2392,9 @@ if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const daemonSources = present.filter(
     (relativePath) =>
-      relativePath.startsWith("packages/daemon/src/") && relativePath.endsWith(".ts"),
+      (relativePath.startsWith("packages/daemon/src/") ||
+      relativePath.startsWith("packages/daemon/test/")) &&
+    relativePath.endsWith(".ts"),
   );
 
   const manifest = readIfPresent("packages/daemon/package.json");
@@ -2353,7 +2408,7 @@ if (tracked.status === 0) {
     // owner's law, which is about product adoption and is untouched. Exactly
     // one bin is permitted, by name and by target.
     const bin = parsed.bin;
-    const EXPECTED_BIN = { "acp-daemon": "./dist/bin/acp-daemon.js" };
+    const EXPECTED_BIN = { "acp-daemon": "./dist/bin/acp-daemon/index.js" };
     if (bin === undefined) {
       fail("packages/daemon must declare its one packaged entry");
     } else if (
@@ -2369,9 +2424,9 @@ if (tracked.status === 0) {
     }
     // The entry must exist as tracked source, carry the portable shebang, and
     // be made executable by the build. A bin pointing at nothing is a claim.
-    const entrySource = readIfPresent("packages/daemon/src/bin/acp-daemon.ts");
+    const entrySource = readIfPresent("packages/daemon/src/bin/acp-daemon/index.ts");
     if (entrySource === null) {
-      fail("packages/daemon/src/bin/acp-daemon.ts is missing");
+      fail("packages/daemon/src/bin/acp-daemon/index.ts is missing");
     } else if (entrySource.split("\n")[0] !== "#!/usr/bin/env node") {
       fail("the packaged entry must keep the portable shebang in tracked source");
     }
@@ -2444,21 +2499,21 @@ if (tracked.status === 0) {
   // The status document is an observation. The moment a decision reads it, it
   // becomes a second authority that can disagree with the ledger.
   for (const decisionPath of [
-    "packages/daemon/src/lifecycle.ts",
-    "packages/daemon/src/singleton.ts",
-    "packages/daemon/src/mode-sqlite.ts",
-    "packages/daemon/src/mode-restate.ts",
+    "packages/daemon/src/lifecycle/index.ts",
+    "packages/daemon/src/singleton/index.ts",
+    "packages/daemon/src/mode-sqlite/index.ts",
+    "packages/daemon/src/mode-restate/index.ts",
   ]) {
     const content = readIfPresent(decisionPath);
-    if (content !== null && /from\s+["']\.\/status\.js["']/.test(content)) {
+    if (content !== null && /from\s+["']\.\.\/status\/index\.js["']/.test(content)) {
       fail(decisionPath + " imports the status observation; lifecycle decisions may not read it");
     }
   }
 
   // The child entry runs only when executed, never on import.
-  const childCode = readIfPresent("packages/daemon/src/daemon-child.ts");
+  const childCode = readIfPresent("packages/daemon/src/daemon-child/index.ts");
   if (childCode !== null && !/process\.argv\[1\]/.test(childCode)) {
-    fail("packages/daemon/src/daemon-child.ts must guard its entry point on process.argv[1]");
+    fail("packages/daemon/src/daemon-child/index.ts must guard its entry point on process.argv[1]");
   }
 
   // The public surface is closed, and stays closed.
@@ -2655,7 +2710,7 @@ if (tracked.status === 0) {
   // single permitted line, plus a check that the file has acquired no Node
   // import at all, so the exemption cannot become cover for a module that grew
   // filesystem or process access.
-  const DENYLIST_FILE = "packages/daemon/src/launchd/validate.ts";
+  const DENYLIST_FILE = "packages/daemon/src/launchd/validate/index.ts";
   const AGENT_DIR_TOKEN = ["Launch", "Agents"].join("");
   for (const relativePath of present) {
     if (relativePath.endsWith(".md")) continue;
@@ -3168,6 +3223,7 @@ const TOPOLOGY_ACTIVE_TREES = [
   "observation",
   "cli",
   "adapters",
+  "daemon",
 ];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
@@ -3336,7 +3392,11 @@ if (tracked.status === 0) {
 // is the first normalized package and the fence has never had a per-package
 // source scan for it, so the exemption is a statement of fact rather than a
 // waiver. A package that *does* have a scan may never be added to it.
-const TEST_TREE_SCANNED_PREFIXES = ["packages/observation/test/", "packages/adapters/test/"];
+const TEST_TREE_SCANNED_PREFIXES = [
+  "packages/observation/test/",
+  "packages/adapters/test/",
+  "packages/daemon/test/",
+];
 
 /**
  * Packages the fence runs no per-package source scan for.

@@ -23,21 +23,21 @@ import { openLedger } from "@acp/ledger";
 import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
 import { deriveInvocation, resolveScenarioRoot, scenarioLedgerPath } from "@acp/runtime";
 
-import { DRAIN_DEADLINE_MS } from "./constants.js";
-import type { DaemonErrorCode } from "./errors.js";
-import { ModeError, StartupError } from "./errors.js";
-import type { ProcessInspector, RecordedIdentity } from "./identity-probe.js";
-import { createPsInspector, ownIdentity } from "./identity-probe.js";
-import type { DaemonMode, Resource, UnwindOutcome } from "./lifecycle.js";
-import { UnwindStack, assertReservedPortsFree, classify, isDaemonMode } from "./lifecycle.js";
-import { createLogger } from "./log.js";
-import type { DaemonRoot } from "./paths.js";
-import { existingDaemonRoot, resolveDaemonRoot } from "./paths.js";
-import { runSqliteMode } from "./mode-sqlite.js";
-import { startRestateMode, superviseRestate } from "./mode-restate.js";
-import { acquireSingleton, recoverStaleLock, releaseSingleton } from "./singleton.js";
-import type { DaemonPhase, DaemonStatusDocument } from "./status.js";
-import { clearStatus, readStatusFrom, writeStatus } from "./status.js";
+import { DRAIN_DEADLINE_MS } from "./constants/index.js";
+import type { DaemonErrorCode } from "./errors/index.js";
+import { ModeError, StartupError } from "./errors/index.js";
+import type { ProcessInspector, RecordedIdentity } from "./identity-probe/index.js";
+import { createPsInspector, ownIdentity } from "./identity-probe/index.js";
+import type { DaemonMode, Resource, UnwindOutcome } from "./lifecycle/index.js";
+import { UnwindStack, assertReservedPortsFree, classify, isDaemonMode } from "./lifecycle/index.js";
+import { createLogger } from "./log/index.js";
+import type { DaemonRoot } from "./paths/index.js";
+import { existingDaemonRoot, resolveDaemonRoot } from "./paths/index.js";
+import { runSqliteMode } from "./mode-sqlite/index.js";
+import { startRestateMode, superviseRestate } from "./mode-restate/index.js";
+import { acquireSingleton, recoverStaleLock, releaseSingleton } from "./singleton/index.js";
+import type { DaemonPhase, DaemonStatusDocument } from "./status/index.js";
+import { clearStatus, readStatusFrom, writeStatus } from "./status/index.js";
 
 /**
  * The closed public surface: start, stop, terminate, observe, recover.
@@ -54,8 +54,8 @@ import { clearStatus, readStatusFrom, writeStatus } from "./status.js";
  * inside the boundary, and narrowing the public surface is not meant to make
  * the package harder to prove.
  */
-export type { DaemonMode } from "./lifecycle.js";
-export type { DaemonErrorCode } from "./errors.js";
+export type { DaemonMode } from "./lifecycle/index.js";
+export type { DaemonErrorCode } from "./errors/index.js";
 export {
   DaemonError,
   DaemonRootError,
@@ -66,10 +66,10 @@ export {
   StaleLockError,
   StartupError,
   SupervisionError,
-} from "./errors.js";
-export type { IdentityVerdict } from "./identity-probe.js";
-export type { RecoveryResult } from "./singleton.js";
-export type { DaemonPhase, DaemonStatusDocument } from "./status.js";
+} from "./errors/index.js";
+export type { IdentityVerdict } from "./identity-probe/index.js";
+export type { RecoveryResult } from "./singleton/index.js";
+export type { DaemonPhase, DaemonStatusDocument } from "./status/index.js";
 
 /**
  * The launchd surface, added by P2E.
@@ -80,10 +80,10 @@ export type { DaemonPhase, DaemonStatusDocument } from "./status.js";
  * export set widens by exactly these names, and the fence is updated to the new
  * size in the same change, so the widening is a decision rather than a drift.
  */
-export type { LaunchAgentValues } from "./launchd/render.js";
-export { renderLaunchAgent, writeLaunchAgent } from "./launchd/render.js";
-export type { LaunchdRefusal, LaunchdVerdict } from "./launchd/validate.js";
-export { validatePlist, validateTemplate } from "./launchd/validate.js";
+export type { LaunchAgentValues } from "./launchd/render/index.js";
+export { renderLaunchAgent, writeLaunchAgent } from "./launchd/render/index.js";
+export type { LaunchdRefusal, LaunchdVerdict } from "./launchd/validate/index.js";
+export { validatePlist, validateTemplate } from "./launchd/validate/index.js";
 
 export interface DaemonOptions {
   /** Explicit. There is no auto-detection and no failover. */

@@ -132,7 +132,7 @@ losing a process does not do.
 
 ## The packaged entry
 
-`acp-daemon` (`src/bin/acp-daemon.ts`, exposed as the one `bin`) is what launchd
+`acp-daemon` (`src/bin/acp-daemon/index.ts`, exposed as the one `bin`) is what launchd
 executes. It takes **exactly one positional argument: an absolute config-file
 path** — not a flag, because the tracked template fixes
 `ProgramArguments` at `[PROGRAM_PATH, CONFIG_PATH]`, exactly two strings, and
