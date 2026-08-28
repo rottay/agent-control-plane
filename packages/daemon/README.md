@@ -4,10 +4,16 @@ The supervised process around the durability plane.
 
 ## Scope
 
-**This is P2D: process lifecycle, and nothing above it.** The daemon starts one
-invocation under an explicitly chosen driver, supervises it, and stops cleanly
-when signalled. The launchd template is P2E. There is no observation route, no
-provider adapter and no product adoption.
+**This is P2E: process lifecycle, plus an inert launchd template.** The daemon
+starts one invocation under an explicitly chosen driver, supervises it, and
+stops cleanly when signalled. It can also render a launch agent — an artifact,
+not an installation. There is no observation route, no provider adapter and no
+product adoption.
+
+**P2 is not closed.** The template is well formed and inert, but its command
+contract does not match this daemon: the child entry takes a JSON document as
+`argv[2]`, not a config-file path, and no packaged executable bridges them. P2F
+supplies that contract and proves one disposable launchd lifecycle.
 
 Importing this package has **no side effects**. It parses no argv, creates no
 directory, opens no database, binds no socket, spawns no child, installs no
@@ -16,7 +22,8 @@ the internal child entry. A fresh-process drill proves it: a same-process
 snapshot could not tell an effect that never happened from one that happened
 before the check.
 
-**P2D is not P2 completion**, and it is **no product adoption**.
+**P2E is not product adoption**, and adoption is a separate owner decision at P9
+that nothing here anticipates.
 
 ## The daemon adds no authority
 
@@ -124,3 +131,34 @@ losing a process does not do.
 
 There is **no package `bin`** before P8. The child entry exists solely so the
 drills have a real process to signal.
+
+## The launchd template
+
+`launchd/com.rottay.agent-control-plane.plist.template` is a tracked,
+path-neutral template: no account, home directory, repository path or machine
+value appears in it. Because its placeholders sit inside `<string>` elements it
+is a valid plist exactly as tracked, so the artifact a reviewer reads is the one
+the linter checks.
+
+`RunAtLoad` and `KeepAlive` are present and false — present rather than omitted,
+because a document that relies on a default no longer states what it does. Every
+automatic start trigger is refused by name.
+
+The validator **parses** rather than scanning text, and the reason is concrete: a
+document carrying `RunAtLoad` twice, once false and once true, satisfies any
+substring check and passes `plutil -lint` outright, while launchd resolves the
+duplicate on its own rules. Only a parser can refuse both orderings. Truncated
+documents are classified as truncation at every cut point, including cuts inside
+a tag.
+
+`plutil` runs in the drills and never in production: the two allow-listed
+subprocess sites established for the daemon stay two, and a lint is not a reason
+to make it three. One drill asserts the TypeScript reader and the system parser
+agree on all six values and both booleans.
+
+Rendering is pure and writing is separate. `writeLaunchAgent` writes only under
+`.acp-local/launchd/`, owner-only and atomically. **Nothing invokes `launchctl`
+and nothing writes under `~/Library/LaunchAgents`** — see
+`launchd/README.md` for the manual command an operator may choose to run, which
+is recorded there precisely so that "never automated" refers to something
+concrete.

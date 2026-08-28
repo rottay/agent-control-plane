@@ -1,6 +1,6 @@
 # Rottay Agent Control Plane — roadmap canónico
 
-Estado: `P0_COMPLETE / P1_COMPLETE / P2D_COMPLETE / NEXT_P2E / NO_PRODUCT_CUTOVER`
+Estado: `P0_COMPLETE / P1_COMPLETE / P2_IN_PROGRESS / NO_PRODUCT_CUTOVER`
 
 Fecha: 2026-08-27
 

@@ -71,6 +71,20 @@ export type { IdentityVerdict } from "./identity-probe.js";
 export type { RecoveryResult } from "./singleton.js";
 export type { DaemonPhase, DaemonStatusDocument } from "./status.js";
 
+/**
+ * The launchd surface, added by P2E.
+ *
+ * A rendering and validation surface, not an adoption API: nothing here
+ * installs, loads, copies or schedules anything, and the only function that
+ * writes refuses any destination outside the ignored local root. The closed
+ * export set widens by exactly these names, and the fence is updated to the new
+ * size in the same change, so the widening is a decision rather than a drift.
+ */
+export type { LaunchAgentValues } from "./launchd/render.js";
+export { renderLaunchAgent, writeLaunchAgent } from "./launchd/render.js";
+export type { LaunchdRefusal, LaunchdVerdict } from "./launchd/validate.js";
+export { validatePlist, validateTemplate } from "./launchd/validate.js";
+
 export interface DaemonOptions {
   /** Explicit. There is no auto-detection and no failover. */
   readonly mode: DaemonMode;

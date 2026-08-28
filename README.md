@@ -3,9 +3,13 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0 and P1 complete. Next: P2.** Contracts, fences, the append-only
-event ledger, and a read-only observation plane over it: a loopback HTTP server,
-a CLI and a local UI. There is no orchestrator and no provider adapter yet.
+Status: **P0 and P1 complete. P2 in progress.** Contracts, fences, the
+append-only event ledger, a read-only observation plane over it — a loopback
+HTTP server, a CLI and a local UI — and a durability plane with two
+orchestration drivers under a supervised local daemon. A launchd template
+exists and is inert; **P2 does not close until the daemon is proven startable
+under launchd**, which the template alone does not show. There is no provider
+adapter yet, and no product adoption of any kind.
 
 **P1A is not P1 completion**, and neither was P1B. P1 closed only once the
 server served the frozen contract, the CLI read it and the UI rendered it, each
@@ -120,6 +124,8 @@ docs/ROADMAP.md                    canonical authority (byte-exact copy)
 docs/architecture/                 architecture decision records
 packages/contracts/                frozen runtime contracts
 packages/ledger/                   append-only event ledger and read models
+packages/runtime/                  durability plane: one lifecycle, two drivers
+packages/daemon/                   supervised process and inert launchd template
 ```
 
 ## Secrets

@@ -350,6 +350,29 @@ const P2D_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * The exact P2E additions: an inert launchd template and P2 closure.
+ *
+ * `vitest.config.ts` is deliberately absent. The daemon project already globs
+ * `src/**` for tests, so the launchd suites are picked up without a topology
+ * change, and they bind no port, so the P2D serialization law is untouched.
+ */
+const P2E_WRITE_SET = [
+  "packages/daemon/launchd/com.rottay.agent-control-plane.plist.template",
+  "packages/daemon/launchd/README.md",
+  "packages/daemon/src/launchd/render.ts",
+  "packages/daemon/src/launchd/render.test.ts",
+  "packages/daemon/src/launchd/validate.ts",
+  "packages/daemon/src/launchd/validate.test.ts",
+  "packages/daemon/src/launchd/launchd-drills.test.ts",
+  "docs/architecture/0007-launchd-template-and-p2-closure.md",
+  "packages/daemon/src/index.ts",
+  "packages/daemon/README.md",
+  "README.md",
+  "docs/ROADMAP.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -359,6 +382,7 @@ const WRITE_SET = [
   ...P2B_WRITE_SET,
   ...P2C_WRITE_SET,
   ...P2D_WRITE_SET,
+  ...P2E_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -375,7 +399,7 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "a90e66462547ec71aac9ed5f568fd6c0858c96111a8c9e200215ebf1c9da7b4d";
+  "9a5c7e72405e86602bf99d410e5e497c6329b2a01d116d3acb4c97d15aa29ffd";
 
 /**
  * The Estado line P1 closure is allowed to have produced.
@@ -391,7 +415,7 @@ const ROADMAP_SHA256 =
  * authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2D_COMPLETE / NEXT_P2E / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_IN_PROGRESS / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -411,6 +435,14 @@ const ROADMAP_LITERALS = [
  * a verifier receipt. The cutover literals never leave it: no phase status may
  * ever assert cutover authority, which is granted by the owner at P9 and by
  * nothing else.
+ *
+ * P2_COMPLETE went back on. P2E produces a well-formed inert template, but the
+ * roadmap's P2 criterion is a daemon startable under launchd, and the tracked
+ * template's command contract does not match the daemon that exists: the child
+ * entry takes a JSON document as argv[2], not a config-file path, and no
+ * packaged executable bridges them. Closing P2 on this packet would certify a
+ * capability the repository cannot execute. It leaves the list again in P2F,
+ * after a real launchd lifecycle drill passes.
  */
 const FORBIDDEN_ROADMAP_LITERALS = [
   "P1_DONE",
@@ -530,8 +562,23 @@ const AUTHORITY_LITERALS = {
     "adds no authority",
     "no auto-detection",
     "never silently reclaimed",
-    "P2D is not P2 completion",
-    "no product adoption",
+    "P2E is not product adoption",
+    "nothing invokes `launchctl`",
+  ],
+  "packages/daemon/launchd/README.md": [
+    "template",
+    "RunAtLoad",
+    "never automated",
+    "in the sense of product adoption",
+    "no cutover is authorized",
+  ],
+  "docs/architecture/0007-launchd-template-and-p2-closure.md": [
+    "inert",
+    "P2E is not product adoption",
+    "no cutover",
+    "parses",
+    "duplicate key",
+    "never in production",
   ],
   "docs/architecture/0006-daemon-process-lifecycle.md": [
     "authority",
@@ -581,6 +628,8 @@ const EXPIRED_LITERALS = {
   ],
   "packages/runtime/src/index.ts": ["This is P2B"],
   "packages/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
+  "README.md": ["There is no orchestrator", "P0 and P1 complete. Next: P2."],
+  "packages/daemon/README.md": ["This is P2D", "The launchd template is P2E"],
 };
 
 /** Files that must never exist in the repository, in any directory. */
@@ -715,7 +764,7 @@ if (roadmap === null) {
         ROADMAP_SHA256,
     );
   } else {
-    notes.push("docs/ROADMAP.md matches the pinned P2D digest");
+    notes.push("docs/ROADMAP.md matches its pinned digest");
   }
 
   // The digest alone would let a re-pin smuggle in a rewritten roadmap, so the
@@ -723,9 +772,12 @@ if (roadmap === null) {
   if (!roadmap.includes(ROADMAP_STATUS_LITERAL)) {
     fail("docs/ROADMAP.md no longer carries the authorized P1A status line");
   } else {
-    notes.push(
-      "roadmap status is P0, P1 and P2C complete, next P2D, no product cutover",
-    );
+    // Derived, never restated. A hand-typed copy of the value being checked is
+    // exactly what drifted: this line announced P2C long after the enforced
+    // literal had moved to P2D, and the gate passed the whole time because the
+    // note is only a note. Deriving it means it cannot say something the fence
+    // is not actually enforcing.
+    notes.push("roadmap status literal enforced: " + ROADMAP_STATUS_LITERAL);
   }
   for (const literal of ROADMAP_LITERALS) {
     if (!roadmap.includes(literal)) {
@@ -1477,6 +1529,11 @@ if (tracked.status === 0) {
 const LAUNCHCTL_EXEMPT = new Set([
   "docs/architecture/0004-durability-and-supervisor.md",
   "scripts/check-architecture.mjs",
+  // Prose only. The comment used to say "no code is exempt" while a test file
+  // sat on this list, which is the kind of exemption that quietly becomes the
+  // rule. Code constructs the token from pieces instead of being excused.
+  "packages/daemon/launchd/README.md",
+  "docs/architecture/0007-launchd-template-and-p2-closure.md",
 ]);
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -1485,8 +1542,17 @@ if (tracked.status === 0) {
     if (relativePath === "pnpm-lock.yaml") continue;
     const content = readIfPresent(relativePath);
     if (content === null) continue;
+    // Two checks, because the first one alone had a blind spot. The
+    // whitespace-shaped pattern only ever matched prose-like text, so any code
+    // that built the command differently would have passed. In non-prose files
+    // the bare token is refused outright, after comments are stripped: a source
+    // file has no legitimate reason to contain it, and a drill that needs it can
+    // assemble it from pieces.
     if (/launchctl\s+(load|bootstrap|kickstart|enable)/.test(content)) {
       fail(relativePath + " invokes launchctl; P2 may never load a daemon automatically");
+    }
+    if (!relativePath.endsWith(".md") && stripComments(content).includes("launchctl")) {
+      fail(relativePath + " names launchctl in code; build the token from pieces if a test needs it");
     }
   }
   notes.push("no file invokes launchctl load or bootstrap");
@@ -1701,6 +1767,23 @@ if (tracked.status === 0) {
   // boundaries this package exists to draw. A consumer handed
   // `resolveDaemonRoot` and `installSignalHandlers` can assemble a second
   // daemon beside this one, and then the singleton means nothing.
+  /**
+   * The launchd surface, pinned as an exact set.
+   *
+   * Every name here must be exported, and every launchd name exported must be
+   * here. Equality in both directions is the point: it catches a withdrawn
+   * internal coming back, which membership alone cannot.
+   */
+  const LAUNCHD_PUBLIC_EXPORTS = [
+    "renderLaunchAgent",
+    "writeLaunchAgent",
+    "validateTemplate",
+    "validatePlist",
+    "LaunchAgentValues",
+    "LaunchdRefusal",
+    "LaunchdVerdict",
+  ];
+
   const DAEMON_PUBLIC_EXPORTS = new Set([
     // lifecycle
     "startDaemon",
@@ -1728,6 +1811,16 @@ if (tracked.status === 0) {
     "StaleLockError",
     "StartupError",
     "SupervisionError",
+    // P2E: the launchd rendering and validation surface, exactly seven names.
+    // A rendering surface, not an adoption API: nothing here installs, loads,
+    // copies or schedules anything.
+    //
+    // These seven are pinned by EQUALITY below, not merely allowed. An earlier
+    // version of this list still authorised eight internals that C3 had already
+    // withdrawn from the entry point, so each of them could have been silently
+    // re-exported with the fence green — an allow-list is an upper bound, and an
+    // upper bound cannot detect a surface growing back to it.
+    ...LAUNCHD_PUBLIC_EXPORTS,
   ]);
 
   const indexCode = readIfPresent("packages/daemon/src/index.ts");
@@ -1757,12 +1850,137 @@ if (tracked.status === 0) {
         fail("packages/daemon exports " + name + ", which is outside its closed public surface");
       }
     }
-    notes.push(exported.size + " daemon exports, all inside the closed public surface");
+
+    // Equality for the launchd subset, in both directions. Membership alone is
+    // an upper bound: it fails a name nobody authorised, and says nothing about
+    // an authorised name quietly returning to the entry point. Both halves are
+    // needed, and both are cheap.
+    const launchdExported = LAUNCHD_PUBLIC_EXPORTS.filter((name) => exported.has(name));
+    if (launchdExported.length !== LAUNCHD_PUBLIC_EXPORTS.length) {
+      const missing = LAUNCHD_PUBLIC_EXPORTS.filter((name) => !exported.has(name));
+      fail("packages/daemon no longer exports pinned launchd name(s): " + missing.join(", "));
+    }
+    const LAUNCHD_WITHDRAWN = [
+      "PlistValue",
+      "KNOWN_KEYS",
+      "FORBIDDEN_KEYS",
+      "placeholdersIn",
+      "checkValues",
+      "checkReferencedPaths",
+      "parseFixedPlist",
+      "readValues",
+      "writeLaunchAgentAt",
+    ];
+    for (const name of LAUNCHD_WITHDRAWN) {
+      if (exported.has(name)) {
+        fail(
+          "packages/daemon re-exports " +
+            name +
+            ", which C3 withdrew from the public surface; tests import it by relative path",
+        );
+      }
+    }
+    notes.push(
+      exported.size +
+        " daemon exports, all inside the closed public surface; the launchd subset is pinned by equality",
+    );
   }
 
   notes.push(
     daemonSources.length + " daemon sources import only what a supervised process is allowed",
   );
+}
+
+// --- 18. P2E: the template is inert, and adoption is impossible from here ---
+
+const TEMPLATE_PATH = "packages/daemon/launchd/com.rottay.agent-control-plane.plist.template";
+const templateSource = readIfPresent(TEMPLATE_PATH);
+if (templateSource === null) {
+  fail("the launchd template is missing: " + TEMPLATE_PATH);
+} else {
+  // Path neutral: nothing in a tracked artifact may tie it to one machine.
+  for (const literal of ["/Users/", "$HOME", "~/", "LaunchAgents", "/private/var/root"]) {
+    if (templateSource.includes(literal)) {
+      fail("the launchd template names " + literal + ", which ties it to one machine");
+    }
+  }
+  // Inert on its face: present and false, not merely absent and defaulted.
+  for (const key of ["RunAtLoad", "KeepAlive"]) {
+    const inert = new RegExp("<key>" + key + "</key>\\s*<false/>");
+    if (!inert.test(templateSource)) {
+      fail("the launchd template must declare " + key + " explicitly false");
+    }
+  }
+  for (const key of [
+    "StartInterval",
+    "StartCalendarInterval",
+    "WatchPaths",
+    "QueueDirectories",
+    "StartOnMount",
+    "Sockets",
+    "MachServices",
+    "inetdCompatibility",
+  ]) {
+    if (templateSource.includes(key)) {
+      fail("the launchd template carries " + key + ", which would start the daemon on its own");
+    }
+  }
+  notes.push("the launchd template is path-neutral and inert on its face");
+}
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+
+  // The two-spawn-site law is unchanged by P2E. `plutil` runs in the drills,
+  // where node:child_process is already a test-only import, and never in a
+  // production module: a lint is not a reason to add a third spawner.
+  for (const relativePath of present) {
+    if (!relativePath.startsWith("packages/daemon/src/launchd/")) continue;
+    if (relativePath.endsWith(".test.ts")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    if (/from\s+["']node:child_process["']/.test(content)) {
+      fail(relativePath + " spawns a process; plutil belongs in the drills, not in production");
+    }
+  }
+
+  // Nothing anywhere may write into the user's launch agent directory. Prose
+  // may name it; code may not — and that now includes test code, which used to
+  // be skipped wholesale. A drill that needs the token assembles it.
+  //
+  // `validate.ts` is not blanket-exempt either. It carries the string exactly
+  // once, as a denylist entry, and the allowance is written that narrowly: the
+  // single permitted line, plus a check that the file has acquired no Node
+  // import at all, so the exemption cannot become cover for a module that grew
+  // filesystem or process access.
+  const DENYLIST_FILE = "packages/daemon/src/launchd/validate.ts";
+  const AGENT_DIR_TOKEN = ["Launch", "Agents"].join("");
+  for (const relativePath of present) {
+    if (relativePath.endsWith(".md")) continue;
+    if (relativePath === "scripts/check-architecture.mjs") continue;
+    if (relativePath === "pnpm-lock.yaml") continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const code = stripComments(content);
+    if (!code.includes(AGENT_DIR_TOKEN)) continue;
+
+    if (relativePath !== DENYLIST_FILE) {
+      fail(relativePath + " names the user agent directory in code; nothing may write there");
+      continue;
+    }
+    // The exact allowance: one occurrence, inside the host-specific denylist.
+    const occurrences = code.split(AGENT_DIR_TOKEN).length - 1;
+    if (occurrences !== 1) {
+      fail(DENYLIST_FILE + " names the user agent directory more than once");
+    }
+    if (!new RegExp('"' + AGENT_DIR_TOKEN + '",').test(code)) {
+      fail(DENYLIST_FILE + " may name the user agent directory only as a denylist literal");
+    }
+    if (/from\s+["']node:/.test(code)) {
+      fail(DENYLIST_FILE + " must import nothing from node:; it is a pure reader");
+    }
+  }
+  notes.push("no module spawns for plutil, and only the denylist names the agent directory");
 }
 
 // Names that must never enter the graph, matched as whole tokens so the
