@@ -394,6 +394,31 @@ const P2F_STAGE_A_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P3A: the shadow-mode boundary. Roots, refusals, and the laws that govern the
+ * rest of P3 — collectors (P3B), baseline (P3C), parity (P3D), closure (P3E).
+ *
+ * P3 is 29 distinct paths across 32 packet entries; three paths are touched
+ * twice (`packages/observation/src/index.ts` in A and C,
+ * `packages/observation/README.md` and `scripts/check-architecture.mjs` in A
+ * and E). The earlier arrays stay as the historical record and the displayed
+ * count deduplicates, as P2D established.
+ */
+const P3A_WRITE_SET = [
+  "packages/observation/package.json",
+  "packages/observation/tsconfig.json",
+  "packages/observation/README.md",
+  "packages/observation/src/index.ts",
+  "packages/observation/src/roots.ts",
+  "packages/observation/src/roots.test.ts",
+  "packages/observation/src/errors.ts",
+  "docs/architecture/0009-shadow-observation-boundary.md",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -405,6 +430,7 @@ const WRITE_SET = [
   ...P2D_WRITE_SET,
   ...P2E_WRITE_SET,
   ...P2F_STAGE_A_WRITE_SET,
+  ...P3A_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -2098,6 +2124,197 @@ if (tracked.status === 0) {
     }
   }
   notes.push("the packaged entry takes a config file and reads no environment");
+}
+
+// --- 19. P3A: the shadow observation boundary --------------------------------
+//
+// The one new manifest in P3 is the only one the dependency law would otherwise
+// not verify — the same gap that was found in the daemon manifest at P2D and
+// made binding then. A stray dependency must fail `pnpm check`.
+const OBSERVATION_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/ledger"]);
+const OBSERVATION_ALLOWED_BUILTINS = new Set(["node:fs", "node:path", "node:url"]);
+const OBSERVATION_TEST_ONLY_IMPORTS = new Set(["vitest", "node:os", "node:crypto"]);
+
+// Capability the package must not have. It observes; it cannot attach, signal,
+// reach out, or write — including into its own roots.
+const OBSERVATION_FORBIDDEN_BUILTINS = [
+  "node:child_process",
+  "node:net",
+  "node:http",
+  "node:https",
+  "node:tls",
+  "node:dgram",
+  "node:dns",
+  "node:cluster",
+  "node:worker_threads",
+];
+const OBSERVATION_FORBIDDEN_CALLS = [
+  "writeFileSync",
+  "appendFileSync",
+  "mkdirSync",
+  "rmSync",
+  "unlinkSync",
+  "renameSync",
+  "chmodSync",
+  "openSync",
+  "process.env",
+  "process.kill",
+];
+
+const observationManifest = readIfPresent("packages/observation/package.json");
+if (observationManifest === null) {
+  fail("packages/observation/package.json is missing");
+} else {
+  const parsed = JSON.parse(observationManifest);
+  if (parsed.bin !== undefined) {
+    fail("packages/observation declares a bin; observation exposes no executable");
+  }
+  const deps = Object.keys(parsed.dependencies ?? {}).sort();
+  const devDeps = Object.keys(parsed.devDependencies ?? {}).sort();
+  const expected = ["@acp/contracts", "@acp/ledger"];
+  if (deps.join(",") !== expected.join(",")) {
+    fail("packages/observation dependencies must be exactly " + expected.join(", "));
+  }
+  if (devDeps.join(",") !== "vitest") {
+    fail("packages/observation devDependencies must be exactly vitest");
+  }
+  for (const forbidden of ["better-sqlite3", "@restatedev/restate-sdk", "@scarf/scarf"]) {
+    if (deps.includes(forbidden)) {
+      fail("packages/observation must not depend on " + forbidden + " directly");
+    }
+  }
+  notes.push("the observation manifest declares no bin and an exact dependency surface");
+}
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const sources = present.filter(
+    (relativePath) =>
+      relativePath.startsWith("packages/observation/src/") && relativePath.endsWith(".ts"),
+  );
+
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const isTest = relativePath.endsWith(".test.ts");
+    const code = stripComments(content);
+
+    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
+    let match = pattern.exec(content);
+    while (match !== null) {
+      const name = match[1] ?? "";
+      const relative = name.startsWith("./") || name.startsWith("../");
+      const allowed =
+        relative ||
+        OBSERVATION_ALLOWED_PACKAGES.has(name) ||
+        OBSERVATION_ALLOWED_BUILTINS.has(name) ||
+        (isTest && OBSERVATION_TEST_ONLY_IMPORTS.has(name));
+      if (!allowed) {
+        fail(relativePath + " imports " + name + ", which observation may not use");
+      }
+      if (OBSERVATION_FORBIDDEN_BUILTINS.includes(name)) {
+        fail(relativePath + " imports " + name + "; observation attaches to and signals nothing");
+      }
+      match = pattern.exec(content);
+    }
+
+    // Production modules may not even name a mutating call. The roadmap forbids
+    // writing into anything; the guarantee is that the code has no means, not
+    // that it declines.
+    if (isTest) continue;
+    for (const call of OBSERVATION_FORBIDDEN_CALLS) {
+      if (code.includes(call)) {
+        fail(relativePath + " uses " + call + "; observation production modules only read");
+      }
+    }
+  }
+  notes.push(sources.length + " observation sources only read, and reach nothing");
+}
+
+// The closed export surface, pinned by equality in both directions. The
+// upper-bound form failed once in this repository — a withdrawn name could be
+// re-exported with the fence green — so equality is the form used from here on.
+const OBSERVATION_PUBLIC_EXPORTS = [
+  "ObservationRefusal",
+  "ObservationRefused",
+  "ObservationVerdict",
+  "ObservationError",
+  "ArtifactAdmission",
+  "ArtifactHandle",
+  "ObservationKind",
+  "ObservationRoot",
+  "ARTIFACT_MAX_BYTES",
+  "OBSERVATION_KINDS",
+  "OBSERVATION_ROOT_SEGMENTS",
+  "admitArtifact",
+  "checkArtifactName",
+  "observationRootPath",
+  "redactObservationPath",
+  "resolveObservationRoot",
+];
+
+const observationIndex = readIfPresent("packages/observation/src/index.ts");
+if (observationIndex === null) {
+  fail("packages/observation/src/index.ts is missing");
+} else {
+  if (/export\s*\*\s*from/.test(observationIndex)) {
+    fail("packages/observation/src/index.ts uses `export *`, which cannot stay closed");
+  }
+  const exported = new Set();
+  for (const block of observationIndex.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+    for (const piece of (block[1] ?? "").split(",")) {
+      const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
+      if (name !== undefined && name !== "") exported.add(name);
+    }
+  }
+  for (const name of exported) {
+    if (!OBSERVATION_PUBLIC_EXPORTS.includes(name)) {
+      fail("packages/observation exports " + name + ", which is outside its closed surface");
+    }
+  }
+  for (const name of OBSERVATION_PUBLIC_EXPORTS) {
+    if (!exported.has(name)) {
+      fail("packages/observation no longer exports the pinned name " + name);
+    }
+  }
+  notes.push(exported.size + " observation exports, pinned by equality");
+}
+
+// The P3D deep aliases: exactly two, pointing at exactly these two modules, and
+// importable only by the parity test. Aliasing rather than widening either
+// package's entry point is what keeps both closed surfaces byte-untouched.
+const vitestConfig = readIfPresent("vitest.config.ts");
+if (vitestConfig !== null) {
+  const aliasTargets = [
+    ["@acp/cli/observation-rows", "packages/cli/src/observation.ts"],
+    ["@acp/ui/row-model", "packages/ui/src/api/client.ts"],
+  ];
+  for (const [specifier, target] of aliasTargets) {
+    if (!vitestConfig.includes(target)) {
+      fail("vitest.config.ts no longer aliases " + specifier + " to " + target);
+    }
+  }
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (relativePath === "vitest.config.ts") continue;
+      if (relativePath === "scripts/check-architecture.mjs") continue;
+      if (relativePath === "packages/server/src/parity.test.ts") continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      for (const [specifier] of aliasTargets) {
+        if (content.includes(specifier)) {
+          fail(
+            relativePath +
+              " imports " +
+              specifier +
+              "; the deep aliases exist only for the parity test",
+          );
+        }
+      }
+    }
+  }
+  notes.push("the parity deep aliases point at two modules and are used by one test");
 }
 
 // Names that must never enter the graph, matched as whole tokens so the

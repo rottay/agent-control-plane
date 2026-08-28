@@ -31,6 +31,7 @@
   "references": [
     { "path": "./packages/contracts" },
     { "path": "./packages/ledger" },
+    { "path": "./packages/observation" },
     { "path": "./packages/api-contracts" },
     { "path": "./packages/runtime" },
     { "path": "./packages/daemon" },

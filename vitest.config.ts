@@ -123,6 +123,31 @@ const daemonSourceAliases = [
   { find: /^@acp\/runtime$/, replacement: runtimeSource },
 ];
 
+/**
+ * Deep aliases for the P3D parity test, resolved only in the server project.
+ *
+ * The three-way equality has to compare the CLI's row model against the UI's,
+ * and neither module is its package's entry point. Widening either entry for a
+ * test-only need is exactly the export-surface drift the closed-surface pins
+ * exist to prevent, so the specifiers are aliased here instead: test resolution
+ * only, invisible to production code, and both packages' public surfaces stay
+ * byte-untouched.
+ *
+ * The architecture fence asserts these two targets and that the specifiers are
+ * imported only by `packages/server/src/parity.test.ts`.
+ */
+const cliRowModelSource = fileURLToPath(
+  new URL('./packages/cli/src/observation.ts', import.meta.url),
+);
+const uiRowModelSource = fileURLToPath(
+  new URL('./packages/ui/src/api/client.ts', import.meta.url),
+);
+const parityAliases = [
+  ...workspaceSourceAliases,
+  { find: /^@acp\/cli\/observation-rows$/, replacement: cliRowModelSource },
+  { find: /^@acp\/ui\/row-model$/, replacement: uiRowModelSource },
+];
+
 export default defineConfig({
   test: {
     projects: [
@@ -170,6 +195,21 @@ export default defineConfig({
       },
       {
         test: {
+          // Reads only; binds no port and spawns nothing, so it stays in the
+          // default parallel group (groupOrder 0) rather than joining the
+          // serialized port-binding groups the runtime and daemon projects use.
+          name: 'observation',
+          root: './packages/observation',
+          include: ['src/**/*.test.ts'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+        },
+        resolve: { alias: workspaceSourceAliases },
+      },
+      {
+        test: {
           name: 'server',
           root: './packages/server',
           include: ['src/**/*.test.ts'],
@@ -181,7 +221,7 @@ export default defineConfig({
           testTimeout: 120_000,
           hookTimeout: 120_000,
         },
-        resolve: { alias: workspaceSourceAliases },
+        resolve: { alias: parityAliases },
       },
       {
         test: {

@@ -1,0 +1,29 @@
+{
+  "name": "@acp/observation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shadow-mode observation boundary for the Agent Control Plane. Allowlisted roots and fail-closed admission over passive artifacts and synthetic scenarios.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@acp/contracts": "workspace:*",
+    "@acp/ledger": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
+  }
+}
