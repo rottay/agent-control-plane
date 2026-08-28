@@ -82,7 +82,7 @@ byte-identical after every command has run against it.
 
 Every document is parsed by the schemas in `@acp/api-contracts` before it is
 rendered, in both formats. The CLI and the future HTTP server therefore publish
-the same shapes, and the mapping code in `observation.ts` — which is the new code
+the same shapes, and the mapping code in `observation/index.ts` — which is the new code
 between two careful layers — cannot quietly emit a field the contract does not
 describe. A projection that drifted fails loudly here instead of printing a
 plausible answer.

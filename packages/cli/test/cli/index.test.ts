@@ -42,8 +42,8 @@ import {
   EXIT_UNAVAILABLE,
   EXIT_USAGE,
   run,
-} from "./cli.js";
-import type { CliIo } from "./cli.js";
+} from "../../src/cli/index.js";
+import type { CliIo } from "../../src/cli/index.js";
 
 // ---------------------------------------------------------------------------
 // Harness

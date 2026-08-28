@@ -137,7 +137,7 @@ const daemonSourceAliases = [
  * imported only by `packages/server/src/parity.test.ts`.
  */
 const cliRowModelSource = fileURLToPath(
-  new URL('./packages/cli/src/observation.ts', import.meta.url),
+  new URL('./packages/cli/src/observation/index.ts', import.meta.url),
 );
 const uiRowModelSource = fileURLToPath(
   new URL('./packages/ui/src/api/client.ts', import.meta.url),
@@ -288,7 +288,7 @@ export default defineConfig({
         test: {
           name: 'cli',
           root: './packages/cli',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

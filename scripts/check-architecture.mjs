@@ -152,6 +152,13 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C5 (cli): the CLI entry, the renderer and the ledger-to-DTO
+  // layer, plus their colocated test, now under src/<domain>/index.ts and the
+  // mirrored test tree.
+  "packages/cli/src/cli.test.ts",
+  "packages/cli/src/cli.ts",
+  "packages/cli/src/format.ts",
+  "packages/cli/src/observation.ts",
   // P5N cohort C4 (observation): four flat domains, two collectors and five
   // colocated tests, now under src/<domain>/index.ts and the mirrored test tree.
   "packages/observation/src/baseline.test.ts",
@@ -230,10 +237,10 @@ const P1B_LANE_ENVELOPES = ["packages/cli/", "packages/server/", "packages/ui/"]
  */
 const P1_WRITE_SET = [
   "packages/cli/README.md",
-  "packages/cli/src/cli.test.ts",
-  "packages/cli/src/cli.ts",
-  "packages/cli/src/format.ts",
-  "packages/cli/src/observation.ts",
+  "packages/cli/test/cli/index.test.ts",
+  "packages/cli/src/cli/index.ts",
+  "packages/cli/src/format/index.ts",
+  "packages/cli/src/observation/index.ts",
   "packages/server/src/aggregates.ts",
   "packages/server/src/build-server.test.ts",
   "packages/server/src/build-server.ts",
@@ -508,7 +515,7 @@ const P3D_WRITE_SET = [
   "packages/api-contracts/src/parity/index.ts",
   "packages/api-contracts/test/parity/index.test.ts",
   "packages/api-contracts/src/index.ts",
-  "packages/cli/src/observation.ts",
+  "packages/cli/src/observation/index.ts",
   "packages/ui/src/api/client.ts",
   "packages/server/src/parity.test.ts",
   "scripts/check-architecture.mjs",
@@ -776,6 +783,27 @@ const P5N_C4_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C5: cli, the fifth tree normalized.
+ *
+ * As with C1-C4 the relocated source paths are not listed here — they are
+ * carried by `P1_WRITE_SET` and `P3D_WRITE_SET`, rewritten 1:1 — so this array
+ * declares only the test tree's own `tsconfig.json` and the config files the
+ * cohort edits. This cohort additionally edits `packages/server/tsconfig.json`:
+ * the DT's binding deep-alias adjudication moves the
+ * `@acp/cli/observation-rows` half of the P3D alias update here rather than to
+ * the server cohort, so every commit keeps the server's typecheck green. No
+ * `.gitignore` or ESLint entry is needed: this test tree typechecks with
+ * `noEmit`, so it produces no build output to ignore.
+ */
+const P5N_C5_WRITE_SET = [
+  "packages/cli/test/tsconfig.json",
+  "packages/server/tsconfig.json",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -807,6 +835,7 @@ const WRITE_SET = [
   ...P5N_C2_WRITE_SET,
   ...P5N_C3_WRITE_SET,
   ...P5N_C4_WRITE_SET,
+  ...P5N_C5_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -3096,7 +3125,7 @@ if (tracked.status === 0) {
 // commit against. Each cohort activates its own tree in the same commit that
 // makes that tree compliant, so the law and the code arrive together and every
 // commit in between is green.
-const TOPOLOGY_ACTIVE_TREES = ["contracts", "ledger", "api-contracts", "observation"];
+const TOPOLOGY_ACTIVE_TREES = ["contracts", "ledger", "api-contracts", "observation", "cli"];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
 const TOPOLOGY_PRODUCT_INDEX = new Set(["index.ts", "index.tsx"]);
@@ -3274,7 +3303,7 @@ const TEST_TREE_SCANNED_PREFIXES = ["packages/observation/test/"];
  * visible: an entry here is a package whose sources the fence never inspected,
  * not a package whose inspection was dropped.
  */
-const TEST_TREE_NO_PACKAGE_SCAN = ["contracts", "ledger", "api-contracts"];
+const TEST_TREE_NO_PACKAGE_SCAN = ["contracts", "ledger", "api-contracts", "cli"];
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -3375,7 +3404,7 @@ if (accountsIndex === null) {
 const vitestConfig = readIfPresent("vitest.config.ts");
 if (vitestConfig !== null) {
   const aliasTargets = [
-    ["@acp/cli/observation-rows", "packages/cli/src/observation.ts"],
+    ["@acp/cli/observation-rows", "packages/cli/src/observation/index.ts"],
     ["@acp/ui/row-model", "packages/ui/src/api/client.ts"],
   ];
   for (const [specifier, target] of aliasTargets) {
@@ -3425,7 +3454,7 @@ if (vitestConfig !== null) {
 // emit `.js`/`.d.ts` next to the CLI and UI sources — an observed failure
 // while this was built, not a hypothetical.
 const SERVER_TS_ALIASES = {
-  "@acp/cli/observation-rows": "../cli/dist/observation.d.ts",
+  "@acp/cli/observation-rows": "../cli/dist/observation/index.d.ts",
   "@acp/ui/row-model": "../ui/dist/app/api/client.d.ts",
 };
 const SERVER_TS_REFERENCES = ["../api-contracts", "../cli", "../ledger", "../ui"];

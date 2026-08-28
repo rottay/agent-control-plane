@@ -5,7 +5,7 @@
     "outDir": "./dist",
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "paths": {
-      "@acp/cli/observation-rows": ["../cli/dist/observation.d.ts"],
+      "@acp/cli/observation-rows": ["../cli/dist/observation/index.d.ts"],
       "@acp/ui/row-model": ["../ui/dist/app/api/client.d.ts"]
     }
   },

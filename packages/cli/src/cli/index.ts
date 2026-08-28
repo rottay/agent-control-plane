@@ -52,8 +52,8 @@ import {
   renderWorkerDetail,
   renderWorkerPage,
   isOutputFormat,
-} from "./format.js";
-import type { OutputFormat } from "./format.js";
+} from "../format/index.js";
+import type { OutputFormat } from "../format/index.js";
 import {
   buildEventPage,
   buildIntegrity,
@@ -66,8 +66,8 @@ import {
   buildWorkerPage,
   databaseIdentity,
   systemClock,
-} from "./observation.js";
-import type { Clock } from "./observation.js";
+} from "../observation/index.js";
+import type { Clock } from "../observation/index.js";
 
 /**
  * Exit codes, closed and meaningful.

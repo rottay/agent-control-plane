@@ -21,13 +21,13 @@ export {
   EXIT_INTEGRITY,
   LEDGER_SCHEMA_VERSION,
   run,
-} from "./cli.js";
-export type { CliIo } from "./cli.js";
+} from "./cli/index.js";
+export type { CliIo } from "./cli/index.js";
 
-export { OUTPUT_FORMATS, isOutputFormat } from "./format.js";
-export type { OutputFormat } from "./format.js";
+export { OUTPUT_FORMATS, isOutputFormat } from "./format/index.js";
+export type { OutputFormat } from "./format/index.js";
 
-import { run } from "./cli.js";
+import { run } from "./cli/index.js";
 
 /**
  * Run only when this module is the process entry point.
