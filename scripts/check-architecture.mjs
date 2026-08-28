@@ -398,11 +398,11 @@ const P2F_STAGE_A_WRITE_SET = [
  * P3A: the shadow-mode boundary. Roots, refusals, and the laws that govern the
  * rest of P3 — collectors (P3B), baseline (P3C), parity (P3D), closure (P3E).
  *
- * P3 is 31 distinct paths across 36 packet entries. Four paths are touched
+ * P3 is 31 distinct paths across 37 packet entries. Four paths are touched
  * more than once: `packages/observation/src/index.ts` (A, C),
  * `packages/observation/README.md` (A, E), `vitest.config.ts` (A, B) and
- * `scripts/check-architecture.mjs` (A, D, E — three touches). Check:
- * 36 − (1 + 1 + 1 + 2) = 31. `packages/server/src/routes.ts` and
+ * `scripts/check-architecture.mjs` (A, C, D, E — four touches). Check:
+ * 37 − (1 + 1 + 1 + 3) = 31. `packages/server/src/routes.ts` and
  * `packages/server/tsconfig.json` are each new distinct paths *within P3*;
  * their P1 array membership is historical and outside the scope this count
  * describes, which is the treatment the ordering ruling set for `routes.ts`.
@@ -446,6 +446,9 @@ const P3C_WRITE_SET = [
   "packages/observation/src/shadow-ledger.ts",
   "packages/observation/src/shadow-ledger.test.ts",
   "packages/observation/src/index.ts",
+  // The export re-pin, the sole-writer law and the count restatement all live
+  // in the fence, so P3C touches it like P3A and P3D did.
+  "scripts/check-architecture.mjs",
 ];
 
 /** P3D: the ledger-to-client parity contract and its three-way proof. */
@@ -2263,6 +2266,19 @@ const OBSERVATION_FORBIDDEN_CALLS = [
 // no write-capable flag anywhere, and every other observation source still
 // refused for naming `openSync` at all.
 const OBSERVATION_OPEN_SITE = "packages/observation/src/collect/artifact.ts";
+
+// P3C's sole writer. Every other observation production module — the
+// collectors above all — stays a reader, and none of them may name a database
+// driver or raw SQL: the one permitted path to storage is the public ledger
+// API, in exactly one file.
+const OBSERVATION_LEDGER_SITE = "packages/observation/src/shadow-ledger.ts";
+const OBSERVATION_FORBIDDEN_DATA_ACCESS = [
+  "better-sqlite3",
+  "node:sqlite",
+  "CREATE TABLE",
+  "INSERT INTO",
+  "SELECT ",
+];
 // The exact normalized call, not a set of tokens that must appear somewhere.
 // Checking only that `O_RDONLY` and `O_NOFOLLOW` are present anywhere in the
 // file would admit `openSync(other, constants.O_RDONLY | constants.O_NOFOLLOW | 2)`
@@ -2342,9 +2358,11 @@ if (tracked.status === 0) {
       match = pattern.exec(content);
     }
 
-    // Production modules may not even name a mutating call. The roadmap forbids
-    // writing into anything; the guarantee is that the code has no means, not
-    // that it declines.
+    // Production modules may not even name a mutating call. The guarantee is
+    // that the code has no means, not that it declines. P3C does not soften
+    // this: `shadow-ledger.ts` writes, but only through `@acp/ledger`'s public
+    // API into a disposable fixture, and it still may not touch the filesystem
+    // itself — it creates no directory and removes nothing.
     if (isTest) continue;
     for (const call of OBSERVATION_FORBIDDEN_CALLS) {
       if (code.includes(call)) {
@@ -2384,9 +2402,35 @@ if (tracked.status === 0) {
     } else if (tokens > 0) {
       fail(relativePath + " uses openSync; only " + OBSERVATION_OPEN_SITE + " may open a descriptor");
     }
+
+    // Exactly one module may reach the ledger, and the collectors may not. A
+    // passive collector that could open a ledger would stop being passive, and
+    // a second writer would make "the sole writer" a claim rather than a fact.
+    const importsLedger = /from\s*["']@acp\/ledger["']/.test(code);
+    if (relativePath === OBSERVATION_LEDGER_SITE) {
+      if (!importsLedger) {
+        fail(relativePath + " no longer imports @acp/ledger; it is the package's only writer");
+      }
+    } else if (importsLedger) {
+      fail(
+        relativePath +
+          " imports @acp/ledger; only " +
+          OBSERVATION_LEDGER_SITE +
+          " may, and collect/** stays passive",
+      );
+    }
+    for (const banned of OBSERVATION_FORBIDDEN_DATA_ACCESS) {
+      if (code.includes(banned)) {
+        fail(
+          relativePath + " names " + banned + "; observation reaches storage only through @acp/ledger",
+        );
+      }
+    }
   }
   notes.push(
-    sources.length + " observation sources only read, and reach nothing; one read-only descriptor site, pinned",
+    sources.length +
+      " observation sources: collectors passive, one read-only descriptor site, and one sole writer" +
+      " (a disposable non-product ledger fixture through the public @acp/ledger API)",
   );
 }
 
@@ -2410,6 +2454,33 @@ const OBSERVATION_PUBLIC_EXPORTS = [
   "observationRootPath",
   "redactObservationPath",
   "resolveObservationRoot",
+  // P3C: the baseline and the disposable shadow ledger.
+  "AcceptanceBaseline",
+  "Baseline",
+  "BaselineStopReason",
+  "OutcomeCount",
+  "ReasonCount",
+  "ReworkBaseline",
+  "RoutingBaseline",
+  "TaskDuration",
+  "TaskReworkCount",
+  "TimeBaseline",
+  "TokensBaseline",
+  "VerdictCount",
+  "AUDIT_VERDICTS",
+  "BaselineStopError",
+  "REASON_MAX_LENGTH",
+  "TERMINAL_OUTCOME_TYPES",
+  "TOKENS_USED_MAX",
+  "computeBaseline",
+  "serializeBaseline",
+  "ShadowReceipt",
+  "ShadowRefusal",
+  "ShadowSnapshot",
+  "SHADOW_LEDGER_DIRECTORY",
+  "ShadowLedgerError",
+  "buildShadowLedger",
+  "shadowLedgerDirectory",
 ];
 
 const observationIndex = readIfPresent("packages/observation/src/index.ts");
