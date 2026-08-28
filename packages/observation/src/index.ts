@@ -22,14 +22,14 @@
  * P3A is not P3 completion, and it is no product adoption.
  */
 
-export type { ObservationRefusal, ObservationRefused, ObservationVerdict } from "./errors.js";
-export { ObservationError } from "./errors.js";
+export type { ObservationRefusal, ObservationRefused, ObservationVerdict } from "./errors/index.js";
+export { ObservationError } from "./errors/index.js";
 export type {
   ArtifactAdmission,
   ArtifactHandle,
   ObservationKind,
   ObservationRoot,
-} from "./roots.js";
+} from "./roots/index.js";
 export {
   ARTIFACT_MAX_BYTES,
   OBSERVATION_KINDS,
@@ -39,7 +39,7 @@ export {
   observationRootPath,
   redactObservationPath,
   resolveObservationRoot,
-} from "./roots.js";
+} from "./roots/index.js";
 
 export type {
   AcceptanceBaseline,
@@ -54,7 +54,7 @@ export type {
   TimeBaseline,
   TokensBaseline,
   VerdictCount,
-} from "./baseline.js";
+} from "./baseline/index.js";
 export {
   AUDIT_VERDICTS,
   BaselineStopError,
@@ -63,12 +63,12 @@ export {
   TOKENS_USED_MAX,
   computeBaseline,
   serializeBaseline,
-} from "./baseline.js";
+} from "./baseline/index.js";
 
-export type { ShadowReceipt, ShadowRefusal, ShadowSnapshot } from "./shadow-ledger.js";
+export type { ShadowReceipt, ShadowRefusal, ShadowSnapshot } from "./shadow-ledger/index.js";
 export {
   SHADOW_LEDGER_DIRECTORY,
   ShadowLedgerError,
   buildShadowLedger,
   shadowLedgerDirectory,
-} from "./shadow-ledger.js";
+} from "./shadow-ledger/index.js";

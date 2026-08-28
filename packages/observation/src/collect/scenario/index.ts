@@ -1,8 +1,8 @@
-import { ObservationError } from "../errors.js";
-import { admitArtifact, resolveObservationRoot } from "../roots.js";
-import type { ArtifactHandle } from "../roots.js";
-import type { CollectRefused, CollectedArtifact } from "./artifact.js";
-import { collectRefuse, isJsonArray, parseEvent, readBoundedJson } from "./artifact.js";
+import { ObservationError } from "../../errors/index.js";
+import { admitArtifact, resolveObservationRoot } from "../../roots/index.js";
+import type { ArtifactHandle } from "../../roots/index.js";
+import type { CollectRefused, CollectedArtifact } from "../artifact/index.js";
+import { collectRefuse, isJsonArray, parseEvent, readBoundedJson } from "../artifact/index.js";
 
 /**
  * The synthetic scenario collector.
@@ -16,7 +16,7 @@ import { collectRefuse, isJsonArray, parseEvent, readBoundedJson } from "./artif
  * P3C's law, not this one's.
  *
  * Admission, the byte bound, and per-event contract validation are the same
- * machinery `artifact.ts` already built; this module adds only what a
+ * machinery `artifact/index.ts` already built; this module adds only what a
  * *sequence* of events needs on top of one: an array shape, and a count
  * bound so a scenario cannot be crafted to spend unbounded validation work
  * inside a byte budget sized for one artifact.

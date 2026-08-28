@@ -1,10 +1,10 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ObservationError } from "./errors.js";
+import { ObservationError } from "../../src/errors/index.js";
 import {
   ARTIFACT_MAX_BYTES,
   OBSERVATION_KINDS,
@@ -13,11 +13,36 @@ import {
   observationRootPath,
   redactObservationPath,
   resolveObservationRoot,
-} from "./roots.js";
+} from "../../src/roots/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
-const PACKAGE_ROOT = dirname(HERE);
+const PACKAGE_ROOT = resolve(HERE, "..", "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
+const OBSERVATION_SRC = join(PACKAGE_ROOT, "src");
+
+/**
+ * Every production `.ts` file under `src/`, named by its path relative to
+ * `src/` with `/` separators — e.g. `"collect/artifact/index.ts"`.
+ *
+ * A flat `readdirSync` was enough while every production module was a direct
+ * sibling of this file; now that each domain lives one level deeper under its
+ * own subdirectory, the scan has to walk the tree instead of one directory,
+ * or it would silently stop seeing anything nested (an `isFile()` guard alone
+ * would skip every subdirectory rather than fail loudly).
+ */
+function collectSources(directory: string, prefix = ""): { readonly name: string; readonly source: string }[] {
+  const found: { readonly name: string; readonly source: string }[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      found.push(...collectSources(join(directory, entry.name), prefix + entry.name + "/"));
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+    if (entry.name.endsWith(".test.ts")) continue;
+    found.push({ name: prefix + entry.name, source: readFileSync(join(directory, entry.name), "utf8") });
+  }
+  return found;
+}
 
 /**
  * The suite owns the shadow roots for the duration of a test and removes them
@@ -215,10 +240,7 @@ describe("the package cannot mutate or reach out", () => {
       "renameSync",
       "chmodSync",
     ];
-    for (const entry of readdirSync(HERE, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-      if (entry.name.endsWith(".test.ts")) continue;
-      const source = readFileSync(join(HERE, entry.name), "utf8");
+    for (const { source } of collectSources(OBSERVATION_SRC)) {
       for (const name of forbidden) expect(source).not.toContain(name);
       for (const name of mutators) expect(source).not.toContain(name);
       expect(source).not.toContain("process.env");
@@ -238,7 +260,7 @@ describe("the package cannot mutate or reach out", () => {
     // both directions across every production module in the package: that one
     // file opens once, read-only, refusing symlinks; every other file may not
     // open at all; and no file anywhere may name a write-capable flag.
-    const OPEN_SITE = "collect/artifact.ts";
+    const OPEN_SITE = "collect/artifact/index.ts";
     // The exact normalized call, not a set of tokens that must appear
     // somewhere: checking only for `O_RDONLY` and `O_NOFOLLOW` would admit a
     // different handle, or a numeric flag no name-based scan can read.
@@ -247,15 +269,7 @@ describe("the package cannot mutate or reach out", () => {
     const callsIn = (source: string): string[] =>
       [...source.matchAll(/openSync\([^()]*\)/g)].map((match) => match[0].replace(/\s+/g, " ").trim());
 
-    const sources: { readonly name: string; readonly source: string }[] = [];
-    for (const directory of [HERE, join(HERE, "collect")]) {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-        if (entry.name.endsWith(".test.ts")) continue;
-        const relative = directory === HERE ? entry.name : "collect/" + entry.name;
-        sources.push({ name: relative, source: readFileSync(join(directory, entry.name), "utf8") });
-      }
-    }
+    const sources = collectSources(OBSERVATION_SRC);
     expect(sources.map((entry) => entry.name)).toContain(OPEN_SITE);
 
     for (const { name, source } of sources) {
@@ -284,10 +298,7 @@ describe("the package cannot mutate or reach out", () => {
       ["ui-design", "system"].join("-"),
       ["tm", "ux"].join(""),
     ];
-    for (const entry of readdirSync(HERE, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-      if (entry.name.endsWith(".test.ts")) continue;
-      const source = readFileSync(join(HERE, entry.name), "utf8");
+    for (const { source } of collectSources(OBSERVATION_SRC)) {
       for (const token of forbidden) expect(source).not.toContain(token);
     }
   });

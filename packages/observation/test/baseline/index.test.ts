@@ -11,7 +11,7 @@ import {
   TOKENS_USED_MAX,
   computeBaseline,
   serializeBaseline,
-} from "./baseline.js";
+} from "../../src/baseline/index.js";
 
 /**
  * Fixture events are plain records cast to the contract type: this suite tests

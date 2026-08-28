@@ -2,8 +2,8 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ObservationError, refuse } from "./errors.js";
-import type { ObservationRefused, ObservationVerdict } from "./errors.js";
+import { ObservationError, refuse } from "../errors/index.js";
+import type { ObservationRefused, ObservationVerdict } from "../errors/index.js";
 
 /**
  * Where shadow mode may look, and nothing else.
@@ -49,7 +49,7 @@ const ARTIFACT_NAME = new RegExp("^[a-z0-9][a-z0-9._-]{0,127}$");
 export const ARTIFACT_MAX_BYTES = 4 * 1024 * 1024;
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
-const REPO_ROOT = resolve(HERE, "..", "..", "..");
+const REPO_ROOT = resolve(HERE, "..", "..", "..", "..");
 
 /** Where a kind's root must live, as an absolute path. Does not create it. */
 export function observationRootPath(kind: ObservationKind): string {

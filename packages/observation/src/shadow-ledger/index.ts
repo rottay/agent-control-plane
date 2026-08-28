@@ -4,9 +4,9 @@ import { join, sep } from "node:path";
 import type { ControlPlaneEvent } from "@acp/contracts";
 import { canonicalJsonStringify, openLedger, sha256Hex } from "@acp/ledger";
 
-import { checkArtifactName, observationRootPath } from "./roots.js";
-import type { Baseline } from "./baseline.js";
-import { computeBaseline, serializeBaseline } from "./baseline.js";
+import { checkArtifactName, observationRootPath } from "../roots/index.js";
+import type { Baseline } from "../baseline/index.js";
+import { computeBaseline, serializeBaseline } from "../baseline/index.js";
 
 /**
  * The disposable shadow ledger.

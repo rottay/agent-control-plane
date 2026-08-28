@@ -9,26 +9,48 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildIdempotencyKey, findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
 import type { ControlPlaneEvent } from "@acp/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { computeBaseline, serializeBaseline } from "./baseline.js";
-import { OBSERVATION_KINDS, observationRootPath } from "./roots.js";
-import type { ShadowLedgerError } from "./shadow-ledger.js";
+import { computeBaseline, serializeBaseline } from "../../src/baseline/index.js";
+import { OBSERVATION_KINDS, observationRootPath } from "../../src/roots/index.js";
+import type { ShadowLedgerError } from "../../src/shadow-ledger/index.js";
 import {
   SHADOW_LEDGER_DIRECTORY,
   buildShadowLedger,
   shadowLedgerDirectory,
-} from "./shadow-ledger.js";
+} from "../../src/shadow-ledger/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
-const PACKAGE_ROOT = dirname(HERE);
+const PACKAGE_ROOT = resolve(HERE, "..", "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
 const SHADOW_ROOT = join(REPO_ROOT, ".acp-local", "shadow");
+const OBSERVATION_SRC = join(PACKAGE_ROOT, "src");
+
+/**
+ * Every production `.ts` file under `src/`, named by its path relative to
+ * `src/` with `/` separators. Mirrors the walk `test/roots/index.test.ts`
+ * needs, for the same reason: this suite's "sole writer" check has to see
+ * every production module, and they are no longer flat siblings of either
+ * `src/` or `src/collect/`.
+ */
+function collectSources(directory: string, prefix = ""): { readonly name: string; readonly source: string }[] {
+  const found: { readonly name: string; readonly source: string }[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      found.push(...collectSources(join(directory, entry.name), prefix + entry.name + "/"));
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+    if (entry.name.endsWith(".test.ts")) continue;
+    found.push({ name: prefix + entry.name, source: readFileSync(join(directory, entry.name), "utf8") });
+  }
+  return found;
+}
 
 function makeRoots(): void {
   for (const kind of OBSERVATION_KINDS) {
@@ -160,7 +182,7 @@ describe("the shadow ledger proves the measurement survives a rebuild", () => {
     // recorded on another day, which is what the rebuild proof needs.
     expect(serialized).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
     // And the production module never asks for the current time.
-    const source = readFileSync(join(HERE, "shadow-ledger.ts"), "utf8");
+    const source = readFileSync(join(OBSERVATION_SRC, "shadow-ledger", "index.ts"), "utf8");
     for (const clock of ["Date.now(", "new Date(", "hrtime", "performance.now("]) {
       expect({ clock, present: source.includes(clock) }).toEqual({ clock, present: false });
     }
@@ -312,29 +334,21 @@ describe("the sole writer is the only one", () => {
     // Structural, and the same law the architecture fence enforces: the
     // collectors stay passive, and a second writer would make "sole" a claim
     // rather than a fact.
-    const files: string[] = [];
-    for (const directory of [HERE, join(HERE, "collect")]) {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-        if (entry.name.endsWith(".test.ts")) continue;
-        files.push(join(directory, entry.name));
-      }
-    }
-    const importers = files.filter((file) =>
-      /from\s*["']@acp\/ledger["']/.test(readFileSync(file, "utf8")),
+    const importers = collectSources(OBSERVATION_SRC).filter((entry) =>
+      /from\s*["']@acp\/ledger["']/.test(entry.source),
     );
-    expect(importers.map((file) => file.slice(HERE.length + 1))).toEqual(["shadow-ledger.ts"]);
+    expect(importers.map((entry) => entry.name)).toEqual(["shadow-ledger/index.ts"]);
   });
 
   it("names no database driver and writes no SQL", () => {
-    const source = readFileSync(join(HERE, "shadow-ledger.ts"), "utf8");
+    const source = readFileSync(join(OBSERVATION_SRC, "shadow-ledger", "index.ts"), "utf8");
     for (const banned of ["better-sqlite3", "node:sqlite", "CREATE TABLE", "INSERT INTO", "SELECT "]) {
       expect({ banned, present: source.includes(banned) }).toEqual({ banned, present: false });
     }
   });
 
   it("creates and removes nothing on the filesystem itself", () => {
-    const source = readFileSync(join(HERE, "shadow-ledger.ts"), "utf8");
+    const source = readFileSync(join(OBSERVATION_SRC, "shadow-ledger", "index.ts"), "utf8");
     for (const mutator of ["mkdirSync", "rmSync", "unlinkSync", "writeFileSync", "chmodSync"]) {
       expect({ mutator, present: source.includes(mutator) }).toEqual({ mutator, present: false });
     }

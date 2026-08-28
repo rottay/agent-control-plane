@@ -152,6 +152,19 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C4 (observation): four flat domains, two collectors and five
+  // colocated tests, now under src/<domain>/index.ts and the mirrored test tree.
+  "packages/observation/src/baseline.test.ts",
+  "packages/observation/src/baseline.ts",
+  "packages/observation/src/collect/artifact.test.ts",
+  "packages/observation/src/collect/artifact.ts",
+  "packages/observation/src/collect/scenario.test.ts",
+  "packages/observation/src/collect/scenario.ts",
+  "packages/observation/src/errors.ts",
+  "packages/observation/src/roots.test.ts",
+  "packages/observation/src/roots.ts",
+  "packages/observation/src/shadow-ledger.test.ts",
+  "packages/observation/src/shadow-ledger.ts",
   // P5N cohort C3 (api-contracts): four flat modules and two colocated tests,
   // now under src/<domain>/index.ts and the mirrored test tree. The two pure
   // renames retire their old flat path too, even though no byte inside them
@@ -453,9 +466,9 @@ const P3A_WRITE_SET = [
   "packages/observation/tsconfig.json",
   "packages/observation/README.md",
   "packages/observation/src/index.ts",
-  "packages/observation/src/roots.ts",
-  "packages/observation/src/roots.test.ts",
-  "packages/observation/src/errors.ts",
+  "packages/observation/src/roots/index.ts",
+  "packages/observation/test/roots/index.test.ts",
+  "packages/observation/src/errors/index.ts",
   "docs/architecture/0009-shadow-observation-boundary.md",
   "tsconfig.base.json",
   "vitest.config.ts",
@@ -470,20 +483,20 @@ const P3A_WRITE_SET = [
  * topology ruling put it here rather than letting an integrator add it later.
  */
 const P3B_WRITE_SET = [
-  "packages/observation/src/collect/artifact.ts",
-  "packages/observation/src/collect/artifact.test.ts",
-  "packages/observation/src/collect/scenario.ts",
-  "packages/observation/src/collect/scenario.test.ts",
+  "packages/observation/src/collect/artifact/index.ts",
+  "packages/observation/test/collect/artifact/index.test.ts",
+  "packages/observation/src/collect/scenario/index.ts",
+  "packages/observation/test/collect/scenario/index.test.ts",
   "packages/observation/src/collect/index.ts",
   "vitest.config.ts",
 ];
 
 /** P3C: the baseline and its disposable shadow ledger. */
 const P3C_WRITE_SET = [
-  "packages/observation/src/baseline.ts",
-  "packages/observation/src/baseline.test.ts",
-  "packages/observation/src/shadow-ledger.ts",
-  "packages/observation/src/shadow-ledger.test.ts",
+  "packages/observation/src/baseline/index.ts",
+  "packages/observation/test/baseline/index.test.ts",
+  "packages/observation/src/shadow-ledger/index.ts",
+  "packages/observation/test/shadow-ledger/index.test.ts",
   "packages/observation/src/index.ts",
   // The export re-pin, the sole-writer law and the count restatement all live
   // in the fence, so P3C touches it like P3A and P3D did.
@@ -747,6 +760,22 @@ const P5N_C3_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C4: observation, the fourth tree normalized.
+ *
+ * The relocated source paths stay declared once, in `P3A`/`P3B`/`P3C`, rewritten
+ * 1:1. Note what is **not** here: observation is the first cohort whose package
+ * the fence already scans, so it does not join `TEST_TREE_NO_PACKAGE_SCAN` —
+ * its scan is extended to the mirrored tree instead, which is what B5b asks of
+ * a package that has one.
+ */
+const P5N_C4_WRITE_SET = [
+  "packages/observation/test/tsconfig.json",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -777,6 +806,7 @@ const WRITE_SET = [
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
   ...P5N_C3_WRITE_SET,
+  ...P5N_C4_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -2648,13 +2678,13 @@ const OBSERVATION_FORBIDDEN_CALLS = [
 // fail-closed in every direction: one file, one open, read-only flags present,
 // no write-capable flag anywhere, and every other observation source still
 // refused for naming `openSync` at all.
-const OBSERVATION_OPEN_SITE = "packages/observation/src/collect/artifact.ts";
+const OBSERVATION_OPEN_SITE = "packages/observation/src/collect/artifact/index.ts";
 
 // P3C's sole writer. Every other observation production module — the
 // collectors above all — stays a reader, and none of them may name a database
 // driver or raw SQL: the one permitted path to storage is the public ledger
 // API, in exactly one file.
-const OBSERVATION_LEDGER_SITE = "packages/observation/src/shadow-ledger.ts";
+const OBSERVATION_LEDGER_SITE = "packages/observation/src/shadow-ledger/index.ts";
 const OBSERVATION_FORBIDDEN_DATA_ACCESS = [
   "better-sqlite3",
   "node:sqlite",
@@ -2711,9 +2741,18 @@ if (observationManifest === null) {
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  // Both trees. B5b: when a cohort moves this package's tests into the mirrored
+  // `test/` tree they leave the `src/` prefix, and the import allowlist below
+  // would silently stop applying to them — nothing failing, the rules simply
+  // covering nothing. Observation is the first normalized package the fence
+  // actually scans, so it extends its scan rather than declaring itself
+  // unscanned. The production-only checks further down still skip tests, by the
+  // `isTest` guard, exactly as before.
   const sources = present.filter(
     (relativePath) =>
-      relativePath.startsWith("packages/observation/src/") && relativePath.endsWith(".ts"),
+      (relativePath.startsWith("packages/observation/src/") ||
+        relativePath.startsWith("packages/observation/test/")) &&
+      relativePath.endsWith(".ts"),
   );
 
   for (const relativePath of sources) {
@@ -3057,7 +3096,7 @@ if (tracked.status === 0) {
 // commit against. Each cohort activates its own tree in the same commit that
 // makes that tree compliant, so the law and the code arrive together and every
 // commit in between is green.
-const TOPOLOGY_ACTIVE_TREES = ["contracts", "ledger", "api-contracts"];
+const TOPOLOGY_ACTIVE_TREES = ["contracts", "ledger", "api-contracts", "observation"];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
 const TOPOLOGY_PRODUCT_INDEX = new Set(["index.ts", "index.tsx"]);
@@ -3225,7 +3264,7 @@ if (tracked.status === 0) {
 // is the first normalized package and the fence has never had a per-package
 // source scan for it, so the exemption is a statement of fact rather than a
 // waiver. A package that *does* have a scan may never be added to it.
-const TEST_TREE_SCANNED_PREFIXES = [];
+const TEST_TREE_SCANNED_PREFIXES = ["packages/observation/test/"];
 
 /**
  * Packages the fence runs no per-package source scan for.

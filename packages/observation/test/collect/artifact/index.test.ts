@@ -10,20 +10,44 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildIdempotencyKey } from "@acp/contracts";
 
-import { OBSERVATION_KINDS, observationRootPath } from "../roots.js";
-import type { ArtifactHandle } from "../roots.js";
-import { collectArtifact, isPlainRecord, readBoundedJson } from "./artifact.js";
+import { OBSERVATION_KINDS, observationRootPath } from "../../../src/roots/index.js";
+import type { ArtifactHandle } from "../../../src/roots/index.js";
+import { collectArtifact, isPlainRecord, readBoundedJson } from "../../../src/collect/artifact/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
-const PACKAGE_ROOT = dirname(dirname(HERE));
+const PACKAGE_ROOT = resolve(HERE, "..", "..", "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
+const OBSERVATION_COLLECT_SRC = join(PACKAGE_ROOT, "src", "collect");
+
+/**
+ * Every production `.ts` file under `src/collect/`, named by its path
+ * relative to that directory — e.g. `"artifact/index.ts"`.
+ *
+ * Mirrors the same recursive walk `test/roots/index.test.ts` needs, scoped
+ * to this module's own subdomain: `src/collect/` now nests `artifact/` and
+ * `scenario/` rather than holding them as flat siblings, so a flat
+ * `readdirSync` would silently stop seeing either of them.
+ */
+function collectSources(directory: string, prefix = ""): { readonly name: string; readonly source: string }[] {
+  const found: { readonly name: string; readonly source: string }[] = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      found.push(...collectSources(join(directory, entry.name), prefix + entry.name + "/"));
+      continue;
+    }
+    if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+    if (entry.name.endsWith(".test.ts")) continue;
+    found.push({ name: prefix + entry.name, source: readFileSync(join(directory, entry.name), "utf8") });
+  }
+  return found;
+}
 
 function makeRoots(): void {
   for (const kind of OBSERVATION_KINDS) {
@@ -178,7 +202,7 @@ describe("collecting one passive artifact", () => {
     // one open, the exact permitted call, no write-capable flag. Equality
     // against the whole normalized call, not a token search: a token search
     // would admit a different handle or a numeric flag it cannot read.
-    const source = readFileSync(join(HERE, "artifact.ts"), "utf8");
+    const source = readFileSync(join(OBSERVATION_COLLECT_SRC, "artifact", "index.ts"), "utf8");
     expect(source.split("openSync(").length - 1).toBe(1);
     const calls = [...source.matchAll(/openSync\([^()]*\)/g)].map((match) =>
       match[0].replace(/\s+/g, " ").trim(),
@@ -195,7 +219,7 @@ describe("collecting one passive artifact", () => {
     // decided. The ruling says unknown is never swallowed, and that includes
     // this branch: a descriptor that will not close means the module's belief
     // about it is wrong, which is a refusal, not a footnote.
-    const source = readFileSync(join(HERE, "artifact.ts"), "utf8");
+    const source = readFileSync(join(OBSERVATION_COLLECT_SRC, "artifact", "index.ts"), "utf8");
     expect(source.split("closeSync(").length - 1).toBe(1);
     expect(source).toContain("closeSync(descriptor)");
     expect(source).toContain('return classifyReadFailure(error, "close");');
@@ -253,8 +277,8 @@ describe("collecting one passive artifact", () => {
 
 describe("the collect module cannot mutate or reach out", () => {
   it("imports no process, network, signal or write API in production modules", () => {
-    // Structural, not behavioural, and the same law `../roots.test.ts` already
-    // proves for the boundary this module builds on.
+    // Structural, not behavioural, and the same law `test/roots/index.test.ts`
+    // already proves for the boundary this module builds on.
     const forbidden = [
       "node:child_process",
       "node:net",
@@ -274,10 +298,7 @@ describe("the collect module cannot mutate or reach out", () => {
       "renameSync",
       "chmodSync",
     ];
-    for (const entry of readdirSync(HERE, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-      if (entry.name.endsWith(".test.ts")) continue;
-      const source = readFileSync(join(HERE, entry.name), "utf8");
+    for (const { source } of collectSources(OBSERVATION_COLLECT_SRC)) {
       for (const name of forbidden) expect(source).not.toContain(name);
       for (const name of mutators) expect(source).not.toContain(name);
       expect(source).not.toContain("process.env");
@@ -291,10 +312,7 @@ describe("the collect module cannot mutate or reach out", () => {
       ["ui-design", "system"].join("-"),
       ["tm", "ux"].join(""),
     ];
-    for (const entry of readdirSync(HERE, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
-      if (entry.name.endsWith(".test.ts")) continue;
-      const source = readFileSync(join(HERE, entry.name), "utf8");
+    for (const { source } of collectSources(OBSERVATION_COLLECT_SRC)) {
       for (const token of forbidden) expect(source).not.toContain(token);
     }
   });

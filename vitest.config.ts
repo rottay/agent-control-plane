@@ -218,7 +218,7 @@ export default defineConfig({
           // cross-project group is unaffected.
           name: 'observation',
           root: './packages/observation',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

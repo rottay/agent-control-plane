@@ -3,10 +3,10 @@ import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { ControlPlaneEvent } from "@acp/contracts";
 import type { ControlPlaneEvent as ControlPlaneEventShape } from "@acp/contracts";
 
-import { ObservationError } from "../errors.js";
-import type { ObservationRefusal } from "../errors.js";
-import { ARTIFACT_MAX_BYTES, admitArtifact, resolveObservationRoot } from "../roots.js";
-import type { ArtifactHandle } from "../roots.js";
+import { ObservationError } from "../../errors/index.js";
+import type { ObservationRefusal } from "../../errors/index.js";
+import { ARTIFACT_MAX_BYTES, admitArtifact, resolveObservationRoot } from "../../roots/index.js";
+import type { ArtifactHandle } from "../../roots/index.js";
 
 /**
  * The passive artifact collector.
@@ -23,15 +23,16 @@ import type { ArtifactHandle } from "../roots.js";
  * opens exactly one file, read-only and refusing to follow symlinks, and
  * re-applies admission's law to that opened inode before allocating anything.
  * That is the only `openSync` the observation package permits, and the
- * architecture fence and `roots.test.ts` both pin it to this file, to the
- * read-only flags, and to nothing else; every write-capable flag and every
- * other open stays forbidden. The admission rules themselves are still
- * `../roots.js`'s, which this module calls rather than reimplements.
+ * architecture fence and `test/roots/index.test.ts` both pin it to this
+ * file, to the read-only flags, and to nothing else; every write-capable
+ * flag and every other open stays forbidden. The admission rules themselves
+ * are still `../../roots/index.js`'s, which this module calls rather than
+ * reimplements.
  */
 
 /**
  * Refusal codes this module can add on top of the nine admission refusals
- * `../errors.js` already classifies. Admission refusals are forwarded
+ * `../../errors/index.js` already classifies. Admission refusals are forwarded
  * verbatim — this module widens no code that boundary already owns. These
  * three exist only because admission cannot know them: they are true only
  * once the admitted bytes have actually been read and parsed.

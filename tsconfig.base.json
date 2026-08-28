@@ -34,6 +34,7 @@
     { "path": "./packages/ledger" },
     { "path": "./packages/ledger/test" },
     { "path": "./packages/observation" },
+    { "path": "./packages/observation/test" },
     { "path": "./packages/adapters" },
     { "path": "./packages/accounts" },
     { "path": "./packages/api-contracts" },

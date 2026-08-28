@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildIdempotencyKey } from "@acp/contracts";
 
-import { OBSERVATION_KINDS, observationRootPath } from "../roots.js";
-import { SCENARIO_MAX_EVENTS, collectScenario } from "./scenario.js";
+import { OBSERVATION_KINDS, observationRootPath } from "../../../src/roots/index.js";
+import { SCENARIO_MAX_EVENTS, collectScenario } from "../../../src/collect/scenario/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
-const PACKAGE_ROOT = dirname(dirname(HERE));
+const PACKAGE_ROOT = resolve(HERE, "..", "..", "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
 
 function makeRoots(): void {

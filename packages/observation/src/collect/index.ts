@@ -17,8 +17,8 @@ export type {
   CollectRefusal,
   CollectRefused,
   CollectedArtifact,
-} from "./artifact.js";
-export { collectArtifact } from "./artifact.js";
+} from "./artifact/index.js";
+export { collectArtifact } from "./artifact/index.js";
 
-export type { CollectedScenario, ScenarioCollection } from "./scenario.js";
-export { SCENARIO_MAX_EVENTS, collectScenario } from "./scenario.js";
+export type { CollectedScenario, ScenarioCollection } from "./scenario/index.js";
+export { SCENARIO_MAX_EVENTS, collectScenario } from "./scenario/index.js";
