@@ -220,6 +220,24 @@ export default defineConfig({
       },
       {
         test: {
+          // Adapters spawn child processes but bind no port, and every session
+          // gets its own disposable root, so nothing is shared across files and
+          // the project joins the default parallel group (groupOrder 0). The
+          // leak assertion is therefore per-file: each test file sweeps the
+          // PIDs it created, rather than one global sweep that could not tell
+          // another file's live child from a leak.
+          name: 'adapters',
+          root: './packages/adapters',
+          include: ['src/**/*.test.ts'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+        },
+        resolve: { alias: workspaceSourceAliases },
+      },
+      {
+        test: {
           name: 'server',
           root: './packages/server',
           include: ['src/**/*.test.ts'],

@@ -479,6 +479,79 @@ const P3E_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P4: read-only provider adapters.
+ *
+ * P4 is 40 packet entries across 31 distinct paths within P4 scope. The
+ * convention is the standing one: entries are the sum of the array lengths,
+ * distinct is `new Set` over their union. Repeated: `src/index.ts` (A, B, C, D),
+ * `scripts/check-architecture.mjs` (A, B, C, D, E) and
+ * `packages/adapters/README.md` (A, E) — 40 − 8 = 32 across all five arrays,
+ * of which `scripts/check-architecture.mjs` is historical (it belongs to
+ * earlier phases too), leaving 31 new to P4.
+ *
+ * This supersedes an earlier 33/25, computed over arrays that omitted the six
+ * co-located test paths and `session.ts`. A test file is its own path.
+ */
+const P4A_WRITE_SET = [
+  "packages/adapters/package.json",
+  "packages/adapters/tsconfig.json",
+  "packages/adapters/README.md",
+  "packages/adapters/src/index.ts",
+  "packages/adapters/src/errors.ts",
+  "packages/adapters/src/contract.ts",
+  "packages/adapters/src/events.ts",
+  "packages/adapters/src/redact.ts",
+  "packages/adapters/src/config-root.ts",
+  "packages/adapters/src/session.ts",
+  "packages/adapters/src/process/spawn.ts",
+  "packages/adapters/src/process/handle.ts",
+  "packages/adapters/src/testing/fake-provider.ts",
+  "packages/adapters/src/contract.test.ts",
+  "packages/adapters/src/events.test.ts",
+  "packages/adapters/src/redact.test.ts",
+  "packages/adapters/src/config-root.test.ts",
+  "packages/adapters/src/session.test.ts",
+  "packages/adapters/src/process/spawn.test.ts",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0010-provider-adapter-boundary.md",
+];
+
+/** P4B: the Claude headless descriptor. */
+const P4B_WRITE_SET = [
+  "packages/adapters/src/providers/claude.ts",
+  "packages/adapters/src/providers/claude.test.ts",
+  "packages/adapters/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/** P4C: the Kimi ACP descriptor. */
+const P4C_WRITE_SET = [
+  "packages/adapters/src/providers/kimi.ts",
+  "packages/adapters/src/providers/kimi.test.ts",
+  "packages/adapters/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/** P4D: the Codex App Server descriptor. */
+const P4D_WRITE_SET = [
+  "packages/adapters/src/providers/codex.ts",
+  "packages/adapters/src/providers/codex.test.ts",
+  "packages/adapters/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/** P4E: closure. The status line moves here and nowhere else. */
+const P4E_WRITE_SET = [
+  "docs/ROADMAP.md",
+  "README.md",
+  "packages/adapters/README.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -495,6 +568,11 @@ const WRITE_SET = [
   ...P3C_WRITE_SET,
   ...P3D_WRITE_SET,
   ...P3E_WRITE_SET,
+  ...P4A_WRITE_SET,
+  ...P4B_WRITE_SET,
+  ...P4C_WRITE_SET,
+  ...P4D_WRITE_SET,
+  ...P4E_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -1402,6 +1480,15 @@ const P1B_DEPENDENCY_LAW = [
     // beacon. The 1.7.7 server is an external pinned binary, never a dependency.
     forbidden: ["@restatedev/restate-server", "@scarf/scarf", "@restatedev/restate"],
   },
+  {
+    manifest: "packages/adapters/package.json",
+    // The adapters are pure producers of normalized events. They never open,
+    // append to or even name a ledger, which is what keeps the provider
+    // boundary from acquiring an authority it has no business holding.
+    dependencies: ["@acp/contracts"],
+    devDependencies: ["vitest"],
+    forbidden: ["@acp/ledger", "better-sqlite3", "node:sqlite", "@acp/api-contracts"],
+  },
 ];
 
 for (const law of P1B_DEPENDENCY_LAW) {
@@ -1581,6 +1668,7 @@ const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint.ts";
 const SPAWN_ALLOWED_FILES = new Map([
   ["packages/runtime/src/restate/server-handle.ts", "the pinned Restate server"],
   ["packages/daemon/src/identity-probe.ts", "reading process identity via /bin/ps"],
+  ["packages/adapters/src/process/spawn.ts", "the single provider spawn authority"],
 ]);
 
 // Anything that could listen, connect or fan out. None of these belongs in a
@@ -2639,6 +2727,251 @@ if (serverTsconfigRaw !== null) {
     }
     notes.push("the server tsconfig pins two declaration aliases and four references, by equality");
   }
+}
+
+// ---------------------------------------------------------------------------
+// P4A: the provider adapter boundary
+// ---------------------------------------------------------------------------
+
+/** What an adapter source may import. Nothing here can reach a ledger. */
+const ADAPTERS_ALLOWED_PACKAGES = new Set(["@acp/contracts"]);
+const ADAPTERS_ALLOWED_BUILTINS = new Set([
+  "node:fs",
+  "node:path",
+  "node:string_decoder",
+]);
+const ADAPTERS_TEST_ONLY_IMPORTS = new Set(["vitest", "node:crypto", "node:os", "node:url"]);
+const ADAPTERS_FORBIDDEN_BUILTINS = [
+  "node:net",
+  "node:http",
+  "node:https",
+  "node:tls",
+  "node:dgram",
+  "node:dns",
+  "node:cluster",
+  "node:worker_threads",
+];
+
+/** Exactly one file spawns, and exactly one file calls it. */
+const ADAPTERS_SPAWN_SITE = "packages/adapters/src/process/spawn.ts";
+const ADAPTERS_SPAWN_CALLER = "packages/adapters/src/session.ts";
+
+/**
+ * The closed public surface, pinned by equality in both directions.
+ *
+ * `src/testing/fake-provider.ts` is deliberately absent: it is test
+ * scaffolding, imported by relative path. A fake on the public surface would
+ * eventually be mistaken for evidence.
+ */
+const ADAPTERS_PUBLIC_EXPORTS = [
+  "AdapterErrorCode",
+  "ADAPTER_ERROR_CODES",
+  "AdapterError",
+  "AdmittedBinary",
+  "AdmittedConfigRoot",
+  "AdmittedWorkdir",
+  "CapabilityEvidence",
+  "CapabilityName",
+  "CapabilityOutcome",
+  "CapabilityRecord",
+  "CapabilityState",
+  "ParseCursor",
+  "ParseOutcome",
+  "ProviderAdapter",
+  "ProviderName",
+  "ProviderSignal",
+  "SessionDescriptor",
+  "SessionLimits",
+  "SessionRequest",
+  "SessionState",
+  "CAPABILITY_NAMES",
+  "EMPTY_CURSOR",
+  "LEGAL_TRANSITIONS",
+  "PROVIDER_NAMES",
+  "SESSION_STATES",
+  "capability",
+  "confirmsProviderCapability",
+  "isLegalTransition",
+  "unknownCapabilities",
+  "NormalizedEvent",
+  "NormalizedEventName",
+  "FROZEN_TYPE_BY_EVENT",
+  "NORMALIZED_EVENT_NAMES",
+  "TOKENS_USED_MAX",
+  "isReportableTokenCount",
+  "normalizedEvent",
+  "toNormalized",
+  "PAYLOAD_BYTES_MAX",
+  "PAYLOAD_STRING_MAX",
+  "boundString",
+  "hasPrivacyViolation",
+  "shapePayload",
+  "BASE_ENV_KEYS",
+  "PROVIDER_CONFIG_ENV",
+  "admitConfigRoot",
+  "admitWorkdir",
+  "allowedEnvKeys",
+  "buildEnv",
+  "InterruptRecord",
+  "LadderStep",
+  "admitBinary",
+  "AdapterSession",
+  "descriptorEnablesWrites",
+  "isReadOnlyIdentity",
+  "startSession",
+];
+
+/** The environment allowlist, pinned so a fourth variable cannot appear. */
+const ADAPTERS_ENV_ALLOWLIST = {
+  claude: ["CLAUDE_CONFIG_DIR", "HOME", "LC_ALL", "PATH"],
+  kimi: ["HOME", "KIMI_CODE_HOME", "LC_ALL", "PATH"],
+  codex: ["CODEX_HOME", "HOME", "LC_ALL", "PATH"],
+};
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const declared = new Set(present);
+  for (const relativePath of WRITE_SET) {
+    if (relativePath.startsWith("packages/adapters/src/") && relativePath.endsWith(".ts")) {
+      declared.add(relativePath);
+    }
+  }
+  const sources = [...declared]
+    .filter((relativePath) => relativePath.startsWith("packages/adapters/src/"))
+    .filter((relativePath) => relativePath.endsWith(".ts"))
+    .sort();
+
+  let checked = 0;
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    checked += 1;
+    const isTest = relativePath.endsWith(".test.ts");
+    const code = stripComments(content);
+
+    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
+    let match = pattern.exec(content);
+    while (match !== null) {
+      const name = match[1] ?? "";
+      const relative = name.startsWith("./") || name.startsWith("../");
+      const spawnHere = name === "node:child_process" && relativePath === ADAPTERS_SPAWN_SITE;
+      const allowed =
+        relative ||
+        ADAPTERS_ALLOWED_PACKAGES.has(name) ||
+        ADAPTERS_ALLOWED_BUILTINS.has(name) ||
+        spawnHere ||
+        (isTest && ADAPTERS_TEST_ONLY_IMPORTS.has(name));
+      if (!allowed) {
+        fail(relativePath + " imports " + name + ", which adapters may not use");
+      }
+      if (ADAPTERS_FORBIDDEN_BUILTINS.includes(name)) {
+        fail(relativePath + " imports " + name + "; adapters reach no network");
+      }
+      match = pattern.exec(content);
+    }
+
+    // No adapter source may name a ledger, in any form. Adapters produce
+    // normalized events; the caller decides what to persist.
+    if (code.includes("@acp/ledger")) {
+      fail(relativePath + " names @acp/ledger; adapters append nothing");
+    }
+
+    if (isTest) continue;
+
+    // Exactly one spawner, and exactly one caller of it.
+    if (/from\s*["']node:child_process["']/.test(code) && relativePath !== ADAPTERS_SPAWN_SITE) {
+      fail(relativePath + " imports node:child_process; only " + ADAPTERS_SPAWN_SITE + " may");
+    }
+    // The law is about *calling* the spawner, not naming its module: the index
+    // re-exports `admitBinary` from it, which grants no ability to spawn.
+    if (code.includes("spawnAdmitted(") && relativePath !== ADAPTERS_SPAWN_CALLER && relativePath !== ADAPTERS_SPAWN_SITE) {
+      fail(relativePath + " calls the spawner; only " + ADAPTERS_SPAWN_CALLER + " may");
+    }
+
+    if (relativePath === ADAPTERS_SPAWN_SITE) {
+      // `shell:` would hand argv to a shell; `...process.env` would inherit an
+      // ambient environment the allowlist was built to replace; `maxBuffer` is
+      // an exec-only option `spawn` ignores, so requiring it would enforce a
+      // dead argument while the real bound went unimplemented.
+      for (const banned of ["shell:", "...process.env", "maxBuffer"]) {
+        if (code.includes(banned)) {
+          fail(relativePath + " names " + banned + "; the spawn authority forbids it");
+        }
+      }
+      for (const required of ["stdio:", "timeout:", "killSignal:"]) {
+        if (!code.includes(required)) {
+          fail(relativePath + " omits " + required + "; spawn options are explicit, never default");
+        }
+      }
+    } else if (code.includes("process.env") && relativePath !== "packages/adapters/src/config-root.ts") {
+      fail(relativePath + " reads process.env; only config-root.ts builds an environment");
+    }
+  }
+
+  if (checked > 0) {
+    notes.push(
+      checked + " adapter sources: one spawn authority, one caller, no ledger and no network",
+    );
+  }
+}
+
+const adaptersIndex = readIfPresent("packages/adapters/src/index.ts");
+if (adaptersIndex !== null) {
+  if (/export\s*\*\s*from/.test(adaptersIndex)) {
+    fail("packages/adapters/src/index.ts uses `export *`, which cannot stay closed");
+  }
+  if (stripComments(adaptersIndex).includes("testing/fake-provider")) {
+    fail("packages/adapters/src/index.ts exports the fake provider; it is not public surface");
+  }
+  const exported = new Set();
+  for (const block of adaptersIndex.matchAll(/export\s*(?:type\s*)?\{([^}]*)\}/g)) {
+    for (const raw of (block[1] ?? "").split(",")) {
+      const name = raw.trim().split(/\s+as\s+/)[0]?.trim();
+      if (name !== undefined && name !== "") exported.add(name);
+    }
+  }
+  for (const name of exported) {
+    if (!ADAPTERS_PUBLIC_EXPORTS.includes(name)) {
+      fail("packages/adapters exports " + name + ", which is outside its closed surface");
+    }
+  }
+  for (const name of ADAPTERS_PUBLIC_EXPORTS) {
+    if (!exported.has(name)) {
+      fail("packages/adapters no longer exports the pinned name " + name);
+    }
+  }
+  notes.push(exported.size + " adapter exports, pinned by equality");
+}
+
+const adaptersConfigRoot = readIfPresent("packages/adapters/src/config-root.ts");
+if (adaptersConfigRoot !== null) {
+  for (const [provider, keys] of Object.entries(ADAPTERS_ENV_ALLOWLIST)) {
+    for (const key of keys) {
+      if (!adaptersConfigRoot.includes(key)) {
+        fail("packages/adapters/src/config-root.ts no longer names " + key + " for " + provider);
+      }
+    }
+  }
+  // Equality the other way, read from the two declarations rather than from
+  // every uppercase literal in the file: a refusal code is not an environment
+  // variable, and a scan that cannot tell them apart is a scan that fails on
+  // its own vocabulary.
+  const permitted = new Set(Object.values(ADAPTERS_ENV_ALLOWLIST).flat());
+  const baseBlock = adaptersConfigRoot.match(/BASE_ENV_KEYS[^=]*=\s*Object\.freeze\(\[([^\]]*)\]/);
+  const providerBlock = adaptersConfigRoot.match(/PROVIDER_CONFIG_ENV[^=]*=\s*Object\.freeze\(\{([^}]*)\}/);
+  const declaredKeys = [
+    ...[...(baseBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+    ...[...(providerBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+  ];
+  if (declaredKeys.length === 0) {
+    fail("packages/adapters/src/config-root.ts declares no environment allowlist");
+  }
+  for (const key of declaredKeys) {
+    if (key !== undefined && !permitted.has(key)) {
+      fail("packages/adapters/src/config-root.ts names " + key + ", outside the env allowlist");
+    }
+  }
+  notes.push("the adapter environment allowlist is exactly four variables per provider");
 }
 
 // The server may not reach @acp/contracts. `packages/server/src/mappers.ts`
