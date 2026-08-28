@@ -52,6 +52,50 @@ import { defineConfig } from 'vitest/config';
  * fixed root is exactly what the boundary tests exist to defend.
  */
 
+/**
+ * P2D adds the daemon project, and with it a resource neither project owns
+ * alone: the pinned loopback ports 8080, 9070 and 9080.
+ *
+ * `fileParallelism: false` is not enough here, and the distinction matters.
+ * That option serialises the files *within* one project; it says nothing about
+ * two projects, which Vitest is free to run at the same time. The runtime
+ * drills start a real Restate server on 8080/9070 and the daemon drills start
+ * another one, so concurrent projects would collide on bind — and the failure
+ * would surface as an unrelated timeout in whichever suite happened to lose,
+ * which is the kind of flake that gets re-run rather than diagnosed.
+ *
+ * `sequence.groupOrder` is the project-level control: projects sharing a number
+ * run together, and lower numbers run first. The two port-binding projects get
+ * distinct numbers, so they are serialised with respect to each other while
+ * every hermetic project still runs concurrently in group 0.
+ *
+ * The daemon drills additionally assert the ports are unbound before they start
+ * and fail loudly if they are not. Solving this with dynamic ports was rejected:
+ * the pinned addresses are part of the contract, and a daemon that quietly moved
+ * would pass its own drills and then not be where anything expects it.
+ */
+
+/**
+ * A correction P2D found the hard way, which applies to the runtime project too.
+ *
+ * `fileParallelism: false` declared **inside a project** is not honoured. Only
+ * the root-level option and the `--no-file-parallelism` flag are, so the setting
+ * the runtime project has carried since P2B has been inert: its files have been
+ * running in parallel over the shared `.acp-local/drills` root the whole time,
+ * and it stayed green by luck rather than by design.
+ *
+ * The daemon suites surfaced it immediately because they share one fixed owned
+ * root and one lock file, so interleaving is not subtle: suites deleted each
+ * other's directories mid-test. Passing the same files with
+ * `--no-file-parallelism` made them pass, which is what identified the config as
+ * the cause rather than the code.
+ *
+ * `poolOptions.forks.singleFork` is the per-project control that does bind: it
+ * confines the project to one worker, so its files run one at a time. Both
+ * port-binding projects now set it. `fileParallelism: false` is left in place as
+ * documentation of intent, but the fork option is what enforces it.
+ */
+
 const contractsSource = fileURLToPath(
   new URL('./packages/contracts/src/index.ts', import.meta.url),
 );
@@ -67,6 +111,16 @@ const workspaceSourceAliases = [
   { find: /^@acp\/contracts$/, replacement: contractsSource },
   { find: /^@acp\/ledger$/, replacement: ledgerSource },
   { find: /^@acp\/api-contracts$/, replacement: apiContractsSource },
+];
+
+const runtimeSource = fileURLToPath(
+  new URL('./packages/runtime/src/index.ts', import.meta.url),
+);
+
+/** The daemon additionally resolves the runtime to source, for the same reason. */
+const daemonSourceAliases = [
+  ...workspaceSourceAliases,
+  { find: /^@acp\/runtime$/, replacement: runtimeSource },
 ];
 
 export default defineConfig({
@@ -167,11 +221,34 @@ export default defineConfig({
           unstubGlobals: true,
           // Shared adversarial root: see the note above. Only this project.
           fileParallelism: false,
+          poolOptions: { forks: { singleFork: true } },
+          // Binds the pinned ports; must not overlap the daemon project.
+          sequence: { groupOrder: 1 },
           // Real child processes, real SIGKILL, real ledger reopens.
           testTimeout: 120_000,
           hookTimeout: 120_000,
         },
         resolve: { alias: workspaceSourceAliases },
+      },
+      {
+        test: {
+          name: 'daemon',
+          root: './packages/daemon',
+          include: ['src/**/*.test.ts'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+          // One owned root, one lock file, one set of pinned ports.
+          fileParallelism: false,
+          poolOptions: { forks: { singleFork: true } },
+          // Runs after the runtime project, never beside it.
+          sequence: { groupOrder: 2 },
+          // Real child processes, real signals, a real external server.
+          testTimeout: 120_000,
+          hookTimeout: 120_000,
+        },
+        resolve: { alias: daemonSourceAliases },
       },
     ],
   },

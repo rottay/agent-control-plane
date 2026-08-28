@@ -1,9 +1,9 @@
 {
-  "name": "@acp/runtime",
+  "name": "@acp/daemon",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Durability plane for the Agent Control Plane. One shared lifecycle engine and both drivers, SQLite supervisor and Restate, over the append-only ledger.",
+  "description": "Supervised local daemon for the Agent Control Plane. Owns process lifecycle, singleton, bounded logs and a redacted status observation over the runtime durability plane.",
   "license": "UNLICENSED",
   "exports": {
     ".": {
@@ -22,7 +22,7 @@
   "dependencies": {
     "@acp/contracts": "workspace:*",
     "@acp/ledger": "workspace:*",
-    "@restatedev/restate-sdk": "catalog:"
+    "@acp/runtime": "workspace:*"
   },
   "devDependencies": {
     "vitest": "3.2.4"

@@ -13,15 +13,23 @@ import {
   RESTATE_SERVER_SHA256_PIN_PATH,
   RESTATE_SERVER_VERSION,
 } from "../constants.js";
+import type { ScenarioRoot } from "../toy/repository.js";
 
 /**
  * Locate, start and stop the external pinned Restate server.
  *
- * TEST-ONLY. This module spawns a process, which production code in this phase
- * may not do, and the architecture fence asserts that no production module
- * reaches it, transitively or otherwise. It exists so the drills can run
- * against a real server rather than a mock, because a mock cannot fail the way
- * a real one does.
+ * This is the one module in the repository that starts the external server, and
+ * P2D promotes it from test-only so the daemon can use it rather than grow a
+ * second spawner. Two spawners drift, and the drift is only ever discovered
+ * when they disagree about how to stop a server.
+ *
+ * Promotion widens the audience, so the surface narrows in the same change.
+ * There are two handles here. `ServerHandle` is internal and keeps `dataRoot`
+ * and the child, because the drills delete the derived state to prove it is
+ * rebuildable. `SafeServerHandle` is what leaves the package: no child, no
+ * stdio, no absolute path, and a bounded stop. `startServer` takes a
+ * `ScenarioRoot` rather than a string, because a caller that could name a
+ * directory could name a real repository.
  *
  * Nothing here downloads. The binary is acquired by an explicit operator
  * command and verified against a tracked digest; this module refuses to run if
@@ -145,13 +153,46 @@ export function serverAvailability(): { available: boolean; reason: string } {
   return { available: true, reason: "verified" };
 }
 
+/**
+ * How a server run ended, classified.
+ *
+ * A daemon has to tell "I stopped it" apart from "it died on me", and it must
+ * do so without forwarding raw stderr, which is unbounded text of unknown
+ * provenance. Three reasons are enough to decide, and none of them carries a
+ * message.
+ */
+export interface ServerExit {
+  readonly reason: "STOPPED" | "KILLED_AFTER_DEADLINE" | "UNEXPECTED_EXIT";
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
+/** Internal handle. Keeps the child and the data root; never leaves the package. */
 export interface ServerHandle {
   readonly child: ChildProcess;
   readonly pid: number;
   readonly ingressUrl: string;
   readonly adminUrl: string;
   readonly dataRoot: string;
-  stop(signal?: NodeJS.Signals): Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  /** Resolves whenever the child ends, however it ends. */
+  readonly exited: Promise<ServerExit>;
+  stop(signal?: NodeJS.Signals, deadlineMs?: number): Promise<ServerExit>;
+}
+
+/**
+ * The public handle.
+ *
+ * No `child`, so a caller cannot signal the server out of band and defeat the
+ * bounded stop. No `dataRoot`, because it is an absolute path and absolute
+ * paths name a home directory, a user account and a machine layout.
+ */
+export interface SafeServerHandle {
+  readonly pid: number;
+  readonly ingressUrl: string;
+  readonly adminUrl: string;
+  readonly exited: Promise<ServerExit>;
+  waitForExit(): Promise<ServerExit>;
+  stop(signal?: NodeJS.Signals, deadlineMs?: number): Promise<ServerExit>;
 }
 
 /**
@@ -162,7 +203,7 @@ export interface ServerHandle {
  * documentation stating the field but no default, so relying on a default here
  * would be relying on something nobody has written down.
  */
-export function writeServerConfig(scenarioRoot: string): string {
+export function writeServerConfig(scenarioRoot: ScenarioRoot): string {
   const dataRoot = join(scenarioRoot, DATA_ROOT_RESTATE);
   mkdirSync(dataRoot, { recursive: true, mode: 0o700 });
   const configPath = join(scenarioRoot, "restate-config.toml");
@@ -185,8 +226,21 @@ export function writeServerConfig(scenarioRoot: string): string {
   return configPath;
 }
 
-/** Start the pinned server for one scenario, on loopback, and wait for admin. */
-export async function startServer(scenarioRoot: string): Promise<ServerHandle> {
+/**
+ * Start the pinned server for one scenario, on loopback, and wait for admin.
+ *
+ * Once the child exists this function owns it until it hands the handle back.
+ * If readiness fails, nobody has received a handle and nobody can have pushed
+ * one onto an unwind stack, so a child left running here would be a leak no
+ * caller could clean up. The failure path therefore performs the same bounded
+ * stop before rethrowing.
+ */
+export async function startServer(
+  scenarioRoot: ScenarioRoot,
+  /** Readiness seam. Defaults to the real admin poll; the drills fail it. */
+  __awaitReady: (adminUrl: string, child: ChildProcess) => Promise<void> = (url, proc) =>
+    waitForAdmin(url, proc),
+): Promise<ServerHandle> {
   const availability = serverAvailability();
   if (!availability.available) {
     throw new Error("refusing to start an unverified Restate server: " + availability.reason);
@@ -210,27 +264,108 @@ export async function startServer(scenarioRoot: string): Promise<ServerHandle> {
   const ingressUrl = "http://" + LOOPBACK_HOST + ":" + String(RESTATE_INGRESS_PORT);
   const adminUrl = "http://" + LOOPBACK_HOST + ":" + String(RESTATE_ADMIN_PORT);
 
+  // Attached before anything can await it, so an immediate death is still
+  // observed rather than lost between spawn and subscription.
+  //
+  // One variable classifies the exit, and both `stop()` and `exited` read it.
+  // Two independent classifications disagreed after a deadline escalation:
+  // `stop()` reported KILLED_AFTER_DEADLINE while `waitForExit()` reported
+  // STOPPED for the same exit, so a caller's answer depended on which one it
+  // happened to hold.
+  let intent: ServerExit["reason"] = "UNEXPECTED_EXIT";
+  const exited = new Promise<ServerExit>((resolvePromise) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolvePromise({ reason: intent, code: child.exitCode, signal: child.signalCode });
+      return;
+    }
+    child.once("close", (code, closeSignal) => {
+      resolvePromise({ reason: intent, code, signal: closeSignal });
+    });
+  });
+  // Nothing may reject: the daemon races this against draining, and an
+  // unhandled rejection during shutdown would be a second failure on top of
+  // whatever caused the first.
+  exited.catch(() => undefined);
+
+  const stop = async (
+    signal: NodeJS.Signals = "SIGTERM",
+    deadlineMs = 15_000,
+  ): Promise<ServerExit> => {
+    intent = "STOPPED";
+    if (child.exitCode !== null || child.signalCode !== null) return exited;
+    child.kill(signal);
+
+    // A bound, not a hope. An unbounded stop in a daemon is a hang, and this
+    // repository has already paid for one of those.
+    let timer: NodeJS.Timeout | undefined;
+    const escalation = new Promise<"DEADLINE">((resolveEscalation) => {
+      timer = setTimeout(() => { resolveEscalation("DEADLINE"); }, deadlineMs);
+    });
+    const outcome = await Promise.race([exited, escalation]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (outcome !== "DEADLINE") return outcome;
+
+    // Recorded before the kill, so the close listener classifies it the same
+    // way this function is about to.
+    intent = "KILLED_AFTER_DEADLINE";
+    child.kill("SIGKILL");
+    return await exited;
+  };
+
   const handle: ServerHandle = {
     child,
     pid: child.pid ?? -1,
     ingressUrl,
     adminUrl,
     dataRoot: join(scenarioRoot, DATA_ROOT_RESTATE),
-    stop: (signal: NodeJS.Signals = "SIGTERM") =>
-      new Promise((resolvePromise) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          resolvePromise({ code: child.exitCode, signal: child.signalCode });
-          return;
-        }
-        child.once("close", (code, closeSignal) => {
-          resolvePromise({ code, signal: closeSignal });
-        });
-        child.kill(signal);
-      }),
+    exited,
+    stop,
   };
 
-  await waitForAdmin(adminUrl, child);
+  try {
+    await __awaitReady(adminUrl, child);
+  } catch (error: unknown) {
+    // The child is ours and no caller knows it exists yet.
+    await stop("SIGTERM", 15_000);
+    throw error;
+  }
   return handle;
+}
+
+/**
+ * Narrow an internal handle to the public one.
+ *
+ * Deliberately a projection rather than a cast: the fields that must not leave
+ * the package are absent from the returned object, not merely absent from its
+ * type, so a structural cast downstream cannot recover them.
+ */
+export function narrowServerHandle(handle: ServerHandle): SafeServerHandle {
+  return {
+    pid: handle.pid,
+    ingressUrl: handle.ingressUrl,
+    adminUrl: handle.adminUrl,
+    exited: handle.exited,
+    waitForExit: () => handle.exited,
+    stop: (signal?: NodeJS.Signals, deadlineMs?: number) => handle.stop(signal, deadlineMs),
+  };
+}
+
+/**
+ * The public way to start the pinned server.
+ *
+ * This is what `@acp/runtime` exports. `startServer` stays available inside the
+ * package for the drills, which need `dataRoot` to delete derived state and
+ * prove it rebuilds from the ledger.
+ */
+export async function startVerifiedServer(
+  scenarioRoot: ScenarioRoot,
+  __awaitReady?: (adminUrl: string, child: ChildProcess) => Promise<void>,
+): Promise<SafeServerHandle> {
+  return narrowServerHandle(
+    __awaitReady === undefined
+      ? await startServer(scenarioRoot)
+      : await startServer(scenarioRoot, __awaitReady),
+  );
 }
 
 /**

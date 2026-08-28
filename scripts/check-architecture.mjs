@@ -305,6 +305,51 @@ const P2C_WRITE_SET = [
 
 const RETIRED = new Set(RETIRED_PATHS);
 
+/**
+ * The exact P2D additions: a dedicated daemon package and the debts it settles.
+ *
+ * Several entries also appear in earlier arrays. That is intentional and
+ * authorised: the earlier arrays stay as the historical record of what each
+ * phase was allowed to touch, and membership is validated against the union.
+ * The displayed count below deduplicates, so a path in two phases is one path.
+ */
+const P2D_WRITE_SET = [
+  "packages/daemon/package.json",
+  "packages/daemon/tsconfig.json",
+  "packages/daemon/README.md",
+  "packages/daemon/src/index.ts",
+  "packages/daemon/src/constants.ts",
+  "packages/daemon/src/errors.ts",
+  "packages/daemon/src/paths.ts",
+  "packages/daemon/src/paths.test.ts",
+  "packages/daemon/src/singleton.ts",
+  "packages/daemon/src/singleton.test.ts",
+  "packages/daemon/src/identity-probe.ts",
+  "packages/daemon/src/identity-probe.test.ts",
+  "packages/daemon/src/status.ts",
+  "packages/daemon/src/status.test.ts",
+  "packages/daemon/src/log.ts",
+  "packages/daemon/src/log.test.ts",
+  "packages/daemon/src/lifecycle.ts",
+  "packages/daemon/src/lifecycle.test.ts",
+  "packages/daemon/src/mode-sqlite.ts",
+  "packages/daemon/src/mode-restate.ts",
+  "packages/daemon/src/signals.ts",
+  "packages/daemon/src/daemon-child.ts",
+  "packages/daemon/src/daemon-drills.test.ts",
+  "packages/daemon/src/import-purity.test.ts",
+  "docs/architecture/0006-daemon-process-lifecycle.md",
+  "packages/runtime/src/restate/server-handle.ts",
+  "packages/runtime/src/index.ts",
+  "packages/runtime/README.md",
+  "packages/runtime/package.json",
+  "docs/ROADMAP.md",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -313,7 +358,11 @@ const WRITE_SET = [
   ...P2A_WRITE_SET,
   ...P2B_WRITE_SET,
   ...P2C_WRITE_SET,
+  ...P2D_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
+
+/** Distinct paths, for reporting. A path in two phases is still one path. */
+const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
 
 /**
  * docs/ROADMAP.md is pinned by digest so it cannot drift.
@@ -326,7 +375,7 @@ const WRITE_SET = [
  * of them.
  */
 const ROADMAP_SHA256 =
-  "dc2ccc422716a7e71fa9fec9063df9541692fb6d4c777b4d96ff1e597b944100";
+  "a90e66462547ec71aac9ed5f568fd6c0858c96111a8c9e200215ebf1c9da7b4d";
 
 /**
  * The Estado line P1 closure is allowed to have produced.
@@ -342,7 +391,7 @@ const ROADMAP_SHA256 =
  * authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2C_COMPLETE / NEXT_P2D / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2D_COMPLETE / NEXT_P2E / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -382,6 +431,11 @@ const PRE_PUSH_SHA256 =
  * Literals that encode authority. If any of these disappears, the document no
  * longer says what P0 froze, and the fence fails rather than trusting prose.
  */
+/** Lower-case and collapse whitespace, so a line break cannot hide a statement. */
+function flatten(text) {
+  return text.toLowerCase().replace(/\s+/g, " ");
+}
+
 const AUTHORITY_LITERALS = {
   "README.md": [
     "docs/ROADMAP.md",
@@ -468,7 +522,24 @@ const AUTHORITY_LITERALS = {
     "authority",
     "no side effects",
     "fails closed",
-    "P2B is not P2 completion",
+    "P2D is not P2 completion",
+    "no product adoption",
+  ],
+  "packages/daemon/README.md": [
+    "no side effects",
+    "adds no authority",
+    "no auto-detection",
+    "never silently reclaimed",
+    "P2D is not P2 completion",
+    "no product adoption",
+  ],
+  "docs/architecture/0006-daemon-process-lifecycle.md": [
+    "authority",
+    "observation",
+    "fails closed",
+    "no failover",
+    "acyclic",
+    "P2D is not P2 completion",
     "no product adoption",
   ],
   "docs/architecture/0005-restate-driver-and-adoption.md": [
@@ -489,6 +560,27 @@ const AUTHORITY_LITERALS = {
     "no product adoption",
     "GET only",
   ],
+};
+
+/**
+ * Text that must no longer appear, now that a later phase has falsified it.
+ *
+ * The mirror of AUTHORITY_LITERALS, and it exists because of a real miss. P2C
+ * shipped with `packages/runtime/README.md` still saying "There is no Restate
+ * driver" in the same commit that added one, and the full suite passed over it:
+ * the literal table can require a sentence to be PRESENT but has no way to
+ * require one to be GONE. A document could therefore satisfy every assertion it
+ * carried while contradicting the code it described, and the more literals a
+ * file carried, the more confident the green looked.
+ */
+const EXPIRED_LITERALS = {
+  "packages/runtime/README.md": [
+    "There is no Restate driver",
+    "This is P2B",
+    "will walk the same one in P2C",
+  ],
+  "packages/runtime/src/index.ts": ["This is P2B"],
+  "packages/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
 };
 
 /** Files that must never exist in the repository, in any directory. */
@@ -598,8 +690,8 @@ if (tracked.status !== 0) {
   notes.push(
     present.length +
       " repository files scanned against the write-set (" +
-      WRITE_SET.length +
-      " exact paths across P0 through P2C; " +
+      WRITE_SET_DISTINCT.length +
+      " distinct paths across P0 through P2D; " +
       inEnvelope +
       " inside the lane envelope which is " +
       (laneEnvelopeOpen ? "open" : "closed") +
@@ -623,7 +715,7 @@ if (roadmap === null) {
         ROADMAP_SHA256,
     );
   } else {
-    notes.push("docs/ROADMAP.md matches the pinned P2C digest");
+    notes.push("docs/ROADMAP.md matches the pinned P2D digest");
   }
 
   // The digest alone would let a re-pin smuggle in a rewritten roadmap, so the
@@ -659,15 +751,39 @@ for (const [relativePath, literals] of Object.entries(AUTHORITY_LITERALS)) {
     fail("authority document is missing: " + relativePath);
     continue;
   }
-  // Case-insensitive: the fence checks that the statement is still made, not
-  // how a sentence happened to capitalise it.
-  const haystack = content.toLowerCase();
+  // Case-insensitive and whitespace-normalised: the fence checks that the
+  // statement is still made, not how a sentence happened to capitalise it or
+  // where a paragraph happened to wrap. A literal that failed because a phrase
+  // straddled a line break would teach people to reword prose to satisfy a
+  // checker, which is the opposite of what this table is for.
+  const haystack = flatten(content);
   for (const literal of literals) {
-    if (!haystack.includes(literal.toLowerCase())) {
+    if (!haystack.includes(flatten(literal))) {
       fail(relativePath + " no longer states the authority literal: " + literal);
     }
   }
 }
+
+// And the mirror: statements a later phase has falsified must be gone, not
+// merely outnumbered by newer ones.
+for (const [relativePath, literals] of Object.entries(EXPIRED_LITERALS)) {
+  const content = readIfPresent(relativePath);
+  if (content === null) continue;
+  const haystack = flatten(content);
+  for (const literal of literals) {
+    if (haystack.includes(flatten(literal))) {
+      fail(
+        relativePath +
+          " still says " +
+          JSON.stringify(literal) +
+          ", which a later phase made false",
+      );
+    }
+  }
+}
+notes.push(
+  Object.keys(EXPIRED_LITERALS).length + " document(s) checked for statements that expired",
+);
 
 // --- 5. pre-push hook still denies ----------------------------------------
 
@@ -1239,12 +1355,23 @@ const RUNTIME_TEST_ONLY_IMPORTS = new Set([
 const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint.ts";
 
 /**
- * Test-only modules: they spawn processes, which production code may not.
+ * The only two production files that may start a subprocess, by exact path and
+ * stated purpose.
  *
- * `server-handle.ts` starts the external server; a production module reaching
- * it would be a daemon, which is P2D and is not authorised.
+ * Through P2C the server handle was classified test-only, because a production
+ * module that spawned a process would have been a daemon and P2D was not
+ * authorised. P2D authorises it, so the classification is replaced rather than
+ * merely deleted: the allowance is still file-scoped, still two entries long,
+ * and each entry is separately checked for the properties that make it safe.
+ *
+ * Duplicating either spawner elsewhere is the thing being prevented. Two
+ * spawners drift, and the drift is discovered only when they disagree about how
+ * to stop something.
  */
-const RUNTIME_TEST_ONLY_MODULES = ["packages/runtime/src/restate/server-handle.js"];
+const SPAWN_ALLOWED_FILES = new Map([
+  ["packages/runtime/src/restate/server-handle.ts", "the pinned Restate server"],
+  ["packages/daemon/src/identity-probe.ts", "reading process identity via /bin/ps"],
+]);
 
 // Anything that could listen, connect or fan out. None of these belongs in a
 // local durability plane, and P2 adds no network surface of any kind.
@@ -1285,11 +1412,7 @@ if (tracked.status === 0) {
       // File-scoped, not repository-wide: exactly one file may open a listener,
       // and exactly one module may spawn the external server.
       const http2Here = name === "node:http2" && relativePath === HTTP2_ALLOWED_FILE;
-      const spawnHere =
-        name === "node:child_process" &&
-        RUNTIME_TEST_ONLY_MODULES.some((module) =>
-          relativePath === module.replace(/\.js$/, ".ts"),
-        );
+      const spawnHere = name === "node:child_process" && SPAWN_ALLOWED_FILES.has(relativePath);
       const allowed =
         relative ||
         RUNTIME_ALLOWED_PACKAGES.has(name) ||
@@ -1331,15 +1454,13 @@ if (tracked.status === 0) {
   // and is not authorised yet.
   for (const relativePath of runtimeSources) {
     if (relativePath.endsWith(".test.ts")) continue;
-    // The server handle is classified test-only: it spawns the external server,
-    // and check 16 below asserts no production module reaches it.
-    if (RUNTIME_TEST_ONLY_MODULES.some((module) => relativePath === module.replace(/\.js$/, ".ts"))) {
-      continue;
-    }
+    // The two purpose-bound spawn sites are exempt; section 17 checks each of
+    // them for the properties that make the allowance safe.
+    if (SPAWN_ALLOWED_FILES.has(relativePath)) continue;
     const content = readIfPresent(relativePath);
     if (content === null) continue;
     if (/from\s+["']node:child_process["']/.test(content)) {
-      fail(relativePath + " spawns a process; only the drills may do that in P2");
+      fail(relativePath + " spawns a process; only the two allow-listed sites may do that");
     }
   }
 
@@ -1400,63 +1521,247 @@ if (endpointSource === null) {
   notes.push("the endpoint pins loopback and calls neither serve() nor a numeric listen");
 }
 
-// No production module may reach the server handle, transitively or otherwise.
-// It spawns the external server; a production path to it would be a daemon.
-if (tracked.status === 0) {
-  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  const testOnly = new Set(
-    RUNTIME_TEST_ONLY_MODULES.map((module) => module.replace(/\.js$/, ".ts")),
-  );
-  const productionRuntime = present.filter(
-    (relativePath) =>
-      relativePath.startsWith("packages/runtime/src/") &&
-      relativePath.endsWith(".ts") &&
-      !relativePath.endsWith(".test.ts") &&
-      !testOnly.has(relativePath),
-  );
+// --- 17. P2D: the promoted server handle and the daemon package -------------
 
-  const importsOf = (relativePath) => {
-    const content = readIfPresent(relativePath);
-    if (content === null) return [];
-    const found = [];
-    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["'](\.[^"']+)["']/g;
-    let match = pattern.exec(content);
-    while (match !== null) {
-      const target = (match[1] ?? "").replace(/\.js$/, ".ts");
-      const base = relativePath.split("/").slice(0, -1);
-      for (const segment of target.split("/")) {
-        if (segment === ".") continue;
-        if (segment === "..") base.pop();
-        else base.push(segment);
-      }
-      found.push(base.join("/"));
-      match = pattern.exec(content);
-    }
-    return found;
-  };
-
-  const seen = new Set(productionRuntime);
-  const queue = [...productionRuntime];
-  while (queue.length > 0) {
-    const current = queue.shift();
-    for (const next of importsOf(current)) {
-      if (testOnly.has(next)) {
-        fail(
-          current +
-            " reaches " +
-            next +
-            "; that module spawns the external server and is test-only in P2",
-        );
-        continue;
-      }
-      if (!seen.has(next)) {
-        seen.add(next);
-        queue.push(next);
-      }
+/**
+ * Strip comments before analysing code.
+ *
+ * The files checked below necessarily NAME the things they must not do, in
+ * order to explain why they do not do them. A check that cannot tell code from
+ * prose fails on its own documentation, which P2C already learned once.
+ */
+function stripComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+//
+// Through P2C no production module could reach the server handle at all. P2D
+// lifts that so the daemon can start the pinned server without a second
+// spawner, and pays for it here: the promotion is only safe while the public
+// surface stays narrow, so each narrowing is asserted rather than described.
+const SERVER_HANDLE_FILE = "packages/runtime/src/restate/server-handle.ts";
+const serverHandleCode = stripComments(readIfPresent(SERVER_HANDLE_FILE) ?? "");
+if (serverHandleCode === "") {
+  fail(SERVER_HANDLE_FILE + " is missing");
+} else {
+  // A string root would let any caller name a directory, which is the toy
+  // boundary P2B closed. Public, that would hand out a path-named spawner.
+  for (const entry of ["writeServerConfig", "startServer", "startVerifiedServer"]) {
+    const signature = new RegExp(entry + "\\s*\\([^)]*scenarioRoot:\\s*ScenarioRoot");
+    if (!signature.test(serverHandleCode)) {
+      fail(SERVER_HANDLE_FILE + ": " + entry + " must take a ScenarioRoot, never a string");
     }
   }
+  // The public handle must expose neither the child nor the absolute data root.
+  const safeBlock = /export interface SafeServerHandle\s*\{([\s\S]*?)\}/.exec(serverHandleCode);
+  if (safeBlock === null) {
+    fail(SERVER_HANDLE_FILE + " no longer declares SafeServerHandle");
+  } else {
+    const body = safeBlock[1] ?? "";
+    if (/\bchild\b/.test(body)) {
+      fail("SafeServerHandle exposes the raw child; a caller could signal it out of band");
+    }
+    if (/\bdataRoot\b/.test(body)) {
+      fail("SafeServerHandle exposes dataRoot, which is an absolute path");
+    }
+  }
+  notes.push("the promoted server lifecycle keeps its narrow public shape");
+}
+
+// The package entry point exports only the safe pair.
+const runtimeIndex = stripComments(readIfPresent("packages/runtime/src/index.ts") ?? "");
+if (runtimeIndex !== "") {
+  if (/export\s*\{[^}]*\bstartServer\b/.test(runtimeIndex)) {
+    fail("packages/runtime/src/index.ts exports startServer; only startVerifiedServer may leave");
+  }
+  if (/export\s+type\s*\{[^}]*\bServerHandle\b(?!\s*as)/.test(runtimeIndex.replace(/SafeServerHandle/g, "Safe"))) {
+    fail("packages/runtime/src/index.ts exports the internal ServerHandle type");
+  }
+  notes.push("the runtime entry point exports only the narrowed server lifecycle");
+}
+
+// The identity probe: an absolute binary, fixed argv, no shell, bounded.
+const PROBE_FILE = "packages/daemon/src/identity-probe.ts";
+const probeCode = stripComments(readIfPresent(PROBE_FILE) ?? "");
+if (probeCode === "") {
+  fail(PROBE_FILE + " is missing");
+} else {
+  if (!/execFile\s*\(/.test(probeCode)) fail(PROBE_FILE + " must use execFile");
+  // Not `\bexec\(`: that also matches `pattern.exec(...)`, which is a regular
+  // expression method and has nothing to do with a shell.
+  if (/(^|[^.\w])exec\s*\(/.test(probeCode)) {
+    fail(PROBE_FILE + " must not use exec(), which runs a shell");
+  }
+  if (/shell\s*:/.test(probeCode)) fail(PROBE_FILE + " must not pass a shell option");
+  if (!/"\/bin\/ps"/.test(probeCode + (readIfPresent("packages/daemon/src/constants.ts") ?? ""))) {
+    fail(PROBE_FILE + " must invoke an absolute /bin/ps so PATH cannot choose the program");
+  }
+  if (!/LC_ALL/.test(probeCode)) fail(PROBE_FILE + " must pin LC_ALL=C for a stable date format");
+  if (!/timeout\s*:/.test(probeCode)) fail(PROBE_FILE + " must bound the probe in time");
+  if (!/maxBuffer\s*:/.test(probeCode)) fail(PROBE_FILE + " must bound the probe's output");
+  notes.push("the identity probe is absolute, shell-free and bounded");
+}
+
+// The daemon package: no bin, no deep imports, no network, no status in the
+// decision path.
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const daemonSources = present.filter(
+    (relativePath) =>
+      relativePath.startsWith("packages/daemon/src/") && relativePath.endsWith(".ts"),
+  );
+
+  const manifest = readIfPresent("packages/daemon/package.json");
+  if (manifest === null) {
+    fail("packages/daemon/package.json is missing");
+  } else {
+    const parsed = JSON.parse(manifest);
+    if (parsed.bin !== undefined) {
+      fail("packages/daemon declares a bin; no public executable exists before P8");
+    }
+    // Fable B2: the dependency surface is exact in both directions.
+    const deps = Object.keys(parsed.dependencies ?? {}).sort();
+    const devDeps = Object.keys(parsed.devDependencies ?? {}).sort();
+    const expected = ["@acp/contracts", "@acp/ledger", "@acp/runtime"];
+    if (deps.join(",") !== expected.join(",")) {
+      fail("packages/daemon dependencies must be exactly " + expected.join(", "));
+    }
+    if (devDeps.join(",") !== "vitest") {
+      fail("packages/daemon devDependencies must be exactly vitest");
+    }
+    for (const forbidden of ["better-sqlite3", "@restatedev/restate-sdk"]) {
+      if (deps.includes(forbidden)) {
+        fail("packages/daemon must not depend on " + forbidden + " directly");
+      }
+    }
+    notes.push("the daemon manifest declares no bin and an exact dependency surface");
+  }
+
+  const DAEMON_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/ledger", "@acp/runtime"]);
+  const DAEMON_ALLOWED_BUILTINS = new Set(["node:crypto", "node:fs", "node:path", "node:url"]);
+  const DAEMON_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os"]);
+
+  for (const relativePath of daemonSources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const isTest = relativePath.endsWith(".test.ts");
+
+    // Deep imports would let the daemon reach past the runtime's public surface
+    // and undo every narrowing the promotion above depends on.
+    if (/@acp\/runtime\/(src|dist)/.test(content)) {
+      fail(relativePath + " deep-imports @acp/runtime; only its public entry point is allowed");
+    }
+
+    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
+    let match = pattern.exec(content);
+    while (match !== null) {
+      const name = match[1] ?? "";
+      const relative = name.startsWith("./") || name.startsWith("../");
+      const spawnHere = name === "node:child_process" && SPAWN_ALLOWED_FILES.has(relativePath);
+      const allowed =
+        relative ||
+        DAEMON_ALLOWED_PACKAGES.has(name) ||
+        DAEMON_ALLOWED_BUILTINS.has(name) ||
+        spawnHere ||
+        (isTest && DAEMON_TEST_ONLY_IMPORTS.has(name));
+      if (!allowed) {
+        fail(relativePath + " imports " + name + ", which the daemon may not use");
+      }
+      if (RUNTIME_FORBIDDEN_BUILTINS.includes(name)) {
+        fail(relativePath + " imports " + name + "; the daemon opens no network surface");
+      }
+      match = pattern.exec(content);
+    }
+  }
+
+  // The status document is an observation. The moment a decision reads it, it
+  // becomes a second authority that can disagree with the ledger.
+  for (const decisionPath of [
+    "packages/daemon/src/lifecycle.ts",
+    "packages/daemon/src/singleton.ts",
+    "packages/daemon/src/mode-sqlite.ts",
+    "packages/daemon/src/mode-restate.ts",
+  ]) {
+    const content = readIfPresent(decisionPath);
+    if (content !== null && /from\s+["']\.\/status\.js["']/.test(content)) {
+      fail(decisionPath + " imports the status observation; lifecycle decisions may not read it");
+    }
+  }
+
+  // The child entry runs only when executed, never on import.
+  const childCode = readIfPresent("packages/daemon/src/daemon-child.ts");
+  if (childCode !== null && !/process\.argv\[1\]/.test(childCode)) {
+    fail("packages/daemon/src/daemon-child.ts must guard its entry point on process.argv[1]");
+  }
+
+  // The public surface is closed, and stays closed.
+  //
+  // The first version of this entry point re-exported the root brand and its
+  // resolver, the logger, signal installation, the identity inspector, the
+  // unwind stack and every constant: a second wide surface around exactly the
+  // boundaries this package exists to draw. A consumer handed
+  // `resolveDaemonRoot` and `installSignalHandlers` can assemble a second
+  // daemon beside this one, and then the singleton means nothing.
+  const DAEMON_PUBLIC_EXPORTS = new Set([
+    // lifecycle
+    "startDaemon",
+    "stopDaemon",
+    "terminateDaemon",
+    "DaemonOptions",
+    "DaemonRun",
+    "StopResult",
+    "DaemonMode",
+    // observation and recovery
+    "readOwnStatus",
+    "recoverOwnStaleLock",
+    "DaemonPhase",
+    "DaemonStatusDocument",
+    "RecoveryResult",
+    "IdentityVerdict",
+    // the classified failure contract
+    "DaemonErrorCode",
+    "DaemonError",
+    "DaemonRootError",
+    "IdentityProbeError",
+    "ModeError",
+    "ShutdownError",
+    "SingletonError",
+    "StaleLockError",
+    "StartupError",
+    "SupervisionError",
+  ]);
+
+  const indexCode = readIfPresent("packages/daemon/src/index.ts");
+  if (indexCode === null) {
+    fail("packages/daemon/src/index.ts is missing");
+  } else {
+    if (/export\s*\*\s*from/.test(indexCode)) {
+      fail("packages/daemon/src/index.ts uses `export *`, which cannot stay closed");
+    }
+    const exported = new Set();
+    // Named re-export and export blocks.
+    const blocks = indexCode.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g);
+    for (const block of blocks) {
+      for (const piece of (block[1] ?? "").split(",")) {
+        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
+        if (name !== undefined && name !== "") exported.add(name);
+      }
+    }
+    // Direct declarations.
+    const declared = indexCode.matchAll(
+      /export\s+(?:async\s+)?(?:function|interface|class|const|type)\s+([A-Za-z0-9_$]+)/g,
+    );
+    for (const item of declared) exported.add(item[1]);
+
+    for (const name of exported) {
+      if (!DAEMON_PUBLIC_EXPORTS.has(name)) {
+        fail("packages/daemon exports " + name + ", which is outside its closed public surface");
+      }
+    }
+    notes.push(exported.size + " daemon exports, all inside the closed public surface");
+  }
+
   notes.push(
-    productionRuntime.length + " production runtime modules reach no process-spawning module",
+    daemonSources.length + " daemon sources import only what a supervised process is allowed",
   );
 }
 

@@ -33,6 +33,7 @@
     { "path": "./packages/ledger" },
     { "path": "./packages/api-contracts" },
     { "path": "./packages/runtime" },
+    { "path": "./packages/daemon" },
     { "path": "./packages/server" },
     { "path": "./packages/cli" },
     { "path": "./packages/ui" }

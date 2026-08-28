@@ -1,16 +1,17 @@
 /**
  * Public surface of the Agent Control Plane runtime package.
  *
- * Scope note. This is P2B: one shared lifecycle engine and its first driver,
- * `SQLITE_SUPERVISOR`, over the append-only ledger. The Restate driver, the
- * daemon, the launchd template and any observation route are not here.
+ * Scope note. This is P2D: one shared lifecycle engine and both of its drivers,
+ * `SQLITE_SUPERVISOR` and `RESTATE`, over the append-only ledger, plus the
+ * narrowed server lifecycle the daemon drives. Process lifecycle itself lives
+ * in `@acp/daemon`; the launchd template and any observation route are not here.
  *
  * Importing this module has no side effects. It binds no socket, starts no
  * listener, spawns no process and creates no directory. Filesystem work happens
  * only inside an explicitly invoked drill, under a root this package resolves
  * itself; the architecture fence asserts both.
  *
- * P2B is not P2 completion, and it is no product adoption.
+ * P2D is not P2 completion, and it is no product adoption.
  */
 
 export {
@@ -128,5 +129,15 @@ export {
   submitAdvance,
 } from "./restate/submit.js";
 export type { SubmitResult } from "./restate/submit.js";
+
+/**
+ * The narrowed server lifecycle.
+ *
+ * Only the safe pair is exported. `startServer` and `ServerHandle` stay
+ * package-internal because they carry the raw child and the absolute data root,
+ * which the drills need and no consumer should have.
+ */
+export { startVerifiedServer, serverAvailability } from "./restate/server-handle.js";
+export type { SafeServerHandle, ServerExit } from "./restate/server-handle.js";
 
 export type { RestateCacheState, RestateDriverOptions, LedgerLike } from "./contracts.js";

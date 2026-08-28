@@ -102,6 +102,22 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(lightningcss@1.33.0)
 
+  packages/daemon:
+    dependencies:
+      '@acp/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@acp/ledger':
+        specifier: workspace:*
+        version: link:../ledger
+      '@acp/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+    devDependencies:
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@22.19.2)(lightningcss@1.33.0)
+
   packages/ledger:
     dependencies:
       '@acp/contracts':

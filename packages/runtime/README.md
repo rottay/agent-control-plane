@@ -4,25 +4,26 @@ The durability and supervisor plane of the Agent Control Plane.
 
 ## Scope
 
-**This is P2B: one shared lifecycle engine and its first driver.** The
-`SQLITE_SUPERVISOR` walks the plan over the append-only ledger and recovers from
-real process kills. There is no Restate driver, no daemon, no `launchd` template
-and no observation route yet.
+**This is P2D: one shared lifecycle engine and both of its drivers.** The
+`SQLITE_SUPERVISOR` and the `RESTATE` driver walk the same plan over the
+append-only ledger and recover from real process kills. Process lifecycle now
+lives in `@acp/daemon`, which drives this package. There is no `launchd`
+template and no observation route yet.
 
 Importing this package has **no side effects**. It binds no socket, starts no
 listener, spawns no process and creates no directory. Filesystem work happens
 only inside an explicitly invoked drill, under a root this package resolves for
 itself. The architecture fence asserts both.
 
-**P2B is not P2 completion**, and it is **no product adoption**. Nothing here is
+**P2D is not P2 completion**, and it is **no product adoption**. Nothing here is
 connected to, observed from or used by any real operation.
 
 ## One core, two drivers
 
-`src/core/lifecycle.ts` holds the single plan. The supervisor walks it today and
-the Restate driver will walk the same one in P2C. Neither encodes a transition
-of its own: two copies of a state machine drift, and the drift is only ever
-discovered when the two disagree about a recovery.
+`src/core/lifecycle.ts` holds the single plan. The supervisor and the Restate
+driver both walk it. Neither encodes a transition of its own: two copies of a
+state machine drift, and the drift is only ever discovered when the two disagree
+about a recovery.
 
 The supervisor holds **no cursor**. Every decision about what to do next is read
 back out of the ledger, which is what makes "the ledger is the authority" true
@@ -37,7 +38,9 @@ whether the outcome event exists, which is evidence rather than memory.
 `packages/ledger` is the sole application authority. Restate is a **derived**
 driver whose state may be deleted and reconstructed from the ledger. The SQLite
 supervisor is not a degraded path: it is a first-class alternate driver over the
-same core, and it is the predetermined default if the Restate drills fail.
+same core. It was the predetermined default had the Restate drills failed; they
+passed, so the driver is now an explicit choice the daemon is given rather than
+a fallback it works out for itself.
 
 The `OrchestrationDriver` interface deliberately has no method that reads state
 back from a driver in order to make a decision. That is how a derived
@@ -106,13 +109,20 @@ The Restate **server** `1.7.7` is deliberately **not** an npm dependency. The
 `postinstall` is a network beacon, and this repository's install policy exists
 precisely so nothing phones home while being installed. The server is acquired
 as an external pinned binary under `.acp-local/tools/` by an explicit operator
-command that verifies platform and SHA-256 — never by an install hook.
+command — never by an install hook. **Two** digests are pinned, the archive's
+and the extracted binary's, and the pin is the authority rather than the
+receipt: the receipt is bound to the pin field by field, and the installed
+binary is independently re-hashed against the pin's own digest. Pinning only the
+archive would have left the binary attested by nothing but the receipt that
+travels with it.
 
 ## Tests
 
-`pnpm test` runs the `runtime` project, which includes three kill/restart drills
-against fresh, owned toy roots: killed after the intent, after the effect, and
-after the outcome. The children are real processes terminated with `SIGKILL`. An
+`pnpm test` runs the `runtime` project. For the supervisor it includes three
+kill/restart drills against fresh, owned toy roots: killed after the intent,
+after the effect, and after the outcome. For Restate it adds D1 through D5, a
+final leak sweep, a cross-driver equivalence check and the acquisition-boundary
+negatives. The children are real processes terminated with `SIGKILL`. An
 exception caught in-process would prove nothing, because the page cache, the
 open database handle and every object survive a thrown error, which is exactly
 what a crash does not leave behind.
