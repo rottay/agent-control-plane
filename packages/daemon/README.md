@@ -10,10 +10,11 @@ stops cleanly when signalled. It can also render a launch agent — an artifact,
 not an installation. There is no observation route, no provider adapter and no
 product adoption.
 
-**P2 is not closed.** The template is well formed and inert, but its command
-contract does not match this daemon: the child entry takes a JSON document as
-`argv[2]`, not a config-file path, and no packaged executable bridges them. P2F
-supplies that contract and proves one disposable launchd lifecycle.
+**P2F Stage A supplies what was missing.** There is now a packaged entry,
+`acp-daemon`, which takes the config-file path launchd passes, and one real
+disposable launchd lifecycle drill. **P2 still closes in Stage B**, after an
+independent verifier reproduces that drill — the status line lands behind the
+evidence, never beside it.
 
 Importing this package has **no side effects**. It parses no argv, creates no
 directory, opens no database, binds no socket, spawns no child, installs no
@@ -129,8 +130,31 @@ demonstrated by calling a function in-process proves nothing, because the file
 handles, the page cache and every object survive it, which is precisely what
 losing a process does not do.
 
-There is **no package `bin`** before P8. The child entry exists solely so the
-drills have a real process to signal.
+## The packaged entry
+
+`acp-daemon` (`src/bin/acp-daemon.ts`, exposed as the one `bin`) is what launchd
+executes. It takes **exactly one positional argument: an absolute config-file
+path** — not a flag, because the tracked template fixes
+`ProgramArguments` at `[PROGRAM_PATH, CONFIG_PATH]`, exactly two strings, and
+the validator refuses a third. The committed artifact dictates the contract,
+which is what "no caller wrapper" means: launchd runs the built form of a file
+in this repository, with nothing an operator wrote in between.
+
+The config file is held to the same law as a rendered path — absolute,
+canonical, a regular file, owned, not group- or world-writable, size-bounded on
+the `stat` before it is read — and its content is validated by the **existing**
+child schema, so the file and argv contracts cannot drift apart. Refusals are
+classified exit codes (`2` usage, `3` path, `4` content) and never echo content.
+The entry reads **no environment**: launchd controls a job's environment, and an
+entry that read from it would take instructions nobody reviewed.
+
+The tracked source keeps the portable `#!/usr/bin/env node`. The build
+materializes the real interpreter into the ignored `dist/` artifact, because a
+launchd gui job runs with `PATH=/usr/bin:/bin:/usr/sbin:/sbin` and a Node
+installed outside it would never be found. Host-specific bytes stay in build
+output, never in a tracked file.
+
+The internal child entry remains for the signal drills; it is not the bin.
 
 ## The launchd template
 

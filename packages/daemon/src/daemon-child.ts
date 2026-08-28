@@ -11,8 +11,13 @@ import { startDaemon, stopDaemon, terminateDaemon } from "./index.js";
 /**
  * The daemon, hosted in its own process so a drill can signal it for real.
  *
- * There is no package `bin` and there will not be one before P8. This entry
- * exists solely so the drills can send SIGTERM, SIGINT and SIGKILL to an actual
+ * This is not the packaged entry. P2F added that — `src/bin/acp-daemon.ts`,
+ * exposed as the one `bin` — and it takes a config-file path, which is what
+ * launchd passes. This module keeps its JSON-argv mode unchanged so the P2D
+ * drills keep working; the packaged entry delegates here after validating a
+ * config file.
+ *
+ * It exists so the drills can send SIGTERM, SIGINT and SIGKILL to an actual
  * process: a shutdown proven by calling a function in-process proves nothing,
  * because the handles, the page cache and every object survive it, which is
  * exactly what losing a process does not do.

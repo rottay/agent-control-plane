@@ -13,11 +13,14 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "acp-daemon": "./dist/bin/acp-daemon.js"
+  },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc --build"
+    "build": "tsc --build && node -e \"const f='dist/bin/acp-daemon.js',fs=require('fs');const s=fs.readFileSync(f,'utf8').split('\\n');s[0]='#!'+process.execPath;fs.writeFileSync(f,s.join('\\n'));fs.chmodSync(f,0o755)\""
   },
   "dependencies": {
     "@acp/contracts": "workspace:*",

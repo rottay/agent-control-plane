@@ -3,6 +3,10 @@
 - Status: accepted for P2E as `P2E_TEMPLATE_READY`. **This ADR does not close P2.**
 - Date: 2026-08-27
 - Extends ADR 0006 (daemon process lifecycle).
+- Superseded on the closure question by **ADR 0008 (P2F)**, which supplies the
+  packaged entry and the config-file contract this template's
+  `[PROGRAM_PATH, CONFIG_PATH]` shape always implied, and drives one real
+  launchd lifecycle. The template itself is unchanged by P2F.
 
 ## Scope, stated first
 

@@ -149,10 +149,18 @@ limit rather than argued for.
 
 ### 11. No public executable before P8
 
-`packages/daemon/package.json` declares no `bin`. The internal child entry
-exists solely so the drills can signal a real process, it accepts a validated
-JSON argument rather than reading the environment, and it takes a **scenario
-identifier** rather than a filesystem path, so a caller cannot name a directory.
+**Amended by ADR 0008 (P2F).** As written for P2D this said
+`packages/daemon/package.json` declares no `bin`. That was a placeholder adopted
+when there was nothing to execute and no drill that needed to start one — a
+repository-internal law, never the owner's. P2F replaces it with an exact one:
+exactly one `bin`, `acp-daemon` → `./dist/bin/acp-daemon.js`, because the
+roadmap's P2 criterion is a daemon startable under launchd and launchd must be
+given a program. The owner's P8/P9 adoption law is untouched.
+
+The internal child entry described here is unchanged: it exists so the drills
+can signal a real process, it accepts a validated JSON argument rather than
+reading the environment, and it takes a **scenario identifier** rather than a
+filesystem path, so a caller cannot name a directory.
 
 ## Consequences
 

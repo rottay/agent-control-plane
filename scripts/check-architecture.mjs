@@ -373,6 +373,27 @@ const P2E_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P2F Stage A: the packaged entry, its config contract, and one real launchd
+ * lifecycle. Capability only — no status line moves here. Stage B records
+ * closure separately, after the drill has been reproduced independently, so the
+ * claim and its evidence never land at the same instant.
+ */
+const P2F_STAGE_A_WRITE_SET = [
+  "packages/daemon/src/bin/acp-daemon.ts",
+  "packages/daemon/src/bin/config-file.ts",
+  "packages/daemon/src/bin/acp-daemon.test.ts",
+  "packages/daemon/src/launchd/launchd-lifecycle.test.ts",
+  "docs/architecture/0008-packaged-entry-and-launchd-lifecycle.md",
+  "packages/daemon/package.json",
+  "packages/daemon/src/daemon-child.ts",
+  "packages/daemon/README.md",
+  "packages/daemon/launchd/README.md",
+  "docs/architecture/0006-daemon-process-lifecycle.md",
+  "docs/architecture/0007-launchd-template-and-p2-closure.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -383,6 +404,7 @@ const WRITE_SET = [
   ...P2C_WRITE_SET,
   ...P2D_WRITE_SET,
   ...P2E_WRITE_SET,
+  ...P2F_STAGE_A_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -1534,7 +1556,21 @@ const LAUNCHCTL_EXEMPT = new Set([
   // rule. Code constructs the token from pieces instead of being excused.
   "packages/daemon/launchd/README.md",
   "docs/architecture/0007-launchd-template-and-p2-closure.md",
+  "docs/architecture/0008-packaged-entry-and-launchd-lifecycle.md",
 ]);
+
+/**
+ * The one file that may drive launchd, and the only verbs it may use.
+ *
+ * P2F replaces the blanket ban, which was a placeholder from a phase with
+ * nothing to start. The verbs that persist a job — load, unload, enable,
+ * disable — stay forbidden everywhere, including here. The four permitted verbs
+ * are the ones a disposable lifecycle needs and no more.
+ */
+const LAUNCH_DRILL_FILE = "packages/daemon/src/launchd/launchd-lifecycle.test.ts";
+const LAUNCH_PERMITTED_VERBS = ["bootstrap", "kickstart", "print", "bootout"];
+const LAUNCH_FORBIDDEN_VERBS = ["load", "unload", "enable", "disable"];
+const DRILL_LABEL_PREFIX = "com.rottay.acp-drill-";
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   for (const relativePath of present) {
@@ -1548,11 +1584,41 @@ if (tracked.status === 0) {
     // the bare token is refused outright, after comments are stripped: a source
     // file has no legitimate reason to contain it, and a drill that needs it can
     // assemble it from pieces.
-    if (/launchctl\s+(load|bootstrap|kickstart|enable)/.test(content)) {
-      fail(relativePath + " invokes launchctl; P2 may never load a daemon automatically");
+    const code = stripComments(content);
+
+    // The persisting verbs are refused everywhere, in every file, including the
+    // drill. These are the ones that would leave a job behind.
+    for (const verb of LAUNCH_FORBIDDEN_VERBS) {
+      if (new RegExp("launchctl\\s+" + verb).test(content)) {
+        fail(relativePath + " uses launchctl " + verb + ", which persists a job");
+      }
+      if (relativePath === LAUNCH_DRILL_FILE && new RegExp('"' + verb + '"').test(code)) {
+        fail(LAUNCH_DRILL_FILE + " names the persisting verb " + verb);
+      }
     }
-    if (!relativePath.endsWith(".md") && stripComments(content).includes("launchctl")) {
-      fail(relativePath + " names launchctl in code; build the token from pieces if a test needs it");
+
+    if (relativePath.endsWith(".md")) continue;
+    if (!code.includes("launchctl")) continue;
+
+    // Exactly one file may drive launchd. Everything else builds the token from
+    // pieces or does not mention it.
+    if (relativePath !== LAUNCH_DRILL_FILE) {
+      fail(relativePath + " names launchctl in code; only the lifecycle drill may drive launchd");
+      continue;
+    }
+    // And it may target only a disposable label: a drill that could act on the
+    // tracked template's own label would be an installation, not a drill.
+    if (!code.includes(DRILL_LABEL_PREFIX)) {
+      fail(LAUNCH_DRILL_FILE + " must target only the disposable " + DRILL_LABEL_PREFIX + " label");
+    }
+    for (const verb of LAUNCH_PERMITTED_VERBS) {
+      if (!new RegExp('"' + verb + '"').test(code)) {
+        fail(LAUNCH_DRILL_FILE + " no longer uses the permitted verb " + verb);
+      }
+    }
+    // Bootout must be unconditional on every path out of the lifecycle.
+    if (!/finally\s*\{[\s\S]*?bootout/.test(code)) {
+      fail(LAUNCH_DRILL_FILE + " must boot the job out in a finally block");
     }
   }
   notes.push("no file invokes launchctl load or bootstrap");
@@ -1681,8 +1747,40 @@ if (tracked.status === 0) {
     fail("packages/daemon/package.json is missing");
   } else {
     const parsed = JSON.parse(manifest);
-    if (parsed.bin !== undefined) {
-      fail("packages/daemon declares a bin; no public executable exists before P8");
+    // P2F replaces the blanket ban with an exact one. The ban was a
+    // repository-internal placeholder from P2D, adopted when there was no
+    // executable and no drill that needed to start one; it was never the
+    // owner's law, which is about product adoption and is untouched. Exactly
+    // one bin is permitted, by name and by target.
+    const bin = parsed.bin;
+    const EXPECTED_BIN = { "acp-daemon": "./dist/bin/acp-daemon.js" };
+    if (bin === undefined) {
+      fail("packages/daemon must declare its one packaged entry");
+    } else if (
+      typeof bin !== "object" ||
+      bin === null ||
+      Object.keys(bin).length !== 1 ||
+      bin["acp-daemon"] !== EXPECTED_BIN["acp-daemon"]
+    ) {
+      fail(
+        "packages/daemon may declare exactly one bin, acp-daemon -> " +
+          EXPECTED_BIN["acp-daemon"],
+      );
+    }
+    // The entry must exist as tracked source, carry the portable shebang, and
+    // be made executable by the build. A bin pointing at nothing is a claim.
+    const entrySource = readIfPresent("packages/daemon/src/bin/acp-daemon.ts");
+    if (entrySource === null) {
+      fail("packages/daemon/src/bin/acp-daemon.ts is missing");
+    } else if (entrySource.split("\n")[0] !== "#!/usr/bin/env node") {
+      fail("the packaged entry must keep the portable shebang in tracked source");
+    }
+    const buildScript = String(parsed.scripts?.build ?? "");
+    if (!buildScript.includes("chmod") || !buildScript.includes("process.execPath")) {
+      fail(
+        "packages/daemon build must materialize the interpreter and set the executable bit; " +
+          "a launchd gui job runs with PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+      );
     }
     // Fable B2: the dependency surface is exact in both directions.
     const deps = Object.keys(parsed.dependencies ?? {}).sort();
@@ -1981,6 +2079,20 @@ if (tracked.status === 0) {
     }
   }
   notes.push("no module spawns for plutil, and only the denylist names the agent directory");
+
+  // The packaged entry reads a file, never the environment. launchd controls
+  // the environment of a job it starts, so an entry that read from it would
+  // take instructions from something no reviewer sees.
+  for (const relativePath of present) {
+    if (!relativePath.startsWith("packages/daemon/src/bin/")) continue;
+    if (relativePath.endsWith(".test.ts")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    if (/process\.env/.test(stripComments(content))) {
+      fail(relativePath + " reads process.env; the packaged entry takes a config file only");
+    }
+  }
+  notes.push("the packaged entry takes a config file and reads no environment");
 }
 
 // Names that must never enter the graph, matched as whole tokens so the

@@ -58,10 +58,13 @@ Producing an inert artifact is not installing one. **P2E is not P2 completion
 in the sense of product adoption**, and no cutover is authorized by anything in
 this directory.
 
-It does not close P2 in any other sense either. The roadmap's P2 criterion is a
-daemon startable under launchd, and this template's command contract does not
-match the daemon that exists: `daemon-child` takes a JSON document as `argv[2]`,
-not a config-file path, and no packaged executable bridges them. Pointing
-`programPath` at a hand-written wrapper would prove something about that
-wrapper, not about this control plane. **P2 stays in progress** until P2F
-supplies the missing contract and one disposable launchd lifecycle drill.
+P2F Stage A supplied the missing half: `programPath` now points at the packaged
+`acp-daemon` entry, which takes the `CONFIG_PATH` this template always passed,
+and one disposable lifecycle drill starts it under launchd for real. **P2 still
+closes in Stage B**, after an independent verifier reproduces that drill.
+
+The drill is disposable by construction: a unique `com.rottay.acp-drill-` label,
+bootstrapped **by path** from an ignored root so nothing enters the directory
+named below, `RunAtLoad` left false so the start is an explicit one, and bootout
+in a `finally` with a prefix-scoped sweep afterwards. Nothing it creates
+survives it.
