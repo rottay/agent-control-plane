@@ -214,7 +214,6 @@ describe("the package cannot mutate or reach out", () => {
       "unlinkSync",
       "renameSync",
       "chmodSync",
-      "openSync",
     ];
     for (const entry of readdirSync(HERE, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
@@ -224,6 +223,54 @@ describe("the package cannot mutate or reach out", () => {
       for (const name of mutators) expect(source).not.toContain(name);
       expect(source).not.toContain("process.env");
       expect(source).not.toContain("process.kill");
+    }
+  });
+
+  it("opens exactly one read-only descriptor in the whole package", () => {
+    // `openSync` used to sit in the mutator list above, banned by token. That
+    // ban was wrong rather than strict: closing the admission-then-read gap
+    // honestly requires an `fstat` on the *opened inode*, which only a
+    // descriptor can provide. A token ban would have forced the dishonest
+    // alternative — re-checking the path and trusting it still named the same
+    // file.
+    //
+    // The ban is therefore an exception with exactly one member, checked in
+    // both directions across every production module in the package: that one
+    // file opens once, read-only, refusing symlinks; every other file may not
+    // open at all; and no file anywhere may name a write-capable flag.
+    const OPEN_SITE = "collect/artifact.ts";
+    // The exact normalized call, not a set of tokens that must appear
+    // somewhere: checking only for `O_RDONLY` and `O_NOFOLLOW` would admit a
+    // different handle, or a numeric flag no name-based scan can read.
+    const OPEN_CALL = "openSync(handle, constants.O_RDONLY | constants.O_NOFOLLOW)";
+    const WRITE_FLAGS = ["O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND", "O_EXCL"];
+    const callsIn = (source: string): string[] =>
+      [...source.matchAll(/openSync\([^()]*\)/g)].map((match) => match[0].replace(/\s+/g, " ").trim());
+
+    const sources: { readonly name: string; readonly source: string }[] = [];
+    for (const directory of [HERE, join(HERE, "collect")]) {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+        if (entry.name.endsWith(".test.ts")) continue;
+        const relative = directory === HERE ? entry.name : "collect/" + entry.name;
+        sources.push({ name: relative, source: readFileSync(join(directory, entry.name), "utf8") });
+      }
+    }
+    expect(sources.map((entry) => entry.name)).toContain(OPEN_SITE);
+
+    for (const { name, source } of sources) {
+      const opens = source.split("openSync(").length - 1;
+      const calls = callsIn(source);
+      if (name === OPEN_SITE) {
+        // Token count and parsed calls must agree, so an unreadable call is a
+        // failure rather than an omission.
+        expect({ name, opens, parsed: calls.length }).toEqual({ name, opens: 1, parsed: 1 });
+        expect({ name, call: calls[0] }).toEqual({ name, call: OPEN_CALL });
+      } else {
+        expect({ name, opens }).toEqual({ name, opens: 0 });
+        expect({ name, parsed: calls.length }).toEqual({ name, parsed: 0 });
+      }
+      for (const flag of WRITE_FLAGS) expect({ name, flag, present: source.includes(flag) }).toEqual({ name, flag, present: false });
     }
   });
 

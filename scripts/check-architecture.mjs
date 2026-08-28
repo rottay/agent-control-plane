@@ -2248,10 +2248,42 @@ const OBSERVATION_FORBIDDEN_CALLS = [
   "unlinkSync",
   "renameSync",
   "chmodSync",
-  "openSync",
   "process.env",
   "process.kill",
 ];
+
+// `openSync` is no longer banned outright, because the honest fix for the
+// admission-then-read gap needs a descriptor: only an open file can be
+// `fstat`ed and bounded as the same inode admission approved. A blanket token
+// ban would have forced the dishonest version — re-checking the path and
+// hoping it still named the same file.
+//
+// So the ban becomes an exception with exactly one member, and it is
+// fail-closed in every direction: one file, one open, read-only flags present,
+// no write-capable flag anywhere, and every other observation source still
+// refused for naming `openSync` at all.
+const OBSERVATION_OPEN_SITE = "packages/observation/src/collect/artifact.ts";
+// The exact normalized call, not a set of tokens that must appear somewhere.
+// Checking only that `O_RDONLY` and `O_NOFOLLOW` are present anywhere in the
+// file would admit `openSync(other, constants.O_RDONLY | constants.O_NOFOLLOW | 2)`
+// — a different handle, or a numeric flag the name-based scan cannot read.
+// Equality against the whole call is the only form that cannot drift.
+const OBSERVATION_OPEN_CALL = "openSync(handle, constants.O_RDONLY | constants.O_NOFOLLOW)";
+const OBSERVATION_WRITE_FLAGS = [
+  "O_WRONLY",
+  "O_RDWR",
+  "O_CREAT",
+  "O_TRUNC",
+  "O_APPEND",
+  "O_EXCL",
+];
+
+/** Every `openSync(...)` call in a source, whitespace-normalized. */
+function openSyncCalls(code) {
+  return [...code.matchAll(/openSync\([^()]*\)/g)].map((match) =>
+    match[0].replace(/\s+/g, " ").trim(),
+  );
+}
 
 const observationManifest = readIfPresent("packages/observation/package.json");
 if (observationManifest === null) {
@@ -2319,8 +2351,43 @@ if (tracked.status === 0) {
         fail(relativePath + " uses " + call + "; observation production modules only read");
       }
     }
+
+    // The descriptor exception, enforced in both directions.
+    const tokens = code.split("openSync(").length - 1;
+    const calls = openSyncCalls(code);
+    if (relativePath === OBSERVATION_OPEN_SITE) {
+      // Token count and parsed-call count must agree, so a call this regex
+      // cannot read is a failure rather than an omission.
+      if (tokens !== 1 || calls.length !== 1) {
+        fail(
+          relativePath +
+            " performs " +
+            String(tokens) +
+            " openSync token(s) and " +
+            String(calls.length) +
+            " parseable call(s); the exception permits exactly one of each",
+        );
+      } else if (calls[0] !== OBSERVATION_OPEN_CALL) {
+        fail(
+          relativePath +
+            " opens with " +
+            calls[0] +
+            " rather than the exact permitted call " +
+            OBSERVATION_OPEN_CALL,
+        );
+      }
+      for (const flag of OBSERVATION_WRITE_FLAGS) {
+        if (code.includes(flag)) {
+          fail(relativePath + " names the write-capable flag " + flag + "; observation only reads");
+        }
+      }
+    } else if (tokens > 0) {
+      fail(relativePath + " uses openSync; only " + OBSERVATION_OPEN_SITE + " may open a descriptor");
+    }
   }
-  notes.push(sources.length + " observation sources only read, and reach nothing");
+  notes.push(
+    sources.length + " observation sources only read, and reach nothing; one read-only descriptor site, pinned",
+  );
 }
 
 // The closed export surface, pinned by equality in both directions. The

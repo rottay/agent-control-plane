@@ -198,6 +198,14 @@ export default defineConfig({
           // Reads only; binds no port and spawns nothing, so it stays in the
           // default parallel group (groupOrder 0) rather than joining the
           // serialized port-binding groups the runtime and daemon projects use.
+          //
+          // Its own files, however, must run serially. Every collector suite
+          // creates and then removes the shared `.acp-local/shadow` roots, so
+          // two of them running at once means one deletes the roots the other
+          // is still admitting against — a failure that depends on timing
+          // rather than on either test being wrong. `fileParallelism: false`
+          // and a single fork bound that sharing to one file at a time; the
+          // cross-project group is unaffected.
           name: 'observation',
           root: './packages/observation',
           include: ['src/**/*.test.ts'],
@@ -205,6 +213,8 @@ export default defineConfig({
           restoreMocks: true,
           unstubEnvs: true,
           unstubGlobals: true,
+          fileParallelism: false,
+          poolOptions: { forks: { singleFork: true } },
         },
         resolve: { alias: workspaceSourceAliases },
       },
