@@ -2839,6 +2839,10 @@ const ADAPTERS_PUBLIC_EXPORTS = [
   "KIMI_ACP_PROTOCOL",
   "KIMI_ACP_PROTOCOL_VERSION",
   "kimiAdapter",
+  // P4D
+  "CODEX_APP_SERVER_PROTOCOL",
+  "CODEX_PROTOCOL_RECORD",
+  "codexAdapter",
 ];
 
 /** The environment allowlist, pinned so a fourth variable cannot appear. */

@@ -3,7 +3,8 @@
  *
  * This is P4A: the shared contract, the normalized event taxonomy, the config
  * and binary admissions, and one process boundary. The Claude, Kimi and Codex
- * descriptors are P4B, P4C and P4D and are not exported yet.
+ * descriptors arrived in P4B, P4C and P4D and are re-exported at the foot of
+ * this file.
  *
  * Importing this module has no side effects. `startSession` spawns when it is
  * called, and only then, through the single authority in `process/spawn.ts`.
@@ -97,7 +98,18 @@ export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./ses
 // establish.
 export { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "./providers/claude/index.js";
 
-// P4C: the Kimi ACP descriptor, built against stable ACP v1 NDJSON. Codex
-// arrives in P4D. Live conformance is unclaimed and every Kimi capability
-// leaves P4 `UNKNOWN`.
+// P4C: the Kimi ACP descriptor, built against stable ACP v1 NDJSON. Live
+// conformance is unclaimed and every Kimi capability leaves P4 `UNKNOWN`.
 export { KIMI_ACP_PROTOCOL, KIMI_ACP_PROTOCOL_VERSION, kimiAdapter } from "./providers/kimi/index.js";
+
+// P4D: the Codex App Server descriptor, built against the offline schema the
+// Codex CLI generates for its own protocol. `CODEX_PROTOCOL_RECORD` is
+// exported because what the evidence does *not* establish — the wire framing,
+// the experimental method tier — is part of the surface a caller has to read,
+// not a footnote. No handshake was performed, no conformance is claimed, and
+// every Codex capability leaves P4 `UNKNOWN`.
+export {
+  CODEX_APP_SERVER_PROTOCOL,
+  CODEX_PROTOCOL_RECORD,
+  codexAdapter,
+} from "./providers/codex/index.js";
