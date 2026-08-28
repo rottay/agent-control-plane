@@ -9,9 +9,9 @@ import {
   confirmsProviderCapability,
   isLegalTransition,
   unknownCapabilities,
-} from "./contract.js";
-import type { CapabilityEvidence } from "./contract.js";
-import { ADAPTER_ERROR_CODES, AdapterError } from "./errors.js";
+} from "../../src/contract/index.js";
+import type { CapabilityEvidence } from "../../src/contract/index.js";
+import { ADAPTER_ERROR_CODES, AdapterError } from "../../src/errors/index.js";
 
 const CONTEXT = { provider: "claude", taskId: "00000000-0000-4000-8000-00000000000a" };
 

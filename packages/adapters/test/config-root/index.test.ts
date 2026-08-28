@@ -12,9 +12,9 @@ import {
   admitWorkdir,
   allowedEnvKeys,
   buildEnv,
-} from "./config-root.js";
-import { AdapterError } from "./errors.js";
-import { PROVIDER_NAMES } from "./contract.js";
+} from "../../src/config-root/index.js";
+import { AdapterError } from "../../src/errors/index.js";
+import { PROVIDER_NAMES } from "../../src/contract/index.js";
 
 const CONTEXT = { provider: "claude", taskId: "00000000-0000-4000-8000-00000000000a" };
 const created: string[] = [];

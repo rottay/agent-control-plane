@@ -12,13 +12,13 @@ import type {
   ProviderAdapter,
   SessionLimits,
   SessionRequest,
-} from "./contract.js";
-import { AdapterError } from "./errors.js";
-import type { NormalizedEvent } from "./events.js";
-import { admitBinary } from "./process/spawn.js";
-import { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./session.js";
-import { fakeAdapter, fakeProviderArgv } from "./testing/fake-provider.js";
-import type { FakeScript } from "./testing/fake-provider.js";
+} from "../../src/contract/index.js";
+import { AdapterError } from "../../src/errors/index.js";
+import type { NormalizedEvent } from "../../src/events/index.js";
+import { admitBinary } from "../../src/process/spawn/index.js";
+import { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "../../src/session/index.js";
+import { fakeAdapter, fakeProviderArgv } from "../testing/index.js";
+import type { FakeScript } from "../testing/index.js";
 
 const TMP_ROOT = realpathSync(tmpdir());
 const NODE = realpathSync(process.execPath) as AdmittedBinary;

@@ -3,12 +3,12 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
-import type { AdmittedBinary, SessionDescriptor, SessionLimits } from "../contract.js";
-import { AdapterError } from "../errors.js";
+import type { AdmittedBinary, SessionDescriptor, SessionLimits } from "../../contract/index.js";
+import { AdapterError } from "../../errors/index.js";
 
 /**
  * The process-spawn authority. One file, one import of `node:child_process`,
- * and exactly one caller (`../session.ts`).
+ * and exactly one caller (`../../session/index.ts`).
  *
  * Duplicating a spawner is the thing being prevented. Two spawners drift, and
  * the drift is discovered only when they disagree about how to stop something
@@ -17,7 +17,7 @@ import { AdapterError } from "../errors.js";
  * Note what is NOT here: `maxBuffer`. It is an `exec`/`execFile` option that
  * `spawn` silently ignores, so mandating it would enforce a dead argument
  * while the real output bound went unimplemented. The bound is a manual byte
- * count in `session.ts`, taken on raw bytes before decoding.
+ * count in `session/index.ts`, taken on raw bytes before decoding.
  */
 
 export interface SpawnedProcess {

@@ -65,8 +65,8 @@ suite rather than leaving a stale claim standing.
 
 ## One process boundary
 
-`src/process/spawn.ts` is the only file that imports `node:child_process`, and
-`src/session.ts` is its only caller. Both facts are asserted by the
+`src/process/spawn/index.ts` is the only file that imports `node:child_process`, and
+`src/session/index.ts` is its only caller. Both facts are asserted by the
 architecture fence, not merely intended. Two spawners drift, and the drift is
 discovered only when they disagree about how to stop something.
 
@@ -160,7 +160,7 @@ rather than transcript pipes.
 
 ## Testing
 
-Every negative is driven by `src/testing/fake-provider.ts`: a scripted child
+Every negative is driven by `test/testing/index.ts`: a scripted child
 with no auth, no network, no account and no product path. It is deliberately
 **not** part of the public surface — tests import it by relative path — because
 a fake on the public surface would eventually be mistaken for evidence.

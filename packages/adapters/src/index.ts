@@ -20,8 +20,8 @@
  * No adapter writes product in P4, for any role.
  */
 
-export type { AdapterErrorCode } from "./errors.js";
-export { ADAPTER_ERROR_CODES, AdapterError } from "./errors.js";
+export type { AdapterErrorCode } from "./errors/index.js";
+export { ADAPTER_ERROR_CODES, AdapterError } from "./errors/index.js";
 
 export type {
   AdmittedBinary,
@@ -41,7 +41,7 @@ export type {
   SessionLimits,
   SessionRequest,
   SessionState,
-} from "./contract.js";
+} from "./contract/index.js";
 export {
   CAPABILITY_NAMES,
   EMPTY_CURSOR,
@@ -52,9 +52,9 @@ export {
   confirmsProviderCapability,
   isLegalTransition,
   unknownCapabilities,
-} from "./contract.js";
+} from "./contract/index.js";
 
-export type { NormalizedEvent, NormalizedEventName } from "./events.js";
+export type { NormalizedEvent, NormalizedEventName } from "./events/index.js";
 export {
   FROZEN_TYPE_BY_EVENT,
   NORMALIZED_EVENT_NAMES,
@@ -62,7 +62,7 @@ export {
   isReportableTokenCount,
   normalizedEvent,
   toNormalized,
-} from "./events.js";
+} from "./events/index.js";
 
 export {
   PAYLOAD_BYTES_MAX,
@@ -70,7 +70,7 @@ export {
   boundString,
   hasPrivacyViolation,
   shapePayload,
-} from "./redact.js";
+} from "./redact/index.js";
 
 export {
   BASE_ENV_KEYS,
@@ -79,18 +79,18 @@ export {
   admitWorkdir,
   allowedEnvKeys,
   buildEnv,
-} from "./config-root.js";
+} from "./config-root/index.js";
 
-export type { InterruptRecord, LadderStep } from "./process/handle.js";
+export type { InterruptRecord, LadderStep } from "./process/handle/index.js";
 // `spawnAdmitted` and `ProcessHandle` are deliberately NOT exported. They are
 // the boundary's internals, and a caller able to spawn directly could bypass
 // the session controller — which is the one place read-only enforcement, the
 // output budget and the state machine live. `admitBinary` is public because a
 // caller must be able to construct an `AdmittedBinary` to make a request.
-export { admitBinary } from "./process/spawn.js";
+export { admitBinary } from "./process/spawn/index.js";
 
-export type { AdapterSession } from "./session.js";
-export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./session.js";
+export type { AdapterSession } from "./session/index.js";
+export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./session/index.js";
 
 // P4B: the Claude headless descriptor. Kimi and Codex arrive in P4C and P4D.
 // Every Claude capability leaves P4 `UNKNOWN`: the adapter is complete, the

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { allowedEnvKeys } from "../../config-root.js";
+import { allowedEnvKeys } from "../../../src/config-root/index.js";
 import type {
   AdmittedBinary,
   AdmittedConfigRoot,
@@ -14,16 +14,18 @@ import type {
   ProviderAdapter,
   SessionLimits,
   SessionRequest,
-} from "../../contract.js";
-import { EMPTY_CURSOR } from "../../contract.js";
-import { AdapterError } from "../../errors.js";
-import type { NormalizedEvent } from "../../events.js";
-import { descriptorEnablesWrites, startSession } from "../../session.js";
-import { fakeProviderArgv } from "../../testing/fake-provider.js";
-import type { FakeScript } from "../../testing/fake-provider.js";
-import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "./index.js";
+} from "../../../src/contract/index.js";
+import { EMPTY_CURSOR } from "../../../src/contract/index.js";
+import { AdapterError } from "../../../src/errors/index.js";
+import type { NormalizedEvent } from "../../../src/events/index.js";
+import { descriptorEnablesWrites, startSession } from "../../../src/session/index.js";
+import { fakeProviderArgv } from "../../testing/index.js";
+import type { FakeScript } from "../../testing/index.js";
+import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "../../../src/providers/claude/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
+const PACKAGE_ROOT = resolve(HERE, "..", "..", "..");
+const PROVIDER_SRC = join(PACKAGE_ROOT, "src", "providers", "claude");
 const TMP_ROOT = realpathSync(tmpdir());
 const NODE = realpathSync(process.execPath) as AdmittedBinary;
 const IMPLEMENTER = "anthropic/claude-opus-5/implementer/01";
@@ -409,7 +411,7 @@ describe("the reviewer guarantee holds for this provider", () => {
 });
 
 describe("the provider module keeps the boundary's laws", () => {
-  const source = readFileSync(join(HERE, "index.ts"), "utf8");
+  const source = readFileSync(join(PROVIDER_SRC, "index.ts"), "utf8");
   // Comments explain which APIs the module deliberately does not use, and say
   // their names to do so. Only code is under assertion.
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -418,20 +420,20 @@ describe("the provider module keeps the boundary's laws", () => {
     expect(code).not.toContain("node:child_process");
     expect(code).not.toMatch(/from\s*["'][^"']*process\/spawn\.js["']/);
     expect(code).not.toContain("spawnAdmitted");
-    // `isReadOnlyIdentity` is a pure predicate re-exported by session.ts; the
+    // `isReadOnlyIdentity` is a pure predicate re-exported by session/index.ts; the
     // module never touches the controller itself.
     expect(code).not.toContain("startSession");
   });
 
   it("imports no session or process module from any provider source", () => {
     // Provider modules are pure descriptors and parsers. Reaching into
-    // `session.ts` — even for a pure predicate, as an earlier revision did —
-    // makes the module a participant in the process boundary it is kept
+    // `session/index.ts` — even for a pure predicate, as an earlier revision
+    // did — makes the module a participant in the process boundary it is kept
     // outside of. The role predicate comes from `@acp/contracts` instead.
-    for (const entry of readdirSync(HERE, { withFileTypes: true })) {
+    for (const entry of readdirSync(PROVIDER_SRC, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
       if (entry.name.endsWith(".test.ts")) continue;
-      const text = readFileSync(join(HERE, entry.name), "utf8")
+      const text = readFileSync(join(PROVIDER_SRC, entry.name), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/\/\/[^\n]*/g, "");
       expect({ file: entry.name, session: /from\s*["'][^"']*session\.js["']/.test(text) }).toEqual({
@@ -497,4 +499,4 @@ describe("errors stay classified", () => {
 });
 
 /** Keeps `dirname` used, and documents where the module under test lives. */
-export const MODULE_DIRECTORY = dirname(join(HERE, "index.ts"));
+export const MODULE_DIRECTORY = dirname(join(PROVIDER_SRC, "index.ts"));

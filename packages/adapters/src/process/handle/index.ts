@@ -1,6 +1,6 @@
-import type { SessionLimits } from "../contract.js";
-import { AdapterError } from "../errors.js";
-import type { SpawnedProcess } from "./spawn.js";
+import type { SessionLimits } from "../../contract/index.js";
+import { AdapterError } from "../../errors/index.js";
+import type { SpawnedProcess } from "../spawn/index.js";
 
 /**
  * PID ownership, the interrupt ladder and the leak sweep.

@@ -1,7 +1,7 @@
 import { CONTROL_PLANE_EVENT_TYPES } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
-import type { ProviderSignal } from "./contract.js";
+import type { ProviderSignal } from "../../src/contract/index.js";
 import {
   FROZEN_TYPE_BY_EVENT,
   NORMALIZED_EVENT_NAMES,
@@ -9,7 +9,7 @@ import {
   isReportableTokenCount,
   normalizedEvent,
   toNormalized,
-} from "./events.js";
+} from "../../src/events/index.js";
 
 const TASK = "00000000-0000-4000-8000-00000000000a";
 

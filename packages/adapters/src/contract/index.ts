@@ -1,6 +1,6 @@
 import type { WorkerIdentityString } from "@acp/contracts";
 
-import { AdapterError } from "./errors.js";
+import { AdapterError } from "../errors/index.js";
 
 /**
  * The ports, the session state machine and the capability model.
@@ -28,13 +28,13 @@ declare const binaryBrand: unique symbol;
 declare const configRootBrand: unique symbol;
 declare const workdirBrand: unique symbol;
 
-/** An absolute, canonical, owner-checked regular file. Only `spawn.ts` mints it. */
+/** An absolute, canonical, owner-checked regular file. Only `spawn/index.ts` mints it. */
 export type AdmittedBinary = string & { readonly [binaryBrand]: true };
 
-/** An admitted provider configuration root. Only `config-root.ts` mints it. */
+/** An admitted provider configuration root. Only `config-root/index.ts` mints it. */
 export type AdmittedConfigRoot = string & { readonly [configRootBrand]: true };
 
-/** An admitted working directory. Only `config-root.ts` mints it. */
+/** An admitted working directory. Only `config-root/index.ts` mints it. */
 export type AdmittedWorkdir = string & { readonly [workdirBrand]: true };
 
 // ---------------------------------------------------------------------------

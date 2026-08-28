@@ -152,6 +152,28 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C6 (adapters): the contract, the normalized-event taxonomy,
+  // the process boundary, the three provider descriptors' tests, and the
+  // fake-provider fixture (relocated from src/ to test/), now under
+  // src/<domain>/index.ts and the mirrored test tree.
+  "packages/adapters/src/config-root.test.ts",
+  "packages/adapters/src/config-root.ts",
+  "packages/adapters/src/contract.test.ts",
+  "packages/adapters/src/contract.ts",
+  "packages/adapters/src/errors.ts",
+  "packages/adapters/src/events.test.ts",
+  "packages/adapters/src/events.ts",
+  "packages/adapters/src/process/handle.ts",
+  "packages/adapters/src/process/spawn.test.ts",
+  "packages/adapters/src/process/spawn.ts",
+  "packages/adapters/src/providers/claude/index.test.ts",
+  "packages/adapters/src/providers/codex/index.test.ts",
+  "packages/adapters/src/providers/kimi/index.test.ts",
+  "packages/adapters/src/redact.test.ts",
+  "packages/adapters/src/redact.ts",
+  "packages/adapters/src/session.test.ts",
+  "packages/adapters/src/session.ts",
+  "packages/adapters/src/testing/fake-provider.ts",
   // P5N cohort C5 (cli): the CLI entry, the renderer and the ledger-to-DTO
   // layer, plus their colocated test, now under src/<domain>/index.ts and the
   // mirrored test tree.
@@ -564,21 +586,21 @@ const P4A_WRITE_SET = [
   "packages/adapters/tsconfig.json",
   "packages/adapters/README.md",
   "packages/adapters/src/index.ts",
-  "packages/adapters/src/errors.ts",
-  "packages/adapters/src/contract.ts",
-  "packages/adapters/src/events.ts",
-  "packages/adapters/src/redact.ts",
-  "packages/adapters/src/config-root.ts",
-  "packages/adapters/src/session.ts",
-  "packages/adapters/src/process/spawn.ts",
-  "packages/adapters/src/process/handle.ts",
-  "packages/adapters/src/testing/fake-provider.ts",
-  "packages/adapters/src/contract.test.ts",
-  "packages/adapters/src/events.test.ts",
-  "packages/adapters/src/redact.test.ts",
-  "packages/adapters/src/config-root.test.ts",
-  "packages/adapters/src/session.test.ts",
-  "packages/adapters/src/process/spawn.test.ts",
+  "packages/adapters/src/errors/index.ts",
+  "packages/adapters/src/contract/index.ts",
+  "packages/adapters/src/events/index.ts",
+  "packages/adapters/src/redact/index.ts",
+  "packages/adapters/src/config-root/index.ts",
+  "packages/adapters/src/session/index.ts",
+  "packages/adapters/src/process/spawn/index.ts",
+  "packages/adapters/src/process/handle/index.ts",
+  "packages/adapters/test/testing/index.ts",
+  "packages/adapters/test/contract/index.test.ts",
+  "packages/adapters/test/events/index.test.ts",
+  "packages/adapters/test/redact/index.test.ts",
+  "packages/adapters/test/config-root/index.test.ts",
+  "packages/adapters/test/session/index.test.ts",
+  "packages/adapters/test/process/spawn/index.test.ts",
   "tsconfig.base.json",
   "vitest.config.ts",
   "pnpm-lock.yaml",
@@ -589,7 +611,7 @@ const P4A_WRITE_SET = [
 /** P4B: the Claude headless descriptor. */
 const P4B_WRITE_SET = [
   "packages/adapters/src/providers/claude/index.ts",
-  "packages/adapters/src/providers/claude/index.test.ts",
+  "packages/adapters/test/providers/claude/index.test.ts",
   "packages/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -597,7 +619,7 @@ const P4B_WRITE_SET = [
 /** P4C: the Kimi ACP descriptor. */
 const P4C_WRITE_SET = [
   "packages/adapters/src/providers/kimi/index.ts",
-  "packages/adapters/src/providers/kimi/index.test.ts",
+  "packages/adapters/test/providers/kimi/index.test.ts",
   "packages/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -605,7 +627,7 @@ const P4C_WRITE_SET = [
 /** P4D: the Codex App Server descriptor. */
 const P4D_WRITE_SET = [
   "packages/adapters/src/providers/codex/index.ts",
-  "packages/adapters/src/providers/codex/index.test.ts",
+  "packages/adapters/test/providers/codex/index.test.ts",
   "packages/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -804,6 +826,19 @@ const P5N_C5_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C6 (adapters): the paths the mirrored-topology normalization
+ * touches outside the cohort's own relocated sources — the new package-scoped
+ * test project, the two root build/test configs that must learn about it, and
+ * the fence itself. Enumerated by the C6 brief, item 8.
+ */
+const P5N_C6_WRITE_SET = [
+  "packages/adapters/test/tsconfig.json",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -836,6 +871,7 @@ const WRITE_SET = [
   ...P5N_C3_WRITE_SET,
   ...P5N_C4_WRITE_SET,
   ...P5N_C5_WRITE_SET,
+  ...P5N_C6_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -2008,7 +2044,7 @@ const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint.ts";
 const SPAWN_ALLOWED_FILES = new Map([
   ["packages/runtime/src/restate/server-handle.ts", "the pinned Restate server"],
   ["packages/daemon/src/identity-probe.ts", "reading process identity via /bin/ps"],
-  ["packages/adapters/src/process/spawn.ts", "the single provider spawn authority"],
+  ["packages/adapters/src/process/spawn/index.ts", "the single provider spawn authority"],
 ]);
 
 // Anything that could listen, connect or fan out. None of these belongs in a
@@ -3125,7 +3161,14 @@ if (tracked.status === 0) {
 // commit against. Each cohort activates its own tree in the same commit that
 // makes that tree compliant, so the law and the code arrive together and every
 // commit in between is green.
-const TOPOLOGY_ACTIVE_TREES = ["contracts", "ledger", "api-contracts", "observation", "cli"];
+const TOPOLOGY_ACTIVE_TREES = [
+  "contracts",
+  "ledger",
+  "api-contracts",
+  "observation",
+  "cli",
+  "adapters",
+];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
 const TOPOLOGY_PRODUCT_INDEX = new Set(["index.ts", "index.tsx"]);
@@ -3293,7 +3336,7 @@ if (tracked.status === 0) {
 // is the first normalized package and the fence has never had a per-package
 // source scan for it, so the exemption is a statement of fact rather than a
 // waiver. A package that *does* have a scan may never be added to it.
-const TEST_TREE_SCANNED_PREFIXES = ["packages/observation/test/"];
+const TEST_TREE_SCANNED_PREFIXES = ["packages/observation/test/", "packages/adapters/test/"];
 
 /**
  * Packages the fence runs no per-package source scan for.
@@ -3539,8 +3582,8 @@ const ADAPTERS_FORBIDDEN_BUILTINS = [
 ];
 
 /** Exactly one file spawns, and exactly one file calls it. */
-const ADAPTERS_SPAWN_SITE = "packages/adapters/src/process/spawn.ts";
-const ADAPTERS_SPAWN_CALLER = "packages/adapters/src/session.ts";
+const ADAPTERS_SPAWN_SITE = "packages/adapters/src/process/spawn/index.ts";
+const ADAPTERS_SPAWN_CALLER = "packages/adapters/src/session/index.ts";
 
 /**
  * The closed public surface, pinned by equality in both directions.
@@ -3629,12 +3672,20 @@ if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const declared = new Set(present);
   for (const relativePath of WRITE_SET) {
-    if (relativePath.startsWith("packages/adapters/src/") && relativePath.endsWith(".ts")) {
+    if (
+      (relativePath.startsWith("packages/adapters/src/") ||
+        relativePath.startsWith("packages/adapters/test/")) &&
+      relativePath.endsWith(".ts")
+    ) {
       declared.add(relativePath);
     }
   }
   const sources = [...declared]
-    .filter((relativePath) => relativePath.startsWith("packages/adapters/src/"))
+    .filter(
+      (relativePath) =>
+        relativePath.startsWith("packages/adapters/src/") ||
+        relativePath.startsWith("packages/adapters/test/"),
+    )
     .filter((relativePath) => relativePath.endsWith(".ts"))
     .sort();
 
@@ -3714,8 +3765,8 @@ if (tracked.status === 0) {
           fail(relativePath + " omits " + required + "; spawn options are explicit, never default");
         }
       }
-    } else if (code.includes("process.env") && relativePath !== "packages/adapters/src/config-root.ts") {
-      fail(relativePath + " reads process.env; only config-root.ts builds an environment");
+    } else if (code.includes("process.env") && relativePath !== "packages/adapters/src/config-root/index.ts") {
+      fail(relativePath + " reads process.env; only config-root/index.ts builds an environment");
     }
   }
 
@@ -3754,12 +3805,12 @@ if (adaptersIndex !== null) {
   notes.push(exported.size + " adapter exports, pinned by equality");
 }
 
-const adaptersConfigRoot = readIfPresent("packages/adapters/src/config-root.ts");
+const adaptersConfigRoot = readIfPresent("packages/adapters/src/config-root/index.ts");
 if (adaptersConfigRoot !== null) {
   for (const [provider, keys] of Object.entries(ADAPTERS_ENV_ALLOWLIST)) {
     for (const key of keys) {
       if (!adaptersConfigRoot.includes(key)) {
-        fail("packages/adapters/src/config-root.ts no longer names " + key + " for " + provider);
+        fail("packages/adapters/src/config-root/index.ts no longer names " + key + " for " + provider);
       }
     }
   }
@@ -3775,11 +3826,11 @@ if (adaptersConfigRoot !== null) {
     ...[...(providerBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]),
   ];
   if (declaredKeys.length === 0) {
-    fail("packages/adapters/src/config-root.ts declares no environment allowlist");
+    fail("packages/adapters/src/config-root/index.ts declares no environment allowlist");
   }
   for (const key of declaredKeys) {
     if (key !== undefined && !permitted.has(key)) {
-      fail("packages/adapters/src/config-root.ts names " + key + ", outside the env allowlist");
+      fail("packages/adapters/src/config-root/index.ts names " + key + ", outside the env allowlist");
     }
   }
   notes.push("the adapter environment allowlist is exactly four variables per provider");

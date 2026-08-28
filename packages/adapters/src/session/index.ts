@@ -10,15 +10,15 @@ import type {
   ProviderName,
   SessionRequest,
   SessionState,
-} from "./contract.js";
-import { EMPTY_CURSOR, isLegalTransition, unknownCapabilities } from "./contract.js";
-import { AdapterError } from "./errors.js";
-import type { NormalizedEvent } from "./events.js";
-import { normalizedEvent, toNormalized } from "./events.js";
-import { ProcessHandle } from "./process/handle.js";
-import type { InterruptRecord } from "./process/handle.js";
-import { spawnAdmitted } from "./process/spawn.js";
-import { shapePayload } from "./redact.js";
+} from "../contract/index.js";
+import { EMPTY_CURSOR, isLegalTransition, unknownCapabilities } from "../contract/index.js";
+import { AdapterError } from "../errors/index.js";
+import type { NormalizedEvent } from "../events/index.js";
+import { normalizedEvent, toNormalized } from "../events/index.js";
+import { ProcessHandle } from "../process/handle/index.js";
+import type { InterruptRecord } from "../process/handle/index.js";
+import { spawnAdmitted } from "../process/spawn/index.js";
+import { shapePayload } from "../redact/index.js";
 
 /**
  * The session controller: start, stream, interrupt, close, health.

@@ -6,8 +6,8 @@ import type {
   ProviderSignal,
   SessionDescriptor,
   SessionRequest,
-} from "../contract.js";
-import { EMPTY_CURSOR, unknownCapabilities } from "../contract.js";
+} from "../../src/contract/index.js";
+import { EMPTY_CURSOR, unknownCapabilities } from "../../src/contract/index.js";
 
 /**
  * A scripted stand-in for a provider.

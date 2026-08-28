@@ -10,16 +10,18 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { AdmittedBinary, AdmittedWorkdir, SessionDescriptor, SessionLimits } from "../contract.js";
-import { AdapterError } from "../errors.js";
-import { admitBinary, spawnAdmitted } from "./spawn.js";
+import type { AdmittedBinary, AdmittedWorkdir, SessionDescriptor, SessionLimits } from "../../../src/contract/index.js";
+import { AdapterError } from "../../../src/errors/index.js";
+import { admitBinary, spawnAdmitted } from "../../../src/process/spawn/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
+const PACKAGE_ROOT = resolve(HERE, "..", "..", "..");
+const ADAPTERS_SRC = join(PACKAGE_ROOT, "src");
 const CONTEXT = { provider: "claude", taskId: "00000000-0000-4000-8000-00000000000a" };
 const TMP_ROOT = realpathSync(tmpdir());
 const created: string[] = [];
@@ -180,7 +182,7 @@ describe("the spawner is shell-free and pinned", () => {
 });
 
 describe("the spawner's own source obeys the laws the fence asserts", () => {
-  const source = readFileSync(join(HERE, "spawn.ts"), "utf8");
+  const source = readFileSync(join(ADAPTERS_SRC, "process", "spawn", "index.ts"), "utf8");
   /** Comments explain why a thing is absent; only code is under assertion. */
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
@@ -198,13 +200,13 @@ describe("the spawner's own source obeys the laws the fence asserts", () => {
     expect(code).toContain("killSignal:");
     // `maxBuffer` is an exec/execFile option that `spawn` silently ignores.
     // Mandating it would enforce a dead argument while the real output bound
-    // went unimplemented; the bound is a manual byte count in session.ts. The
+    // went unimplemented; the bound is a manual byte count in session/index.ts. The
     // assertion is on code, because the comment above says the word too.
     expect(code).not.toContain("maxBuffer");
   });
 
   it("is the only file in the package importing node:child_process", () => {
-    const packageSrc = dirname(HERE);
+    const packageSrc = ADAPTERS_SRC;
     const offenders: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -221,6 +223,6 @@ describe("the spawner's own source obeys the laws the fence asserts", () => {
       }
     };
     walk(packageSrc);
-    expect(offenders).toEqual(["process/spawn.ts"]);
+    expect(offenders).toEqual(["process/spawn/index.ts"]);
   });
 });

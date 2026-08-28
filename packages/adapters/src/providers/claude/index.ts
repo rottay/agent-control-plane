@@ -9,10 +9,10 @@ import type {
   ProviderSignal,
   SessionDescriptor,
   SessionRequest,
-} from "../../contract.js";
-import { unknownCapabilities } from "../../contract.js";
-import { buildEnv } from "../../config-root.js";
-import { isReportableTokenCount } from "../../events.js";
+} from "../../contract/index.js";
+import { unknownCapabilities } from "../../contract/index.js";
+import { buildEnv } from "../../config-root/index.js";
+import { isReportableTokenCount } from "../../events/index.js";
 
 /**
  * The Claude headless descriptor and stream-json parser.

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { allowedEnvKeys } from "../../config-root.js";
+import { allowedEnvKeys } from "../../../src/config-root/index.js";
 import type {
   AdmittedBinary,
   AdmittedConfigRoot,
@@ -14,17 +14,19 @@ import type {
   ProviderAdapter,
   SessionLimits,
   SessionRequest,
-} from "../../contract.js";
-import { EMPTY_CURSOR } from "../../contract.js";
-import { AdapterError } from "../../errors.js";
-import type { NormalizedEvent } from "../../events.js";
-import { hasPrivacyViolation } from "../../redact.js";
-import { descriptorEnablesWrites, startSession } from "../../session.js";
-import { fakeProviderArgv } from "../../testing/fake-provider.js";
-import type { FakeScript } from "../../testing/fake-provider.js";
-import { CODEX_APP_SERVER_PROTOCOL, CODEX_PROTOCOL_RECORD, codexAdapter } from "./index.js";
+} from "../../../src/contract/index.js";
+import { EMPTY_CURSOR } from "../../../src/contract/index.js";
+import { AdapterError } from "../../../src/errors/index.js";
+import type { NormalizedEvent } from "../../../src/events/index.js";
+import { hasPrivacyViolation } from "../../../src/redact/index.js";
+import { descriptorEnablesWrites, startSession } from "../../../src/session/index.js";
+import { fakeProviderArgv } from "../../testing/index.js";
+import type { FakeScript } from "../../testing/index.js";
+import { CODEX_APP_SERVER_PROTOCOL, CODEX_PROTOCOL_RECORD, codexAdapter } from "../../../src/providers/codex/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
+const PACKAGE_ROOT = resolve(HERE, "..", "..", "..");
+const PROVIDER_SRC = join(PACKAGE_ROOT, "src", "providers", "codex");
 const TMP_ROOT = realpathSync(tmpdir());
 const NODE = realpathSync(process.execPath) as AdmittedBinary;
 const IMPLEMENTER = "openai/codex/implementer/01";
@@ -764,7 +766,7 @@ describe("every method the vendored schema defines is accounted for", () => {
    * `.acp-local/`. What it must not do is pass *silently*, so the absence is
    * reported rather than swallowed.
    *
-   * Five levels up from this directory: codex → providers → src → adapters →
+   * Five levels up from this directory: codex → providers → test → adapters →
    * packages → the repository root.
    */
   const SCHEMA_DIR = resolve(HERE, "..", "..", "..", "..", "..", ".acp-local", "p4d-codex-schema");
@@ -921,14 +923,14 @@ describe("every method the vendored schema defines is accounted for", () => {
 });
 
 describe("the provider module keeps the boundary's laws", () => {
-  const source = readFileSync(join(HERE, "index.ts"), "utf8");
+  const source = readFileSync(join(PROVIDER_SRC, "index.ts"), "utf8");
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
   it("imports no session module, process module or child_process", () => {
-    for (const entry of readdirSync(HERE, { withFileTypes: true })) {
+    for (const entry of readdirSync(PROVIDER_SRC, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
       if (entry.name.endsWith(".test.ts")) continue;
-      const text = readFileSync(join(HERE, entry.name), "utf8")
+      const text = readFileSync(join(PROVIDER_SRC, entry.name), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/\/\/[^\n]*/g, "");
       expect({ file: entry.name, session: /from\s*["'][^"']*session\.js["']/.test(text) }).toEqual({
@@ -996,10 +998,10 @@ describe("the provider module keeps the boundary's laws", () => {
 
   it("is an isolated adapter-contract test of negotiate(), not a lifecycle claim", () => {
     // Stated plainly because it would otherwise be easy to over-read: nothing
-    // in `session.ts` calls `negotiate()`, so no production lifecycle path
-    // reaches it. This asserts the pure function's contract and supports no
-    // claim about session-level handshake or negotiation behaviour.
-    const controller = readFileSync(join(HERE, "..", "..", "session.ts"), "utf8");
+    // in `session/index.ts` calls `negotiate()`, so no production lifecycle
+    // path reaches it. This asserts the pure function's contract and supports
+    // no claim about session-level handshake or negotiation behaviour.
+    const controller = readFileSync(join(PACKAGE_ROOT, "src", "session", "index.ts"), "utf8");
     expect(controller).not.toContain("negotiate(");
 
     const outcome = codexAdapter.negotiate({ anything: true });

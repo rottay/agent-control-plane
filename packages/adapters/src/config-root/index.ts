@@ -1,8 +1,8 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
-import type { AdmittedConfigRoot, AdmittedWorkdir, ProviderName } from "./contract.js";
-import { AdapterError } from "./errors.js";
+import type { AdmittedConfigRoot, AdmittedWorkdir, ProviderName } from "../contract/index.js";
+import { AdapterError } from "../errors/index.js";
 
 /**
  * Config-root admission and the environment allowlist.

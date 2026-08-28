@@ -1,6 +1,6 @@
 import type { ControlPlaneEventType } from "@acp/contracts";
 
-import type { ProviderName, ProviderSignal } from "./contract.js";
+import type { ProviderName, ProviderSignal } from "../contract/index.js";
 
 /**
  * Normalized events, and their mapping onto the frozen 21.
@@ -75,7 +75,7 @@ export const TOKENS_USED_MAX = 10_000_000;
  * Turn one provider signal into a normalized event.
  *
  * A `write` signal has no mapping on purpose: it is not an observation to
- * report, it is a violation to refuse, and `session.ts` fails the session on
+ * report, it is a violation to refuse, and `session/index.ts` fails the session on
  * it. Returning `null` here rather than inventing an event is what keeps that
  * decision in one place.
  */

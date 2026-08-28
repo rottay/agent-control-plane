@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { allowedEnvKeys } from "../../config-root.js";
+import { allowedEnvKeys } from "../../../src/config-root/index.js";
 import type {
   AdmittedBinary,
   AdmittedConfigRoot,
@@ -14,17 +14,19 @@ import type {
   ProviderAdapter,
   SessionLimits,
   SessionRequest,
-} from "../../contract.js";
-import { EMPTY_CURSOR } from "../../contract.js";
-import { AdapterError } from "../../errors.js";
-import type { NormalizedEvent } from "../../events.js";
-import { hasPrivacyViolation } from "../../redact.js";
-import { descriptorEnablesWrites, startSession } from "../../session.js";
-import { fakeProviderArgv } from "../../testing/fake-provider.js";
-import type { FakeScript } from "../../testing/fake-provider.js";
-import { KIMI_ACP_PROTOCOL, KIMI_ACP_PROTOCOL_VERSION, kimiAdapter } from "./index.js";
+} from "../../../src/contract/index.js";
+import { EMPTY_CURSOR } from "../../../src/contract/index.js";
+import { AdapterError } from "../../../src/errors/index.js";
+import type { NormalizedEvent } from "../../../src/events/index.js";
+import { hasPrivacyViolation } from "../../../src/redact/index.js";
+import { descriptorEnablesWrites, startSession } from "../../../src/session/index.js";
+import { fakeProviderArgv } from "../../testing/index.js";
+import type { FakeScript } from "../../testing/index.js";
+import { KIMI_ACP_PROTOCOL, KIMI_ACP_PROTOCOL_VERSION, kimiAdapter } from "../../../src/providers/kimi/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
+const PACKAGE_ROOT = resolve(HERE, "..", "..", "..");
+const PROVIDER_SRC = join(PACKAGE_ROOT, "src", "providers", "kimi");
 const TMP_ROOT = realpathSync(tmpdir());
 const NODE = realpathSync(process.execPath) as AdmittedBinary;
 const IMPLEMENTER = "moonshot/kimi-k3/implementer/01";
@@ -344,7 +346,7 @@ describe("the parser reads ACP v1 NDJSON, and refuses the rest", () => {
     expect(failure).toBe("MALFORMED_EVENT");
     // On code, not prose: the module comment explains why this framing is
     // absent, and says its name to do so.
-    const moduleCode = readFileSync(join(HERE, "index.ts"), "utf8")
+    const moduleCode = readFileSync(join(PROVIDER_SRC, "index.ts"), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
     expect(moduleCode).not.toContain("Content-Length");
@@ -747,14 +749,14 @@ describe("every method the pinned schema defines is accounted for", () => {
 });
 
 describe("the provider module keeps the boundary's laws", () => {
-  const source = readFileSync(join(HERE, "index.ts"), "utf8");
+  const source = readFileSync(join(PROVIDER_SRC, "index.ts"), "utf8");
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
   it("imports no session module, process module or child_process", () => {
-    for (const entry of readdirSync(HERE, { withFileTypes: true })) {
+    for (const entry of readdirSync(PROVIDER_SRC, { withFileTypes: true })) {
       if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
       if (entry.name.endsWith(".test.ts")) continue;
-      const text = readFileSync(join(HERE, entry.name), "utf8")
+      const text = readFileSync(join(PROVIDER_SRC, entry.name), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/\/\/[^\n]*/g, "");
       expect({ file: entry.name, session: /from\s*["'][^"']*session\.js["']/.test(text) }).toEqual({
@@ -810,12 +812,12 @@ describe("the provider module keeps the boundary's laws", () => {
 
   it("is an isolated adapter-contract test of negotiate(), not a lifecycle claim", () => {
     // Stated plainly because it would otherwise be easy to over-read: nothing
-    // in `session.ts` calls `negotiate()`, so no production lifecycle path
-    // reaches it. This asserts the pure function's contract and supports no
-    // claim about session-level handshake or negotiation behaviour. Wiring
-    // negotiation into the lifecycle would require changing `session.ts`,
+    // in `session/index.ts` calls `negotiate()`, so no production lifecycle
+    // path reaches it. This asserts the pure function's contract and supports
+    // no claim about session-level handshake or negotiation behaviour. Wiring
+    // negotiation into the lifecycle would require changing `session/index.ts`,
     // which is outside this packet's four paths.
-    const controller = readFileSync(join(HERE, "..", "..", "session.ts"), "utf8");
+    const controller = readFileSync(join(PACKAGE_ROOT, "src", "session", "index.ts"), "utf8");
     expect(controller).not.toContain("negotiate(");
 
     const outcome = kimiAdapter.negotiate({ anything: true });

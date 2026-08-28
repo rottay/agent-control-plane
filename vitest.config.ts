@@ -238,7 +238,7 @@ export default defineConfig({
           // another file's live child from a leak.
           name: 'adapters',
           root: './packages/adapters',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

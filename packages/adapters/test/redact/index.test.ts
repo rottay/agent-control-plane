@@ -6,7 +6,7 @@ import {
   boundString,
   hasPrivacyViolation,
   shapePayload,
-} from "./redact.js";
+} from "../../src/redact/index.js";
 
 describe("payloads are bounded before they are emitted", () => {
   it("caps a string at its ceiling", () => {

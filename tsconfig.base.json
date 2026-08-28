@@ -36,6 +36,7 @@
     { "path": "./packages/observation" },
     { "path": "./packages/observation/test" },
     { "path": "./packages/adapters" },
+    { "path": "./packages/adapters/test" },
     { "path": "./packages/accounts" },
     { "path": "./packages/api-contracts" },
     { "path": "./packages/api-contracts/test" },
