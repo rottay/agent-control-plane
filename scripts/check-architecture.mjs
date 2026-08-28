@@ -634,6 +634,21 @@ const P5D_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N-A: the first structural commit of the normalization checkpoint.
+ *
+ * It relocates nothing that is committed. It retires the colocated-test law,
+ * scaffolds the mirrored-topology gate with an empty activation list, records
+ * the law in ADR 0012 and re-pins the roadmap the owner's edit produced. The
+ * cohorts that follow carry the relocations, each with its own enumerated
+ * write-set from the adjudicated inventory.
+ */
+const P5N_A_WRITE_SET = [
+  "docs/ROADMAP.md",
+  "docs/architecture/0012-structural-normalization.md",
+  "scripts/check-architecture.mjs",
+];
+
 /** P5E: closure. The status line moves here and nowhere else. */
 const P5E_WRITE_SET = [
   "docs/ROADMAP.md",
@@ -668,6 +683,7 @@ const WRITE_SET = [
   ...P5C_WRITE_SET,
   ...P5D_WRITE_SET,
   ...P5E_WRITE_SET,
+  ...P5N_A_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -684,7 +700,7 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "e41264e7bd52236fe19741c7fa2b06181511334ee435875123a78d1e573ca092";
+  "c13a33297f306487cc438fa0ae8e3d18625644862905c082ab6b7204909ae334";
 
 /**
  * The Estado line P4 closure is allowed to have produced.
@@ -911,6 +927,24 @@ const AUTHORITY_LITERALS = {
     "P1B is not P1 completion",
     "no product adoption",
     "GET only",
+  ],
+  // The checkpoint's own laws, asserted rather than described. Without this
+  // entry the fence knows ADR 0012 only as a write-set path, and the four
+  // statements the whole normalization rests on — the activation list starts
+  // empty, no P5C byte is staged, P5C does not resume until full compliance,
+  // and no commit claims the live tree is green — would live only in prose that
+  // nothing checks.
+  "docs/architecture/0012-structural-normalization.md": [
+    "mirrored",
+    "zero",
+    "activation list",
+    "starts empty",
+    "never moves",
+    "does not resume until full compliance",
+    "no P5C byte",
+    "claims the live tree is green",
+    "no product adoption",
+    "no cutover",
   ],
   "docs/architecture/0011-accounts-registry-shadow-routing.md": [
     "read-only",
@@ -2892,57 +2926,134 @@ if (tracked.status === 0) {
   );
 }
 
-// --- 21. the folder/index organization law (owner rule, P5B) -----------------
+// --- 21. the mirrored-topology law (owner rule, P5N) -------------------------
 //
-// Owner law: inside the two trees named below, a source file is either the
-// tree's own `index.ts`/`errors.ts` or it lives in a domain folder as
-// `index.ts` with `index.test.ts` beside it when the index carries
-// implementation. Domains nest: each folder level is a domain in its own right
-// and needs its own `index.ts`.
+// Owner law, repository-wide once every tree is activated:
 //
-// The point is that a domain is a *folder*, so its implementation and its
-// evidence are one directory listing apart and can never drift into separate
-// halves of a package. Three things are refused, and each has been an actual
-// failure mode somewhere:
+//   • product code lives at `packages/<pkg>/src/<domain>[/<subdomain>]/index.ts[x]`;
+//   • tests live at `packages/<pkg>/test/<domain>[/<subdomain>]/index.test.ts[x]`,
+//     a **separate mirrored tree**, with fixtures and helpers under the
+//     corresponding mirrored test domain;
+//   • **zero** `*.test.*` or `*.spec.*` anywhere under `src/`;
+//   • the only package-root product exception is `src/index.ts[x]`, a stable
+//     public barrel, and the only mirrored root exception is
+//     `test/index.test.ts[x]` for whole-package assertions — never
+//     `test/index.ts`, since a helper at the test root belongs to no domain;
+//   • inside a test domain, `index.ts[x]` is permitted alongside the test, so
+//     the fixtures and helpers the owner law places under the mirrored domain
+//     have somewhere to be;
+//   • there is **no `errors.ts` exception**: an error module is a domain and
+//     lives at `src/errors/index.ts` like any other.
 //
-//   • a flat `src/quota.ts` beside `src/quota/` — two homes for one domain,
-//     and a reader who finds the wrong one first;
-//   • a folder that is entered without an `index.ts` — a directory of loose
-//     modules wearing a domain's name;
-//   • an implementation-bearing `index.ts` with no `index.test.ts` beside it,
-//     which is the shape code takes just before it stops being tested.
+// **Naming law**, enforced mechanically alongside the structure: every domain
+// directory segment is lowercase kebab-case, mirrored identically under
+// `test/`; no adjacent duplicate semantic segment (`format/format/` is
+// refused); and a leaf file that repeats its parent domain folds into that
+// domain's own `index.ts` rather than growing a `<name>/<name>/` wrapper —
+// which the non-index basename rule already refuses.
 //
-// A **pure re-export barrel** needs no test, and the criterion is mechanical
-// rather than a judgement call: strip the comments and every `import`/`export
-// … from "…"` statement, and if nothing but whitespace remains the file
-// declares nothing of its own and has nothing to test. Requiring a test for a
-// file that only forwards names would be requiring a test of the module
-// system.
+// This section **retires the P5B folder/index law** it replaces. That rule
+// required `index.test.ts` *beside* an implementation-bearing `index.ts` and
+// granted an `errors.ts` root exception; both are now false, and leaving it
+// live would have fired on the first relocation this checkpoint performs.
 //
-// Scoped to exactly these two trees. The older packages predate the law and are
-// not retrofitted by it: applying a new organizational rule retroactively would
-// turn one packet into a repository-wide refactor, which is how a fence stops
-// being something anyone can afford to satisfy.
-const FOLDER_INDEX_TREES = ["packages/accounts/src/", "packages/adapters/src/providers/"];
+// **The activation list starts empty, and that is the design.** Sixty
+// committed tests sit under `src/` today and a hundred and one non-index
+// product modules with them; a law switched on repo-wide in one step would
+// fail every gate until the last cohort landed, which is a fence nobody can
+// commit against. Each cohort activates its own tree in the same commit that
+// makes that tree compliant, so the law and the code arrive together and every
+// commit in between is green.
+const TOPOLOGY_ACTIVE_TREES = [];
 
-/** The only basenames permitted directly at a tree's root. */
-const FOLDER_INDEX_ROOT_FILES = new Set(["index.ts", "errors.ts"]);
+/** The only basename a product module may carry, anywhere under `src/`. */
+const TOPOLOGY_PRODUCT_INDEX = new Set(["index.ts", "index.tsx"]);
 
 /**
- * Does this module declare anything of its own, or only forward names?
+ * What a test tree may hold, and it differs by depth.
  *
- * Comments go first, then every import and re-export statement — including the
- * multi-line braced form and `export * from`. Whatever is left is the file's
- * own content.
+ * At the root: only `index.test.ts[x]`, the whole-package assertion mirroring
+ * the `src/index.ts[x]` barrel. **Not** `test/index.ts` — a helper at the root
+ * of the test tree belongs to no domain, which is the shape the mirror exists
+ * to prevent.
+ *
+ * Inside a domain: the test itself, and also `index.ts[x]`, because the owner
+ * law puts fixtures and helpers under the mirrored test domain they serve.
+ * A scripted child process, a fake, a shared builder — each is a domain's own
+ * supporting module and is entered through an index like anything else. The
+ * accepted inventory moves five of them, and a gate that admitted only
+ * `index.test.ts` would have refused every one.
  */
-function declaresImplementation(source) {
-  const stripped = stripComments(source)
-    .replace(
-      /\b(?:import|export)\s+(?:type\s+)?(?:\*(?:\s+as\s+[\w$]+)?|\{[^}]*\}|[\w$]+)?\s*from\s*["'][^"']+["']\s*;?/g,
-      "",
-    )
-    .replace(/\bimport\s*["'][^"']+["']\s*;?/g, "");
-  return stripped.trim() !== "";
+const TOPOLOGY_TEST_ROOT = new Set(["index.test.ts", "index.test.tsx"]);
+const TOPOLOGY_TEST_DOMAIN = new Set([
+  "index.test.ts",
+  "index.test.tsx",
+  "index.ts",
+  "index.tsx",
+]);
+/** Lowercase kebab-case: no uppercase, no underscore, no leading or double dash. */
+const TOPOLOGY_SEGMENT = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** What may never appear under `src/`, whatever else is true of it. */
+const TOPOLOGY_TEST_MARKER = /\.(test|spec)\.[cm]?[jt]sx?$/;
+
+/**
+ * Check one file's path against the topology.
+ *
+ * `segments` is the path below the tree root, so `["quota", "index.ts"]` for
+ * `packages/accounts/src/quota/index.ts`. The rules are the same either side of
+ * the mirror; only the permitted basenames differ, which is what makes the two
+ * trees genuinely mirror images rather than two conventions that happen to
+ * rhyme.
+ */
+function checkTopologyPath(relativePath, segments, rootBasenames, domainBasenames, treeLabel) {
+  const basename = segments[segments.length - 1] ?? "";
+  const directories = segments.slice(0, -1);
+  const atRoot = directories.length === 0;
+  const permitted = atRoot ? rootBasenames : domainBasenames;
+
+  if (!permitted.has(basename)) {
+    if (atRoot) {
+      fail(
+        relativePath +
+          " is a non-index module at the root of " +
+          treeLabel +
+          "; the only root exception is " +
+          [...permitted].sort().join(" or "),
+      );
+    } else {
+      fail(
+        relativePath +
+          " is not " +
+          [...permitted].sort().join(" or ") +
+          "; a domain is entered through its own index, and a leaf repeating its" +
+          " parent folds into that index",
+      );
+    }
+    return;
+  }
+
+  for (let depth = 0; depth < directories.length; depth += 1) {
+    const segment = directories[depth] ?? "";
+    if (!TOPOLOGY_SEGMENT.test(segment)) {
+      fail(
+        relativePath +
+          " has the domain segment " +
+          JSON.stringify(segment) +
+          ", which is not lowercase kebab-case",
+      );
+    }
+    // Adjacent only. `status/badge/status/index.ts` is a legitimate shape; it
+    // is the immediate repetition that means a folder was created to hold a
+    // file that should have been its parent's index.
+    if (depth > 0 && directories[depth - 1] === segment) {
+      fail(
+        relativePath +
+          " repeats the domain segment " +
+          JSON.stringify(segment) +
+          " immediately inside itself; fold it into the parent's index",
+      );
+    }
+  }
 }
 
 if (tracked.status === 0) {
@@ -2952,79 +3063,53 @@ if (tracked.status === 0) {
   const candidates = new Set(present);
   for (const relativePath of WRITE_SET) candidates.add(relativePath);
 
-  /** domain folder → the basenames it holds. */
-  const domainFolders = new Map();
-  let checked = 0;
+  let checkedFiles = 0;
+  for (const pkg of TOPOLOGY_ACTIVE_TREES) {
+    const srcRoot = "packages/" + pkg + "/src/";
+    const testRoot = "packages/" + pkg + "/test/";
+    for (const relativePath of [...candidates].sort()) {
+      if (!/\.[cm]?[jt]sx?$/.test(relativePath)) continue;
+      if (readIfPresent(relativePath) === null) continue;
 
-  for (const relativePath of [...candidates].sort()) {
-    const tree = FOLDER_INDEX_TREES.find((prefix) => relativePath.startsWith(prefix));
-    if (tree === undefined || !relativePath.endsWith(".ts")) continue;
-    if (readIfPresent(relativePath) === null) continue;
-    checked += 1;
-
-    const segments = relativePath.slice(tree.length).split("/");
-    const basename = segments[segments.length - 1] ?? "";
-
-    if (segments.length === 1) {
-      if (!FOLDER_INDEX_ROOT_FILES.has(basename)) {
-        fail(
-          relativePath +
-            " is a flat file in " +
-            tree +
-            "; a domain lives in a folder as index.ts with index.test.ts beside it",
+      if (relativePath.startsWith(srcRoot)) {
+        checkedFiles += 1;
+        if (TOPOLOGY_TEST_MARKER.test(relativePath)) {
+          fail(
+            relativePath +
+              " is a test under src/; tests live in the mirrored " +
+              testRoot +
+              " tree",
+          );
+          continue;
+        }
+        checkTopologyPath(
+          relativePath,
+          relativePath.slice(srcRoot.length).split("/"),
+          TOPOLOGY_PRODUCT_INDEX,
+          TOPOLOGY_PRODUCT_INDEX,
+          srcRoot,
+        );
+      } else if (relativePath.startsWith(testRoot)) {
+        checkedFiles += 1;
+        checkTopologyPath(
+          relativePath,
+          relativePath.slice(testRoot.length).split("/"),
+          TOPOLOGY_TEST_ROOT,
+          TOPOLOGY_TEST_DOMAIN,
+          testRoot,
         );
       }
-      continue;
-    }
-
-    if (basename !== "index.ts" && basename !== "index.test.ts") {
-      fail(
-        relativePath +
-          " is not index.ts or index.test.ts; a domain folder in " +
-          tree +
-          " holds exactly those two",
-      );
-      continue;
-    }
-
-    // Every level is a domain, so every level is registered. `a/b/index.ts`
-    // makes both `a` and `a/b` folders that must each be entered through an
-    // index of their own.
-    const folders = segments.slice(0, -1);
-    for (let depth = 1; depth <= folders.length; depth += 1) {
-      const key = tree + folders.slice(0, depth).join("/");
-      const held = domainFolders.get(key) ?? new Set();
-      if (depth === folders.length) held.add(basename);
-      domainFolders.set(key, held);
     }
   }
 
-  for (const [folder, held] of [...domainFolders].sort()) {
-    if (!held.has("index.ts")) {
-      fail(folder + " has no index.ts; every folder level is a domain entered through one");
-      continue;
-    }
-    const source = readIfPresent(folder + "/index.ts");
-    if (source === null) continue;
-    if (declaresImplementation(source) && !held.has("index.test.ts")) {
-      fail(
-        folder +
-          "/index.ts declares implementation with no index.test.ts beside it;" +
-          " a domain folder carries its own evidence",
-      );
-    }
-  }
-
-  if (checked > 0) {
-    notes.push(
-      checked +
-        " sources in " +
-        FOLDER_INDEX_TREES.length +
-        " trees follow the folder/index law across " +
-        domainFolders.size +
-        " domain folders",
-    );
-  }
+  notes.push(
+    TOPOLOGY_ACTIVE_TREES.length === 0
+      ? "the mirrored-topology law is scaffolded with no tree activated yet; cohorts activate their own"
+      : checkedFiles +
+          " files in " +
+          TOPOLOGY_ACTIVE_TREES.length +
+          " activated tree(s) satisfy the mirrored-topology and naming laws",
+  );
 }
 
 // The closed export surface, pinned by equality in both directions.

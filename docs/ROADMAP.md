@@ -45,6 +45,37 @@ Claude, Kimi y Codex y que pueda:
 No es un segundo DT. Ejecuta reglas admitidas por el DT activo y nunca decide
 producto, arquitectura o aceptación visual por su cuenta.
 
+## Iniciativas concurrentes de primera clase
+
+El control plane soporta dos o más **Initiatives** de primera clase en
+concurrente, no una lista plana de tareas. Es un producto local reutilizable,
+no un dashboard específico de Modern Rescue: una iniciativa de Modern Rescue
+puede correr al lado de un módulo nuevo de Rottay o de una iniciativa de
+frontend ajena, sin contaminación cruzada. Toda tarea, versión de roadmap,
+objetivo, asignación de agente, worktree, lease, write-set, log, gate,
+auditoría, checkpoint, commit, aprobación y atribución de tokens es
+initiative-scoped. La cuota de proveedor/cuenta sigue siendo global, pero el
+uso y las reservas se agregan por iniciativa y por tarea. Las iniciativas
+corren en paralelo sin contaminación cruzada.
+
+La UI ofrece un portfolio global y workspaces por iniciativa con switcher
+limpio, mostrando por iniciativa: objetivo, roadmap versionado y editable,
+hitos y progreso, grafo de tareas, agentes activos y su acción actual, logs,
+tokens consumidos/reservados/restantes, confianza de cuota y
+reset/renovación, errores, bloqueos e historia.
+
+La edición del roadmap es versionada y auditada: `RoadmapVersion` inmutable
+con digest, concurrencia optimista, evento/receipt de cambio append-only,
+rollback e historia. El roadmap del propio ACP no es un documento UI mutable
+sin tracking.
+
+Los contratos de Initiative y de roadmap versionado son una fase propia,
+preauditada, anterior a cualquier implementación de UI (ver P7I).
+
+La autoridad persistente local es SQLite WAL y la API es Fastify en loopback.
+La CLI y el daemon son completamente operables con la UI detenida: la UI es
+opcional como proceso, pero completa como producto antes del cutover.
+
 ## Ley de coexistencia y cutover
 
 La operatoria actual de Modern Rescue y el Kimi que coordina la refactorización
@@ -327,6 +358,38 @@ adjudica políticas; Codex revisa el checkpoint.
 - perfiles preautenticados y fallback de reautenticación;
 - cambio automático/manual y drills por proveedor.
 
+### P5N — Normalización estructural (checkpoint obligatorio)
+
+DT: Kimi. Inventario y refactors por cohortes: Sonnet en worktrees aislados.
+Integrator: Opus. Auditor por cohorte: Fable. Kimi adjudica cada agrupación.
+
+Topología obligatoria exacta (ley del owner, repository-wide):
+
+- código de producto: `packages/<pkg>/src/<domain>/<subdomain>/index.ts[x]`;
+- tests: `packages/<pkg>/test/<domain>/<subdomain>/index.test.ts[x]` — un
+  árbol espejo separado; **cero** `*.test.*` o `*.spec.*` bajo `src`;
+- fixtures y helpers viven bajo el dominio de test espejo correspondiente;
+- el `src/index.ts` raíz de cada paquete es sólo un barrel público estable;
+- el architecture gate aserta estos invariantes exactos, árbol por árbol,
+  repo-wide.
+
+Censo medido con clasificador disjunto (no `grep -v`), reconciliado
+explícitamente entre baseline commiteado y P5C congelado:
+
+- **tracked HEAD: 177** fuentes TS/TSX bajo `packages/*/src/` = 60
+  tests/spec + 16 index de producto + 101 producto no-index;
+- **live: 179** = 61 tests + 17 index + 101 producto no-index (los dos
+  archivos P5C untracked congelados añaden un test y un index);
+- los 101 paths de producto no-index son los candidatos a adjudicación
+  semántica (no movimientos ciegos); los 60 tests commiteados bajo `src/` se
+  relocan al árbol espejo `test/`. Los conteos por paquete los produce el
+  inventario P5N-INV con el clasificador disjunto; ninguna cifra por paquete
+  se afirma sin esa medición.
+
+Las relocations son mecánicas; ningún cambio semántico viaja en un cohorte;
+el gate expande la ley árbol por árbol, sólo cuando cada cohorte queda
+compliant; **P6 no comienza hasta compliance total**.
+
 ### P6 — Enforcement de writers
 
 Writer: Opus. Auditor: Fable. Checkpoint independiente: Codex.
@@ -346,6 +409,18 @@ Integrator: Opus. Auditor: Fable.
 - un packet mecánico writer con commit local y sin push;
 - cero participación de Modern Rescue durante todo P7 y P8.
 
+### P7I — Contratos de iniciativa y roadmap versionado
+
+DT: Kimi. Writer: Opus. Auditor: Fable (preauditoría obligatoria de los
+contratos antes de cualquier implementación de UI).
+
+- contrato `Initiative` y scoping de toda entidad por iniciativa;
+- contrato `RoadmapVersion` inmutable con digest, concurrencia optimista,
+  evento/receipt append-only por cambio, rollback e historia;
+- rollups de uso/reserva de tokens por iniciativa y por tarea sobre cuota
+  global;
+- cero UI en esta fase: sólo contratos, ledger mappings y pruebas.
+
 ### P8 — Producto completo y certificación pre-cutover
 
 Kimi adjudica; Fable audita evidencia; Codex comunica una evaluación concisa al
@@ -357,13 +432,25 @@ owner.
 - tiempo mediano no empeora más de 10%; objetivo posterior: mejora neta;
 - cero writers concurrentes por worktree y cero writes fuera de scope;
 - cada packet tiene checkpoint o receipt terminal;
-- UI completa: overview, task graph, timeline, workers/sessions, routing, cuentas,
+- UI completa: portfolio global y workspaces por iniciativa (objetivo,
+  roadmap versionado y editable, hitos y progreso, task graph, agentes
+  activos y acción actual, logs, tokens consumidos/reservados/restantes,
+  confianza de cuota y reset/renovación, errores/bloqueos e historia),
+  overview, task graph, timeline, workers/sessions, routing, cuentas,
   cuotas, worktrees, leases, write-sets, logs, diffs, gates, auditorías,
   checkpoints, commits, approvals, errores y recuperación;
-- experiencia responsive, navegación por teclado, WCAG AA, estados loading/empty/
-  degraded/error, búsqueda/filtros y evidencia visual desktop/mobile;
-- tests unitarios, integración, contratos, E2E y sighted QA sobre los workflows
-  principales, sin defectos críticos o mayores abiertos;
+- stack visual vinculante: React+Vite se mantiene; se adoptan Radix UI
+  primitives, TanStack Query, TanStack Table, TanStack Virtual,
+  `@xyflow/react`, Recharts, Lucide y dnd-kit para el ordenamiento del
+  roadmap; lenguaje visual bespoke tokenizado con CSS custom properties; sin
+  Next.js, sin shadcn copy-paste, sin tema monolítico estilo MUI;
+- experiencia responsive desktop/mobile, navegación por teclado, WCAG AA,
+  estados loading/empty/degraded/error, búsqueda/filtros y evidencia visual
+  desktop/mobile;
+- tests unitarios, integración, contratos, E2E y sighted QA sobre los
+  workflows principales — incluyendo portfolio, cambio de iniciativa,
+  edición de roadmap, logs, cuotas y recuperación — sin defectos críticos o
+  mayores abiertos;
 - documentación operativa, troubleshooting, backup/restore, cambio de cuenta,
   actualización y rollback reproducibles por una sesión fresca;
 - owner acepta explícitamente el producto completo. Esta aceptación certifica el
