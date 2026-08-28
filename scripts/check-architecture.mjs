@@ -495,13 +495,20 @@ const P3E_WRITE_SET = [
 /**
  * P4: read-only provider adapters.
  *
- * P4 is 40 packet entries across 31 distinct paths within P4 scope. The
- * convention is the standing one: entries are the sum of the array lengths,
- * distinct is `new Set` over their union. Repeated: `src/index.ts` (A, B, C, D),
- * `scripts/check-architecture.mjs` (A, B, C, D, E) and
- * `packages/adapters/README.md` (A, E) — 40 − 8 = 32 across all five arrays,
- * of which `scripts/check-architecture.mjs` is historical (it belongs to
- * earlier phases too), leaving 31 new to P4.
+ * P4 is **40 packet entries across 32 distinct paths**. The convention is the
+ * standing one, applied without exception: entries are the sum of the packet
+ * array lengths, distinct is `new Set` over their union, within phase scope.
+ * 24 + 4 + 4 + 4 + 4 = 40 entries; the repeats are
+ * `scripts/check-architecture.mjs` (A, B, C, D, E), `src/index.ts`
+ * (A, B, C, D) and `packages/adapters/README.md` (A, E), contributing
+ * 4 + 3 + 1 = 8 duplicate entries, so 40 − 8 = 32.
+ *
+ * One number, stated once. An earlier revision of this comment opened with 31
+ * and then computed 32 in its own next sentence, netting the fence script out
+ * of `scripts/check-architecture.mjs` as "historical". That subtraction is not
+ * the convention: the convention counts distinct paths within phase scope, and
+ * a path P4 edits is in P4's scope whether or not an earlier phase edited it
+ * too. 32 is what ADR 0010 records, and the two now agree.
  *
  * This supersedes an earlier 33/25, computed over arrays that omitted the six
  * co-located test paths and `session.ts`. A test file is its own path.
@@ -602,25 +609,30 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "b2a990c438e379ee245df0b99e201f2ef1405b700a6d4d3ed30c6a02a160226d";
+  "e41264e7bd52236fe19741c7fa2b06181511334ee435875123a78d1e573ca092";
 
 /**
- * The Estado line P3 closure is allowed to have produced.
+ * The Estado line P4 closure is allowed to have produced.
  *
- * P3 is complete on four committed commits and the independently verified
- * receipts behind them: the shadow-observation boundary, the ledger-to-client
- * parity contract, the passive collectors, and the baseline over a disposable
- * shadow ledger. The literal is exact, and because it still does not contain
- * P1_INCOMPLETE it also keeps the lane envelope closed.
+ * P4 is complete on five committed commits and the independently verified
+ * receipts behind them: the adapter contract and session boundary, the Claude
+ * headless descriptor, the Kimi ACP descriptor, the provider-folder
+ * relocation, and the Codex App Server descriptor. The literal is exact, and
+ * because it still does not contain P1_INCOMPLETE it also keeps the lane
+ * envelope closed.
  *
- * P4 opens as *next*, not as started. What completion does NOT mean is stated
- * in the same line and must stay there: NO_PRODUCT_CUTOVER. A measured shadow
- * baseline is still not in service, and nothing P3 built observes any live
- * session. Adoption happens once, after P8 certification and under a separate
- * P9 authorisation.
+ * What P4 completion does NOT mean is worth stating where the claim is made.
+ * Every provider capability leaves P4 `UNKNOWN`: no adapter was pointed at a
+ * running provider, no handshake was performed and no account was touched, so
+ * the adapters are complete while the warranties about the providers are
+ * simply absent. P5 opens as *next*, not as started.
+ *
+ * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P4
+ * built is in service, and adoption happens once, after P8 certification and
+ * under a separate P9 authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / NEXT_P4 / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / NEXT_P5 / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -656,6 +668,13 @@ const ROADMAP_LITERALS = [
 // independent verifier's receipt, so there was never a claim to suppress. The
 // membership below is therefore unchanged at P3 closure — and the cutover
 // literals still never leave it.
+//
+// P4_COMPLETE never entered it either, and for the same reason: P4 closed on
+// five committed commits, each behind an independent verifier's receipt and a
+// semantic audit. The claim it makes is also a narrow one — three adapters
+// built, every provider capability left UNKNOWN — so there is no overclaim for
+// this list to suppress. Membership is therefore unchanged at P4 closure, and
+// the cutover literals still never leave it.
 const FORBIDDEN_ROADMAP_LITERALS = [
   "P1_DONE",
   "PRODUCT_CUTOVER_AUTHORIZED",
@@ -843,11 +862,23 @@ const EXPIRED_LITERALS = {
     "There is no orchestrator",
     "P0 and P1 complete. Next: P2.",
     "P0, P1 and P2 complete. Next: P3.",
+    "P0, P1, P2 and P3 complete. Next: P4.",
+    // Falsified by the same commit that retires the status text above: P4
+    // shipped three provider adapters. Pinned here rather than merely deleted,
+    // because a sentence that is only removed can come back, and coming back
+    // is the exact drift this table exists to catch.
+    "There is no provider adapter yet",
   ],
   "packages/daemon/README.md": ["This is P2D", "The launchd template is P2E"],
   // The P3A-only frame the observation README carried until P3 closed. Both
   // literals are lifted byte-exactly from the pre-edit file (lines 7 and 19).
   "packages/observation/README.md": ["This is P3A", "P3A is not P3 completion"],
+  // The P4A-only frame the adapters README carried until P4 closed. Both
+  // literals are lifted byte-exactly from the pre-edit file: the scope section
+  // opened "This is P4A" and closed by saying the three descriptors "are not
+  // exported yet". All three are exported now, so both sentences are false and
+  // pinned absent.
+  "packages/adapters/README.md": ["This is P4A", "are not exported yet"],
 };
 
 /** Files that must never exist in the repository, in any directory. */

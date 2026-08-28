@@ -3,28 +3,47 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0, P1, P2 and P3 complete. Next: P4.** Contracts, fences, the
+Status: **P0, P1, P2, P3 and P4 complete. Next: P5.** Contracts, fences, the
 append-only event ledger, a read-only observation plane over it — a loopback
 HTTP server, a CLI and a local UI — a durability plane with two orchestration
-drivers under a supervised local daemon, and a shadow-mode observation package
-with a measured baseline. P3 closed on committed evidence: the ledger, the
-server, the CLI and the UI are proven to agree exactly across all nine frozen
-routes — the CLI building its own answer from the same ledger without ever
-seeing the server's, and the UI proven to project the server's answer
-unchanged, with `health` bound in the contract as its named non-ledger
-exception, and with ordering and pagination part of the equality. Collectors
-read already-emitted artifacts and synthetic scenarios passively, and the
-baseline is recomputed over a disposable shadow ledger and proven
-byte-identical after a rebuild.
+drivers under a supervised local daemon, a shadow-mode observation package with
+a measured baseline, and three read-only provider adapters behind one process
+boundary. P3 closed on committed evidence: the ledger, the server, the CLI and
+the UI are proven to agree exactly across all nine frozen routes — the CLI
+building its own answer from the same ledger without ever seeing the server's,
+and the UI proven to project the server's answer unchanged, with `health` bound
+in the contract as its named non-ledger exception, and with ordering and
+pagination part of the equality. Collectors read already-emitted artifacts and
+synthetic scenarios passively, and the baseline is recomputed over a disposable
+shadow ledger and proven byte-identical after a rebuild.
+
+P4 closed on committed evidence and on an explicit account of what that
+evidence does *not* cover. `@acp/adapters` holds one spawn authority, one
+session controller and three provider descriptors — Claude headless
+`stream-json`, Kimi ACP over stable v1 NDJSON, and the Codex App Server — each
+a pure module that builds argv and turns bytes into normalized events, and none
+of which can spawn anything itself. Every parser claims an exact method subset
+and answers everything outside it with a classified refusal rather than a
+guess.
+
+**All five capabilities — `STREAMING`, `RESUME`, `MODEL_PIN`, `SESSION_ID` and
+`PROTOCOL_CANCEL` — leave P4 `UNKNOWN` for all three providers, with no
+evidence, and no live-conformance claim is made anywhere.** No provider
+protocol was handshaked, no account or credential touched, and no real provider
+session run: every negative is driven by a scripted fake, which proves our
+parser and our machinery and nothing whatsoever about a provider. Each real
+capability claim waits for its own separately authorized protocol proof.
+Interruption works for all three regardless, because the signal floor is a
+property of our process handle rather than a provider feature.
 
 Shadow mode measured synthetic and already-emitted artifacts only. Nothing was
 observed from any live session, nothing here is adopted into any real
 operation, and no cutover is authorized.
 
 The launchd template stays inert, nothing is installed, and no launch agent
-survives a drill. There is no provider adapter yet, and **no product adoption
-of any kind**: adoption is a separate owner decision at P9 that nothing here
-anticipates or authorizes.
+survives a drill. No adapter has been pointed at a real provider, and there is
+**no product adoption of any kind**: adoption is a separate owner decision at
+P9 that nothing here anticipates or authorizes.
 
 **P1A is not P1 completion**, and neither was P1B. P1 closed only once the
 server served the frozen contract, the CLI read it and the UI rendered it, each
