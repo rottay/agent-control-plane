@@ -3,13 +3,18 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0 and P1 complete. P2 in progress.** Contracts, fences, the
+Status: **P0, P1 and P2 complete. Next: P3.** Contracts, fences, the
 append-only event ledger, a read-only observation plane over it — a loopback
 HTTP server, a CLI and a local UI — and a durability plane with two
-orchestration drivers under a supervised local daemon. A launchd template
-exists and is inert; **P2 does not close until the daemon is proven startable
-under launchd**, which the template alone does not show. There is no provider
-adapter yet, and no product adoption of any kind.
+orchestration drivers under a supervised local daemon. P2 closed on evidence:
+the daemon is a packaged executable with a tracked config-file contract, and a
+disposable drill starts it under `launchd`, reaches readiness, stops it, and
+leaves nothing behind — reproduced independently before the status moved.
+
+The launchd template stays inert, nothing is installed, and no launch agent
+survives a drill. There is no provider adapter yet, and **no product adoption
+of any kind**: adoption is a separate owner decision at P9 that nothing here
+anticipates or authorizes.
 
 **P1A is not P1 completion**, and neither was P1B. P1 closed only once the
 server served the frozen contract, the CLI read it and the UI rendered it, each

@@ -421,7 +421,7 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "9a5c7e72405e86602bf99d410e5e497c6329b2a01d116d3acb4c97d15aa29ffd";
+  "6c58bf68a17d0399d990f90e81120c9b9e0543d713f2d8912a4b525238e74721";
 
 /**
  * The Estado line P1 closure is allowed to have produced.
@@ -437,7 +437,7 @@ const ROADMAP_SHA256 =
  * authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_IN_PROGRESS / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / NEXT_P3 / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -458,17 +458,18 @@ const ROADMAP_LITERALS = [
  * ever assert cutover authority, which is granted by the owner at P9 and by
  * nothing else.
  *
- * P2_COMPLETE went back on. P2E produces a well-formed inert template, but the
- * roadmap's P2 criterion is a daemon startable under launchd, and the tracked
- * template's command contract does not match the daemon that exists: the child
- * entry takes a JSON document as argv[2], not a config-file path, and no
- * packaged executable bridges them. Closing P2 on this packet would certify a
- * capability the repository cannot execute. It leaves the list again in P2F,
- * after a real launchd lifecycle drill passes.
+ * P2_COMPLETE went back on at P2E, because the roadmap's P2 criterion is a
+ * daemon startable under launchd and an inert template is not that. It leaves
+ * the list again here, in P2F Stage B, and only now: Stage A supplied the
+ * packaged entry and the config-file contract, drove one real disposable
+ * launchd lifecycle, and an independent verifier reproduced it across four
+ * cycles. The claim follows the evidence rather than arriving beside it.
+ *
+ * The cutover literals never leave. No phase status may assert cutover
+ * authority, which is the owner's at P9 and nobody else's.
  */
 const FORBIDDEN_ROADMAP_LITERALS = [
   "P1_DONE",
-  "P2_COMPLETE",
   "PRODUCT_CUTOVER_AUTHORIZED",
   "CUTOVER_AUTHORIZED",
 ];
@@ -1797,7 +1798,11 @@ if (tracked.status === 0) {
         fail("packages/daemon must not depend on " + forbidden + " directly");
       }
     }
-    notes.push("the daemon manifest declares no bin and an exact dependency surface");
+    // Corrected in Stage B. This note still said "declares no bin" after P2F
+    // Stage A began requiring exactly one — non-functional, since it is only a
+    // note, but false, and a green line that says the opposite of what the
+    // check enforces is precisely how an untrue claim survives review.
+    notes.push("the daemon manifest declares the one exact bin and an exact dependency surface");
   }
 
   const DAEMON_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/ledger", "@acp/runtime"]);

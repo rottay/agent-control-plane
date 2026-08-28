@@ -512,11 +512,66 @@ describe("adoption is impossible from here", () => {
     expect(status).not.toBe(0);
   });
 
-  it("the fence refuses a roadmap that closes P2 early", () => {
-    const status = withMutation("docs/ROADMAP.md", (source) =>
-      source.replace("P2_IN_PROGRESS", "P2_COMPLETE"),
-    );
-    expect(status).not.toBe(0);
+  it("the fence refuses a roadmap that claims cutover authority", () => {
+    // Migrated in P2F Stage B. This drill used to flip P2_IN_PROGRESS to
+    // P2_COMPLETE — an invariant that expired the moment P2 legitimately
+    // closed, at which point the replace became a no-op and the harness guard
+    // caught it. The cutover literals are the enduring form of the same law:
+    // no phase status may assert cutover authority, which is the owner's at P9
+    // and nobody else's, so they never leave the forbidden list.
+    //
+    // Attribution is the point here. Any edit to the roadmap changes its
+    // digest, and the digest gate would refuse on its own — so a bare non-zero
+    // exit would prove nothing about the literal gate. The pin is therefore
+    // moved to match the edited roadmap, which satisfies the digest gate and
+    // leaves the literal gate as the only thing that can still object. The
+    // control below shows that re-pinning really does neutralize the digest
+    // gate; the case then shows the claim is refused anyway.
+    const roadmapAbsolute = join(REPO_ROOT, "docs", "ROADMAP.md");
+    const original = readFileSync(roadmapAbsolute, "utf8");
+    const originalDigest = createHash("sha256").update(original).digest("hex");
+    const digestOf = (text: string): string =>
+      createHash("sha256").update(text).digest("hex");
+
+    // Control: changes the digest, claims nothing.
+    const benign = original + "\n";
+    // Case: changes the digest and claims cutover authority, while leaving the
+    // exact status line and NO_PRODUCT_CUTOVER intact.
+    //
+    // Appended rather than substituted, deliberately. Replacing
+    // NO_PRODUCT_CUTOVER with PRODUCT_CUTOVER_AUTHORIZED also destroys the
+    // exact status literal and removes a required structural statement, so the
+    // fence refuses on those instead and the forbidden-literal gate is never
+    // reached. That version was written first and observed to pass with
+    // PRODUCT_CUTOVER_AUTHORIZED deleted from the forbidden list — a negative
+    // that could not fail for its stated reason. Appending isolates the gate
+    // under test.
+    const claiming = original + "\nPRODUCT_CUTOVER_AUTHORIZED\n";
+    // The substituting form is still exercised, for the shape the DT named; it
+    // is refused too, just not attributably.
+    const substituting = original.replace("NO_PRODUCT_CUTOVER", "PRODUCT_CUTOVER_AUTHORIZED");
+    expect(substituting).not.toBe(original);
+
+    const runWithRoadmap = (variant: string): number => {
+      try {
+        writeFileSync(roadmapAbsolute, variant, "utf8");
+        return withMutation("scripts/check-architecture.mjs", (fence) =>
+          fence.replace(originalDigest, digestOf(variant)),
+        );
+      } finally {
+        writeFileSync(roadmapAbsolute, original, "utf8");
+        expect(digestOf(readFileSync(roadmapAbsolute, "utf8"))).toBe(originalDigest);
+      }
+    };
+
+    // The digest gate is satisfied by the re-pin, so this passes. This is what
+    // makes the next assertion mean something.
+    expect(runWithRoadmap(benign)).toBe(0);
+    // Same treatment, status line and structural statements untouched, and it
+    // is still refused: the forbidden-literal gate is the only one left.
+    expect(runWithRoadmap(claiming)).not.toBe(0);
+    // And the substituting shape is refused as well.
+    expect(runWithRoadmap(substituting)).not.toBe(0);
   });
 
   it("passes with no mutation at all", () => {
