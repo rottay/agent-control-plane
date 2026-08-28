@@ -238,6 +238,29 @@ export default defineConfig({
       },
       {
         test: {
+          // Reads only. It opens no socket, binds no port and spawns no child,
+          // so it stays in the default parallel group (groupOrder 0) beside the
+          // other hermetic projects rather than joining the serialized
+          // port-binding groups the runtime and daemon projects use.
+          //
+          // Its files need no serialization either: every fixture is a fresh
+          // uniquely-named directory under the real temporary root, created and
+          // removed by the test that made it, so two files running at once
+          // cannot see each other's fixtures. That is a deliberate difference
+          // from the observation project, which shares fixed roots and must run
+          // one file at a time.
+          name: 'accounts',
+          root: './packages/accounts',
+          include: ['src/**/*.test.ts'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+        },
+        resolve: { alias: workspaceSourceAliases },
+      },
+      {
+        test: {
           name: 'server',
           root: './packages/server',
           include: ['src/**/*.test.ts'],

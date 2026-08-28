@@ -572,6 +572,76 @@ const P4E_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5: accounts, quotas and shadow routing.
+ *
+ * P5 is **28 packet entries across 20 distinct paths**. The standing convention,
+ * applied without exception: entries are the sum of the packet array lengths,
+ * distinct is `new Set` over their union, within phase scope.
+ * 12 + 4 + 4 + 4 + 4 = 28 entries; the repeats are
+ * `scripts/check-architecture.mjs` (A, B, C, D, E), `src/index.ts` (A, B, C, D)
+ * and `packages/accounts/README.md` (A, E), contributing 4 + 3 + 1 = 8
+ * duplicate entries, so 28 − 8 = 20.
+ *
+ * A path an earlier phase also edited is still in P5's scope: the convention
+ * counts distinct paths within the phase, and nothing is netted out as
+ * "historical". That correction was made for P4 at P4E closure and the same
+ * arithmetic is used here from the start.
+ */
+const P5A_WRITE_SET = [
+  "packages/accounts/package.json",
+  "packages/accounts/tsconfig.json",
+  "packages/accounts/README.md",
+  "packages/accounts/src/index.ts",
+  "packages/accounts/src/errors.ts",
+  "packages/accounts/src/registry/index.ts",
+  "packages/accounts/src/registry/index.test.ts",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0011-accounts-registry-shadow-routing.md",
+];
+
+/**
+ * P5B, P5C, P5D and P5E are declared here and are **future**.
+ *
+ * Their paths are named now so the write-set gate accepts them when they
+ * arrive, and so a reader can see the whole phase from one place. None of the
+ * files exists yet, and the gate does not require a declared path to be
+ * present — it requires a present path to be declared. Declaring them early
+ * costs nothing and prevents the alternative, which is a fence edit smuggled
+ * into a packet that was supposed to be about a router.
+ */
+const P5B_WRITE_SET = [
+  "packages/accounts/src/quota/index.ts",
+  "packages/accounts/src/quota/index.test.ts",
+  "packages/accounts/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+const P5C_WRITE_SET = [
+  "packages/accounts/src/router/index.ts",
+  "packages/accounts/src/router/index.test.ts",
+  "packages/accounts/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+const P5D_WRITE_SET = [
+  "packages/accounts/src/switching/index.ts",
+  "packages/accounts/src/switching/index.test.ts",
+  "packages/accounts/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/** P5E: closure. The status line moves here and nowhere else. */
+const P5E_WRITE_SET = [
+  "docs/ROADMAP.md",
+  "README.md",
+  "packages/accounts/README.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -593,6 +663,11 @@ const WRITE_SET = [
   ...P4C_WRITE_SET,
   ...P4D_WRITE_SET,
   ...P4E_WRITE_SET,
+  ...P5A_WRITE_SET,
+  ...P5B_WRITE_SET,
+  ...P5C_WRITE_SET,
+  ...P5D_WRITE_SET,
+  ...P5E_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -836,6 +911,21 @@ const AUTHORITY_LITERALS = {
     "P1B is not P1 completion",
     "no product adoption",
     "GET only",
+  ],
+  "docs/architecture/0011-accounts-registry-shadow-routing.md": [
+    "read-only",
+    "no default path",
+    "never dereferenced",
+    "0600",
+    "never a value",
+    "shadow",
+    "read-only by law",
+    "never imports",
+    "deferred to P8",
+    "STOP law",
+    "P5A is not P5 completion",
+    "no product adoption",
+    "no cutover",
   ],
 };
 
@@ -1523,6 +1613,26 @@ const P1B_DEPENDENCY_LAW = [
     // The server package pulls @scarf/scarf, whose postinstall is a network
     // beacon. The 1.7.7 server is an external pinned binary, never a dependency.
     forbidden: ["@restatedev/restate-server", "@scarf/scarf", "@restatedev/restate"],
+  },
+  {
+    manifest: "packages/accounts/package.json",
+    // The ledger is a read-only dependency: P5D reads quota observations from
+    // the event log, and the `.append(` scan below asserts that no production
+    // source in the package ever writes one. `@acp/runtime` is forbidden by
+    // name because the dependency direction runs the other way — runtime
+    // consumes accounts in P6, never the reverse — and a cycle is far easier to
+    // refuse here than to unpick later.
+    dependencies: ["@acp/contracts", "@acp/ledger"],
+    devDependencies: ["vitest"],
+    forbidden: [
+      "@acp/runtime",
+      "@acp/daemon",
+      "@acp/adapters",
+      "@acp/api-contracts",
+      "@restatedev/restate-sdk",
+      "better-sqlite3",
+      "node:sqlite",
+    ],
   },
   {
     manifest: "packages/adapters/package.json",
@@ -2654,6 +2764,173 @@ if (observationIndex === null) {
     }
   }
   notes.push(exported.size + " observation exports, pinned by equality");
+}
+
+// --- 20. P5A: the accounts registry ------------------------------------------
+//
+// The accounts package reads the one document in this system that legitimately
+// names where credentials live. Every law it claims about that is asserted here
+// rather than described in its README, because a README cannot fail a build.
+const ACCOUNTS_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/ledger"]);
+const ACCOUNTS_ALLOWED_BUILTINS = new Set(["node:fs", "node:path"]);
+const ACCOUNTS_TEST_ONLY_IMPORTS = new Set(["vitest", "node:os", "node:crypto", "node:url"]);
+
+// Capability the package must not have. It reads a file and computes; it
+// cannot spawn, signal or reach out.
+const ACCOUNTS_FORBIDDEN_BUILTINS = [
+  "node:child_process",
+  "node:net",
+  "node:http",
+  "node:https",
+  "node:tls",
+  "node:dgram",
+  "node:dns",
+  "node:cluster",
+  "node:worker_threads",
+];
+
+// Tokens no production source in this package may name.
+//
+// `process.env` covers `HOME` on its own, and `HOME` is listed separately
+// anyway: the loader's whole hermeticity argument is that it cannot find the
+// owner file without being told where it is, and a package that reads one
+// environment variable is a package that can be given a default path by
+// somebody's shell. The owner-file name and its directory are here for the
+// same reason — they belong in prose, where a reader sees them and no code can
+// reach them.
+const ACCOUNTS_FORBIDDEN_TOKENS = [
+  "process.env",
+  "HOME",
+  "homedir",
+  "accounts.local.json",
+  ".rottay-agent-control-plane",
+  "writeFileSync",
+  "appendFileSync",
+  "mkdirSync",
+  "rmSync",
+  "unlinkSync",
+  "renameSync",
+  "chmodSync",
+  "chownSync",
+  ".append(",
+];
+
+const accountsManifest = readIfPresent("packages/accounts/package.json");
+if (accountsManifest === null) {
+  fail("packages/accounts/package.json is missing");
+} else {
+  const parsed = JSON.parse(accountsManifest);
+  if (parsed.bin !== undefined) {
+    fail("packages/accounts declares a bin; the accounts domain exposes no executable");
+  }
+  notes.push("the accounts manifest declares no bin");
+}
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  // A path this packet creates may not be in the index yet, and a law that only
+  // applied to committed files would not apply to the commit that introduced
+  // the break. The declared write-set is added so a new source is scanned the
+  // moment it exists.
+  const declared = new Set(present);
+  for (const relativePath of WRITE_SET) {
+    if (relativePath.startsWith("packages/accounts/src/") && relativePath.endsWith(".ts")) {
+      declared.add(relativePath);
+    }
+  }
+  const sources = [...declared]
+    .filter(
+      (relativePath) =>
+        relativePath.startsWith("packages/accounts/src/") && relativePath.endsWith(".ts"),
+    )
+    .filter((relativePath) => readIfPresent(relativePath) !== null)
+    .sort();
+
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const isTest = relativePath.endsWith(".test.ts");
+    const code = stripComments(content);
+
+    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
+    let match = pattern.exec(content);
+    while (match !== null) {
+      const name = match[1] ?? "";
+      const relative = name.startsWith("./") || name.startsWith("../");
+      const allowed =
+        relative ||
+        ACCOUNTS_ALLOWED_PACKAGES.has(name) ||
+        ACCOUNTS_ALLOWED_BUILTINS.has(name) ||
+        (isTest && ACCOUNTS_TEST_ONLY_IMPORTS.has(name));
+      if (!allowed) {
+        fail(relativePath + " imports " + name + ", which the accounts domain may not use");
+      }
+      if (ACCOUNTS_FORBIDDEN_BUILTINS.includes(name)) {
+        fail(relativePath + " imports " + name + "; the accounts domain reaches nothing");
+      }
+      match = pattern.exec(content);
+    }
+
+    // Tests need fixtures, so they may write, chmod and read an environment.
+    // Production sources may do none of it, and the guarantee is that the code
+    // has no means rather than that it declines.
+    if (isTest) continue;
+    for (const token of ACCOUNTS_FORBIDDEN_TOKENS) {
+      if (code.includes(token)) {
+        fail(
+          relativePath +
+            " names " +
+            token +
+            "; accounts production sources read one explicitly-supplied path and write nothing",
+        );
+      }
+    }
+  }
+  notes.push(
+    sources.length +
+      " accounts sources: no environment, no default owner-file path, no append, no spawn",
+  );
+}
+
+// The closed export surface, pinned by equality in both directions.
+const ACCOUNTS_PUBLIC_EXPORTS = [
+  "AccountsRefusal",
+  "AccountsRefused",
+  "ACCOUNTS_REFUSALS",
+  "AccountsFile",
+  "AccountsRegistry",
+  "LoadOutcome",
+  "ACCOUNTS_FILE_KEYS",
+  "ACCOUNTS_FILE_MAX_BYTES",
+  "buildRegistry",
+  "loadAccountsFile",
+];
+
+const accountsIndex = readIfPresent("packages/accounts/src/index.ts");
+if (accountsIndex === null) {
+  fail("packages/accounts/src/index.ts is missing");
+} else {
+  if (/export\s*\*\s*from/.test(accountsIndex)) {
+    fail("packages/accounts/src/index.ts uses `export *`, which cannot stay closed");
+  }
+  const exported = new Set();
+  for (const block of accountsIndex.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+    for (const piece of (block[1] ?? "").split(",")) {
+      const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
+      if (name !== undefined && name !== "") exported.add(name);
+    }
+  }
+  for (const name of exported) {
+    if (!ACCOUNTS_PUBLIC_EXPORTS.includes(name)) {
+      fail("packages/accounts exports " + name + ", which is outside its closed surface");
+    }
+  }
+  for (const name of ACCOUNTS_PUBLIC_EXPORTS) {
+    if (!exported.has(name)) {
+      fail("packages/accounts no longer exports the pinned name " + name);
+    }
+  }
+  notes.push(exported.size + " accounts exports, pinned by equality");
 }
 
 // The P3D deep aliases: exactly two, pointing at exactly these two modules, and
