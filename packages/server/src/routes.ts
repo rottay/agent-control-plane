@@ -335,11 +335,21 @@ function buildOverview(source: LedgerSource) {
       total: taskCounts.total,
       terminal: taskCounts.terminal,
       active: taskCounts.active,
-      byState: [...taskCounts.byState].map(([state, count]) => ({ state, count })),
+      // Sorted, not insertion-ordered. `Map` order here is a function of the
+      // ledger walk — page size, cursor order, which key appeared first — so it
+      // is declared nowhere and can change when unrelated data changes. The CLI
+      // has always sorted these alphabetically; ordering is part of the parity
+      // law, so the server converges onto that existing deterministic order
+      // rather than onto a third one.
+      byState: [...taskCounts.byState]
+        .map(([state, count]) => ({ state, count }))
+        .sort((left, right) => (left.state < right.state ? -1 : left.state > right.state ? 1 : 0)),
     },
     workers: {
       total: workerCounts.total,
-      byRole: [...workerCounts.byRole].map(([role, count]) => ({ role, count })),
+      byRole: [...workerCounts.byRole]
+        .map(([role, count]) => ({ role, count }))
+        .sort((left, right) => (left.role < right.role ? -1 : left.role > right.role ? 1 : 0)),
     },
     capabilities: CAPABILITIES,
     notice: null,

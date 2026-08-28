@@ -15,6 +15,8 @@ import {
 } from "@acp/api-contracts";
 
 import { buildPath } from "./queryString.js";
+import { canonicalRows } from "@acp/api-contracts";
+import type { ApiRouteName } from "@acp/api-contracts";
 
 /**
  * The read-only API client.
@@ -113,6 +115,19 @@ async function fetchAndParse<T>(
     };
   }
   return { kind: "ok", data: parsed.data };
+}
+
+/**
+ * The UI's adapter into the shared canonical row model (P3D).
+ *
+ * Takes an already-parsed response — the value a view would render — and
+ * projects it through the one row model defined in `@acp/api-contracts`. It
+ * deliberately does no fetching: parity is a claim about what the UI shows for
+ * a given body, and the transport is proven elsewhere. Keeping it pure is also
+ * what lets a Node test import this module at all.
+ */
+export function uiRowModel(route: ApiRouteName, response: unknown): unknown {
+  return canonicalRows(route, response);
 }
 
 export interface TasksFilters {

@@ -398,11 +398,16 @@ const P2F_STAGE_A_WRITE_SET = [
  * P3A: the shadow-mode boundary. Roots, refusals, and the laws that govern the
  * rest of P3 — collectors (P3B), baseline (P3C), parity (P3D), closure (P3E).
  *
- * P3 is 29 distinct paths across 32 packet entries; three paths are touched
- * twice (`packages/observation/src/index.ts` in A and C,
- * `packages/observation/README.md` and `scripts/check-architecture.mjs` in A
- * and E). The earlier arrays stay as the historical record and the displayed
- * count deduplicates, as P2D established.
+ * P3 is 31 distinct paths across 36 packet entries. Four paths are touched
+ * more than once: `packages/observation/src/index.ts` (A, C),
+ * `packages/observation/README.md` (A, E), `vitest.config.ts` (A, B) and
+ * `scripts/check-architecture.mjs` (A, D, E — three touches). Check:
+ * 36 − (1 + 1 + 1 + 2) = 31. `packages/server/src/routes.ts` and
+ * `packages/server/tsconfig.json` are each new distinct paths *within P3*;
+ * their P1 array membership is historical and outside the scope this count
+ * describes, which is the treatment the ordering ruling set for `routes.ts`.
+ * The earlier arrays stay as the historical record and the displayed count
+ * deduplicates, as P2D established.
  */
 const P3A_WRITE_SET = [
   "packages/observation/package.json",
@@ -419,6 +424,58 @@ const P3A_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P3B: the passive collectors. Sonnet's only authorized surface: five new
+ * files under one new subdirectory with frozen imports, plus `vitest.config.ts`
+ * — the collectors' test topology has to be declared somewhere, and the P3B
+ * topology ruling put it here rather than letting an integrator add it later.
+ */
+const P3B_WRITE_SET = [
+  "packages/observation/src/collect/artifact.ts",
+  "packages/observation/src/collect/artifact.test.ts",
+  "packages/observation/src/collect/scenario.ts",
+  "packages/observation/src/collect/scenario.test.ts",
+  "packages/observation/src/collect/index.ts",
+  "vitest.config.ts",
+];
+
+/** P3C: the baseline and its disposable shadow ledger. */
+const P3C_WRITE_SET = [
+  "packages/observation/src/baseline.ts",
+  "packages/observation/src/baseline.test.ts",
+  "packages/observation/src/shadow-ledger.ts",
+  "packages/observation/src/shadow-ledger.test.ts",
+  "packages/observation/src/index.ts",
+];
+
+/** P3D: the ledger-to-client parity contract and its three-way proof. */
+const P3D_WRITE_SET = [
+  "packages/api-contracts/src/parity.ts",
+  "packages/api-contracts/src/parity.test.ts",
+  "packages/api-contracts/src/index.ts",
+  "packages/cli/src/observation.ts",
+  "packages/ui/src/api/client.ts",
+  "packages/server/src/parity.test.ts",
+  "scripts/check-architecture.mjs",
+  // Sorting only, at the two aggregate emit sites. The server was emitting
+  // `Map` insertion order while the CLI sorted; ordering is part of the parity
+  // law, so the server converges onto the CLI's existing deterministic order.
+  "packages/server/src/routes.ts",
+  // The TypeScript counterpart of the P3A deep aliases. Those live in
+  // `vitest.config.ts`, which `tsc` and type-aware eslint never read, so the
+  // parity test resolved at run time and nowhere else. Declaration-based, so
+  // no foreign source enters this project's `rootDir`.
+  "packages/server/tsconfig.json",
+];
+
+/** P3E: closure. The status line moves here and nowhere else. */
+const P3E_WRITE_SET = [
+  "docs/ROADMAP.md",
+  "README.md",
+  "packages/observation/README.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -431,6 +488,10 @@ const WRITE_SET = [
   ...P2E_WRITE_SET,
   ...P2F_STAGE_A_WRITE_SET,
   ...P3A_WRITE_SET,
+  ...P3B_WRITE_SET,
+  ...P3C_WRITE_SET,
+  ...P3D_WRITE_SET,
+  ...P3E_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -720,12 +781,43 @@ const laneEnvelopeOpen = roadmap !== null && roadmap.includes("P1_INCOMPLETE");
 
 // --- 1. required paths -----------------------------------------------------
 
+// The write-set has two jobs: it admits paths, and it requires them to exist.
+// Those jobs collide the moment one array declares paths a *future* packet will
+// create — P3B and P3C are declared here now so their fence admission arrives
+// with the packet that declares them, but their files do not exist yet.
+//
+// The git index resolves the collision without a hand-maintained exception
+// list, which would immediately drift from the packet state:
+//
+//   present on disk           → unchanged, every check applies;
+//   absent, known to index    → fail. A committed path stays in the index, so
+//                               a deletion — staged or not — can never be
+//                               mistaken for a not-yet-written file;
+//   absent, unknown to index  → tolerate as declared-future, and say so. The
+//                               tolerance is named in the output, never silent.
+//
+// Fail-closed in both directions: a file that has never existed is tolerated;
+// a file that has ever entered the index cannot go missing quietly.
+const requiredSeen = new Set();
 for (const relativePath of WRITE_SET) {
   if (relativePath === "pnpm-lock.yaml") continue;
+  if (requiredSeen.has(relativePath)) continue;
+  requiredSeen.add(relativePath);
+
+  let present = true;
   try {
     statSync(join(REPO_ROOT, relativePath));
   } catch {
-    fail("required path is missing: " + relativePath);
+    present = false;
+  }
+  if (present) continue;
+
+  const cached = git(["ls-files", "--cached", "--", relativePath]);
+  const knownToIndex = cached.status === 0 && cached.stdout.trim() !== "";
+  if (knownToIndex) {
+    fail("tracked path is missing: " + relativePath);
+  } else {
+    notes.push("declared future path, not yet created: " + relativePath);
   }
 }
 
@@ -2300,6 +2392,14 @@ if (vitestConfig !== null) {
       if (relativePath === "vitest.config.ts") continue;
       if (relativePath === "scripts/check-architecture.mjs") continue;
       if (relativePath === "packages/server/src/parity.test.ts") continue;
+      // The TypeScript counterpart of the same two aliases. `tsc` and
+      // type-aware eslint never read `vitest.config.ts`, so without this the
+      // parity test resolves at run time and fails both other gates. A
+      // tsconfig is not a module: it declares resolution, it imports nothing,
+      // so the law this check protects — that no shipped module resolves these
+      // specifiers — is untouched. The declaration is pinned by equality
+      // immediately below rather than merely excused here.
+      if (relativePath === "packages/server/tsconfig.json") continue;
       const content = readIfPresent(relativePath);
       if (content === null) continue;
       for (const [specifier] of aliasTargets) {
@@ -2316,6 +2416,144 @@ if (vitestConfig !== null) {
   }
   notes.push("the parity deep aliases point at two modules and are used by one test");
 }
+
+// The TypeScript side of the same two aliases. `tsc` and type-aware eslint
+// never read `vitest.config.ts`, so without this declaration the parity test
+// resolves at run time and fails both other gates. Pinned by equality in both
+// directions, exactly as the Vitest law above is: exactly two specifiers,
+// exactly these targets, exactly four project references.
+//
+// The targets are emitted declarations, never sources. A source mapping pulls
+// foreign files into this project's `rootDir` (TS6059/TS6307) and makes `tsc`
+// emit `.js`/`.d.ts` next to the CLI and UI sources — an observed failure
+// while this was built, not a hypothetical.
+const SERVER_TS_ALIASES = {
+  "@acp/cli/observation-rows": "../cli/dist/observation.d.ts",
+  "@acp/ui/row-model": "../ui/dist/app/api/client.d.ts",
+};
+const SERVER_TS_REFERENCES = ["../api-contracts", "../cli", "../ledger", "../ui"];
+const serverTsconfigRaw = readIfPresent("packages/server/tsconfig.json");
+if (serverTsconfigRaw !== null) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(serverTsconfigRaw);
+  } catch {
+    fail("packages/server/tsconfig.json is not parseable JSON");
+  }
+  if (parsed !== null) {
+    const declared = parsed.compilerOptions?.paths ?? {};
+    const expectedAliases = Object.keys(SERVER_TS_ALIASES).sort().join(", ");
+    const actualAliases = Object.keys(declared).sort().join(", ");
+    if (actualAliases !== expectedAliases) {
+      fail(
+        "packages/server/tsconfig.json paths are not exactly [" +
+          expectedAliases +
+          "]: found [" +
+          actualAliases +
+          "]",
+      );
+    }
+    for (const [specifier, target] of Object.entries(SERVER_TS_ALIASES)) {
+      const mapped = Array.isArray(declared[specifier]) ? declared[specifier] : [];
+      if (mapped.length !== 1 || mapped[0] !== target) {
+        fail(
+          "packages/server/tsconfig.json maps " +
+            specifier +
+            " to " +
+            JSON.stringify(mapped) +
+            " rather than to [" +
+            target +
+            "]",
+        );
+      } else if (!target.endsWith(".d.ts")) {
+        fail(
+          "packages/server/tsconfig.json aliases " + specifier + " to a source, not a declaration",
+        );
+      }
+    }
+    const references = Array.isArray(parsed.references) ? parsed.references : [];
+    const actualReferences = references
+      .map((entry) => (entry === null || entry === undefined ? "" : entry.path))
+      .sort()
+      .join(", ");
+    if (actualReferences !== SERVER_TS_REFERENCES.join(", ")) {
+      fail(
+        "packages/server/tsconfig.json references are not exactly [" +
+          SERVER_TS_REFERENCES.join(", ") +
+          "]: found [" +
+          actualReferences +
+          "]",
+      );
+    }
+    notes.push("the server tsconfig pins two declaration aliases and four references, by equality");
+  }
+}
+
+// The server may not reach @acp/contracts. `packages/server/src/mappers.ts`
+// records that exclusion as a design decision, and the parity test honours it
+// by asking @acp/api-contracts for the privacy verdict through its named
+// helper instead. Enforced in all three forms the reach could take: a manifest
+// dependency, a tsconfig path, or an import in any server source. Prose may
+// name it — comments are stripped before matching — because the point is
+// resolution, not vocabulary.
+//
+// The source check is a fail-closed substring test rather than a match on
+// `from "…"`. A regex shaped like one import spelling answers only for that
+// spelling: `import("@acp/contracts")`, `require("@acp/contracts")`,
+// `import type … from`, `export … from`, and a bare reference in a
+// dependency-injected identifier all reach the same package while sliding past
+// it. Naming the package anywhere in live code is the thing being forbidden,
+// so that is what is matched.
+const serverManifestRaw = readIfPresent("packages/server/package.json");
+if (serverManifestRaw !== null) {
+  let manifest = null;
+  try {
+    manifest = JSON.parse(serverManifestRaw);
+  } catch {
+    fail("packages/server/package.json is not parseable JSON");
+  }
+  if (manifest !== null) {
+    const declaredDependencies = {
+      ...(manifest.dependencies ?? {}),
+      ...(manifest.devDependencies ?? {}),
+      ...(manifest.peerDependencies ?? {}),
+    };
+    if (Object.hasOwn(declaredDependencies, "@acp/contracts")) {
+      fail("packages/server/package.json depends on @acp/contracts; that reach is excluded");
+    }
+  }
+}
+if (serverTsconfigRaw !== null && serverTsconfigRaw.includes('"@acp/contracts"')) {
+  fail("packages/server/tsconfig.json maps @acp/contracts; that reach is excluded");
+}
+const serverSources = new Set(
+  (tracked.status === 0 ? tracked.stdout.split("\n").map((line) => line.trim()) : []).filter(
+    (relativePath) =>
+      relativePath.startsWith("packages/server/src/") && relativePath.endsWith(".ts"),
+  ),
+);
+for (const relativePath of WRITE_SET) {
+  if (relativePath.startsWith("packages/server/src/") && relativePath.endsWith(".ts")) {
+    serverSources.add(relativePath);
+  }
+}
+let serverSourcesChecked = 0;
+for (const relativePath of [...serverSources].sort()) {
+  const content = readIfPresent(relativePath);
+  if (content === null) continue;
+  serverSourcesChecked += 1;
+  if (stripComments(content).includes("@acp/contracts")) {
+    fail(
+      relativePath +
+        " names @acp/contracts in live code; that reach is excluded — use the" +
+        " @acp/api-contracts privacy helper instead",
+    );
+  }
+}
+notes.push(
+  serverSourcesChecked +
+    " server sources name @acp/contracts nowhere in live code, and neither manifest nor tsconfig reaches it",
+);
 
 // Names that must never enter the graph, matched as whole tokens so the
 // permitted SDK does not trip the ban on its own parent package.

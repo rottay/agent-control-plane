@@ -25,6 +25,26 @@ export {
 } from "./routes.js";
 export type { ApiAllowedMethod, ApiRouteName, ApiRoutePattern } from "./routes.js";
 
+/**
+ * The ledger-to-client parity contract (P3D).
+ *
+ * Lives in the shared package so no single client can redefine the law it is
+ * measured against.
+ */
+export type { FieldBinding, ParitySource } from "./parity.js";
+export {
+  NON_LEDGER_SOURCES,
+  PARITY_BINDINGS,
+  PARITY_ROUTES,
+  VOLATILE_FIELDS,
+  bindingCoversAllRoutes,
+  canonicalRows,
+  canonicalize,
+  comparableFields,
+  declaredExceptions,
+  hasObservationPrivacyViolation,
+} from "./parity.js";
+
 export {
   API_ERROR_CODES,
   ApiError,

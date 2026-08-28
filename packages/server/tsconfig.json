@@ -3,8 +3,17 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
-    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "paths": {
+      "@acp/cli/observation-rows": ["../cli/dist/observation.d.ts"],
+      "@acp/ui/row-model": ["../ui/dist/app/api/client.d.ts"]
+    }
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../api-contracts" }, { "path": "../ledger" }]
+  "references": [
+    { "path": "../api-contracts" },
+    { "path": "../ledger" },
+    { "path": "../cli" },
+    { "path": "../ui" }
+  ]
 }

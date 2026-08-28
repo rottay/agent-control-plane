@@ -40,7 +40,8 @@ import {
   WorkerDetailResponse,
   WorkerPageResponse,
 } from "@acp/api-contracts";
-import type { OverviewState } from "@acp/api-contracts";
+import { canonicalRows } from "@acp/api-contracts";
+import type { ApiRouteName, OverviewState } from "@acp/api-contracts";
 import type {
   EventQuery,
   IntegrityReport,
@@ -79,6 +80,18 @@ const LEDGER_VERSION = LEDGER_CONTRACT_VERSION;
 
 /** A clock, injected so a test can render a fixed document. */
 export type Clock = () => string;
+
+/**
+ * The CLI's adapter into the shared canonical row model (P3D).
+ *
+ * Thin on purpose. The row model is defined once, in `@acp/api-contracts`, and
+ * each client contributes only the step from its own output shape into it —
+ * three definitions kept in step would be three chances to drift, which is the
+ * thing parity exists to catch.
+ */
+export function cliRowModel(route: ApiRouteName, response: unknown): unknown {
+  return canonicalRows(route, response);
+}
 
 export const systemClock: Clock = () => new Date().toISOString();
 
