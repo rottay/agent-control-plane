@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { allowedEnvKeys } from "../config-root.js";
+import { allowedEnvKeys } from "../../config-root.js";
 import type {
   AdmittedBinary,
   AdmittedConfigRoot,
@@ -14,14 +14,14 @@ import type {
   ProviderAdapter,
   SessionLimits,
   SessionRequest,
-} from "../contract.js";
-import { EMPTY_CURSOR } from "../contract.js";
-import { AdapterError } from "../errors.js";
-import type { NormalizedEvent } from "../events.js";
-import { descriptorEnablesWrites, startSession } from "../session.js";
-import { fakeProviderArgv } from "../testing/fake-provider.js";
-import type { FakeScript } from "../testing/fake-provider.js";
-import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "./claude.js";
+} from "../../contract.js";
+import { EMPTY_CURSOR } from "../../contract.js";
+import { AdapterError } from "../../errors.js";
+import type { NormalizedEvent } from "../../events.js";
+import { descriptorEnablesWrites, startSession } from "../../session.js";
+import { fakeProviderArgv } from "../../testing/fake-provider.js";
+import type { FakeScript } from "../../testing/fake-provider.js";
+import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "./index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const TMP_ROOT = realpathSync(tmpdir());
@@ -409,7 +409,7 @@ describe("the reviewer guarantee holds for this provider", () => {
 });
 
 describe("the provider module keeps the boundary's laws", () => {
-  const source = readFileSync(join(HERE, "claude.ts"), "utf8");
+  const source = readFileSync(join(HERE, "index.ts"), "utf8");
   // Comments explain which APIs the module deliberately does not use, and say
   // their names to do so. Only code is under assertion.
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
@@ -497,4 +497,4 @@ describe("errors stay classified", () => {
 });
 
 /** Keeps `dirname` used, and documents where the module under test lives. */
-export const MODULE_DIRECTORY = dirname(join(HERE, "claude.ts"));
+export const MODULE_DIRECTORY = dirname(join(HERE, "index.ts"));

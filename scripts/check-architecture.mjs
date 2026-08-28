@@ -142,8 +142,21 @@ const P1B_SHARED_WRITE_SET = [
  * what P0 was authorized to create, and it is named here so the fence both
  * stops requiring it and starts requiring its absence. A deletion that is only
  * performed once is not enforced.
+ *
+ * P4B and P4C authorized the flat provider modules; the provider-folders law
+ * retires them: each provider is a directory `providers/<name>/` containing
+ * `index.ts` and `index.test.ts`, and the flat files are renamed into it. The
+ * flat paths stay out of every phase array — the arrays name the nested paths
+ * they became — and are named here so a flat provider file can never come back
+ * alongside its directory.
  */
-const RETIRED_PATHS = ["vitest.workspace.ts"];
+const RETIRED_PATHS = [
+  "vitest.workspace.ts",
+  "packages/adapters/src/providers/claude.ts",
+  "packages/adapters/src/providers/claude.test.ts",
+  "packages/adapters/src/providers/kimi.ts",
+  "packages/adapters/src/providers/kimi.test.ts",
+];
 
 /**
  * The P1B lane envelope.
@@ -522,24 +535,24 @@ const P4A_WRITE_SET = [
 
 /** P4B: the Claude headless descriptor. */
 const P4B_WRITE_SET = [
-  "packages/adapters/src/providers/claude.ts",
-  "packages/adapters/src/providers/claude.test.ts",
+  "packages/adapters/src/providers/claude/index.ts",
+  "packages/adapters/src/providers/claude/index.test.ts",
   "packages/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 /** P4C: the Kimi ACP descriptor. */
 const P4C_WRITE_SET = [
-  "packages/adapters/src/providers/kimi.ts",
-  "packages/adapters/src/providers/kimi.test.ts",
+  "packages/adapters/src/providers/kimi/index.ts",
+  "packages/adapters/src/providers/kimi/index.test.ts",
   "packages/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 /** P4D: the Codex App Server descriptor. */
 const P4D_WRITE_SET = [
-  "packages/adapters/src/providers/codex.ts",
-  "packages/adapters/src/providers/codex.test.ts",
+  "packages/adapters/src/providers/codex/index.ts",
+  "packages/adapters/src/providers/codex/index.test.ts",
   "packages/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];

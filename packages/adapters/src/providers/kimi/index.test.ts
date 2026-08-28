@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { allowedEnvKeys } from "../config-root.js";
+import { allowedEnvKeys } from "../../config-root.js";
 import type {
   AdmittedBinary,
   AdmittedConfigRoot,
@@ -14,15 +14,15 @@ import type {
   ProviderAdapter,
   SessionLimits,
   SessionRequest,
-} from "../contract.js";
-import { EMPTY_CURSOR } from "../contract.js";
-import { AdapterError } from "../errors.js";
-import type { NormalizedEvent } from "../events.js";
-import { hasPrivacyViolation } from "../redact.js";
-import { descriptorEnablesWrites, startSession } from "../session.js";
-import { fakeProviderArgv } from "../testing/fake-provider.js";
-import type { FakeScript } from "../testing/fake-provider.js";
-import { KIMI_ACP_PROTOCOL, KIMI_ACP_PROTOCOL_VERSION, kimiAdapter } from "./kimi.js";
+} from "../../contract.js";
+import { EMPTY_CURSOR } from "../../contract.js";
+import { AdapterError } from "../../errors.js";
+import type { NormalizedEvent } from "../../events.js";
+import { hasPrivacyViolation } from "../../redact.js";
+import { descriptorEnablesWrites, startSession } from "../../session.js";
+import { fakeProviderArgv } from "../../testing/fake-provider.js";
+import type { FakeScript } from "../../testing/fake-provider.js";
+import { KIMI_ACP_PROTOCOL, KIMI_ACP_PROTOCOL_VERSION, kimiAdapter } from "./index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const TMP_ROOT = realpathSync(tmpdir());
@@ -344,7 +344,7 @@ describe("the parser reads ACP v1 NDJSON, and refuses the rest", () => {
     expect(failure).toBe("MALFORMED_EVENT");
     // On code, not prose: the module comment explains why this framing is
     // absent, and says its name to do so.
-    const moduleCode = readFileSync(join(HERE, "kimi.ts"), "utf8")
+    const moduleCode = readFileSync(join(HERE, "index.ts"), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");
     expect(moduleCode).not.toContain("Content-Length");
@@ -660,7 +660,7 @@ describe("every method the pinned schema defines is accounted for", () => {
    * version probe follows. What it must not do is pass *silently*, so the
    * absence is reported rather than swallowed.
    */
-  const SCHEMA_PATH = resolve(HERE, "..", "..", "..", "..", ".acp-local", "p4c-acp-v1-schema-9f40e018.json");
+  const SCHEMA_PATH = resolve(HERE, "..", "..", "..", "..", "..", ".acp-local", "p4c-acp-v1-schema-9f40e018.json");
 
   /** Methods this parser classifies, inbound from the agent. */
   const CLASSIFIED_INBOUND: readonly string[] = [
@@ -747,7 +747,7 @@ describe("every method the pinned schema defines is accounted for", () => {
 });
 
 describe("the provider module keeps the boundary's laws", () => {
-  const source = readFileSync(join(HERE, "kimi.ts"), "utf8");
+  const source = readFileSync(join(HERE, "index.ts"), "utf8");
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
   it("imports no session module, process module or child_process", () => {
@@ -815,7 +815,7 @@ describe("the provider module keeps the boundary's laws", () => {
     // claim about session-level handshake or negotiation behaviour. Wiring
     // negotiation into the lifecycle would require changing `session.ts`,
     // which is outside this packet's four paths.
-    const controller = readFileSync(join(HERE, "..", "session.ts"), "utf8");
+    const controller = readFileSync(join(HERE, "..", "..", "session.ts"), "utf8");
     expect(controller).not.toContain("negotiate(");
 
     const outcome = kimiAdapter.negotiate({ anything: true });

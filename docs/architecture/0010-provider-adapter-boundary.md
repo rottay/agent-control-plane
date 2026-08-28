@@ -26,6 +26,14 @@ rather than by discipline.
 `src/process/spawn.ts` is the only file importing `node:child_process`;
 `src/session.ts` is its only caller. The architecture fence asserts both.
 
+### Provider modules are folders
+
+Each provider is a directory `providers/<name>/` containing `index.ts` — the
+descriptor and parser — and `index.test.ts`. Public exports are unchanged: the
+package index re-exports from the directory index, so no caller's import of
+`@acp/adapters` moves. Flat provider files are retired, and the fence requires
+their absence so one cannot come back beside its directory.
+
 ### Who ends a session
 
 A terminal failure initiates its own teardown: the failure path invokes the
