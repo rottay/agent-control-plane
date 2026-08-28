@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 
-import { sha256Hex } from "./canonical-json.js";
-import type { AppliedMigration } from "./types.js";
+import { sha256Hex } from "../canonical-json/index.js";
+import type { AppliedMigration } from "../types/index.js";
 
 /**
  * The ordered, checksummed migration set.

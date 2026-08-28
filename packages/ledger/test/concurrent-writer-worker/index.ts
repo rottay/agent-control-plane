@@ -10,13 +10,13 @@
  *
  * It is not part of the public API and is not exported from index.ts.
  *
- * Usage: node concurrent-writer-worker.js <databasePath> <eventJson>
+ * Usage: node index.js <databasePath> <eventJson>
  *
  * It prints exactly one JSON line to stdout describing the outcome, so the
  * parent can assert on it without parsing prose.
  */
 
-import { openLedger } from "./ledger.js";
+import { openLedger } from "../../src/ledger/index.js";
 
 interface WorkerOutcome {
   readonly ok: boolean;

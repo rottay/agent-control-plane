@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { LedgerCanonicalizationError } from "./errors.js";
+import { LedgerCanonicalizationError } from "../errors/index.js";
 
 /**
  * Canonical JSON for the ledger hash chain.

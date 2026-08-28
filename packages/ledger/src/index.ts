@@ -12,7 +12,7 @@
  * P1A is not P1 completion nor any form of product adoption.
  */
 
-export { Ledger, openLedger, LEDGER_MIGRATIONS } from "./ledger.js";
+export { Ledger, openLedger, LEDGER_MIGRATIONS } from "./ledger/index.js";
 
 export {
   CANONICAL_MAX_DEPTH,
@@ -20,7 +20,7 @@ export {
   canonicalJsonStringify,
   chainDigest,
   sha256Hex,
-} from "./canonical-json.js";
+} from "./canonical-json/index.js";
 
 export {
   LedgerError,
@@ -36,11 +36,11 @@ export {
   LedgerSequenceError,
   LedgerIntegrityError,
   LedgerQueryError,
-} from "./errors.js";
+} from "./errors/index.js";
 
-export type { LedgerErrorCode, LedgerValidationIssue } from "./errors.js";
+export type { LedgerErrorCode, LedgerValidationIssue } from "./errors/index.js";
 
-export type { Migration } from "./migrations.js";
+export type { Migration } from "./migrations/index.js";
 
 export type {
   AppendResult,
@@ -63,4 +63,4 @@ export type {
   WorkerPage,
   WorkerQuery,
   WorkerReadModel,
-} from "./types.js";
+} from "./types/index.js";

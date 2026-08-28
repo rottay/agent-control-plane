@@ -30,7 +30,7 @@ import {
   chainDigest,
   openLedger,
   type Ledger,
-} from "./index.js";
+} from "../../src/index.js";
 
 // ---------------------------------------------------------------------------
 // Temporary databases
@@ -1425,9 +1425,15 @@ describe("status refuses an unexpected projection name", () => {
 // Cross-process concurrency
 // ---------------------------------------------------------------------------
 
-const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
-const REPO_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
-const WORKER_ENTRY = join(PACKAGE_ROOT, "dist", "concurrent-writer-worker.js");
+const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
+const WORKER_ENTRY = join(
+  PACKAGE_ROOT,
+  "dist-test",
+  "test",
+  "concurrent-writer-worker",
+  "index.js",
+);
 
 interface WorkerOutcome {
   readonly ok: boolean;
@@ -1440,8 +1446,11 @@ interface WorkerOutcome {
 /**
  * A child process cannot use the vitest alias that points @acp/contracts at
  * its TypeScript source, so the compiled entry point is what it runs. The
- * build is normally already there, because `pnpm check` typechecks before it
- * tests; this only pays for a build when the tests are run on their own.
+ * worker now lives under `test/`, outside the package's shipped `src/`
+ * build, so it is compiled by the test tree's own `tsconfig.json` into
+ * `dist-test/`, never into the published `dist/`. The build is normally
+ * already there, because `pnpm check` typechecks before it tests; this only
+ * pays for a build when the tests are run on their own.
  */
 function ensureWorkerBuilt(): void {
   if (existsSync(WORKER_ENTRY)) return;
@@ -1450,13 +1459,13 @@ function ensureWorkerBuilt(): void {
     [
       join(REPO_ROOT, "node_modules", "typescript", "bin", "tsc"),
       "--build",
-      join(PACKAGE_ROOT, "tsconfig.json"),
+      join(PACKAGE_ROOT, "test", "tsconfig.json"),
     ],
     { encoding: "utf8", cwd: REPO_ROOT },
   );
   if (result.status !== 0 || !existsSync(WORKER_ENTRY)) {
     throw new Error(
-      "could not build the ledger package for the cross-process test: " +
+      "could not build the ledger test tree for the cross-process test: " +
         result.stdout +
         result.stderr,
     );

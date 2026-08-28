@@ -89,14 +89,14 @@ const P1A_WRITE_SET = [
   "packages/ledger/tsconfig.json",
   "packages/ledger/README.md",
   "packages/ledger/src/index.ts",
-  "packages/ledger/src/types.ts",
-  "packages/ledger/src/errors.ts",
-  "packages/ledger/src/canonical-json.ts",
-  "packages/ledger/src/migrations.ts",
-  "packages/ledger/src/projection.ts",
-  "packages/ledger/src/ledger.ts",
-  "packages/ledger/src/concurrent-writer-worker.ts",
-  "packages/ledger/src/ledger.test.ts",
+  "packages/ledger/src/types/index.ts",
+  "packages/ledger/src/errors/index.ts",
+  "packages/ledger/src/canonical-json/index.ts",
+  "packages/ledger/src/migrations/index.ts",
+  "packages/ledger/src/projection/index.ts",
+  "packages/ledger/src/ledger/index.ts",
+  "packages/ledger/test/concurrent-writer-worker/index.ts",
+  "packages/ledger/test/ledger/index.test.ts",
 ];
 
 /**
@@ -152,6 +152,17 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C2 (ledger): six flat modules, a colocated test and a child
+  // process fixture, now under src/<domain>/index.ts and the mirrored test
+  // tree. Named here so none can return beside its replacement.
+  "packages/ledger/src/canonical-json.ts",
+  "packages/ledger/src/concurrent-writer-worker.ts",
+  "packages/ledger/src/errors.ts",
+  "packages/ledger/src/ledger.test.ts",
+  "packages/ledger/src/ledger.ts",
+  "packages/ledger/src/migrations.ts",
+  "packages/ledger/src/projection.ts",
+  "packages/ledger/src/types.ts",
   // P5N cohort C1 (contracts): the flat schema module and its colocated test,
   // now at src/schemas/index.ts and test/schemas/index.test.ts. Named here so
   // neither can return beside its replacement.
@@ -690,6 +701,26 @@ const P5N_C1_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C2: ledger, the second tree normalized.
+ *
+ * As with C1, the eight relocated source paths are **not** listed here —
+ * `P1A_WRITE_SET` carries them and this cohort rewrote them there 1:1. This
+ * array declares only what the cohort adds or edits elsewhere: the test tree's
+ * own `tsconfig.json`, and the two one-line hygiene entries for the build
+ * output that config produces — `.gitignore` so it is not tracked, and the
+ * ESLint ignore so it is not linted as if a compiler's output were authored
+ * code. Both recur for every package whose test tree emits.
+ */
+const P5N_C2_WRITE_SET = [
+  "packages/ledger/test/tsconfig.json",
+  ".gitignore",
+  "eslint.config.mjs",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -718,6 +749,7 @@ const WRITE_SET = [
   ...P5E_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
+  ...P5N_C2_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -2998,7 +3030,7 @@ if (tracked.status === 0) {
 // commit against. Each cohort activates its own tree in the same commit that
 // makes that tree compliant, so the law and the code arrive together and every
 // commit in between is green.
-const TOPOLOGY_ACTIVE_TREES = ["contracts"];
+const TOPOLOGY_ACTIVE_TREES = ["contracts", "ledger"];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
 const TOPOLOGY_PRODUCT_INDEX = new Set(["index.ts", "index.tsx"]);
@@ -3176,7 +3208,7 @@ const TEST_TREE_SCANNED_PREFIXES = [];
  * visible: an entry here is a package whose sources the fence never inspected,
  * not a package whose inspection was dropped.
  */
-const TEST_TREE_NO_PACKAGE_SCAN = ["contracts"];
+const TEST_TREE_NO_PACKAGE_SCAN = ["contracts", "ledger"];
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);

@@ -22,6 +22,12 @@ export default tseslint.config(
     ignores: [
       '**/node_modules/**',
       '**/dist/**',
+      // Test-tree build output. A package whose mirrored `test/` tree emits a
+      // runnable fixture writes it here rather than into the published
+      // `dist/`, and generated JS is not written to the conventions these
+      // rules assume of authored code — so linting it reports defects in a
+      // compiler's output. Recurs for every package whose test tree emits.
+      '**/dist-test/**',
       '**/coverage/**',
       '**/*.tsbuildinfo',
       'pnpm-lock.yaml',

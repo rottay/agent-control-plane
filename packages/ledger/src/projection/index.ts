@@ -4,7 +4,7 @@ import {
   type ControlPlaneEvent,
 } from "@acp/contracts";
 
-import type { TaskReadModel, WorkerReadModel } from "./types.js";
+import type { TaskReadModel, WorkerReadModel } from "../types/index.js";
 
 /**
  * Pure projection rules.

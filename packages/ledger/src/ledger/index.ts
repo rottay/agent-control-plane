@@ -7,7 +7,7 @@ import {
   canonicalJsonStringify,
   chainDigest,
   sha256Hex,
-} from "./canonical-json.js";
+} from "../canonical-json/index.js";
 import {
   LedgerClosedError,
   LedgerEventIdConflictError,
@@ -21,7 +21,7 @@ import {
   LedgerSequenceError,
   LedgerValidationError,
   type LedgerValidationIssue,
-} from "./errors.js";
+} from "../errors/index.js";
 import {
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
@@ -32,7 +32,7 @@ import {
   checkMigrationConformance,
   readAppliedMigrations,
   schemaMigrationsTableExists,
-} from "./migrations.js";
+} from "../migrations/index.js";
 import {
   applyEventToSnapshot,
   createProjectionSnapshot,
@@ -42,7 +42,7 @@ import {
   workerTaskKey,
   type ProjectionSnapshot,
   type WorkerTaskProjection,
-} from "./projection.js";
+} from "../projection/index.js";
 import type {
   AppendResult,
   AppliedMigration,
@@ -62,7 +62,7 @@ import type {
   WorkerPage,
   WorkerQuery,
   WorkerReadModel,
-} from "./types.js";
+} from "../types/index.js";
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 const MAX_BUSY_TIMEOUT_MS = 300_000;

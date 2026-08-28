@@ -168,9 +168,12 @@ export default defineConfig({
       },
       {
         test: {
+          // P5N cohort C2: the ledger tree is normalized, so its tests live in
+          // the mirrored `test/` tree. The `src/**` glob stays until every
+          // cohort has landed.
           name: 'ledger',
           root: './packages/ledger',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,
