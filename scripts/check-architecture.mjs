@@ -78,8 +78,8 @@ const P0_WRITE_SET = [
   "packages/contracts/package.json",
   "packages/contracts/tsconfig.json",
   "packages/contracts/src/index.ts",
-  "packages/contracts/src/schemas.ts",
-  "packages/contracts/src/schemas.test.ts",
+  "packages/contracts/src/schemas/index.ts",
+  "packages/contracts/test/schemas/index.test.ts",
 ];
 
 /** The exact P1A additions. No twenty-fourth ledger path is authorized. */
@@ -152,6 +152,11 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C1 (contracts): the flat schema module and its colocated test,
+  // now at src/schemas/index.ts and test/schemas/index.test.ts. Named here so
+  // neither can return beside its replacement.
+  "packages/contracts/src/schemas.ts",
+  "packages/contracts/src/schemas.test.ts",
   "packages/adapters/src/providers/claude.ts",
   "packages/adapters/src/providers/claude.test.ts",
   "packages/adapters/src/providers/kimi.ts",
@@ -657,6 +662,34 @@ const P5E_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C1: contracts, the first tree normalized under the mirrored
+ * topology.
+ *
+ * The three relocated source paths are **not** listed here. `P0_WRITE_SET`
+ * carries them and this cohort rewrote them there 1:1, per the relocation
+ * mechanics; repeating them would give each a second declaration site, and a
+ * path declared twice is a path whose rewrite no gate can enforce — the P0 edit
+ * would become invisible to the write-set check. This array therefore declares
+ * only what the cohort genuinely adds or edits elsewhere.
+ *
+ * That file sits in `test/` rather than being a `tsconfig.test.json` at the
+ * package root, and the placement is load-bearing rather than a preference.
+ * ESLint runs with `projectService: true`, which finds a file's project by
+ * walking up to the nearest `tsconfig.json`; a root-level `tsconfig.test.json`
+ * is never discovered that way, so the test tree would lint as unprojected and
+ * type-aware rules would silently stop applying to it. Placed here it is found,
+ * the tests are typechecked as evidence must be, and `eslint.config.mjs` needs
+ * no change — which matters, because that file's parser settings are repo-wide
+ * and not a cohort's to decide.
+ */
+const P5N_C1_WRITE_SET = [
+  "packages/contracts/test/tsconfig.json",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -684,6 +717,7 @@ const WRITE_SET = [
   ...P5D_WRITE_SET,
   ...P5E_WRITE_SET,
   ...P5N_A_WRITE_SET,
+  ...P5N_C1_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -1548,7 +1582,7 @@ const CREDENTIAL_MATERIAL_PATTERNS = [
  * function it no longer tests. A production source file can never take this
  * route at all.
  */
-const CREDENTIAL_FIXTURE_EXEMPT = new Set(["packages/contracts/src/schemas.test.ts"]);
+const CREDENTIAL_FIXTURE_EXEMPT = new Set(["packages/contracts/test/schemas/index.test.ts"]);
 
 /** An actual invocation, not a mention. */
 const CREDENTIAL_SCANNER_CALL_SITE = /\bfindCredentialViolations\s*\(/;
@@ -2964,7 +2998,7 @@ if (tracked.status === 0) {
 // commit against. Each cohort activates its own tree in the same commit that
 // makes that tree compliant, so the law and the code arrive together and every
 // commit in between is green.
-const TOPOLOGY_ACTIVE_TREES = [];
+const TOPOLOGY_ACTIVE_TREES = ["contracts"];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
 const TOPOLOGY_PRODUCT_INDEX = new Set(["index.ts", "index.tsx"]);
@@ -3110,6 +3144,73 @@ if (tracked.status === 0) {
           TOPOLOGY_ACTIVE_TREES.length +
           " activated tree(s) satisfy the mirrored-topology and naming laws",
   );
+}
+
+// --- 21b. every test tree stays inside some scan (preaudit B5b) -------------
+//
+// The per-package source scans select files by the `packages/<pkg>/src/`
+// prefix and apply that package's test-only allowlist — no `node:net`, no
+// `process.env`, no spawn outside named files — to the `.test.ts` files found
+// there. The moment a cohort moves those tests to `packages/<pkg>/test/`, they
+// leave every scanned prefix and the allowlists **silently stop applying**.
+// Nothing fails; the rules simply cover nothing.
+//
+// That is the failure mode this assertion exists for: coverage lost by
+// omission rather than by decision. Every tracked file under any
+// `packages/*/test/` tree must be inside a prefix some scan actually reads, or
+// its package must be named below as having no per-package scan at all. A
+// cohort that relocates tests without extending its scan fails here, by name.
+//
+// Both lists start where the repository actually is. No cohort has yet
+// extended a scan to a `test/` tree, so the scanned list is empty; `contracts`
+// is the first normalized package and the fence has never had a per-package
+// source scan for it, so the exemption is a statement of fact rather than a
+// waiver. A package that *does* have a scan may never be added to it.
+const TEST_TREE_SCANNED_PREFIXES = [];
+
+/**
+ * Packages the fence runs no per-package source scan for.
+ *
+ * There is nothing to extend for these, so their test trees are uncovered by
+ * construction rather than by oversight. Naming them keeps the difference
+ * visible: an entry here is a package whose sources the fence never inspected,
+ * not a package whose inspection was dropped.
+ */
+const TEST_TREE_NO_PACKAGE_SCAN = ["contracts"];
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const candidates = new Set(present);
+  for (const relativePath of WRITE_SET) candidates.add(relativePath);
+
+  let covered = 0;
+  const uncovered = [];
+  for (const relativePath of [...candidates].sort()) {
+    const match = /^packages\/([^/]+)\/test\//.exec(relativePath);
+    if (match === null) continue;
+    if (readIfPresent(relativePath) === null) continue;
+    const pkg = match[1] ?? "";
+    const scanned = TEST_TREE_SCANNED_PREFIXES.some((prefix) => relativePath.startsWith(prefix));
+    if (scanned || TEST_TREE_NO_PACKAGE_SCAN.includes(pkg)) {
+      covered += 1;
+      continue;
+    }
+    uncovered.push(relativePath);
+  }
+
+  for (const relativePath of uncovered) {
+    fail(
+      relativePath +
+        " is in a test tree no package scan reads; extend the package's scan to" +
+        " its test/ prefix, or name the package as having no scan",
+    );
+  }
+  if (uncovered.length === 0) {
+    notes.push(
+      covered +
+        " test-tree file(s) are inside a package scan or an explicit no-scan package",
+    );
+  }
 }
 
 // The closed export surface, pinned by equality in both directions.

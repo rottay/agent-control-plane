@@ -55,7 +55,7 @@ export {
   findCredentialViolations,
   findTranscriptViolations,
   serializedByteLength,
-} from "./schemas.js";
+} from "./schemas/index.js";
 
-export type { GuardViolation } from "./schemas.js";
-export type { ReconciliationDiscrepancy } from "./schemas.js";
+export type { GuardViolation } from "./schemas/index.js";
+export type { ReconciliationDiscrepancy } from "./schemas/index.js";

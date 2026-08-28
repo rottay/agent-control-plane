@@ -30,6 +30,7 @@
   "files": [],
   "references": [
     { "path": "./packages/contracts" },
+    { "path": "./packages/contracts/test" },
     { "path": "./packages/ledger" },
     { "path": "./packages/observation" },
     { "path": "./packages/adapters" },

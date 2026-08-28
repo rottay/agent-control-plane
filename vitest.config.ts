@@ -153,9 +153,13 @@ export default defineConfig({
     projects: [
       {
         test: {
+          // P5N cohort C1: the contracts tree is normalized, so its tests live
+          // in the mirrored `test/` tree. The `src/**` glob stays until every
+          // cohort has landed — a project that stopped looking at `src/` would
+          // silently run nothing in a package whose turn had not come yet.
           name: 'contracts',
           root: './packages/contracts',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

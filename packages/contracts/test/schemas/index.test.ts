@@ -36,7 +36,7 @@ import {
   isLifecycleState,
   parseWorkerIdentity,
   serializedByteLength,
-} from "./index.js";
+} from "../../src/index.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -791,7 +791,7 @@ describe("CommitAuthorizationReceipt", () => {
 // Mechanical no-push fence
 // ---------------------------------------------------------------------------
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 
 describe("no-push architecture fence", () => {
   const hookPath = resolve(REPO_ROOT, ".githooks", "pre-push");
