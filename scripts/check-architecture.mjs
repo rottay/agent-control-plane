@@ -2892,8 +2892,144 @@ if (tracked.status === 0) {
   );
 }
 
+// --- 21. the folder/index organization law (owner rule, P5B) -----------------
+//
+// Owner law: inside the two trees named below, a source file is either the
+// tree's own `index.ts`/`errors.ts` or it lives in a domain folder as
+// `index.ts` with `index.test.ts` beside it when the index carries
+// implementation. Domains nest: each folder level is a domain in its own right
+// and needs its own `index.ts`.
+//
+// The point is that a domain is a *folder*, so its implementation and its
+// evidence are one directory listing apart and can never drift into separate
+// halves of a package. Three things are refused, and each has been an actual
+// failure mode somewhere:
+//
+//   • a flat `src/quota.ts` beside `src/quota/` — two homes for one domain,
+//     and a reader who finds the wrong one first;
+//   • a folder that is entered without an `index.ts` — a directory of loose
+//     modules wearing a domain's name;
+//   • an implementation-bearing `index.ts` with no `index.test.ts` beside it,
+//     which is the shape code takes just before it stops being tested.
+//
+// A **pure re-export barrel** needs no test, and the criterion is mechanical
+// rather than a judgement call: strip the comments and every `import`/`export
+// … from "…"` statement, and if nothing but whitespace remains the file
+// declares nothing of its own and has nothing to test. Requiring a test for a
+// file that only forwards names would be requiring a test of the module
+// system.
+//
+// Scoped to exactly these two trees. The older packages predate the law and are
+// not retrofitted by it: applying a new organizational rule retroactively would
+// turn one packet into a repository-wide refactor, which is how a fence stops
+// being something anyone can afford to satisfy.
+const FOLDER_INDEX_TREES = ["packages/accounts/src/", "packages/adapters/src/providers/"];
+
+/** The only basenames permitted directly at a tree's root. */
+const FOLDER_INDEX_ROOT_FILES = new Set(["index.ts", "errors.ts"]);
+
+/**
+ * Does this module declare anything of its own, or only forward names?
+ *
+ * Comments go first, then every import and re-export statement — including the
+ * multi-line braced form and `export * from`. Whatever is left is the file's
+ * own content.
+ */
+function declaresImplementation(source) {
+  const stripped = stripComments(source)
+    .replace(
+      /\b(?:import|export)\s+(?:type\s+)?(?:\*(?:\s+as\s+[\w$]+)?|\{[^}]*\}|[\w$]+)?\s*from\s*["'][^"']+["']\s*;?/g,
+      "",
+    )
+    .replace(/\bimport\s*["'][^"']+["']\s*;?/g, "");
+  return stripped.trim() !== "";
+}
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  // Declared-but-uncommitted paths count too: a law that only applied to
+  // committed files would not apply to the commit that introduced the break.
+  const candidates = new Set(present);
+  for (const relativePath of WRITE_SET) candidates.add(relativePath);
+
+  /** domain folder → the basenames it holds. */
+  const domainFolders = new Map();
+  let checked = 0;
+
+  for (const relativePath of [...candidates].sort()) {
+    const tree = FOLDER_INDEX_TREES.find((prefix) => relativePath.startsWith(prefix));
+    if (tree === undefined || !relativePath.endsWith(".ts")) continue;
+    if (readIfPresent(relativePath) === null) continue;
+    checked += 1;
+
+    const segments = relativePath.slice(tree.length).split("/");
+    const basename = segments[segments.length - 1] ?? "";
+
+    if (segments.length === 1) {
+      if (!FOLDER_INDEX_ROOT_FILES.has(basename)) {
+        fail(
+          relativePath +
+            " is a flat file in " +
+            tree +
+            "; a domain lives in a folder as index.ts with index.test.ts beside it",
+        );
+      }
+      continue;
+    }
+
+    if (basename !== "index.ts" && basename !== "index.test.ts") {
+      fail(
+        relativePath +
+          " is not index.ts or index.test.ts; a domain folder in " +
+          tree +
+          " holds exactly those two",
+      );
+      continue;
+    }
+
+    // Every level is a domain, so every level is registered. `a/b/index.ts`
+    // makes both `a` and `a/b` folders that must each be entered through an
+    // index of their own.
+    const folders = segments.slice(0, -1);
+    for (let depth = 1; depth <= folders.length; depth += 1) {
+      const key = tree + folders.slice(0, depth).join("/");
+      const held = domainFolders.get(key) ?? new Set();
+      if (depth === folders.length) held.add(basename);
+      domainFolders.set(key, held);
+    }
+  }
+
+  for (const [folder, held] of [...domainFolders].sort()) {
+    if (!held.has("index.ts")) {
+      fail(folder + " has no index.ts; every folder level is a domain entered through one");
+      continue;
+    }
+    const source = readIfPresent(folder + "/index.ts");
+    if (source === null) continue;
+    if (declaresImplementation(source) && !held.has("index.test.ts")) {
+      fail(
+        folder +
+          "/index.ts declares implementation with no index.test.ts beside it;" +
+          " a domain folder carries its own evidence",
+      );
+    }
+  }
+
+  if (checked > 0) {
+    notes.push(
+      checked +
+        " sources in " +
+        FOLDER_INDEX_TREES.length +
+        " trees follow the folder/index law across " +
+        domainFolders.size +
+        " domain folders",
+    );
+  }
+}
+
 // The closed export surface, pinned by equality in both directions.
 const ACCOUNTS_PUBLIC_EXPORTS = [
+  // P5A
   "AccountsRefusal",
   "AccountsRefused",
   "ACCOUNTS_REFUSALS",
@@ -2904,6 +3040,22 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "ACCOUNTS_FILE_MAX_BYTES",
   "buildRegistry",
   "loadAccountsFile",
+  // P5B
+  "QuotaEstimate",
+  "QuotaEstimateInput",
+  "QuotaOutcome",
+  "QuotaRefusal",
+  "QuotaRefused",
+  "ResetCalendar",
+  "ResetOutcome",
+  "TokenObservation",
+  "CONFIDENCE_ORDER",
+  "OBSERVATIONS_MAX",
+  "QUOTA_REFUSALS",
+  "TOKENS_USED_MAX",
+  "estimateQuota",
+  "resetCalendar",
+  "weakerConfidence",
 ];
 
 const accountsIndex = readIfPresent("packages/accounts/src/index.ts");
