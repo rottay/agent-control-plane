@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
 
-import { API_ROUTES } from "./routes.js";
+import { API_ROUTES } from "../../src/routes/index.js";
 import {
   EventPageResponse,
   HealthResponse,
@@ -13,7 +13,7 @@ import {
   TaskPageResponse,
   WorkerDetailResponse,
   WorkerPageResponse,
-} from "./schemas.js";
+} from "../../src/schemas/index.js";
 import {
   NON_LEDGER_SOURCES,
   PARITY_BINDINGS,
@@ -25,7 +25,7 @@ import {
   comparableFields,
   declaredExceptions,
   hasObservationPrivacyViolation,
-} from "./parity.js";
+} from "../../src/parity/index.js";
 
 describe("the contract covers every frozen route", () => {
   it("binds all nine, not eight", () => {

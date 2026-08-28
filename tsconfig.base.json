@@ -37,6 +37,7 @@
     { "path": "./packages/adapters" },
     { "path": "./packages/accounts" },
     { "path": "./packages/api-contracts" },
+    { "path": "./packages/api-contracts/test" },
     { "path": "./packages/runtime" },
     { "path": "./packages/daemon" },
     { "path": "./packages/server" },

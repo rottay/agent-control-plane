@@ -12,7 +12,7 @@ import {
 } from "@acp/contracts";
 import { z } from "zod";
 
-import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "./version.js";
+import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "../version/index.js";
 
 /**
  * Data transfer objects of the read-only observation plane.

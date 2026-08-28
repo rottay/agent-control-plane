@@ -12,8 +12,8 @@
  * this package is adopted into any real operation.
  */
 
-export { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "./version.js";
-export type { ApiContractVersionLiteral, LedgerContractVersionLiteral } from "./version.js";
+export { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "./version/index.js";
+export type { ApiContractVersionLiteral, LedgerContractVersionLiteral } from "./version/index.js";
 
 export {
   API_ALLOWED_METHODS,
@@ -22,8 +22,8 @@ export {
   API_ROUTE_PATTERNS,
   taskPath,
   workerPath,
-} from "./routes.js";
-export type { ApiAllowedMethod, ApiRouteName, ApiRoutePattern } from "./routes.js";
+} from "./routes/index.js";
+export type { ApiAllowedMethod, ApiRouteName, ApiRoutePattern } from "./routes/index.js";
 
 /**
  * The ledger-to-client parity contract (P3D).
@@ -31,7 +31,7 @@ export type { ApiAllowedMethod, ApiRouteName, ApiRoutePattern } from "./routes.j
  * Lives in the shared package so no single client can redefine the law it is
  * measured against.
  */
-export type { FieldBinding, ParitySource } from "./parity.js";
+export type { FieldBinding, ParitySource } from "./parity/index.js";
 export {
   NON_LEDGER_SOURCES,
   PARITY_BINDINGS,
@@ -43,7 +43,7 @@ export {
   comparableFields,
   declaredExceptions,
   hasObservationPrivacyViolation,
-} from "./parity.js";
+} from "./parity/index.js";
 
 export {
   API_ERROR_CODES,
@@ -88,4 +88,4 @@ export {
   WorkerSummary,
   WorkersQuery,
   cursorPage,
-} from "./schemas.js";
+} from "./schemas/index.js";

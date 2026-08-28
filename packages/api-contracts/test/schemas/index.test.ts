@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -33,7 +34,7 @@ import {
   WorkersQuery,
   taskPath,
   workerPath,
-} from "./index.js";
+} from "../../src/index.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1046,8 +1047,25 @@ describe("safe serialization", () => {
 describe("browser safety", () => {
   const SOURCE_FILES = ["index.ts", "version.ts", "routes.ts", "schemas.ts"];
 
+  /**
+   * Each label's actual location relative to this test file, now that every
+   * source module but the barrel lives one level deeper under its own
+   * subdirectory. `index.ts` alone stays at the package root, per the
+   * mirrored-root exception; the other three moved to `<name>/index.ts`.
+   */
+  const SOURCE_PATHS: Readonly<Record<string, string>> = {
+    "index.ts": "../../src/index.ts",
+    "version.ts": "../../src/version/index.ts",
+    "routes.ts": "../../src/routes/index.ts",
+    "schemas.ts": "../../src/schemas/index.ts",
+  };
+
   function read(name: string): string {
-    return readFileSync(fileURLToPath(new URL("./" + name, import.meta.url)), "utf8");
+    const relativePath = SOURCE_PATHS[name];
+    if (relativePath === undefined) {
+      throw new Error("no known path for source file " + name);
+    }
+    return readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
   }
 
   /**
@@ -1074,11 +1092,35 @@ describe("browser safety", () => {
     return found;
   }
 
+  /** Where a same-package import must land, whatever shape it is written in. */
+  const SRC_ROOT = fileURLToPath(new URL("../../src/", import.meta.url));
+
+  /**
+   * Does this specifier, read from this file, stay inside the package?
+   *
+   * Resolved rather than pattern-matched. Every module now lives in its own
+   * subdirectory, so a sibling import is legitimately `"../<name>/index.js"` —
+   * but accepting any `"../"` prefix would also accept
+   * `"../../ledger/src/index.js"`, which leaves the package entirely and which
+   * the ledger check below does not catch, because that check matches the
+   * package *name* and not a path. Resolving against the importing file and
+   * requiring the result to sit under `src/` admits exactly the shapes the
+   * topology produces and refuses every escape, however it is spelled.
+   */
+  function staysInsidePackage(name: string, specifier: string): boolean {
+    const importer = SOURCE_PATHS[name];
+    if (importer === undefined) return false;
+    const importerPath = fileURLToPath(new URL(importer, import.meta.url));
+    return resolve(dirname(importerPath), specifier).startsWith(SRC_ROOT);
+  }
+
   it("imports only browser resolvable modules", () => {
-    const allowed = new Set(["zod", "@acp/contracts", "./version.js"]);
+    const allowed = new Set(["zod", "@acp/contracts"]);
     for (const name of SOURCE_FILES) {
       for (const specifier of specifiers(read(name))) {
-        const relative = specifier.startsWith("./");
+        const relative =
+          (specifier.startsWith("./") || specifier.startsWith("../")) &&
+          staysInsidePackage(name, specifier);
         const ok = allowed.has(specifier) || relative;
         expect(name + " imports " + specifier + ":" + String(ok)).toBe(
           name + " imports " + specifier + ":true",
@@ -1088,6 +1130,16 @@ describe("browser safety", () => {
         );
       }
     }
+  });
+
+  it("refuses a relative specifier that escapes the package", () => {
+    // The hole the resolve-and-contain check exists to close: a path-based
+    // reach into another package is not a browser-safe same-package import,
+    // and the name-matching check below would not see it.
+    expect(staysInsidePackage("schemas.ts", "../version/index.js")).toBe(true);
+    expect(staysInsidePackage("schemas.ts", "../../ledger/src/index.js")).toBe(false);
+    expect(staysInsidePackage("index.ts", "./version/index.js")).toBe(true);
+    expect(staysInsidePackage("index.ts", "../../ledger/src/index.js")).toBe(false);
   });
 
   it("never imports the ledger or a database driver", () => {

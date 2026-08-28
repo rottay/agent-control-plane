@@ -1,7 +1,7 @@
 import { findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
 
-import type { ApiRouteName } from "./routes.js";
-import { API_ROUTES } from "./routes.js";
+import type { ApiRouteName } from "../routes/index.js";
+import { API_ROUTES } from "../routes/index.js";
 
 /**
  * The ledger-to-client parity contract.

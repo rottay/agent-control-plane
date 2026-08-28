@@ -114,10 +114,10 @@ const P1B_SHARED_WRITE_SET = [
   "packages/api-contracts/tsconfig.json",
   "packages/api-contracts/README.md",
   "packages/api-contracts/src/index.ts",
-  "packages/api-contracts/src/version.ts",
-  "packages/api-contracts/src/routes.ts",
-  "packages/api-contracts/src/schemas.ts",
-  "packages/api-contracts/src/schemas.test.ts",
+  "packages/api-contracts/src/version/index.ts",
+  "packages/api-contracts/src/routes/index.ts",
+  "packages/api-contracts/src/schemas/index.ts",
+  "packages/api-contracts/test/schemas/index.test.ts",
   "packages/cli/package.json",
   "packages/cli/tsconfig.json",
   "packages/cli/src/index.ts",
@@ -152,6 +152,16 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C3 (api-contracts): four flat modules and two colocated tests,
+  // now under src/<domain>/index.ts and the mirrored test tree. The two pure
+  // renames retire their old flat path too, even though no byte inside them
+  // changed.
+  "packages/api-contracts/src/parity.test.ts",
+  "packages/api-contracts/src/parity.ts",
+  "packages/api-contracts/src/routes.ts",
+  "packages/api-contracts/src/schemas.test.ts",
+  "packages/api-contracts/src/schemas.ts",
+  "packages/api-contracts/src/version.ts",
   // P5N cohort C2 (ledger): six flat modules, a colocated test and a child
   // process fixture, now under src/<domain>/index.ts and the mirrored test
   // tree. Named here so none can return beside its replacement.
@@ -482,8 +492,8 @@ const P3C_WRITE_SET = [
 
 /** P3D: the ledger-to-client parity contract and its three-way proof. */
 const P3D_WRITE_SET = [
-  "packages/api-contracts/src/parity.ts",
-  "packages/api-contracts/src/parity.test.ts",
+  "packages/api-contracts/src/parity/index.ts",
+  "packages/api-contracts/test/parity/index.test.ts",
   "packages/api-contracts/src/index.ts",
   "packages/cli/src/observation.ts",
   "packages/ui/src/api/client.ts",
@@ -721,6 +731,22 @@ const P5N_C2_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C3: api-contracts, the third tree normalized.
+ *
+ * As with C1 and C2 the relocated source paths are not listed here — they are
+ * carried by `P1B_SHARED_WRITE_SET` and `P3D_WRITE_SET`, rewritten 1:1 — so
+ * this array declares only the test tree's own `tsconfig.json` and the config
+ * files the cohort edits. No `.gitignore` or ESLint entry is needed: this test
+ * tree typechecks with `noEmit`, so it produces no build output to ignore.
+ */
+const P5N_C3_WRITE_SET = [
+  "packages/api-contracts/test/tsconfig.json",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -750,6 +776,7 @@ const WRITE_SET = [
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
+  ...P5N_C3_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -3030,7 +3057,7 @@ if (tracked.status === 0) {
 // commit against. Each cohort activates its own tree in the same commit that
 // makes that tree compliant, so the law and the code arrive together and every
 // commit in between is green.
-const TOPOLOGY_ACTIVE_TREES = ["contracts", "ledger"];
+const TOPOLOGY_ACTIVE_TREES = ["contracts", "ledger", "api-contracts"];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
 const TOPOLOGY_PRODUCT_INDEX = new Set(["index.ts", "index.tsx"]);
@@ -3208,7 +3235,7 @@ const TEST_TREE_SCANNED_PREFIXES = [];
  * visible: an entry here is a package whose sources the fence never inspected,
  * not a package whose inspection was dropped.
  */
-const TEST_TREE_NO_PACKAGE_SCAN = ["contracts", "ledger"];
+const TEST_TREE_NO_PACKAGE_SCAN = ["contracts", "ledger", "api-contracts"];
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);

@@ -188,9 +188,12 @@ export default defineConfig({
       },
       {
         test: {
+          // P5N cohort C3: the api-contracts tree is normalized, so its tests
+          // live in the mirrored `test/` tree. The `src/**` glob stays until
+          // every cohort has landed.
           name: 'api-contracts',
           root: './packages/api-contracts',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,
