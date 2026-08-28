@@ -511,23 +511,25 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "6c58bf68a17d0399d990f90e81120c9b9e0543d713f2d8912a4b525238e74721";
+  "b2a990c438e379ee245df0b99e201f2ef1405b700a6d4d3ed30c6a02a160226d";
 
 /**
- * The Estado line P1 closure is allowed to have produced.
+ * The Estado line P3 closure is allowed to have produced.
  *
- * P1 is complete: the server serves the frozen contract, the CLI reads it and
- * the UI renders it, all three under an independent verifier's receipt. The
- * literal is exact, and because it no longer contains P1_INCOMPLETE it is also
- * what closes the lane envelope below.
+ * P3 is complete on four committed commits and the independently verified
+ * receipts behind them: the shadow-observation boundary, the ledger-to-client
+ * parity contract, the passive collectors, and the baseline over a disposable
+ * shadow ledger. The literal is exact, and because it still does not contain
+ * P1_INCOMPLETE it also keeps the lane envelope closed.
  *
- * What completion does NOT mean is stated in the same line and must stay there:
- * NO_PRODUCT_CUTOVER. A finished observation plane is still not in service.
- * Adoption happens once, after P8 certification and under a separate P9
- * authorisation.
+ * P4 opens as *next*, not as started. What completion does NOT mean is stated
+ * in the same line and must stay there: NO_PRODUCT_CUTOVER. A measured shadow
+ * baseline is still not in service, and nothing P3 built observes any live
+ * session. Adoption happens once, after P8 certification and under a separate
+ * P9 authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / NEXT_P3 / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / NEXT_P4 / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -558,6 +560,11 @@ const ROADMAP_LITERALS = [
  * The cutover literals never leave. No phase status may assert cutover
  * authority, which is the owner's at P9 and nobody else's.
  */
+// P3_COMPLETE never entered this list. A status goes on it when the claim would
+// outrun the evidence; P3 closed on four committed commits, each behind an
+// independent verifier's receipt, so there was never a claim to suppress. The
+// membership below is therefore unchanged at P3 closure — and the cutover
+// literals still never leave it.
 const FORBIDDEN_ROADMAP_LITERALS = [
   "P1_DONE",
   "PRODUCT_CUTOVER_AUTHORIZED",
@@ -741,8 +748,15 @@ const EXPIRED_LITERALS = {
   ],
   "packages/runtime/src/index.ts": ["This is P2B"],
   "packages/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
-  "README.md": ["There is no orchestrator", "P0 and P1 complete. Next: P2."],
+  "README.md": [
+    "There is no orchestrator",
+    "P0 and P1 complete. Next: P2.",
+    "P0, P1 and P2 complete. Next: P3.",
+  ],
   "packages/daemon/README.md": ["This is P2D", "The launchd template is P2E"],
+  // The P3A-only frame the observation README carried until P3 closed. Both
+  // literals are lifted byte-exactly from the pre-edit file (lines 7 and 19).
+  "packages/observation/README.md": ["This is P3A", "P3A is not P3 completion"],
 };
 
 /** Files that must never exist in the repository, in any directory. */

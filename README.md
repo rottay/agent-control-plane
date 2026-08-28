@@ -3,13 +3,23 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0, P1 and P2 complete. Next: P3.** Contracts, fences, the
+Status: **P0, P1, P2 and P3 complete. Next: P4.** Contracts, fences, the
 append-only event ledger, a read-only observation plane over it — a loopback
-HTTP server, a CLI and a local UI — and a durability plane with two
-orchestration drivers under a supervised local daemon. P2 closed on evidence:
-the daemon is a packaged executable with a tracked config-file contract, and a
-disposable drill starts it under `launchd`, reaches readiness, stops it, and
-leaves nothing behind — reproduced independently before the status moved.
+HTTP server, a CLI and a local UI — a durability plane with two orchestration
+drivers under a supervised local daemon, and a shadow-mode observation package
+with a measured baseline. P3 closed on committed evidence: the ledger, the
+server, the CLI and the UI are proven to agree exactly across all nine frozen
+routes — the CLI building its own answer from the same ledger without ever
+seeing the server's, and the UI proven to project the server's answer
+unchanged, with `health` bound in the contract as its named non-ledger
+exception, and with ordering and pagination part of the equality. Collectors
+read already-emitted artifacts and synthetic scenarios passively, and the
+baseline is recomputed over a disposable shadow ledger and proven
+byte-identical after a rebuild.
+
+Shadow mode measured synthetic and already-emitted artifacts only. Nothing was
+observed from any live session, nothing here is adopted into any real
+operation, and no cutover is authorized.
 
 The launchd template stays inert, nothing is installed, and no launch agent
 survives a drill. There is no provider adapter yet, and **no product adoption
