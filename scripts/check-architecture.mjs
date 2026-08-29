@@ -863,6 +863,28 @@ const P5E_WRITE_SET = [
 ];
 
 /**
+ * P6: writer enforcement.
+ *
+ * P6A is **5 packet entries across 5 distinct paths** — the enforcement module
+ * and its mirrored test, the runtime barrel, the runtime README falsified by
+ * the landing, and this file. The standing convention applies: entries are the
+ * sum of the packet array lengths, distinct is `new Set` over their union,
+ * within phase scope. Nothing repeats yet, so 5 = 5.
+ *
+ * The module ships no observer. Its git port is a runtime-internal type with a
+ * closed read-only verb set, and `SPAWN_ALLOWED_FILES` gains nothing here: a
+ * fourth spawner in the package that enforces the no-cleanup law would be the
+ * thing being prevented. Production wiring is a separate authorized packet.
+ */
+const P6A_WRITE_SET = [
+  "packages/runtime/src/enforcement/index.ts",
+  "packages/runtime/test/enforcement/index.test.ts",
+  "packages/runtime/src/index.ts",
+  "packages/runtime/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P5N cohort C1: contracts, the first tree normalized under the mirrored
  * topology.
  *
@@ -1083,6 +1105,7 @@ const WRITE_SET = [
   ...P5C_WRITE_SET,
   ...P5D_WRITE_SET,
   ...P5E_WRITE_SET,
+  ...P6A_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -1291,7 +1314,10 @@ const AUTHORITY_LITERALS = {
     "authority",
     "no side effects",
     "fails closed",
-    "P2D is not P2 completion",
+    // "P2D is not P2 completion" was pinned here until P6A. A phrase cannot be
+    // required present and required absent at once: retiring it under
+    // EXPIRED_LITERALS means it leaves this list in the same change. The
+    // completion disclaimer it carried survives as "no product adoption".
     "no product adoption",
   ],
   "packages/daemon/README.md": [
@@ -1395,8 +1421,13 @@ const EXPIRED_LITERALS = {
     "There is no Restate driver",
     "This is P2B",
     "will walk the same one in P2C",
+    // Retired by the P6A landing: the README framed itself as P2D-only and
+    // disclaimed P2 completion for as long as the package held nothing but the
+    // lifecycle engine and its drivers. It now holds the enforcement core too.
+    "This is P2D: one shared lifecycle engine and both of its drivers.",
+    "P2D is not P2 completion",
   ],
-  "packages/runtime/src/index.ts": ["This is P2B"],
+  "packages/runtime/src/index.ts": ["This is P2B", "This is P2D"],
   "packages/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
   "README.md": [
     "There is no orchestrator",

@@ -1,18 +1,61 @@
 /**
  * Public surface of the Agent Control Plane runtime package.
  *
- * Scope note. This is P2D: one shared lifecycle engine and both of its drivers,
+ * Scope note. P2D built one shared lifecycle engine and both of its drivers,
  * `SQLITE_SUPERVISOR` and `RESTATE`, over the append-only ledger, plus the
- * narrowed server lifecycle the daemon drives. Process lifecycle itself lives
- * in `@acp/daemon`; the launchd template and any observation route are not here.
+ * narrowed server lifecycle the daemon drives. P6A adds the writer-enforcement
+ * core: leases, write-set conformance and prestate verification, as pure
+ * functions over injected values. Process lifecycle itself lives in
+ * `@acp/daemon`; the launchd template and any observation route are not here.
  *
  * Importing this module has no side effects. It binds no socket, starts no
  * listener, spawns no process and creates no directory. Filesystem work happens
  * only inside an explicitly invoked drill, under a root this package resolves
  * itself; the architecture fence asserts both.
  *
- * P2D is not P2 completion, and it is no product adoption.
+ * The enforcement core observes nothing itself: the read-only git port is a
+ * type, no implementation of it exists in this package, and no production
+ * source here imports a process module. It recommends quarantine and never a
+ * cleanup.
+ *
+ * None of this is product adoption. Nothing here is connected to, observed
+ * from or used by any real operation.
  */
+
+// P6A: the writer-enforcement core. One writer per worktree, an exact
+// write-set scanned tracked-and-untracked, and a violation that quarantines
+// rather than cleans. Pure functions over injected values; the git port is a
+// type with a closed read-only verb set and no implementation here.
+export {
+  ENFORCEMENT_REFUSALS,
+  GIT_READ_VERBS,
+  acquireLease,
+  checkWriteSetConformance,
+  observationFailure,
+  renewLease,
+  revokeLease,
+  verifyPrestate,
+} from "./enforcement/index.js";
+export type {
+  ConformanceOutcome,
+  ConformanceRequest,
+  ConformanceVerdict,
+  EnforcementEvent,
+  EnforcementEventType,
+  EnforcementRefusal,
+  EnforcementRefused,
+  GitReadOutcome,
+  GitReadPort,
+  GitReadRequest,
+  GitReadVerb,
+  LeaseGranted,
+  LeaseOutcome,
+  LeaseRequest,
+  PrestateOutcome,
+  PrestateRequest,
+  PrestateVerdict,
+  WorktreeObservation,
+} from "./enforcement/index.js";
 
 export {
   DATA_ROOTS,

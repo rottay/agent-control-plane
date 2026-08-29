@@ -4,19 +4,38 @@ The durability and supervisor plane of the Agent Control Plane.
 
 ## Scope
 
-**This is P2D: one shared lifecycle engine and both of its drivers.** The
-`SQLITE_SUPERVISOR` and the `RESTATE` driver walk the same plan over the
-append-only ledger and recover from real process kills. Process lifecycle now
-lives in `@acp/daemon`, which drives this package. There is no `launchd`
-template and no observation route yet.
+**P2D built one shared lifecycle engine and both of its drivers**, and **P6A
+adds the writer-enforcement core.** The `SQLITE_SUPERVISOR` and the `RESTATE`
+driver walk the same plan over the append-only ledger and recover from real
+process kills. Enforcement adds leases, write-set conformance and prestate
+verification as pure functions over injected values: one writer per worktree,
+an exact write-set scanned tracked-and-untracked, and a violation that revokes
+the lease and quarantines the worktree rather than cleaning it. Process
+lifecycle now lives in `@acp/daemon`, which drives this package. There is no
+`launchd` template and no observation route yet.
+
+P6A admits at most one live holder **per worktree**, and makes no
+cross-worktree claim: whether two worktrees may be written in parallel is the
+conflict graph's decision, which is P6B's gate applied before acquire. Nothing
+here computes a partial conflict check. Revocation is the caller folding the
+lease out of the set it passes in — derived from `LEASE_ACQUIRED` and
+`LEASE_REVOKED` in the ledger, which is the authority — because the engine
+holds no state of its own.
+
+The enforcement core observes nothing itself. Its read-only git port is a type
+naming the four verbs an observer may ever speak — `status`, `diff`,
+`ls-files`, `rev-parse` — so a mutation verb is unrepresentable; no
+implementation of it exists in this package, and no production source here
+imports a process module. Wiring a real observer is a separate authorized
+packet.
 
 Importing this package has **no side effects**. It binds no socket, starts no
 listener, spawns no process and creates no directory. Filesystem work happens
 only inside an explicitly invoked drill, under a root this package resolves for
 itself. The architecture fence asserts both.
 
-**P2D is not P2 completion**, and it is **no product adoption**. Nothing here is
-connected to, observed from or used by any real operation.
+This is **no product adoption**. Nothing here is connected to, observed from or
+used by any real operation.
 
 ## One core, two drivers
 
