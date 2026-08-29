@@ -390,6 +390,16 @@ Las relocations son mecánicas; ningún cambio semántico viaja en un cohorte;
 el gate expande la ley árbol por árbol, sólo cuando cada cohorte queda
 compliant; **P6 no comienza hasta compliance total**.
 
+**P5N completo** (2026-08-28, HEAD `94849d7a`): los diez árboles —
+contracts, ledger, api-contracts, observation, cli, adapters, daemon,
+runtime, ui, server — cumplen la topología folder/index con el árbol
+espejo de tests separado; cada cohorte (C1–C10) cerró con validación
+independiente y receipt local, incluidos el incidente C8-1 (No-Checkout
+Law), la adjudicación C7-R1 (los child executables de drill son
+producción cuando el build real los emite), el par C9-F y la regla de
+scope C10-R1. La línea de estado no se mueve aquí: P5 sigue abierto
+hasta P5E.
+
 ### P6 — Enforcement de writers
 
 Writer: Opus. Auditor: Fable. Checkpoint independiente: Codex.

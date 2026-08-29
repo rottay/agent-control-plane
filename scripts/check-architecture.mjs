@@ -1086,7 +1086,7 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "c13a33297f306487cc438fa0ae8e3d18625644862905c082ab6b7204909ae334";
+  "148839fe1015ce0e8db34a776b8d57bef1edb9221702c58828a948ebae856216";
 
 /**
  * The Estado line P4 closure is allowed to have produced.
