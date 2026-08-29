@@ -273,7 +273,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
     const outcome = checkWriteSetConformance({
       declaredWriteSet: ["src/allowed.ts"],
       observation: observation({ trackedChanges: [digest("src/elsewhere.ts", A)] }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
@@ -293,6 +293,35 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
   });
 
   // (f)
+  it("emits the same LEASE_REVOKED payload from both sites", () => {
+    // The deferred P6A-N1: one event, one shape, whichever path produced it.
+    // A reader of the ledger can attribute a revocation to a worktree and a
+    // holder without joining anything.
+    const held = lease();
+    const fromRevoke = revokeLease({
+      leases: [held], now: NOON, leaseId: held.leaseId, cause: "WRITE_SET_VIOLATION_DETECTED",
+    });
+    const fromVerdict = checkWriteSetConformance({
+      declaredWriteSet: ["src/allowed.ts"],
+      observation: observation({ trackedChanges: [digest("src/elsewhere.ts", A)] }),
+      lease: held,
+    });
+    expect(fromRevoke.ok).toBe(true);
+    expect(fromVerdict.ok).toBe(true);
+    if (!fromRevoke.ok || !fromVerdict.ok) return;
+    const left = fromRevoke.events.find((e) => e.type === "LEASE_REVOKED");
+    const right = fromVerdict.events.find((e) => e.type === "LEASE_REVOKED");
+    const expected = {
+      leaseId: held.leaseId,
+      worktreePath: held.worktreePath,
+      holder: held.holder,
+      cause: "WRITE_SET_VIOLATION_DETECTED",
+    };
+    expect(left?.payload).toEqual(expected);
+    expect(right?.payload).toEqual(expected);
+    expect(Object.keys(left?.payload ?? {}).sort()).toEqual(Object.keys(right?.payload ?? {}).sort());
+  });
+
   it("passes when untracked paths are inside the set — the scan is not tracked-only", () => {
     const outcome = checkWriteSetConformance({
       declaredWriteSet: ["src/allowed.ts", "src/new.ts"],
@@ -300,7 +329,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
         trackedChanges: [digest("src/allowed.ts", A)],
         untrackedPaths: ["src/new.ts"],
       }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(outcome.ok && outcome.conformant).toBe(true);
   });
@@ -309,7 +338,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
     const outcome = checkWriteSetConformance({
       declaredWriteSet: ["src/allowed.ts"],
       observation: observation({ untrackedPaths: ["src/sneaked-in.ts"] }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(outcome.ok && outcome.conformant).toBe(false);
   });
@@ -319,7 +348,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
     const deletion = checkWriteSetConformance({
       declaredWriteSet: ["src/allowed.ts"],
       observation: observation({ trackedChanges: [digest("src/deleted.ts", A)] }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(deletion.ok && deletion.violations).toEqual(["src/deleted.ts"]);
 
@@ -330,7 +359,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
       observation: observation({
         trackedChanges: [digest("src/allowed.ts", A), digest("src/moved-away.ts", B)],
       }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(rename.ok && rename.violations).toEqual(["src/moved-away.ts"]);
   });
@@ -342,7 +371,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
     const outcome = checkWriteSetConformance({
       declaredWriteSet: ["src/allowed.ts"],
       observation: observation({ untrackedPaths: [] }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(outcome.ok && outcome.conformant).toBe(true);
   });
@@ -354,7 +383,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
         trackedChanges: [digest("z.ts", A), digest("a.ts", B)],
         untrackedPaths: ["z.ts", "m.ts"],
       }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(outcome.ok && outcome.violations).toEqual(["a.ts", "m.ts", "z.ts"]);
   });
@@ -372,7 +401,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
         checkWriteSetConformance({
           declaredWriteSet: ["ok.ts"],
           observation: malformed as WorktreeObservation,
-          leaseId: lease().leaseId,
+          lease: lease(),
         });
       expect(run).not.toThrow();
       const outcome = run();
@@ -396,7 +425,7 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
       const outcome = checkWriteSetConformance({
         declaredWriteSet: [entry],
         observation: observation(),
-        leaseId: lease().leaseId,
+        lease: lease(),
       });
       expect({ label, reason: refusal(outcome).reason, at: refusal(outcome).at }).toEqual({
         label,
@@ -410,23 +439,23 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
     const outcome = checkWriteSetConformance({
       declaredWriteSet: ["ok.ts"],
       observation: observation(),
-      leaseId: "not-a-uuid",
+      lease: { ...lease(), leaseId: "not-a-uuid" },
     });
     expect(refusal(outcome).reason).toBe("REQUEST_INVALID");
-    expect(refusal(outcome).at).toBe("request.leaseId");
+    expect(refusal(outcome).at).toBe("request.lease");
   });
 
   it("accepts a null head only, and refuses an empty declared set", () => {
     const initial = checkWriteSetConformance({
       declaredWriteSet: ["ok.ts"],
       observation: observation({ head: null }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(initial.ok).toBe(true);
     const empty = checkWriteSetConformance({
       declaredWriteSet: [],
       observation: observation(),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(refusal(empty).reason).toBe("WRITE_SET_EMPTY");
   });
@@ -486,12 +515,12 @@ describe("the module's own laws", () => {
     const first = checkWriteSetConformance({
       declaredWriteSet: ["ok.ts"],
       observation: observation({ untrackedPaths: ["bad.ts"] }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     const second = checkWriteSetConformance({
       declaredWriteSet: ["ok.ts"],
       observation: observation({ untrackedPaths: ["bad.ts"] }),
-      leaseId: lease().leaseId,
+      lease: lease(),
     });
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
     expect(first.ok).toBe(true);

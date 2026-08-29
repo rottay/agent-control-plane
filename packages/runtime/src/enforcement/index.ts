@@ -381,8 +381,14 @@ export function revokeLease(
 export interface ConformanceRequest {
   readonly declaredWriteSet: readonly string[];
   readonly observation: WorktreeObservation;
-  /** The lease the writer holds, so a violation can name what to revoke. */
-  readonly leaseId: string;
+  /**
+   * The lease the writer holds.
+   *
+   * The whole lease, not just its id: a revocation the ledger can attribute to
+   * a worktree and a holder without joining another table is what a reader of
+   * the event log actually needs.
+   */
+  readonly lease: Lease;
 }
 
 export interface ConformanceVerdict {
@@ -423,11 +429,11 @@ export function checkWriteSetConformance(request: ConformanceRequest): Conforman
   if (typeof raw !== "object" || raw === null) return refuse("REQUEST_INVALID", "request");
   const fields = raw as Record<string, unknown>;
 
-  // The lease this verdict would revoke has to be a lease. A malformed id here
+  // The lease this verdict would revoke has to be a lease. A malformed one here
   // would produce a revocation instruction naming nothing.
-  if (!Lease.shape.leaseId.safeParse(fields["leaseId"]).success) {
-    return refuse("REQUEST_INVALID", "request.leaseId");
-  }
+  const leaseParse = Lease.safeParse(fields["lease"]);
+  if (!leaseParse.success) return refuse("REQUEST_INVALID", "request.lease");
+  const lease = leaseParse.data;
 
   const declared: unknown = fields["declaredWriteSet"];
   if (!Array.isArray(declared)) return refuse("REQUEST_INVALID", "request.declaredWriteSet");
@@ -499,15 +505,22 @@ export function checkWriteSetConformance(request: ConformanceRequest): Conforman
     ok: true as const,
     conformant: false,
     violations,
-    revokeLeaseId: request.leaseId,
+    revokeLeaseId: lease.leaseId,
     recommendedTaskState: "SUSPECT_WORKTREE" as const,
     events: Object.freeze([
       event("WRITE_SET_VIOLATION_DETECTED", {
-        leaseId: request.leaseId,
+        leaseId: lease.leaseId,
         firstPathOutsideSet: violations[0] ?? "",
         pathsOutsideSet: String(violations.length),
       }),
-      event("LEASE_REVOKED", { leaseId: request.leaseId, cause: "WRITE_SET_VIOLATION_DETECTED" }),
+      // The unified payload: the same four fields `revokeLease` emits, so the
+      // ledger carries one shape for one event whichever path produced it.
+      event("LEASE_REVOKED", {
+        leaseId: lease.leaseId,
+        worktreePath: lease.worktreePath,
+        holder: lease.holder,
+        cause: "WRITE_SET_VIOLATION_DETECTED",
+      }),
     ]),
   });
 }

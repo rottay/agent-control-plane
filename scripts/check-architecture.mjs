@@ -865,17 +865,22 @@ const P5E_WRITE_SET = [
 /**
  * P6: writer enforcement.
  *
- * P6 is **9 packet entries across 7 distinct paths**. The standing convention
+ * P6 is **15 packet entries across 9 distinct paths**. The standing convention
  * applies: entries are the sum of the packet array lengths, distinct is
- * `new Set` over their union, within phase scope. 5 + 4 = 9 entries; the
- * repeats are `packages/runtime/src/index.ts` (A, B) and
- * `scripts/check-architecture.mjs` (A, B), contributing 2 duplicate entries,
- * so 9 - 2 = 7.
+ * `new Set` over their union, within phase scope. 5 + 4 + 6 = 15 entries; the
+ * repeats are `packages/runtime/src/index.ts` (A, B, C),
+ * `scripts/check-architecture.mjs` (A, B, C),
+ * `packages/runtime/src/enforcement/index.ts` (A, C) and
+ * `packages/runtime/test/enforcement/index.test.ts` (A, C), contributing 6
+ * duplicate entries, so 15 - 6 = 9.
  *
  * P6A is the enforcement module and its mirrored test, the runtime barrel, the
  * runtime README falsified by that landing, and this file. P6B is the conflict
  * graph and its mirrored test, the barrel and this file; its README sentence
- * rides the union through P6A_WRITE_SET, the P5D Ruling-2 form.
+ * rides the union through P6A_WRITE_SET, the P5D Ruling-2 form. P6C is the
+ * commit-authorization module and its mirrored test, the enforcement pair for
+ * the deferred P6A-N1 payload unification, the barrel and this file; its
+ * README paragraph rides the union the same way.
  *
  * The module ships no observer. Its git port is a runtime-internal type with a
  * closed read-only verb set, and `SPAWN_ALLOWED_FILES` gains nothing here: a
@@ -893,6 +898,15 @@ const P6A_WRITE_SET = [
 const P6B_WRITE_SET = [
   "packages/runtime/src/conflict-graph/index.ts",
   "packages/runtime/test/conflict-graph/index.test.ts",
+  "packages/runtime/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+const P6C_WRITE_SET = [
+  "packages/runtime/src/commit-authorization/index.ts",
+  "packages/runtime/test/commit-authorization/index.test.ts",
+  "packages/runtime/src/enforcement/index.ts",
+  "packages/runtime/test/enforcement/index.test.ts",
   "packages/runtime/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -1120,6 +1134,7 @@ const WRITE_SET = [
   ...P5E_WRITE_SET,
   ...P6A_WRITE_SET,
   ...P6B_WRITE_SET,
+  ...P6C_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,

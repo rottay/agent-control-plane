@@ -5,7 +5,8 @@ The durability and supervisor plane of the Agent Control Plane.
 ## Scope
 
 **P2D built one shared lifecycle engine and both of its drivers**, **P6A adds
-the writer-enforcement core**, and **P6B adds the conflict graph.** The
+the writer-enforcement core**, **P6B adds the conflict graph**, and **P6C adds
+commit authorization and quarantine.** The
 `SQLITE_SUPERVISOR` and the `RESTATE`
 driver walk the same plan over the append-only ledger and recover from real
 process kills. Enforcement adds leases, write-set conformance and prestate
@@ -31,6 +32,24 @@ naming the four verbs an observer may ever speak — `status`, `diff`,
 implementation of it exists in this package, and no production source here
 imports a process module. Wiring a real observer is a separate authorized
 packet.
+
+P6C decides whether a commit is authorized, and never performs one. The
+receipt's envelope is injected whole: this module mints no identifier, reads no
+clock and never speaks git, so the bytes a verifier audits are the bytes the
+integrator commits under. Authorization requires an independent verifier — a
+receipt whose verifier is its own writer is refused — every recorded check
+exiting zero, an observation inside the declared write-set, and a base head the
+receipt was taken against. A receipt can never authorize a push: the field is
+`false` at the type, so `true` is unrepresentable rather than merely unused.
+Recording a commit afterwards is a second decision: a first parent that is not
+the receipt's base head, a message that is not the authorized one, or a
+malformed object id is refused rather than logged.
+
+When the observation falls outside the declared set the outcome is a quarantine
+record — the violating paths, the evidence digests and a recommended
+`SUSPECT_WORKTREE` — and quarantine is **never cleanup**. The record has no
+field in which a clean, a reset or a restore could be written, which is the law
+expressed as a shape rather than as a warning.
 
 Importing this package has **no side effects**. It binds no socket, starts no
 listener, spawns no process and creates no directory. Filesystem work happens

@@ -59,6 +59,33 @@ export type {
   GraphRefusal,
   GraphRefused,
 } from "./conflict-graph/index.js";
+// P6C: commit authorization and quarantine. The receipt envelope is injected
+// whole -- this module mints no identifier, reads no clock and never runs git;
+// it decides, and the integrator commits under the receipt it returns. A
+// receipt can never authorize a push, and quarantine is never cleanup.
+export {
+  AUTHORIZATION_REFUSALS,
+  authorizeCommit,
+  quarantineWorktree,
+  recordCommit,
+} from "./commit-authorization/index.js";
+export type {
+  AuthorizationEvent,
+  AuthorizationEventType,
+  AuthorizationGranted,
+  AuthorizationOutcome,
+  AuthorizationRefusal,
+  AuthorizationRefused,
+  AuthorizationRequest,
+  CommitRecordOutcome,
+  CommitRecordRequest,
+  CommitRecorded,
+  QuarantineOutcome,
+  QuarantineRecord,
+  QuarantineRequest,
+  RecordedCheck,
+  RecordedCommit,
+} from "./commit-authorization/index.js";
 
 export type {
   ConformanceOutcome,
