@@ -47,6 +47,7 @@
     { "path": "./packages/server" },
     { "path": "./packages/cli" },
     { "path": "./packages/cli/test" },
-    { "path": "./packages/ui" }
+    { "path": "./packages/ui" },
+    { "path": "./packages/ui/test" }
   ]
 }

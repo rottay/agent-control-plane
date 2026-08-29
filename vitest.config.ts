@@ -140,7 +140,7 @@ const cliRowModelSource = fileURLToPath(
   new URL('./packages/cli/src/observation/index.ts', import.meta.url),
 );
 const uiRowModelSource = fileURLToPath(
-  new URL('./packages/ui/src/api/client.ts', import.meta.url),
+  new URL('./packages/ui/src/api/client/index.ts', import.meta.url),
 );
 const parityAliases = [
   ...workspaceSourceAliases,
@@ -303,7 +303,12 @@ export default defineConfig({
         test: {
           name: 'ui',
           root: './packages/ui',
-          include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+          include: [
+            'src/**/*.test.ts',
+            'src/**/*.test.tsx',
+            'test/**/*.test.ts',
+            'test/**/*.test.tsx',
+          ],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

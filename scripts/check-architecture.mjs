@@ -129,8 +129,8 @@ const P1B_SHARED_WRITE_SET = [
   "packages/ui/tsconfig.node.json",
   "packages/ui/vite.config.ts",
   "packages/ui/index.html",
-  "packages/ui/src/main.tsx",
-  "packages/ui/src/App.tsx",
+  "packages/ui/src/index.tsx",
+  "packages/ui/src/app/index.tsx",
 ];
 
 /**
@@ -152,6 +152,55 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C9 (ui): the browser package — the app entry and shell, every
+  // component, view, hook and routing helper, the API client and the format
+  // helpers (collapsed per adjudication C), and every colocated test, now
+  // under src/<domain>/index.tsx and the mirrored test tree.
+  "packages/ui/src/App.tsx",
+  "packages/ui/src/api/client.test.ts",
+  "packages/ui/src/api/client.ts",
+  "packages/ui/src/api/queryString.ts",
+  "packages/ui/src/components/AppShell.test.tsx",
+  "packages/ui/src/components/AppShell.tsx",
+  "packages/ui/src/components/AsyncSection.test.tsx",
+  "packages/ui/src/components/AsyncSection.tsx",
+  "packages/ui/src/components/BarBreakdown.test.tsx",
+  "packages/ui/src/components/BarBreakdown.tsx",
+  "packages/ui/src/components/DataTable.test.tsx",
+  "packages/ui/src/components/DataTable.tsx",
+  "packages/ui/src/components/FilterBar.test.tsx",
+  "packages/ui/src/components/FilterBar.tsx",
+  "packages/ui/src/components/IdValue.test.tsx",
+  "packages/ui/src/components/IdValue.tsx",
+  "packages/ui/src/components/Pagination.test.tsx",
+  "packages/ui/src/components/Pagination.tsx",
+  "packages/ui/src/components/SkipLink.tsx",
+  "packages/ui/src/components/StatusBadge.test.tsx",
+  "packages/ui/src/components/StatusBadge.tsx",
+  "packages/ui/src/components/TimelineList.test.tsx",
+  "packages/ui/src/components/TimelineList.tsx",
+  "packages/ui/src/format/chain.test.ts",
+  "packages/ui/src/format/chain.ts",
+  "packages/ui/src/format/format.test.ts",
+  "packages/ui/src/format/format.ts",
+  "packages/ui/src/format/statusTone.test.ts",
+  "packages/ui/src/format/statusTone.ts",
+  "packages/ui/src/hooks/useAsyncResource.ts",
+  "packages/ui/src/main.tsx",
+  "packages/ui/src/routing/hashRoute.test.ts",
+  "packages/ui/src/routing/hashRoute.ts",
+  "packages/ui/src/routing/useHashRoute.ts",
+  "packages/ui/src/views/EventsView.tsx",
+  "packages/ui/src/views/IntegrityView.tsx",
+  "packages/ui/src/views/NotFoundView.test.tsx",
+  "packages/ui/src/views/NotFoundView.tsx",
+  "packages/ui/src/views/OverviewView.tsx",
+  "packages/ui/src/views/StatusView.tsx",
+  "packages/ui/src/views/TaskDetailView.tsx",
+  "packages/ui/src/views/TasksListView.tsx",
+  "packages/ui/src/views/WorkerDetailView.tsx",
+  "packages/ui/src/views/WorkersListView.tsx",
+  "packages/ui/src/views/views.test.tsx",
   // P5N cohort C8 (runtime): the durability plane — constants and contracts,
   // the core execution model, both drivers with their two child executables
   // (kept in src/, adjudication A), the Restate server pin and submit path,
@@ -336,54 +385,54 @@ const P1_WRITE_SET = [
   "packages/server/src/query-schemas.ts",
   "packages/server/src/routes.ts",
   "packages/server/src/start.ts",
-  "packages/ui/src/api/client.test.ts",
-  "packages/ui/src/api/client.ts",
-  "packages/ui/src/api/queryString.ts",
-  "packages/ui/src/components/AppShell.test.tsx",
-  "packages/ui/src/components/AppShell.tsx",
-  "packages/ui/src/components/AsyncSection.test.tsx",
-  "packages/ui/src/components/AsyncSection.tsx",
-  "packages/ui/src/components/BarBreakdown.test.tsx",
-  "packages/ui/src/components/BarBreakdown.tsx",
-  "packages/ui/src/components/DataTable.test.tsx",
-  "packages/ui/src/components/DataTable.tsx",
-  "packages/ui/src/components/FilterBar.test.tsx",
-  "packages/ui/src/components/FilterBar.tsx",
-  "packages/ui/src/components/IdValue.test.tsx",
-  "packages/ui/src/components/IdValue.tsx",
-  "packages/ui/src/components/Pagination.test.tsx",
-  "packages/ui/src/components/Pagination.tsx",
-  "packages/ui/src/components/SkipLink.tsx",
-  "packages/ui/src/components/StatusBadge.test.tsx",
-  "packages/ui/src/components/StatusBadge.tsx",
-  "packages/ui/src/components/TimelineList.test.tsx",
-  "packages/ui/src/components/TimelineList.tsx",
-  "packages/ui/src/format/chain.test.ts",
-  "packages/ui/src/format/chain.ts",
-  "packages/ui/src/format/format.test.ts",
-  "packages/ui/src/format/format.ts",
-  "packages/ui/src/format/statusTone.test.ts",
-  "packages/ui/src/format/statusTone.ts",
-  "packages/ui/src/hooks/useAsyncResource.ts",
-  "packages/ui/src/routing/hashRoute.test.ts",
-  "packages/ui/src/routing/hashRoute.ts",
-  "packages/ui/src/routing/useHashRoute.ts",
+  "packages/ui/test/api/client/index.test.ts",
+  "packages/ui/src/api/client/index.ts",
+  "packages/ui/src/api/query-string/index.ts",
+  "packages/ui/test/components/app-shell/index.test.tsx",
+  "packages/ui/src/components/app-shell/index.tsx",
+  "packages/ui/test/components/async-section/index.test.tsx",
+  "packages/ui/src/components/async-section/index.tsx",
+  "packages/ui/test/components/bar-breakdown/index.test.tsx",
+  "packages/ui/src/components/bar-breakdown/index.tsx",
+  "packages/ui/test/components/data-table/index.test.tsx",
+  "packages/ui/src/components/data-table/index.tsx",
+  "packages/ui/test/components/filter-bar/index.test.tsx",
+  "packages/ui/src/components/filter-bar/index.tsx",
+  "packages/ui/test/components/id-value/index.test.tsx",
+  "packages/ui/src/components/id-value/index.tsx",
+  "packages/ui/test/components/pagination/index.test.tsx",
+  "packages/ui/src/components/pagination/index.tsx",
+  "packages/ui/src/components/skip-link/index.tsx",
+  "packages/ui/test/components/status-badge/index.test.tsx",
+  "packages/ui/src/components/status-badge/index.tsx",
+  "packages/ui/test/components/timeline-list/index.test.tsx",
+  "packages/ui/src/components/timeline-list/index.tsx",
+  "packages/ui/test/format/chain/index.test.ts",
+  "packages/ui/src/format/chain/index.ts",
+  "packages/ui/test/format/index.test.ts",
+  "packages/ui/src/format/index.ts",
+  "packages/ui/test/format/status-tone/index.test.ts",
+  "packages/ui/src/format/status-tone/index.ts",
+  "packages/ui/src/hooks/use-async-resource/index.ts",
+  "packages/ui/test/routing/hash-route/index.test.ts",
+  "packages/ui/src/routing/hash-route/index.ts",
+  "packages/ui/src/routing/use-hash-route/index.ts",
   "packages/ui/src/styles/base.css",
   "packages/ui/src/styles/components.css",
   "packages/ui/src/styles/index.css",
   "packages/ui/src/styles/layout.css",
   "packages/ui/src/styles/tokens.css",
-  "packages/ui/src/views/EventsView.tsx",
-  "packages/ui/src/views/IntegrityView.tsx",
-  "packages/ui/src/views/NotFoundView.test.tsx",
-  "packages/ui/src/views/NotFoundView.tsx",
-  "packages/ui/src/views/OverviewView.tsx",
-  "packages/ui/src/views/StatusView.tsx",
-  "packages/ui/src/views/TaskDetailView.tsx",
-  "packages/ui/src/views/TasksListView.tsx",
-  "packages/ui/src/views/WorkerDetailView.tsx",
-  "packages/ui/src/views/WorkersListView.tsx",
-  "packages/ui/src/views/views.test.tsx",
+  "packages/ui/src/views/events-view/index.tsx",
+  "packages/ui/src/views/integrity-view/index.tsx",
+  "packages/ui/test/views/not-found-view/index.test.tsx",
+  "packages/ui/src/views/not-found-view/index.tsx",
+  "packages/ui/src/views/overview-view/index.tsx",
+  "packages/ui/src/views/status-view/index.tsx",
+  "packages/ui/src/views/task-detail-view/index.tsx",
+  "packages/ui/src/views/tasks-list-view/index.tsx",
+  "packages/ui/src/views/worker-detail-view/index.tsx",
+  "packages/ui/src/views/workers-list-view/index.tsx",
+  "packages/ui/test/views/index.test.tsx",
 ];
 
 /**
@@ -600,7 +649,7 @@ const P3D_WRITE_SET = [
   "packages/api-contracts/test/parity/index.test.ts",
   "packages/api-contracts/src/index.ts",
   "packages/cli/src/observation/index.ts",
-  "packages/ui/src/api/client.ts",
+  "packages/ui/src/api/client/index.ts",
   "packages/server/src/parity.test.ts",
   "scripts/check-architecture.mjs",
   // Sorting only, at the two aggregate emit sites. The server was emitting
@@ -934,6 +983,24 @@ const P5N_C8_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C9: ui, the ninth tree normalized. The relocated source paths are
+ * carried by P1B_SHARED_WRITE_SET, P1_WRITE_SET and P3D_WRITE_SET, rewritten
+ * 1:1. This array declares the test tree's own tsconfig.json, the one admitted
+ * index.html line, the config files, and — per adjudication C9-F —
+ * packages/server/tsconfig.json, whose @acp/ui/row-model declaration alias is
+ * pinned by equality against SERVER_TS_ALIASES and so must move in the same
+ * change as the ui path it names.
+ */
+const P5N_C9_WRITE_SET = [
+  "packages/ui/test/tsconfig.json",
+  "packages/ui/index.html",
+  "packages/server/tsconfig.json",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -969,6 +1036,7 @@ const WRITE_SET = [
   ...P5N_C6_WRITE_SET,
   ...P5N_C7_WRITE_SET,
   ...P5N_C8_WRITE_SET,
+  ...P5N_C9_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -3271,6 +3339,7 @@ const TOPOLOGY_ACTIVE_TREES = [
   "adapters",
   "daemon",
   "runtime",
+  "ui",
 ];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
@@ -3444,6 +3513,7 @@ const TEST_TREE_SCANNED_PREFIXES = [
   "packages/adapters/test/",
   "packages/daemon/test/",
   "packages/runtime/test/",
+  "packages/ui/test/",
 ];
 
 /**
@@ -3556,7 +3626,7 @@ const vitestConfig = readIfPresent("vitest.config.ts");
 if (vitestConfig !== null) {
   const aliasTargets = [
     ["@acp/cli/observation-rows", "packages/cli/src/observation/index.ts"],
-    ["@acp/ui/row-model", "packages/ui/src/api/client.ts"],
+    ["@acp/ui/row-model", "packages/ui/src/api/client/index.ts"],
   ];
   for (const [specifier, target] of aliasTargets) {
     if (!vitestConfig.includes(target)) {
@@ -3606,7 +3676,7 @@ if (vitestConfig !== null) {
 // while this was built, not a hypothetical.
 const SERVER_TS_ALIASES = {
   "@acp/cli/observation-rows": "../cli/dist/observation/index.d.ts",
-  "@acp/ui/row-model": "../ui/dist/app/api/client.d.ts",
+  "@acp/ui/row-model": "../ui/dist/app/api/client/index.d.ts",
 };
 const SERVER_TS_REFERENCES = ["../api-contracts", "../cli", "../ledger", "../ui"];
 const serverTsconfigRaw = readIfPresent("packages/server/tsconfig.json");
