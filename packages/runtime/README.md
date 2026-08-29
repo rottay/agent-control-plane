@@ -4,17 +4,18 @@ The durability and supervisor plane of the Agent Control Plane.
 
 ## Scope
 
-**P2D built one shared lifecycle engine and both of its drivers**, **P6A adds
-the writer-enforcement core**, **P6B adds the conflict graph**, and **P6C adds
-commit authorization and quarantine.** The
-`SQLITE_SUPERVISOR` and the `RESTATE`
-driver walk the same plan over the append-only ledger and recover from real
-process kills. Enforcement adds leases, write-set conformance and prestate
-verification as pure functions over injected values: one writer per worktree,
-an exact write-set scanned tracked-and-untracked, and a violation that revokes
-the lease and quarantines the worktree rather than cleaning it. Process
-lifecycle now lives in `@acp/daemon`, which drives this package. There is no
-`launchd` template and no observation route yet.
+**P2D built one shared lifecycle engine and both of its drivers, and P6
+completed the enforcement plane over it**: the writer-enforcement core, the
+conflict graph, and commit authorization with quarantine. That plane is
+**decision machinery only — there is no production observer**, so nothing here
+acts on a real worktree. The `SQLITE_SUPERVISOR` and the `RESTATE` driver walk
+the same plan over the append-only ledger and recover from real process kills.
+Enforcement adds leases, write-set conformance and prestate verification as
+pure functions over injected values: one writer per worktree, an exact
+write-set scanned tracked-and-untracked, and a violation that revokes the lease
+and quarantines the worktree rather than cleaning it. Process lifecycle now
+lives in `@acp/daemon`, which drives this package. There is no `launchd`
+template and no observation route yet.
 
 P6A admits at most one live holder **per worktree**, and makes no
 cross-worktree claim: whether two worktrees may be written in parallel is the

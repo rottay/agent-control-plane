@@ -865,14 +865,16 @@ const P5E_WRITE_SET = [
 /**
  * P6: writer enforcement.
  *
- * P6 is **15 packet entries across 9 distinct paths**. The standing convention
+ * P6 is **19 packet entries across 11 distinct paths**. The standing convention
  * applies: entries are the sum of the packet array lengths, distinct is
- * `new Set` over their union, within phase scope. 5 + 4 + 6 = 15 entries; the
- * repeats are `packages/runtime/src/index.ts` (A, B, C),
- * `scripts/check-architecture.mjs` (A, B, C),
- * `packages/runtime/src/enforcement/index.ts` (A, C) and
- * `packages/runtime/test/enforcement/index.test.ts` (A, C), contributing 6
- * duplicate entries, so 15 - 6 = 9.
+ * `new Set` over their union, within phase scope. 5 + 4 + 6 + 4 = 19 entries;
+ * the repeats are `scripts/check-architecture.mjs` (A, B, C, E) contributing 3,
+ * `packages/runtime/src/index.ts` (A, B, C) contributing 2, and
+ * `packages/runtime/src/enforcement/index.ts` (A, C),
+ * `packages/runtime/test/enforcement/index.test.ts` (A, C) and
+ * `packages/runtime/README.md` (A, E) contributing 1 each: 8 duplicate
+ * entries, so 19 - 8 = 11. The two paths distinct to the closure are the
+ * roadmap and the root README, which no other P6 packet touches.
  *
  * P6A is the enforcement module and its mirrored test, the runtime barrel, the
  * runtime README falsified by that landing, and this file. P6B is the conflict
@@ -880,7 +882,9 @@ const P5E_WRITE_SET = [
  * rides the union through P6A_WRITE_SET, the P5D Ruling-2 form. P6C is the
  * commit-authorization module and its mirrored test, the enforcement pair for
  * the deferred P6A-N1 payload unification, the barrel and this file; its
- * README paragraph rides the union the same way.
+ * README paragraph rides the union the same way. P6E is the closure: the
+ * roadmap status line, the root README's evidence paragraphs, the runtime
+ * README's scope sentence and this file.
  *
  * The module ships no observer. Its git port is a runtime-internal type with a
  * closed read-only verb set, and `SPAWN_ALLOWED_FILES` gains nothing here: a
@@ -908,6 +912,14 @@ const P6C_WRITE_SET = [
   "packages/runtime/src/enforcement/index.ts",
   "packages/runtime/test/enforcement/index.test.ts",
   "packages/runtime/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/** P6E: closure. The status line moves here and nowhere else. */
+const P6E_WRITE_SET = [
+  "docs/ROADMAP.md",
+  "README.md",
+  "packages/runtime/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1135,6 +1147,7 @@ const WRITE_SET = [
   ...P6A_WRITE_SET,
   ...P6B_WRITE_SET,
   ...P6C_WRITE_SET,
+  ...P6E_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -1163,35 +1176,33 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "e876d21e10fffcd6e7c71723eb12b49ab74443dc25a46ac1a09b4e638c7a0bff";
+  "ac67534b95bd811c4d074b97807f682c3efc04a37b1195c75618b170f28f197d";
 
 /**
- * The Estado line P5 closure is allowed to have produced.
+ * The Estado line P6 closure is allowed to have produced.
  *
- * P5 is complete on its committed commits and the independently verified
- * receipts behind them: the accounts scaffold with the owner-file loader and
- * its admission ladder (P5A), the clock-injected quota estimator with its
- * reset calendar (P5B), the quota-aware router (P5C), the switching policy
- * (P5D), and the structural normalization that made accounts the eleventh
- * activated tree (P5N, C11). The literal is exact, and because it still does
- * not contain P1_INCOMPLETE it also keeps the lane envelope closed.
+ * P6 is complete on its committed commits and the independently verified
+ * receipts behind them: the writer-enforcement core with leases, write-set
+ * conformance and prestate verification (P6A), the conflict graph that is the
+ * admission gate before acquire (P6B), and commit authorization with
+ * quarantine (P6C). The literal is exact, and because it still does not
+ * contain P1_INCOMPLETE it also keeps the lane envelope closed.
  *
- * What P5 completion does NOT mean is worth stating where the claim is made.
- * Nothing in P5 acts. No provider session was started, no socket opened and no
- * credential resolved — the opaque locators are carried and never
- * dereferenced. The router recommends and reserves nothing; the switching
- * policy returns candidate events as values and leaves every step of its own
- * plan to an executor that does not exist yet. No quota was measured against a
- * live provider: the estimator reasons over observations it is handed. The
- * decisions are made and proven; none of them has been made *for* a running
- * system. P6 opens as *next*, not as started.
+ * What P6 completion does NOT mean is worth stating where the claim is made.
+ * Nothing in P6 acts on a real worktree. No production observer exists: the
+ * read-only git port is a type, no implementation of it lives in the package,
+ * and wiring one is a separately authorized packet. No lease was acquired over
+ * a real worktree, no commit was authorized for a running system, no worktree
+ * was quarantined, and nothing here ran git — every proof is a pure function
+ * over injected values and scripted fakes. The enforcement decisions are made
+ * and proven; nothing is enforcing. P7 opens as *next*, not as started.
  *
- * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P5
+ * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P6
  * built is in service, and adoption happens once, after P8 certification and
  * under a separate P9 authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / NEXT_P6 / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / NEXT_P7 / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -1460,6 +1471,14 @@ const EXPIRED_LITERALS = {
     // complete one. The enforcement core still computes none, and the rewritten
     // sentence says exactly that.
     "Nothing here computes a partial conflict check",
+    // Retired by the P6 closure: the scope sentence enumerated the three P6
+    // packets as things being *added*, which was true while each was landing
+    // and false once the phase closed. The rewritten sentence states the
+    // completed plane instead, and adds the claim that matters -- decision
+    // machinery only, no production observer.
+    "P6A adds the writer-enforcement core",
+    "P6B adds the conflict graph",
+    "P6C adds commit authorization and quarantine",
   ],
   "packages/runtime/src/index.ts": ["This is P2B", "This is P2D"],
   "packages/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
@@ -1469,6 +1488,7 @@ const EXPIRED_LITERALS = {
     "P0, P1 and P2 complete. Next: P3.",
     "P0, P1, P2 and P3 complete. Next: P4.",
     "P0, P1, P2, P3 and P4 complete. Next: P5.",
+    "P0, P1, P2, P3, P4 and P5 complete. Next: P6.",
     // Falsified by the same commit that retires the status text above: P4
     // shipped three provider adapters. Pinned here rather than merely deleted,
     // because a sentence that is only removed can come back, and coming back

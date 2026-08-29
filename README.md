@@ -3,20 +3,23 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0, P1, P2, P3, P4 and P5 complete. Next: P6.** Contracts, fences, the
-append-only event ledger, a read-only observation plane over it — a loopback
-HTTP server, a CLI and a local UI — a durability plane with two orchestration
-drivers under a supervised local daemon, a shadow-mode observation package with
-a measured baseline, three read-only provider adapters behind one process
-boundary, and an accounts domain that estimates quota, ranks candidates and
-recommends a switch without ever acting. P3 closed on committed evidence: the ledger, the server, the CLI and
-the UI are proven to agree exactly across all nine frozen routes — the CLI
-building its own answer from the same ledger without ever seeing the server's,
-and the UI proven to project the server's answer unchanged, with `health` bound
-in the contract as its named non-ledger exception, and with ordering and
-pagination part of the equality. Collectors read already-emitted artifacts and
-synthetic scenarios passively, and the baseline is recomputed over a disposable
-shadow ledger and proven byte-identical after a rebuild.
+Status: **P0, P1, P2, P3, P4, P5 and P6 complete. Next: P7.** Contracts,
+fences, the append-only event ledger, a read-only observation plane over it — a
+loopback HTTP server, a CLI and a local UI — a durability plane with two
+orchestration drivers under a supervised local daemon, a shadow-mode
+observation package with a measured baseline, three read-only provider adapters
+behind one process boundary, an accounts domain that estimates quota, ranks
+candidates and recommends a switch without ever acting, and a
+writer-enforcement plane that decides leases, worktree conflicts and commit
+authorization without touching a worktree. P3 closed on committed evidence: the
+ledger, the server, the CLI and the UI are proven to agree exactly across all
+nine frozen routes — the CLI building its own answer from the same ledger
+without ever seeing the server's, and the UI proven to project the server's
+answer unchanged, with `health` bound in the contract as its named non-ledger
+exception, and with ordering and pagination part of the equality. Collectors
+read already-emitted artifacts and synthetic scenarios passively, and the
+baseline is recomputed over a disposable shadow ledger and proven
+byte-identical after a rebuild.
 
 P4 closed on committed evidence and on an explicit account of what that
 evidence does *not* cover. `@acp/adapters` holds one spawn authority, one
@@ -58,6 +61,29 @@ was drained, no task moved, and no quota measured against a live provider: the
 estimator reasons over observations it is handed. What P5 completion means is
 that the decisions are made and proven, not that anything has been decided *for*
 a running system.
+
+P6 closed on committed evidence and, as with P4 and P5, on an explicit account
+of what that evidence does *not* cover. `@acp/runtime` gained the
+writer-enforcement core (P6A): leases that admit at most one live holder per
+worktree, write-set conformance scanned across tracked *and* untracked paths,
+prestate verification by digest, and a violation that revokes the lease and
+quarantines the worktree — a record whose shape has no field in which a
+restore, reset, stash or clean could be written. The conflict graph (P6B)
+computes the complete pairwise verdict over task envelopes and is the admission
+gate applied before any lease is acquired. Commit authorization (P6C) requires
+an independent verifier, every recorded check exiting zero, an observation
+inside the declared write-set and a base head projected from that same
+observation, and constructs a receipt in which `pushAuthorized` is `false` at
+the shared schema — `true` is not a value the module can produce.
+
+**Nothing in P6 acts on a real worktree.** No production observer exists: the
+read-only git port is a *type* naming the four verbs an observer may ever
+speak, no implementation of it lives in the package, and wiring one is a
+separately authorized packet. No lease was acquired over a real worktree, no
+commit was authorized for a running system, no worktree was quarantined, and
+nothing here ran git. Every proof is a pure function over injected values and
+scripted fakes. What P6 completion means is that the enforcement decisions are
+made and proven, not that anything is enforcing.
 
 Shadow mode measured synthetic and already-emitted artifacts only. Nothing was
 observed from any live session, nothing here is adopted into any real
