@@ -4,11 +4,11 @@ import { fileURLToPath } from "node:url";
 
 import { openLedger } from "@acp/ledger";
 
-import type { DurableInvocation } from "../contracts.js";
-import { SupervisorError } from "../errors.js";
-import { resolveScenarioRoot, scenarioLedgerPath } from "../toy/repository.js";
-import { SqliteSupervisor } from "./sqlite-supervisor.js";
-import type { FaultPoint } from "./sqlite-supervisor.js";
+import type { DurableInvocation } from "../../contracts/index.js";
+import { SupervisorError } from "../../errors/index.js";
+import { resolveScenarioRoot, scenarioLedgerPath } from "../../toy/repository/index.js";
+import { SqliteSupervisor } from "../sqlite-supervisor/index.js";
+import type { FaultPoint } from "../sqlite-supervisor/index.js";
 
 /**
  * The child entry point for the kill/restart drills.

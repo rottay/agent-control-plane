@@ -1,7 +1,7 @@
 import { CONTROL_PLANE_EVENT_TYPES, LIFECYCLE_STATES } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
-import { LifecyclePlanError } from "../errors.js";
+import { LifecyclePlanError } from "../../../src/errors/index.js";
 import {
   INTENT_STEP,
   LIFECYCLE_PLAN,
@@ -9,7 +9,7 @@ import {
   PLAN_TERMINAL_STATE,
   planStep,
   validatePlan,
-} from "./lifecycle.js";
+} from "../../../src/core/lifecycle/index.js";
 
 describe("the shared lifecycle plan", () => {
   it("validates against the frozen contract vocabulary", () => {

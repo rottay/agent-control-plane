@@ -1,9 +1,9 @@
 import { ControlPlaneEvent, findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
-import type { DurableInvocation } from "../contracts.js";
-import { buildEvent, operationForStep } from "./events.js";
-import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP } from "./lifecycle.js";
+import type { DurableInvocation } from "../../../src/contracts/index.js";
+import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
+import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP } from "../../../src/core/lifecycle/index.js";
 
 const INVOCATION: DurableInvocation = {
   taskId: "22222222-2222-4222-8222-222222222222",

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { buildIdempotencyKey } from "@acp/contracts";
 
-import type { DurableInvocation, EventCoordinate, OperationCoordinate } from "../contracts.js";
+import type { DurableInvocation, EventCoordinate, OperationCoordinate } from "../../contracts/index.js";
 
 /**
  * Deterministic coordinate derivation.

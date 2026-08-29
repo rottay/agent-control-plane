@@ -7,19 +7,19 @@ import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { DurableInvocation } from "../contracts.js";
-import { buildEvent, operationForStep } from "../core/events.js";
-import { applyEffect } from "../toy/repository.js";
-import { INTENT_STEP, LIFECYCLE_PLAN } from "../core/lifecycle.js";
-import { PostconditionUnknownError, SupervisorError } from "../errors.js";
+import type { DurableInvocation } from "../../../src/contracts/index.js";
+import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
+import { applyEffect } from "../../../src/toy/repository/index.js";
+import { INTENT_STEP, LIFECYCLE_PLAN } from "../../../src/core/lifecycle/index.js";
+import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
-} from "../toy/repository.js";
-import type { ScenarioRoot } from "../toy/repository.js";
-import { SqliteSupervisor } from "./sqlite-supervisor.js";
-import type { FaultPoint } from "./sqlite-supervisor.js";
+} from "../../../src/toy/repository/index.js";
+import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
+import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
+import type { FaultPoint } from "../../../src/drivers/sqlite-supervisor/index.js";
 
 /**
  * Evidence for the SQLite supervisor.
@@ -30,9 +30,9 @@ import type { FaultPoint } from "./sqlite-supervisor.js";
  * exactly what a crash does not leave behind.
  */
 
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
-const CHILD_ENTRY = join(PACKAGE_ROOT, "dist", "drivers", "sqlite-supervisor-child.js");
+const CHILD_ENTRY = join(PACKAGE_ROOT, "dist", "drivers", "sqlite-supervisor-child", "index.js");
 
 const EMITTED_BY = "claude/opus/implementer/01";
 
@@ -517,7 +517,7 @@ describe("the supervisor", () => {
 
   it("has no import side effects", async () => {
     const before = effectMarkerCount(join(REPO_ROOT, ".acp-local", "drills"));
-    const module = await import("../index.js");
+    const module = await import("../../../src/index.js");
     expect(typeof module.SqliteSupervisor).toBe("function");
     expect(effectMarkerCount(join(REPO_ROOT, ".acp-local", "drills"))).toBe(before);
   });

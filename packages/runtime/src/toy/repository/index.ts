@@ -10,10 +10,10 @@ import {
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { DATA_ROOT_DRILLS } from "../constants.js";
-import type { OperationCoordinate, PostconditionVerdict } from "../contracts.js";
-import { operationDigest } from "../core/coordinates.js";
-import { ToyBoundaryError } from "../errors.js";
+import { DATA_ROOT_DRILLS } from "../../constants/index.js";
+import type { OperationCoordinate, PostconditionVerdict } from "../../contracts/index.js";
+import { operationDigest } from "../../core/coordinates/index.js";
+import { ToyBoundaryError } from "../../errors/index.js";
 
 /**
  * The disposable toy repository the drills act on.
@@ -161,12 +161,14 @@ function assertDrillRootIntact(): void {
 /**
  * The repository root, derived from this module's own location.
  *
- * Four levels up from `<pkg>/{src,dist}/toy/` is the repository. Derived rather
- * than configured: a configurable root is a root an attacker or a confused
- * caller can move.
+ * Five levels up from `<pkg>/{src,dist}/toy/repository/` is the repository.
+ * Derived rather than configured: a configurable root is a root an attacker or
+ * a confused caller can move.
  */
 function realRepositoryRoot(): string {
-  return realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", ".."));
+  return realpathSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", ".."),
+  );
 }
 
 /** The fixed drill root. Created on demand, never accepted from a caller. */

@@ -4,7 +4,7 @@ import type { Http2Server, ServerHttp2Session } from "node:http2";
 import { createEndpointHandler } from "@restatedev/restate-sdk";
 import type { VirtualObjectDefinition } from "@restatedev/restate-sdk";
 
-import { LOOPBACK_HOST, RUNTIME_SERVICE_PORT } from "../constants.js";
+import { LOOPBACK_HOST, RUNTIME_SERVICE_PORT } from "../../constants/index.js";
 
 /**
  * The only file in this repository permitted to import `node:http2`.

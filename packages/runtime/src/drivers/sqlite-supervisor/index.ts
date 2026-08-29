@@ -8,11 +8,11 @@ import type {
 } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 
-import { DATA_ROOT_DRILLS } from "../constants.js";
-import type { DurableInvocation, OrchestrationDriver } from "../contracts.js";
-import { deriveEventCoordinate } from "../core/coordinates.js";
-import { LIFECYCLE_PLAN, PLAN_TERMINAL_STATE } from "../core/lifecycle.js";
-import type { PlanStep } from "../core/lifecycle.js";
+import { DATA_ROOT_DRILLS } from "../../constants/index.js";
+import type { DurableInvocation, OrchestrationDriver } from "../../contracts/index.js";
+import { deriveEventCoordinate } from "../../core/coordinates/index.js";
+import { LIFECYCLE_PLAN, PLAN_TERMINAL_STATE } from "../../core/lifecycle/index.js";
+import type { PlanStep } from "../../core/lifecycle/index.js";
 import {
   appendPlanStep,
   applyIntentEffect,
@@ -21,11 +21,11 @@ import {
   closeIntent,
   currentState as executorCurrentState,
   nextStep as executorNextStep,
-} from "../core/step-executor.js";
-import type { BeatContext, BeatResult, EffectPort } from "../core/step-executor.js";
-import { SupervisorError } from "../errors.js";
-import { applyEffect, probeEffect } from "../toy/repository.js";
-import type { ScenarioRoot } from "../toy/repository.js";
+} from "../../core/step-executor/index.js";
+import type { BeatContext, BeatResult, EffectPort } from "../../core/step-executor/index.js";
+import { SupervisorError } from "../../errors/index.js";
+import { applyEffect, probeEffect } from "../../toy/repository/index.js";
+import type { ScenarioRoot } from "../../toy/repository/index.js";
 
 /**
  * The SQLite supervisor: a single process walking the shared plan.
@@ -227,7 +227,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
   /**
    * Bind this driver's ledger and scenario into a beat context.
    *
-   * The guards and the three beats live in `core/step-executor.ts` so the
+   * The guards and the three beats live in `core/step-executor/index.ts` so the
    * Restate driver can journal each one separately. This supervisor keeps only
    * what is genuinely its own: the loop, the fault seam, and the ports.
    */

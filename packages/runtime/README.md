@@ -20,7 +20,7 @@ connected to, observed from or used by any real operation.
 
 ## One core, two drivers
 
-`src/core/lifecycle.ts` holds the single plan. The supervisor and the Restate
+`src/core/lifecycle/index.ts` holds the single plan. The supervisor and the Restate
 driver both walk it. Neither encodes a transition of its own: two copies of a
 state machine drift, and the drift is only ever discovered when the two disagree
 about a recovery.

@@ -10,30 +10,30 @@ import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
-import { LOOPBACK_HOST, RESTATE_ADMIN_PORT, RESTATE_INGRESS_PORT, RUNTIME_SERVICE_PORT } from "../constants.js";
-import type { DurableInvocation } from "../contracts.js";
-import { LIFECYCLE_PLAN } from "../core/lifecycle.js";
-import type { BeatContext } from "../core/step-executor.js";
+import { LOOPBACK_HOST, RESTATE_ADMIN_PORT, RESTATE_INGRESS_PORT, RUNTIME_SERVICE_PORT } from "../../../src/constants/index.js";
+import type { DurableInvocation } from "../../../src/contracts/index.js";
+import { LIFECYCLE_PLAN } from "../../../src/core/lifecycle/index.js";
+import type { BeatContext } from "../../../src/core/step-executor/index.js";
 import {
   applyEffect,
   probeEffect,
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
-} from "../toy/repository.js";
-import type { ScenarioRoot } from "../toy/repository.js";
-import { serverAvailability, startServer } from "../restate/server-handle.js";
-import { platformKey, readTrackedPin, receiptMatchesPin } from "../restate/server-handle.js";
-import type { ServerHandle } from "../restate/server-handle.js";
+} from "../../../src/toy/repository/index.js";
+import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
+import { serverAvailability, startServer } from "../../../src/restate/server-handle/index.js";
+import { platformKey, readTrackedPin, receiptMatchesPin } from "../../../src/restate/server-handle/index.js";
+import type { ServerHandle } from "../../../src/restate/server-handle/index.js";
 import {
   deriveInvocation,
   readCacheThroughHandler,
   registerDeployment,
   submitAdvance,
-} from "../restate/submit.js";
-import { reconcile } from "./restate-driver.js";
-import { releasePath } from "./restate-child.js";
-import { SqliteSupervisor } from "./sqlite-supervisor.js";
+} from "../../../src/restate/submit/index.js";
+import { reconcile } from "../../../src/drivers/restate-driver/index.js";
+import { releasePath } from "../../../src/drivers/restate-child/index.js";
+import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
 
 /**
  * The real drills: a real pinned Restate server, real child processes, real
@@ -46,9 +46,9 @@ import { SqliteSupervisor } from "./sqlite-supervisor.js";
  * decision.
  */
 
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..");
-const CHILD_ENTRY = join(PACKAGE_ROOT, "dist", "drivers", "restate-child.js");
+const CHILD_ENTRY = join(PACKAGE_ROOT, "dist", "drivers", "restate-child", "index.js");
 const ACQUIRE = join(REPO_ROOT, "scripts", "acquire-restate-server.mjs");
 const EMITTED_BY = "claude/opus/implementer/01";
 
@@ -513,7 +513,7 @@ describe("the acquisition boundary", () => {
     // hard-coded index, and every fault and pause drill would quietly become a
     // no-op while still reporting green.
     const childSource = readFileSync(
-      join(REPO_ROOT, "packages", "runtime", "src", "drivers", "restate-child.ts"),
+      join(REPO_ROOT, "packages", "runtime", "src", "drivers", "restate-child", "index.ts"),
       "utf8",
     );
     expect(childSource).toContain('"AFTER_INTENT_" + String(INTENT_STEP.index)');
@@ -831,7 +831,7 @@ describe("restate drills", () => {
     const ledger = track(openLedger(scenarioLedgerPath(root)));
     const beat = beatFactory(root, ledger);
 
-    const { RestateDriver } = await import("./restate-driver.js");
+    const { RestateDriver } = await import("../../../src/drivers/restate-driver/index.js");
     const driver = new RestateDriver(
       {
         ledger,

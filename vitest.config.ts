@@ -315,7 +315,7 @@ export default defineConfig({
         test: {
           name: 'runtime',
           root: './packages/runtime',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

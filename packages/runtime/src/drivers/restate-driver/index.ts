@@ -15,25 +15,25 @@ import {
   RESTATE_HANDLER_READ_CACHE,
   RESTATE_OBJECT_NAME,
   RESTATE_STATE_KEY_CACHE,
-} from "../constants.js";
+} from "../../constants/index.js";
 import type {
   DurableInvocation,
   LedgerLike,
   OrchestrationDriver,
   RestateCacheState,
   RestateDriverOptions,
-} from "../contracts.js";
-import { deterministicUuid } from "../core/coordinates.js";
-import { LIFECYCLE_PLAN } from "../core/lifecycle.js";
+} from "../../contracts/index.js";
+import { deterministicUuid } from "../../core/coordinates/index.js";
+import { LIFECYCLE_PLAN } from "../../core/lifecycle/index.js";
 import {
   appendPlanStep,
   applyIntentEffect,
   assertClaimedState,
   assertInvocationContinuity,
   closeIntent,
-} from "../core/step-executor.js";
-import type { BeatContext } from "../core/step-executor.js";
-import { SupervisorError } from "../errors.js";
+} from "../../core/step-executor/index.js";
+import type { BeatContext } from "../../core/step-executor/index.js";
+import { SupervisorError } from "../../errors/index.js";
 
 /**
  * The Restate driver: a derived orchestrator over the same ledger.

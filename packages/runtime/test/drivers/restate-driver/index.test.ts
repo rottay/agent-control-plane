@@ -5,24 +5,24 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RESTATE_STATE_KEY_CACHE } from "../constants.js";
-import type { DurableInvocation, LedgerLike, RestateCacheState } from "../contracts.js";
-import { LIFECYCLE_PLAN, OUTCOME_STEP } from "../core/lifecycle.js";
-import { deriveEventCoordinate } from "../core/coordinates.js";
-import { appendPlanStep } from "../core/step-executor.js";
-import type { BeatContext } from "../core/step-executor.js";
-import { SupervisorError } from "../errors.js";
+import { RESTATE_STATE_KEY_CACHE } from "../../../src/constants/index.js";
+import type { DurableInvocation, LedgerLike, RestateCacheState } from "../../../src/contracts/index.js";
+import { LIFECYCLE_PLAN, OUTCOME_STEP } from "../../../src/core/lifecycle/index.js";
+import { deriveEventCoordinate } from "../../../src/core/coordinates/index.js";
+import { appendPlanStep } from "../../../src/core/step-executor/index.js";
+import type { BeatContext } from "../../../src/core/step-executor/index.js";
+import { SupervisorError } from "../../../src/errors/index.js";
 import {
   applyEffect,
   probeEffect,
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
-} from "../toy/repository.js";
-import type { ScenarioRoot } from "../toy/repository.js";
-import { RESTATE_MODE, RestateDriver, advanceHandler, reconcile } from "./restate-driver.js";
-import type { AdvanceContext } from "./restate-driver.js";
-import { parseCacheReply } from "../restate/submit.js";
+} from "../../../src/toy/repository/index.js";
+import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
+import { RESTATE_MODE, RestateDriver, advanceHandler, reconcile } from "../../../src/drivers/restate-driver/index.js";
+import type { AdvanceContext } from "../../../src/drivers/restate-driver/index.js";
+import { parseCacheReply } from "../../../src/restate/submit/index.js";
 
 /**
  * Unit and negative evidence for the Restate driver. No server is started.
@@ -319,7 +319,7 @@ describe("the restate driver", () => {
   });
 
   it("opens no socket and spawns no process on import", async () => {
-    const module = await import("./restate-driver.js");
+    const module = await import("../../../src/drivers/restate-driver/index.js");
     expect(typeof module.RestateDriver).toBe("function");
     expect(typeof module.createAcpTaskObject).toBe("function");
   });

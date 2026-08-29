@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { DurableInvocation } from "../contracts.js";
+import type { DurableInvocation } from "../../../src/contracts/index.js";
 import {
   ACP_UUID_NAMESPACE,
   deriveEventCoordinate,
@@ -9,7 +9,7 @@ import {
   eventName,
   operationDigest,
   operationName,
-} from "./coordinates.js";
+} from "../../../src/core/coordinates/index.js";
 
 const INVOCATION: DurableInvocation = {
   taskId: "11111111-1111-4111-8111-111111111111",

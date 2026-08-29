@@ -32,7 +32,7 @@ export {
   RUNTIME_SERVICE_PORT,
   RUNTIME_SERVICE_URL,
   UI_PORT,
-} from "./constants.js";
+} from "./constants/index.js";
 
 export type {
   CoordinateOrigin,
@@ -47,7 +47,7 @@ export type {
   Provenanced,
   ReplayForbiddenSource,
   StepBeat,
-} from "./contracts.js";
+} from "./contracts/index.js";
 
 export {
   PostconditionUnknownError,
@@ -56,8 +56,8 @@ export {
   SupervisorError,
   LifecyclePlanError,
   ToyBoundaryError,
-} from "./errors.js";
-export type { RuntimeErrorCode } from "./errors.js";
+} from "./errors/index.js";
+export type { RuntimeErrorCode } from "./errors/index.js";
 
 export {
   ACP_UUID_NAMESPACE,
@@ -67,10 +67,10 @@ export {
   eventName,
   operationDigest,
   operationName,
-} from "./core/coordinates.js";
+} from "./core/coordinates/index.js";
 
-export { buildEvent, operationForStep } from "./core/events.js";
-export type { BuildEventInput } from "./core/events.js";
+export { buildEvent, operationForStep } from "./core/events/index.js";
+export type { BuildEventInput } from "./core/events/index.js";
 
 export {
   INTENT_STEP,
@@ -79,8 +79,8 @@ export {
   PLAN_TERMINAL_STATE,
   planStep,
   validatePlan,
-} from "./core/lifecycle.js";
-export type { PlanStep } from "./core/lifecycle.js";
+} from "./core/lifecycle/index.js";
+export type { PlanStep } from "./core/lifecycle/index.js";
 
 export {
   DRILL_ROOT_SEGMENTS,
@@ -90,15 +90,15 @@ export {
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
-} from "./toy/repository.js";
-export type { ScenarioRoot } from "./toy/repository.js";
+} from "./toy/repository/index.js";
+export type { ScenarioRoot } from "./toy/repository/index.js";
 
-export { SqliteSupervisor } from "./drivers/sqlite-supervisor.js";
+export { SqliteSupervisor } from "./drivers/sqlite-supervisor/index.js";
 export type {
   FaultPoint,
   RunResult,
   SqliteSupervisorOptions,
-} from "./drivers/sqlite-supervisor.js";
+} from "./drivers/sqlite-supervisor/index.js";
 
 export {
   appendPlanStep,
@@ -108,27 +108,27 @@ export {
   closeIntent,
   currentState,
   nextStep,
-} from "./core/step-executor.js";
+} from "./core/step-executor/index.js";
 export type {
   BeatContext,
   BeatResult,
   EffectPort,
   LedgerPort,
-} from "./core/step-executor.js";
+} from "./core/step-executor/index.js";
 
-export { RESTATE_MODE, RestateDriver, createAcpTaskObject, reconcile } from "./drivers/restate-driver.js";
-export type { ObjectDependencies, ReconcileInput } from "./drivers/restate-driver.js";
+export { RESTATE_MODE, RestateDriver, createAcpTaskObject, reconcile } from "./drivers/restate-driver/index.js";
+export type { ObjectDependencies, ReconcileInput } from "./drivers/restate-driver/index.js";
 
-export { startEndpoint } from "./drivers/restate-endpoint.js";
-export type { EndpointHandle, StartEndpointOptions } from "./drivers/restate-endpoint.js";
+export { startEndpoint } from "./drivers/restate-endpoint/index.js";
+export type { EndpointHandle, StartEndpointOptions } from "./drivers/restate-endpoint/index.js";
 
 export {
   deriveInvocation,
   readCacheThroughHandler,
   registerDeployment,
   submitAdvance,
-} from "./restate/submit.js";
-export type { SubmitResult } from "./restate/submit.js";
+} from "./restate/submit/index.js";
+export type { SubmitResult } from "./restate/submit/index.js";
 
 /**
  * The narrowed server lifecycle.
@@ -137,7 +137,7 @@ export type { SubmitResult } from "./restate/submit.js";
  * package-internal because they carry the raw child and the absolute data root,
  * which the drills need and no consumer should have.
  */
-export { startVerifiedServer, serverAvailability } from "./restate/server-handle.js";
-export type { SafeServerHandle, ServerExit } from "./restate/server-handle.js";
+export { startVerifiedServer, serverAvailability } from "./restate/server-handle/index.js";
+export type { SafeServerHandle, ServerExit } from "./restate/server-handle/index.js";
 
-export type { RestateCacheState, RestateDriverOptions, LedgerLike } from "./contracts.js";
+export type { RestateCacheState, RestateDriverOptions, LedgerLike } from "./contracts/index.js";

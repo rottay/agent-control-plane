@@ -4,19 +4,19 @@ import { fileURLToPath } from "node:url";
 
 import { openLedger } from "@acp/ledger";
 
-import { RUNTIME_SERVICE_PORT } from "../constants.js";
-import type { DurableInvocation } from "../contracts.js";
-import { INTENT_STEP } from "../core/lifecycle.js";
-import type { BeatContext } from "../core/step-executor.js";
-import { SupervisorError } from "../errors.js";
-import { applyEffect, probeEffect, resolveScenarioRoot, scenarioLedgerPath } from "../toy/repository.js";
-import { createAcpTaskObject } from "./restate-driver.js";
-import { startEndpoint } from "./restate-endpoint.js";
+import { RUNTIME_SERVICE_PORT } from "../../constants/index.js";
+import type { DurableInvocation } from "../../contracts/index.js";
+import { INTENT_STEP } from "../../core/lifecycle/index.js";
+import type { BeatContext } from "../../core/step-executor/index.js";
+import { SupervisorError } from "../../errors/index.js";
+import { applyEffect, probeEffect, resolveScenarioRoot, scenarioLedgerPath } from "../../toy/repository/index.js";
+import { createAcpTaskObject } from "../restate-driver/index.js";
+import { startEndpoint } from "../restate-endpoint/index.js";
 
 /**
  * The service endpoint, hosted in its own process so a drill can kill it.
  *
- * Mirrors `sqlite-supervisor-child.ts`. A restart drill is only evidence if the
+ * Mirrors `sqlite-supervisor-child/index.ts`. A restart drill is only evidence if the
  * process actually dies: an exception caught in the same process leaves the
  * ledger handle, the page cache and every object intact, which is exactly what
  * a crash does not do. So the endpoint runs here and the drill sends it a real

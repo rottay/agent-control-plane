@@ -1,9 +1,9 @@
 import { CONTRACT_VERSION, ControlPlaneEvent } from "@acp/contracts";
 import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts";
 
-import type { DurableInvocation, OperationCoordinate } from "../contracts.js";
-import { deriveEventCoordinate, deriveOperationCoordinate, operationDigest } from "./coordinates.js";
-import type { PlanStep } from "./lifecycle.js";
+import type { DurableInvocation, OperationCoordinate } from "../../contracts/index.js";
+import { deriveEventCoordinate, deriveOperationCoordinate, operationDigest } from "../coordinates/index.js";
+import type { PlanStep } from "../lifecycle/index.js";
 
 /**
  * Event construction.

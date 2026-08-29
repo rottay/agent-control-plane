@@ -5,12 +5,12 @@ import type {
   DurableInvocation,
   OperationCoordinate,
   PostconditionVerdict,
-} from "../contracts.js";
-import { deriveEventCoordinate } from "./coordinates.js";
-import { buildEvent, operationForStep } from "./events.js";
-import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, planStep } from "./lifecycle.js";
-import type { PlanStep } from "./lifecycle.js";
-import { LifecyclePlanError, PostconditionUnknownError, SupervisorError } from "../errors.js";
+} from "../../contracts/index.js";
+import { deriveEventCoordinate } from "../coordinates/index.js";
+import { buildEvent, operationForStep } from "../events/index.js";
+import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, planStep } from "../lifecycle/index.js";
+import type { PlanStep } from "../lifecycle/index.js";
+import { LifecyclePlanError, PostconditionUnknownError, SupervisorError } from "../../errors/index.js";
 
 /**
  * The one beat executor. Both drivers walk the plan through this module.

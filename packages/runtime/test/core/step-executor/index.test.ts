@@ -2,18 +2,18 @@ import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { DurableInvocation, OperationCoordinate, PostconditionVerdict } from "../contracts.js";
-import { PostconditionUnknownError, SupervisorError } from "../errors.js";
+import type { DurableInvocation, OperationCoordinate, PostconditionVerdict } from "../../../src/contracts/index.js";
+import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
   applyEffect,
   probeEffect,
-} from "../toy/repository.js";
-import type { ScenarioRoot } from "../toy/repository.js";
-import { operationForStep } from "./events.js";
-import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, planStep } from "./lifecycle.js";
+} from "../../../src/toy/repository/index.js";
+import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
+import { operationForStep } from "../../../src/core/events/index.js";
+import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, planStep } from "../../../src/core/lifecycle/index.js";
 import {
   appendPlanStep,
   applyIntentEffect,
@@ -22,8 +22,8 @@ import {
   closeIntent,
   currentState,
   nextStep,
-} from "./step-executor.js";
-import type { BeatContext, EffectPort } from "./step-executor.js";
+} from "../../../src/core/step-executor/index.js";
+import type { BeatContext, EffectPort } from "../../../src/core/step-executor/index.js";
 
 /**
  * Evidence for the shared beat executor.

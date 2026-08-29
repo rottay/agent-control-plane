@@ -41,6 +41,7 @@
     { "path": "./packages/api-contracts" },
     { "path": "./packages/api-contracts/test" },
     { "path": "./packages/runtime" },
+    { "path": "./packages/runtime/test" },
     { "path": "./packages/daemon" },
     { "path": "./packages/daemon/test" },
     { "path": "./packages/server" },

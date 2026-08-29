@@ -1,7 +1,7 @@
 import { CONTROL_PLANE_EVENT_TYPES, LIFECYCLE_STATES } from "@acp/contracts";
 import type { ControlPlaneEventType, LifecycleState, TaskState } from "@acp/contracts";
 
-import { LifecyclePlanError } from "../errors.js";
+import { LifecyclePlanError } from "../../errors/index.js";
 
 /**
  * The one lifecycle plan.

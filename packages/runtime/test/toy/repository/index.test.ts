@@ -13,10 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { DurableInvocation } from "../contracts.js";
-import { deriveOperationCoordinate, operationDigest } from "../core/coordinates.js";
-import { ToyBoundaryError } from "../errors.js";
-import type { ScenarioRoot } from "./repository.js";
+import type { DurableInvocation } from "../../../src/contracts/index.js";
+import { deriveOperationCoordinate, operationDigest } from "../../../src/core/coordinates/index.js";
+import { ToyBoundaryError } from "../../../src/errors/index.js";
+import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
 import {
   DRILL_ROOT_SEGMENTS,
   applyEffect,
@@ -25,7 +25,7 @@ import {
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
-} from "./repository.js";
+} from "../../../src/toy/repository/index.js";
 
 const INVOCATION: DurableInvocation = {
   taskId: "33333333-3333-4333-8333-333333333333",

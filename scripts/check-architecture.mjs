@@ -152,6 +152,34 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C8 (runtime): the durability plane — constants and contracts,
+  // the core execution model, both drivers with their two child executables
+  // (kept in src/, adjudication A), the Restate server pin and submit path,
+  // the toy repository, and every colocated test, now under
+  // src/<domain>/index.ts and the mirrored test tree.
+  "packages/runtime/src/constants.ts",
+  "packages/runtime/src/contracts.ts",
+  "packages/runtime/src/core/coordinates.test.ts",
+  "packages/runtime/src/core/coordinates.ts",
+  "packages/runtime/src/core/events.test.ts",
+  "packages/runtime/src/core/events.ts",
+  "packages/runtime/src/core/lifecycle.test.ts",
+  "packages/runtime/src/core/lifecycle.ts",
+  "packages/runtime/src/core/step-executor.test.ts",
+  "packages/runtime/src/core/step-executor.ts",
+  "packages/runtime/src/drivers/restate-child.ts",
+  "packages/runtime/src/drivers/restate-drills.test.ts",
+  "packages/runtime/src/drivers/restate-driver.test.ts",
+  "packages/runtime/src/drivers/restate-driver.ts",
+  "packages/runtime/src/drivers/restate-endpoint.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor-child.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor.test.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor.ts",
+  "packages/runtime/src/errors.ts",
+  "packages/runtime/src/restate/server-handle.ts",
+  "packages/runtime/src/restate/submit.ts",
+  "packages/runtime/src/toy/repository.test.ts",
+  "packages/runtime/src/toy/repository.ts",
   // P5N cohort C7 (daemon): the packaged entry and its config contract, the
   // child-process fixture (kept in src/, ruling C7-R1 — not a src->test
   // split), the process boundary, the launchd rendering and validation
@@ -371,8 +399,8 @@ const P2A_WRITE_SET = [
   "packages/runtime/tsconfig.json",
   "packages/runtime/README.md",
   "packages/runtime/src/index.ts",
-  "packages/runtime/src/contracts.ts",
-  "packages/runtime/src/constants.ts",
+  "packages/runtime/src/contracts/index.ts",
+  "packages/runtime/src/constants/index.ts",
 ];
 
 /**
@@ -383,18 +411,18 @@ const P2A_WRITE_SET = [
  * here, and no eighth path is authorized.
  */
 const P2B_WRITE_SET = [
-  "packages/runtime/src/errors.ts",
-  "packages/runtime/src/core/coordinates.ts",
-  "packages/runtime/src/core/coordinates.test.ts",
-  "packages/runtime/src/core/events.ts",
-  "packages/runtime/src/core/events.test.ts",
-  "packages/runtime/src/core/lifecycle.ts",
-  "packages/runtime/src/core/lifecycle.test.ts",
-  "packages/runtime/src/toy/repository.ts",
-  "packages/runtime/src/toy/repository.test.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor-child.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor.test.ts",
+  "packages/runtime/src/errors/index.ts",
+  "packages/runtime/src/core/coordinates/index.ts",
+  "packages/runtime/test/core/coordinates/index.test.ts",
+  "packages/runtime/src/core/events/index.ts",
+  "packages/runtime/test/core/events/index.test.ts",
+  "packages/runtime/src/core/lifecycle/index.ts",
+  "packages/runtime/test/core/lifecycle/index.test.ts",
+  "packages/runtime/src/toy/repository/index.ts",
+  "packages/runtime/test/toy/repository/index.test.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/runtime/test/drivers/sqlite-supervisor/index.test.ts",
 ];
 
 /**
@@ -405,15 +433,15 @@ const P2B_WRITE_SET = [
  */
 const P2C_WRITE_SET = [
   "docs/architecture/0005-restate-driver-and-adoption.md",
-  "packages/runtime/src/core/step-executor.ts",
-  "packages/runtime/src/core/step-executor.test.ts",
-  "packages/runtime/src/drivers/restate-driver.ts",
-  "packages/runtime/src/drivers/restate-endpoint.ts",
-  "packages/runtime/src/drivers/restate-driver.test.ts",
-  "packages/runtime/src/drivers/restate-drills.test.ts",
-  "packages/runtime/src/drivers/restate-child.ts",
-  "packages/runtime/src/restate/server-handle.ts",
-  "packages/runtime/src/restate/submit.ts",
+  "packages/runtime/src/core/step-executor/index.ts",
+  "packages/runtime/test/core/step-executor/index.test.ts",
+  "packages/runtime/src/drivers/restate-driver/index.ts",
+  "packages/runtime/src/drivers/restate-endpoint/index.ts",
+  "packages/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/runtime/test/drivers/drills/index.test.ts",
+  "packages/runtime/src/drivers/restate-child/index.ts",
+  "packages/runtime/src/restate/server-handle/index.ts",
+  "packages/runtime/src/restate/submit/index.ts",
   "scripts/acquire-restate-server.mjs",
   "scripts/restate-server.pin.json",
 ];
@@ -454,7 +482,7 @@ const P2D_WRITE_SET = [
   "packages/daemon/test/drills/index.test.ts",
   "packages/daemon/test/index.test.ts",
   "docs/architecture/0006-daemon-process-lifecycle.md",
-  "packages/runtime/src/restate/server-handle.ts",
+  "packages/runtime/src/restate/server-handle/index.ts",
   "packages/runtime/src/index.ts",
   "packages/runtime/README.md",
   "packages/runtime/package.json",
@@ -891,6 +919,21 @@ const P5N_C7_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C8: runtime, the eighth tree normalized. As with C1-C7 the
+ * relocated source paths are not listed here — they are carried by
+ * P2A_WRITE_SET, P2B_WRITE_SET, P2C_WRITE_SET and the P2D-era array,
+ * rewritten 1:1 — so this array declares only the test tree's own
+ * tsconfig.json and the config/doc files the cohort edits.
+ */
+const P5N_C8_WRITE_SET = [
+  "packages/runtime/test/tsconfig.json",
+  "packages/runtime/README.md",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -925,6 +968,7 @@ const WRITE_SET = [
   ...P5N_C5_WRITE_SET,
   ...P5N_C6_WRITE_SET,
   ...P5N_C7_WRITE_SET,
+  ...P5N_C8_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -2078,7 +2122,7 @@ const RUNTIME_TEST_ONLY_IMPORTS = new Set([
  * relax the ban repository-wide, the allowance is scoped to a single file, and
  * the two checks below make that file prove it binds loopback.
  */
-const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint.ts";
+const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint/index.ts";
 
 /**
  * The only two production files that may start a subprocess, by exact path and
@@ -2095,7 +2139,7 @@ const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint.ts";
  * to stop something.
  */
 const SPAWN_ALLOWED_FILES = new Map([
-  ["packages/runtime/src/restate/server-handle.ts", "the pinned Restate server"],
+  ["packages/runtime/src/restate/server-handle/index.ts", "the pinned Restate server"],
   ["packages/daemon/src/identity-probe/index.ts", "reading process identity via /bin/ps"],
   ["packages/adapters/src/process/spawn/index.ts", "the single provider spawn authority"],
 ]);
@@ -2118,7 +2162,9 @@ if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const runtimeSources = present.filter(
     (relativePath) =>
-      relativePath.startsWith("packages/runtime/src/") && relativePath.endsWith(".ts"),
+      (relativePath.startsWith("packages/runtime/src/") ||
+      relativePath.startsWith("packages/runtime/test/")) &&
+    relativePath.endsWith(".ts"),
   );
   if (runtimeSources.length === 0) {
     fail("packages/runtime/src has no tracked sources; the import purity check is inert");
@@ -2323,7 +2369,7 @@ function stripComments(source) {
 // lifts that so the daemon can start the pinned server without a second
 // spawner, and pays for it here: the promotion is only safe while the public
 // surface stays narrow, so each narrowing is asserted rather than described.
-const SERVER_HANDLE_FILE = "packages/runtime/src/restate/server-handle.ts";
+const SERVER_HANDLE_FILE = "packages/runtime/src/restate/server-handle/index.ts";
 const serverHandleCode = stripComments(readIfPresent(SERVER_HANDLE_FILE) ?? "");
 if (serverHandleCode === "") {
   fail(SERVER_HANDLE_FILE + " is missing");
@@ -3224,6 +3270,7 @@ const TOPOLOGY_ACTIVE_TREES = [
   "cli",
   "adapters",
   "daemon",
+  "runtime",
 ];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
@@ -3396,6 +3443,7 @@ const TEST_TREE_SCANNED_PREFIXES = [
   "packages/observation/test/",
   "packages/adapters/test/",
   "packages/daemon/test/",
+  "packages/runtime/test/",
 ];
 
 /**
@@ -3976,7 +4024,7 @@ const P2C_NAME_EXEMPT = new Set([
   "docs/architecture/0004-durability-and-supervisor.md",
   "docs/architecture/0005-restate-driver-and-adoption.md",
   "packages/runtime/README.md",
-  "packages/runtime/src/constants.ts",
+  "packages/runtime/src/constants/index.ts",
   "pnpm-workspace.yaml",
 ]);
 if (tracked.status === 0) {
