@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { Lease as LeaseSchema } from "@acp/contracts";
 import type { Lease, PathDigest } from "@acp/contracts";
 
 import {
@@ -507,6 +508,318 @@ describe("prestate verification", () => {
     const run = (): PrestateOutcome => verifyPrestate(null as unknown as never);
     expect(run).not.toThrow();
     expect(refusal(run()).reason).toBe("REQUEST_INVALID");
+  });
+});
+
+describe("the P6 checkpoint defects", () => {
+  const PLUS_TWO_NOON = "2026-08-29T14:00:00.000+02:00"; // === NOON
+  const TWO_PM = "2026-08-29T14:00:00.000Z";
+
+  // --- F1: prestate parses every entry and refuses duplicates fail-closed ---
+
+  it("refuses a malformed path digest at its exact index, on both sides", () => {
+    for (const [label, request, at] of [
+      [
+        "bad sha256 in authority",
+        { authority: [digest("a.ts", A), { path: "b.ts", sha256: "nope" }], observed: [] },
+        "request.authority[1]",
+      ],
+      [
+        "absolute path in authority",
+        { authority: [digest("/etc/passwd", A)], observed: [] },
+        "request.authority[0]",
+      ],
+      [
+        "parent traversal in observed",
+        { authority: [digest("a.ts", A)], observed: [digest("../elsewhere.ts", A)] },
+        "request.observed[0]",
+      ],
+      [
+        "bad sha256 in observed",
+        { authority: [digest("a.ts", A)], observed: [{ path: "a.ts", sha256: "short" }] },
+        "request.observed[0]",
+      ],
+    ] as const) {
+      const run = (): PrestateOutcome => verifyPrestate(request as never);
+      expect(run).not.toThrow();
+      const out = run();
+      expect({ label, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        label,
+        reason: "REQUEST_INVALID",
+        at,
+      });
+    }
+  });
+
+  it("refuses a duplicate path whether or not the digests agree", () => {
+    // Conflicting: the observer contradicted itself.
+    const conflicting = verifyPrestate({
+      authority: [digest("a.ts", A)],
+      observed: [digest("a.ts", A), digest("a.ts", B)],
+    });
+    expect(refusal(conflicting).reason).toBe("DUPLICATE_PATH");
+    expect(refusal(conflicting).at).toBe("request.observed[1]");
+
+    // Agreeing: still refused. "Never a match" must not become "a match when
+    // they happen to agree" -- the caller that sent two does not know which it
+    // observed, and the Map would silently have kept the last.
+    const agreeing = verifyPrestate({
+      authority: [digest("a.ts", A)],
+      observed: [digest("a.ts", A), digest("a.ts", A)],
+    });
+    expect(refusal(agreeing).reason).toBe("DUPLICATE_PATH");
+
+    const inAuthority = verifyPrestate({
+      authority: [digest("a.ts", A), digest("a.ts", B)],
+      observed: [digest("a.ts", A)],
+    });
+    expect(refusal(inAuthority).reason).toBe("DUPLICATE_PATH");
+    expect(refusal(inAuthority).at).toBe("request.authority[1]");
+  });
+
+  it("still matches a well-formed prestate", () => {
+    const out = verifyPrestate({
+      authority: [digest("a.ts", A), digest("b.ts", B)],
+      observed: [digest("b.ts", B), digest("a.ts", A)],
+    });
+    expect(out.ok).toBe(true);
+  });
+
+  // --- F2: conformance admits observations with the same strictness ---
+
+  it("refuses an observation that is not a path digest, or not repo-relative", () => {
+    for (const [label, observed, at, reason] of [
+      [
+        "tracked change without a digest",
+        observation({ trackedChanges: [{ path: "ok.ts" } as never] }),
+        "request.observation.trackedChanges[0]",
+        "OBSERVATION_INVALID",
+      ],
+      [
+        "tracked change with a bad digest",
+        observation({ trackedChanges: [{ path: "ok.ts", sha256: "nope" } as never] }),
+        "request.observation.trackedChanges[0]",
+        "OBSERVATION_INVALID",
+      ],
+      [
+        "duplicate tracked path",
+        observation({ trackedChanges: [digest("ok.ts", A), digest("ok.ts", B)] }),
+        "request.observation.trackedChanges[1]",
+        "DUPLICATE_PATH",
+      ],
+      [
+        "absolute untracked path",
+        observation({ untrackedPaths: ["/etc/passwd"] }),
+        "request.observation.untrackedPaths[0]",
+        "OBSERVATION_INVALID",
+      ],
+      [
+        "untracked parent traversal",
+        observation({ untrackedPaths: ["../elsewhere.ts"] }),
+        "request.observation.untrackedPaths[0]",
+        "OBSERVATION_INVALID",
+      ],
+      [
+        "untracked backslash path",
+        observation({ untrackedPaths: ["src\\windows.ts"] }),
+        "request.observation.untrackedPaths[0]",
+        "OBSERVATION_INVALID",
+      ],
+    ] as const) {
+      const run = (): ConformanceOutcome =>
+        checkWriteSetConformance({
+          declaredWriteSet: ["ok.ts"],
+          observation: observed,
+          lease: lease(),
+        });
+      expect(run).not.toThrow();
+      const out = run();
+      expect({ label, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        label,
+        reason,
+        at,
+      });
+    }
+  });
+
+  // --- C3: every comparison is by instant, not by string ---
+
+  it("treats equal instants written in different offsets as equal", () => {
+    // acquiredAt === now across offsets: the string comparison read this as
+    // "acquired in the future" and refused a lawful lease.
+    const acquired = acquireLease({
+      leases: [],
+      now: NOON,
+      candidate: lease({ acquiredAt: PLUS_TWO_NOON, expiresAt: ONE_PM }),
+    });
+    expect(acquired.ok).toBe(true);
+
+    // And the same for an expiry: an offset expiry equal to `now` is expired,
+    // exactly as the Z-form is.
+    const expired = acquireLease({
+      leases: [],
+      now: NOON,
+      candidate: lease({ acquiredAt: ELEVEN_AM, expiresAt: PLUS_TWO_NOON }),
+    });
+    expect(refusal(expired).reason).toBe("LEASE_EXPIRED");
+  });
+
+  // --- F4 + C1: renewal semantics and the authoritative representation ---
+
+  it("refuses a renewal that does not extend", () => {
+    for (const [label, expiresAt] of [
+      ["equal to now", NOON],
+      ["before now", ELEVEN_AM],
+      ["after now but before the existing expiry", "2026-08-29T12:30:00.000Z"],
+      ["equal to the existing expiry", ONE_PM],
+    ] as const) {
+      const out = renewLease({
+        leases: [lease()],
+        now: NOON,
+        leaseId: lease().leaseId,
+        holder: HOLDER,
+        expiresAt,
+      });
+      expect({ label, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        label,
+        reason: "LEASE_RENEWAL_NOT_EXTENDING",
+        at: "request.expiresAt",
+      });
+    }
+  });
+
+  it("refuses a holder that is not an identity", () => {
+    const out = renewLease({
+      leases: [lease()],
+      now: NOON,
+      leaseId: lease().leaseId,
+      holder: "not-an-identity",
+      expiresAt: TWO_PM,
+    });
+    expect(refusal(out).reason).toBe("REQUEST_INVALID");
+    expect(refusal(out).at).toBe("request.holder");
+  });
+
+  it("emits the whole lease in LEASE_ACQUIRED, at both sites", () => {
+    const acquired = acquireLease({ leases: [], now: NOON, candidate: lease() });
+    expect(acquired.ok).toBe(true);
+    if (!acquired.ok) return;
+    const renewal = renewLease({
+      leases: [lease()],
+      now: NOON,
+      leaseId: lease().leaseId,
+      holder: HOLDER,
+      expiresAt: TWO_PM,
+    });
+    expect(renewal.ok).toBe(true);
+    if (!renewal.ok) return;
+
+    const acquireEvent = acquired.events[0];
+    const renewEvent = renewal.events[0];
+    expect(acquireEvent?.type).toBe("LEASE_ACQUIRED");
+    expect(renewEvent?.type).toBe("LEASE_ACQUIRED");
+    expect(acquireEvent?.payload).toEqual({
+      leaseId: lease().leaseId,
+      worktreePath: WORKTREE,
+      holder: HOLDER,
+      acquiredAt: ELEVEN_AM,
+      expiresAt: ONE_PM,
+    });
+    // The same five keys at both sites, and a renewal changes only the expiry.
+    expect(Object.keys(renewEvent?.payload ?? {}).sort()).toEqual(
+      Object.keys(acquireEvent?.payload ?? {}).sort(),
+    );
+    expect(renewEvent?.payload).toEqual({
+      leaseId: lease().leaseId,
+      worktreePath: WORKTREE,
+      holder: HOLDER,
+      acquiredAt: ELEVEN_AM,
+      expiresAt: TWO_PM,
+    });
+  });
+
+  it("lets a caller fold the ledger back into the renewed lease", () => {
+    // The fold rule, exercised: per leaseId the last LEASE_ACQUIRED in ledger
+    // order defines the lease. Nothing but the payloads is used.
+    const first = acquireLease({ leases: [], now: NOON, candidate: lease() });
+    const second = renewLease({
+      leases: [lease()],
+      now: NOON,
+      leaseId: lease().leaseId,
+      holder: HOLDER,
+      expiresAt: TWO_PM,
+    });
+    if (!first.ok || !second.ok) throw new Error("fixture refused");
+
+    const ledger = [...first.events, ...second.events];
+    const folded = new Map<string, Record<string, string>>();
+    for (const candidate of ledger) {
+      const payload = { ...candidate.payload };
+      const leaseId = payload["leaseId"] ?? "";
+      if (candidate.type === "LEASE_ACQUIRED") folded.set(leaseId, payload);
+      if (candidate.type === "LEASE_REVOKED") folded.delete(leaseId);
+    }
+
+    const reconstructed = folded.get(lease().leaseId);
+    const parsed = LeaseSchema.safeParse(reconstructed);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data).toEqual(lease({ expiresAt: TWO_PM }));
+  });
+
+  // N1: the fold rule's other clause -- a revocation is terminal for the id.
+  it("ignores a LEASE_ACQUIRED that would resurrect a revoked lease", () => {
+    const acquired = acquireLease({ leases: [], now: NOON, candidate: lease() });
+    const revoked = revokeLease({
+      leases: [lease()],
+      now: NOON,
+      leaseId: lease().leaseId,
+      cause: "WRITE_SET_VIOLATION_DETECTED",
+    });
+    if (!acquired.ok || !revoked.ok) throw new Error("fixture refused");
+    // The caller's live set is empty after the revocation, so the engine will
+    // hand out the same id again: it holds no state and could not refuse.
+    const resurrection = acquireLease({ leases: [], now: NOON, candidate: lease() });
+    if (!resurrection.ok) throw new Error("fixture refused");
+
+    const ledger = [...acquired.events, ...revoked.events, ...resurrection.events];
+    const folded = new Map<string, Record<string, string>>();
+    const dead = new Set<string>();
+    for (const candidate of ledger) {
+      const payload = { ...candidate.payload };
+      const leaseId = payload["leaseId"] ?? "";
+      if (candidate.type === "LEASE_REVOKED") {
+        dead.add(leaseId);
+        folded.delete(leaseId);
+      }
+      // Terminal: a later acquisition for a revoked id is not a resurrection,
+      // and the fold ignores it rather than reviving the lease.
+      if (candidate.type === "LEASE_ACQUIRED" && !dead.has(leaseId)) {
+        folded.set(leaseId, payload);
+      }
+    }
+
+    expect(folded.has(lease().leaseId)).toBe(false);
+    expect([...folded.keys()]).toEqual([]);
+
+    // The engine's own reading agrees: over the folded set the lease is gone.
+    const renewal = renewLease({
+      leases: [],
+      now: NOON,
+      leaseId: lease().leaseId,
+      holder: HOLDER,
+      expiresAt: TWO_PM,
+    });
+    expect(refusal(renewal).reason).toBe("LEASE_NOT_FOUND");
+    expect(refusal(renewal).at).toBe("request.leaseId");
+  });
+
+  it("closes its refusal set after the new codes", () => {
+    expect([...ENFORCEMENT_REFUSALS]).toEqual([...ENFORCEMENT_REFUSALS].sort());
+    expect(new Set(ENFORCEMENT_REFUSALS).size).toBe(ENFORCEMENT_REFUSALS.length);
+    for (const code of ["DUPLICATE_PATH", "LEASE_RENEWAL_NOT_EXTENDING"]) {
+      expect(ENFORCEMENT_REFUSALS).toContain(code);
+    }
   });
 });
 

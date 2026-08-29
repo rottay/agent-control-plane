@@ -865,16 +865,18 @@ const P5E_WRITE_SET = [
 /**
  * P6: writer enforcement.
  *
- * P6 is **19 packet entries across 11 distinct paths**. The standing convention
+ * P6 is **25 packet entries across 11 distinct paths**. The standing convention
  * applies: entries are the sum of the packet array lengths, distinct is
- * `new Set` over their union, within phase scope. 5 + 4 + 6 + 4 = 19 entries;
- * the repeats are `scripts/check-architecture.mjs` (A, B, C, E) contributing 3,
+ * `new Set` over their union, within phase scope. 5 + 4 + 6 + 4 + 6 = 25
+ * entries; the repeats are `scripts/check-architecture.mjs` (A, B, C, E, F)
+ * contributing 4, `packages/runtime/src/enforcement/index.ts` (A, C, F) and
+ * `packages/runtime/test/enforcement/index.test.ts` (A, C, F) and
+ * `packages/runtime/README.md` (A, E, F) contributing 2 each,
  * `packages/runtime/src/index.ts` (A, B, C) contributing 2, and
- * `packages/runtime/src/enforcement/index.ts` (A, C),
- * `packages/runtime/test/enforcement/index.test.ts` (A, C) and
- * `packages/runtime/README.md` (A, E) contributing 1 each: 8 duplicate
- * entries, so 19 - 8 = 11. The two paths distinct to the closure are the
- * roadmap and the root README, which no other P6 packet touches.
+ * `packages/runtime/src/commit-authorization/index.ts` (C, F) and
+ * `packages/runtime/test/commit-authorization/index.test.ts` (C, F)
+ * contributing 1 each: 14 duplicate entries, so 25 - 14 = 11. P6F adds no path
+ * that was not already in the phase.
  *
  * P6A is the enforcement module and its mirrored test, the runtime barrel, the
  * runtime README falsified by that landing, and this file. P6B is the conflict
@@ -884,7 +886,9 @@ const P5E_WRITE_SET = [
  * the deferred P6A-N1 payload unification, the barrel and this file; its
  * README paragraph rides the union the same way. P6E is the closure: the
  * roadmap status line, the root README's evidence paragraphs, the runtime
- * README's scope sentence and this file.
+ * README's scope sentence and this file. P6F is the checkpoint correction: the
+ * enforcement pair, the commit-authorization pair, the runtime README and this
+ * file.
  *
  * The module ships no observer. Its git port is a runtime-internal type with a
  * closed read-only verb set, and `SPAWN_ALLOWED_FILES` gains nothing here: a
@@ -919,6 +923,25 @@ const P6C_WRITE_SET = [
 const P6E_WRITE_SET = [
   "docs/ROADMAP.md",
   "README.md",
+  "packages/runtime/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P6F: the checkpoint corrections.
+ *
+ * The four defects the P6 phase checkpoint rejected on — unparsed prestate
+ * entries and their duplicate-path ambiguity, the same laxity in the
+ * conformance observation, an authorization that never bound the lease to its
+ * writer or worktree, and a renewal that neither extended nor recorded
+ * anything. The README rides its own entry here rather than the union, because
+ * this packet edits it for its own reasons.
+ */
+const P6F_WRITE_SET = [
+  "packages/runtime/src/enforcement/index.ts",
+  "packages/runtime/test/enforcement/index.test.ts",
+  "packages/runtime/src/commit-authorization/index.ts",
+  "packages/runtime/test/commit-authorization/index.test.ts",
   "packages/runtime/README.md",
   "scripts/check-architecture.mjs",
 ];
@@ -1148,6 +1171,7 @@ const WRITE_SET = [
   ...P6B_WRITE_SET,
   ...P6C_WRITE_SET,
   ...P6E_WRITE_SET,
+  ...P6F_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,

@@ -51,6 +51,9 @@ export type AuthorizationRefusal =
   | "WRITE_SET_VIOLATION"
   | "BASE_HEAD_MISSING"
   | "BASE_HEAD_MISMATCH"
+  | "LEASE_HOLDER_MISMATCH"
+  | "LEASE_WORKTREE_MISMATCH"
+  | "LEASE_EXPIRED"
   | "RECEIPT_INVALID"
   | "COMMIT_PARENT_MISMATCH"
   | "COMMIT_MESSAGE_MISMATCH"
@@ -64,6 +67,9 @@ export const AUTHORIZATION_REFUSALS: readonly AuthorizationRefusal[] = Object.fr
   "COMMIT_MESSAGE_MISMATCH",
   "COMMIT_PARENT_MISMATCH",
   "COMMIT_SHA_INVALID",
+  "LEASE_EXPIRED",
+  "LEASE_HOLDER_MISMATCH",
+  "LEASE_WORKTREE_MISMATCH",
   "RECEIPT_INVALID",
   "REQUEST_INVALID",
   "VERIFIER_NOT_INDEPENDENT",
@@ -216,6 +222,30 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
     if (exitCode !== 0) {
       return refuse("CHECK_FAILED", "request.checks[" + String(index) + "]");
     }
+  }
+
+  // F3: the lease is not decoration on the request -- it is the claim that
+  // this writer holds this worktree. A receipt built while the lease belongs
+  // to someone else, or to another tree, would certify a commit nobody was
+  // entitled to make, and P6A's one-writer law would hold everywhere except
+  // at the moment it matters.
+  const leaseParse = Lease.safeParse(fields["lease"]);
+  if (!leaseParse.success) return refuse("REQUEST_INVALID", "request.lease");
+  const lease = leaseParse.data;
+  if (lease.holder !== writer) return refuse("LEASE_HOLDER_MISMATCH", "request.lease.holder");
+  const worktreePath: unknown = fields["worktreePath"];
+  if (lease.worktreePath !== worktreePath) {
+    return refuse("LEASE_WORKTREE_MISMATCH", "request.lease.worktreePath");
+  }
+  // C5: and it must still be live. An expired lease of the right holder on the
+  // right tree is a lease that ended before the commit it would authorize --
+  // the same instant-of-expiry rule P6A uses, `authorizedAt >= expiresAt` is
+  // expired. Instants are admitted by the contract's own parser and compared
+  // by epoch, never as strings.
+  const authorizedAt = Lease.shape.expiresAt.safeParse(fields["authorizedAt"]);
+  if (!authorizedAt.success) return refuse("REQUEST_INVALID", "request.authorizedAt");
+  if (Date.parse(authorizedAt.data) >= Date.parse(lease.expiresAt)) {
+    return refuse("LEASE_EXPIRED", "request.lease.expiresAt");
   }
 
   // The optional audit is shape-checked here, with the other request guards,

@@ -27,6 +27,14 @@
  * The engine holds no revoked state and could not, because it holds no state
  * at all.
  *
+ * **The fold rule, completely.** Per `leaseId`, the last `LEASE_ACQUIRED` in
+ * ledger order defines the lease — ledger order, not `expiresAt` order — and a
+ * `LEASE_REVOKED` is terminal for that id, so a later `LEASE_ACQUIRED` for a
+ * revoked id is not a resurrection and the fold ignores it. A renewal re-emits
+ * `LEASE_ACQUIRED` with the same id and a later expiry, and never changes
+ * `worktreePath`, `holder` or `acquiredAt`. Each payload carries the whole
+ * lease, so the fold is computable from the ledger alone.
+ *
  * **The No-Checkout Law is code here, not prose.** The recovery path this
  * module recommends is quarantine: it revokes the lease, recommends
  * SUSPECT_WORKTREE, and leaves the worktree exactly as it found it. There is no
@@ -34,8 +42,7 @@
  * asserts the absent tokens.
  */
 
-import { Lease } from "@acp/contracts";
-import type { PathDigest } from "@acp/contracts";
+import { Lease, PathDigest } from "@acp/contracts";
 
 // ---------------------------------------------------------------------------
 // The read-only git port — a type, and an allow-list
@@ -119,7 +126,9 @@ export type EnforcementRefusal =
   | "LEASE_EXPIRED"
   | "LEASE_NOT_HELD"
   | "LEASE_NOT_FOUND"
+  | "LEASE_RENEWAL_NOT_EXTENDING"
   | "INSTANT_INVALID"
+  | "DUPLICATE_PATH"
   | "OBSERVATION_INVALID"
   | "OBSERVATION_FAILED"
   | "WRITE_SET_EMPTY"
@@ -127,12 +136,14 @@ export type EnforcementRefusal =
   | "PRESTATE_MISSING";
 
 export const ENFORCEMENT_REFUSALS: readonly EnforcementRefusal[] = Object.freeze([
+  "DUPLICATE_PATH",
   "INSTANT_INVALID",
   "LEASE_EXPIRED",
   "LEASE_HELD_BY_ANOTHER",
   "LEASE_INVALID",
   "LEASE_NOT_FOUND",
   "LEASE_NOT_HELD",
+  "LEASE_RENEWAL_NOT_EXTENDING",
   "OBSERVATION_FAILED",
   "OBSERVATION_INVALID",
   "PRESTATE_MISMATCH",
@@ -195,9 +206,23 @@ function isInstant(value: unknown): value is string {
   return Lease.shape.expiresAt.safeParse(value).success;
 }
 
-/** Ordering over admitted instants. Both sides are validated before comparison. */
+/**
+ * Ordering over admitted instants. Both sides are validated before comparison.
+ *
+ * Every comparison in this module goes through these two, and both convert to
+ * epoch milliseconds first. Comparing the strings would make
+ * `2026-08-29T12:00:00+02:00` and `2026-08-29T10:00:00Z` — the same instant —
+ * unequal, and an offset a caller is entitled to send would be read as a
+ * different moment. Converting for comparison is not minting a grammar: the
+ * grammar is admitted above, by the contract's own parser.
+ */
 function atOrAfter(left: string, right: string): boolean {
   return Date.parse(left) >= Date.parse(right);
+}
+
+/** Strictly after, by instant. */
+function strictlyAfter(left: string, right: string): boolean {
+  return Date.parse(left) > Date.parse(right);
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +236,10 @@ function atOrAfter(left: string, right: string): boolean {
  * the authority (ADR 0001): the caller folds `LEASE_ACQUIRED` and
  * `LEASE_REVOKED` into the set it passes here, and two callers reasoning over
  * the same ledger reach the same answer because this function is pure.
+ *
+ * The fold, in one line: per `leaseId`, the last `LEASE_ACQUIRED` in ledger
+ * order wins, a `LEASE_REVOKED` is terminal for that id, and a renewal re-emits
+ * `LEASE_ACQUIRED` with the same id and a later expiry.
  */
 export interface LeaseRequest {
   readonly leases: readonly Lease[];
@@ -277,7 +306,10 @@ export function acquireLease(
     // holder is tolerated; a reused id pointing anywhere else is not.
     return refuse("LEASE_INVALID", "request.candidate.leaseId");
   }
-  if (atOrAfter(candidate.acquiredAt, now) && candidate.acquiredAt !== now) {
+  // Strictly after `now` is the future. The comparison is by instant, so a
+  // candidate stamped `…T12:00:00+02:00` against a `now` of `…T10:00:00Z` is
+  // the same moment and is admitted; comparing the strings refused it.
+  if (strictlyAfter(candidate.acquiredAt, now)) {
     return refuse("LEASE_INVALID", "request.candidate.acquiredAt");
   }
   if (atOrAfter(candidate.acquiredAt, candidate.expiresAt)) {
@@ -301,10 +333,16 @@ export function acquireLease(
     ok: true as const,
     lease: candidate,
     events: Object.freeze([
+      // The whole lease, so the fold below is computable from the ledger
+      // alone: without the instants a reader can see that a lease exists and
+      // never work out whether it is still live, nor which of two acquisitions
+      // for one id carries the later expiry.
       event("LEASE_ACQUIRED", {
         leaseId: candidate.leaseId,
         worktreePath: candidate.worktreePath,
         holder: candidate.holder,
+        acquiredAt: candidate.acquiredAt,
+        expiresAt: candidate.expiresAt,
       }),
     ]),
   });
@@ -325,6 +363,12 @@ export function renewLease(
   const invalid = validateLeaseSet(fields["leases"], fields["now"], "request");
   if (invalid !== null) return invalid;
   if (!isInstant(fields["expiresAt"])) return refuse("INSTANT_INVALID", "request.expiresAt");
+  // The holder is an identity, admitted by the contract's own parser rather
+  // than by a `typeof` check — the same borrowed-parser discipline the lease
+  // set and the instants use.
+  if (!Lease.shape.holder.safeParse(fields["holder"]).success) {
+    return refuse("REQUEST_INVALID", "request.holder");
+  }
   const { leases, now } = request;
 
   const existing = leases.find((lease) => lease.leaseId === request.leaseId);
@@ -334,13 +378,38 @@ export function renewLease(
   if (existing.holder !== request.holder) return refuse("LEASE_NOT_HELD", "request.holder");
   if (!isLive(existing, now)) return refuse("LEASE_EXPIRED", "request.leaseId");
 
+  // A renewal extends. An expiry at or before `now` renews nothing, and one at
+  // or before the existing expiry shortens the lease — which is `revoke` plus
+  // `acquire`, two events with two honest causes, not a renewal wearing one
+  // event's name. Equality is not an extension either: re-stamping the same
+  // expiry would append an event that changes nothing a reader could act on.
+  if (!strictlyAfter(request.expiresAt, now)) {
+    return refuse("LEASE_RENEWAL_NOT_EXTENDING", "request.expiresAt");
+  }
+  if (!strictlyAfter(request.expiresAt, existing.expiresAt)) {
+    return refuse("LEASE_RENEWAL_NOT_EXTENDING", "request.expiresAt");
+  }
+
   const renewed = Lease.safeParse({ ...existing, expiresAt: request.expiresAt });
   if (!renewed.success) return refuse("LEASE_INVALID", "request.expiresAt");
 
   return Object.freeze({
     ok: true as const,
     lease: renewed.data,
-    events: Object.freeze([] as readonly EnforcementEvent[]),
+    // The renewal re-asserts the same lease with a later expiry, and the
+    // frozen vocabulary has no renewal type — minting one would be a STOP. A
+    // second `LEASE_ACQUIRED` for the same `leaseId` is the honest record;
+    // "revoke and re-acquire under a new id" would write a cause that did not
+    // happen and break continuity for every receipt already naming this id.
+    events: Object.freeze([
+      event("LEASE_ACQUIRED", {
+        leaseId: renewed.data.leaseId,
+        worktreePath: renewed.data.worktreePath,
+        holder: renewed.data.holder,
+        acquiredAt: renewed.data.acquiredAt,
+        expiresAt: renewed.data.expiresAt,
+      }),
+    ]),
   });
 }
 
@@ -470,23 +539,28 @@ export function checkWriteSetConformance(request: ConformanceRequest): Conforman
 
   const seen = new Set<string>(declared);
   const outside: string[] = [];
+  // The same admission the prestate uses: the contract's `PathDigest` for a
+  // tracked change, and the path half of it for an untracked one. A `typeof`
+  // check accepted `"/etc/passwd"` and `"../elsewhere.ts"` as observations,
+  // and an observation outside the tree is not something a write-set can be
+  // compared against at all.
+  const trackedSeen = new Set<string>();
   for (let index = 0; index < trackedChanges.length; index += 1) {
-    const change: unknown = trackedChanges[index];
-    if (typeof change !== "object" || change === null) {
-      return refuse("OBSERVATION_INVALID", "request.observation.trackedChanges[" + String(index) + "]");
-    }
-    const path: unknown = (change as Record<string, unknown>)["path"];
-    if (typeof path !== "string" || path === "") {
-      return refuse("OBSERVATION_INVALID", "request.observation.trackedChanges[" + String(index) + "].path");
-    }
+    const at = "request.observation.trackedChanges[" + String(index) + "]";
+    const parsed = PathDigest.safeParse(trackedChanges[index]);
+    if (!parsed.success) return refuse("OBSERVATION_INVALID", at);
+    const path = parsed.data.path;
+    // Two digests for one path: the observer contradicted itself, and neither
+    // reading may be preferred over the other.
+    if (trackedSeen.has(path)) return refuse("DUPLICATE_PATH", at);
+    trackedSeen.add(path);
     if (!seen.has(path)) outside.push(path);
   }
   for (let index = 0; index < untrackedPaths.length; index += 1) {
-    const path: unknown = untrackedPaths[index];
-    if (typeof path !== "string" || path === "") {
-      return refuse("OBSERVATION_INVALID", "request.observation.untrackedPaths[" + String(index) + "]");
-    }
-    if (!seen.has(path)) outside.push(path);
+    const at = "request.observation.untrackedPaths[" + String(index) + "]";
+    const parsed = PathDigest.shape.path.safeParse(untrackedPaths[index]);
+    if (!parsed.success) return refuse("OBSERVATION_INVALID", at);
+    if (!seen.has(parsed.data)) outside.push(parsed.data);
   }
 
   const violations = Object.freeze([...new Set(outside)].sort());
@@ -584,33 +658,39 @@ export function verifyPrestate(request: PrestateRequest): PrestateOutcome {
   if (authority.length === 0) return refuse("PRESTATE_MISSING", "request.authority");
   if (!Array.isArray(observed)) return refuse("REQUEST_INVALID", "request.observed");
 
+  // Every entry is admitted by the contract's own `PathDigest` — the path form
+  // and the digest form both — rather than by a `typeof` check that would let
+  // `sha256: "nope"` and an absolute path through as authority.
   const byPath = new Map<string, string>();
   for (let index = 0; index < observed.length; index += 1) {
-    const entry: unknown = observed[index];
-    if (typeof entry !== "object" || entry === null) {
+    const parsed = PathDigest.safeParse(observed[index]);
+    if (!parsed.success) {
       return refuse("REQUEST_INVALID", "request.observed[" + String(index) + "]");
     }
-    const fieldsOf = entry as Record<string, unknown>;
-    const path: unknown = fieldsOf["path"];
-    const digest: unknown = fieldsOf["sha256"];
-    if (typeof path !== "string" || typeof digest !== "string") {
-      return refuse("REQUEST_INVALID", "request.observed[" + String(index) + "]");
+    // Two entries for one path are a conflicting observation, not a later one
+    // superseding an earlier: the map would have kept whichever arrived last
+    // and called that the truth. Refused whether or not the digests agree —
+    // "never a match" must not quietly become "a match when they happen to
+    // agree", because the caller that sent two still does not know which it
+    // observed.
+    if (byPath.has(parsed.data.path)) {
+      return refuse("DUPLICATE_PATH", "request.observed[" + String(index) + "]");
     }
-    byPath.set(path, digest);
+    byPath.set(parsed.data.path, parsed.data.sha256);
   }
 
   const mismatched: string[] = [];
+  const authorityPaths = new Set<string>();
   for (let index = 0; index < authority.length; index += 1) {
-    const entry: unknown = authority[index];
-    if (typeof entry !== "object" || entry === null) {
+    const parsed = PathDigest.safeParse(authority[index]);
+    if (!parsed.success) {
       return refuse("REQUEST_INVALID", "request.authority[" + String(index) + "]");
     }
-    const fieldsOf = entry as Record<string, unknown>;
-    const path: unknown = fieldsOf["path"];
-    const digest: unknown = fieldsOf["sha256"];
-    if (typeof path !== "string" || typeof digest !== "string") {
-      return refuse("REQUEST_INVALID", "request.authority[" + String(index) + "]");
+    const { path, sha256: digest } = parsed.data;
+    if (authorityPaths.has(path)) {
+      return refuse("DUPLICATE_PATH", "request.authority[" + String(index) + "]");
     }
+    authorityPaths.add(path);
     const seen = byPath.get(path);
     // Absent counts as mismatched: a file the authority names and the worktree
     // does not have is not a match, and calling it one would let a packet start

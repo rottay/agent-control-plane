@@ -22,10 +22,20 @@ cross-worktree claim: whether two worktrees may be written in parallel is the
 conflict graph's decision, which is P6B's gate applied before acquire. The
 enforcement core computes no conflict check of its own; the conflict-graph
 module computes the complete one, over task envelopes, before any lease is
-taken. Revocation is the caller folding the
-lease out of the set it passes in — derived from `LEASE_ACQUIRED` and
-`LEASE_REVOKED` in the ledger, which is the authority — because the engine
-holds no state of its own.
+taken. Revocation is the caller folding the lease out of the set it passes in
+— derived from `LEASE_ACQUIRED` and `LEASE_REVOKED` in the ledger, which is the
+authority — because the engine holds no state of its own.
+
+The fold rule, completely: per `leaseId`, the **last `LEASE_ACQUIRED` in ledger
+order** defines the lease — ledger order, not `expiresAt` order — and a
+`LEASE_REVOKED` is **terminal** for that id, so a later `LEASE_ACQUIRED` for a
+revoked id is not a resurrection and the fold ignores it. A renewal re-emits
+`LEASE_ACQUIRED` with the same `leaseId` and a later expiry, never changing
+`worktreePath`, `holder` or `acquiredAt`: the frozen event vocabulary has no
+renewal type, and "revoke and re-acquire under a new id" would record a cause
+that did not happen and break continuity for every receipt already naming the
+lease. Each payload carries the whole lease — id, worktree, holder,
+`acquiredAt`, `expiresAt` — so the fold is computable from the ledger alone.
 
 The enforcement core observes nothing itself. Its read-only git port is a type
 naming the four verbs an observer may ever speak — `status`, `diff`,
@@ -39,12 +49,13 @@ receipt's envelope is injected whole: this module mints no identifier, reads no
 clock and never speaks git, so the bytes a verifier audits are the bytes the
 integrator commits under. Authorization requires an independent verifier — a
 receipt whose verifier is its own writer is refused — every recorded check
-exiting zero, an observation inside the declared write-set, and a base head the
-receipt was taken against. A receipt can never authorize a push: the field is
-`false` at the type, so `true` is unrepresentable rather than merely unused.
-Recording a commit afterwards is a second decision: a first parent that is not
-the receipt's base head, a message that is not the authorized one, or a
-malformed object id is refused rather than logged.
+exiting zero, an observation inside the declared write-set, a base head the
+receipt was taken against, and a lease held by the writer for that worktree and
+still live at the moment of authorization. A receipt can never authorize a
+push: the field is `false` at the type, so `true` is unrepresentable rather
+than merely unused. Recording a commit afterwards is a second decision: a first
+parent that is not the receipt's base head, a message that is not the
+authorized one, or a malformed object id is refused rather than logged.
 
 When the observation falls outside the declared set the outcome is a quarantine
 record — the violating paths, the evidence digests and a recommended

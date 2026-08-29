@@ -212,9 +212,16 @@ describe("the authorization decision", () => {
 
   // (k)
   it("carries the contract parser's refusal for a malformed identity", () => {
-    const out = authorizeCommit(request({ writer: "not-an-identity" }));
+    // `authorizedBy` is an identity no earlier guard reads, so the contract's
+    // own parser is what refuses it, and its path is carried out unchanged.
+    const out = authorizeCommit(request({ authorizedBy: "not-an-identity" }));
     expect(refusal(out).reason).toBe("RECEIPT_INVALID");
     expect(refusal(out).at).toContain("receipt.");
+
+    // A malformed `writer` is caught earlier and more specifically: no lease
+    // can be held by a non-identity, so the holder binding refuses first.
+    const badWriter = authorizeCommit(request({ writer: "not-an-identity" }));
+    expect(refusal(badWriter).reason).toBe("LEASE_HOLDER_MISMATCH");
   });
 
   // (h)
@@ -466,6 +473,64 @@ describe("quarantine", () => {
       taskId: "33333333-3333-4333-8333-333333333333",
     });
     expect(refusal(out).at).toBe("request.observation.trackedChanges[0]");
+  });
+});
+
+describe("the lease binds the writer, the worktree and the moment", () => {
+  // (s) F3: a lease held by someone else authorizes nothing.
+  it("refuses a lease whose holder is not the writer", () => {
+    const out = authorizeCommit(request({ lease: lease({ holder: "claude/sonnet/verifier/01" }) }));
+    expect(refusal(out).reason).toBe("LEASE_HOLDER_MISMATCH");
+    expect(refusal(out).at).toBe("request.lease.holder");
+  });
+
+  // (t) F3: nor one taken on a different tree.
+  it("refuses a lease on a different worktree", () => {
+    const out = authorizeCommit(request({ lease: lease({ worktreePath: "/tmp/acp-elsewhere" }) }));
+    expect(refusal(out).reason).toBe("LEASE_WORKTREE_MISMATCH");
+    expect(refusal(out).at).toBe("request.lease.worktreePath");
+  });
+
+  it("refuses a malformed lease rather than throwing", () => {
+    const run = (): AuthorizationOutcome => authorizeCommit(request({ lease: "nope" as never }));
+    expect(run).not.toThrow();
+    expect(refusal(run()).reason).toBe("REQUEST_INVALID");
+    expect(refusal(run()).at).toBe("request.lease");
+  });
+
+  // (u) C5: an expired lease of the right holder on the right tree.
+  it("refuses a lease that has expired at the moment of authorization", () => {
+    const expired = authorizeCommit(
+      request({ lease: lease({ expiresAt: "2026-08-29T11:30:00.000Z" }) }),
+    );
+    expect(refusal(expired).reason).toBe("LEASE_EXPIRED");
+    expect(refusal(expired).at).toBe("request.lease.expiresAt");
+
+    // The instant of expiry is expired: `authorizedAt >= expiresAt`, the same
+    // rule P6A's `isLive` uses.
+    const exactly = authorizeCommit(request({ lease: lease({ expiresAt: NOW }) }));
+    expect(refusal(exactly).reason).toBe("LEASE_EXPIRED");
+
+    // And the comparison is by instant: the same moment in another offset is
+    // still the same moment.
+    const offset = authorizeCommit(
+      request({ lease: lease({ expiresAt: "2026-08-29T14:00:00.000+02:00" }) }),
+    );
+    expect(refusal(offset).reason).toBe("LEASE_EXPIRED");
+  });
+
+  it("refuses an authorizedAt that is not an instant", () => {
+    const run = (): AuthorizationOutcome => authorizeCommit(request({ authorizedAt: "noon" }));
+    expect(run).not.toThrow();
+    expect(refusal(run()).reason).toBe("REQUEST_INVALID");
+    expect(refusal(run()).at).toBe("request.authorizedAt");
+  });
+
+  it("keeps its refusal set closed after the new codes", () => {
+    expect([...AUTHORIZATION_REFUSALS]).toEqual([...AUTHORIZATION_REFUSALS].sort());
+    for (const code of ["LEASE_EXPIRED", "LEASE_HOLDER_MISMATCH", "LEASE_WORKTREE_MISMATCH"]) {
+      expect(AUTHORIZATION_REFUSALS).toContain(code);
+    }
   });
 });
 
