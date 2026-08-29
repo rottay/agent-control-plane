@@ -152,6 +152,9 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5C: the router's own test, the last file to leave a src/ tree. Its
+  // relocation is what let accounts join TOPOLOGY_ACTIVE_TREES (ruling R1).
+  "packages/accounts/src/routing/index.test.ts",
   // P5N cohort C11 (accounts, structural remnant): the refusal vocabulary and
   // the two colocated tests, now under src/<domain>/index.ts and the mirrored
   // test tree. Topology activation is withheld to P5C per DT ruling R1.
@@ -823,8 +826,8 @@ const P5B_WRITE_SET = [
 ];
 
 const P5C_WRITE_SET = [
-  "packages/accounts/src/router/index.ts",
-  "packages/accounts/src/router/index.test.ts",
+  "packages/accounts/src/routing/index.ts",
+  "packages/accounts/test/routing/index.test.ts",
   "packages/accounts/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -1411,6 +1414,16 @@ const EXPIRED_LITERALS = {
   // exported yet". All three are exported now, so both sentences are false and
   // pinned absent.
   "packages/adapters/README.md": ["This is P4A", "are not exported yet"],
+  // The P5A-only frame the accounts README carried until the router landed.
+  // Both literals are lifted byte-exactly from the pre-edit file: the scope
+  // section deferred quota estimation and the router to P5B/P5C as "not
+  // exported yet", and the shadow-mode paragraph spoke of the router as still
+  // to arrive. Both are exported and arrived now, so both sentences are false
+  // and pinned absent.
+  "packages/accounts/README.md": [
+    "Quota estimation, the quota-aware router and the switching policy arrive in P5B, P5C and P5D and are not exported yet",
+    "The router and the switching machine that arrive later",
+  ],
 };
 
 /** Files that must never exist in the repository, in any directory. */
@@ -3398,6 +3411,7 @@ const TOPOLOGY_ACTIVE_TREES = [
   "runtime",
   "ui",
   "server",
+  "accounts",
 ];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
@@ -3650,6 +3664,25 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "estimateQuota",
   "resetCalendar",
   "weakerConfidence",
+  // P5C
+  "CandidateEvidence",
+  "EvidenceSample",
+  "RankedAccount",
+  "RejectedAccount",
+  "RoutingConfig",
+  "RoutingOutcome",
+  "RoutingRecommendation",
+  "RoutingRefusal",
+  "RoutingRefused",
+  "RoutingRequest",
+  "RoutingTerm",
+  "TaskProfile",
+  "CANDIDATES_MAX",
+  "DEFAULT_ROUTING_CONFIG",
+  "EVIDENCE_ABSENT",
+  "ROUTING_REFUSALS",
+  "ROUTING_TERMS",
+  "rankAccounts",
 ];
 
 const accountsIndex = readIfPresent("packages/accounts/src/index.ts");

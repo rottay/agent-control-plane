@@ -6,10 +6,10 @@ them.
 
 ## Scope
 
-This is **P5A**: the package scaffold, the owner-file loader, the admission
-ladder and the registry. Quota estimation, the quota-aware router and the
-switching policy arrive in P5B, P5C and P5D and are not exported yet.
-**P5A is not P5 completion.**
+This is **P5A, P5B and P5C**: the package scaffold, the owner-file loader, the
+admission ladder, the registry, quota estimation and the quota-aware router,
+all exported. The switching policy arrives in P5D and is not exported yet.
+**This is not P5 completion.**
 
 Importing this package has **no side effects**. `loadAccountsFile` reads when it
 is called, and only then, from a path the caller supplies. Nothing here writes,
@@ -17,9 +17,9 @@ creates or removes anything.
 
 This is **shadow mode**, and no product adoption. Nothing in P5 starts a
 provider session, authenticates against anything, opens a socket or touches a
-product repository. The router and the switching machine that arrive later
-*recommend*; they never act. Adoption is a separate owner decision at P9 that
-nothing here anticipates or authorizes.
+product repository. The router that has landed, and the switching machine that
+follows it, *recommend*; they never act. Adoption is a separate owner decision
+at P9 that nothing here anticipates or authorizes.
 
 ## The owner file, and why this package cannot find it
 

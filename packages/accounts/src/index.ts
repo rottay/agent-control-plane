@@ -1,9 +1,10 @@
 /**
  * Public surface of the Agent Control Plane accounts domain.
  *
- * This is P5A and P5B: the owner-file loader, the admission law, the read-only
- * registry, and the quota estimator with its reset calendar. The router and the
- * switching policy arrive in P5C and P5D and are not exported yet.
+ * This is P5A, P5B and P5C: the owner-file loader, the admission law, the
+ * read-only registry, the quota estimator with its reset calendar, and the
+ * quota-aware router. The switching policy arrives in P5D and is not exported
+ * yet.
  *
  * Importing this module has no side effects. `loadAccountsFile` reads when it
  * is called, and only then, from a path the caller supplies — there is no
@@ -56,3 +57,29 @@ export {
   resetCalendar,
   weakerConfidence,
 } from "./quota/index.js";
+
+// P5C: the quota-aware router. Pure, clock-injected and deterministic; it
+// recommends and reserves nothing. An account without margin for the next
+// atomic step plus its checkpoint is refused by name rather than ranked last.
+export type {
+  CandidateEvidence,
+  EvidenceSample,
+  RankedAccount,
+  RejectedAccount,
+  RoutingConfig,
+  RoutingOutcome,
+  RoutingRecommendation,
+  RoutingRefusal,
+  RoutingRefused,
+  RoutingRequest,
+  RoutingTerm,
+  TaskProfile,
+} from "./routing/index.js";
+export {
+  CANDIDATES_MAX,
+  DEFAULT_ROUTING_CONFIG,
+  EVIDENCE_ABSENT,
+  ROUTING_REFUSALS,
+  ROUTING_TERMS,
+  rankAccounts,
+} from "./routing/index.js";
