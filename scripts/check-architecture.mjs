@@ -834,7 +834,7 @@ const P5C_WRITE_SET = [
 
 const P5D_WRITE_SET = [
   "packages/accounts/src/switching/index.ts",
-  "packages/accounts/src/switching/index.test.ts",
+  "packages/accounts/test/switching/index.test.ts",
   "packages/accounts/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -1423,6 +1423,13 @@ const EXPIRED_LITERALS = {
   "packages/accounts/README.md": [
     "Quota estimation, the quota-aware router and the switching policy arrive in P5B, P5C and P5D and are not exported yet",
     "The router and the switching machine that arrive later",
+    // The P5C-era frame the accounts README carried until the switching policy
+    // landed. Both are lifted byte-exactly from the pre-edit file: the scope
+    // section deferred the switching policy to P5D, and the shadow-mode
+    // paragraph still spoke of a machine that had not arrived. It has, and it
+    // is exported, so both sentences are false and pinned absent.
+    "The switching policy arrives in P5D and is not exported yet",
+    "the switching machine that follows it",
   ],
 };
 
@@ -3683,6 +3690,22 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "ROUTING_REFUSALS",
   "ROUTING_TERMS",
   "rankAccounts",
+  // P5D: the switching policy. It recommends and never acts; the plan is named
+  // steps and candidate events as values, and quota and selection are composed
+  // from P5B and P5C rather than re-decided.
+  "SwitchAccountStatus",
+  "SwitchEvent",
+  "SwitchOutcome",
+  "SwitchPlan",
+  "SwitchRefusal",
+  "SwitchRefused",
+  "SwitchRequest",
+  "SwitchStep",
+  "SwitchTrigger",
+  "SWITCH_REFUSALS",
+  "SWITCH_STEPS",
+  "SWITCH_TRIGGERS",
+  "decideSwitch",
 ];
 
 const accountsIndex = readIfPresent("packages/accounts/src/index.ts");

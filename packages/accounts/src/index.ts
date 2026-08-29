@@ -1,10 +1,9 @@
 /**
  * Public surface of the Agent Control Plane accounts domain.
  *
- * This is P5A, P5B and P5C: the owner-file loader, the admission law, the
- * read-only registry, the quota estimator with its reset calendar, and the
- * quota-aware router. The switching policy arrives in P5D and is not exported
- * yet.
+ * This is P5A through P5D: the owner-file loader, the admission law, the
+ * read-only registry, the quota estimator with its reset calendar, the
+ * quota-aware router, and the switching policy — all exported.
  *
  * Importing this module has no side effects. `loadAccountsFile` reads when it
  * is called, and only then, from a path the caller supplies — there is no
@@ -16,9 +15,10 @@
  * material they name stays outside this repository in P5 and in every phase
  * this package can reach.
  *
- * Nothing here writes. `@acp/ledger` is a declared dependency because P5D reads
- * quota observations from it; the architecture fence asserts that no production
- * source in this package contains an append.
+ * Nothing here writes. `@acp/ledger` is a declared dependency because the quota
+ * observations P5D reasons over originate in the event log; the switching policy
+ * takes them as injected values and no production source in this package
+ * contains an append — the architecture fence asserts it.
  *
  * Nothing here reads a clock. The quota estimator takes the current instant as
  * an injected parameter at every entry point, so an estimate depends on what it
@@ -83,3 +83,20 @@ export {
   ROUTING_TERMS,
   rankAccounts,
 } from "./routing/index.js";
+
+// P5D: the switching policy. It recommends and never acts: an ordered plan of
+// named steps, candidate events as values, and a classified refusal for
+// anything it was not given the standing to decide. Quota and selection are
+// composed from P5B and P5C rather than re-decided here.
+export type {
+  SwitchAccountStatus,
+  SwitchEvent,
+  SwitchOutcome,
+  SwitchPlan,
+  SwitchRefusal,
+  SwitchRefused,
+  SwitchRequest,
+  SwitchStep,
+  SwitchTrigger,
+} from "./switching/index.js";
+export { SWITCH_REFUSALS, SWITCH_STEPS, SWITCH_TRIGGERS, decideSwitch } from "./switching/index.js";
