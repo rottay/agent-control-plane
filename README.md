@@ -3,12 +3,13 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0, P1, P2, P3 and P4 complete. Next: P5.** Contracts, fences, the
+Status: **P0, P1, P2, P3, P4 and P5 complete. Next: P6.** Contracts, fences, the
 append-only event ledger, a read-only observation plane over it — a loopback
 HTTP server, a CLI and a local UI — a durability plane with two orchestration
 drivers under a supervised local daemon, a shadow-mode observation package with
-a measured baseline, and three read-only provider adapters behind one process
-boundary. P3 closed on committed evidence: the ledger, the server, the CLI and
+a measured baseline, three read-only provider adapters behind one process
+boundary, and an accounts domain that estimates quota, ranks candidates and
+recommends a switch without ever acting. P3 closed on committed evidence: the ledger, the server, the CLI and
 the UI are proven to agree exactly across all nine frozen routes — the CLI
 building its own answer from the same ledger without ever seeing the server's,
 and the UI proven to project the server's answer unchanged, with `health` bound
@@ -35,6 +36,28 @@ parser and our machinery and nothing whatsoever about a provider. Each real
 capability claim waits for its own separately authorized protocol proof.
 Interruption works for all three regardless, because the signal floor is a
 property of our process handle rather than a provider feature.
+
+P5 closed on committed evidence and, as with P4, on an explicit account of what
+that evidence does *not* cover. `@acp/accounts` holds the owner-file loader and
+its admission ladder over a read-only registry (P5A), a clock-injected quota
+estimator with its reset calendar (P5B), a quota-aware router that refuses an
+account without margin for the next atomic step plus its checkpoint (P5C), and
+a switching policy that classifies its trigger fail-closed and returns an
+ordered plan of named steps (P5D). The structural normalization that ran
+alongside it made accounts the eleventh tree under the folder/index law (P5N,
+C11). Every surface is pure and clock-injected: the current instant is an
+argument at each entry point, so an answer depends on what it was given rather
+than on when it ran.
+
+**Nothing in P5 acts.** No provider session was started, no socket opened, no
+credential resolved — `authProfileRef` and `credentialRef` are opaque locators
+this package carries and never dereferences. The router recommends and reserves
+nothing; the switching policy returns candidate events as values and leaves
+every step of its own plan to an executor that does not exist yet. No account
+was drained, no task moved, and no quota measured against a live provider: the
+estimator reasons over observations it is handed. What P5 completion means is
+that the decisions are made and proven, not that anything has been decided *for*
+a running system.
 
 Shadow mode measured synthetic and already-emitted artifacts only. Nothing was
 observed from any live session, nothing here is adopted into any real

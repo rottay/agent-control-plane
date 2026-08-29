@@ -6,9 +6,10 @@ them.
 
 ## Scope
 
-This is **P5A through P5D**: the package scaffold, the owner-file loader, the
-admission ladder, the registry, quota estimation, the quota-aware router and
-the switching policy, all exported. **This is not P5 completion.**
+**P5 is complete**: the package scaffold, the owner-file loader, the admission
+ladder, the registry, quota estimation with its reset calendar, the quota-aware
+router and the switching policy, all exported from `src/index.ts` behind a
+closed surface the architecture fence pins by equality.
 
 Importing this package has **no side effects**. `loadAccountsFile` reads when it
 is called, and only then, from a path the caller supplies. Nothing here writes,

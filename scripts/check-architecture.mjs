@@ -1111,30 +1111,35 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "148839fe1015ce0e8db34a776b8d57bef1edb9221702c58828a948ebae856216";
+  "e876d21e10fffcd6e7c71723eb12b49ab74443dc25a46ac1a09b4e638c7a0bff";
 
 /**
- * The Estado line P4 closure is allowed to have produced.
+ * The Estado line P5 closure is allowed to have produced.
  *
- * P4 is complete on five committed commits and the independently verified
- * receipts behind them: the adapter contract and session boundary, the Claude
- * headless descriptor, the Kimi ACP descriptor, the provider-folder
- * relocation, and the Codex App Server descriptor. The literal is exact, and
- * because it still does not contain P1_INCOMPLETE it also keeps the lane
- * envelope closed.
+ * P5 is complete on its committed commits and the independently verified
+ * receipts behind them: the accounts scaffold with the owner-file loader and
+ * its admission ladder (P5A), the clock-injected quota estimator with its
+ * reset calendar (P5B), the quota-aware router (P5C), the switching policy
+ * (P5D), and the structural normalization that made accounts the eleventh
+ * activated tree (P5N, C11). The literal is exact, and because it still does
+ * not contain P1_INCOMPLETE it also keeps the lane envelope closed.
  *
- * What P4 completion does NOT mean is worth stating where the claim is made.
- * Every provider capability leaves P4 `UNKNOWN`: no adapter was pointed at a
- * running provider, no handshake was performed and no account was touched, so
- * the adapters are complete while the warranties about the providers are
- * simply absent. P5 opens as *next*, not as started.
+ * What P5 completion does NOT mean is worth stating where the claim is made.
+ * Nothing in P5 acts. No provider session was started, no socket opened and no
+ * credential resolved — the opaque locators are carried and never
+ * dereferenced. The router recommends and reserves nothing; the switching
+ * policy returns candidate events as values and leaves every step of its own
+ * plan to an executor that does not exist yet. No quota was measured against a
+ * live provider: the estimator reasons over observations it is handed. The
+ * decisions are made and proven; none of them has been made *for* a running
+ * system. P6 opens as *next*, not as started.
  *
- * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P4
+ * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P5
  * built is in service, and adoption happens once, after P8 certification and
  * under a separate P9 authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / NEXT_P5 / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / NEXT_P6 / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -1398,6 +1403,7 @@ const EXPIRED_LITERALS = {
     "P0 and P1 complete. Next: P2.",
     "P0, P1 and P2 complete. Next: P3.",
     "P0, P1, P2 and P3 complete. Next: P4.",
+    "P0, P1, P2, P3 and P4 complete. Next: P5.",
     // Falsified by the same commit that retires the status text above: P4
     // shipped three provider adapters. Pinned here rather than merely deleted,
     // because a sentence that is only removed can come back, and coming back
@@ -1430,6 +1436,9 @@ const EXPIRED_LITERALS = {
     // is exported, so both sentences are false and pinned absent.
     "The switching policy arrives in P5D and is not exported yet",
     "the switching machine that follows it",
+    // Retired by P5 closure itself: the scope paragraph disclaimed completion
+    // for as long as a P5 surface was still to come. None is.
+    "This is not P5 completion.",
   ],
 };
 
