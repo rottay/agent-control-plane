@@ -36,6 +36,30 @@ export {
   revokeLease,
   verifyPrestate,
 } from "./enforcement/index.js";
+// P6B: the conflict graph. The complete pairwise verdict over a candidate set,
+// and the admission form defined as that graph restricted to the candidate's
+// pairs. It decides envelope compatibility only: worktree isolation stays with
+// the lease check, and the graph is the gate applied before acquire.
+export {
+  CONFLICT_KINDS,
+  DUPLICATE_TASK_ID,
+  GRAPH_REFUSALS,
+  buildConflictGraph,
+  checkAdmission,
+} from "./conflict-graph/index.js";
+export type {
+  AdmissionRequest,
+  ConflictGraphRequest,
+  ConflictIntersection,
+  ConflictKind,
+  ConflictOutcome,
+  ConflictPair,
+  ConflictVerdict,
+  DuplicateTaskId,
+  GraphRefusal,
+  GraphRefused,
+} from "./conflict-graph/index.js";
+
 export type {
   ConformanceOutcome,
   ConformanceRequest,

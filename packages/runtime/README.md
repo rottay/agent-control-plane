@@ -4,8 +4,9 @@ The durability and supervisor plane of the Agent Control Plane.
 
 ## Scope
 
-**P2D built one shared lifecycle engine and both of its drivers**, and **P6A
-adds the writer-enforcement core.** The `SQLITE_SUPERVISOR` and the `RESTATE`
+**P2D built one shared lifecycle engine and both of its drivers**, **P6A adds
+the writer-enforcement core**, and **P6B adds the conflict graph.** The
+`SQLITE_SUPERVISOR` and the `RESTATE`
 driver walk the same plan over the append-only ledger and recover from real
 process kills. Enforcement adds leases, write-set conformance and prestate
 verification as pure functions over injected values: one writer per worktree,
@@ -16,8 +17,10 @@ lifecycle now lives in `@acp/daemon`, which drives this package. There is no
 
 P6A admits at most one live holder **per worktree**, and makes no
 cross-worktree claim: whether two worktrees may be written in parallel is the
-conflict graph's decision, which is P6B's gate applied before acquire. Nothing
-here computes a partial conflict check. Revocation is the caller folding the
+conflict graph's decision, which is P6B's gate applied before acquire. The
+enforcement core computes no conflict check of its own; the conflict-graph
+module computes the complete one, over task envelopes, before any lease is
+taken. Revocation is the caller folding the
 lease out of the set it passes in — derived from `LEASE_ACQUIRED` and
 `LEASE_REVOKED` in the ledger, which is the authority — because the engine
 holds no state of its own.
@@ -39,7 +42,8 @@ used by any real operation.
 
 ## One core, two drivers
 
-`src/core/lifecycle/index.ts` holds the single plan. The supervisor and the Restate
+`src/core/lifecycle/index.ts` holds the single plan. The supervisor and the
+Restate
 driver both walk it. Neither encodes a transition of its own: two copies of a
 state machine drift, and the drift is only ever discovered when the two disagree
 about a recovery.

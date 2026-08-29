@@ -865,11 +865,17 @@ const P5E_WRITE_SET = [
 /**
  * P6: writer enforcement.
  *
- * P6A is **5 packet entries across 5 distinct paths** — the enforcement module
- * and its mirrored test, the runtime barrel, the runtime README falsified by
- * the landing, and this file. The standing convention applies: entries are the
- * sum of the packet array lengths, distinct is `new Set` over their union,
- * within phase scope. Nothing repeats yet, so 5 = 5.
+ * P6 is **9 packet entries across 7 distinct paths**. The standing convention
+ * applies: entries are the sum of the packet array lengths, distinct is
+ * `new Set` over their union, within phase scope. 5 + 4 = 9 entries; the
+ * repeats are `packages/runtime/src/index.ts` (A, B) and
+ * `scripts/check-architecture.mjs` (A, B), contributing 2 duplicate entries,
+ * so 9 - 2 = 7.
+ *
+ * P6A is the enforcement module and its mirrored test, the runtime barrel, the
+ * runtime README falsified by that landing, and this file. P6B is the conflict
+ * graph and its mirrored test, the barrel and this file; its README sentence
+ * rides the union through P6A_WRITE_SET, the P5D Ruling-2 form.
  *
  * The module ships no observer. Its git port is a runtime-internal type with a
  * closed read-only verb set, and `SPAWN_ALLOWED_FILES` gains nothing here: a
@@ -881,6 +887,13 @@ const P6A_WRITE_SET = [
   "packages/runtime/test/enforcement/index.test.ts",
   "packages/runtime/src/index.ts",
   "packages/runtime/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+const P6B_WRITE_SET = [
+  "packages/runtime/src/conflict-graph/index.ts",
+  "packages/runtime/test/conflict-graph/index.test.ts",
+  "packages/runtime/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1106,6 +1119,7 @@ const WRITE_SET = [
   ...P5D_WRITE_SET,
   ...P5E_WRITE_SET,
   ...P6A_WRITE_SET,
+  ...P6B_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -1426,6 +1440,11 @@ const EXPIRED_LITERALS = {
     // lifecycle engine and its drivers. It now holds the enforcement core too.
     "This is P2D: one shared lifecycle engine and both of its drivers.",
     "P2D is not P2 completion",
+    // Retired by the P6B landing: true while the package computed no conflict
+    // check at all, misleading once the conflict-graph module computes the
+    // complete one. The enforcement core still computes none, and the rewritten
+    // sentence says exactly that.
+    "Nothing here computes a partial conflict check",
   ],
   "packages/runtime/src/index.ts": ["This is P2B", "This is P2D"],
   "packages/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
