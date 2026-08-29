@@ -24,8 +24,8 @@
  * was given rather than on when it ran.
  */
 
-export type { AccountsRefusal, AccountsRefused } from "./errors.js";
-export { ACCOUNTS_REFUSALS } from "./errors.js";
+export type { AccountsRefusal, AccountsRefused } from "./errors/index.js";
+export { ACCOUNTS_REFUSALS } from "./errors/index.js";
 
 export type { AccountsFile, AccountsRegistry, LoadOutcome } from "./registry/index.js";
 export {

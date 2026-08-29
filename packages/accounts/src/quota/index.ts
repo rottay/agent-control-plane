@@ -22,7 +22,7 @@ import type { AccountRecord, ConfidenceLevel } from "@acp/contracts";
  * available is refused by name. It is never estimated at zero, never estimated
  * optimistically, and never returned as "unknown, proceed".
  *
- * The refusal vocabulary here is separate from `../errors.js` deliberately.
+ * The refusal vocabulary here is separate from `../errors/index.js` deliberately.
  * That one classifies what is wrong with the *owner file*; this one classifies
  * what is wrong with an *estimate*. They are different judgements about
  * different objects, and collapsing them would make both less precise. (The

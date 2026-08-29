@@ -38,6 +38,7 @@
     { "path": "./packages/adapters" },
     { "path": "./packages/adapters/test" },
     { "path": "./packages/accounts" },
+    { "path": "./packages/accounts/test" },
     { "path": "./packages/api-contracts" },
     { "path": "./packages/api-contracts/test" },
     { "path": "./packages/runtime" },

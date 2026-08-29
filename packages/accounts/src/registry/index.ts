@@ -3,8 +3,8 @@ import { isAbsolute } from "node:path";
 
 import { AccountRecord, CONTRACT_VERSION, findCredentialViolations } from "@acp/contracts";
 
-import { ROOT_PATH, refuse } from "../errors.js";
-import type { AccountsRefused } from "../errors.js";
+import { ROOT_PATH, refuse } from "../errors/index.js";
+import type { AccountsRefused } from "../errors/index.js";
 
 /**
  * The owner-file loader and the account registry.

@@ -17,14 +17,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CONTRACT_VERSION } from "@acp/contracts";
 
-import { ACCOUNTS_REFUSALS } from "../errors.js";
-import type { AccountsRefused } from "../errors.js";
+import { ACCOUNTS_REFUSALS } from "../../src/errors/index.js";
+import type { AccountsRefused } from "../../src/errors/index.js";
 import {
   ACCOUNTS_FILE_KEYS,
   ACCOUNTS_FILE_MAX_BYTES,
   buildRegistry,
   loadAccountsFile,
-} from "./index.js";
+} from "../../src/registry/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const TMP_ROOT = realpathSync(tmpdir());
@@ -476,10 +476,15 @@ describe("no byte of a credential ever leaves this boundary", () => {
 });
 
 describe("the package keeps its own laws", () => {
-  const sources = ["errors.ts", "registry/index.ts", "index.ts"];
+  const sources = ["errors/index.ts", "registry/index.ts", "index.ts"];
 
   function production(name: string): string {
-    const path = name === "errors.ts" || name === "index.ts" ? join(HERE, "..", name) : join(HERE, "index.ts");
+    const path =
+      name === "errors/index.ts"
+        ? join(HERE, "..", "..", "src", "errors", "index.ts")
+        : name === "index.ts"
+          ? join(HERE, "..", "..", "src", "index.ts")
+          : join(HERE, "..", "..", "src", "registry", "index.ts");
     return readFileSync(path, "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/\/\/[^\n]*/g, "");

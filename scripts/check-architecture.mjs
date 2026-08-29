@@ -152,6 +152,12 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C11 (accounts, structural remnant): the refusal vocabulary and
+  // the two colocated tests, now under src/<domain>/index.ts and the mirrored
+  // test tree. Topology activation is withheld to P5C per DT ruling R1.
+  "packages/accounts/src/errors.ts",
+  "packages/accounts/src/quota/index.test.ts",
+  "packages/accounts/src/registry/index.test.ts",
   // P5N cohort C10 (server): the HTTP surface — the route table, the
   // aggregates and mappers, the ledger source and database identity, the
   // builder and its start path, and both integration tests, now under
@@ -789,9 +795,9 @@ const P5A_WRITE_SET = [
   "packages/accounts/tsconfig.json",
   "packages/accounts/README.md",
   "packages/accounts/src/index.ts",
-  "packages/accounts/src/errors.ts",
+  "packages/accounts/src/errors/index.ts",
   "packages/accounts/src/registry/index.ts",
-  "packages/accounts/src/registry/index.test.ts",
+  "packages/accounts/test/registry/index.test.ts",
   "tsconfig.base.json",
   "vitest.config.ts",
   "pnpm-lock.yaml",
@@ -811,7 +817,7 @@ const P5A_WRITE_SET = [
  */
 const P5B_WRITE_SET = [
   "packages/accounts/src/quota/index.ts",
-  "packages/accounts/src/quota/index.test.ts",
+  "packages/accounts/test/quota/index.test.ts",
   "packages/accounts/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -1033,6 +1039,21 @@ const P5N_C10_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C11: the accounts structural remnant. The relocated paths are
+ * carried by P5A_WRITE_SET and P5B_WRITE_SET, rewritten 1:1. This array
+ * declares only the test tree's own tsconfig.json and the config files the
+ * cohort edits. TOPOLOGY_ACTIVE_TREES is deliberately NOT extended here — DT
+ * ruling R1 reassigns the accounts activation to P5C, sequenced after the
+ * frozen routing test leaves src/.
+ */
+const P5N_C11_WRITE_SET = [
+  "packages/accounts/test/tsconfig.json",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -1070,6 +1091,7 @@ const WRITE_SET = [
   ...P5N_C8_WRITE_SET,
   ...P5N_C9_WRITE_SET,
   ...P5N_C10_WRITE_SET,
+  ...P5N_C11_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -3267,14 +3289,16 @@ if (tracked.status === 0) {
   // moment it exists.
   const declared = new Set(present);
   for (const relativePath of WRITE_SET) {
-    if (relativePath.startsWith("packages/accounts/src/") && relativePath.endsWith(".ts")) {
+    if ((relativePath.startsWith("packages/accounts/src/") ||
+      relativePath.startsWith("packages/accounts/test/")) && relativePath.endsWith(".ts")) {
       declared.add(relativePath);
     }
   }
   const sources = [...declared]
     .filter(
       (relativePath) =>
-        relativePath.startsWith("packages/accounts/src/") && relativePath.endsWith(".ts"),
+        (relativePath.startsWith("packages/accounts/src/") ||
+      relativePath.startsWith("packages/accounts/test/")) && relativePath.endsWith(".ts"),
     )
     .filter((relativePath) => readIfPresent(relativePath) !== null)
     .sort();
@@ -3549,6 +3573,7 @@ const TEST_TREE_SCANNED_PREFIXES = [
   "packages/runtime/test/",
   "packages/ui/test/",
   "packages/server/test/",
+  "packages/accounts/test/",
 ];
 
 /**

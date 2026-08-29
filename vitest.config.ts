@@ -261,7 +261,7 @@ export default defineConfig({
           // one file at a time.
           name: 'accounts',
           root: './packages/accounts',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

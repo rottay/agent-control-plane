@@ -14,8 +14,8 @@ import {
   estimateQuota,
   resetCalendar,
   weakerConfidence,
-} from "./index.js";
-import type { QuotaOutcome, QuotaRefused, ResetOutcome, TokenObservation } from "./index.js";
+} from "../../src/quota/index.js";
+import type { QuotaOutcome, QuotaRefused, ResetOutcome, TokenObservation } from "../../src/quota/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 
@@ -562,7 +562,7 @@ describe("the evidence has to hold together", () => {
     // without knowing it was load bearing. That is a different thing from the
     // unreachable branch removed during this packet, which was guarding a case
     // the ordering already made impossible and documented nothing.
-    const source = readFileSync(join(HERE, "index.ts"), "utf8");
+    const source = readFileSync(join(HERE, "..", "..", "src", "quota", "index.ts"), "utf8");
     expect(source).toContain("used + tokens > Number.MAX_SAFE_INTEGER");
     expect(QUOTA_REFUSALS).toContain("OBSERVATION_SUM_UNSAFE");
   });
@@ -701,7 +701,7 @@ describe("confidence is propagated, never improved", () => {
 });
 
 describe("the module is pure, and stays that way", () => {
-  const source = readFileSync(join(HERE, "index.ts"), "utf8");
+  const source = readFileSync(join(HERE, "..", "..", "src", "quota", "index.ts"), "utf8");
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
   it("reads no clock", () => {
