@@ -23,8 +23,8 @@ import {
 import { openLedger, type Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildServer } from "./build-server.js";
-import { startServer } from "./start.js";
+import { buildServer } from "../../src/build-server/index.js";
+import { startServer } from "../../src/start/index.js";
 
 // ---------------------------------------------------------------------------
 // Temporary databases. Every test builds its own, under its own temporary
@@ -774,18 +774,41 @@ describe("loopback", () => {
 
 describe("import purity", () => {
   it("importing the package performs no I/O and starts nothing", async () => {
-    const module = await import("./index.js");
+    const module = await import("../../src/index.js");
     expect(typeof module.buildServer).toBe("function");
     expect(typeof module.startServer).toBe("function");
   });
 
   it("no source file in this package calls a ledger mutator", () => {
-    const directory = fileURLToPath(new URL(".", import.meta.url));
-    const files = readdirSync(directory).filter(
-      (name) => name.endsWith(".ts") && !name.endsWith(".test.ts"),
-    );
-    for (const name of files) {
-      const content = readFileSync(join(directory, name), "utf8");
+    // The relocation to folder/index topology spread the package's production
+    // sources across ten sibling directories (`src/aggregates/index.ts`,
+    // `src/routes/index.ts`, ...). A flat, single-level `readdirSync` of this
+    // test's own directory -- which is what this check used before the move,
+    // valid only because every production file was once a flat sibling under
+    // `src/` -- would now read `test/build-server/` and silently find nothing
+    // to scan. The walk is bounded to the package's own `src/` tree, recurses
+    // one level to reach each domain's `index.ts`, and excludes `.test.ts` by
+    // the same rule as before.
+    const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const srcRoot = join(packageRoot, "src");
+
+    function collectProductionSources(dir: string): string[] {
+      const found: string[] = [];
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          found.push(...collectProductionSources(full));
+        } else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+          found.push(full);
+        }
+      }
+      return found;
+    }
+
+    const files = collectProductionSources(srcRoot);
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      const content = readFileSync(file, "utf8");
       expect(content).not.toMatch(/\.append\s*\(/);
       expect(content).not.toMatch(/\.rebuildReadModel\s*\(/);
     }

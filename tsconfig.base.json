@@ -45,6 +45,7 @@
     { "path": "./packages/daemon" },
     { "path": "./packages/daemon/test" },
     { "path": "./packages/server" },
+    { "path": "./packages/server/test" },
     { "path": "./packages/cli" },
     { "path": "./packages/cli/test" },
     { "path": "./packages/ui" },

@@ -152,6 +152,23 @@ const P1B_SHARED_WRITE_SET = [
  */
 const RETIRED_PATHS = [
   "vitest.workspace.ts",
+  // P5N cohort C10 (server): the HTTP surface — the route table, the
+  // aggregates and mappers, the ledger source and database identity, the
+  // builder and its start path, and both integration tests, now under
+  // src/<domain>/index.ts and the mirrored test tree. The tenth and last
+  // structural cohort.
+  "packages/server/src/aggregates.ts",
+  "packages/server/src/build-server.test.ts",
+  "packages/server/src/build-server.ts",
+  "packages/server/src/constants.ts",
+  "packages/server/src/database-identity.ts",
+  "packages/server/src/errors.ts",
+  "packages/server/src/ledger-source.ts",
+  "packages/server/src/mappers.ts",
+  "packages/server/src/parity.test.ts",
+  "packages/server/src/query-schemas.ts",
+  "packages/server/src/routes.ts",
+  "packages/server/src/start.ts",
   // P5N cohort C9 (ui): the browser package — the app entry and shell, every
   // component, view, hook and routing helper, the API client and the format
   // helpers (collapsed per adjudication C), and every colocated test, now
@@ -374,17 +391,17 @@ const P1_WRITE_SET = [
   "packages/cli/src/cli/index.ts",
   "packages/cli/src/format/index.ts",
   "packages/cli/src/observation/index.ts",
-  "packages/server/src/aggregates.ts",
-  "packages/server/src/build-server.test.ts",
-  "packages/server/src/build-server.ts",
-  "packages/server/src/constants.ts",
-  "packages/server/src/database-identity.ts",
-  "packages/server/src/errors.ts",
-  "packages/server/src/ledger-source.ts",
-  "packages/server/src/mappers.ts",
-  "packages/server/src/query-schemas.ts",
-  "packages/server/src/routes.ts",
-  "packages/server/src/start.ts",
+  "packages/server/src/aggregates/index.ts",
+  "packages/server/test/build-server/index.test.ts",
+  "packages/server/src/build-server/index.ts",
+  "packages/server/src/constants/index.ts",
+  "packages/server/src/database-identity/index.ts",
+  "packages/server/src/errors/index.ts",
+  "packages/server/src/ledger-source/index.ts",
+  "packages/server/src/mappers/index.ts",
+  "packages/server/src/query-schemas/index.ts",
+  "packages/server/src/routes/index.ts",
+  "packages/server/src/start/index.ts",
   "packages/ui/test/api/client/index.test.ts",
   "packages/ui/src/api/client/index.ts",
   "packages/ui/src/api/query-string/index.ts",
@@ -594,7 +611,7 @@ const P2F_STAGE_A_WRITE_SET = [
  * more than once: `packages/observation/src/index.ts` (A, C),
  * `packages/observation/README.md` (A, E), `vitest.config.ts` (A, B) and
  * `scripts/check-architecture.mjs` (A, C, D, E — four touches). Check:
- * 37 − (1 + 1 + 1 + 3) = 31. `packages/server/src/routes.ts` and
+ * 37 − (1 + 1 + 1 + 3) = 31. `packages/server/src/routes/index.ts` and
  * `packages/server/tsconfig.json` are each new distinct paths *within P3*;
  * their P1 array membership is historical and outside the scope this count
  * describes, which is the treatment the ordering ruling set for `routes.ts`.
@@ -650,12 +667,12 @@ const P3D_WRITE_SET = [
   "packages/api-contracts/src/index.ts",
   "packages/cli/src/observation/index.ts",
   "packages/ui/src/api/client/index.ts",
-  "packages/server/src/parity.test.ts",
+  "packages/server/test/parity/index.test.ts",
   "scripts/check-architecture.mjs",
   // Sorting only, at the two aggregate emit sites. The server was emitting
   // `Map` insertion order while the CLI sorted; ordering is part of the parity
   // law, so the server converges onto the CLI's existing deterministic order.
-  "packages/server/src/routes.ts",
+  "packages/server/src/routes/index.ts",
   // The TypeScript counterpart of the P3A deep aliases. Those live in
   // `vitest.config.ts`, which `tsc` and type-aware eslint never read, so the
   // parity test resolved at run time and nowhere else. Declaration-based, so
@@ -1001,6 +1018,21 @@ const P5N_C9_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P5N cohort C10: server, the tenth and last tree normalized. The relocated
+ * source paths are carried by P1_WRITE_SET and P3D_WRITE_SET, rewritten 1:1.
+ * This array declares only the test tree's own tsconfig.json and the config
+ * files the cohort edits. packages/server/tsconfig.json is deliberately
+ * absent — adjudication C: its aliases and references were already correct
+ * once C5 and C9-F landed, and it is not touched here.
+ */
+const P5N_C10_WRITE_SET = [
+  "packages/server/test/tsconfig.json",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -1037,6 +1069,7 @@ const WRITE_SET = [
   ...P5N_C7_WRITE_SET,
   ...P5N_C8_WRITE_SET,
   ...P5N_C9_WRITE_SET,
+  ...P5N_C10_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -3340,6 +3373,7 @@ const TOPOLOGY_ACTIVE_TREES = [
   "daemon",
   "runtime",
   "ui",
+  "server",
 ];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
@@ -3514,6 +3548,7 @@ const TEST_TREE_SCANNED_PREFIXES = [
   "packages/daemon/test/",
   "packages/runtime/test/",
   "packages/ui/test/",
+  "packages/server/test/",
 ];
 
 /**
@@ -3638,7 +3673,7 @@ if (vitestConfig !== null) {
     for (const relativePath of present) {
       if (relativePath === "vitest.config.ts") continue;
       if (relativePath === "scripts/check-architecture.mjs") continue;
-      if (relativePath === "packages/server/src/parity.test.ts") continue;
+      if (relativePath === "packages/server/test/parity/index.test.ts") continue;
       // The TypeScript counterpart of the same two aliases. `tsc` and
       // type-aware eslint never read `vitest.config.ts`, so without this the
       // parity test resolves at run time and fails both other gates. A
@@ -3647,6 +3682,10 @@ if (vitestConfig !== null) {
       // specifiers — is untouched. The declaration is pinned by equality
       // immediately below rather than merely excused here.
       if (relativePath === "packages/server/tsconfig.json") continue;
+      // The test tree's own tsconfig carries the same two aliases,
+      // depth-corrected, for the same reason and under the same rationale —
+      // adjudication A (C10). A tsconfig `paths` declaration is not an import.
+      if (relativePath === "packages/server/test/tsconfig.json") continue;
       const content = readIfPresent(relativePath);
       if (content === null) continue;
       for (const [specifier] of aliasTargets) {
@@ -4014,7 +4053,7 @@ if (adaptersConfigRoot !== null) {
   notes.push("the adapter environment allowlist is exactly four variables per provider");
 }
 
-// The server may not reach @acp/contracts. `packages/server/src/mappers.ts`
+// The server may not reach @acp/contracts. `packages/server/src/mappers/index.ts`
 // records that exclusion as a design decision, and the parity test honours it
 // by asking @acp/api-contracts for the privacy verdict through its named
 // helper instead. Enforced in all three forms the reach could take: a manifest
@@ -4054,11 +4093,17 @@ if (serverTsconfigRaw !== null && serverTsconfigRaw.includes('"@acp/contracts"')
 const serverSources = new Set(
   (tracked.status === 0 ? tracked.stdout.split("\n").map((line) => line.trim()) : []).filter(
     (relativePath) =>
-      relativePath.startsWith("packages/server/src/") && relativePath.endsWith(".ts"),
+      (relativePath.startsWith("packages/server/src/") ||
+        relativePath.startsWith("packages/server/test/")) &&
+      relativePath.endsWith(".ts"),
   ),
 );
 for (const relativePath of WRITE_SET) {
-  if (relativePath.startsWith("packages/server/src/") && relativePath.endsWith(".ts")) {
+  if (
+    (relativePath.startsWith("packages/server/src/") ||
+      relativePath.startsWith("packages/server/test/")) &&
+    relativePath.endsWith(".ts")
+  ) {
     serverSources.add(relativePath);
   }
 }

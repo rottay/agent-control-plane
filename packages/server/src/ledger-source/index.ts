@@ -1,7 +1,7 @@
 import type { LedgerDatabaseIdentity } from "@acp/api-contracts";
 import { type Ledger, openLedger } from "@acp/ledger";
 
-import { computeDatabaseIdentity } from "./database-identity.js";
+import { computeDatabaseIdentity } from "../database-identity/index.js";
 
 /**
  * The outcome of the one, and only, ledger open this process performs.

@@ -1,8 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 
-import { classifyFastifyError, sendApiError } from "./errors.js";
-import { openLedgerSource } from "./ledger-source.js";
-import { registerRoutes } from "./routes.js";
+import { classifyFastifyError, sendApiError } from "../errors/index.js";
+import { openLedgerSource } from "../ledger-source/index.js";
+import { registerRoutes } from "../routes/index.js";
 
 export interface BuildServerOptions {
   /**
@@ -43,7 +43,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   //   one `ApiError` envelope rather than Fastify's own default shape — which
   //   a strict reader cannot tell apart from a genuine contract mismatch.
   //
-  // A handler wrapped by `guarded()` (routes.ts) never lets an exception
+  // A handler wrapped by `guarded()` (routes/index.ts) never lets an exception
   // reach either path: it classifies everything itself and sends the
   // envelope directly. What reaches these two handlers is always Fastify's
   // own doing, never this package's route logic.

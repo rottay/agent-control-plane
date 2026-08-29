@@ -41,7 +41,7 @@ import {
 } from "@acp/cli/observation-rows";
 import { uiRowModel } from "@acp/ui/row-model";
 
-import { buildServer } from "./build-server.js";
+import { buildServer } from "../../src/build-server/index.js";
 
 /**
  * The three-way parity proof: ledger, CLI and UI must tell the same story.
@@ -223,7 +223,7 @@ const FIXED_CLOCK = (): string => "2026-08-28T00:00:00.000Z";
  */
 function cliResponses(path: string, taskId: string, identity: string): Record<string, unknown> {
   // Read-only, because that is how the CLI opens a ledger in production
-  // (`cli.ts` passes `{ readOnly: true }`) and how the server opens it too. An
+  // (`cli/index.ts` passes `{ readOnly: true }`) and how the server opens it too. An
   // earlier draft opened it read-write and the comparison failed on
   // `readOnly`/`queryOnly` — a difference between this harness and both real
   // clients, not between the clients themselves.
@@ -257,7 +257,7 @@ function cliResponses(path: string, taskId: string, identity: string): Record<st
  * Pagination is part of the parity law, so the CLI has to answer the *same
  * question* — same limit, same cursor — from the ledger, rather than be handed
  * the server's page. `afterTaskId` is the ledger-level spelling of the `cursor`
- * query parameter the route maps onto it (`routes.ts`), which is why the two
+ * query parameter the route maps onto it (`routes/index.ts`), which is why the two
  * sides can be asked the same thing in their own vocabularies.
  */
 function cliTaskPage(path: string, query: { limit: number; afterTaskId?: string }): unknown {
@@ -443,7 +443,7 @@ describe("redaction is absence, in every client", () => {
   it("carries no credential- or transcript-shaped key on any route", async () => {
     // The one privacy vocabulary, reached through the contract's named helper.
     // This package may not depend on `@acp/contracts` directly — the same
-    // exclusion `mappers.ts` records — so the shared contract both clients
+    // exclusion `mappers/index.ts` records — so the shared contract both clients
     // already depend on answers the question instead of a second denylist.
     const { path, taskA } = seed();
     const bodies: unknown[] = [

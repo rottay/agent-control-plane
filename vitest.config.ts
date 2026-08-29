@@ -134,7 +134,7 @@ const daemonSourceAliases = [
  * byte-untouched.
  *
  * The architecture fence asserts these two targets and that the specifiers are
- * imported only by `packages/server/src/parity.test.ts`.
+ * imported only by `packages/server/test/parity/index.test.ts`.
  */
 const cliRowModelSource = fileURLToPath(
   new URL('./packages/cli/src/observation/index.ts', import.meta.url),
@@ -273,7 +273,7 @@ export default defineConfig({
         test: {
           name: 'server',
           root: './packages/server',
-          include: ['src/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

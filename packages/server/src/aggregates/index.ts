@@ -1,7 +1,7 @@
 import { MAX_DETAIL_TIMELINE_ITEMS, type TimelineItem } from "@acp/api-contracts";
 import type { EventQuery, Ledger } from "@acp/ledger";
 
-import { timelineItem } from "./mappers.js";
+import { timelineItem } from "../mappers/index.js";
 
 /**
  * Server-side aggregation over the ledger's cursor-paged read APIs.

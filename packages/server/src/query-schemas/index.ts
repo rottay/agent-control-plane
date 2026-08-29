@@ -1,4 +1,4 @@
-import { ApiRouteError } from "./errors.js";
+import { ApiRouteError } from "../errors/index.js";
 
 /**
  * The query shape for every route the frozen contract does not give one to:

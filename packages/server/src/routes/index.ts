@@ -20,11 +20,11 @@ import {
 import type { Ledger } from "@acp/ledger";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-import { countTasks, countWorkers, recentEventsForTask, recentEventsForWorker } from "./aggregates.js";
-import { ApiRouteError, classifyUnexpectedError, sendApiError } from "./errors.js";
-import type { LedgerSource } from "./ledger-source.js";
-import { taskDetail, taskSummary, timelineItem, workerDetail, workerSummary } from "./mappers.js";
-import { assertEmptyQuery, parseQuery, parseTaskIdParam } from "./query-schemas.js";
+import { countTasks, countWorkers, recentEventsForTask, recentEventsForWorker } from "../aggregates/index.js";
+import { ApiRouteError, classifyUnexpectedError, sendApiError } from "../errors/index.js";
+import type { LedgerSource } from "../ledger-source/index.js";
+import { taskDetail, taskSummary, timelineItem, workerDetail, workerSummary } from "../mappers/index.js";
+import { assertEmptyQuery, parseQuery, parseTaskIdParam } from "../query-schemas/index.js";
 
 /**
  * Route registration for the P1 read-only observation surface.

@@ -12,8 +12,8 @@
  * only when called with an explicit ledger path.
  */
 
-export { buildServer, type BuildServerOptions } from "./build-server.js";
-export { SERVER_BIND_HOST, SERVER_DEFAULT_PORT } from "./constants.js";
-export { computeDatabaseIdentity } from "./database-identity.js";
-export { openLedgerSource, type LedgerSource } from "./ledger-source.js";
-export { type RunningServer, startServer, type StartServerOptions } from "./start.js";
+export { buildServer, type BuildServerOptions } from "./build-server/index.js";
+export { SERVER_BIND_HOST, SERVER_DEFAULT_PORT } from "./constants/index.js";
+export { computeDatabaseIdentity } from "./database-identity/index.js";
+export { openLedgerSource, type LedgerSource } from "./ledger-source/index.js";
+export { type RunningServer, startServer, type StartServerOptions } from "./start/index.js";

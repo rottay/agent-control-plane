@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
-import { buildServer } from "./build-server.js";
-import { SERVER_BIND_HOST, SERVER_DEFAULT_PORT } from "./constants.js";
+import { buildServer } from "../build-server/index.js";
+import { SERVER_BIND_HOST, SERVER_DEFAULT_PORT } from "../constants/index.js";
 
 export interface StartServerOptions {
   /**
