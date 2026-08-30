@@ -9,6 +9,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  CONTRACT_VERSION,
   buildIdempotencyKey,
   type ControlPlaneEventType,
   type TaskState,
@@ -94,7 +95,7 @@ function makeEvent(input: EventInput = {}): Record<string, unknown> {
   const transitionId = input.transitionId ?? "step-1";
   const occurredAt = input.occurredAt ?? "2026-08-27T12:00:00.000Z";
   return {
-    contractVersion: "1.0.0",
+    contractVersion: CONTRACT_VERSION,
     eventId: input.eventId ?? randomUUID(),
     taskId,
     attempt,

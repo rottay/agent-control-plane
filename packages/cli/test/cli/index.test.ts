@@ -26,6 +26,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   EventPageResponse,
   IntegrityResult,
+  LEDGER_CONTRACT_VERSION,
   LedgerStatusResponse,
   OverviewResponse,
   TaskDetailResponse,
@@ -139,7 +140,7 @@ function makeEvent(input: EventInput = {}): Record<string, unknown> {
   const transitionId = input.transitionId ?? "step-1";
   const occurredAt = input.occurredAt ?? "2026-08-27T10:00:00.000Z";
   return {
-    contractVersion: "1.0.0",
+    contractVersion: LEDGER_CONTRACT_VERSION,
     eventId: randomUUID(),
     taskId,
     attempt,
@@ -287,7 +288,7 @@ describe("usage", () => {
     expect(result.exitCode).toBe(EXIT_OK);
     expect(json(result)).toEqual({
       apiContractVersion: "0.1.0",
-      ledgerContractVersion: "1.0.0",
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });
   });

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { buildIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
 
 import { OBSERVATION_KINDS, observationRootPath } from "../../../src/roots/index.js";
 import { SCENARIO_MAX_EVENTS, collectScenario } from "../../../src/collect/scenario/index.js";
@@ -34,7 +34,7 @@ function makeEventRecord(overrides: Record<string, unknown> = {}): Record<string
   const attempt = 1;
   const transitionId = (overrides["transitionId"] as string | undefined) ?? "discover";
   return {
-    contractVersion: "1.0.0",
+    contractVersion: CONTRACT_VERSION,
     eventId: randomUUID(),
     taskId,
     attempt,

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { buildIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
 import type { ControlPlaneEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -24,7 +24,7 @@ function event(overrides: Record<string, unknown>): ControlPlaneEvent {
   const attempt = 1;
   const transitionId = (overrides["transitionId"] as string | undefined) ?? "step";
   return {
-    contractVersion: "1.0.0",
+    contractVersion: CONTRACT_VERSION,
     eventId: randomUUID(),
     taskId,
     attempt,

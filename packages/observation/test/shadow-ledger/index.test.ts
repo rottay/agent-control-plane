@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildIdempotencyKey, findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
+import {
+  CONTRACT_VERSION,
+  buildIdempotencyKey,
+  findCredentialViolations,
+  findTranscriptViolations,
+} from "@acp/contracts";
 import type { ControlPlaneEvent } from "@acp/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -83,7 +88,7 @@ function event(overrides: Record<string, unknown>): ControlPlaneEvent {
   const attempt = 1;
   const transitionId = (overrides["transitionId"] as string | undefined) ?? "step";
   return {
-    contractVersion: "1.0.0",
+    contractVersion: CONTRACT_VERSION,
     eventId: randomUUID(),
     taskId,
     attempt,

@@ -9,6 +9,7 @@ import {
   EventPageResponse,
   HealthResponse,
   IntegrityResult,
+  LEDGER_CONTRACT_VERSION,
   LedgerStatusResponse,
   OverviewResponse,
   PARITY_ROUTES,
@@ -87,7 +88,7 @@ function makeEvent(input: EventInput): Record<string, unknown> {
   const attempt = 1;
   const occurredAt = input.occurredAt ?? "2026-08-27T12:00:00.000Z";
   return {
-    contractVersion: "1.0.0",
+    contractVersion: LEDGER_CONTRACT_VERSION,
     eventId: randomUUID(),
     taskId: input.taskId,
     attempt,

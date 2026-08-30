@@ -1072,6 +1072,48 @@ const P7C_WRITE_SET = [
 const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architecture.mjs"];
 
 /**
+ * P7I: initiative contracts and the versioned roadmap.
+ *
+ * P7I-0 opens the phase and is P7I-1's precondition: it moves
+ * `CONTRACT_VERSION` to `2.0.0` and, in the same packet, replaces every
+ * hardcoded `"1.0.0"` in a fixture with the imported constant, so the next
+ * bump is genuinely mechanical. The split is causal rather than cosmetic --
+ * the bump and the schema additions are different units of change, and each
+ * packet leaves a green tree.
+ *
+ * The de-hardcoding is the packet's real content. A literal that *means*
+ * `CONTRACT_VERSION` but does not *reference* it is invisible to typecheck:
+ * these fixtures build `Record<string, unknown>` values, or spread an
+ * `overrides` of that type, so the literal is erased before `.parse()` ever
+ * sees it. That is why P7I-1's first attempt stopped -- `tsc` reported zero
+ * errors while 125 tests would have failed -- and why, for a contract-shape
+ * change, the **full test suite** is the completeness proof and typecheck is
+ * not. Two packages reach the constant through `@acp/api-contracts`'s
+ * `LEDGER_CONTRACT_VERSION` re-export rather than directly: `packages/cli` and
+ * `packages/server` may not depend on `@acp/contracts` under the P1B
+ * dependency law, and the re-export exists for exactly this.
+ *
+ * P7I is therefore **10 packet entries across 10 distinct paths** so far --
+ * P7I-0 is the only array in the phase and repeats nothing within it. This
+ * file is named once here; its appearances in earlier phases are counted in
+ * those phases, since the standing convention scopes the arithmetic to the
+ * phase. P7I-1 declares its own array after `...P7I0_WRITE_SET` when it
+ * lands, and the arithmetic is recomputed then.
+ */
+const P7I0_WRITE_SET = [
+  "packages/contracts/src/schemas/index.ts",
+  "packages/ledger/test/ledger/index.test.ts",
+  "packages/cli/test/cli/index.test.ts",
+  "packages/server/test/build-server/index.test.ts",
+  "packages/server/test/parity/index.test.ts",
+  "packages/observation/test/shadow-ledger/index.test.ts",
+  "packages/observation/test/collect/scenario/index.test.ts",
+  "packages/observation/test/collect/artifact/index.test.ts",
+  "packages/observation/test/baseline/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P5N cohort C1: contracts, the first tree normalized under the mirrored
  * topology.
  *
@@ -1302,6 +1344,7 @@ const WRITE_SET = [
   ...P7B_WRITE_SET,
   ...P7C_WRITE_SET,
   ...P7E_WRITE_SET,
+  ...P7I0_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,

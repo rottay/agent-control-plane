@@ -16,7 +16,7 @@ import { z } from "zod";
  *    the next safe action, never by replaying a provider conversation.
  */
 
-export const CONTRACT_VERSION = "1.0.0" as const;
+export const CONTRACT_VERSION = "2.0.0" as const;
 
 /** Serialized byte budget for a single Checkpoint. */
 export const CHECKPOINT_MAX_BYTES = 16_384;
