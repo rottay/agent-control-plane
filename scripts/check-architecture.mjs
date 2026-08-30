@@ -959,11 +959,15 @@ const P6F_WRITE_SET = [
  * mechanical writer packet: the eleven-step writer plan
  * (`LOCAL_COMMIT_WITH_RECEIPT`) over a toy repository this drill genuinely
  * writes to, with a real local commit and reconciliation against the
- * receipt -- the first end-to-end evidence for the commit path. P7 is
- * therefore **30 packet entries across 27 distinct paths**: 19 (P7P) + 3
- * (P7A) + 5 (P7B) + 3 (P7C) = 30 entries; the repeat is
- * `scripts/check-architecture.mjs` itself (P7P, P7A, P7B, P7C), so
- * 30 - 1 - 1 - 1 = 27 distinct paths. P7A's other two paths --
+ * receipt -- the first end-to-end evidence for the commit path. P7E is the
+ * closure: the roadmap status line, the root README's status sentence and
+ * this file. P7 is therefore **33 packet entries across 28 distinct paths**:
+ * 19 (P7P) + 3 (P7A) + 5 (P7B) + 3 (P7C) + 3 (P7E) = 33 entries. Two paths
+ * repeat: `scripts/check-architecture.mjs` itself, named by all five packets
+ * (P7P, P7A, P7B, P7C, P7E), contributing 4 duplicate entries, and
+ * `docs/ROADMAP.md`, named by P7P -- which moved the roadmap when it opened
+ * the phase -- and again by P7E, contributing 1. So 33 - 4 - 1 = 28 distinct
+ * paths. P7A's other two paths --
  * `packages/runtime/test/pilots/index.test.ts` and
  * `packages/runtime/test/pilots/helpers/index.ts` -- are new to the phase.
  * P7B's other four paths -- `packages/runtime/test/pilots/recovery/index.test.ts`,
@@ -972,7 +976,8 @@ const P6F_WRITE_SET = [
  * `packages/accounts/test/pilots/helpers/index.ts` -- are new to the phase.
  * P7C's other two paths -- `packages/runtime/test/pilots/writer/index.test.ts`
  * and `packages/runtime/test/pilots/writer/helpers/index.ts` -- are new to
- * the phase.
+ * the phase. Of P7E's other two, only `README.md` is new to the phase;
+ * `docs/ROADMAP.md` is the second repeat named above.
  *
  * The plan is selected at the driver boundary, which is why the set reaches
  * into `@acp/daemon`: the two places that construct a driver must now say which
@@ -1055,6 +1060,16 @@ const P7C_WRITE_SET = [
   "packages/runtime/test/pilots/writer/helpers/index.ts",
   "scripts/check-architecture.mjs",
 ];
+
+/**
+ * P7E: closure. The status line moves here and nowhere else.
+ *
+ * The phase's own documents only: the roadmap's Estado line and its `P7
+ * completo` annotation, the root README's status sentence, and this file --
+ * the roadmap re-pin, the status literal, this array and the README status
+ * text the closure retires. No package is touched, and no test changes.
+ */
+const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architecture.mjs"];
 
 /**
  * P5N cohort C1: contracts, the first tree normalized under the mirrored
@@ -1286,6 +1301,7 @@ const WRITE_SET = [
   ...P7A_WRITE_SET,
   ...P7B_WRITE_SET,
   ...P7C_WRITE_SET,
+  ...P7E_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -1314,33 +1330,37 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "feaa62ad69afe8d3fa5ada81999cd69475559a2b3a6cf14f38932ec8d5b6616e";
+  "0afbc857399fd8636fbff8b4d3616440b67d4f54eaf15465002033d54dab79a0";
 
 /**
- * The Estado line P6 closure is allowed to have produced.
+ * The Estado line P7 closure is allowed to have produced.
  *
- * P6 is complete on its committed commits and the independently verified
- * receipts behind them: the writer-enforcement core with leases, write-set
- * conformance and prestate verification (P6A), the conflict graph that is the
- * admission gate before acquire (P6B), and commit authorization with
- * quarantine (P6C). The literal is exact, and because it still does not
- * contain P1_INCOMPLETE it also keeps the lane envelope closed.
+ * P7 is complete on its committed commits and the independently verified
+ * receipts behind them: the commit-policy-aware lifecycle plan that gives a
+ * `NO_COMMIT` packet a lawful close (P7P), the read-only packet pilot over the
+ * real machinery (P7A), kill/restart 3/3 by real SIGKILL plus the account
+ * switch played as values over a real ledger (P7B), and the mechanical writer
+ * packet with a real local commit under a receipt (P7C). The literal is exact,
+ * and because it still does not contain P1_INCOMPLETE it also keeps the lane
+ * envelope closed.
  *
- * What P6 completion does NOT mean is worth stating where the claim is made.
- * Nothing in P6 acts on a real worktree. No production observer exists: the
- * read-only git port is a type, no implementation of it lives in the package,
- * and wiring one is a separately authorized packet. No lease was acquired over
- * a real worktree, no commit was authorized for a running system, no worktree
- * was quarantined, and nothing here ran git — every proof is a pure function
- * over injected values and scripted fakes. The enforcement decisions are made
- * and proven; nothing is enforcing. P7 opens as *next*, not as started.
+ * What P7 completion does NOT mean is worth stating where the claim is made.
+ * P7 is the first phase whose drills act — but only inside repositories they
+ * create and delete themselves. Every `git` invocation in the phase is aimed
+ * at an `mkdtemp` toy repository the drill owns; the one commit any packet
+ * makes is that toy's own, disposed with its directory; no product repository
+ * was read or written, no worktree outside a temp directory was touched, and
+ * nothing pushed — the toys carry zero remotes, the drills' spawned argv is
+ * proven free of `push`, the receipt type sets `pushAuthorized` false and the
+ * canonical pre-push hook still refuses unconditionally. The pilots prove the
+ * machinery; nothing is in service. P7I opens as *next*, not as started.
  *
- * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P6
+ * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P7
  * built is in service, and adoption happens once, after P8 certification and
  * under a separate P9 authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / NEXT_P7 / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / NEXT_P7I / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -1631,6 +1651,11 @@ const EXPIRED_LITERALS = {
     "P0, P1, P2 and P3 complete. Next: P4.",
     "P0, P1, P2, P3 and P4 complete. Next: P5.",
     "P0, P1, P2, P3, P4 and P5 complete. Next: P6.",
+    // Retired by the P7 closure, the same way every status sentence before it
+    // was: the claim was true while P7 was the next phase and false the moment
+    // the pilots landed. Pinned absent rather than merely rewritten, because a
+    // sentence that is only deleted can come back.
+    "P0, P1, P2, P3, P4, P5 and P6 complete. Next: P7.",
     // Falsified by the same commit that retires the status text above: P4
     // shipped three provider adapters. Pinned here rather than merely deleted,
     // because a sentence that is only removed can come back, and coming back

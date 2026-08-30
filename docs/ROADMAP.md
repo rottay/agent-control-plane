@@ -1,6 +1,6 @@
 # Rottay Agent Control Plane — roadmap canónico
 
-Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / NEXT_P7 / NO_PRODUCT_CUTOVER`
+Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / NEXT_P7I / NO_PRODUCT_CUTOVER`
 
 Fecha: 2026-08-27
 
@@ -421,6 +421,19 @@ Integrator: Opus. Auditor: Fable.
 - kill/restart y cambio de cuenta;
 - un packet mecánico writer con commit local y sin push;
 - cero participación de Modern Rescue durante todo P7 y P8.
+
+**P7 completo** (2026-08-30, HEAD `34d7680a`): los cuatro packets cerraron
+cada uno con verificación independiente, ACCEPT de Fable, receipt del DT y
+commit local — P7P (`6f2c0a85`), que hace el plan de lifecycle consciente
+de la commit policy y le da cierre lícito a un packet `NO_COMMIT`; P7A
+(`514b4953`), el piloto del packet read-only sobre la maquinaria real; P7B
+(`1ef4a91b`), kill/restart 3/3 con SIGKILL sobre un proceso hijo real más
+el cambio de cuenta ejecutado como valores sobre un ledger real; y P7C
+(`34d7680a`), el packet mecánico writer, con un commit local real en un
+repositorio de juguete bajo receipt y sin push jamás. Cero participación de
+Modern Rescue durante toda la fase. Nada de esto queda adoptado: la
+adopción ocurre una sola vez, tras la certificación P8 y bajo una
+autorización P9 separada.
 
 ### P7I — Contratos de iniciativa y roadmap versionado
 
