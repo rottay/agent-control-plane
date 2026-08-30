@@ -950,10 +950,13 @@ const P6F_WRITE_SET = [
  * P7: the read-only packet path.
  *
  * P7P opens the phase and is P7A's precondition: it makes the lifecycle plan
- * commit-policy-aware, so a `NO_COMMIT` packet has a lawful close. P7 is
- * therefore **19 packet entries across 19 distinct paths** so far -- P7P is the
- * only array in the phase and repeats nothing; P7A declares its own after
- * `...P7P_WRITE_SET` when it lands, and the arithmetic is recomputed then.
+ * commit-policy-aware, so a `NO_COMMIT` packet has a lawful close. P7A is the
+ * isolated pilot that walks the landed plan over the real machinery. P7 is
+ * therefore **22 packet entries across 21 distinct paths**: 19 (P7P) + 3
+ * (P7A) = 22 entries; the repeat is `scripts/check-architecture.mjs` itself
+ * (P7P, P7A), so 22 - 1 = 21 distinct paths. P7A's other two paths --
+ * `packages/runtime/test/pilots/index.test.ts` and
+ * `packages/runtime/test/pilots/helpers/index.ts` -- are new to the phase.
  *
  * The plan is selected at the driver boundary, which is why the set reaches
  * into `@acp/daemon`: the two places that construct a driver must now say which
@@ -981,6 +984,20 @@ const P7P_WRITE_SET = [
   "packages/daemon/src/mode-sqlite/index.ts",
   "packages/daemon/src/mode-restate/index.ts",
   "packages/daemon/test/drills/index.test.ts",
+];
+
+/**
+ * P7A: the isolated pilot.
+ *
+ * The read-only packet drill and its helpers -- the toy-repo builder, the
+ * test-tree `GitReadPort` implementation, ledger/supervisor wiring -- live
+ * under the mirror test domain, per the topology law. No production source
+ * changes: the pilot walks the plan P7P already landed.
+ */
+const P7A_WRITE_SET = [
+  "packages/runtime/test/pilots/index.test.ts",
+  "packages/runtime/test/pilots/helpers/index.ts",
+  "scripts/check-architecture.mjs",
 ];
 
 /**
@@ -1210,6 +1227,7 @@ const WRITE_SET = [
   ...P6E_WRITE_SET,
   ...P6F_WRITE_SET,
   ...P7P_WRITE_SET,
+  ...P7A_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
