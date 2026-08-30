@@ -65,6 +65,23 @@ under the frozen vocabulary is a STOP escalated to the DT, never a reason to
 widen the contract. The mapping and that law are in
 `docs/architecture/0009-shadow-observation-boundary.md`.
 
+## Token rollups
+
+`rollups/index.ts` folds the task stream into token totals per task and per
+initiative: `TOKEN_USAGE_RECORDED` accumulates, because spend is history, and
+`TOKEN_RESERVATION_RECORDED` supersedes, because a reservation is a hold that
+is current rather than a history that sums. An initiative is the sum of its
+tasks for both.
+
+It is pure, like the baseline: the caller pages the events and folds the
+task-to-initiative mapping out of the task projection, so nothing here opens a
+ledger — this module may not even name `@acp/ledger`, and it defines its own
+bounded value shapes rather than reaching for another package's. A task with no
+initiative folds into an explicit unscoped bucket instead of being dropped, and
+a payload the convention does not name is skipped and counted in
+`skippedMalformed`. This is a read model, not an authority: it may not refuse,
+and it may not lie by silence.
+
 ## The disposable shadow ledger
 
 `shadow-ledger.ts` is the package's **sole writer**, and the fence permits the

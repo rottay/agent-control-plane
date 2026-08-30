@@ -65,6 +65,21 @@ export {
   serializeBaseline,
 } from "./baseline/index.js";
 
+export type {
+  InitiativeTokenRollup,
+  TaskTokenRollup,
+  TokenRollupInput,
+  TokenRollups,
+} from "./rollups/index.js";
+export {
+  ROLLUP_ACCOUNT_ID_MAX_LENGTH,
+  ROLLUP_RESERVATION_TYPE,
+  ROLLUP_TOKENS_MAX,
+  ROLLUP_USAGE_TYPE,
+  UNSCOPED_INITIATIVE,
+  computeTokenRollups,
+} from "./rollups/index.js";
+
 export type { ShadowReceipt, ShadowRefusal, ShadowSnapshot } from "./shadow-ledger/index.js";
 export {
   SHADOW_LEDGER_DIRECTORY,

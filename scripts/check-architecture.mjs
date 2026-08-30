@@ -1109,14 +1109,18 @@ const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architectu
  * roadmap-version decision, placed beside the fold it consumes the way
  * `AUTHORIZATION_REFUSALS` sits beside its own module.
  *
- * P7I is therefore **28 packet entries across 24 distinct paths**: 10 (P7I-0)
- * + 8 (P7I-1) + 10 (P7I-2) = 28 entries. Three paths repeat:
- * `scripts/check-architecture.mjs` itself, named by all three packets,
- * contributing 2; `packages/contracts/src/schemas/index.ts`, named by P7I-0
+ * P7I-3 closes the phase's R4 obligation: the token rollups, a pure fold in
+ * the read-model plane over the two usage types P7I-1 added and the
+ * attribution P7I-2 landed.
+ *
+ * P7I is therefore **33 packet entries across 28 distinct paths**: 10 (P7I-0)
+ * + 8 (P7I-1) + 10 (P7I-2) + 5 (P7I-3) = 33 entries. Three paths repeat:
+ * `scripts/check-architecture.mjs` itself, named by all four packets,
+ * contributing 3; `packages/contracts/src/schemas/index.ts`, named by P7I-0
  * for the bump and by P7I-1 for the contracts, contributing 1; and
  * `packages/ledger/test/ledger/index.test.ts`, named by P7I-0 for the
  * de-hardcoding and by P7I-2 for the sibling stream's laws, contributing 1.
- * So 28 - 2 - 1 - 1 = 24 distinct paths. This file's appearances in earlier
+ * So 33 - 3 - 1 - 1 = 28 distinct paths. This file's appearances in earlier
  * phases are counted in those phases, since the standing convention scopes
  * the arithmetic to the phase.
  *
@@ -1156,6 +1160,25 @@ const P7I1_WRITE_SET = [
   "packages/runtime/test/pilots/helpers/index.ts",
   "packages/observation/src/baseline/index.ts",
   "packages/accounts/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P7I-3: the token rollups.
+ *
+ * A pure fold in the read-model plane, closing R4. It reads the two usage
+ * types the task stream gained in P7I-1 and the initiative attribution the
+ * task projection gained in P7I-2, and it adds no dependency to do it: the
+ * observation package's surface stays `@acp/contracts` + `@acp/ledger`, and
+ * this module names neither a ledger nor an accounts type. Its entry in this
+ * file also re-pins the package's closed export surface, which is checked by
+ * equality in both directions.
+ */
+const P7I3_WRITE_SET = [
+  "packages/observation/src/rollups/index.ts",
+  "packages/observation/src/index.ts",
+  "packages/observation/test/rollups/index.test.ts",
+  "packages/observation/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1414,6 +1437,7 @@ const WRITE_SET = [
   ...P7I0_WRITE_SET,
   ...P7I1_WRITE_SET,
   ...P7I2_WRITE_SET,
+  ...P7I3_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -3585,6 +3609,19 @@ const OBSERVATION_PUBLIC_EXPORTS = [
   "ShadowLedgerError",
   "buildShadowLedger",
   "shadowLedgerDirectory",
+  // P7I-3: the token rollups. A pure fold over the task stream, with its own
+  // bounded value shapes -- no accounts edge, and no ledger import outside the
+  // one site that is allowed one.
+  "InitiativeTokenRollup",
+  "TaskTokenRollup",
+  "TokenRollupInput",
+  "TokenRollups",
+  "ROLLUP_ACCOUNT_ID_MAX_LENGTH",
+  "ROLLUP_RESERVATION_TYPE",
+  "ROLLUP_TOKENS_MAX",
+  "ROLLUP_USAGE_TYPE",
+  "UNSCOPED_INITIATIVE",
+  "computeTokenRollups",
 ];
 
 const observationIndex = readIfPresent("packages/observation/src/index.ts");
