@@ -1093,12 +1093,26 @@ const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architectu
  * `packages/server` may not depend on `@acp/contracts` under the P1B
  * dependency law, and the re-export exists for exactly this.
  *
- * P7I is therefore **10 packet entries across 10 distinct paths** so far --
- * P7I-0 is the only array in the phase and repeats nothing within it. This
- * file is named once here; its appearances in earlier phases are counted in
- * those phases, since the standing convention scopes the arithmetic to the
- * phase. P7I-1 declares its own array after `...P7I0_WRITE_SET` when it
- * lands, and the arithmetic is recomputed then.
+ * P7I-1 is the contracts themselves, on top of the landed bump: `Initiative`,
+ * `RoadmapVersion`, the `InitiativeEvent` sibling stream and its three-name
+ * vocabulary, the sibling idempotency builder, the task stream's two usage
+ * types, and `TaskEnvelope.initiativeId` -- with the fixture adaptation the
+ * required field forces, and the two sentences this phase falsifies: the
+ * observation baseline's event-type count (21 becomes 23 here) and the
+ * accounts README's version example (falsified by P7I-0, swept here on the
+ * rule that the packet which falsifies a sentence fixes it).
+ *
+ * P7I is therefore **18 packet entries across 16 distinct paths**: 10 (P7I-0)
+ * + 8 (P7I-1) = 18 entries; the repeat is `scripts/check-architecture.mjs`
+ * itself (P7I-0, P7I-1), contributing 1, and
+ * `packages/contracts/src/schemas/index.ts`, named by P7I-0 for the bump and
+ * by P7I-1 for the contracts, contributing 1. So 18 - 1 - 1 = 16 distinct
+ * paths. This file's appearances in earlier phases are counted in those
+ * phases, since the standing convention scopes the arithmetic to the phase.
+ *
+ * No refusal vocabulary lands here: the roadmap-version decision is placed
+ * beside the fold it consumes, in `packages/ledger` (P7I-2), the way
+ * `AUTHORIZATION_REFUSALS` sits beside its own module.
  */
 const P7I0_WRITE_SET = [
   "packages/contracts/src/schemas/index.ts",
@@ -1110,6 +1124,26 @@ const P7I0_WRITE_SET = [
   "packages/observation/test/collect/scenario/index.test.ts",
   "packages/observation/test/collect/artifact/index.test.ts",
   "packages/observation/test/baseline/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P7I-1: the initiative contracts.
+ *
+ * The contracts package and the fixtures the required `initiativeId` forces,
+ * plus the two stale sentences this phase falsifies. Nothing outside
+ * `packages/contracts` changes in substance: the runtime and observation
+ * entries are a fixture factory, a pilot helper's fixed initiative id and one
+ * comment line, and the accounts entry is one line of a JSON example.
+ */
+const P7I1_WRITE_SET = [
+  "packages/contracts/src/schemas/index.ts",
+  "packages/contracts/src/index.ts",
+  "packages/contracts/test/schemas/index.test.ts",
+  "packages/runtime/test/conflict-graph/index.test.ts",
+  "packages/runtime/test/pilots/helpers/index.ts",
+  "packages/observation/src/baseline/index.ts",
+  "packages/accounts/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1345,6 +1379,7 @@ const WRITE_SET = [
   ...P7C_WRITE_SET,
   ...P7E_WRITE_SET,
   ...P7I0_WRITE_SET,
+  ...P7I1_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,

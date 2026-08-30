@@ -9,6 +9,7 @@ import {
   AccountRecord,
   CHECKPOINT_MAX_BYTES,
   CONTRACT_VERSION,
+  CONTROL_PLANE_EVENT_TYPES,
   Checkpoint,
   CommitAuthorizationReceipt,
   ControlPlaneEvent,
@@ -19,8 +20,14 @@ import {
   DriverStatus,
   EVENT_PAYLOAD_MAX_BYTES,
   EXCEPTIONAL_STATES,
+  INITIATIVE_EVENT_TYPES,
+  INITIATIVE_STATUSES,
+  Initiative,
+  InitiativeEvent,
   LIFECYCLE_STATES,
+  ROADMAP_VERSION_KINDS,
   RECONCILIATION_VERDICTS,
+  RoadmapVersion,
   RESUMABLE_VERDICTS,
   ReconciliationReport,
   ReconciliationVerdict,
@@ -29,6 +36,7 @@ import {
   WorkerIdentityString,
   WorkerSlot,
   buildIdempotencyKey,
+  buildInitiativeIdempotencyKey,
   findCredentialViolations,
   findTranscriptViolations,
   formatWorkerIdentity,
@@ -43,6 +51,8 @@ import {
 // ---------------------------------------------------------------------------
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";
+const INITIATIVE_ID = "44444444-4444-4444-8444-444444444444";
+const OTHER_INITIATIVE_ID = "55555555-5555-4555-8555-555555555555";
 const OTHER_ID = "22222222-2222-4222-8222-222222222222";
 const THIRD_ID = "33333333-3333-4333-8333-333333333333";
 const AT = "2026-08-27T12:00:00.000Z";
@@ -58,6 +68,7 @@ function envelope(overrides: Record<string, unknown> = {}): unknown {
   return {
     contractVersion: CONTRACT_VERSION,
     taskId: TASK_ID,
+    initiativeId: INITIATIVE_ID,
     title: "P0 bootstrap",
     objective: "Freeze the runtime contracts and the mechanical git fence.",
     classification: "ARCHITECTURAL",
@@ -1048,5 +1059,302 @@ describe("ReconciliationReport", () => {
   it("survives a JSON round trip unchanged", () => {
     const parsed = ReconciliationReport.parse(reconciliation());
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Initiatives and the versioned roadmap
+// ---------------------------------------------------------------------------
+
+function initiative(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    initiativeId: INITIATIVE_ID,
+    slug: "agent-control-plane",
+    title: "Agent Control Plane",
+    objective: "Coordinate coding agents across providers, accounts and quotas.",
+    status: "ACTIVE",
+    createdAt: AT,
+    ...overrides,
+  };
+}
+
+function roadmapVersion(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    roadmapVersionId: OTHER_ID,
+    initiativeId: INITIATIVE_ID,
+    version: 1,
+    contentDigest: SHA256,
+    parentVersionId: null,
+    expectedHeadDigest: null,
+    kind: "EDIT",
+    restoresVersionId: null,
+    recordedBy: AUTHORITY,
+    recordedAt: AT,
+    ...overrides,
+  };
+}
+
+function initiativeEvent(overrides: Record<string, unknown> = {}): unknown {
+  const transitionId = (overrides["transitionId"] as string | undefined) ?? "initiative.registered";
+  const initiativeId = (overrides["initiativeId"] as string | undefined) ?? INITIATIVE_ID;
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: THIRD_ID,
+    initiativeId,
+    transitionId,
+    idempotencyKey: buildInitiativeIdempotencyKey({ initiativeId, transitionId }),
+    type: "INITIATIVE_REGISTERED",
+    fromStatus: null,
+    toStatus: "ACTIVE",
+    emittedBy: AUTHORITY,
+    occurredAt: AT,
+    recordedAt: AT,
+    payload: {},
+    ...overrides,
+  };
+}
+
+describe("Initiative", () => {
+  it("accepts a well formed initiative and survives a JSON round trip", () => {
+    const parsed = Initiative.parse(initiative());
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
+  });
+
+  it("closes its status vocabulary at four names", () => {
+    expect([...INITIATIVE_STATUSES]).toEqual(["ACTIVE", "PAUSED", "COMPLETED", "ARCHIVED"]);
+    for (const status of INITIATIVE_STATUSES) {
+      expect(Initiative.safeParse(initiative({ status })).success).toBe(true);
+    }
+    expect(Initiative.safeParse(initiative({ status: "DELETED" })).success).toBe(false);
+  });
+
+  it("requires a lowercase kebab-case slug", () => {
+    expect(Initiative.safeParse(initiative({ slug: "Agent-Control-Plane" })).success).toBe(false);
+    expect(Initiative.safeParse(initiative({ slug: "-leading-dash" })).success).toBe(false);
+    expect(Initiative.safeParse(initiative({ slug: "has space" })).success).toBe(false);
+  });
+
+  it("rejects unknown keys and credential shaped fields", () => {
+    expect(Initiative.safeParse(initiative({ owner: "someone" })).success).toBe(false);
+    expect(Initiative.safeParse(initiative({ token: "x" })).success).toBe(false);
+  });
+});
+
+describe("RoadmapVersion", () => {
+  it("accepts the bootstrap version and survives a JSON round trip", () => {
+    const parsed = RoadmapVersion.parse(roadmapVersion());
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
+  });
+
+  it("accepts a successor that names its parent and the head it expected", () => {
+    const parsed = RoadmapVersion.safeParse(
+      roadmapVersion({ version: 2, parentVersionId: OTHER_ID, expectedHeadDigest: SHA256 }),
+    );
+    expect(parsed.success).toBe(true);
+  });
+
+  it("binds parentVersionId to the bootstrap in both directions", () => {
+    // A later version may not claim it has no parent.
+    expect(
+      RoadmapVersion.safeParse(
+        roadmapVersion({ version: 2, parentVersionId: null, expectedHeadDigest: SHA256 }),
+      ).success,
+    ).toBe(false);
+    // Version 1 may not claim one either: there is nothing to be a parent.
+    expect(
+      RoadmapVersion.safeParse(roadmapVersion({ parentVersionId: OTHER_ID })).success,
+    ).toBe(false);
+  });
+
+  it("binds expectedHeadDigest to the bootstrap in both directions", () => {
+    // A null head claim on a later version is unconditional overwrite.
+    expect(
+      RoadmapVersion.safeParse(
+        roadmapVersion({ version: 2, parentVersionId: OTHER_ID, expectedHeadDigest: null }),
+      ).success,
+    ).toBe(false);
+    // Version 1 had no head to expect.
+    expect(RoadmapVersion.safeParse(roadmapVersion({ expectedHeadDigest: SHA256 })).success).toBe(
+      false,
+    );
+  });
+
+  it("binds restoresVersionId to the kind in both directions", () => {
+    expect([...ROADMAP_VERSION_KINDS]).toEqual(["EDIT", "ROLLBACK"]);
+    expect(RoadmapVersion.safeParse(roadmapVersion({ restoresVersionId: THIRD_ID })).success).toBe(
+      false,
+    );
+    expect(RoadmapVersion.safeParse(roadmapVersion({ kind: "ROLLBACK" })).success).toBe(false);
+    expect(
+      RoadmapVersion.safeParse(roadmapVersion({ kind: "ROLLBACK", restoresVersionId: THIRD_ID }))
+        .success,
+    ).toBe(true);
+  });
+
+  it("carries a digest, never the roadmap's bytes", () => {
+    expect(RoadmapVersion.safeParse(roadmapVersion({ contentDigest: "not a digest" })).success).toBe(
+      false,
+    );
+    expect(RoadmapVersion.safeParse(roadmapVersion({ content: "# roadmap" })).success).toBe(false);
+  });
+
+  it("rejects a non positive version", () => {
+    expect(RoadmapVersion.safeParse(roadmapVersion({ version: 0 })).success).toBe(false);
+  });
+});
+
+describe("InitiativeEvent", () => {
+  it("accepts a registration and survives a JSON round trip", () => {
+    const parsed = InitiativeEvent.parse(initiativeEvent());
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
+  });
+
+  it("closes its vocabulary at the three initiative facts", () => {
+    expect([...INITIATIVE_EVENT_TYPES]).toEqual([
+      "INITIATIVE_REGISTERED",
+      "INITIATIVE_STATE_CHANGED",
+      "ROADMAP_VERSION_RECORDED",
+    ]);
+    expect(InitiativeEvent.safeParse(initiativeEvent({ type: "TASK_DISCOVERED" })).success).toBe(
+      false,
+    );
+  });
+
+  it("derives the key from initiativeId and transitionId, with no attempt", () => {
+    expect(
+      buildInitiativeIdempotencyKey({
+        initiativeId: INITIATIVE_ID,
+        transitionId: "initiative.registered",
+      }),
+    ).toBe(INITIATIVE_ID + "/1/initiative.registered");
+  });
+
+  it("rejects an event whose key disagrees with its coordinates", () => {
+    expect(
+      InitiativeEvent.safeParse(
+        initiativeEvent({ idempotencyKey: INITIATIVE_ID + "/2/initiative.registered" }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("binds a null fromStatus to registration in both directions", () => {
+    // Only a registration has no prior status.
+    expect(
+      InitiativeEvent.safeParse(
+        initiativeEvent({
+          type: "INITIATIVE_STATE_CHANGED",
+          transitionId: "initiative.paused",
+          idempotencyKey: INITIATIVE_ID + "/1/initiative.paused",
+          fromStatus: null,
+          toStatus: "PAUSED",
+        }),
+      ).success,
+    ).toBe(false);
+    // And a registration may not claim one.
+    expect(
+      InitiativeEvent.safeParse(initiativeEvent({ fromStatus: "ACTIVE" })).success,
+    ).toBe(false);
+  });
+
+  it("requires a status change to change status, and a recording not to", () => {
+    const changed = (overrides: Record<string, unknown>): unknown =>
+      initiativeEvent({
+        transitionId: "initiative.paused",
+        idempotencyKey: INITIATIVE_ID + "/1/initiative.paused",
+        ...overrides,
+      });
+    expect(
+      InitiativeEvent.safeParse(
+        changed({ type: "INITIATIVE_STATE_CHANGED", fromStatus: "ACTIVE", toStatus: "ACTIVE" }),
+      ).success,
+    ).toBe(false);
+    expect(
+      InitiativeEvent.safeParse(
+        changed({ type: "INITIATIVE_STATE_CHANGED", fromStatus: "ACTIVE", toStatus: "PAUSED" }),
+      ).success,
+    ).toBe(true);
+    expect(
+      InitiativeEvent.safeParse(
+        changed({ type: "ROADMAP_VERSION_RECORDED", fromStatus: "ACTIVE", toStatus: "PAUSED" }),
+      ).success,
+    ).toBe(false);
+    expect(
+      InitiativeEvent.safeParse(
+        changed({ type: "ROADMAP_VERSION_RECORDED", fromStatus: "ACTIVE", toStatus: "ACTIVE" }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("refuses credential material and transcript continuity in its payload", () => {
+    expect(
+      InitiativeEvent.safeParse(initiativeEvent({ payload: { token: "x" } })).success,
+    ).toBe(false);
+    expect(
+      InitiativeEvent.safeParse(initiativeEvent({ payload: { transcript: "x" } })).success,
+    ).toBe(false);
+  });
+
+  it("bounds its payload by the same budget as the task stream", () => {
+    const oversized = { blob: "x".repeat(EVENT_PAYLOAD_MAX_BYTES) };
+    expect(InitiativeEvent.safeParse(initiativeEvent({ payload: oversized })).success).toBe(false);
+  });
+
+  it("keeps the two streams apart: no taskId, no toState", () => {
+    expect(InitiativeEvent.safeParse(initiativeEvent({ taskId: TASK_ID })).success).toBe(false);
+    expect(InitiativeEvent.safeParse(initiativeEvent({ toState: "RUNNING" })).success).toBe(false);
+  });
+});
+
+describe("the task stream's usage attribution", () => {
+  it("declares both usage types", () => {
+    const types: readonly string[] = CONTROL_PLANE_EVENT_TYPES;
+    expect(types).toContain("TOKEN_USAGE_RECORDED");
+    expect(types).toContain("TOKEN_RESERVATION_RECORDED");
+  });
+
+  it("accepts an accountId/tokens payload as a same-state passthrough", () => {
+    for (const type of ["TOKEN_USAGE_RECORDED", "TOKEN_RESERVATION_RECORDED"] as const) {
+      const parsed = ControlPlaneEvent.safeParse(
+        event({
+          type,
+          fromState: "RUNNING",
+          toState: "RUNNING",
+          payload: { accountId: "acct-a", tokens: 1_200 },
+        }),
+      );
+      expect({ type, ok: parsed.success }).toEqual({ type, ok: true });
+    }
+  });
+
+  it("would refuse the singular token key, which is why the payload says tokens", () => {
+    const parsed = ControlPlaneEvent.safeParse(
+      event({
+        type: "TOKEN_USAGE_RECORDED",
+        fromState: "RUNNING",
+        toState: "RUNNING",
+        payload: { accountId: "acct-a", token: 1_200 },
+      }),
+    );
+    expect(parsed.success).toBe(false);
+  });
+});
+
+describe("TaskEnvelope initiative scoping", () => {
+  it("requires an initiativeId", () => {
+    const withoutInitiative = Object.fromEntries(
+      Object.entries(envelope() as Record<string, unknown>).filter(
+        ([key]) => key !== "initiativeId",
+      ),
+    );
+    expect(TaskEnvelope.safeParse(withoutInitiative).success).toBe(false);
+  });
+
+  it("requires it to be a uuid, and keeps it distinct from the task", () => {
+    expect(TaskEnvelope.safeParse(envelope({ initiativeId: "not-a-uuid" })).success).toBe(false);
+    const parsed = TaskEnvelope.parse(envelope({ initiativeId: OTHER_INITIATIVE_ID }));
+    expect(parsed.initiativeId).toBe(OTHER_INITIATIVE_ID);
+    expect(parsed.initiativeId).not.toBe(parsed.taskId);
   });
 });

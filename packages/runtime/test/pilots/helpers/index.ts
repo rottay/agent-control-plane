@@ -181,11 +181,21 @@ export interface PilotEnvelopeInput {
   readonly commitPolicy: CommitPolicy;
 }
 
+/**
+ * The initiative every pilot packet is scoped to.
+ *
+ * Fixed rather than generated, and filled here rather than at the call sites,
+ * so the drills keep asserting what they were written to assert: the envelope
+ * gained a required field, and no pilot's subject is the scoping itself.
+ */
+const PILOT_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
 /** A minimal, real `TaskEnvelope`. Parsed, never assembled by cast. */
 export function pilotEnvelope(input: PilotEnvelopeInput): TaskEnvelopeShape {
   return TaskEnvelope.parse({
     contractVersion: CONTRACT_VERSION,
     taskId: input.taskId,
+    initiativeId: PILOT_INITIATIVE_ID,
     title: "P7A pilot: read-only packet",
     objective: "walk a NO_COMMIT packet over the real machinery and prove the fence",
     classification: "MECHANICAL",

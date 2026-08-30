@@ -453,6 +453,15 @@ export const TaskEnvelope = z
   .strictObject({
     contractVersion: ContractVersion,
     taskId: Uuid,
+    /**
+     * The initiative this packet belongs to. Required, and the only place the
+     * attribution lives: leases bind worktrees, worktrees serve tasks, events
+     * carry taskId, so scoping through the task is the one shape that cannot
+     * hold two disagreeing copies of the same fact. Isolation here means no
+     * data bleed between initiatives — admission and quota stay global, so two
+     * initiatives declaring the same conflict key still conflict.
+     */
+    initiativeId: Uuid,
     title: z.string().min(1).max(200),
     objective: z.string().min(1).max(4_000),
     classification: TaskClassification,
@@ -723,6 +732,14 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   "LEASE_REVOKED",
   "WRITE_SET_VIOLATION_DETECTED",
   "QUOTA_WARNING",
+  // Usage attribution. Both are task facts, so they belong to the task stream
+  // and are same-state passthroughs: recording what a task spent, or what was
+  // reserved for it, moves no lifecycle state. The payload is
+  // `{accountId, tokens}` on the WorkerSlot bounds for both — the reservation
+  // variant mirrors the usage shape rather than inventing a second one. In P7I
+  // only tests append these; the runtime's own emission is a later packet.
+  "TOKEN_USAGE_RECORDED",
+  "TOKEN_RESERVATION_RECORDED",
   "ACCOUNT_SWITCH_STARTED",
   "ACCOUNT_SWITCH_COMPLETED",
   "AUTH_REQUIRED_RAISED",
@@ -1224,3 +1241,244 @@ export const ReconciliationReport = z
     }
   });
 export type ReconciliationReport = z.infer<typeof ReconciliationReport>;
+
+// ---------------------------------------------------------------------------
+// Initiatives and the versioned roadmap
+// ---------------------------------------------------------------------------
+
+/**
+ * The lifecycle of an initiative, closed like every other vocabulary here.
+ *
+ * An initiative is the unit of work a task is scoped to. The ACP's own roadmap
+ * is one of these, registered like any other — a reserved, well-known
+ * initiative rather than a special case in the schema.
+ */
+export const INITIATIVE_STATUSES = ["ACTIVE", "PAUSED", "COMPLETED", "ARCHIVED"] as const;
+
+export const InitiativeStatus = z.enum(INITIATIVE_STATUSES);
+export type InitiativeStatus = z.infer<typeof InitiativeStatus>;
+
+/**
+ * A stable, human-readable handle. Lowercase so two initiatives cannot differ
+ * only by case, and bounded like every other identifier in this file.
+ */
+const InitiativeSlug = z
+  .string()
+  .min(1)
+  .max(80)
+  .regex(/^[a-z0-9][a-z0-9-]*$/, "expected a lowercase kebab-case slug");
+
+export const Initiative = z
+  .strictObject({
+    contractVersion: ContractVersion,
+    initiativeId: Uuid,
+    slug: InitiativeSlug,
+    title: z.string().min(1).max(200),
+    objective: z.string().min(1).max(4_000),
+    status: InitiativeStatus,
+    createdAt: Timestamp,
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: false });
+  });
+export type Initiative = z.infer<typeof Initiative>;
+
+export const ROADMAP_VERSION_KINDS = ["EDIT", "ROLLBACK"] as const;
+
+export const RoadmapVersionKind = z.enum(ROADMAP_VERSION_KINDS);
+export type RoadmapVersionKind = z.infer<typeof RoadmapVersionKind>;
+
+/**
+ * One immutable version of an initiative's roadmap.
+ *
+ * `contentDigest` is a digest and nothing else. The bytes it names live
+ * outside the ledger, reached by artifact reference: the Checkpoint law is
+ * that a record carries digests and references rather than content, and the
+ * event payload budget makes roadmap bytes unstorable in an event anyway.
+ *
+ * A rollback is a new version, never a rewrite of history — `kind:
+ * "ROLLBACK"` with `restoresVersionId` naming the version whose bytes are
+ * being restored. Append-only holds all the way down.
+ *
+ * What this schema enforces is what a single value can prove about itself:
+ * the bootstrap exceptions and the kind/restore coherence. The laws that need
+ * the folded head — that `version` is the head's successor, that
+ * `parentVersionId` is the head's id, that a rollback's digest equals the
+ * digest of the version it restores, and the refusal vocabulary that names
+ * each failure — belong to the decision module beside the fold, not here.
+ */
+export const RoadmapVersion = z
+  .strictObject({
+    contractVersion: ContractVersion,
+    roadmapVersionId: Uuid,
+    initiativeId: Uuid,
+    version: z.number().int().positive().max(1_000_000),
+    /** sha256 of the canonical roadmap bytes. Digest only, never content. */
+    contentDigest: Sha256Hex,
+    /** The version this one succeeds. Null exactly at the bootstrap. */
+    parentVersionId: Uuid.nullable(),
+    /** The head the writer believed it was appending to. Null at the bootstrap. */
+    expectedHeadDigest: Sha256Hex.nullable(),
+    kind: RoadmapVersionKind,
+    /** The version a rollback restores. Null exactly when the kind is EDIT. */
+    restoresVersionId: Uuid.nullable(),
+    recordedBy: WorkerIdentityString,
+    recordedAt: Timestamp,
+  })
+  .superRefine((value, ctx) => {
+    // The bootstrap exception is a biconditional in both directions. Version 1
+    // has no predecessor, so a parent or a head claim there is a lie; every
+    // later version has one, and a null claim there is unconditional-overwrite
+    // semantics wearing a bootstrap's clothes.
+    if ((value.parentVersionId === null) !== (value.version === 1)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "parentVersionId must be null for version 1 and set for every later version",
+        path: ["parentVersionId"],
+      });
+    }
+
+    if ((value.expectedHeadDigest === null) !== (value.version === 1)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "expectedHeadDigest must be null for version 1 and set for every later version",
+        path: ["expectedHeadDigest"],
+      });
+    }
+
+    if ((value.restoresVersionId === null) !== (value.kind === "EDIT")) {
+      ctx.addIssue({
+        code: "custom",
+        message: "restoresVersionId must be null for an EDIT and set for a ROLLBACK",
+        path: ["restoresVersionId"],
+      });
+    }
+  });
+export type RoadmapVersion = z.infer<typeof RoadmapVersion>;
+
+/**
+ * The initiative stream's vocabulary, closed at three names.
+ *
+ * `ROADMAP_VERSION_RECORDED` **is** the receipt for a recorded version, the
+ * way `COMMIT_RECORDED` is the receipt for a commit. A separate receipt type
+ * would record the same fact twice.
+ */
+export const INITIATIVE_EVENT_TYPES = [
+  "INITIATIVE_REGISTERED",
+  "INITIATIVE_STATE_CHANGED",
+  "ROADMAP_VERSION_RECORDED",
+] as const;
+
+export const InitiativeEventType = z.enum(INITIATIVE_EVENT_TYPES);
+export type InitiativeEventType = z.infer<typeof InitiativeEventType>;
+
+/**
+ * The idempotency coordinates of an initiative-stream append.
+ *
+ * There is no attempt number: a registration is not retried the way a task
+ * step is, so the key fixes the attempt segment at 1 rather than carrying a
+ * counter nothing would increment. The coordinates are their own type rather
+ * than reusing the task's, because putting an initiative id in a field named
+ * `taskId` would make the name lie.
+ */
+export const InitiativeIdempotencyCoordinates = z.strictObject({
+  initiativeId: Uuid,
+  transitionId: z.string().min(1).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+});
+export type InitiativeIdempotencyCoordinates = z.infer<typeof InitiativeIdempotencyCoordinates>;
+
+export function buildInitiativeIdempotencyKey(
+  coordinates: InitiativeIdempotencyCoordinates,
+): string {
+  return coordinates.initiativeId + "/1/" + coordinates.transitionId;
+}
+
+/**
+ * An event in the initiative stream — a sibling of `ControlPlaneEvent`, under
+ * the same laws, in the same ledger, on its own chain.
+ *
+ * It is a separate contract rather than three more names in the task
+ * vocabulary because an initiative registration has no task and no
+ * `TaskState`, and the task stream's storage requires both. Forcing it in
+ * would mean either a column that cannot be null being null, or an
+ * initiative id living in a field named `taskId`.
+ */
+export const InitiativeEvent = z
+  .strictObject({
+    contractVersion: ContractVersion,
+    eventId: Uuid,
+
+    initiativeId: Uuid,
+    transitionId: z.string().min(1).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+    /** Must equal initiativeId/1/transitionId. The ledger uniques on this. */
+    idempotencyKey: z.string().min(1).max(300),
+
+    type: InitiativeEventType,
+    fromStatus: InitiativeStatus.nullable(),
+    toStatus: InitiativeStatus,
+
+    emittedBy: WorkerIdentityString,
+    occurredAt: Timestamp,
+    recordedAt: Timestamp,
+
+    /** Bounded structured payload. Never a provider transcript. */
+    payload: z.record(z.string().max(80), z.unknown()),
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: true });
+
+    const expected = buildInitiativeIdempotencyKey({
+      initiativeId: value.initiativeId,
+      transitionId: value.transitionId,
+    });
+    if (value.idempotencyKey !== expected) {
+      ctx.addIssue({
+        code: "custom",
+        message: "idempotencyKey must be exactly initiativeId/1/transitionId",
+        path: ["idempotencyKey"],
+      });
+    }
+
+    // Registration is the one event with no prior status, and the only one:
+    // every later event is a transition from something.
+    if ((value.fromStatus === null) !== (value.type === "INITIATIVE_REGISTERED")) {
+      ctx.addIssue({
+        code: "custom",
+        message: "fromStatus must be null for INITIATIVE_REGISTERED and set for every other type",
+        path: ["fromStatus"],
+      });
+    }
+
+    // The task law, mirrored: a change event must change something, and a
+    // passthrough must not pretend to.
+    if (value.type === "INITIATIVE_STATE_CHANGED" && value.fromStatus === value.toStatus) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a status change event must actually change status",
+        path: ["toStatus"],
+      });
+    }
+
+    if (value.type === "ROADMAP_VERSION_RECORDED" && value.fromStatus !== value.toStatus) {
+      ctx.addIssue({
+        code: "custom",
+        message: "recording a roadmap version does not move the initiative's status",
+        path: ["toStatus"],
+      });
+    }
+
+    const size = serializedByteLength(value.payload);
+    if (size > EVENT_PAYLOAD_MAX_BYTES) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "event payload is " +
+          String(size) +
+          " bytes which exceeds the " +
+          String(EVENT_PAYLOAD_MAX_BYTES) +
+          " byte budget",
+        path: ["payload"],
+      });
+    }
+  });
+export type InitiativeEvent = z.infer<typeof InitiativeEvent>;

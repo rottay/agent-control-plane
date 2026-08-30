@@ -73,7 +73,7 @@ consulted metadata would be a bound on what the filesystem claimed.
 An accounts file carries exactly two keys:
 
 ```json
-{ "contractVersion": "1.0.0", "accounts": [ /* AccountRecord */ ] }
+{ "contractVersion": "2.0.0", "accounts": [ /* AccountRecord */ ] }
 ```
 
 Any third key is a refusal, not a field to ignore. A loader that ignores keys

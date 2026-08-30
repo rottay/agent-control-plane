@@ -15,6 +15,14 @@ import {
 import type { ConflictOutcome, GraphRefused } from "../../src/conflict-graph/index.js";
 
 const ISSUED_AT = "2026-08-29T12:00:00.000Z";
+/**
+ * One fixed initiative for every drill packet.
+ *
+ * Admission is global by law: two packets conflict on their conflict keys and
+ * write-sets regardless of initiative, so sharing one id here keeps the
+ * subject of these tests where it belongs — the graph, not the scoping.
+ */
+const INITIATIVE_ID = "44444444-4444-4444-8444-444444444444";
 const SHA = "a".repeat(64);
 
 let counter = 0;
@@ -37,6 +45,7 @@ function envelope(parts: Parts = {}): TaskEnvelope {
   const parsed = TaskEnvelope.safeParse({
     contractVersion: CONTRACT_VERSION,
     taskId: parts.taskId ?? taskId(),
+    initiativeId: INITIATIVE_ID,
     title: "drill",
     objective: "a conflict-graph drill packet",
     classification: "MECHANICAL",

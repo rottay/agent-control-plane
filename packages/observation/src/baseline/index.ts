@@ -17,7 +17,7 @@ import type { ControlPlaneEvent } from "@acp/contracts";
  *    interpolated or defaulted. Where the number is not there, this module
  *    stops rather than inventing one.
  * 2. **The frozen vocabulary is the vocabulary.** All five measures are
- *    expressed with the 21 event types `@acp/contracts` already declares. A
+ *    expressed with the 23 event types `@acp/contracts` already declares. A
  *    measure that cannot be expressed that way is a STOP condition escalated
  *    to the DT — never a reason to widen the contract, and never a reason to
  *    press an unrelated event type into service.
