@@ -955,16 +955,24 @@ const P6F_WRITE_SET = [
  * the second isolated pilot: kill/restart of the read-only walk over a real
  * child process (runtime test tree), and the account switch played as values
  * over a real ledger (accounts test tree) -- two drills, one per package that
- * owns the machinery each exercises, per the P1B dependency law. P7 is
- * therefore **27 packet entries across 25 distinct paths**: 19 (P7P) + 3
- * (P7A) + 5 (P7B) = 27 entries; the repeat is `scripts/check-architecture.mjs`
- * itself (P7P, P7A, P7B), so 27 - 1 - 1 = 25 distinct paths. P7A's other two
- * paths -- `packages/runtime/test/pilots/index.test.ts` and
+ * owns the machinery each exercises, per the P1B dependency law. P7C is the
+ * mechanical writer packet: the eleven-step writer plan
+ * (`LOCAL_COMMIT_WITH_RECEIPT`) over a toy repository this drill genuinely
+ * writes to, with a real local commit and reconciliation against the
+ * receipt -- the first end-to-end evidence for the commit path. P7 is
+ * therefore **30 packet entries across 27 distinct paths**: 19 (P7P) + 3
+ * (P7A) + 5 (P7B) + 3 (P7C) = 30 entries; the repeat is
+ * `scripts/check-architecture.mjs` itself (P7P, P7A, P7B, P7C), so
+ * 30 - 1 - 1 - 1 = 27 distinct paths. P7A's other two paths --
+ * `packages/runtime/test/pilots/index.test.ts` and
  * `packages/runtime/test/pilots/helpers/index.ts` -- are new to the phase.
  * P7B's other four paths -- `packages/runtime/test/pilots/recovery/index.test.ts`,
  * `packages/runtime/test/pilots/recovery/helpers/index.ts`,
  * `packages/accounts/test/pilots/index.test.ts` and
  * `packages/accounts/test/pilots/helpers/index.ts` -- are new to the phase.
+ * P7C's other two paths -- `packages/runtime/test/pilots/writer/index.test.ts`
+ * and `packages/runtime/test/pilots/writer/helpers/index.ts` -- are new to
+ * the phase.
  *
  * The plan is selected at the driver boundary, which is why the set reaches
  * into `@acp/daemon`: the two places that construct a driver must now say which
@@ -1028,6 +1036,23 @@ const P7B_WRITE_SET = [
   "packages/runtime/test/pilots/recovery/helpers/index.ts",
   "packages/accounts/test/pilots/index.test.ts",
   "packages/accounts/test/pilots/helpers/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P7C: the mechanical writer packet.
+ *
+ * A new subdomain, `test/pilots/writer/`, sibling to P7A's `pilots` root and
+ * P7B leg 1's `pilots/recovery/` -- the writer plan
+ * (`LOCAL_COMMIT_WITH_RECEIPT`) walked over a toy repository this drill
+ * genuinely writes to: a real local commit, and reconciliation against the
+ * receipt `authorizeCommit` produced. No production source changes: the
+ * drill walks the plan P7P already landed and reconciles against the
+ * receipt `commit-authorization` (P6C) already produces.
+ */
+const P7C_WRITE_SET = [
+  "packages/runtime/test/pilots/writer/index.test.ts",
+  "packages/runtime/test/pilots/writer/helpers/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1260,6 +1285,7 @@ const WRITE_SET = [
   ...P7P_WRITE_SET,
   ...P7A_WRITE_SET,
   ...P7B_WRITE_SET,
+  ...P7C_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
