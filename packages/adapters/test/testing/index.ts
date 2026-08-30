@@ -8,6 +8,12 @@ import type {
   SessionRequest,
 } from "../../src/contract/index.js";
 import { EMPTY_CURSOR, unknownCapabilities } from "../../src/contract/index.js";
+import { AdapterError } from "../../src/errors/index.js";
+import type {
+  ApiStreamChunk,
+  ApiStreamRequest,
+  ApiStreamingClient,
+} from "../../src/providers/api-key/index.js";
 
 /**
  * A scripted stand-in for a provider.
@@ -173,6 +179,48 @@ export function scriptedAdapter(base: ProviderAdapter, script: FakeScript): Prov
         env: { PATH: "/usr/bin:/bin" },
         cwd: request.workdir,
       };
+    },
+  };
+}
+
+/**
+ * A scripted stand-in for a provider API. (P8-3.)
+ *
+ * The API transport has no process to fake, so the fake is the client itself:
+ * a scripted implementation of the owned `ApiStreamingClient` interface. The
+ * acceptance criterion admits exactly this ("fake or real"), and what it proves
+ * is the same thing the CLI leg's fake proves — our normalization and our
+ * boundary — not anything about a provider's API.
+ *
+ * The `secret` parameter is the point of the credential drill: it stands where
+ * a real implementation would hold an API key, closed over by the
+ * implementation and reachable by nothing the interface exposes. A test spends
+ * it into the stream's own text and then proves it never reaches the emitted
+ * trail.
+ */
+export interface FakeApiScript {
+  readonly provider: string;
+  readonly models: readonly string[];
+  readonly chunks: readonly ApiStreamChunk[];
+  /** Thrown after the listed chunks, to drive the failure path. */
+  readonly failAfter?: boolean;
+}
+
+export function fakeApiClient(script: FakeApiScript, secret = "unused"): ApiStreamingClient {
+  return {
+    provider: script.provider,
+    models: script.models,
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async *stream(request: ApiStreamRequest): AsyncIterable<ApiStreamChunk> {
+      // The credential lives here, in the implementation's closure, and the
+      // request cannot carry it: `ApiStreamRequest` has no field it would fit
+      // in. That is the "credential-free by shape" claim, exercised.
+      void secret;
+      void request;
+      for (const chunk of script.chunks) yield chunk;
+      if (script.failAfter === true) {
+        throw new AdapterError("MALFORMED_EVENT", { provider: script.provider, taskId: "" });
+      }
     },
   };
 }

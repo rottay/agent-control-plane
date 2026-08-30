@@ -92,19 +92,37 @@ export { admitBinary } from "./process/spawn/index.js";
 export type { AdapterSession } from "./session/index.js";
 export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./session/index.js";
 
-// P8-2: the CLI subscription binding of the contracts' `ModelExecutionPort`.
-// The port is the only thing here that a control plane talks to; the session
-// machinery above stays available because the drills and the daemon use it
-// directly. Admitted binaries, configuration roots, working directories and
-// budgets arrive per account at binding time, never inside the contract's
+// P8-2/P8-3: the contracts' `ModelExecutionPort` and the transports bound to
+// it. The port is the only thing here that a control plane talks to; the
+// session machinery above stays available because the drills and the daemon
+// use it directly. Admitted binaries, configuration roots, working directories
+// and budgets arrive per account at binding time, never inside the contract's
 // strict `ExecutionRequest`.
-export type { CliBinding, CliExecutionPortInput } from "./execution-port/index.js";
+//
+// One factory, two legs. P8-3 renamed `createCliExecutionPort` to
+// `createExecutionPort` because it now builds a port that serves both
+// transports: a factory named for one of the two would invite the second
+// factory that the design explicitly refused.
+export type { CliBinding, ExecutionPortInput } from "./execution-port/index.js";
 export {
   CLI_TRANSPORT_KIND,
-  cliSessionId,
-  createCliExecutionPort,
+  createExecutionPort,
+  executionSessionId,
   toExecutionEvent,
 } from "./execution-port/index.js";
+
+// P8-3: the API_KEY transport. The streaming client is an interface we own,
+// injected by the caller, with no member able to carry a credential — so the
+// SDK binding is optional (registered as P8-3b) and law 6 holds by
+// construction: nothing on the CLI path can reach an API key.
+export type {
+  ApiAdmission,
+  ApiKeyBinding,
+  ApiStreamChunk,
+  ApiStreamRequest,
+  ApiStreamingClient,
+} from "./providers/api-key/index.js";
+export { API_TRANSPORT_KIND, admitApiRoute, apiExecutionEvents } from "./providers/api-key/index.js";
 
 // P4B: the Claude headless descriptor. Kimi and Codex arrive in P4C and P4D.
 // Every Claude capability leaves P4 `UNKNOWN`: the adapter is complete, the

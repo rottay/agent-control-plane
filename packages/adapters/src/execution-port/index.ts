@@ -17,25 +17,39 @@ import type {
 } from "../contract/index.js";
 import { AdapterError } from "../errors/index.js";
 import type { NormalizedEvent } from "../events/index.js";
+import type { ApiKeyBinding } from "../providers/api-key/index.js";
+import { API_TRANSPORT_KIND, admitApiRoute, apiExecutionEvents } from "../providers/api-key/index.js";
 import type { AdapterSession } from "../session/index.js";
 import { startSession } from "../session/index.js";
 
 /**
- * The CLI subscription binding of the owned execution boundary.
+ * The owned execution boundary, and the transports bound to it.
  *
- * `ModelExecutionPort` is the contract every transport implements; this is the
- * implementation for the one transport that exists today, laid over the landed
- * session machinery. It adds no authority of its own: routing, quota, leases
- * and evidence stay with the control plane, and this module turns a route into
- * a process and provider bytes into normalized events, in that order and
- * nothing else.
+ * `ModelExecutionPort` is the contract every transport implements. This module
+ * is the one factory that builds it: `CLI_SUBSCRIPTION` over the landed
+ * session machinery, and `API_KEY` over an injected streaming client. It adds
+ * no authority of its own — routing, quota, leases and evidence stay with the
+ * control plane — and turns a route into an execution and an execution's
+ * output into normalized events, in that order and nothing else.
  *
- * **The transport is a wall, not a preference.** `start` admits
- * `transportKind === "CLI_SUBSCRIPTION"` and refuses everything else with a
- * classified reason. It never downgrades an API route to a CLI one, never
- * substitutes a provider, and never starts a fresh execution when a caller
- * asked to reattach. Each of those would be a silent success in a place where
- * the caller believes something else happened.
+ * **One factory, not one per transport.** A second factory would let a caller
+ * hold a port that silently serves only half the routes it is handed, and the
+ * two would drift on exactly the laws they are supposed to share: the terminal
+ * shape of a stream, the refusal vocabulary, the session naming. Those laws
+ * are written once here and applied to both legs.
+ *
+ * **The API transport is optional at construction, and that is law 6.** The
+ * CLI binding is always present; `apiBindings` may be absent entirely, and a
+ * port built without it serves CLI routes exactly as before and refuses an
+ * `API_KEY` route with a classified reason. So subscription operation does not
+ * depend on an API key, an AI Gateway or a paid API account — by construction,
+ * not by assertion.
+ *
+ * **The transport is a wall, not a preference.** `start` executes the
+ * transport the route names or refuses. It never downgrades an API route to a
+ * CLI one, never substitutes a provider, and never starts a fresh execution
+ * when a caller asked to reattach. Each of those would be a silent success in
+ * a place where the caller believes something else happened.
  *
  * **Where the admitted values come from.** The binary, the configuration root,
  * the working directory and the session budgets are *not* fields of
@@ -75,18 +89,29 @@ export interface CliBinding {
   readonly limits: SessionLimits;
 }
 
-export interface CliExecutionPortInput {
+export interface ExecutionPortInput {
   /**
-   * One binding per `accountId`, resolved at construction.
+   * The CLI subscription bindings: one per `accountId`, resolved at
+   * construction.
    *
    * A route naming an account with no binding is refused rather than served
    * from a default: a default binary is how one account's subscription
    * quietly spends another's quota.
    */
   readonly bindings: ReadonlyMap<string, CliBinding>;
+  /**
+   * The API_KEY bindings, when this port serves that transport at all.
+   *
+   * Optional, and its absence is meaningful rather than empty: a port built
+   * without it does not have the API transport, and says so with
+   * `TRANSPORT_UNAVAILABLE` at `route.transportKind` — the same answer it
+   * gives for a transport nobody has implemented. An empty map is the
+   * different statement "this port serves API routes, for no account yet".
+   */
+  readonly apiBindings?: ReadonlyMap<string, ApiKeyBinding>;
 }
 
-/** The only transport kind this port serves. */
+/** The subscription-CLI transport kind, served over the session machinery. */
 export const CLI_TRANSPORT_KIND = "CLI_SUBSCRIPTION";
 
 function refuse(refusal: ExecutionRefusal, at: string): ExecutionRefused {
@@ -101,14 +126,16 @@ function firstPath(error: { readonly issues: readonly { readonly path: readonly 
 }
 
 /**
- * A durable name for one execution.
+ * A durable name for one execution, whichever transport runs it.
  *
  * Derived from the coordinates the caller already holds, never minted from a
  * clock or a random source, so the same task and attempt on the same account
  * name the same execution on every run — which is the only way a later
- * `reattach` reference could ever mean anything.
+ * `reattach` reference could ever mean anything. Shared across transports on
+ * purpose: moving a route from CLI to API must preserve the task's identity,
+ * and two naming schemes could not.
  */
-export function cliSessionId(taskId: string, attempt: number, accountId: string): string {
+export function executionSessionId(taskId: string, attempt: number, accountId: string): string {
   return taskId + "/" + String(attempt) + "/" + accountId;
 }
 
@@ -200,55 +227,106 @@ function errorEvent(detail: string): ExecutionEvent {
 }
 
 /**
- * Build the CLI subscription execution port.
+ * The terminal law, written once and applied to every transport.
  *
- * The returned object is the whole surface: the sessions it starts are held
- * only so `interrupt` can find them, and each is forgotten as soon as its
+ * A stream ends in exactly one of two ways: `completed`, carrying the last
+ * `stepIndex` the transport reported so usage can be reconciled against it, or
+ * `error`, carrying a classified refusal. Never both, never neither.
+ *
+ * No CLI or API signal carries completion, so the boundary synthesizes it —
+ * which is precisely why it has to be synthesized in one place. Two transports
+ * each deciding when a stream was "done" is two definitions of done, and the
+ * one that drifts is the one nobody is reading.
+ *
+ * `inner` reports failure by throwing; `finish` reports a failure the iteration
+ * itself could not see, because a CLI session records its own death in its
+ * state rather than by raising.
+ */
+/**
+ * An in-stream failure that carries its own classified detail.
+ *
+ * `AdapterError` classifies by code, which is right for the machinery's own
+ * refusals; this carries the sentence for the cases where the code alone would
+ * not tell a reader which field went missing.
+ */
+class StreamFailure extends Error {}
+
+async function* terminated(
+  inner: AsyncIterable<ExecutionEvent>,
+  finish: () => Promise<string | null>,
+): AsyncIterable<ExecutionEvent> {
+  let lastStepIndex = 0;
+  try {
+    for await (const event of inner) {
+      if (event.kind === "usage") lastStepIndex = event.stepIndex;
+      yield event;
+    }
+  } catch (error: unknown) {
+    if (error instanceof StreamFailure) {
+      yield errorEvent(error.message);
+      return;
+    }
+    yield errorEvent(error instanceof AdapterError ? error.code : "UNCLASSIFIED");
+    return;
+  }
+
+  const failure = await finish();
+  if (failure !== null) {
+    yield errorEvent(failure);
+    return;
+  }
+  yield { kind: "completed", stepIndex: lastStepIndex };
+}
+
+/**
+ * Build the execution port.
+ *
+ * The returned object is the whole surface: the CLI sessions it starts are
+ * held only so `interrupt` can find them, and each is forgotten as soon as its
  * stream ends.
  */
-export function createCliExecutionPort(input: CliExecutionPortInput): ModelExecutionPort {
+export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPort {
   const bindings = input.bindings;
+  const apiBindings = input.apiBindings;
   const live = new Map<string, AdapterSession>();
 
-  async function* stream(
+  /** The CLI leg's mapping. Throws on anything it cannot express. */
+  async function* cliEvents(session: AdapterSession, route: ResolvedRoute): AsyncIterable<ExecutionEvent> {
+    for await (const normalized of session.events()) {
+      const mapped = toExecutionEvent(normalized, route);
+      if (mapped.kind === "SILENT") continue;
+      if (mapped.kind === "UNEXPRESSIBLE") throw new StreamFailure(mapped.detail);
+      const parsed = ExecutionEvent.safeParse(mapped.event);
+      if (!parsed.success) {
+        // The boundary emits contract-valid events or it emits an error. A
+        // provider whose digest is not a digest does not get to put a
+        // malformed event into the control plane's evidence.
+        throw new StreamFailure(normalized.name + " failed the contract at " + firstPath(parsed.error));
+      }
+      yield parsed.data;
+    }
+  }
+
+  async function* cliStream(
     session: AdapterSession,
     route: ResolvedRoute,
     sessionId: string,
   ): AsyncIterable<ExecutionEvent> {
-    let lastStepIndex = 0;
-    try {
-      for await (const normalized of session.events()) {
-        const mapped = toExecutionEvent(normalized, route);
-        if (mapped.kind === "SILENT") continue;
-        if (mapped.kind === "UNEXPRESSIBLE") {
-          yield errorEvent(mapped.detail);
-          return;
-        }
-        const parsed = ExecutionEvent.safeParse(mapped.event);
-        if (!parsed.success) {
-          // The boundary emits contract-valid events or it emits an error. A
-          // provider whose digest is not a digest does not get to put a
-          // malformed event into the control plane's evidence.
-          yield errorEvent(normalized.name + " failed the contract at " + firstPath(parsed.error));
-          return;
-        }
-        if (parsed.data.kind === "usage") lastStepIndex = parsed.data.stepIndex;
-        yield parsed.data;
-      }
-
+    const finish = async (): Promise<string | null> => {
       if (session.state === "FAILED") {
         // The session tore its own child down; wait for that to finish before
         // reporting, so a caller that stops reading here is not racing a kill.
         await session.settled();
-        yield errorEvent("session failed: " + (session.health().classifiedError ?? "UNCLASSIFIED"));
-        return;
+        return "session failed: " + (session.health().classifiedError ?? "UNCLASSIFIED");
       }
-
-      // The clean close, and the port's own law: reaching CLOSED without a
-      // failure is what `completed` means on this transport.
       await session.close();
-      yield { kind: "completed", stepIndex: lastStepIndex };
+      return null;
+    };
+    try {
+      yield* terminated(cliEvents(session, route), finish);
     } finally {
+      // However the stream ended — completed, failed, or abandoned by a caller
+      // that stopped reading — the session stops being interruptible by name.
       live.delete(sessionId);
     }
   }
@@ -273,14 +351,50 @@ export function createCliExecutionPort(input: CliExecutionPortInput): ModelExecu
       const admitted = parsedRoute.data;
       const asked = parsedRequest.data;
 
+      if (asked.reattach !== null) {
+        // Neither landed transport can rejoin. Refusing is the contract's
+        // stated law; starting a fresh execution while the caller believes it
+        // reattached is the one failure this boundary must never produce, and
+        // it is checked before the transports so no transport can forget it.
+        return refuse("REATTACH_UNAVAILABLE", "request.reattach");
+      }
+
+      const sessionId = executionSessionId(asked.taskId, asked.attempt, admitted.accountId);
+
+      if (admitted.transportKind === API_TRANSPORT_KIND) {
+        if (apiBindings === undefined) {
+          // Law 6, as a refusal rather than a promise: this port was built
+          // without the API transport, so it does not have one. Nothing about
+          // the CLI leg changes, which is the whole content of "subscription
+          // operation does not depend on an API key".
+          return refuse("TRANSPORT_UNAVAILABLE", "route.transportKind");
+        }
+        const admittedApi = admitApiRoute(admitted, apiBindings);
+        if (!admittedApi.ok) return admittedApi;
+
+        const apiRequest = {
+          model: admitted.model,
+          taskId: asked.taskId,
+          attempt: asked.attempt,
+          identity: asked.identity,
+        };
+        return Object.freeze({
+          ok: true as const,
+          sessionId,
+          route: admitted,
+          events: (): AsyncIterable<ExecutionEvent> =>
+            // The same terminal law as the CLI leg, applied to a different
+            // producer. `finish` has nothing to add: an API stream that ended
+            // without throwing ended cleanly.
+            terminated(
+              apiExecutionEvents(admittedApi.binding, admitted, apiRequest),
+              () => Promise.resolve(null),
+            ),
+        });
+      }
+
       if (admitted.transportKind !== CLI_TRANSPORT_KIND) {
         return refuse("TRANSPORT_UNAVAILABLE", "route.transportKind");
-      }
-      if (asked.reattach !== null) {
-        // The landed CLI machinery has no rejoin. Refusing is the contract's
-        // stated law; starting a fresh execution while the caller believes it
-        // reattached is the one failure this boundary must never produce.
-        return refuse("REATTACH_UNAVAILABLE", "request.reattach");
       }
 
       const binding = bindings.get(admitted.accountId);
@@ -312,13 +426,12 @@ export function createCliExecutionPort(input: CliExecutionPortInput): ModelExecu
         return refuse("TRANSPORT_UNAVAILABLE", "startSession/" + code);
       }
 
-      const sessionId = cliSessionId(asked.taskId, asked.attempt, admitted.accountId);
       live.set(sessionId, session);
       return Object.freeze({
         ok: true as const,
         sessionId,
         route: admitted,
-        events: (): AsyncIterable<ExecutionEvent> => stream(session, admitted, sessionId),
+        events: (): AsyncIterable<ExecutionEvent> => cliStream(session, admitted, sessionId),
       });
     },
 
@@ -342,9 +455,16 @@ export function createCliExecutionPort(input: CliExecutionPortInput): ModelExecu
         Object.freeze({ status: "FAILED" as const, checkedAt, latencyMs: null, classifiedError });
 
       if (!parsed.success) return failed("ROUTE_INVALID");
-      if (parsed.data.transportKind !== CLI_TRANSPORT_KIND) return failed("TRANSPORT_UNAVAILABLE");
-      const binding = bindings.get(parsed.data.accountId);
-      if (binding === undefined) return failed("TRANSPORT_UNAVAILABLE");
+
+      if (parsed.data.transportKind === API_TRANSPORT_KIND) {
+        if (apiBindings === undefined) return failed("TRANSPORT_UNAVAILABLE");
+        const admittedApi = admitApiRoute(parsed.data, apiBindings);
+        if (!admittedApi.ok) return failed(admittedApi.refusal);
+      } else {
+        if (parsed.data.transportKind !== CLI_TRANSPORT_KIND) return failed("TRANSPORT_UNAVAILABLE");
+        const binding = bindings.get(parsed.data.accountId);
+        if (binding === undefined) return failed("TRANSPORT_UNAVAILABLE");
+      }
 
       // A binding exists, and nothing was spawned to ask. `UNKNOWN` is the
       // honest answer: the probe is read-only by construction, and reporting

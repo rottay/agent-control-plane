@@ -1225,12 +1225,18 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * the adapters' own provider union at the contracts' vocabulary so there is
  * one canonical list rather than two that agree today.
  *
- * P8 is therefore **44 packet entries across 41 distinct paths**: 2 (P8-D) +
- * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) = 44 entries; the only repeat is
- * `scripts/check-architecture.mjs` itself, named by all four packets and
- * contributing 3 duplicate entries. So 44 - 3 = 41 distinct paths. This
- * file's appearances in earlier phases are counted in those phases, since the
- * standing convention scopes the arithmetic to the phase.
+ * P8-3 binds the second transport, `API_KEY`, over an interface the repository
+ * owns rather than an SDK's: law 6 keeps the SDK optional, so the real binding
+ * is registered as P8-3b and the dependency graph does not move here.
+ *
+ * P8 is therefore **50 packet entries across 42 distinct paths**: 2 (P8-D) +
+ * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) = 50 entries, with 8 duplicate
+ * entries. Five paths repeat: `scripts/check-architecture.mjs`, named by all
+ * five packets (4 duplicates), and the four paths P8-2 and P8-3 share — the
+ * port, the barrel, the port's fixture and the test doubles — one duplicate
+ * each. So 50 - 8 = 42 distinct paths. This file's appearances in earlier
+ * phases are counted in those phases, since the standing convention scopes the
+ * arithmetic to the phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
@@ -1324,6 +1330,27 @@ const P82_WRITE_SET = [
   "packages/adapters/src/index.ts",
   "packages/adapters/test/execution-port/index.test.ts",
   "packages/adapters/test/contract/index.test.ts",
+  "packages/adapters/test/testing/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-3: the API_KEY execution surface.
+ *
+ * The second transport on the same boundary, driven by an injected streaming
+ * client this repository owns. No dependency moves: the roadmap's law 6 makes
+ * Vercel AI SDK Core optional and restricted to API-backed adapters, and the
+ * acceptance bullet admits a fake for the conformance fixture, so the SDK
+ * binding is registered as optional P8-3b with its own gates rather than
+ * landing here. The adapters' pinned import surface is untouched, which is
+ * what makes law 6 true by construction: nothing on the CLI path can reach an
+ * API key, because no API key exists in the graph.
+ */
+const P83_WRITE_SET = [
+  "packages/adapters/src/providers/api-key/index.ts",
+  "packages/adapters/src/execution-port/index.ts",
+  "packages/adapters/src/index.ts",
+  "packages/adapters/test/execution-port/index.test.ts",
   "packages/adapters/test/testing/index.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -1589,6 +1616,7 @@ const WRITE_SET = [
   ...P81_WRITE_SET,
   ...P8W_WRITE_SET,
   ...P82_WRITE_SET,
+  ...P83_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -4538,14 +4566,26 @@ const ADAPTERS_PUBLIC_EXPORTS = [
   "descriptorEnablesWrites",
   "isReadOnlyIdentity",
   "startSession",
-  // P8-2: the execution port. The admitted values arrive per account through
-  // `CliBinding`, so the contract's request stays transport-neutral.
+  // P8-2/P8-3: the execution port. The admitted values arrive per account
+  // through `CliBinding`, so the contract's request stays transport-neutral.
+  // P8-3 renamed the factory and the session-id helper: one factory now builds
+  // a port serving both transports, and a name that said CLI would invite the
+  // second factory the design refused.
   "CliBinding",
-  "CliExecutionPortInput",
+  "ExecutionPortInput",
   "CLI_TRANSPORT_KIND",
-  "cliSessionId",
-  "createCliExecutionPort",
+  "createExecutionPort",
+  "executionSessionId",
   "toExecutionEvent",
+  // P8-3: the API_KEY transport, over an interface this repository owns.
+  "ApiAdmission",
+  "ApiKeyBinding",
+  "ApiStreamChunk",
+  "ApiStreamRequest",
+  "ApiStreamingClient",
+  "API_TRANSPORT_KIND",
+  "admitApiRoute",
+  "apiExecutionEvents",
   // P4B
   "CLAUDE_STREAM_PROTOCOL",
   "claudeAdapter",
@@ -4701,6 +4741,64 @@ if (adaptersIndex !== null) {
     }
   }
   notes.push(exported.size + " adapter exports, pinned by equality");
+}
+
+// ---------------------------------------------------------------------------
+// P8-3: the API_KEY transport's shape
+// ---------------------------------------------------------------------------
+
+/**
+ * The owned streaming client, pinned member by member.
+ *
+ * This is how "credentials are unrepresentable" is enforced rather than
+ * promised. A key, a token, an authorization header or a credential reference
+ * cannot be added to either type without this pin moving, and moving it is a
+ * deliberate act a reviewer sees. Scanning the file for credential-sounding
+ * words would be the brittle version of the same idea: the doc comments here
+ * legitimately discuss credentials at length, and a scan that cannot tell a
+ * sentence from a field is a scan that gets disabled the first time it is
+ * wrong.
+ */
+const API_CLIENT_SHAPE = {
+  ApiStreamRequest: ["model", "taskId", "attempt", "identity"],
+  ApiStreamingClient: ["provider", "models", "stream"],
+};
+
+const apiKeyModule = readIfPresent("packages/adapters/src/providers/api-key/index.ts");
+if (apiKeyModule !== null) {
+  const source = stripComments(apiKeyModule);
+  for (const [name, expected] of Object.entries(API_CLIENT_SHAPE)) {
+    const declaration = source.match(new RegExp("export interface " + name + "\\s*\\{([^}]*)\\}"));
+    if (declaration === null) {
+      fail("packages/adapters/src/providers/api-key/index.ts no longer declares " + name);
+      continue;
+    }
+    const members = [];
+    for (const line of (declaration[1] ?? "").split("\n")) {
+      const member = line.trim().replace(/^readonly\s+/, "").match(/^([A-Za-z_$][\w$]*)\s*[(:?]/);
+      if (member !== null) members.push(member[1]);
+    }
+    if (members.join(",") !== expected.join(",")) {
+      fail(
+        name +
+          " no longer has exactly its pinned members: expected [" +
+          expected.join(", ") +
+          "], found [" +
+          members.join(", ") +
+          "]",
+      );
+    }
+  }
+
+  // The transport is bound through an interface this repository owns. An SDK
+  // import here would make the optional dependency a compile-time one, which
+  // is precisely what law 6 forbids and what P8-3b exists to do deliberately.
+  for (const forbidden of ["ai", "@ai-sdk/", "@vercel/"]) {
+    if (new RegExp('from "' + forbidden).test(source)) {
+      fail("packages/adapters/src/providers/api-key/index.ts imports " + forbidden + "; law 6 keeps the SDK optional");
+    }
+  }
+  notes.push("the API client interface is credential-free by shape, pinned member by member");
 }
 
 const adaptersConfigRoot = readIfPresent("packages/adapters/src/config-root/index.ts");

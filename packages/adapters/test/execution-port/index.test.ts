@@ -16,11 +16,12 @@ import type {
   SessionLimits,
 } from "../../src/contract/index.js";
 import type { CliBinding } from "../../src/execution-port/index.js";
-import { cliSessionId, createCliExecutionPort } from "../../src/execution-port/index.js";
+import { createExecutionPort, executionSessionId } from "../../src/execution-port/index.js";
+import type { ApiKeyBinding, ApiStreamChunk } from "../../src/providers/api-key/index.js";
 import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "../../src/providers/claude/index.js";
 import { CODEX_APP_SERVER_PROTOCOL, codexAdapter } from "../../src/providers/codex/index.js";
 import { KIMI_ACP_PROTOCOL, kimiAdapter } from "../../src/providers/kimi/index.js";
-import { scriptedAdapter } from "../testing/index.js";
+import { fakeApiClient, scriptedAdapter } from "../testing/index.js";
 import type { FakeScript } from "../testing/index.js";
 
 /**
@@ -94,8 +95,16 @@ function request(overrides: Partial<ExecutionRequest> = {}): ExecutionRequest {
   return { taskId: TASK, attempt: 1, identity: IDENTITY, reattach: null, ...overrides };
 }
 
-function portFor(bindings: Readonly<Record<string, CliBinding>>): ModelExecutionPort {
-  return createCliExecutionPort({ bindings: new Map(Object.entries(bindings)) });
+function portFor(
+  bindings: Readonly<Record<string, CliBinding>>,
+  apiBindings?: Readonly<Record<string, ApiKeyBinding>>,
+): ModelExecutionPort {
+  return createExecutionPort({
+    bindings: new Map(Object.entries(bindings)),
+    // Absent, not empty: a port constructed without this does not have the API
+    // transport at all, which is what the law-6 drill turns on.
+    ...(apiBindings === undefined ? {} : { apiBindings: new Map(Object.entries(apiBindings)) }),
+  });
 }
 
 async function drain(
@@ -171,50 +180,58 @@ async function trailFor(provider: ProviderName): Promise<readonly ExecutionEvent
   return drain(port, route({ provider }));
 }
 
+/**
+ * The one trail assertion, shared by every transport leg. (N1, binding.)
+ *
+ * Written once and called from each leg rather than restated per transport,
+ * because the acceptance criterion is that the legs produce *the same*
+ * normalized contract — and two copies of an assertion are two assertions that
+ * can drift, with the weaker one quietly becoming the standard the newest
+ * transport is held to.
+ *
+ * What it fixes is the transport intersection: the kinds and their order, the
+ * validity of every event, the measurement, the terminal token, and the route
+ * echoed back unchanged. What it deliberately leaves alone is provider
+ * identity — `resolvedModel` and `protocolVersion` — which the contract expects
+ * to differ, and `stepIndex`, which the CLI adapters do not agree on (pinned
+ * separately below).
+ */
+const SHARED_KINDS = ["started", "usage", "state", "completed"];
+
+function assertSharedTrail(leg: string, trail: readonly ExecutionEvent[], expected: ResolvedRoute): void {
+  expect({ leg, kinds: trail.map((event) => event.kind) }).toEqual({ leg, kinds: SHARED_KINDS });
+
+  // Every event the boundary emitted is a valid `ExecutionEvent`. The port
+  // parses before it yields, so this re-check is cheap; it is here because a
+  // conformance fixture that never validated the contract would pass just as
+  // happily against a port that emitted nonsense of a consistent shape.
+  for (const event of trail) {
+    expect({ leg, kind: event.kind, ok: ExecutionEvent.safeParse(event).success }).toEqual({
+      leg,
+      kind: event.kind,
+      ok: true,
+    });
+  }
+
+  const usage = trail.find((event) => event.kind === "usage");
+  const state = trail.find((event) => event.kind === "state");
+  const started = trail.find((event) => event.kind === "started");
+
+  // The measurement and the terminal token are the same fact whichever
+  // transport reported them, and the route is echoed back unchanged: the port
+  // carries the caller's route, it does not restate its own idea of it.
+  expect({
+    leg,
+    tokensUsed: usage?.kind === "usage" ? usage.tokensUsed : null,
+    toState: state?.kind === "state" ? state.toState : null,
+    route: started?.kind === "started" ? started.route : null,
+  }).toEqual({ leg, tokensUsed: TOKENS, toState: TERMINAL_STATE, route: expected });
+}
+
 describe("one scenario normalizes identically across the three CLI adapters", () => {
-  it("produces the same kinds in the same order from three different wire protocols", async () => {
-    const trails = new Map<ProviderName, readonly ExecutionEvent[]>();
+  it("produces one normalized trail from three different wire protocols", async () => {
     for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
-      trails.set(provider, await trailFor(provider));
-    }
-
-    const expected = ["started", "usage", "state", "completed"];
-    for (const [provider, trail] of trails) {
-      expect({ provider, kinds: trail.map((event) => event.kind) }).toEqual({ provider, kinds: expected });
-    }
-
-    // Every event the boundary emitted is a valid `ExecutionEvent`. The port
-    // parses before it yields, so this re-check is cheap; it is here because a
-    // conformance fixture that never validated the contract would pass just as
-    // happily against a port that emitted nonsense of a consistent shape.
-    for (const [provider, trail] of trails) {
-      for (const event of trail) {
-        expect({ provider, ok: ExecutionEvent.safeParse(event).success }).toEqual({ provider, ok: true });
-      }
-    }
-  });
-
-  it("carries the transport-neutral facts identically", async () => {
-    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
-      const trail = await trailFor(provider);
-      const usage = trail.find((event) => event.kind === "usage");
-      const state = trail.find((event) => event.kind === "state");
-      const started = trail.find((event) => event.kind === "started");
-
-      // The measurement and the terminal token are the same fact whichever
-      // protocol reported them, and the route is echoed back unchanged: the
-      // port carries the caller's route, it does not restate its own idea of it.
-      expect({
-        provider,
-        tokensUsed: usage?.kind === "usage" ? usage.tokensUsed : null,
-        toState: state?.kind === "state" ? state.toState : null,
-        route: started?.kind === "started" ? started.route : null,
-      }).toEqual({
-        provider,
-        tokensUsed: TOKENS,
-        toState: TERMINAL_STATE,
-        route: route({ provider }),
-      });
+      assertSharedTrail("cli/" + provider, await trailFor(provider), route({ provider }));
     }
   });
 
@@ -271,6 +288,231 @@ describe("one scenario normalizes identically across the three CLI adapters", ()
       codex: { usage: 0, completed: 0 },
       kimi: { usage: 0, completed: 0 },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The API_KEY leg: the other half of the dual-transport acceptance bullet
+// ---------------------------------------------------------------------------
+
+const API_ACCOUNT = "acct-api";
+const API_PROVIDER = "openai";
+const API_MODEL = "gpt-5-2026-04";
+const API_PROTOCOL = "api/streaming-1";
+
+/** The transport intersection, as this transport speaks it. */
+const API_SCENARIO: readonly ApiStreamChunk[] = [
+  { kind: "started", resolvedModel: API_MODEL, protocolVersion: API_PROTOCOL },
+  { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+  { kind: "state", toState: TERMINAL_STATE },
+];
+
+function apiBinding(chunks: readonly ApiStreamChunk[], secret = "unused"): ApiKeyBinding {
+  return {
+    client: fakeApiClient(
+      { provider: API_PROVIDER, models: [API_MODEL, "alias-model"], chunks },
+      secret,
+    ),
+  };
+}
+
+function apiRoute(overrides: Partial<ResolvedRoute> = {}): ResolvedRoute {
+  return route({
+    provider: API_PROVIDER,
+    model: API_MODEL,
+    accountId: API_ACCOUNT,
+    transportKind: "API_KEY",
+    ...overrides,
+  });
+}
+
+/** A port serving both transports, which is the ordinary deployment. */
+function dualPort(chunks: readonly ApiStreamChunk[] = API_SCENARIO, secret = "unused"): ModelExecutionPort {
+  return portFor(
+    { "acct-primary": binding(claudeAdapter, CLAUDE_LINES) },
+    { [API_ACCOUNT]: apiBinding(chunks, secret) },
+  );
+}
+
+describe("the same fixture runs through an API_KEY adapter", () => {
+  it("produces the same normalized trail as the CLI legs, through the shared assertion", async () => {
+    assertSharedTrail("api/" + API_PROVIDER, await drain(dualPort(), apiRoute()), apiRoute());
+  });
+
+  it("agrees kind-for-kind with every CLI leg in the same port", async () => {
+    // The acceptance bullet, stated directly: one fixture, at least one
+    // CLI_SUBSCRIPTION adapter and one API_KEY adapter, the same normalized
+    // event/lifecycle contract. All four legs are compared to each other, not
+    // each to a constant, so a change that moved all of them together would
+    // still have to move this too.
+    const legs: Record<string, readonly string[]> = {};
+    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
+      legs["cli/" + provider] = (await trailFor(provider)).map((event) => event.kind);
+    }
+    legs["api/" + API_PROVIDER] = (await drain(dualPort(), apiRoute())).map((event) => event.kind);
+
+    const distinct = new Set(Object.values(legs).map((kinds) => kinds.join(",")));
+    expect({ legs: Object.keys(legs).length, distinctTrails: distinct.size }).toEqual({
+      legs: 4,
+      distinctTrails: 1,
+    });
+    expect([...distinct][0]).toBe(SHARED_KINDS.join(","));
+  });
+
+  it("carries the provider's own resolution verbatim, beside the echoed route", async () => {
+    const trail = await drain(dualPort(), apiRoute({ model: "alias-model" }));
+    const started = trail.find((event) => event.kind === "started");
+    if (started?.kind !== "started") throw new Error("expected a started event");
+
+    // The route asked for `alias-model`; the client bound `gpt-5-2026-04`.
+    // Both travel unmodified, exactly as on the CLI side — the adapter never
+    // rewrites one to match the other.
+    expect({ asked: started.route.model, got: started.resolvedModel, protocol: started.protocolVersion }).toEqual({
+      asked: "alias-model",
+      got: API_MODEL,
+      protocol: API_PROTOCOL,
+    });
+  });
+
+  it("expresses the two kinds the CLI transport cannot", async () => {
+    // `text` and `toolUse` are API-transport kinds: the landed CLI parsers
+    // emit neither, which is why the shared scenario above is the intersection
+    // rather than the union. They are drilled here instead of being smuggled
+    // into the shared fixture, where they would have made the CLI legs fail
+    // for a reason that has nothing to do with conformance.
+    const trail = await drain(
+      dualPort([
+        { kind: "started", resolvedModel: API_MODEL, protocolVersion: API_PROTOCOL },
+        { kind: "text", delta: "one delta, not a transcript" },
+        { kind: "toolUse", tool: "search", detail: "bounded, and never the tool's whole output" },
+        { kind: "write", target: "packages/adapters/src/providers/api-key/index.ts" },
+        { kind: "checkpoint", digest: "a".repeat(64) },
+        { kind: "authRequired", reason: "TOKEN_EXPIRED" },
+        { kind: "usage", stepIndex: 3, tokensUsed: 99 },
+      ]),
+      apiRoute(),
+    );
+
+    expect(trail.map((event) => event.kind)).toEqual([
+      "started",
+      "text",
+      "toolUse",
+      "write",
+      "checkpoint",
+      "authRequired",
+      "usage",
+      "completed",
+    ]);
+    // `write` reaching the boundary is the difference from the CLI leg, where
+    // the landed normalization drops it before the port ever sees one. The
+    // enforcement plane can see writes on this transport.
+    expect(trail.find((event) => event.kind === "write")).toEqual({
+      kind: "write",
+      target: "packages/adapters/src/providers/api-key/index.ts",
+    });
+    // The synthesized completion carries the last step the transport reported.
+    expect(trail.at(-1)).toEqual({ kind: "completed", stepIndex: 3 });
+  });
+
+  it("refuses a malformed chunk instead of emitting it", async () => {
+    // A digest that is not a digest. The boundary emits contract-valid events
+    // or it emits an error; it never puts a malformed event into evidence.
+    const trail = await drain(
+      dualPort([
+        { kind: "started", resolvedModel: API_MODEL, protocolVersion: API_PROTOCOL },
+        { kind: "checkpoint", digest: "not-a-sha256" },
+      ]),
+      apiRoute(),
+    );
+    expect(trail.map((event) => event.kind)).toEqual(["started", "error"]);
+    expect(trail.some((event) => event.kind === "completed")).toBe(false);
+  });
+
+  it("refuses a model the client did not declare, and never substitutes one", async () => {
+    const outcome = await dualPort().start(apiRoute({ model: "some-other-model" }), request());
+    expect(outcome).toEqual({ ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "route.model" });
+  });
+
+  it("refuses an API account it holds no binding for, and a provider mismatch", async () => {
+    const noAccount = await dualPort().start(apiRoute({ accountId: "acct-unknown" }), request());
+    expect(noAccount).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.accountId" });
+
+    const wrongProvider = await dualPort().start(apiRoute({ provider: "anthropic" }), request());
+    expect(wrongProvider).toEqual({ ok: false, refusal: "ROUTE_INVALID", at: "route.provider" });
+  });
+
+  it("refuses a reattach on the API transport too", async () => {
+    const outcome = await dualPort().start(apiRoute(), request({ reattach: "yesterday" }));
+    expect(outcome).toEqual({ ok: false, refusal: "REATTACH_UNAVAILABLE", at: "request.reattach" });
+  });
+
+  it("names an API execution with the same durable scheme as a CLI one", async () => {
+    const started = await dualPort().start(apiRoute(), request());
+    if (!started.ok) throw new Error("expected a session");
+    for await (const _event of started.events()) void _event;
+
+    // One naming scheme across transports: moving a route from CLI to API must
+    // preserve the task's identity, and two schemes could not.
+    expect(started.sessionId).toBe(executionSessionId(TASK, 1, API_ACCOUNT));
+  });
+});
+
+describe("law 6: subscription operation does not depend on the API transport", () => {
+  it("serves CLI routes and refuses API routes when built without an API binding", async () => {
+    // Constructed with the CLI binding alone — the deployment law 6 describes.
+    const cliOnly = portFor({ "acct-primary": binding(claudeAdapter, CLAUDE_LINES) });
+
+    // The CLI leg is untouched: the full trail, not a degraded one.
+    assertSharedTrail("cli-only/claude", await drain(cliOnly, route()), route());
+
+    // And the API transport does not exist here. Not an empty account list, not
+    // a lazy failure at stream time: a classified refusal at the transport,
+    // before anything is attempted.
+    const outcome = await cliOnly.start(apiRoute(), request());
+    expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.transportKind" });
+    expect(await cliOnly.healthProbe(apiRoute())).toEqual({
+      status: "FAILED",
+      checkedAt: AT,
+      latencyMs: null,
+      classifiedError: "TRANSPORT_UNAVAILABLE",
+    });
+  });
+
+  it("distinguishes an absent API transport from one with no accounts", async () => {
+    // An empty map is a different statement from an absent one: this port has
+    // the transport and serves no account on it yet. The refusals differ, and
+    // a caller can tell "not built for this" from "not configured for you".
+    const empty = portFor({ "acct-primary": binding(claudeAdapter, CLAUDE_LINES) }, {});
+    const outcome = await empty.start(apiRoute(), request());
+    expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.accountId" });
+  });
+});
+
+describe("credentials are unrepresentable at this boundary", () => {
+  it("never surfaces a secret the client implementation holds", async () => {
+    const secret = "sk-p83-do-not-emit-0123456789";
+    // The fake spends the secret into the one place a leak would show: the
+    // stream's own content. If any of it reached the trail, the scan below
+    // would find it.
+    const trail = await drain(
+      dualPort(
+        [
+          { kind: "started", resolvedModel: API_MODEL, protocolVersion: API_PROTOCOL },
+          { kind: "text", delta: "a delta that does not name the key" },
+          { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+        ],
+        secret,
+      ),
+      apiRoute(),
+    );
+
+    // Redaction by unrepresentability rather than by filtering: no member of
+    // `ApiStreamRequest` or `ApiStreamingClient` can carry a key, so the port
+    // is never handed one and has nothing to strip. The scan is the evidence,
+    // not the mechanism.
+    expect(JSON.stringify(trail)).not.toContain(secret);
+    expect(JSON.stringify(trail)).not.toContain("sk-");
+    expect(trail.map((event) => event.kind)).toEqual(["started", "text", "usage", "completed"]);
   });
 });
 
@@ -429,7 +671,7 @@ describe("what this transport can and cannot say", () => {
     for await (const _event of second.events()) void _event;
 
     expect(first.sessionId).toBe(second.sessionId);
-    expect(first.sessionId).toBe(cliSessionId(TASK, 1, "acct-primary"));
+    expect(first.sessionId).toBe(executionSessionId(TASK, 1, "acct-primary"));
   });
 
   it("interrupts only sessions it holds, and is idempotent about it", async () => {
