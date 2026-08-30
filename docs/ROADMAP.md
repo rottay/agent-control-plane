@@ -22,6 +22,9 @@ Este roadmap incorpora y supersede operativamente el plan consolidado efímero:
   SHA-256 `a0681ace29d8cdd7ec494b5caffdef2b2211ba4518d54ec5b4839a1b8120642f`;
 - addendum del owner: `/private/tmp/agent-control-plane-owner-addendum-2026-08-27.md`,
   SHA-256 `e37e2c94dc01c33effda13edc7615c31481c1a4facb48c38793e64aff7b5406b`.
+- ruling del owner para P8 (transport-agnostic):
+  `.acp-local/p8-transport-agnostic-owner-ruling.md`, SHA-256
+  `11c7a81a759034405e652eb8af11cf9aa9bca567cbca64ac16de8c4b0cab1ab4`.
 
 Los dos revisores dieron `ACCEPT_WITH_CHANGES`. Sus correcciones quedan
 integradas aquí. No se abre una cadena adicional de reauditorías antes del
@@ -505,6 +508,82 @@ owner.
   (`11c7a81a759034405e652eb8af11cf9aa9bca567cbca64ac16de8c4b0cab1ab4`),
   incorporado a la planificación de P8; su incorporación completa es su
   propio packet de diseño, no este cierre.
+
+#### Addendum vinculante del owner (2026-08-30): ejecución y UI agnósticas de transporte
+
+El owner ruling `.acp-local/p8-transport-agnostic-owner-ruling.md`
+(SHA-256 `11c7a81a759034405e652eb8af11cf9aa9bca567cbca64ac16de8c4b0cab1ab4`)
+es ley de producto para P8. Proveedor, modelo, cuenta, transporte,
+librería de UI, exportador de observabilidad e integraciones de runtime
+durable permanecen reemplazables detrás de contratos propios. La
+certificación pre-cutover ahora exige,
+además de los criterios ya listados:
+
+**Arquitectura vinculante.**
+
+1. El control plane es dueño de routing, selección de rol, política de
+   cuenta/cuota, leases de writer, detección de conflictos, checkpoints y
+   evidencia. Ningún registry de SDK ni gateway se vuelve autoridad de
+   estas decisiones.
+2. Un puerto de ejecución propio (`ModelExecutionPort`) retorna eventos
+   de ejecución normalizados y admite como mínimo: `CLI_SUBSCRIPTION`
+   (transports oficiales/headless de Claude, Kimi y Codex), `API_KEY`
+   (llamadas API de proveedor, opcionalmente vía Vercel AI SDK) y
+   `LOCAL_OR_SELF_HOSTED` (transports locales o compatibles
+   OpenAI, futuros).
+3. La ruta resuelta identifica proveedor, modelo, cuenta, tipo de
+   transporte y versión de la política de capacidad evaluada. Los
+   adapters ejecutan esa ruta exacta; no seleccionan otro modelo ni caen
+   en silencio a uno distinto.
+4. Un registro versionado de capacidad/política vive fuera del código de
+   aplicación: release del modelo, roles elegibles, calidad medida,
+   latencia, contexto, soporte de modalidad/herramientas, disponibilidad
+   de transporte, confianza de cuota/reset por cuenta, costo cuando
+   aplique, fecha de evaluación y fallbacks permitidos. Actualizar las
+   preferencias de modelo nunca requiere cambiar código de orquestación.
+5. Restate sigue siendo un adapter de runtime durable reemplazable; el
+   ledger append-only sigue canónico. Restate aporta llamadas durables,
+   reintentos, reattachment y concurrencia de sesión sólo tras los drills
+   de reconciliación/idempotencia; el fallback documentado del supervisor
+   SQLite sigue válido.
+6. Vercel AI SDK Core es opcional y restringido a adapters API-backed. La
+   operación por CLI de suscripción no depende de API key, de AI Gateway
+   ni de una cuenta API paga.
+7. AI SDK UI sólo en el borde de presentación (estado de chat, partes de
+   mensaje tipadas, streaming, render de herramientas/estado), conectado
+   por un transport propio a la API/ingress del control plane. El estado
+   de AI SDK UI nunca es estado de ejecución canónico.
+8. Las operaciones largas usan invocación durable fire-and-forget,
+   idempotency keys, invocation IDs, reattachment y actualizaciones
+   SSE/pubsub. Cerrar o reabrir la UI no cancela ni duplica una
+   ejecución.
+9. La observabilidad emite primero eventos neutrales compatibles con
+   OpenTelemetry/OpenInference. Langfuse puede ser el primer exportador
+   opcional; ningún vendor de observabilidad se vuelve requerido para
+   routing, recuperación o evidencia.
+10. El cambio de cuenta queda dentro de los adapters de
+    cuenta/transporte. Cambiar entre cuentas de suscripción o mover una
+    ruta de CLI a API preserva la misma identidad de tarea/checkpoint y
+    nunca expone credenciales en eventos, prompts, logs ni UI.
+
+**Criterios de aceptación añadidos.**
+
+- El mismo fixture de conformidad ejecuta a través de al menos un adapter
+  `CLI_SUBSCRIPTION` y un adapter `API_KEY` (fake o real), produciendo el
+  mismo contrato de eventos/lifecycle normalizado.
+- Retirar o deshabilitar AI SDK, Restate y el exportador de
+  observabilidad, independientemente, deja operativos los caminos de
+  fallback documentados.
+- Una actualización de la política de routing cambia el modelo elegible
+  elegido sin cambios de código fuente y registra la versión de política
+  usada.
+- La reconexión de la UI prueba que no hay invocación duplicada y que la
+  recuperación tras un reinicio del frontend es correcta.
+- Las credenciales API y de suscripción aparecen redactadas en eventos,
+  checkpoints, logs, trazas y UI.
+- No hay cutover ni participación de Modern Rescue antes de que pasen
+  todos los criterios P8 originales más estas adiciones y el owner
+  autorice P9 explícitamente.
 
 ### P9 — Cutover explícito y reversible
 

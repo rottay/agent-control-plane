@@ -1200,6 +1200,29 @@ const P7I3_WRITE_SET = [
 const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architecture.mjs"];
 
 /**
+ * P8: the complete product and its pre-cutover certification.
+ *
+ * P8-D opens the phase with design rather than code: it incorporates the
+ * owner's transport-agnostic ruling into the roadmap as binding product law,
+ * so the certification criteria are written down before anything is built
+ * against them. Provider, model, account, transport, UI library, observability
+ * exporter and durable-runtime integrations all stay replaceable behind owned
+ * contracts, and the roadmap now says so where a reader of the phase will find
+ * it.
+ *
+ * The Estado line does not move here. P8 opens as *next* and stays that way
+ * until the phase's own closure: incorporating the criteria a phase will be
+ * judged against is not the same as meeting them, and a status line that
+ * moved on a design packet would say it was.
+ *
+ * P8 is therefore **2 packet entries across 2 distinct paths** so far — P8-D
+ * is the only array in the phase and repeats nothing within it. This file's
+ * appearances in earlier phases are counted in those phases, since the
+ * standing convention scopes the arithmetic to the phase.
+ */
+const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -1456,6 +1479,7 @@ const WRITE_SET = [
   ...P7I2_WRITE_SET,
   ...P7I3_WRITE_SET,
   ...P7IE_WRITE_SET,
+  ...P8D_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -1484,7 +1508,7 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "591bc6512cda220595ce0b5d3435bd4e840109742f549413bc269b87f71042f7";
+  "162aa28e0c6765669b40de7a64b10b06fd18520a28383138f1b980bda56da971";
 
 /**
  * The Estado line P7 closure is allowed to have produced.
