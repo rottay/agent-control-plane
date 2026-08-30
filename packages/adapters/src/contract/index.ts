@@ -1,3 +1,4 @@
+import { CLI_SUBSCRIPTION_PROVIDERS } from "@acp/contracts";
 import type { WorkerIdentityString } from "@acp/contracts";
 
 import { AdapterError } from "../errors/index.js";
@@ -12,12 +13,27 @@ import { AdapterError } from "../errors/index.js";
  * the boundary wrong.
  */
 
-export type ProviderName = "claude" | "kimi" | "codex";
+/**
+ * The providers this package can speak to.
+ *
+ * Derived from `@acp/contracts` rather than declared here. There is one
+ * canonical CLI provider vocabulary in the repository and it lives in the
+ * package that imports nothing and that everything imports; an adapter's own
+ * union restating it is a second list, and two lists drift. The direction is
+ * the only lawful one — adapters already depend on contracts, and contracts
+ * must never depend on adapters.
+ */
+export type ProviderName = (typeof CLI_SUBSCRIPTION_PROVIDERS)[number];
 
+/**
+ * The same vocabulary as a frozen runtime value.
+ *
+ * A copy of the canonical list, not a second declaration of it: the elements
+ * and their order come from the contract, and a test pins the equality in both
+ * directions so a name cannot be added or dropped on one side alone.
+ */
 export const PROVIDER_NAMES: readonly ProviderName[] = Object.freeze([
-  "claude",
-  "codex",
-  "kimi",
+  ...CLI_SUBSCRIPTION_PROVIDERS,
 ]);
 
 // ---------------------------------------------------------------------------

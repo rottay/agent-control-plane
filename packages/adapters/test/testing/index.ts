@@ -148,3 +148,31 @@ export const fakeAdapter: ProviderAdapter = {
 };
 
 export { EMPTY_CURSOR };
+/**
+ * A real adapter's parser, driven by a scripted process. (P8-2, N1.)
+ *
+ * The conformance fixture has to answer one question: do the three landed CLI
+ * adapters normalize the same logical scenario into the same trail? Answering
+ * it with three *fake* parsers would answer a different question — whether one
+ * fake agrees with itself. So the adapter under test stays real: its `parse`,
+ * its `negotiate` and its `provider` are the shipped ones, and only `describe`
+ * is replaced, so the child process is a scripted Node program speaking that
+ * provider's own wire format instead of a provider binary nobody may run here.
+ *
+ * What this proves is exactly the parsers and the normalization. It proves
+ * nothing about any real provider, which is why the capability model still
+ * refuses to let evidence from here confirm anything.
+ */
+export function scriptedAdapter(base: ProviderAdapter, script: FakeScript): ProviderAdapter {
+  return {
+    ...base,
+    describe(request: SessionRequest): SessionDescriptor {
+      return {
+        provider: base.provider,
+        argv: fakeProviderArgv(script),
+        env: { PATH: "/usr/bin:/bin" },
+        cwd: request.workdir,
+      };
+    },
+  };
+}

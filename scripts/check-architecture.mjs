@@ -1221,10 +1221,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * P8-W is the runtime wiring that makes the contracts and the P7I folds
  * load-bearing.
  *
- * P8 is therefore **37 packet entries across 35 distinct paths**: 2 (P8-D) +
- * 4 (P8-1) + 31 (P8-W) = 37 entries; the only repeat is
- * `scripts/check-architecture.mjs` itself, named by all three packets and
- * contributing 2 duplicate entries. So 37 - 2 = 35 distinct paths. This
+ * P8-2 binds the first transport to the boundary P8-1 declared, and re-points
+ * the adapters' own provider union at the contracts' vocabulary so there is
+ * one canonical list rather than two that agree today.
+ *
+ * P8 is therefore **44 packet entries across 41 distinct paths**: 2 (P8-D) +
+ * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) = 44 entries; the only repeat is
+ * `scripts/check-architecture.mjs` itself, named by all four packets and
+ * contributing 3 duplicate entries. So 44 - 3 = 41 distinct paths. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1297,6 +1301,30 @@ const P8W_WRITE_SET = [
   "packages/daemon/test/launchd/lifecycle/index.test.ts",
   "packages/daemon/test/drills/index.test.ts",
   "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-2: the CLI subscription binding of the execution port.
+ *
+ * The contracts' `ModelExecutionPort` implemented over the landed session
+ * machinery, with the admitted binary, configuration root, working directory
+ * and budgets arriving per account at binding time rather than inside the
+ * contract's strict `ExecutionRequest`. The adapters' `ProviderName` re-points
+ * at `CLI_SUBSCRIPTION_PROVIDERS` in the same packet: one canonical list, in
+ * the only lawful direction, since adapters already depend on contracts.
+ *
+ * No new dependency edge. The package's pinned import surface stays
+ * `@acp/contracts` alone, which is what makes the port a binding rather than a
+ * widening.
+ */
+const P82_WRITE_SET = [
+  "packages/adapters/src/execution-port/index.ts",
+  "packages/adapters/src/contract/index.ts",
+  "packages/adapters/src/index.ts",
+  "packages/adapters/test/execution-port/index.test.ts",
+  "packages/adapters/test/contract/index.test.ts",
+  "packages/adapters/test/testing/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1560,6 +1588,7 @@ const WRITE_SET = [
   ...P8D_WRITE_SET,
   ...P81_WRITE_SET,
   ...P8W_WRITE_SET,
+  ...P82_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -4509,6 +4538,14 @@ const ADAPTERS_PUBLIC_EXPORTS = [
   "descriptorEnablesWrites",
   "isReadOnlyIdentity",
   "startSession",
+  // P8-2: the execution port. The admitted values arrive per account through
+  // `CliBinding`, so the contract's request stays transport-neutral.
+  "CliBinding",
+  "CliExecutionPortInput",
+  "CLI_TRANSPORT_KIND",
+  "cliSessionId",
+  "createCliExecutionPort",
+  "toExecutionEvent",
   // P4B
   "CLAUDE_STREAM_PROTOCOL",
   "claudeAdapter",

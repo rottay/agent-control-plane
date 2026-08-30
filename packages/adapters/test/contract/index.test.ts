@@ -1,3 +1,4 @@
+import { CLI_SUBSCRIPTION_PROVIDERS } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -10,7 +11,7 @@ import {
   isLegalTransition,
   unknownCapabilities,
 } from "../../src/contract/index.js";
-import type { CapabilityEvidence } from "../../src/contract/index.js";
+import type { CapabilityEvidence, ProviderName } from "../../src/contract/index.js";
 import { ADAPTER_ERROR_CODES, AdapterError } from "../../src/errors/index.js";
 
 const CONTEXT = { provider: "claude", taskId: "00000000-0000-4000-8000-00000000000a" };
@@ -27,6 +28,30 @@ describe("the session state machine is a closed table", () => {
       "STREAMING",
     ]);
     expect([...PROVIDER_NAMES]).toEqual(["claude", "codex", "kimi"]);
+  });
+
+  /**
+   * The re-point (P8-2), pinned in both directions.
+   *
+   * `ProviderName` no longer declares a union here; it is derived from the
+   * contracts' `CLI_SUBSCRIPTION_PROVIDERS`, which is the one canonical CLI
+   * provider vocabulary in the repository. Equality is asserted as a list, not
+   * as membership: order carries too, so neither side can gain, lose or
+   * reorder a name without this failing. Two lists that merely happen to agree
+   * today is exactly the drift the re-point removes.
+   */
+  it("derives the provider vocabulary from the contract, order included", () => {
+    expect([...PROVIDER_NAMES]).toEqual([...CLI_SUBSCRIPTION_PROVIDERS]);
+    // Frozen, and a copy rather than the contract's own array: freezing the
+    // shared literal would reach across a package boundary to mutate it.
+    expect(Object.isFrozen(PROVIDER_NAMES)).toBe(true);
+    expect(PROVIDER_NAMES).not.toBe(CLI_SUBSCRIPTION_PROVIDERS);
+
+    // The type is the contract's too. This line does not merely compile — it
+    // fails to compile if `ProviderName` ever stops matching, which is the
+    // half of the re-point no runtime assertion can reach.
+    const roundTrip: readonly ProviderName[] = [...CLI_SUBSCRIPTION_PROVIDERS];
+    expect(roundTrip).toEqual([...PROVIDER_NAMES]);
   });
 
   it("permits exactly the legal moves", () => {

@@ -92,6 +92,20 @@ export { admitBinary } from "./process/spawn/index.js";
 export type { AdapterSession } from "./session/index.js";
 export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./session/index.js";
 
+// P8-2: the CLI subscription binding of the contracts' `ModelExecutionPort`.
+// The port is the only thing here that a control plane talks to; the session
+// machinery above stays available because the drills and the daemon use it
+// directly. Admitted binaries, configuration roots, working directories and
+// budgets arrive per account at binding time, never inside the contract's
+// strict `ExecutionRequest`.
+export type { CliBinding, CliExecutionPortInput } from "./execution-port/index.js";
+export {
+  CLI_TRANSPORT_KIND,
+  cliSessionId,
+  createCliExecutionPort,
+  toExecutionEvent,
+} from "./execution-port/index.js";
+
 // P4B: the Claude headless descriptor. Kimi and Codex arrive in P4C and P4D.
 // Every Claude capability leaves P4 `UNKNOWN`: the adapter is complete, the
 // warranty about the provider's protocol is what no authorized evidence could
