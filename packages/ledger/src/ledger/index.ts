@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 
-import { ControlPlaneEvent } from "@acp/contracts";
+import { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 
 import {
   GENESIS_SHA256,
@@ -25,6 +25,7 @@ import {
 import {
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
+  INITIATIVE_PROJECTION_NAMES,
   MIGRATIONS,
   PROJECTION_NAMES,
   SCHEMA_MIGRATIONS_DDL,
@@ -35,11 +36,16 @@ import {
 } from "../migrations/index.js";
 import {
   applyEventToSnapshot,
+  applyInitiativeEventToSnapshot,
+  createInitiativeProjectionSnapshot,
   createProjectionSnapshot,
+  nextInitiativeProjection,
+  nextRoadmapVersionProjection,
   nextTaskProjection,
   nextWorkerProjection,
   nextWorkerTaskProjection,
   workerTaskKey,
+  type InitiativeProjectionSnapshot,
   type ProjectionSnapshot,
   type WorkerTaskProjection,
 } from "../projection/index.js";
@@ -48,6 +54,11 @@ import type {
   AppliedMigration,
   EventPage,
   EventQuery,
+  InitiativeAppendResult,
+  InitiativeEventPage,
+  InitiativeEventQuery,
+  InitiativeEventRecord,
+  InitiativeReadModel,
   IntegrityProblem,
   IntegrityReport,
   LedgerEventRecord,
@@ -56,6 +67,7 @@ import type {
   OpenLedgerOptions,
   ProjectionStatus,
   RebuildResult,
+  RoadmapVersionReadModel,
   TaskPage,
   TaskQuery,
   TaskReadModel,
@@ -86,6 +98,15 @@ const HEAD_SEQUENCE = "head_sequence";
 const HEAD_EVENT_SHA256 = "head_event_sha256";
 const EVENT_COUNT = "event_count";
 
+const INITIATIVE_EVENT_COLUMNS =
+  "sequence, event_id, idempotency_key, initiative_id, transition_id, type, " +
+  "from_status, to_status, emitted_by, occurred_at, recorded_at, contract_version, " +
+  "event_json, previous_sha256, event_sha256";
+
+const INITIATIVE_HEAD_SEQUENCE = "initiative_head_sequence";
+const INITIATIVE_HEAD_EVENT_SHA256 = "initiative_head_event_sha256";
+const INITIATIVE_EVENT_COUNT = "initiative_event_count";
+
 interface EventRow {
   readonly sequence: number;
   readonly event_id: string;
@@ -107,8 +128,54 @@ interface EventRow {
   readonly event_sha256: string;
 }
 
+interface InitiativeEventRow {
+  readonly sequence: number;
+  readonly event_id: string;
+  readonly idempotency_key: string;
+  readonly initiative_id: string;
+  readonly transition_id: string;
+  readonly type: string;
+  readonly from_status: string | null;
+  readonly to_status: string;
+  readonly emitted_by: string;
+  readonly occurred_at: string;
+  readonly recorded_at: string;
+  readonly contract_version: string;
+  readonly event_json: string;
+  readonly previous_sha256: string;
+  readonly event_sha256: string;
+}
+
+interface InitiativeRow {
+  readonly initiative_id: string;
+  readonly current_status: string;
+  readonly event_count: number;
+  readonly first_sequence: number;
+  readonly last_sequence: number;
+  readonly last_event_id: string;
+  readonly last_event_type: string;
+  readonly last_transition_id: string;
+  readonly last_emitted_by: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+interface RoadmapVersionRow {
+  readonly roadmap_version_id: string;
+  readonly initiative_id: string;
+  readonly version: number;
+  readonly content_digest: string;
+  readonly parent_version_id: string | null;
+  readonly kind: string;
+  readonly restores_version_id: string | null;
+  readonly recorded_by: string;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
 interface TaskRow {
   readonly task_id: string;
+  readonly initiative_id: string | null;
   readonly current_state: string;
   readonly latest_attempt: number;
   readonly event_count: number;
@@ -189,6 +256,7 @@ function toValidationIssues(issues: readonly { path: PropertyKey[]; message: str
 function taskRowToModel(row: TaskRow): TaskReadModel {
   return {
     taskId: row.task_id,
+    initiativeId: row.initiative_id,
     currentState: row.current_state as TaskReadModel["currentState"],
     latestAttempt: row.latest_attempt,
     eventCount: row.event_count,
@@ -222,6 +290,37 @@ function workerRowToModel(row: WorkerRow): WorkerReadModel {
   };
 }
 
+function initiativeRowToModel(row: InitiativeRow): InitiativeReadModel {
+  return {
+    initiativeId: row.initiative_id,
+    currentStatus: row.current_status as InitiativeReadModel["currentStatus"],
+    eventCount: row.event_count,
+    firstSequence: row.first_sequence,
+    lastSequence: row.last_sequence,
+    lastEventId: row.last_event_id,
+    lastEventType: row.last_event_type as InitiativeReadModel["lastEventType"],
+    lastTransitionId: row.last_transition_id,
+    lastEmittedBy: row.last_emitted_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function roadmapVersionRowToModel(row: RoadmapVersionRow): RoadmapVersionReadModel {
+  return {
+    roadmapVersionId: row.roadmap_version_id,
+    initiativeId: row.initiative_id,
+    version: row.version,
+    contentDigest: row.content_digest,
+    parentVersionId: row.parent_version_id,
+    kind: row.kind as RoadmapVersionReadModel["kind"],
+    restoresVersionId: row.restores_version_id,
+    recordedBy: row.recorded_by,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
+}
+
 function boundedLimit(requested: number | undefined, label: string): number {
   if (requested === undefined) return DEFAULT_PAGE_LIMIT;
   if (!Number.isInteger(requested) || requested < 1 || requested > MAX_PAGE_LIMIT) {
@@ -232,8 +331,20 @@ function boundedLimit(requested: number | undefined, label: string): number {
   return requested;
 }
 
-/** The closed set of projection names this build defines. */
-const PROJECTION_NAME_SET: ReadonlySet<string> = new Set(PROJECTION_NAMES);
+/**
+ * The closed set of projection names this build defines, across both streams.
+ *
+ * The two streams keep separate name lists because each projection is level
+ * with its own chain, but membership is one question — a projection_meta row
+ * naming anything outside this set describes a build that is not this one.
+ */
+const PROJECTION_NAME_SET: ReadonlySet<string> = new Set([
+  ...PROJECTION_NAMES,
+  ...INITIATIVE_PROJECTION_NAMES,
+]);
+
+/** Which stream a projection follows. */
+const INITIATIVE_PROJECTION_NAME_SET: ReadonlySet<string> = new Set(INITIATIVE_PROJECTION_NAMES);
 
 /**
  * Render a database-supplied name safely for a diagnostic.
@@ -432,6 +543,56 @@ export class Ledger {
     this.#writeMeta(HEAD_SEQUENCE, String(sequence));
     this.#writeMeta(HEAD_EVENT_SHA256, sha256);
     this.#writeMeta(EVENT_COUNT, String(count));
+  }
+
+  /**
+   * The initiative stream's head, read with the same suspicion as the task
+   * stream's: a meta row that is missing or is not a count is a corrupted
+   * ledger, not a default to paper over.
+   */
+  #readInitiativeHead(): HeadState {
+    const meta = this.#readMetaMap();
+    const sequenceText = meta.get(INITIATIVE_HEAD_SEQUENCE);
+    const shaText = meta.get(INITIATIVE_HEAD_EVENT_SHA256);
+    const countText = meta.get(INITIATIVE_EVENT_COUNT);
+
+    if (sequenceText === undefined || shaText === undefined || countText === undefined) {
+      throw new LedgerIntegrityError(["ledger_meta is missing an initiative head or count row"]);
+    }
+    const sequence = Number(sequenceText);
+    const count = Number(countText);
+    if (!Number.isInteger(sequence) || sequence < 0 || !Number.isInteger(count) || count < 0) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds an initiative head or count that is not a count",
+      ]);
+    }
+    if (!/^[0-9a-f]{64}$/.test(shaText)) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds an initiative head digest that is not a sha-256",
+      ]);
+    }
+    return { sequence, sha256: shaText, count };
+  }
+
+  #writeInitiativeHead(sequence: number, sha256: string, count: number): void {
+    this.#writeMeta(INITIATIVE_HEAD_SEQUENCE, String(sequence));
+    this.#writeMeta(INITIATIVE_HEAD_EVENT_SHA256, sha256);
+    this.#writeMeta(INITIATIVE_EVENT_COUNT, String(count));
+  }
+
+  #writeInitiativeProjectionMeta(
+    appliedThroughSequence: number,
+    eventCount: number,
+    sourceHeadSha256: string,
+    updatedAt: string,
+  ): void {
+    const update = this.#stmt(
+      "UPDATE projection_meta SET applied_through_sequence = ?, event_count = ?, " +
+        "source_head_sha256 = ?, updated_at = ? WHERE name = ?",
+    );
+    for (const name of INITIATIVE_PROJECTION_NAMES) {
+      update.run(appliedThroughSequence, eventCount, sourceHeadSha256, updatedAt, name);
+    }
   }
 
   #writeProjectionMeta(
@@ -765,11 +926,12 @@ export class Ledger {
   #upsertTask(task: TaskReadModel): void {
     this.#stmt(
       "INSERT INTO task_read_model (" +
-        "task_id, current_state, latest_attempt, event_count, first_sequence, last_sequence, " +
-        "last_event_id, last_event_type, last_transition_id, last_emitted_by, created_at, " +
-        "updated_at, is_terminal" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "task_id, initiative_id, current_state, latest_attempt, event_count, first_sequence, " +
+        "last_sequence, last_event_id, last_event_type, last_transition_id, last_emitted_by, " +
+        "created_at, updated_at, is_terminal" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (task_id) DO UPDATE SET " +
+        "initiative_id = excluded.initiative_id, " +
         "current_state = excluded.current_state, latest_attempt = excluded.latest_attempt, " +
         "event_count = excluded.event_count, last_sequence = excluded.last_sequence, " +
         "last_event_id = excluded.last_event_id, last_event_type = excluded.last_event_type, " +
@@ -778,6 +940,7 @@ export class Ledger {
         "is_terminal = excluded.is_terminal",
     ).run(
       task.taskId,
+      task.initiativeId,
       task.currentState,
       task.latestAttempt,
       task.eventCount,
@@ -827,6 +990,246 @@ export class Ledger {
         "ON CONFLICT (identity, task_id) DO UPDATE SET " +
         "event_count = excluded.event_count, last_sequence = excluded.last_sequence",
     ).run(pair.identity, pair.taskId, pair.eventCount, pair.lastSequence);
+  }
+
+  // -------------------------------------------------------------------------
+  // The initiative stream
+  // -------------------------------------------------------------------------
+
+  /**
+   * Append one initiative event.
+   *
+   * The same pipeline as the task stream, on its own chain: contract-parse,
+   * idempotent replay, the contiguity guard, chain, insert at this stream's
+   * own head + 1, project — all inside one immediate transaction. The two
+   * streams share a database and a transaction discipline but never a
+   * sequence, a digest chain or a head, because an initiative registration is
+   * not an event about a task and must not be able to move the task stream's
+   * head.
+   */
+  appendInitiativeEvent(candidate: unknown): InitiativeAppendResult {
+    this.#assertOpen("appendInitiativeEvent");
+    this.#assertWritable("appendInitiativeEvent");
+
+    const parsed = InitiativeEvent.safeParse(candidate);
+    if (!parsed.success) {
+      throw new LedgerValidationError(toValidationIssues(parsed.error.issues));
+    }
+    const event = parsed.data;
+    const canonicalJson = canonicalJsonStringify(event);
+
+    const run = this.#db.transaction(
+      (): InitiativeAppendResult => this.#appendInitiativeInTransaction(event, canonicalJson),
+    );
+    return run.immediate();
+  }
+
+  #appendInitiativeInTransaction(
+    event: InitiativeEvent,
+    canonicalJson: string,
+  ): InitiativeAppendResult {
+    const existingByKey = this.#stmt(
+      "SELECT " + INITIATIVE_EVENT_COLUMNS + " FROM initiative_events WHERE idempotency_key = ?",
+    ).get(event.idempotencyKey) as InitiativeEventRow | undefined;
+
+    if (existingByKey !== undefined) {
+      if (existingByKey.event_json === canonicalJson) {
+        return { inserted: false, record: this.#initiativeRowToRecord(existingByKey) };
+      }
+      throw new LedgerIdempotencyConflictError(
+        event.idempotencyKey,
+        sha256Hex(existingByKey.event_json),
+        sha256Hex(canonicalJson),
+      );
+    }
+
+    const existingById = this.#stmt(
+      "SELECT idempotency_key FROM initiative_events WHERE event_id = ?",
+    ).get(event.eventId) as { readonly idempotency_key: string } | undefined;
+
+    if (existingById !== undefined) {
+      throw new LedgerEventIdConflictError(
+        event.eventId,
+        existingById.idempotency_key,
+        event.idempotencyKey,
+      );
+    }
+
+    // The contiguity guard, mirroring the task stream's: the claimed prior
+    // status must be the one the projection actually holds. The DDL allows a
+    // null from_status because the first event of an initiative has none; that
+    // the null is lawful only there is enforced here, where the projection is
+    // visible, and by the contract, which ties it to INITIATIVE_REGISTERED.
+    const initiative = this.#stmt(
+      "SELECT current_status FROM initiative_read_model WHERE initiative_id = ?",
+    ).get(event.initiativeId) as { readonly current_status: string } | undefined;
+
+    if (initiative === undefined) {
+      if (event.fromStatus !== null) {
+        throw new LedgerLifecycleConflictError(event.initiativeId, event.fromStatus, null);
+      }
+    } else if (event.fromStatus !== initiative.current_status) {
+      throw new LedgerLifecycleConflictError(
+        event.initiativeId,
+        event.fromStatus,
+        initiative.current_status,
+      );
+    }
+
+    const head = this.#readInitiativeHead();
+    const previousSha256 = head.sha256;
+    const eventSha256 = chainDigest(previousSha256, canonicalJson);
+    const expectedSequence = head.sequence + 1;
+
+    const info = this.#stmt(
+      "INSERT INTO initiative_events (" +
+        "event_id, idempotency_key, initiative_id, transition_id, type, from_status, " +
+        "to_status, emitted_by, occurred_at, recorded_at, contract_version, event_json, " +
+        "previous_sha256, event_sha256" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      event.eventId,
+      event.idempotencyKey,
+      event.initiativeId,
+      event.transitionId,
+      event.type,
+      event.fromStatus,
+      event.toStatus,
+      event.emittedBy,
+      event.occurredAt,
+      event.recordedAt,
+      event.contractVersion,
+      canonicalJson,
+      previousSha256,
+      eventSha256,
+    );
+
+    // AUTOINCREMENT is per table, but both streams share one rowid space only
+    // in the sense that each has its own; the check is the same one the task
+    // stream makes, and for the same reason.
+    const sequence = Number(info.lastInsertRowid);
+    if (sequence !== expectedSequence) {
+      throw new LedgerSequenceError(expectedSequence, sequence);
+    }
+
+    this.#faults.beforeProjection?.();
+
+    this.#projectInitiativeEvent(event, sequence);
+    this.#writeInitiativeHead(sequence, eventSha256, head.count + 1);
+    this.#writeInitiativeProjectionMeta(
+      sequence,
+      head.count + 1,
+      eventSha256,
+      event.recordedAt,
+    );
+
+    this.#faults.beforeAppendCommit?.();
+
+    return {
+      inserted: true,
+      record: {
+        sequence,
+        eventId: event.eventId,
+        idempotencyKey: event.idempotencyKey,
+        event,
+        canonicalJson,
+        previousSha256,
+        eventSha256,
+      },
+    };
+  }
+
+  /** Incremental projection of the initiative stream. Same rules as replay. */
+  #projectInitiativeEvent(event: InitiativeEvent, sequence: number): void {
+    const current = this.#stmt(
+      "SELECT * FROM initiative_read_model WHERE initiative_id = ?",
+    ).get(event.initiativeId) as InitiativeRow | undefined;
+
+    this.#upsertInitiative(
+      nextInitiativeProjection(
+        current === undefined ? null : initiativeRowToModel(current),
+        event,
+        sequence,
+      ),
+    );
+
+    const version = nextRoadmapVersionProjection(event, sequence);
+    if (version !== null) this.#upsertRoadmapVersion(version);
+  }
+
+  #upsertInitiative(initiative: InitiativeReadModel): void {
+    this.#stmt(
+      "INSERT INTO initiative_read_model (" +
+        "initiative_id, current_status, event_count, first_sequence, last_sequence, " +
+        "last_event_id, last_event_type, last_transition_id, last_emitted_by, created_at, " +
+        "updated_at" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (initiative_id) DO UPDATE SET " +
+        "current_status = excluded.current_status, event_count = excluded.event_count, " +
+        "last_sequence = excluded.last_sequence, last_event_id = excluded.last_event_id, " +
+        "last_event_type = excluded.last_event_type, " +
+        "last_transition_id = excluded.last_transition_id, " +
+        "last_emitted_by = excluded.last_emitted_by, updated_at = excluded.updated_at",
+    ).run(
+      initiative.initiativeId,
+      initiative.currentStatus,
+      initiative.eventCount,
+      initiative.firstSequence,
+      initiative.lastSequence,
+      initiative.lastEventId,
+      initiative.lastEventType,
+      initiative.lastTransitionId,
+      initiative.lastEmittedBy,
+      initiative.createdAt,
+      initiative.updatedAt,
+    );
+  }
+
+  #upsertRoadmapVersion(version: RoadmapVersionReadModel): void {
+    this.#stmt(
+      "INSERT INTO roadmap_version_read_model (" +
+        "roadmap_version_id, initiative_id, version, content_digest, parent_version_id, " +
+        "kind, restores_version_id, recorded_by, recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (roadmap_version_id) DO UPDATE SET " +
+        "initiative_id = excluded.initiative_id, version = excluded.version, " +
+        "content_digest = excluded.content_digest, " +
+        "parent_version_id = excluded.parent_version_id, kind = excluded.kind, " +
+        "restores_version_id = excluded.restores_version_id, " +
+        "recorded_by = excluded.recorded_by, recorded_at = excluded.recorded_at, " +
+        "sequence = excluded.sequence",
+    ).run(
+      version.roadmapVersionId,
+      version.initiativeId,
+      version.version,
+      version.contentDigest,
+      version.parentVersionId,
+      version.kind,
+      version.restoresVersionId,
+      version.recordedBy,
+      version.recordedAt,
+      version.sequence,
+    );
+  }
+
+  #initiativeRowToRecord(row: InitiativeEventRow): InitiativeEventRecord {
+    const parsed = InitiativeEvent.safeParse(JSON.parse(row.event_json));
+    if (!parsed.success) {
+      throw new LedgerIntegrityError([
+        "initiative event at sequence " +
+          String(row.sequence) +
+          " no longer satisfies the contract",
+      ]);
+    }
+    return {
+      sequence: row.sequence,
+      eventId: row.event_id,
+      idempotencyKey: row.idempotency_key,
+      event: parsed.data,
+      canonicalJson: row.event_json,
+      previousSha256: row.previous_sha256,
+      eventSha256: row.event_sha256,
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -928,6 +1331,181 @@ export class Ledger {
     return { problems, checked, lastSequence: cursor, lastSha256: previous };
   }
 
+  /**
+   * Walk the initiative stream the way `#replay` walks the task stream.
+   *
+   * Separate rather than generic: the two streams have different columns,
+   * different coordinate checks and different contracts, and a shared walker
+   * would have to be told which at every step. What they do share — the
+   * canonical-form check, the chain arithmetic, the contiguity rule — is
+   * mirrored deliberately, and a divergence between them is a defect.
+   */
+  #replayInitiative(onEvent: (event: InitiativeEvent, row: InitiativeEventRow) => void): ReplayOutcome {
+    const problems: IntegrityProblem[] = [];
+    let checked = 0;
+    let previous = GENESIS_SHA256;
+    let expectedSequence = 1;
+    let cursor = 0;
+
+    const select = this.#stmt(
+      "SELECT " +
+        INITIATIVE_EVENT_COLUMNS +
+        " FROM initiative_events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?",
+    );
+
+    for (;;) {
+      const rows = select.all(cursor, REPLAY_BATCH_SIZE) as InitiativeEventRow[];
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        cursor = row.sequence;
+
+        if (row.sequence !== expectedSequence) {
+          problems.push({
+            kind: "SEQUENCE",
+            detail:
+              "initiative_events expected sequence " +
+              String(expectedSequence) +
+              " but found " +
+              String(row.sequence) +
+              ", so the stream is not contiguous",
+            sequence: row.sequence,
+          });
+          expectedSequence = row.sequence;
+        }
+        expectedSequence += 1;
+        checked += 1;
+
+        const shapeProblems = this.#validateInitiativeRowShape(row);
+        if (shapeProblems.length > 0) problems.push(...shapeProblems);
+
+        if (row.previous_sha256 !== previous) {
+          problems.push({
+            kind: "HASH_CHAIN",
+            detail:
+              "initiative sequence " +
+              String(row.sequence) +
+              " records previous digest " +
+              row.previous_sha256 +
+              " but the chain has reached " +
+              previous,
+            sequence: row.sequence,
+          });
+        }
+
+        const recomputed = chainDigest(row.previous_sha256, row.event_json);
+        if (recomputed !== row.event_sha256) {
+          problems.push({
+            kind: "HASH_CHAIN",
+            detail:
+              "initiative sequence " +
+              String(row.sequence) +
+              " records digest " +
+              row.event_sha256 +
+              " but its stored content hashes to " +
+              recomputed,
+            sequence: row.sequence,
+          });
+        }
+
+        previous = row.event_sha256;
+
+        if (shapeProblems.length === 0) {
+          const parsed = InitiativeEvent.safeParse(JSON.parse(row.event_json));
+          if (parsed.success) onEvent(parsed.data, row);
+        }
+      }
+    }
+
+    return { problems, checked, lastSequence: cursor, lastSha256: previous };
+  }
+
+  #validateInitiativeRowShape(row: InitiativeEventRow): IntegrityProblem[] {
+    const problems: IntegrityProblem[] = [];
+
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(row.event_json);
+    } catch {
+      problems.push({
+        kind: "EVENT_JSON",
+        detail:
+          "initiative sequence " +
+          String(row.sequence) +
+          " holds event_json that is not valid JSON",
+        sequence: row.sequence,
+      });
+      return problems;
+    }
+
+    let canonical: string;
+    try {
+      canonical = canonicalJsonStringify(decoded);
+    } catch {
+      problems.push({
+        kind: "EVENT_JSON",
+        detail:
+          "initiative sequence " +
+          String(row.sequence) +
+          " holds event_json that is not canonicalizable",
+        sequence: row.sequence,
+      });
+      return problems;
+    }
+
+    if (canonical !== row.event_json) {
+      problems.push({
+        kind: "EVENT_JSON",
+        detail:
+          "initiative sequence " +
+          String(row.sequence) +
+          " holds event_json that is not in canonical form, so it was rewritten after it was appended",
+        sequence: row.sequence,
+      });
+    }
+
+    const parsed = InitiativeEvent.safeParse(decoded);
+    if (!parsed.success) {
+      problems.push({
+        kind: "EVENT_CONTRACT",
+        detail:
+          "initiative sequence " +
+          String(row.sequence) +
+          " holds an event that no longer satisfies the InitiativeEvent contract",
+        sequence: row.sequence,
+      });
+      return problems;
+    }
+
+    const event = parsed.data;
+    const mismatches: string[] = [];
+    if (event.eventId !== row.event_id) mismatches.push("event_id");
+    if (event.idempotencyKey !== row.idempotency_key) mismatches.push("idempotency_key");
+    if (event.initiativeId !== row.initiative_id) mismatches.push("initiative_id");
+    if (event.transitionId !== row.transition_id) mismatches.push("transition_id");
+    if (event.type !== row.type) mismatches.push("type");
+    if (event.fromStatus !== row.from_status) mismatches.push("from_status");
+    if (event.toStatus !== row.to_status) mismatches.push("to_status");
+    if (event.emittedBy !== row.emitted_by) mismatches.push("emitted_by");
+    if (event.occurredAt !== row.occurred_at) mismatches.push("occurred_at");
+    if (event.recordedAt !== row.recorded_at) mismatches.push("recorded_at");
+    if (event.contractVersion !== row.contract_version) mismatches.push("contract_version");
+
+    if (mismatches.length > 0) {
+      problems.push({
+        kind: "EVENT_COORDINATES",
+        detail:
+          "initiative sequence " +
+          String(row.sequence) +
+          " has indexed columns that disagree with its stored event: " +
+          mismatches.join(", "),
+        sequence: row.sequence,
+      });
+    }
+
+    return problems;
+  }
+
   // -------------------------------------------------------------------------
   // Rebuild
   // -------------------------------------------------------------------------
@@ -958,7 +1536,47 @@ export class Ledger {
         lastRecordedAt = event.recordedAt;
       });
 
-      const problems = replay.problems.map((problem) => problem.detail);
+      // Both chains are replayed before anything is cleared, and both are
+      // required to be sound: a rebuild that repaired one stream while the
+      // other was corrupt would hand back a clean-looking read model over a
+      // ledger that is not clean.
+      const initiativeSnapshot = createInitiativeProjectionSnapshot();
+      let lastInitiativeRecordedAt = EPOCH_TIMESTAMP;
+
+      const initiativeReplay = this.#replayInitiative((event, row) => {
+        applyInitiativeEventToSnapshot(initiativeSnapshot, event, row.sequence);
+        lastInitiativeRecordedAt = event.recordedAt;
+      });
+
+      const problems = [...replay.problems, ...initiativeReplay.problems].map(
+        (problem) => problem.detail,
+      );
+
+      const initiativeHead = this.#readInitiativeHead();
+      if (initiativeHead.sequence !== initiativeReplay.lastSequence) {
+        problems.push(
+          "initiative head is sequence " +
+            String(initiativeHead.sequence) +
+            " but the last stored initiative event is sequence " +
+            String(initiativeReplay.lastSequence),
+        );
+      }
+      if (initiativeHead.sha256 !== initiativeReplay.lastSha256) {
+        problems.push(
+          "initiative head digest " +
+            initiativeHead.sha256 +
+            " does not match the replayed initiative chain head",
+        );
+      }
+      if (initiativeHead.count !== initiativeReplay.checked) {
+        problems.push(
+          "initiative head counts " +
+            String(initiativeHead.count) +
+            " events but " +
+            String(initiativeReplay.checked) +
+            " are stored",
+        );
+      }
 
       const head = this.#readHead();
       if (head.sequence !== replay.lastSequence) {
@@ -1001,11 +1619,24 @@ export class Ledger {
       for (const worker of snapshot.workers.values()) this.#upsertWorker(worker);
       for (const pair of snapshot.workerTasks.values()) this.#upsertWorkerTask(pair);
 
+      for (const initiative of initiativeSnapshot.initiatives.values()) {
+        this.#upsertInitiative(initiative);
+      }
+      for (const version of initiativeSnapshot.roadmapVersions.values()) {
+        this.#upsertRoadmapVersion(version);
+      }
+
       this.#writeProjectionMeta(
         replay.lastSequence,
         replay.checked,
         replay.lastSha256,
         lastRecordedAt,
+      );
+      this.#writeInitiativeProjectionMeta(
+        initiativeReplay.lastSequence,
+        initiativeReplay.checked,
+        initiativeReplay.lastSha256,
+        lastInitiativeRecordedAt,
       );
 
       this.#faults.beforeRebuildCommit?.();
@@ -1015,6 +1646,10 @@ export class Ledger {
         throughSequence: replay.lastSequence,
         taskRows: snapshot.tasks.size,
         workerRows: snapshot.workers.size,
+        replayedInitiativeEvents: initiativeReplay.checked,
+        initiativeThroughSequence: initiativeReplay.lastSequence,
+        initiativeRows: initiativeSnapshot.initiatives.size,
+        roadmapVersionRows: initiativeSnapshot.roadmapVersions.size,
       };
     });
 
@@ -1085,6 +1720,57 @@ export class Ledger {
       applyEventToSnapshot(snapshot, event, row.sequence);
     });
     problems.push(...replay.problems);
+
+    const initiativeSnapshot = createInitiativeProjectionSnapshot();
+    const initiativeReplay = this.#replayInitiative((event, row) => {
+      applyInitiativeEventToSnapshot(initiativeSnapshot, event, row.sequence);
+    });
+    problems.push(...initiativeReplay.problems);
+
+    try {
+      const initiativeHead = this.#readInitiativeHead();
+      if (initiativeHead.sequence !== initiativeReplay.lastSequence) {
+        problems.push({
+          kind: "LEDGER_META",
+          detail:
+            "initiative head is sequence " +
+            String(initiativeHead.sequence) +
+            " but the last stored initiative event is sequence " +
+            String(initiativeReplay.lastSequence) +
+            ", so the tail is truncated or the head is stale",
+          sequence: null,
+        });
+      }
+      if (initiativeHead.sha256 !== initiativeReplay.lastSha256) {
+        problems.push({
+          kind: "LEDGER_META",
+          detail:
+            "initiative head digest " +
+            initiativeHead.sha256 +
+            " does not match the replayed initiative chain head " +
+            initiativeReplay.lastSha256,
+          sequence: null,
+        });
+      }
+      if (initiativeHead.count !== initiativeReplay.checked) {
+        problems.push({
+          kind: "LEDGER_META",
+          detail:
+            "initiative head counts " +
+            String(initiativeHead.count) +
+            " events but " +
+            String(initiativeReplay.checked) +
+            " are stored",
+          sequence: null,
+        });
+      }
+    } catch (error: unknown) {
+      problems.push({
+        kind: "LEDGER_META",
+        detail: error instanceof Error ? error.message : "the initiative head is unreadable",
+        sequence: null,
+      });
+    }
 
     let headSequence = 0;
     let headEventSha256 = GENESIS_SHA256;
@@ -1159,33 +1845,49 @@ export class Ledger {
       }
       observedProjectionNames.add(row.name);
 
-      if (row.applied_through_sequence !== replay.lastSequence) {
+      // Each projection is level with the head of the stream it was built
+      // from. Comparing an initiative projection against the task head would
+      // report every healthy ledger as broken the moment the two streams had
+      // different lengths, which is to say almost always.
+      const onInitiativeStream = INITIATIVE_PROJECTION_NAME_SET.has(row.name);
+      const expectedSequence = onInitiativeStream
+        ? initiativeReplay.lastSequence
+        : replay.lastSequence;
+      const expectedSha256 = onInitiativeStream
+        ? initiativeReplay.lastSha256
+        : replay.lastSha256;
+      const streamLabel = onInitiativeStream ? "the initiative stream" : "the ledger";
+
+      if (row.applied_through_sequence !== expectedSequence) {
         problems.push({
           kind: "PROJECTION_META",
           detail:
             label +
             " is applied through sequence " +
             String(row.applied_through_sequence) +
-            " but the ledger head is sequence " +
-            String(replay.lastSequence),
+            " but the head of " +
+            streamLabel +
+            " is sequence " +
+            String(expectedSequence),
           sequence: null,
         });
       }
 
-      if (row.source_head_sha256 !== replay.lastSha256) {
+      if (row.source_head_sha256 !== expectedSha256) {
         problems.push({
           kind: "PROJECTION_META",
           detail:
             label +
             " was built from chain head " +
             row.source_head_sha256 +
-            " which is not the chain head of this ledger",
+            " which is not the chain head of " +
+            streamLabel,
           sequence: null,
         });
       }
     }
 
-    for (const name of PROJECTION_NAMES) {
+    for (const name of [...PROJECTION_NAMES, ...INITIATIVE_PROJECTION_NAMES]) {
       if (!observedProjectionNames.has(name)) {
         problems.push({
           kind: "PROJECTION_META",
@@ -1196,6 +1898,7 @@ export class Ledger {
     }
 
     problems.push(...this.#compareProjections(snapshot));
+    problems.push(...this.#compareInitiativeProjections(initiativeSnapshot));
 
     return {
       ok: problems.length === 0,
@@ -1217,6 +1920,90 @@ export class Ledger {
       ]),
     );
     return this.#compareProjectionsWith(snapshot, problems, storedTasks);
+  }
+
+  /** Compare the stored initiative projections against a fresh replay. */
+  #compareInitiativeProjections(snapshot: InitiativeProjectionSnapshot): IntegrityProblem[] {
+    const problems: IntegrityProblem[] = [];
+
+    const storedInitiatives = new Map(
+      (this.#stmt("SELECT * FROM initiative_read_model").all() as InitiativeRow[]).map((row) => [
+        row.initiative_id,
+        initiativeRowToModel(row),
+      ]),
+    );
+
+    for (const [initiativeId, expected] of snapshot.initiatives) {
+      const stored = storedInitiatives.get(initiativeId);
+      if (stored === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "initiative_read_model is missing initiative " + initiativeId,
+          sequence: null,
+        });
+        continue;
+      }
+      if (canonicalJsonStringify(stored) !== canonicalJsonStringify(expected)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "initiative_read_model row for initiative " + initiativeId + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const initiativeId of storedInitiatives.keys()) {
+      if (!snapshot.initiatives.has(initiativeId)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "initiative_read_model holds initiative " +
+            initiativeId +
+            " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
+
+    const storedVersions = new Map(
+      (
+        this.#stmt("SELECT * FROM roadmap_version_read_model").all() as RoadmapVersionRow[]
+      ).map((row) => [row.roadmap_version_id, roadmapVersionRowToModel(row)]),
+    );
+
+    for (const [versionId, expected] of snapshot.roadmapVersions) {
+      const stored = storedVersions.get(versionId);
+      if (stored === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "roadmap_version_read_model is missing version " + versionId,
+          sequence: null,
+        });
+        continue;
+      }
+      if (canonicalJsonStringify(stored) !== canonicalJsonStringify(expected)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "roadmap_version_read_model row for version " + versionId + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const versionId of storedVersions.keys()) {
+      if (!snapshot.roadmapVersions.has(versionId)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "roadmap_version_read_model holds version " +
+            versionId +
+            " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
+
+    return problems;
   }
 
   /**
@@ -1555,9 +2342,70 @@ export class Ledger {
    * The pragmas are queried rather than echoed from the options, so this proves
    * what the connection actually negotiated instead of what was requested.
    */
+  getInitiative(initiativeId: string): InitiativeReadModel | null {
+    this.#assertOpen("getInitiative");
+    const row = this.#stmt(
+      "SELECT * FROM initiative_read_model WHERE initiative_id = ?",
+    ).get(initiativeId) as InitiativeRow | undefined;
+    return row === undefined ? null : initiativeRowToModel(row);
+  }
+
+  /**
+   * Every recorded roadmap version for one initiative, in version order.
+   *
+   * This is what a caller folds into the head the roadmap-version decision
+   * consumes. It is a query rather than a decision input assembled inside the
+   * module on purpose: the module never reads a ledger, so the fold has to
+   * cross the boundary as a value.
+   */
+  listRoadmapVersions(initiativeId: string): readonly RoadmapVersionReadModel[] {
+    this.#assertOpen("listRoadmapVersions");
+    const rows = this.#stmt(
+      "SELECT * FROM roadmap_version_read_model WHERE initiative_id = ? ORDER BY version ASC",
+    ).all(initiativeId) as RoadmapVersionRow[];
+    return rows.map(roadmapVersionRowToModel);
+  }
+
+  listInitiativeEvents(query: InitiativeEventQuery = {}): InitiativeEventPage {
+    this.#assertOpen("listInitiativeEvents");
+    const limit = boundedLimit(query.limit, "initiative event");
+
+    const clauses: string[] = ["sequence > ?"];
+    const parameters: unknown[] = [query.afterSequence ?? 0];
+
+    if (query.initiativeId !== undefined) {
+      clauses.push("initiative_id = ?");
+      parameters.push(query.initiativeId);
+    }
+    if (query.type !== undefined) {
+      clauses.push("type = ?");
+      parameters.push(query.type);
+    }
+
+    const rows = this.#stmt(
+      "SELECT " +
+        INITIATIVE_EVENT_COLUMNS +
+        " FROM initiative_events WHERE " +
+        clauses.join(" AND ") +
+        " ORDER BY sequence ASC LIMIT ?",
+    ).all(...parameters, limit + 1) as InitiativeEventRow[];
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const events = page.map((row) => this.#initiativeRowToRecord(row));
+    const last = events.at(-1);
+
+    return {
+      events,
+      nextCursor: hasMore && last !== undefined ? last.sequence : null,
+      hasMore,
+    };
+  }
+
   status(): LedgerStatus {
     this.#assertOpen("status");
     const head = this.#readHead();
+    const initiativeHead = this.#readInitiativeHead();
 
     const projections: ProjectionStatus[] = this.#readProjectionMeta().map((row) => {
       // The name is database content, not a module constant. It is checked
@@ -1600,6 +2448,9 @@ export class Ledger {
       headSequence: head.sequence,
       headEventSha256: head.sha256,
       eventCount: head.count,
+      initiativeHeadSequence: initiativeHead.sequence,
+      initiativeHeadEventSha256: initiativeHead.sha256,
+      initiativeEventCount: initiativeHead.count,
       projections,
     };
   }

@@ -1,10 +1,17 @@
 import {
+  RoadmapVersion,
   TERMINAL_STATES,
   parseWorkerIdentity,
   type ControlPlaneEvent,
+  type InitiativeEvent,
 } from "@acp/contracts";
 
-import type { TaskReadModel, WorkerReadModel } from "../types/index.js";
+import type {
+  InitiativeReadModel,
+  RoadmapVersionReadModel,
+  TaskReadModel,
+  WorkerReadModel,
+} from "../types/index.js";
 
 /**
  * Pure projection rules.
@@ -28,6 +35,21 @@ function isTerminalState(state: string): boolean {
   return (TERMINAL_STATES as readonly string[]).includes(state);
 }
 
+/**
+ * The initiative a discovering event attributes its task to, if any.
+ *
+ * Read from the `TASK_DISCOVERED` payload and from nowhere else: that is the
+ * event that opens a task, so it is the one place the attribution can be
+ * stated. Every event older than the field simply has no `initiativeId` in its
+ * payload and folds to null, which is what keeps a ledger written before P7I
+ * replaying byte-for-byte.
+ */
+function initiativeIdFromEvent(event: ControlPlaneEvent): string | null {
+  if (event.type !== "TASK_DISCOVERED") return null;
+  const value = event.payload["initiativeId"];
+  return typeof value === "string" ? value : null;
+}
+
 /** Apply one event to a task projection row, or create it from nothing. */
 export function nextTaskProjection(
   current: TaskReadModel | null,
@@ -49,6 +71,7 @@ export function nextTaskProjection(
   if (current === null) {
     return {
       ...base,
+      initiativeId: initiativeIdFromEvent(event),
       latestAttempt: event.attempt,
       eventCount: 1,
       firstSequence: sequence,
@@ -58,6 +81,10 @@ export function nextTaskProjection(
 
   return {
     ...base,
+    // Attribution is written once and then carried. The `??` covers only the
+    // case where the row was created by something other than the discovering
+    // event; a later event can supply the id but can never change one.
+    initiativeId: current.initiativeId ?? initiativeIdFromEvent(event),
     // A retry raises the attempt; a late event from an older attempt must not
     // lower it, or the projection would claim the task went backwards.
     latestAttempt: Math.max(current.latestAttempt, event.attempt),
@@ -185,4 +212,103 @@ export function applyEventToSnapshot(
   );
 
   snapshot.workerTasks.set(pairKey, nextWorkerTaskProjection(existingPair, event, sequence));
+}
+
+// ---------------------------------------------------------------------------
+// The initiative stream's projections
+// ---------------------------------------------------------------------------
+
+/** Apply one initiative event to an initiative projection row. */
+export function nextInitiativeProjection(
+  current: InitiativeReadModel | null,
+  event: InitiativeEvent,
+  sequence: number,
+): InitiativeReadModel {
+  const base = {
+    initiativeId: event.initiativeId,
+    currentStatus: event.toStatus,
+    lastSequence: sequence,
+    lastEventId: event.eventId,
+    lastEventType: event.type,
+    lastTransitionId: event.transitionId,
+    lastEmittedBy: event.emittedBy,
+    updatedAt: event.occurredAt,
+  } as const;
+
+  if (current === null) {
+    return { ...base, eventCount: 1, firstSequence: sequence, createdAt: event.occurredAt };
+  }
+
+  return {
+    ...base,
+    eventCount: current.eventCount + 1,
+    firstSequence: current.firstSequence,
+    createdAt: current.createdAt,
+  };
+}
+
+/**
+ * The roadmap version a `ROADMAP_VERSION_RECORDED` event records, if its
+ * payload carries one.
+ *
+ * The version travels in the event's payload as a `RoadmapVersion` value, and
+ * it is parsed here through the contract rather than trusted: the payload is a
+ * bounded record of unknowns, so the only way to know it is a version is to
+ * ask the schema. A payload that does not parse, or that names a different
+ * initiative than the event it rides on, projects **no row** — the event still
+ * stands in the stream and still moves the initiative projection, because an
+ * append-only log does not get to disown an event it accepted. Live projection
+ * and replay share this one function, so both agree about which events produce
+ * a row.
+ */
+export function nextRoadmapVersionProjection(
+  event: InitiativeEvent,
+  sequence: number,
+): RoadmapVersionReadModel | null {
+  if (event.type !== "ROADMAP_VERSION_RECORDED") return null;
+
+  const parsed = RoadmapVersion.safeParse(event.payload);
+  if (!parsed.success) return null;
+  if (parsed.data.initiativeId !== event.initiativeId) return null;
+
+  return {
+    roadmapVersionId: parsed.data.roadmapVersionId,
+    initiativeId: parsed.data.initiativeId,
+    version: parsed.data.version,
+    contentDigest: parsed.data.contentDigest,
+    parentVersionId: parsed.data.parentVersionId,
+    kind: parsed.data.kind,
+    restoresVersionId: parsed.data.restoresVersionId,
+    recordedBy: parsed.data.recordedBy,
+    recordedAt: parsed.data.recordedAt,
+    sequence,
+  };
+}
+
+/** In-memory projection of the whole initiative stream. */
+export interface InitiativeProjectionSnapshot {
+  readonly initiatives: Map<string, InitiativeReadModel>;
+  readonly roadmapVersions: Map<string, RoadmapVersionReadModel>;
+}
+
+export function createInitiativeProjectionSnapshot(): InitiativeProjectionSnapshot {
+  return {
+    initiatives: new Map<string, InitiativeReadModel>(),
+    roadmapVersions: new Map<string, RoadmapVersionReadModel>(),
+  };
+}
+
+/** Fold one initiative event into an in-memory snapshot. */
+export function applyInitiativeEventToSnapshot(
+  snapshot: InitiativeProjectionSnapshot,
+  event: InitiativeEvent,
+  sequence: number,
+): void {
+  snapshot.initiatives.set(
+    event.initiativeId,
+    nextInitiativeProjection(snapshot.initiatives.get(event.initiativeId) ?? null, event, sequence),
+  );
+
+  const version = nextRoadmapVersionProjection(event, sequence);
+  if (version !== null) snapshot.roadmapVersions.set(version.roadmapVersionId, version);
 }

@@ -40,7 +40,12 @@ ledger.close();
 | `listEvents(query?)` | Sequence-ordered page. Filters: task, type, emitter, destination state. |
 | `getTask(taskId)` / `listTasks(query?)` | Derived task read model, ordered by task id. |
 | `getWorker(identity)` / `listWorkers(query?)` | Derived worker read model, ordered by identity. |
-| `rebuildReadModel()` | Drop and replay every projection, transactionally. |
+| `appendInitiativeEvent(event)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
+| `getInitiative(id)` | Derived initiative read model, or null. |
+| `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
+| `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
+| `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head; nothing here reads a ledger. |
+| `rebuildReadModel()` | Drop and replay every projection of both streams, transactionally. |
 | `verifyIntegrity()` | Full report. Never throws on a finding; returns problems. |
 | `status()` | Effective pragmas, applied migrations, head, counts, projections. |
 | `close()` | Release the handle. |
@@ -69,14 +74,26 @@ so all of them are safe to log or attach to a checkpoint.
 | --- | --- | --- |
 | `schema_migrations` | authority | applied version, name, SHA-256, timestamp |
 | `control_plane_events` | authority | the append-only log, with `previous_sha256` and `event_sha256` |
-| `ledger_meta` | authority | head sequence, head digest, event count |
-| `task_read_model` | derived | current state, attempt, counts, first and last position |
+| `initiative_events` | authority | the sibling append-only stream, on its own hash chain |
+| `ledger_meta` | authority | head sequence, head digest and event count, one set per stream |
+| `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable) |
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
 | `worker_task_read_model` | derived | emitter to task associations |
+| `initiative_read_model` | derived | current status, counts, first and last position |
+| `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `projection_meta` | derived | applied-through sequence, source head digest |
 
-Only the derived tables are ever cleared. `control_plane_events` has no delete
-path at all: `BEFORE UPDATE` and `BEFORE DELETE` triggers abort unconditionally.
+Only the derived tables are ever cleared. Neither event table has a delete path
+at all: each carries its own `BEFORE UPDATE` and `BEFORE DELETE` triggers, which
+abort unconditionally.
+
+The two streams share a database and the transaction discipline, and nothing
+else. An initiative registration has no task and no lifecycle state, so it
+cannot ride in the task stream without either a null in a NOT NULL column or an
+initiative id in a field named `taskId`; it gets its own table, its own chain
+and its own head instead. `rebuildReadModel()` replays both, and
+`verifyIntegrity()` verifies both — each projection is checked against the head
+of the stream it was built from, never the other's.
 
 ## Integrity
 

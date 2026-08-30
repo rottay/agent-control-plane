@@ -1102,17 +1102,29 @@ const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architectu
  * accounts README's version example (falsified by P7I-0, swept here on the
  * rule that the packet which falsifies a sentence fixes it).
  *
- * P7I is therefore **18 packet entries across 16 distinct paths**: 10 (P7I-0)
- * + 8 (P7I-1) = 18 entries; the repeat is `scripts/check-architecture.mjs`
- * itself (P7I-0, P7I-1), contributing 1, and
- * `packages/contracts/src/schemas/index.ts`, named by P7I-0 for the bump and
- * by P7I-1 for the contracts, contributing 1. So 18 - 1 - 1 = 16 distinct
- * paths. This file's appearances in earlier phases are counted in those
- * phases, since the standing convention scopes the arithmetic to the phase.
- *
- * No refusal vocabulary lands here: the roadmap-version decision is placed
- * beside the fold it consumes, in `packages/ledger` (P7I-2), the way
+ * P7I-2 is the ledger side: the additive migration that adds the sibling
+ * `initiative_events` stream with its own chain and triggers, the two
+ * projection tables and the nullable task column; the append path, the folds
+ * and both chains verified and rebuilt together; and the pure
+ * roadmap-version decision, placed beside the fold it consumes the way
  * `AUTHORIZATION_REFUSALS` sits beside its own module.
+ *
+ * P7I is therefore **28 packet entries across 24 distinct paths**: 10 (P7I-0)
+ * + 8 (P7I-1) + 10 (P7I-2) = 28 entries. Three paths repeat:
+ * `scripts/check-architecture.mjs` itself, named by all three packets,
+ * contributing 2; `packages/contracts/src/schemas/index.ts`, named by P7I-0
+ * for the bump and by P7I-1 for the contracts, contributing 1; and
+ * `packages/ledger/test/ledger/index.test.ts`, named by P7I-0 for the
+ * de-hardcoding and by P7I-2 for the sibling stream's laws, contributing 1.
+ * So 28 - 2 - 1 - 1 = 24 distinct paths. This file's appearances in earlier
+ * phases are counted in those phases, since the standing convention scopes
+ * the arithmetic to the phase.
+ *
+ * P7I-2's tenth path, `packages/ledger/src/types/index.ts`, is where the
+ * package declares every public value type. `TaskReadModel` is declared only
+ * there, so Q6's nullable `initiativeId` has nowhere else to land; the sibling
+ * stream's value shapes and the both-chains fields on `RebuildResult` and
+ * `LedgerStatus` follow it by the same convention.
  */
 const P7I0_WRITE_SET = [
   "packages/contracts/src/schemas/index.ts",
@@ -1144,6 +1156,27 @@ const P7I1_WRITE_SET = [
   "packages/runtime/test/pilots/helpers/index.ts",
   "packages/observation/src/baseline/index.ts",
   "packages/accounts/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P7I-2: the ledger mappings.
+ *
+ * Everything the sibling stream needs to exist durably, in the package that
+ * owns durability. The decision module is a new domain rather than a function
+ * bolted onto the ledger class: it is pure, it never opens a database, and
+ * keeping it separate is what makes that checkable.
+ */
+const P7I2_WRITE_SET = [
+  "packages/ledger/src/migrations/index.ts",
+  "packages/ledger/src/ledger/index.ts",
+  "packages/ledger/src/projection/index.ts",
+  "packages/ledger/src/roadmap-version/index.ts",
+  "packages/ledger/src/types/index.ts",
+  "packages/ledger/src/index.ts",
+  "packages/ledger/test/ledger/index.test.ts",
+  "packages/ledger/test/roadmap-version/index.test.ts",
+  "packages/ledger/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1380,6 +1413,7 @@ const WRITE_SET = [
   ...P7E_WRITE_SET,
   ...P7I0_WRITE_SET,
   ...P7I1_WRITE_SET,
+  ...P7I2_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,

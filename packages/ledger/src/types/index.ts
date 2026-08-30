@@ -1,6 +1,10 @@
 import type {
   ControlPlaneEvent,
   ControlPlaneEventType,
+  InitiativeEvent,
+  InitiativeEventType,
+  InitiativeStatus,
+  RoadmapVersionKind,
   TaskState,
   WorkerRole,
 } from "@acp/contracts";
@@ -83,6 +87,13 @@ export interface EventPage {
 /** Derived per-task projection. Holds no fact that is not in the ledger. */
 export interface TaskReadModel {
   readonly taskId: string;
+  /**
+   * The initiative the task was discovered under, when the discovering event
+   * carried one. Null for every task whose `TASK_DISCOVERED` predates the
+   * field — old events must keep folding, so this is nullable by law rather
+   * than by convenience.
+   */
+  readonly initiativeId: string | null;
   readonly currentState: TaskState;
   readonly latestAttempt: number;
   readonly eventCount: number;
@@ -182,6 +193,10 @@ export interface LedgerStatus {
   readonly headSequence: number;
   readonly headEventSha256: string;
   readonly eventCount: number;
+  /** The initiative stream's own head. Never mixed with the task stream's. */
+  readonly initiativeHeadSequence: number;
+  readonly initiativeHeadEventSha256: string;
+  readonly initiativeEventCount: number;
   readonly projections: readonly ProjectionStatus[];
 }
 
@@ -219,4 +234,81 @@ export interface RebuildResult {
   readonly throughSequence: number;
   readonly taskRows: number;
   readonly workerRows: number;
+  /** The sibling stream is rebuilt in the same transaction, and counted here. */
+  readonly replayedInitiativeEvents: number;
+  readonly initiativeThroughSequence: number;
+  readonly initiativeRows: number;
+  readonly roadmapVersionRows: number;
+}
+
+// ---------------------------------------------------------------------------
+// The initiative stream
+// ---------------------------------------------------------------------------
+
+/** One durable initiative-stream row, with the event and its chain position. */
+export interface InitiativeEventRecord {
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly idempotencyKey: string;
+  readonly event: InitiativeEvent;
+  /** The exact bytes the chain digest was computed over. */
+  readonly canonicalJson: string;
+  readonly previousSha256: string;
+  readonly eventSha256: string;
+}
+
+export interface InitiativeAppendResult {
+  /** false means this was an exact replay and nothing new was written. */
+  readonly inserted: boolean;
+  readonly record: InitiativeEventRecord;
+}
+
+export interface InitiativeEventQuery {
+  /** Exclusive sequence cursor. Pass the previous page nextCursor. */
+  readonly afterSequence?: number | undefined;
+  readonly initiativeId?: string | undefined;
+  readonly type?: InitiativeEventType | undefined;
+  readonly limit?: number | undefined;
+}
+
+export interface InitiativeEventPage {
+  readonly events: readonly InitiativeEventRecord[];
+  readonly nextCursor: number | null;
+  readonly hasMore: boolean;
+}
+
+/** Derived per-initiative projection. Holds no fact not in the stream. */
+export interface InitiativeReadModel {
+  readonly initiativeId: string;
+  readonly currentStatus: InitiativeStatus;
+  readonly eventCount: number;
+  readonly firstSequence: number;
+  readonly lastSequence: number;
+  readonly lastEventId: string;
+  readonly lastEventType: InitiativeEventType;
+  readonly lastTransitionId: string;
+  readonly lastEmittedBy: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * Derived per-roadmap-version projection.
+ *
+ * This is the fold the roadmap-version decision consumes as its head: the
+ * caller reads it and hands it in, so the decision module never reads a
+ * ledger of its own.
+ */
+export interface RoadmapVersionReadModel {
+  readonly roadmapVersionId: string;
+  readonly initiativeId: string;
+  readonly version: number;
+  readonly contentDigest: string;
+  readonly parentVersionId: string | null;
+  readonly kind: RoadmapVersionKind;
+  readonly restoresVersionId: string | null;
+  readonly recordedBy: string;
+  readonly recordedAt: string;
+  /** The initiative-stream position the version was recorded at. */
+  readonly sequence: number;
 }

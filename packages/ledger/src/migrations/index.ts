@@ -175,6 +175,95 @@ INSERT INTO projection_meta
   ('worker_read_model', 0, 0, '0000000000000000000000000000000000000000000000000000000000000000', '1970-01-01T00:00:00.000Z');
 `,
   },
+  {
+    version: 4,
+    name: "initiative_stream",
+    sql: `
+CREATE TABLE initiative_events (
+  sequence         INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id         TEXT    NOT NULL UNIQUE,
+  idempotency_key  TEXT    NOT NULL UNIQUE,
+  initiative_id    TEXT    NOT NULL,
+  transition_id    TEXT    NOT NULL,
+  type             TEXT    NOT NULL,
+  from_status      TEXT,
+  to_status        TEXT    NOT NULL,
+  emitted_by       TEXT    NOT NULL,
+  occurred_at      TEXT    NOT NULL,
+  recorded_at      TEXT    NOT NULL,
+  contract_version TEXT    NOT NULL,
+  event_json       TEXT    NOT NULL,
+  previous_sha256  TEXT    NOT NULL,
+  event_sha256     TEXT    NOT NULL UNIQUE
+) STRICT;
+
+CREATE INDEX initiative_events_by_initiative
+  ON initiative_events (initiative_id, sequence);
+CREATE INDEX initiative_events_by_type
+  ON initiative_events (type, sequence);
+CREATE INDEX initiative_events_by_emitter
+  ON initiative_events (emitted_by, sequence);
+CREATE INDEX initiative_events_by_occurred_at
+  ON initiative_events (occurred_at, sequence);
+
+CREATE TRIGGER initiative_events_deny_update
+BEFORE UPDATE ON initiative_events
+BEGIN
+  SELECT RAISE(ABORT, 'initiative_events is append-only: UPDATE is denied');
+END;
+
+CREATE TRIGGER initiative_events_deny_delete
+BEFORE DELETE ON initiative_events
+BEGIN
+  SELECT RAISE(ABORT, 'initiative_events is append-only: DELETE is denied');
+END;
+
+CREATE TABLE initiative_read_model (
+  initiative_id      TEXT    NOT NULL PRIMARY KEY,
+  current_status     TEXT    NOT NULL,
+  event_count        INTEGER NOT NULL,
+  first_sequence     INTEGER NOT NULL,
+  last_sequence      INTEGER NOT NULL,
+  last_event_id      TEXT    NOT NULL,
+  last_event_type    TEXT    NOT NULL,
+  last_transition_id TEXT    NOT NULL,
+  last_emitted_by    TEXT    NOT NULL,
+  created_at         TEXT    NOT NULL,
+  updated_at         TEXT    NOT NULL
+) STRICT;
+
+CREATE INDEX initiative_read_model_by_status
+  ON initiative_read_model (current_status, initiative_id);
+
+CREATE TABLE roadmap_version_read_model (
+  roadmap_version_id TEXT    NOT NULL PRIMARY KEY,
+  initiative_id      TEXT    NOT NULL,
+  version            INTEGER NOT NULL,
+  content_digest     TEXT    NOT NULL,
+  parent_version_id  TEXT,
+  kind               TEXT    NOT NULL,
+  restores_version_id TEXT,
+  recorded_by        TEXT    NOT NULL,
+  recorded_at        TEXT    NOT NULL,
+  sequence           INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX roadmap_version_read_model_by_initiative
+  ON roadmap_version_read_model (initiative_id, version);
+
+ALTER TABLE task_read_model ADD COLUMN initiative_id TEXT;
+
+INSERT INTO ledger_meta (key, value) VALUES
+  ('initiative_head_sequence', '0'),
+  ('initiative_head_event_sha256', '0000000000000000000000000000000000000000000000000000000000000000'),
+  ('initiative_event_count', '0');
+
+INSERT INTO projection_meta
+  (name, applied_through_sequence, event_count, source_head_sha256, updated_at) VALUES
+  ('initiative_read_model', 0, 0, '0000000000000000000000000000000000000000000000000000000000000000', '1970-01-01T00:00:00.000Z'),
+  ('roadmap_version_read_model', 0, 0, '0000000000000000000000000000000000000000000000000000000000000000', '1970-01-01T00:00:00.000Z');
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -190,10 +279,26 @@ export const DERIVED_TABLES: readonly string[] = [
   "worker_task_read_model",
   "task_read_model",
   "worker_read_model",
+  "initiative_read_model",
+  "roadmap_version_read_model",
 ];
 
-/** Projection names tracked in projection_meta. */
+/** Projection names tracked in projection_meta, for the task stream. */
 export const PROJECTION_NAMES: readonly string[] = ["task_read_model", "worker_read_model"];
+
+/**
+ * Projection names tracked in projection_meta, for the initiative stream.
+ *
+ * Kept separate from the task stream's names rather than merged into one list,
+ * because each set follows its own chain: a projection's
+ * `applied_through_sequence` and `source_head_sha256` only mean anything
+ * against the head of the stream it was built from, and stamping an
+ * initiative projection with the task head would make both unverifiable.
+ */
+export const INITIATIVE_PROJECTION_NAMES: readonly string[] = [
+  "initiative_read_model",
+  "roadmap_version_read_model",
+];
 
 export interface SchemaObject {
   readonly type: string;
@@ -232,6 +337,17 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "worker_task_read_model_by_task" },
   { type: "table", name: "ledger_meta" },
   { type: "table", name: "projection_meta" },
+  { type: "table", name: "initiative_events" },
+  { type: "index", name: "initiative_events_by_initiative" },
+  { type: "index", name: "initiative_events_by_type" },
+  { type: "index", name: "initiative_events_by_emitter" },
+  { type: "index", name: "initiative_events_by_occurred_at" },
+  { type: "trigger", name: "initiative_events_deny_update" },
+  { type: "trigger", name: "initiative_events_deny_delete" },
+  { type: "table", name: "initiative_read_model" },
+  { type: "index", name: "initiative_read_model_by_status" },
+  { type: "table", name: "roadmap_version_read_model" },
+  { type: "index", name: "roadmap_version_read_model_by_initiative" },
 ];
 
 export interface MigrationConformance {

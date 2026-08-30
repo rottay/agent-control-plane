@@ -42,11 +42,30 @@ export type { LedgerErrorCode, LedgerValidationIssue } from "./errors/index.js";
 
 export type { Migration } from "./migrations/index.js";
 
+export {
+  ROADMAP_VERSION_REFUSALS,
+  decideRoadmapVersion,
+} from "./roadmap-version/index.js";
+
+export type {
+  RoadmapVersionEvent,
+  RoadmapVersionGranted,
+  RoadmapVersionOutcome,
+  RoadmapVersionRefusal,
+  RoadmapVersionRefused,
+  RoadmapVersionRequest,
+} from "./roadmap-version/index.js";
+
 export type {
   AppendResult,
   AppliedMigration,
   EventPage,
   EventQuery,
+  InitiativeAppendResult,
+  InitiativeEventPage,
+  InitiativeEventQuery,
+  InitiativeEventRecord,
+  InitiativeReadModel,
   IntegrityProblem,
   IntegrityProblemKind,
   IntegrityReport,
@@ -57,6 +76,7 @@ export type {
   OpenLedgerOptions,
   ProjectionStatus,
   RebuildResult,
+  RoadmapVersionReadModel,
   TaskPage,
   TaskQuery,
   TaskReadModel,

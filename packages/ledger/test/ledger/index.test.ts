@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CONTRACT_VERSION,
   buildIdempotencyKey,
+  buildInitiativeIdempotencyKey,
   type ControlPlaneEventType,
   type TaskState,
 } from "@acp/contracts";
@@ -267,7 +268,10 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    expect(status.migrations.map((migration) => migration.version)).toEqual([1, 2, 3]);
+    expect(status.migrations.map((migration) => migration.version)).toEqual([1, 2, 3, 4]);
+    expect(status.initiativeHeadSequence).toBe(0);
+    expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
+    expect(status.initiativeEventCount).toBe(0);
   });
 
   it("opens read-only as query only and refuses every mutation", () => {
@@ -1333,7 +1337,7 @@ describe("projection metadata verification", () => {
     expect(report.problems).toHaveLength(1);
     expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
     expect(detailsOf(report.problems)).toContain(
-      "is applied through sequence 3 but the ledger head is sequence 5",
+      "is applied through sequence 3 but the head of the ledger is sequence 5",
     );
   });
 
@@ -1344,17 +1348,25 @@ describe("projection metadata verification", () => {
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
     expect(ledger.status().projections.map((projection) => projection.appliedThroughSequence)).toEqual(
-      [0, 0],
+      [0, 0, 0, 0],
     );
   });
 
-  it("keeps every projection level with the head as events are appended", () => {
+  it("keeps every projection level with the head of its own stream", () => {
     const ledger = open(temporaryDatabase());
     seedFixture(ledger);
 
-    for (const projection of ledger.status().projections) {
-      expect(projection.appliedThroughSequence).toBe(5);
-    }
+    // Each projection follows one stream. The task projections move with the
+    // five seeded task events; the initiative projections stay at zero,
+    // because nothing has been appended to the sibling stream. Holding them
+    // all to one number would be the bug this separation exists to prevent.
+    const levels = new Map(
+      ledger.status().projections.map((projection) => [projection.name, projection.appliedThroughSequence]),
+    );
+    expect(levels.get("task_read_model")).toBe(5);
+    expect(levels.get("worker_read_model")).toBe(5);
+    expect(levels.get("initiative_read_model")).toBe(0);
+    expect(levels.get("roadmap_version_read_model")).toBe(0);
     expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 });
@@ -1556,5 +1568,423 @@ describe("cross-process concurrency", () => {
     const verifier = open(path, { readOnly: true });
     expect(verifier.status().eventCount).toBe(1);
     expect(verifier.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The initiative stream
+//
+// The sibling stream lives in the same database under the same laws: its own
+// chain, its own head, its own contiguity guard. These tests hold it to the
+// task stream's standard rather than to a weaker one.
+// ---------------------------------------------------------------------------
+
+const INITIATIVE_A = "44444444-4444-4444-8444-444444444444";
+const INITIATIVE_B = "55555555-5555-4555-8555-555555555555";
+const VERSION_ONE_ID = "66666666-6666-4666-8666-666666666601";
+const VERSION_TWO_ID = "66666666-6666-4666-8666-666666666602";
+const DIGEST_ONE = "a".repeat(64);
+const DIGEST_TWO = "b".repeat(64);
+
+interface InitiativeEventInput {
+  readonly initiativeId?: string;
+  readonly transitionId?: string;
+  readonly eventId?: string;
+  readonly type?: string;
+  readonly fromStatus?: string | null;
+  readonly toStatus?: string;
+  readonly emittedBy?: string;
+  readonly occurredAt?: string;
+  readonly payload?: Record<string, unknown>;
+}
+
+function makeInitiativeEvent(input: InitiativeEventInput = {}): Record<string, unknown> {
+  const initiativeId = input.initiativeId ?? INITIATIVE_A;
+  const transitionId = input.transitionId ?? "initiative.registered";
+  const occurredAt = input.occurredAt ?? "2026-08-30T12:00:00.000Z";
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: input.eventId ?? randomUUID(),
+    initiativeId,
+    transitionId,
+    idempotencyKey: buildInitiativeIdempotencyKey({ initiativeId, transitionId }),
+    type: input.type ?? "INITIATIVE_REGISTERED",
+    fromStatus: input.fromStatus === undefined ? null : input.fromStatus,
+    toStatus: input.toStatus ?? "ACTIVE",
+    emittedBy: input.emittedBy ?? "kimi/k3/coordinator/01",
+    occurredAt,
+    recordedAt: occurredAt,
+    payload: input.payload ?? {},
+  };
+}
+
+function roadmapVersionValue(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    roadmapVersionId: VERSION_ONE_ID,
+    initiativeId: INITIATIVE_A,
+    version: 1,
+    contentDigest: DIGEST_ONE,
+    parentVersionId: null,
+    expectedHeadDigest: null,
+    kind: "EDIT",
+    restoresVersionId: null,
+    recordedBy: "kimi/k3/coordinator/01",
+    recordedAt: "2026-08-30T12:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("the initiative stream appends under the ledger's own laws", () => {
+  it("round-trips an event on its own chain, leaving the task stream untouched", () => {
+    const ledger = open(temporaryDatabase());
+    seedFixture(ledger);
+    const taskHead = ledger.status().headSequence;
+
+    const result = ledger.appendInitiativeEvent(makeInitiativeEvent());
+
+    expect(result.inserted).toBe(true);
+    expect(result.record.sequence).toBe(1);
+    expect(result.record.previousSha256).toBe(GENESIS_SHA256);
+    expect(result.record.eventSha256).toBe(
+      chainDigest(GENESIS_SHA256, result.record.canonicalJson),
+    );
+
+    const status = ledger.status();
+    expect(status.initiativeHeadSequence).toBe(1);
+    expect(status.initiativeEventCount).toBe(1);
+    expect(status.initiativeHeadEventSha256).toBe(result.record.eventSha256);
+    // The two streams share a database and nothing else.
+    expect(status.headSequence).toBe(taskHead);
+
+    const initiative = ledger.getInitiative(INITIATIVE_A);
+    expect(initiative?.currentStatus).toBe("ACTIVE");
+    expect(initiative?.eventCount).toBe(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("chains a second event onto the first", () => {
+    const ledger = open(temporaryDatabase());
+    const first = ledger.appendInitiativeEvent(makeInitiativeEvent());
+    const second = ledger.appendInitiativeEvent(
+      makeInitiativeEvent({
+        transitionId: "initiative.paused",
+        type: "INITIATIVE_STATE_CHANGED",
+        fromStatus: "ACTIVE",
+        toStatus: "PAUSED",
+      }),
+    );
+
+    expect(second.record.sequence).toBe(2);
+    expect(second.record.previousSha256).toBe(first.record.eventSha256);
+    expect(ledger.getInitiative(INITIATIVE_A)?.currentStatus).toBe("PAUSED");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("treats an exact replay as a no-op and refuses a different body at the same key", () => {
+    const ledger = open(temporaryDatabase());
+    const candidate = makeInitiativeEvent();
+    const first = ledger.appendInitiativeEvent(candidate);
+    const replay = ledger.appendInitiativeEvent(candidate);
+
+    expect(first.inserted).toBe(true);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.eventSha256).toBe(first.record.eventSha256);
+    expect(ledger.status().initiativeEventCount).toBe(1);
+
+    const conflict = caught(() =>
+      ledger.appendInitiativeEvent(
+        makeInitiativeEvent({ eventId: randomUUID(), payload: { note: "different" } }),
+      ),
+    );
+    expect(conflict).toBeInstanceOf(LedgerIdempotencyConflictError);
+    expect(ledger.status().initiativeEventCount).toBe(1);
+  });
+
+  it("refuses reuse of an event id under another key", () => {
+    const ledger = open(temporaryDatabase());
+    const first = ledger.appendInitiativeEvent(makeInitiativeEvent());
+
+    const error = caught(() =>
+      ledger.appendInitiativeEvent(
+        makeInitiativeEvent({
+          eventId: first.record.event.eventId,
+          transitionId: "initiative.paused",
+          type: "INITIATIVE_STATE_CHANGED",
+          fromStatus: "ACTIVE",
+          toStatus: "PAUSED",
+        }),
+      ),
+    );
+    expect(error).toBeInstanceOf(LedgerEventIdConflictError);
+    expect(ledger.status().initiativeEventCount).toBe(1);
+  });
+
+  it("enforces contiguity: a fromStatus that lies about the projection is refused", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+
+    // The initiative is ACTIVE; this event claims it was COMPLETED.
+    const error = caught(() =>
+      ledger.appendInitiativeEvent(
+        makeInitiativeEvent({
+          transitionId: "initiative.archived",
+          type: "INITIATIVE_STATE_CHANGED",
+          fromStatus: "COMPLETED",
+          toStatus: "ARCHIVED",
+        }),
+      ),
+    );
+    expect(error).toBeInstanceOf(LedgerLifecycleConflictError);
+    expect(ledger.status().initiativeEventCount).toBe(1);
+  });
+
+  it("requires a null fromStatus for the first event of an initiative", () => {
+    const ledger = open(temporaryDatabase());
+    const error = caught(() =>
+      ledger.appendInitiativeEvent(
+        makeInitiativeEvent({
+          initiativeId: INITIATIVE_B,
+          transitionId: "initiative.paused",
+          type: "INITIATIVE_STATE_CHANGED",
+          fromStatus: "ACTIVE",
+          toStatus: "PAUSED",
+        }),
+      ),
+    );
+    expect(error).toBeInstanceOf(LedgerLifecycleConflictError);
+    expect(ledger.status().initiativeEventCount).toBe(0);
+  });
+
+  it("refuses a candidate the contract rejects", () => {
+    const ledger = open(temporaryDatabase());
+    const candidate = { ...makeInitiativeEvent(), idempotencyKey: "not-the-key" };
+    const error = caught(() => ledger.appendInitiativeEvent(candidate));
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect(ledger.status().initiativeEventCount).toBe(0);
+  });
+
+  it("pages its events and keeps two initiatives apart", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendInitiativeEvent(makeInitiativeEvent({ initiativeId: INITIATIVE_B }));
+
+    const all = ledger.listInitiativeEvents();
+    expect(all.events.map((record) => record.event.initiativeId)).toEqual([
+      INITIATIVE_A,
+      INITIATIVE_B,
+    ]);
+
+    const onlyB = ledger.listInitiativeEvents({ initiativeId: INITIATIVE_B });
+    expect(onlyB.events).toHaveLength(1);
+    expect(onlyB.events[0]?.event.initiativeId).toBe(INITIATIVE_B);
+  });
+});
+
+describe("the roadmap-version projection folds from the stream", () => {
+  it("records a version whose payload carries one, and orders versions", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({
+        transitionId: "roadmap.v1",
+        type: "ROADMAP_VERSION_RECORDED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: roadmapVersionValue(),
+      }),
+    );
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({
+        transitionId: "roadmap.v2",
+        type: "ROADMAP_VERSION_RECORDED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: roadmapVersionValue({
+          roadmapVersionId: VERSION_TWO_ID,
+          version: 2,
+          contentDigest: DIGEST_TWO,
+          parentVersionId: VERSION_ONE_ID,
+          expectedHeadDigest: DIGEST_ONE,
+        }),
+      }),
+    );
+
+    const versions = ledger.listRoadmapVersions(INITIATIVE_A);
+    expect(versions.map((version) => version.version)).toEqual([1, 2]);
+    expect(versions[1]?.parentVersionId).toBe(VERSION_ONE_ID);
+    expect(versions[1]?.contentDigest).toBe(DIGEST_TWO);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("records no version when the payload does not carry one, and still folds the event", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({
+        transitionId: "roadmap.unparseable",
+        type: "ROADMAP_VERSION_RECORDED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: { note: "not a roadmap version" },
+      }),
+    );
+
+    // The event stands in the stream and moves the initiative projection; only
+    // the version table is silent, because there was no version to record.
+    expect(ledger.listRoadmapVersions(INITIATIVE_A)).toEqual([]);
+    expect(ledger.getInitiative(INITIATIVE_A)?.eventCount).toBe(2);
+    expect(ledger.status().initiativeEventCount).toBe(2);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("records no version when the payload names another initiative", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({
+        transitionId: "roadmap.foreign",
+        type: "ROADMAP_VERSION_RECORDED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: roadmapVersionValue({ initiativeId: INITIATIVE_B }),
+      }),
+    );
+
+    expect(ledger.listRoadmapVersions(INITIATIVE_A)).toEqual([]);
+    expect(ledger.listRoadmapVersions(INITIATIVE_B)).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+describe("both chains are verified and rebuilt together", () => {
+  it("rebuilds both streams to identical projections", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({
+        transitionId: "roadmap.v1",
+        type: "ROADMAP_VERSION_RECORDED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: roadmapVersionValue(),
+      }),
+    );
+
+    const before = {
+      initiative: ledger.getInitiative(INITIATIVE_A),
+      versions: ledger.listRoadmapVersions(INITIATIVE_A),
+      tasks: ledger.listTasks().tasks,
+    };
+
+    const result = ledger.rebuildReadModel();
+    expect(result.replayedInitiativeEvents).toBe(2);
+    expect(result.initiativeThroughSequence).toBe(2);
+    expect(result.initiativeRows).toBe(1);
+    expect(result.roadmapVersionRows).toBe(1);
+
+    expect(ledger.getInitiative(INITIATIVE_A)).toEqual(before.initiative);
+    expect(ledger.listRoadmapVersions(INITIATIVE_A)).toEqual(before.versions);
+    expect(ledger.listTasks().tasks).toEqual(before.tasks);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("detects a tampered initiative body through the sibling chain", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      // The append-only trigger denies UPDATE, so the body is rewritten the
+      // only way a tamperer could: by dropping the trigger first.
+      raw.exec("DROP TRIGGER initiative_events_deny_update");
+      raw
+        .prepare("UPDATE initiative_events SET event_json = ? WHERE sequence = 1")
+        .run('{"tampered":true}');
+    });
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toContain("HASH_CHAIN");
+    expect(kindsOf(report.problems)).toContain("SCHEMA_SHAPE");
+  });
+
+  it("detects an initiative head that disagrees with the stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare("UPDATE ledger_meta SET value = ? WHERE key = ?")
+        .run("7", "initiative_head_sequence");
+    });
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toContain("LEDGER_META");
+    expect(detailsOf(report.problems)).toContain("initiative head is sequence 7");
+  });
+
+  it("denies UPDATE and DELETE on the initiative table at the database level", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      const update = caught(() =>
+        raw.prepare("UPDATE initiative_events SET type = ? WHERE sequence = 1").run("X"),
+      );
+      const remove = caught(() => raw.prepare("DELETE FROM initiative_events").run());
+      expect(String(update)).toContain("append-only");
+      expect(String(remove)).toContain("append-only");
+    });
+  });
+});
+
+describe("the task projection carries an initiative when the discovery does", () => {
+  it("folds the initiativeId out of the TASK_DISCOVERED payload", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(
+      makeEvent({ taskId, transitionId: "discover", payload: { initiativeId: INITIATIVE_A } }),
+    );
+
+    expect(ledger.getTask(taskId)?.initiativeId).toBe(INITIATIVE_A);
+  });
+
+  it("folds an old-shape discovery to null, and carries the attribution forward", () => {
+    const ledger = open(temporaryDatabase());
+    const oldShape = randomUUID();
+    const carried = randomUUID();
+
+    // Exactly the event an older ledger holds: no initiativeId anywhere.
+    ledger.append(makeEvent({ taskId: oldShape, transitionId: "discover" }));
+    expect(ledger.getTask(oldShape)?.initiativeId).toBeNull();
+
+    ledger.append(
+      makeEvent({ taskId: carried, transitionId: "discover", payload: { initiativeId: INITIATIVE_B } }),
+    );
+    ledger.append(
+      makeEvent({
+        taskId: carried,
+        transitionId: "classify",
+        type: "TASK_CLASSIFIED",
+        fromState: "DISCOVERED",
+        toState: "DT_CLASSIFIED",
+      }),
+    );
+    // The later event carries no attribution; the projection keeps the one it has.
+    expect(ledger.getTask(carried)?.initiativeId).toBe(INITIATIVE_B);
+
+    ledger.rebuildReadModel();
+    expect(ledger.getTask(oldShape)?.initiativeId).toBeNull();
+    expect(ledger.getTask(carried)?.initiativeId).toBe(INITIATIVE_B);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 });
