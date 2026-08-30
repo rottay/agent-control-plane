@@ -28,6 +28,9 @@ import { RESTATE_MODE, RestateDriver, advanceHandler, reconcile } from "../../..
 import type { AdvanceContext } from "../../../src/drivers/restate-driver/index.js";
 import { parseCacheReply } from "../../../src/restate/submit/index.js";
 
+/** One fixed initiative for every fixture in this file. */
+const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
 /**
  * Unit and negative evidence for the Restate driver. No server is started.
  *
@@ -78,6 +81,7 @@ function open(name: string, taskId: string): {
     invocation: candidate,
     emittedBy: EMITTED_BY,
     plan: LIFECYCLE_PLAN,
+    initiativeId: TEST_INITIATIVE_ID,
   });
   return { ledger, root, invocation, beat };
 }
@@ -85,7 +89,7 @@ function open(name: string, taskId: string): {
 function driverFor(
   ledger: Ledger,
   invocation: DurableInvocation,
-  beat: (invocation: DurableInvocation) => BeatContext,
+  beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId">,
   readCache?: () => Promise<RestateCacheState | null>,
 ): RestateDriver {
   return new RestateDriver(
@@ -99,6 +103,7 @@ function driverFor(
     },
     beat,
     "LOCAL_COMMIT_WITH_RECEIPT",
+    TEST_INITIATIVE_ID,
   );
 }
 
@@ -384,7 +389,7 @@ describe("the advance handler refuses before it touches anything", () => {
 
       await expect(
         advanceHandler(
-          { beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", ledger, __onBeat: (point) => beats.push(point) },
+          { beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger, __onBeat: (point) => beats.push(point) },
           ctx,
           invocation,
         ),
@@ -403,6 +408,50 @@ describe("the advance handler refuses before it touches anything", () => {
     });
   }
 
+  /**
+   * N3, the Restate side. The object composes the attribution the same way it
+   * composes the plan, so the same guard protects it: a handler whose
+   * dependencies name a different initiative rebuilds a different step 0 and
+   * refuses. `RestateDriver.advance` cannot show this — it throws
+   * unconditionally after the guard, so a passing test there would prove
+   * nothing about which throw fired — but the handler is where the object
+   * actually runs, and it can.
+   */
+  it("refuses a handler whose dependencies name a different initiativeId", async () => {
+    const { ledger, root, invocation, beat } = open(
+      "handler-other-initiative",
+      "40404040-4040-4404-8404-404040404044",
+    );
+    appendPlanStep(beat(invocation), LIFECYCLE_PLAN[0]!);
+
+    const before = ledger.status();
+    const beats: string[] = [];
+    const { ctx, runs, sets } = fakeContext(null);
+
+    await expect(
+      advanceHandler(
+        {
+          beat,
+          commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+          initiativeId: "5b5b5b5b-5b5b-4b5b-8b5b-5b5b5b5b5b01",
+          ledger,
+          __onBeat: (point) => beats.push(point),
+        },
+        ctx,
+        invocation,
+      ),
+    ).rejects.toThrow();
+
+    // Refused before anything happened: no journalled run, no cache write, no
+    // beat, no event, no effect directory.
+    expect(runs).toEqual([]);
+    expect(sets).toEqual([]);
+    expect(beats).toEqual([]);
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    expect(existsSync(join(root, "effects"))).toBe(false);
+  });
+
   it("proceeds and caches only when the verdict is resumable", async () => {
     const { ledger, invocation, beat } = open(
       "handler-resumable",
@@ -412,7 +461,7 @@ describe("the advance handler refuses before it touches anything", () => {
     const { ctx, runs, sets } = fakeContext(null);
 
     const result = await advanceHandler(
-      { beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", ledger, __onBeat: (point) => beats.push(point) },
+      { beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger, __onBeat: (point) => beats.push(point) },
       ctx,
       invocation,
     );
@@ -444,7 +493,7 @@ describe("the advance handler refuses before it touches anything", () => {
     const { ctx, runs, sets } = fakeContext(null);
 
     const result = await advanceHandler(
-      { beat, commitPolicy: "NO_COMMIT", ledger, __onBeat: (point) => beats.push(point) },
+      { beat, commitPolicy: "NO_COMMIT", initiativeId: TEST_INITIATIVE_ID, ledger, __onBeat: (point) => beats.push(point) },
       ctx,
       invocation,
     );

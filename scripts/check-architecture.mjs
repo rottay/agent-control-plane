@@ -1218,10 +1218,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * P8-1 opens the implementation: the owned execution boundary as contracts,
  * before any transport binds to it.
  *
- * P8 is therefore **6 packet entries across 5 distinct paths**: 2 (P8-D) + 4
- * (P8-1) = 6 entries; the repeat is `scripts/check-architecture.mjs` itself
- * (P8-D, P8-1), contributing 1. So 6 - 1 = 5 distinct paths. This file's
- * appearances in earlier phases are counted in those phases, since the
+ * P8-W is the runtime wiring that makes the contracts and the P7I folds
+ * load-bearing.
+ *
+ * P8 is therefore **37 packet entries across 35 distinct paths**: 2 (P8-D) +
+ * 4 (P8-1) + 31 (P8-W) = 37 entries; the only repeat is
+ * `scripts/check-architecture.mjs` itself, named by all three packets and
+ * contributing 2 duplicate entries. So 37 - 2 = 35 distinct paths. This
+ * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
@@ -1241,6 +1245,58 @@ const P81_WRITE_SET = [
   "packages/contracts/src/schemas/index.ts",
   "packages/contracts/src/index.ts",
   "packages/contracts/test/schemas/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-W: the runtime wiring.
+ *
+ * The three forward-carry items, now due: `initiativeId` threaded end to end
+ * so the projection's nullable fold finally has a producer; usage and
+ * reservation emission, which is what the P7I-3 rollups fold; and the switch
+ * executor, which plays a `decideSwitch` plan and closes the P7B
+ * `LEASE_REVOKED` divergence by naming the real lease beside the account.
+ *
+ * This is where `@acp/accounts` enters the runtime's dependency surface. The
+ * direction is the one the law below already states -- runtime consumes
+ * accounts, never the reverse -- and the accounts entry still forbids
+ * `@acp/runtime` by name, so the cycle stays refused.
+ */
+const P8W_WRITE_SET = [
+  "packages/runtime/src/core/events/index.ts",
+  "packages/runtime/src/core/step-executor/index.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/runtime/src/drivers/restate-driver/index.ts",
+  "packages/runtime/src/drivers/restate-child/index.ts",
+  "packages/runtime/src/usage/index.ts",
+  "packages/runtime/src/switch-executor/index.ts",
+  "packages/runtime/src/index.ts",
+  "packages/runtime/package.json",
+  // The build-graph edges the authorized dependency needs. Runtime is the
+  // repository's first accounts consumer, and `tsc --build` resolves workspace
+  // packages through project references rather than the manifest, so without
+  // these two the switch executor does not compile at all.
+  "packages/runtime/tsconfig.json",
+  "packages/runtime/test/tsconfig.json",
+  "packages/runtime/test/usage/index.test.ts",
+  "packages/runtime/test/switch-executor/index.test.ts",
+  "packages/runtime/test/core/events/index.test.ts",
+  "packages/runtime/test/core/step-executor/index.test.ts",
+  "packages/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/runtime/test/drivers/drills/index.test.ts",
+  "packages/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/runtime/test/pilots/index.test.ts",
+  "packages/runtime/test/pilots/recovery/index.test.ts",
+  "packages/runtime/test/pilots/writer/index.test.ts",
+  "packages/daemon/src/index.ts",
+  "packages/daemon/src/mode-sqlite/index.ts",
+  "packages/daemon/src/mode-restate/index.ts",
+  "packages/daemon/src/daemon-child/index.ts",
+  "packages/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/daemon/test/drills/index.test.ts",
+  "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1503,6 +1559,7 @@ const WRITE_SET = [
   ...P7IE_WRITE_SET,
   ...P8D_WRITE_SET,
   ...P81_WRITE_SET,
+  ...P8W_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -2553,7 +2610,11 @@ const P1B_DEPENDENCY_LAW = [
   },
   {
     manifest: "packages/runtime/package.json",
-    dependencies: ["@acp/contracts", "@acp/ledger", "@restatedev/restate-sdk"],
+    // P8-W adds `@acp/accounts`: the switch executor plays a plan the accounts
+    // module produced. The direction is the one this file already states --
+    // runtime consumes accounts, never the reverse -- and the accounts entry
+    // below still forbids `@acp/runtime` by name, so the cycle stays refused.
+    dependencies: ["@acp/accounts", "@acp/contracts", "@acp/ledger", "@restatedev/restate-sdk"],
     devDependencies: ["vitest"],
     // The server package pulls @scarf/scarf, whose postinstall is a network
     // beacon. The 1.7.7 server is an external pinned binary, never a dependency.
@@ -2728,6 +2789,12 @@ if (lockText === null) {
 // more, because a kill/restart drill has to spawn and kill a real process, and
 // an in-process exception would prove nothing about durability.
 const RUNTIME_ALLOWED_PACKAGES = new Set([
+  // P8-W: the switch executor plays a plan `@acp/accounts` produced, so the
+  // runtime may now name it. This is the import-level face of the same law the
+  // P1B dependency table states at the manifest level, and both had to move
+  // together -- a manifest edge the import scan still refuses is a dependency
+  // that exists on paper and fails at the gate.
+  "@acp/accounts",
   "@acp/contracts",
   "@acp/ledger",
   "@restatedev/restate-sdk",

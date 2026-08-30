@@ -182,6 +182,7 @@ function stageAgent(): Staged {
       attempt: 1,
       submittedAt: "2026-08-27T18:46:07.000Z",
       submissionDigest: "d".repeat(64),
+      initiativeId: "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01",
       holdOpen: true,
       checkPorts: false,
     }),

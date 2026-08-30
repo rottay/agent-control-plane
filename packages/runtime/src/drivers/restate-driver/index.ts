@@ -227,12 +227,19 @@ export interface ObjectDependencies {
    * executor navigates are the same value by construction rather than by two
    * callers agreeing.
    */
-  readonly beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan">;
+  readonly beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId">;
   /**
    * The packet's commit policy. Required, with no default: see
    * `SqliteSupervisorOptions.commitPolicy`.
    */
   readonly commitPolicy: CommitPolicy;
+  /**
+   * The packet's initiative. Required, with no default, and composed here
+   * rather than carried on the beat surface for the same reason the plan is:
+   * a fact that arrives with the packet belongs to the object that walks it,
+   * not to whichever caller assembled the ports. One source, stated once.
+   */
+  readonly initiativeId: string;
   readonly ledger: LedgerLike;
   /** Deliberate interruption seam for the kill drills. Never set in normal use. */
   readonly __onBeat?: ((point: string) => void) | undefined;
@@ -277,7 +284,11 @@ export async function advanceHandler(
   invocation: DurableInvocation,
 ): Promise<{ readonly finalSequence: number }> {
   const plan = planFor(dependencies.commitPolicy);
-  const context: BeatContext = { ...dependencies.beat(invocation), plan };
+  const context: BeatContext = {
+    ...dependencies.beat(invocation),
+    plan,
+    initiativeId: dependencies.initiativeId,
+  };
 
   const report = await reconcile({
     ledger: dependencies.ledger,
@@ -385,17 +396,20 @@ export class RestateDriver implements OrchestrationDriver {
   readonly mode: DriverMode = RESTATE_MODE;
 
   readonly #options: RestateDriverOptions;
-  readonly #beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan">;
+  readonly #beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId">;
   readonly #commitPolicy: CommitPolicy;
+  readonly #initiativeId: string;
 
   constructor(
     options: RestateDriverOptions,
-    beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan">,
+    beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId">,
     commitPolicy: CommitPolicy,
+    initiativeId: string,
   ) {
     this.#options = options;
     this.#beat = beat;
     this.#commitPolicy = commitPolicy;
+    this.#initiativeId = initiativeId;
   }
 
   /**
@@ -448,6 +462,7 @@ export class RestateDriver implements OrchestrationDriver {
     const context: BeatContext = {
       ...this.#beat(invocation),
       plan: planFor(this.#commitPolicy),
+      initiativeId: this.#initiativeId,
     };
     assertInvocationContinuity(context);
     assertClaimedState(context, from);

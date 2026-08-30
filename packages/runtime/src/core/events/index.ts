@@ -23,6 +23,17 @@ export interface BuildEventInput {
   readonly invocation: DurableInvocation;
   readonly step: PlanStep;
   readonly emittedBy: string;
+  /**
+   * The initiative this packet belongs to.
+   *
+   * It rides in the discovery event's payload and nowhere else: the projection
+   * reads it from `TASK_DISCOVERED` when present, and every later event in the
+   * task inherits the attribution through that fold rather than restating it.
+   * It is deliberately not part of the event's identity -- the coordinates are
+   * unchanged -- because an attribution is a fact about a task, not a
+   * different task.
+   */
+  readonly initiativeId: string;
 }
 
 /**
@@ -45,8 +56,16 @@ function payloadFor(
   invocation: DurableInvocation,
   step: PlanStep,
   operation: OperationCoordinate,
+  initiativeId: string,
 ): Record<string, unknown> {
   const base = { submissionDigest: invocation.submissionDigest };
+
+  // The discovery step opens the task, so it is the one place the initiative
+  // can be stated. Carrying it on every event would put the same fact in N
+  // places and invite them to disagree.
+  if (step.eventType === "TASK_DISCOVERED") {
+    return { ...base, beat: "PLAIN", planIndex: step.index, initiativeId };
+  }
 
   if (step.beat === "INTENT") {
     return {
@@ -76,7 +95,7 @@ function payloadFor(
  * validation failure here rather than a rejected append later.
  */
 export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
-  const { invocation, step, emittedBy } = input;
+  const { invocation, step, emittedBy, initiativeId } = input;
 
   // The INTENT and OUTCOME beats address the SAME effect, so both derive the
   // operation from the intent step's index. An outcome that addressed its own
@@ -107,7 +126,7 @@ export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
     recordedAt: coordinate.recordedAt,
     correlationId: null,
     causationId: null,
-    payload: payloadFor(invocation, step, operation),
+    payload: payloadFor(invocation, step, operation, initiativeId),
   });
 }
 

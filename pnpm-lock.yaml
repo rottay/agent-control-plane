@@ -172,6 +172,9 @@ importers:
 
   packages/runtime:
     dependencies:
+      '@acp/accounts':
+        specifier: workspace:*
+        version: link:../accounts
       '@acp/contracts':
         specifier: workspace:*
         version: link:../contracts

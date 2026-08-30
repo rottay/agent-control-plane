@@ -31,6 +31,12 @@ export interface SqliteModeInput {
    * find, rather than this mode assuming one on its behalf.
    */
   readonly commitPolicy: CommitPolicy;
+  /**
+   * The packet's initiative, passed through for the same reason and in the
+   * same way as the policy above: the daemon says it once, at its own call
+   * site, and this mode never invents one.
+   */
+  readonly initiativeId: string;
 }
 
 export interface SqliteModeResult {
@@ -48,6 +54,7 @@ export async function runSqliteMode(input: SqliteModeInput): Promise<SqliteModeR
     scenarioRoot: input.scenarioRoot,
     emittedBy: input.emittedBy,
     commitPolicy: input.commitPolicy,
+    initiativeId: input.initiativeId,
   });
 
   const report = await supervisor.reconcile();

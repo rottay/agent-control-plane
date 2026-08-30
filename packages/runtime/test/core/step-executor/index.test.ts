@@ -25,6 +25,9 @@ import {
 } from "../../../src/core/step-executor/index.js";
 import type { BeatContext, EffectPort } from "../../../src/core/step-executor/index.js";
 
+/** One fixed initiative for every fixture in this file. */
+const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
 /**
  * Evidence for the shared beat executor.
  *
@@ -86,6 +89,7 @@ function contextFor(name: string, taskId: string, log: string[]): {
       invocation,
       emittedBy: EMITTED_BY,
       plan: LIFECYCLE_PLAN,
+      initiativeId: TEST_INITIATIVE_ID,
     },
     ledger,
     root,

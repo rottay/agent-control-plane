@@ -35,6 +35,8 @@ export interface RestateChildConfig {
   readonly emittedBy: string;
   /** The packet's commit policy. Required in the JSON, never defaulted here. */
   readonly commitPolicy: CommitPolicy;
+  /** The packet's initiative. Required in the JSON, never defaulted here. */
+  readonly initiativeId: string;
   readonly faultPoint: string | null;
   /**
    * Beat at which to pause and announce, for the server-kill drill.
@@ -68,6 +70,13 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   const commitPolicy = CommitPolicy.safeParse(value["commitPolicy"]);
   if (!commitPolicy.success) {
     throw new SupervisorError("child config requires an explicit commitPolicy");
+  }
+  // Symmetric with the policy above, and for the same reason: the value
+  // reaches the discovery event's payload, so a default would be a silent
+  // attribution no later event could correct.
+  const initiativeId = value["initiativeId"];
+  if (typeof initiativeId !== "string" || initiativeId.length === 0) {
+    throw new SupervisorError("child config requires an explicit initiativeId");
   }
   const rawFault = value["faultPoint"] ?? null;
   const faultPoint = typeof rawFault === "string" ? rawFault : null;
@@ -120,6 +129,7 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
     scenarioId,
     emittedBy,
     commitPolicy: commitPolicy.data,
+    initiativeId,
     faultPoint,
     pauseAt,
     port: rawPort,
@@ -154,7 +164,7 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
   const scenarioRoot = resolveScenarioRoot(config.scenarioId);
   const ledger = openLedger(scenarioLedgerPath(scenarioRoot));
 
-  const beat = (invocation: DurableInvocation): Omit<BeatContext, "plan"> => ({
+  const beat = (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
     ledger,
     effects: {
       apply: (operation) => {
@@ -200,6 +210,7 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
       createAcpTaskObject({
         beat,
         commitPolicy: config.commitPolicy,
+        initiativeId: config.initiativeId,
         ledger,
         __onBeat: onBeat,
       }),

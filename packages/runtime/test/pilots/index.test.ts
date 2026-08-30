@@ -57,6 +57,16 @@ import {
 import type { SpawnGit, SpawnResult } from "./helpers/index.js";
 
 /**
+ * The initiative every pilot packet is scoped to.
+ *
+ * The same value the helpers' `pilotEnvelope` fills, restated here because
+ * the helpers keep it module-private and this packet does not touch that
+ * file. The envelope and the supervisor must agree, so the literal is the
+ * agreement.
+ */
+const PILOT_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
+/**
  * P7A: the complete read-only packet pilot.
  *
  * A `NO_COMMIT` `TaskEnvelope` walked end to end over the real machinery this
@@ -166,7 +176,8 @@ function beatContext(
     invocation,
     emittedBy,
     plan,
-  };
+    initiativeId: PILOT_INITIATIVE_ID,
+    };
 }
 
 /** Append step 0 (`TASK_DISCOVERED`) by hand -- the one step `advance()` refuses. */
@@ -336,6 +347,7 @@ describe("the read-only packet, walked end to end", () => {
       scenarioRoot: root,
       emittedBy: PILOT_WRITER,
       commitPolicy: "NO_COMMIT",
+      initiativeId: PILOT_INITIATIVE_ID,
     });
     const run = supervisor.runToCheckpoint();
     expect(run.finalState).toBe("CHECKPOINTED");
@@ -520,6 +532,7 @@ describe("a planted violation revokes the lease and suspects the worktree", () =
       scenarioRoot: root,
       emittedBy: PILOT_WRITER,
       commitPolicy: "NO_COMMIT",
+      initiativeId: PILOT_INITIATIVE_ID,
     });
     expect(() => resumed.runToCheckpoint()).toThrow(LifecyclePlanError);
 

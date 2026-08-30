@@ -35,6 +35,9 @@ import { reconcile } from "../../../src/drivers/restate-driver/index.js";
 import { releasePath } from "../../../src/drivers/restate-child/index.js";
 import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
 
+/** One fixed initiative for every fixture in this file. */
+const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
 /**
  * The real drills: a real pinned Restate server, real child processes, real
  * SIGKILL.
@@ -97,7 +100,7 @@ function markers(root: string): number {
 }
 
 function beatFactory(root: ScenarioRoot, ledger: Ledger) {
-  return (invocation: DurableInvocation): Omit<BeatContext, "plan"> => ({
+  return (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
     ledger,
     effects: {
       apply: (operation) => {
@@ -137,6 +140,7 @@ function startChild(
     emittedBy: EMITTED_BY,
     // The child refuses a config that does not say which policy it runs under.
     commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    initiativeId: TEST_INITIATIVE_ID,
     faultPoint,
     pauseAt,
     port: RUNTIME_SERVICE_PORT,
@@ -849,6 +853,7 @@ describe("restate drills", () => {
       },
       beat,
       "LOCAL_COMMIT_WITH_RECEIPT",
+        TEST_INITIATIVE_ID,
     );
 
     const status = await driver.status();
@@ -924,6 +929,7 @@ describe("driver equivalence", () => {
       scenarioRoot: rootA,
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: TEST_INITIATIVE_ID,
     }).runToCheckpoint();
 
     // Scenario B: Restate, on a different fresh ledger.
@@ -957,6 +963,7 @@ describe("driver equivalence", () => {
       scenarioRoot: rootC,
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: TEST_INITIATIVE_ID,
     }).runToCheckpoint();
     expect(ledgerC.status().headEventSha256).not.toBe(a.headEventSha256);
 

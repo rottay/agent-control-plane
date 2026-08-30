@@ -35,6 +35,8 @@ interface ChildConfig {
   readonly emittedBy: string;
   /** The packet's commit policy. Required in the JSON, never defaulted here. */
   readonly commitPolicy: CommitPolicy;
+  /** The packet's initiative. Required in the JSON, never defaulted here. */
+  readonly initiativeId: string;
   readonly faultPoint: FaultPoint | null;
 }
 
@@ -65,6 +67,15 @@ export function parseChildConfig(raw: unknown): ChildConfig {
   if (!commitPolicy.success) {
     throw new SupervisorError("child config requires an explicit commitPolicy");
   }
+  // The same law as the policy above: a child that did not say which
+  // initiative it runs under is refused rather than handed a default, because
+  // the value reaches the discovery event's payload and a wrong attribution
+  // cannot be corrected by any later event.
+  const initiativeId = value["initiativeId"];
+  if (typeof initiativeId !== "string" || initiativeId.length === 0) {
+    throw new SupervisorError("child config requires an explicit initiativeId");
+  }
+
   const rawFaultPoint = value["faultPoint"] ?? null;
   const faultPoint = typeof rawFaultPoint === "string" ? rawFaultPoint : null;
   if (rawFaultPoint !== null && faultPoint === null) {
@@ -102,6 +113,7 @@ export function parseChildConfig(raw: unknown): ChildConfig {
     scenarioId,
     emittedBy,
     commitPolicy: commitPolicy.data,
+    initiativeId,
     faultPoint: faultPoint as FaultPoint | null,
     invocation: { taskId, attempt, invocationId, submittedAt, submissionDigest },
   };
@@ -119,6 +131,7 @@ export function runChild(config: ChildConfig): void {
       scenarioRoot,
       emittedBy: config.emittedBy,
       commitPolicy: config.commitPolicy,
+      initiativeId: config.initiativeId,
       __faultPoint: config.faultPoint ?? undefined,
       // A real signal, not an exception. SIGKILL cannot be caught, so nothing
       // in this process gets a chance to flush, close or tidy up, which is the

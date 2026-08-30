@@ -10,5 +10,5 @@
     "incremental": false
   },
   "include": ["**/*.ts", "../src/**/*.ts"],
-  "references": [{ "path": "../../contracts" }, { "path": "../../ledger" }]
+  "references": [{ "path": "../../accounts" }, { "path": "../../contracts" }, { "path": "../../ledger" }]
 }

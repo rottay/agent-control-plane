@@ -95,6 +95,15 @@ export interface DaemonOptions {
   readonly attempt: number;
   readonly submittedAt: string;
   readonly submissionDigest: string;
+  /**
+   * The initiative this packet belongs to.
+   *
+   * Required, with no default. It arrives with the packet exactly as the
+   * commit policy will: the daemon states it once, at its own call site, and
+   * passes it to whichever mode runs. There are no CLI flags here -- this
+   * option surface is how a caller says it.
+   */
+  readonly initiativeId: string;
   /** Injectable so the identity verdicts are testable without a real process. */
   readonly inspector?: ProcessInspector | undefined;
   readonly clock?: (() => string) | undefined;
@@ -273,6 +282,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         // this process has never been asked to run, and when it is, the policy
         // will arrive with the packet rather than be assumed here.
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+        initiativeId: options.initiativeId,
       });
       publish("RECONCILED", null);
       publish("READY", null);
@@ -288,6 +298,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         // The same explicit policy as the SQLite site above, for the same
         // reason: one place a reader can find it, and no default anywhere.
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+        initiativeId: options.initiativeId,
         stack,
         onPhase: (phase, pid) => {
           // Published where it happens, in the order it happens. Deferring

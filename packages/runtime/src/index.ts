@@ -241,3 +241,13 @@ export { startVerifiedServer, serverAvailability } from "./restate/server-handle
 export type { SafeServerHandle, ServerExit } from "./restate/server-handle/index.js";
 
 export type { RestateCacheState, RestateDriverOptions, LedgerLike } from "./contracts/index.js";
+
+export { recordTokenObservation } from "./usage/index.js";
+export type {
+  TokenObservation,
+  TokenObservationKind,
+  TokenRecordResult,
+} from "./usage/index.js";
+
+export { executeSwitchPlan } from "./switch-executor/index.js";
+export type { SwitchExecutionInput, SwitchExecutionResult } from "./switch-executor/index.js";

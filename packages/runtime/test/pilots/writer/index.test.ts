@@ -54,6 +54,16 @@ import {
   writeToyContent,
 } from "../helpers/index.js";
 import type { SpawnGit, SpawnResult } from "../helpers/index.js";
+
+/**
+ * The initiative every pilot packet is scoped to.
+ *
+ * The same value the helpers' `pilotEnvelope` fills, restated here because
+ * the helpers keep it module-private and this packet does not touch that
+ * file. The envelope and the supervisor must agree, so the literal is the
+ * agreement.
+ */
+const PILOT_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
 import {
   WRITER_AUTHORIZED_AT,
   WRITER_CHECK_RAN_AT,
@@ -194,7 +204,8 @@ function beatContext(
     invocation,
     emittedBy,
     plan,
-  };
+    initiativeId: PILOT_INITIATIVE_ID,
+    };
 }
 
 function appendStepZero(context: BeatContext): void {
@@ -287,6 +298,7 @@ describe("the writer packet, walked end to end", () => {
       scenarioRoot: root,
       emittedBy: PILOT_WRITER,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: PILOT_INITIATIVE_ID,
     });
     await supervisor.advance(inv, "DISCOVERED"); // 1: classified
     await supervisor.advance(inv, "DT_CLASSIFIED"); // 2: ready

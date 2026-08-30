@@ -64,6 +64,13 @@ export interface SqliteSupervisorOptions {
    */
   readonly commitPolicy: CommitPolicy;
   /**
+   * The initiative this packet belongs to.
+   *
+   * Required, never defaulted, exactly like `commitPolicy`. It arrives with the
+   * packet and reaches the ledger in the discovery event's payload.
+   */
+  readonly initiativeId: string;
+  /**
    * Deliberate interruption seam, for the kill/restart drills only.
    *
    * Rollback and recovery are claims that cannot be verified by reading code.
@@ -90,6 +97,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
   readonly #scenarioRoot: ScenarioRoot;
   readonly #emittedBy: string;
   readonly #plan: readonly PlanStep[];
+  readonly #initiativeId: string;
   readonly #faultPoint: FaultPoint | undefined;
   readonly #onFault: (() => void) | undefined;
 
@@ -99,6 +107,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
     this.#scenarioRoot = options.scenarioRoot;
     this.#emittedBy = options.emittedBy;
     this.#plan = planFor(options.commitPolicy);
+    this.#initiativeId = options.initiativeId;
     this.#faultPoint = options.__faultPoint;
     this.#onFault = options.__onFault;
   }
@@ -259,6 +268,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
       invocation,
       emittedBy: this.#emittedBy,
       plan: this.#plan,
+      initiativeId: this.#initiativeId,
     };
   }
 

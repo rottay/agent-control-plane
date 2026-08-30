@@ -57,6 +57,18 @@ export interface BeatContext {
    * which is the defect this field exists to make unrepresentable.
    */
   readonly plan: readonly PlanStep[];
+  /**
+   * The initiative this run's packet belongs to.
+   *
+   * Required, with no default, for the same reason `plan` is: an attribution
+   * that could be omitted would be an attribution that silently defaulted, and
+   * a task discovered under the wrong initiative is a reporting lie no later
+   * event can correct. It reaches the ledger through the discovery event's
+   * payload, and through continuity: because step 0's bytes carry it, resuming
+   * the same coordinates under a *different* initiative rebuilds different
+   * bytes and `assertInvocationContinuity` refuses.
+   */
+  readonly initiativeId: string;
 }
 
 /** What one durable beat did. Small, canonical, and safe to journal. */
@@ -79,7 +91,7 @@ export interface BeatResult {
  * task.
  */
 export function assertInvocationContinuity(context: BeatContext): void {
-  const { ledger, invocation, emittedBy } = context;
+  const { ledger, invocation, emittedBy, initiativeId } = context;
   const task = ledger.getTask(invocation.taskId);
   if (task === null) return;
 
@@ -106,7 +118,7 @@ export function assertInvocationContinuity(context: BeatContext): void {
   // Step 0 is the same frozen object in every plan -- `READ_ONLY_PLAN` derives
   // steps 0-7 from the writer plan and the lifecycle test asserts the identity
   // -- so the rebuild does not depend on which plan this run walks.
-  const rebuilt = buildEvent({ invocation, step: planStep(0), emittedBy });
+  const rebuilt = buildEvent({ invocation, step: planStep(0), emittedBy, initiativeId });
   if (recorded.canonicalJson !== canonicalJsonStringify(rebuilt)) {
     throw new SupervisorError(
       "refusing to resume: these coordinates were begun by a different" +
@@ -205,6 +217,7 @@ export function appendPlanStep(context: BeatContext, step: PlanStep): BeatResult
     invocation: context.invocation,
     step,
     emittedBy: context.emittedBy,
+    initiativeId: context.initiativeId,
   });
   const result = context.ledger.append(event);
   return { event: result.inserted ? result.record.event : null, inserted: result.inserted };

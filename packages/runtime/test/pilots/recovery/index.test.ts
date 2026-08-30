@@ -30,6 +30,9 @@ import {
   writeToyContent,
 } from "../helpers/index.js";
 import type { SpawnGit, SpawnResult } from "../helpers/index.js";
+
+/** The same fixture initiative the pilots' envelope uses. */
+const PILOT_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
 import {
   RECOVERY_FAULT_SCENARIOS,
   RECOVERY_LEASE_ACQUIRED_AT,
@@ -171,6 +174,7 @@ function runChildProcess(
     emittedBy: PILOT_WRITER,
     // This leg's whole point: the child walks the read-only plan.
     commitPolicy: "NO_COMMIT",
+    initiativeId: PILOT_INITIATIVE_ID,
     faultPoint,
   });
   return new Promise<ChildOutcome>((resolvePromise, rejectPromise) => {

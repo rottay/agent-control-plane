@@ -5,6 +5,9 @@ import type { DurableInvocation } from "../../../src/contracts/index.js";
 import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP } from "../../../src/core/lifecycle/index.js";
 
+/** One fixed initiative for every fixture in this file. */
+const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
 const INVOCATION: DurableInvocation = {
   taskId: "22222222-2222-4222-8222-222222222222",
   attempt: 1,
@@ -18,13 +21,13 @@ const EMITTED_BY = "claude/opus/implementer/01";
 function build(index: number): ReturnType<typeof buildEvent> {
   const step = LIFECYCLE_PLAN[index];
   if (step === undefined) throw new Error("no such plan step");
-  return buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY });
+  return buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
 }
 
 describe("event construction", () => {
   it("produces a valid ControlPlaneEvent for every plan step", () => {
     for (const step of LIFECYCLE_PLAN) {
-      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY });
+      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
       expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
       expect(event.type).toBe(step.eventType);
       expect(event.fromState).toBe(step.fromState);
@@ -62,7 +65,7 @@ describe("event construction", () => {
 
   it("carries no credential, transcript, path or free text in any payload", () => {
     for (const step of LIFECYCLE_PLAN) {
-      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY });
+      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
       expect(findCredentialViolations(event.payload)).toHaveLength(0);
       expect(findTranscriptViolations(event.payload)).toHaveLength(0);
       const serialized = JSON.stringify(event.payload);
@@ -88,7 +91,7 @@ describe("event construction", () => {
 
   it("binds the submission digest into every canonical body", () => {
     for (const step of LIFECYCLE_PLAN) {
-      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY });
+      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
       expect(event.payload["submissionDigest"]).toBe(INVOCATION.submissionDigest);
     }
   });
@@ -100,11 +103,12 @@ describe("event construction", () => {
     // caller silently inherits an outcome for work it did not ask for.
     const step = LIFECYCLE_PLAN[0];
     if (step === undefined) throw new Error("no plan");
-    const a = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY });
+    const a = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
     const b = buildEvent({
       invocation: { ...INVOCATION, submissionDigest: "9".repeat(64) },
       step,
       emittedBy: EMITTED_BY,
+      initiativeId: TEST_INITIATIVE_ID,
     });
 
     expect(b.idempotencyKey).toBe(a.idempotencyKey);

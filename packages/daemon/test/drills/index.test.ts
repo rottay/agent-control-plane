@@ -41,6 +41,8 @@ const CHILD_ENTRY = join(PACKAGE_ROOT, "dist", "daemon-child", "index.js");
 const DIGEST = "b".repeat(64);
 const EMITTED_BY = "claude/opus/implementer/01";
 const TASK_FOR_UNVERIFIED = "11111111-2222-5333-8444-555555555555";
+/** One fixed initiative for every daemon drill packet. */
+const DRILL_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
 
 const scenarios: string[] = [];
 const spawned: number[] = [];
@@ -122,6 +124,7 @@ function configFor(
       attempt: 1,
       submittedAt: "2026-08-27T18:46:07.000Z",
       submissionDigest: DIGEST,
+      initiativeId: DRILL_INITIATIVE_ID,
       holdOpen: true,
       checkPorts: false,
       ...overrides,
@@ -299,6 +302,7 @@ describe("the singleton against a live daemon", () => {
         attempt: 1,
         submittedAt: "2026-08-27T18:46:07.000Z",
         submissionDigest: DIGEST,
+        initiativeId: DRILL_INITIATIVE_ID,
         checkPorts: false,
       }),
     ).rejects.toThrow(SingletonError);
@@ -363,6 +367,7 @@ describe("Restate requested but not verified", () => {
           scenarioRoot: root,
           emittedBy: EMITTED_BY,
           commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+          initiativeId: DRILL_INITIATIVE_ID,
           stack,
           onPhase: () => undefined,
           readAvailability: () => ({ available: false, reason: "no binary" }),
@@ -496,6 +501,7 @@ describe("the Restate mode", () => {
           attempt: 1,
           submittedAt: "2026-08-27T18:46:07.000Z",
           submissionDigest: DIGEST,
+          initiativeId: DRILL_INITIATIVE_ID,
           checkPorts: true,
         }),
       ).rejects.toThrow(/already in use/);

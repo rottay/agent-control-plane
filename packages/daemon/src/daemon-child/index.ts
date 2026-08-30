@@ -28,6 +28,7 @@ import { startDaemon, stopDaemon, terminateDaemon } from "../index.js";
  */
 
 const SHA256_HEX = new RegExp("^[0-9a-f]{64}$");
+const UUID = new RegExp("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", "i");
 
 export interface DaemonChildConfig {
   readonly mode: DaemonMode;
@@ -37,6 +38,8 @@ export interface DaemonChildConfig {
   readonly attempt: number;
   readonly submittedAt: string;
   readonly submissionDigest: string;
+  /** The packet's initiative. Required in the JSON, checked as a uuid here. */
+  readonly initiativeId: string;
   /** Stay alive after supervising, so a signal drill has something to signal. */
   readonly holdOpen: boolean;
   /** Skip the port precheck. Only for the SQLite drills, which bind nothing. */
@@ -56,6 +59,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   const attempt = value["attempt"];
   const submittedAt = value["submittedAt"];
   const submissionDigest = value["submissionDigest"];
+  const initiativeId = value["initiativeId"];
   const holdOpen = value["holdOpen"] ?? true;
   const checkPorts = value["checkPorts"] ?? true;
 
@@ -70,6 +74,12 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   if (typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 1) {
     throw new ModeError("attempt must be a positive integer");
   }
+  // Absence is a refusal, not a default: this value reaches the discovery
+  // event's payload, and the contract will only accept a uuid there, so a
+  // malformed one is caught at the door rather than three layers down.
+  if (typeof initiativeId !== "string" || !UUID.test(initiativeId)) {
+    throw new ModeError("initiativeId must be a uuid");
+  }
   if (typeof holdOpen !== "boolean") throw new ModeError("holdOpen must be a boolean");
   if (typeof checkPorts !== "boolean") throw new ModeError("checkPorts must be a boolean");
 
@@ -81,6 +91,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
     attempt,
     submittedAt,
     submissionDigest,
+    initiativeId,
     holdOpen,
     checkPorts,
   };
@@ -96,6 +107,7 @@ export async function runDaemonChild(config: DaemonChildConfig): Promise<number>
     attempt: config.attempt,
     submittedAt: config.submittedAt,
     submissionDigest: config.submissionDigest,
+    initiativeId: config.initiativeId,
     checkPorts: config.checkPorts,
   });
 

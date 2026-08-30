@@ -54,6 +54,8 @@ export interface RestateModeInput {
    * `SqliteModeInput.commitPolicy`.
    */
   readonly commitPolicy: CommitPolicy;
+  /** The packet's initiative, passed through: see `SqliteModeInput.initiativeId`. */
+  readonly initiativeId: string;
   readonly stack: UnwindStack;
   /**
    * Announce a phase at the instant it is reached.
@@ -90,8 +92,8 @@ export function beatFor(
   ledger: Ledger,
   scenarioRoot: ScenarioRoot,
   emittedBy: string,
-): (invocation: DurableInvocation) => Omit<BeatContext, "plan"> {
-  return (invocation: DurableInvocation): Omit<BeatContext, "plan"> => ({
+): (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId"> {
+  return (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
     ledger,
     effects: {
       apply: (operation) => {
@@ -132,6 +134,7 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
       createAcpTaskObject({
         beat: beatFor(input.ledger, input.scenarioRoot, input.emittedBy),
         commitPolicy: input.commitPolicy,
+        initiativeId: input.initiativeId,
         ledger: input.ledger,
       }),
     ],
