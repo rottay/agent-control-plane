@@ -1,3 +1,4 @@
+import type { CommitPolicy } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
 import { SqliteSupervisor } from "@acp/runtime";
@@ -22,6 +23,14 @@ export interface SqliteModeInput {
   readonly invocation: DurableInvocation;
   readonly scenarioRoot: ScenarioRoot;
   readonly emittedBy: string;
+  /**
+   * The packet's commit policy, which selects the plan the supervisor walks.
+   *
+   * Required and passed through, never defaulted here: the daemon says which
+   * policy it is running under at its own call site, in one place a reader can
+   * find, rather than this mode assuming one on its behalf.
+   */
+  readonly commitPolicy: CommitPolicy;
 }
 
 export interface SqliteModeResult {
@@ -38,6 +47,7 @@ export async function runSqliteMode(input: SqliteModeInput): Promise<SqliteModeR
     invocation: input.invocation,
     scenarioRoot: input.scenarioRoot,
     emittedBy: input.emittedBy,
+    commitPolicy: input.commitPolicy,
   });
 
   const report = await supervisor.reconcile();

@@ -947,6 +947,43 @@ const P6F_WRITE_SET = [
 ];
 
 /**
+ * P7: the read-only packet path.
+ *
+ * P7P opens the phase and is P7A's precondition: it makes the lifecycle plan
+ * commit-policy-aware, so a `NO_COMMIT` packet has a lawful close. P7 is
+ * therefore **19 packet entries across 19 distinct paths** so far -- P7P is the
+ * only array in the phase and repeats nothing; P7A declares its own after
+ * `...P7P_WRITE_SET` when it lands, and the arithmetic is recomputed then.
+ *
+ * The plan is selected at the driver boundary, which is why the set reaches
+ * into `@acp/daemon`: the two places that construct a driver must now say which
+ * commit policy they are running under, and today's answer, made explicit, is
+ * `LOCAL_COMMIT_WITH_RECEIPT`. `DurableInvocation` and `@acp/contracts` are
+ * untouched.
+ */
+const P7P_WRITE_SET = [
+  "packages/runtime/src/core/lifecycle/index.ts",
+  "packages/runtime/src/core/step-executor/index.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/runtime/src/drivers/restate-driver/index.ts",
+  "packages/runtime/src/drivers/restate-child/index.ts",
+  "packages/runtime/src/index.ts",
+  "packages/runtime/test/core/lifecycle/index.test.ts",
+  "packages/runtime/test/core/step-executor/index.test.ts",
+  "packages/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/runtime/test/drivers/drills/index.test.ts",
+  "packages/runtime/README.md",
+  "docs/ROADMAP.md",
+  "scripts/check-architecture.mjs",
+  "packages/daemon/src/index.ts",
+  "packages/daemon/src/mode-sqlite/index.ts",
+  "packages/daemon/src/mode-restate/index.ts",
+  "packages/daemon/test/drills/index.test.ts",
+];
+
+/**
  * P5N cohort C1: contracts, the first tree normalized under the mirrored
  * topology.
  *
@@ -1172,6 +1209,7 @@ const WRITE_SET = [
   ...P6C_WRITE_SET,
   ...P6E_WRITE_SET,
   ...P6F_WRITE_SET,
+  ...P7P_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -1200,7 +1238,7 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "ac67534b95bd811c4d074b97807f682c3efc04a37b1195c75618b170f28f197d";
+  "feaa62ad69afe8d3fa5ada81999cd69475559a2b3a6cf14f38932ec8d5b6616e";
 
 /**
  * The Estado line P6 closure is allowed to have produced.
@@ -1495,6 +1533,10 @@ const EXPIRED_LITERALS = {
     // complete one. The enforcement core still computes none, and the rewritten
     // sentence says exactly that.
     "Nothing here computes a partial conflict check",
+    // Retired by P7P: there is no longer a single plan. The module holds one
+    // step table and one plan per commit policy, derived from it, and the
+    // rewritten sentence says so.
+    "holds the single plan",
     // Retired by the P6 closure: the scope sentence enumerated the three P6
     // packets as things being *added*, which was true while each was landing
     // and false once the phase closed. The rewritten sentence states the

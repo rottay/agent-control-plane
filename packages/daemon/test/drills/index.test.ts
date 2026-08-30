@@ -362,6 +362,7 @@ describe("Restate requested but not verified", () => {
           },
           scenarioRoot: root,
           emittedBy: EMITTED_BY,
+          commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
           stack,
           onPhase: () => undefined,
           readAvailability: () => ({ available: false, reason: "no binary" }),

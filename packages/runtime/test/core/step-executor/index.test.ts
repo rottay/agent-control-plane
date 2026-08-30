@@ -80,7 +80,13 @@ function contextFor(name: string, taskId: string, log: string[]): {
   const ledger = openLedger(scenarioLedgerPath(root));
   ledgers.push(ledger);
   return {
-    context: { ledger, effects: recordingEffects(root, log), invocation, emittedBy: EMITTED_BY },
+    context: {
+      ledger,
+      effects: recordingEffects(root, log),
+      invocation,
+      emittedBy: EMITTED_BY,
+      plan: LIFECYCLE_PLAN,
+    },
     ledger,
     root,
     invocation,

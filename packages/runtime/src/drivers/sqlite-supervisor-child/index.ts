@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { CommitPolicy } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 
 import type { DurableInvocation } from "../../contracts/index.js";
@@ -32,6 +33,8 @@ interface ChildConfig {
   readonly scenarioId: string;
   readonly invocation: DurableInvocation;
   readonly emittedBy: string;
+  /** The packet's commit policy. Required in the JSON, never defaulted here. */
+  readonly commitPolicy: CommitPolicy;
   readonly faultPoint: FaultPoint | null;
 }
 
@@ -55,6 +58,13 @@ export function parseChildConfig(raw: unknown): ChildConfig {
 
   const scenarioId = value["scenarioId"];
   const emittedBy = value["emittedBy"];
+  // Admitted by the contract's own enum, like every other field that reaches an
+  // event: a child that did not say which policy it runs under is refused
+  // rather than handed the commit-capable plan.
+  const commitPolicy = CommitPolicy.safeParse(value["commitPolicy"]);
+  if (!commitPolicy.success) {
+    throw new SupervisorError("child config requires an explicit commitPolicy");
+  }
   const rawFaultPoint = value["faultPoint"] ?? null;
   const faultPoint = typeof rawFaultPoint === "string" ? rawFaultPoint : null;
   if (rawFaultPoint !== null && faultPoint === null) {
@@ -91,6 +101,7 @@ export function parseChildConfig(raw: unknown): ChildConfig {
   return {
     scenarioId,
     emittedBy,
+    commitPolicy: commitPolicy.data,
     faultPoint: faultPoint as FaultPoint | null,
     invocation: { taskId, attempt, invocationId, submittedAt, submissionDigest },
   };
@@ -107,6 +118,7 @@ export function runChild(config: ChildConfig): void {
       invocation: config.invocation,
       scenarioRoot,
       emittedBy: config.emittedBy,
+      commitPolicy: config.commitPolicy,
       __faultPoint: config.faultPoint ?? undefined,
       // A real signal, not an exception. SIGKILL cannot be caught, so nothing
       // in this process gets a chance to flush, close or tidy up, which is the

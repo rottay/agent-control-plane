@@ -1,3 +1,4 @@
+import type { CommitPolicy } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import type {
   BeatContext,
@@ -46,6 +47,13 @@ export interface RestateModeInput {
   readonly invocation: DurableInvocation;
   readonly scenarioRoot: ScenarioRoot;
   readonly emittedBy: string;
+  /**
+   * The packet's commit policy, which selects the plan the object walks.
+   *
+   * Required and passed through, never defaulted here: see
+   * `SqliteModeInput.commitPolicy`.
+   */
+  readonly commitPolicy: CommitPolicy;
   readonly stack: UnwindStack;
   /**
    * Announce a phase at the instant it is reached.
@@ -82,8 +90,8 @@ export function beatFor(
   ledger: Ledger,
   scenarioRoot: ScenarioRoot,
   emittedBy: string,
-): (invocation: DurableInvocation) => BeatContext {
-  return (invocation: DurableInvocation): BeatContext => ({
+): (invocation: DurableInvocation) => Omit<BeatContext, "plan"> {
+  return (invocation: DurableInvocation): Omit<BeatContext, "plan"> => ({
     ledger,
     effects: {
       apply: (operation) => {
@@ -123,6 +131,7 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
     services: [
       createAcpTaskObject({
         beat: beatFor(input.ledger, input.scenarioRoot, input.emittedBy),
+        commitPolicy: input.commitPolicy,
         ledger: input.ledger,
       }),
     ],

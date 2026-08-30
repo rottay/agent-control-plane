@@ -73,11 +73,31 @@ used by any real operation.
 
 ## One core, two drivers
 
-`src/core/lifecycle/index.ts` holds the single plan. The supervisor and the
-Restate
-driver both walk it. Neither encodes a transition of its own: two copies of a
-state machine drift, and the drift is only ever discovered when the two disagree
-about a recovery.
+`src/core/lifecycle/index.ts` holds one step table and one plan per commit
+policy. The supervisor and the Restate driver both walk a plan from it, and
+neither encodes a transition of its own: two copies of a state machine drift,
+and the drift is only ever discovered when the two disagree about a recovery.
+
+That is also why the second plan is **derived rather than written twice**.
+`READ_ONLY_PLAN` is the writer plan's own frozen steps 0-7 plus one closing step
+that takes its transition id, event type and target state from the writer plan's
+checkpoint step; only the `fromState` differs, because a `NO_COMMIT` packet
+closes from `AUDITING` instead of from `COMMITTED`. Sharing the objects is what
+makes "they cannot drift" a fact about the values rather than a promise about
+future edits.
+
+Which plan a run walks is chosen at the **driver boundary**, from the packet's
+`commitPolicy`, and there is no default: `SqliteSupervisorOptions` and the
+Restate object's dependencies both require it, so a caller that never said which
+policy it is under cannot be handed the commit-capable plan by omission. A
+read-only packet therefore never passes through `READY_TO_COMMIT` or
+`COMMITTED`, and no `COMMIT_*` event can appear in its trail, because no step
+exists that could produce one.
+
+The commit-authorization module is unaffected by that second path and cannot be
+reached from it: `authorizeCommit` and `recordCommit` belong to the writer plan
+by construction, since the task envelope refuses a commit policy on an empty
+write-set, so a read-only close can never be followed by a receipt.
 
 The supervisor holds **no cursor**. Every decision about what to do next is read
 back out of the ledger, which is what makes "the ledger is the authority" true

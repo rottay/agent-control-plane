@@ -268,6 +268,11 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         invocation,
         scenarioRoot,
         emittedBy: options.emittedBy,
+        // Today's behaviour, said out loud. The daemon supervises packets that
+        // may commit locally under a receipt; a read-only packet is a policy
+        // this process has never been asked to run, and when it is, the policy
+        // will arrive with the packet rather than be assumed here.
+        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       });
       publish("RECONCILED", null);
       publish("READY", null);
@@ -280,6 +285,9 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         invocation,
         scenarioRoot,
         emittedBy: options.emittedBy,
+        // The same explicit policy as the SQLite site above, for the same
+        // reason: one place a reader can find it, and no default anywhere.
+        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
         stack,
         onPhase: (phase, pid) => {
           // Published where it happens, in the order it happens. Deferring

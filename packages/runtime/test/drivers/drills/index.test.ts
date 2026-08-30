@@ -97,7 +97,7 @@ function markers(root: string): number {
 }
 
 function beatFactory(root: ScenarioRoot, ledger: Ledger) {
-  return (invocation: DurableInvocation): BeatContext => ({
+  return (invocation: DurableInvocation): Omit<BeatContext, "plan"> => ({
     ledger,
     effects: {
       apply: (operation) => {
@@ -135,6 +135,8 @@ function startChild(
     scenarioId,
     invocation,
     emittedBy: EMITTED_BY,
+    // The child refuses a config that does not say which policy it runs under.
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
     faultPoint,
     pauseAt,
     port: RUNTIME_SERVICE_PORT,
@@ -846,6 +848,7 @@ describe("restate drills", () => {
           ),
       },
       beat,
+      "LOCAL_COMMIT_WITH_RECEIPT",
     );
 
     const status = await driver.status();
@@ -920,6 +923,7 @@ describe("driver equivalence", () => {
       invocation,
       scenarioRoot: rootA,
       emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
     }).runToCheckpoint();
 
     // Scenario B: Restate, on a different fresh ledger.
@@ -952,6 +956,7 @@ describe("driver equivalence", () => {
       invocation: other,
       scenarioRoot: rootC,
       emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
     }).runToCheckpoint();
     expect(ledgerC.status().headEventSha256).not.toBe(a.headEventSha256);
 

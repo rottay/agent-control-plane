@@ -1,15 +1,20 @@
-import { CONTROL_PLANE_EVENT_TYPES, LIFECYCLE_STATES } from "@acp/contracts";
+import { CONTROL_PLANE_EVENT_TYPES, CommitPolicy, LIFECYCLE_STATES } from "@acp/contracts";
 import type { ControlPlaneEventType, LifecycleState, TaskState } from "@acp/contracts";
 
 import { LifecyclePlanError } from "../../errors/index.js";
 
 /**
- * The one lifecycle plan.
+ * One step table, one plan per commit policy.
  *
- * Both drivers walk this. The SQLite supervisor does today; the Restate driver
- * will in P2C. Neither encodes a transition of its own, because two copies of a
- * state machine drift, and the drift is only ever discovered when the two
- * disagree about a recovery.
+ * Both drivers walk a plan from this module and neither encodes a transition of
+ * its own, because two copies of a state machine drift and the drift is only
+ * ever discovered when the two disagree about a recovery. That law is why the
+ * read-only plan below is **derived** from the writer plan rather than written
+ * out a second time: the shared steps are the same frozen objects, so they
+ * cannot come to disagree.
+ *
+ * Which plan a run walks is chosen at the driver boundary, from the packet's
+ * `commitPolicy`, and never from a module-global constant.
  *
  * The plan adds no state and no event type: every `toState` comes from the
  * frozen `LIFECYCLE_STATES` and every `eventType` from the frozen
@@ -57,7 +62,60 @@ export const LIFECYCLE_PLAN: readonly PlanStep[] = Object.freeze([
   { index: 10, transitionId: "checkpointed", fromState: "COMMITTED", toState: "CHECKPOINTED", eventType: "CHECKPOINT_WRITTEN", beat: "PLAIN" },
 ] as const);
 
-/** The terminal state the plan drives to. */
+/**
+ * The read-only plan, for a `NO_COMMIT` packet.
+ *
+ * Derived, never duplicated: steps 0-7 are the writer plan's own frozen objects
+ * (`READ_ONLY_PLAN[i] === LIFECYCLE_PLAN[i]`, asserted by the test), and the
+ * closing step takes its `transitionId`, `eventType` and `toState` from the
+ * writer plan's own checkpoint step. Only the `fromState` differs, because this
+ * plan closes from `AUDITING` instead of from `COMMITTED`.
+ *
+ * A packet that may not commit therefore never passes through `READY_TO_COMMIT`
+ * or `COMMITTED`, and no `COMMIT_*` event can appear in its trail: there is no
+ * step that could produce one.
+ */
+export const READ_ONLY_PLAN: readonly PlanStep[] = Object.freeze([
+  ...LIFECYCLE_PLAN.slice(0, 8),
+  {
+    index: 8,
+    transitionId: requireStep(10).transitionId,
+    fromState: "AUDITING",
+    toState: requireStep(10).toState,
+    eventType: requireStep(10).eventType,
+    beat: "PLAIN",
+  },
+]);
+
+/**
+ * The plan a packet of this commit policy walks.
+ *
+ * There is no default, and the absence is enforced rather than promised. The
+ * argument is admitted by the contract's own `CommitPolicy` enum, so an absent
+ * value, a null, an unknown string, or a near-miss like `"no_commit"` **throws**
+ * instead of resolving to a plan.
+ *
+ * The direction of that failure is the point. A comparison of the form
+ * `policy === "NO_COMMIT" ? READ_ONLY_PLAN : LIFECYCLE_PLAN` is total: every
+ * value that is not exactly `"NO_COMMIT"` -- including every value that means
+ * nothing at all -- selects the *commit-capable* plan. A caller that lost its
+ * policy, or spelled it in the wrong case, would silently be handed commit
+ * capability, at the one seam in this package where commit capability is
+ * decided. Failing loudly is the only honest answer, and the caller is a driver
+ * being constructed, so the throw happens at construction rather than mid-plan.
+ */
+export function planFor(commitPolicy: CommitPolicy): readonly PlanStep[] {
+  const parsed = CommitPolicy.safeParse(commitPolicy);
+  if (!parsed.success) {
+    throw new LifecyclePlanError(
+      "a plan cannot be selected without an explicit commit policy from the" +
+        " contract's own vocabulary; no plan is chosen by default",
+    );
+  }
+  return parsed.data === "NO_COMMIT" ? READ_ONLY_PLAN : LIFECYCLE_PLAN;
+}
+
+/** The terminal state every plan drives to. */
 export const PLAN_TERMINAL_STATE: LifecycleState = "CHECKPOINTED";
 
 /** The single INTENT step, resolved once so callers cannot disagree about it. */

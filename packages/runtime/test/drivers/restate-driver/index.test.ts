@@ -7,7 +7,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { RESTATE_STATE_KEY_CACHE } from "../../../src/constants/index.js";
 import type { DurableInvocation, LedgerLike, RestateCacheState } from "../../../src/contracts/index.js";
-import { LIFECYCLE_PLAN, OUTCOME_STEP } from "../../../src/core/lifecycle/index.js";
+import {
+  LIFECYCLE_PLAN,
+  OUTCOME_STEP,
+  READ_ONLY_PLAN,
+} from "../../../src/core/lifecycle/index.js";
 import { deriveEventCoordinate } from "../../../src/core/coordinates/index.js";
 import { appendPlanStep } from "../../../src/core/step-executor/index.js";
 import type { BeatContext } from "../../../src/core/step-executor/index.js";
@@ -73,6 +77,7 @@ function open(name: string, taskId: string): {
     },
     invocation: candidate,
     emittedBy: EMITTED_BY,
+    plan: LIFECYCLE_PLAN,
   });
   return { ledger, root, invocation, beat };
 }
@@ -93,6 +98,7 @@ function driverFor(
       readCache,
     },
     beat,
+    "LOCAL_COMMIT_WITH_RECEIPT",
   );
 }
 
@@ -378,7 +384,7 @@ describe("the advance handler refuses before it touches anything", () => {
 
       await expect(
         advanceHandler(
-          { beat, ledger, __onBeat: (point) => beats.push(point) },
+          { beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", ledger, __onBeat: (point) => beats.push(point) },
           ctx,
           invocation,
         ),
@@ -406,7 +412,7 @@ describe("the advance handler refuses before it touches anything", () => {
     const { ctx, runs, sets } = fakeContext(null);
 
     const result = await advanceHandler(
-      { beat, ledger, __onBeat: (point) => beats.push(point) },
+      { beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", ledger, __onBeat: (point) => beats.push(point) },
       ctx,
       invocation,
     );
@@ -422,6 +428,41 @@ describe("the advance handler refuses before it touches anything", () => {
     // The cache is written once, after the work, from the ledger's own numbers.
     expect(sets).toHaveLength(1);
     expect(sets[0]?.lastAppliedEventSha256).toBe(ledger.status().headEventSha256);
+    // The writer trail is unchanged: every step of the writer plan, in order.
+    const trail = ledger.listEvents({ limit: 200 }).events.map((record) => record.event.type);
+    expect(trail).toEqual(LIFECYCLE_PLAN.map((step) => step.eventType));
+  });
+
+  // P7P: the same object, walking the read-only plan, because its packet says
+  // so. Nothing else about the handler changes.
+  it("walks the read-only plan for a NO_COMMIT packet", async () => {
+    const { ledger, invocation, beat } = open(
+      "handler-read-only",
+      "40404040-4040-4404-8404-404040404044",
+    );
+    const beats: string[] = [];
+    const { ctx, runs, sets } = fakeContext(null);
+
+    const result = await advanceHandler(
+      { beat, commitPolicy: "NO_COMMIT", ledger, __onBeat: (point) => beats.push(point) },
+      ctx,
+      invocation,
+    );
+
+    expect(result.finalSequence).toBe(READ_ONLY_PLAN.length);
+    expect(ledger.getTask(invocation.taskId)?.currentState).toBe("CHECKPOINTED");
+    expect(runs.length).toBe(READ_ONLY_PLAN.length + 1);
+    expect(sets).toHaveLength(1);
+    // The three-beat law is untouched: the intent still has its effect and its
+    // evidence-bearing outcome.
+    expect(beats).toContain("AFTER_EFFECT");
+    expect(beats).toContain("AFTER_OUTCOME");
+
+    const trail = ledger.listEvents({ limit: 200 }).events.map((record) => record.event.type);
+    expect(trail.slice(-2)).toEqual(["AUDIT_COMPLETED", "CHECKPOINT_WRITTEN"]);
+    expect(trail.filter((type) => type.startsWith("COMMIT_"))).toEqual([]);
+    expect(trail).not.toContain("TASK_STATE_CHANGED");
+    expect(trail).toHaveLength(READ_ONLY_PLAN.length);
   });
 });
 

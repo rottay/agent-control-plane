@@ -1,5 +1,6 @@
 import { CONTRACT_VERSION, ReconciliationReport } from "@acp/contracts";
 import type {
+  CommitPolicy,
   ControlPlaneEvent,
   DriverMode,
   DriverStatus,
@@ -24,7 +25,7 @@ import type {
   RestateDriverOptions,
 } from "../../contracts/index.js";
 import { deterministicUuid } from "../../core/coordinates/index.js";
-import { LIFECYCLE_PLAN } from "../../core/lifecycle/index.js";
+import { planFor } from "../../core/lifecycle/index.js";
 import {
   appendPlanStep,
   applyIntentEffect,
@@ -218,7 +219,20 @@ export async function reconcile(input: ReconcileInput): Promise<ReconciliationRe
 // ---------------------------------------------------------------------------
 
 export interface ObjectDependencies {
-  readonly beat: (invocation: DurableInvocation) => BeatContext;
+  /**
+   * The ports for one invocation, without the plan.
+   *
+   * The plan is not the caller's to supply: this object selects it from
+   * `commitPolicy` below, so the plan the handler walks and the plan the
+   * executor navigates are the same value by construction rather than by two
+   * callers agreeing.
+   */
+  readonly beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan">;
+  /**
+   * The packet's commit policy. Required, with no default: see
+   * `SqliteSupervisorOptions.commitPolicy`.
+   */
+  readonly commitPolicy: CommitPolicy;
   readonly ledger: LedgerLike;
   /** Deliberate interruption seam for the kill drills. Never set in normal use. */
   readonly __onBeat?: ((point: string) => void) | undefined;
@@ -262,7 +276,8 @@ export async function advanceHandler(
   ctx: AdvanceContext,
   invocation: DurableInvocation,
 ): Promise<{ readonly finalSequence: number }> {
-  const context = dependencies.beat(invocation);
+  const plan = planFor(dependencies.commitPolicy);
+  const context: BeatContext = { ...dependencies.beat(invocation), plan };
 
   const report = await reconcile({
     ledger: dependencies.ledger,
@@ -284,7 +299,7 @@ export async function advanceHandler(
   // A FIXED walk from index 0. No branch reads unjournaled ledger state, so the
   // journal entry order is identical on every replay; idempotent appends make
   // the already-done steps free.
-  for (const step of LIFECYCLE_PLAN) {
+  for (const step of plan) {
     if (step.beat === "OUTCOME") continue;
 
     await ctx.run("step/" + step.transitionId + "/" + String(step.index), () => {
@@ -308,7 +323,7 @@ export async function advanceHandler(
       });
       dependencies.__onBeat?.("AFTER_EFFECT");
 
-      const outcome = LIFECYCLE_PLAN[step.index + 1];
+      const outcome = plan[step.index + 1];
       if (outcome?.beat === "OUTCOME") {
         await ctx.run("outcome/" + outcome.transitionId + "/" + String(outcome.index), () => {
           try {
@@ -370,11 +385,17 @@ export class RestateDriver implements OrchestrationDriver {
   readonly mode: DriverMode = RESTATE_MODE;
 
   readonly #options: RestateDriverOptions;
-  readonly #beat: (invocation: DurableInvocation) => BeatContext;
+  readonly #beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan">;
+  readonly #commitPolicy: CommitPolicy;
 
-  constructor(options: RestateDriverOptions, beat: (invocation: DurableInvocation) => BeatContext) {
+  constructor(
+    options: RestateDriverOptions,
+    beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan">,
+    commitPolicy: CommitPolicy,
+  ) {
     this.#options = options;
     this.#beat = beat;
+    this.#commitPolicy = commitPolicy;
   }
 
   /**
@@ -424,7 +445,10 @@ export class RestateDriver implements OrchestrationDriver {
     // `async` so every refusal is a rejection. A promise-returning method that
     // throws synchronously makes callers write two error paths, and the one
     // they forget is the one that fires on a bad claim.
-    const context = this.#beat(invocation);
+    const context: BeatContext = {
+      ...this.#beat(invocation),
+      plan: planFor(this.#commitPolicy),
+    };
     assertInvocationContinuity(context);
     assertClaimedState(context, from);
     throw new SupervisorError(

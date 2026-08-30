@@ -166,11 +166,17 @@ export {
 export { buildEvent, operationForStep } from "./core/events/index.js";
 export type { BuildEventInput } from "./core/events/index.js";
 
+// P7P: one step table, one plan per commit policy. `READ_ONLY_PLAN` is the
+// derived plan a `NO_COMMIT` packet walks, and `planFor` is the only lawful way
+// to choose between them -- it has no default, so a caller that never said
+// which policy it runs under cannot be handed the commit-capable plan.
 export {
   INTENT_STEP,
   LIFECYCLE_PLAN,
   OUTCOME_STEP,
   PLAN_TERMINAL_STATE,
+  READ_ONLY_PLAN,
+  planFor,
   planStep,
   validatePlan,
 } from "./core/lifecycle/index.js";

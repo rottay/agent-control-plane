@@ -8,7 +8,7 @@ import type {
 } from "../../contracts/index.js";
 import { deriveEventCoordinate } from "../coordinates/index.js";
 import { buildEvent, operationForStep } from "../events/index.js";
-import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, planStep } from "../lifecycle/index.js";
+import { INTENT_STEP, OUTCOME_STEP, planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
 import { LifecyclePlanError, PostconditionUnknownError, SupervisorError } from "../../errors/index.js";
 
@@ -48,6 +48,15 @@ export interface BeatContext {
   readonly effects: EffectPort;
   readonly invocation: DurableInvocation;
   readonly emittedBy: string;
+  /**
+   * The plan this run walks, chosen at the driver boundary from the packet's
+   * commit policy.
+   *
+   * Navigation reads this and never a module-global plan. A module constant
+   * would make every run walk the commit-capable plan whatever its packet said,
+   * which is the defect this field exists to make unrepresentable.
+   */
+  readonly plan: readonly PlanStep[];
 }
 
 /** What one durable beat did. Small, canonical, and safe to journal. */
@@ -94,6 +103,9 @@ export function assertInvocationContinuity(context: BeatContext): void {
     );
   }
 
+  // Step 0 is the same frozen object in every plan -- `READ_ONLY_PLAN` derives
+  // steps 0-7 from the writer plan and the lifecycle test asserts the identity
+  // -- so the rebuild does not depend on which plan this run walks.
   const rebuilt = buildEvent({ invocation, step: planStep(0), emittedBy });
   if (recorded.canonicalJson !== canonicalJsonStringify(rebuilt)) {
     throw new SupervisorError(
@@ -150,7 +162,7 @@ export function currentState(context: BeatContext): TaskState | null {
  * exists, which is evidence rather than memory.
  */
 export function nextStep(context: BeatContext, current: TaskState | null): PlanStep {
-  if (current === null) return stepFrom(null);
+  if (current === null) return stepFrom(context.plan, null);
 
   if (current === "RUNNING") {
     const key = deriveEventCoordinate(
@@ -159,14 +171,14 @@ export function nextStep(context: BeatContext, current: TaskState | null): PlanS
       OUTCOME_STEP.index,
     ).idempotencyKey;
     const outcome = context.ledger.getEventByIdempotencyKey(key);
-    return outcome === null ? OUTCOME_STEP : stepAfter(OUTCOME_STEP.index);
+    return outcome === null ? OUTCOME_STEP : stepAfter(context.plan, OUTCOME_STEP.index);
   }
 
-  return stepFrom(current);
+  return stepFrom(context.plan, current);
 }
 
-function stepFrom(current: TaskState | null): PlanStep {
-  const step = LIFECYCLE_PLAN.find((candidate) => candidate.fromState === current);
+function stepFrom(plan: readonly PlanStep[], current: TaskState | null): PlanStep {
+  const step = plan.find((candidate) => candidate.fromState === current);
   if (step === undefined) {
     throw new LifecyclePlanError(
       "no plan step leaves the observed state; the ledger and the plan disagree",
@@ -175,8 +187,8 @@ function stepFrom(current: TaskState | null): PlanStep {
   return step;
 }
 
-function stepAfter(index: number): PlanStep {
-  const step = LIFECYCLE_PLAN[index + 1];
+function stepAfter(plan: readonly PlanStep[], index: number): PlanStep {
+  const step = plan[index + 1];
   if (step === undefined) {
     throw new LifecyclePlanError("the plan has no step after index " + String(index));
   }

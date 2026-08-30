@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DurableInvocation } from "../../../src/contracts/index.js";
 import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
 import { applyEffect } from "../../../src/toy/repository/index.js";
-import { INTENT_STEP, LIFECYCLE_PLAN } from "../../../src/core/lifecycle/index.js";
+import { INTENT_STEP, LIFECYCLE_PLAN, READ_ONLY_PLAN } from "../../../src/core/lifecycle/index.js";
 import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
 import {
   removeScenarioRoot,
@@ -114,7 +114,14 @@ function runChildProcess(
   invocation: DurableInvocation,
   faultPoint: FaultPoint | null,
 ): Promise<ChildOutcome> {
-  const config = JSON.stringify({ scenarioId, invocation, emittedBy: EMITTED_BY, faultPoint });
+  const config = JSON.stringify({
+    scenarioId,
+    invocation,
+    emittedBy: EMITTED_BY,
+    // The child refuses a config that does not say which policy it runs under.
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    faultPoint,
+  });
   return new Promise<ChildOutcome>((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [CHILD_ENTRY, config], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -262,7 +269,13 @@ function supervisorFor(
   const invocation = invocationFor(taskId);
   const ledger = track(openLedger(scenarioLedgerPath(root)));
   return {
-    supervisor: new SqliteSupervisor({ ledger, invocation, scenarioRoot: root, emittedBy: EMITTED_BY }),
+    supervisor: new SqliteSupervisor({
+      ledger,
+      invocation,
+      scenarioRoot: root,
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    }),
     ledger,
     root,
     invocation,
@@ -393,6 +406,7 @@ describe("the supervisor", () => {
       invocation: invocationFor(taskId),
       scenarioRoot: root,
       emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
     });
 
     const started = Date.now();
@@ -569,6 +583,7 @@ describe("the supervisor", () => {
         invocation: mutate(invocation),
         scenarioRoot: root,
         emittedBy: EMITTED_BY,
+        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       });
       expect(() => intruder.runToCheckpoint()).toThrow(SupervisorError);
 
@@ -599,6 +614,7 @@ describe("the supervisor", () => {
       invocation: { ...invocation },
       scenarioRoot: root,
       emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
     });
     expect(twin.runToCheckpoint().finalState).toBe("CHECKPOINTED");
     expect(ledger.status().headEventSha256).toBe(head);
@@ -664,5 +680,60 @@ describe("the supervisor", () => {
 
     // runToCheckpoint reads the absence itself rather than being told about it.
     expect(supervisor.runToCheckpoint().finalState).toBe("CHECKPOINTED");
+  });
+});
+
+describe("the plan comes from the packet's commit policy", () => {
+  function runUnder(commitPolicy: "NO_COMMIT" | "LOCAL_COMMIT_WITH_RECEIPT", scenarioId: string, taskId: string) {
+    const root = scenario(scenarioId);
+    const invocation = invocationFor(taskId);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const result = new SqliteSupervisor({
+      ledger,
+      invocation,
+      scenarioRoot: root,
+      emittedBy: EMITTED_BY,
+      commitPolicy,
+    }).runToCheckpoint();
+    const trail = ledger.listEvents({ limit: 200 }).events.map((record) => record.event.type);
+    return { result, trail, ledger, taskId };
+  }
+
+  it("walks a NO_COMMIT packet to a checkpoint with no commit anywhere in it", () => {
+    const { result, trail, ledger, taskId } = runUnder(
+      "NO_COMMIT",
+      "policy-read-only",
+      "70707070-7070-4707-8707-707070707071",
+    );
+
+    expect(result.finalState).toBe("CHECKPOINTED");
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+
+    // The invariant, exactly as the packet states it.
+    expect(trail.slice(-2)).toEqual(["AUDIT_COMPLETED", "CHECKPOINT_WRITTEN"]);
+    expect(trail.filter((type) => type.startsWith("COMMIT_"))).toEqual([]);
+    expect(trail).not.toContain("TASK_STATE_CHANGED");
+    expect(trail).toHaveLength(READ_ONLY_PLAN.length);
+  });
+
+  it("leaves the writer path exactly as it was", () => {
+    const { result, trail, ledger, taskId } = runUnder(
+      "LOCAL_COMMIT_WITH_RECEIPT",
+      "policy-writer",
+      "70707070-7070-4707-8707-707070707072",
+    );
+
+    expect(result.finalState).toBe("CHECKPOINTED");
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+    expect(trail).toEqual(LIFECYCLE_PLAN.map((step) => step.eventType));
+    expect(trail).toContain("COMMIT_RECORDED");
+    expect(trail).toHaveLength(LIFECYCLE_PLAN.length);
+  });
+
+  it("gives each plan its own bound rather than the writer plan's", () => {
+    // A read-only run is two steps shorter; the loop bound must come from the
+    // plan it is walking, or a shorter plan would be given a longer budget and
+    // the guard would stop meaning what it says.
+    expect(READ_ONLY_PLAN.length).toBeLessThan(LIFECYCLE_PLAN.length);
   });
 });

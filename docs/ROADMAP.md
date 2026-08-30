@@ -226,6 +226,9 @@ Nunca depende de transcribir toda la conversación ni contiene credenciales.
 Estados excepcionales: `WAITING_OWNER`, `DRAINING`, `QUOTA_BLOCKED`,
 `AUTH_REQUIRED`, `REJECTED`, `FAILED`, `SUSPECT_WORKTREE`, `CANCELLED`.
 
+Un paquete `NO_COMMIT` cierra desde `AUDITING` directamente en `CHECKPOINTED`,
+sin pasar por `READY_TO_COMMIT` ni `COMMITTED`. El camino con commit no cambia.
+
 ## Cuentas, cuotas y cambio automático
 
 Se incorpora como requisito de v1, inicialmente en shadow mode y luego activo por

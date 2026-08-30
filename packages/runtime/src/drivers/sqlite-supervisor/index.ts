@@ -1,5 +1,6 @@
 import { CONTRACT_VERSION } from "@acp/contracts";
 import type {
+  CommitPolicy,
   ControlPlaneEvent,
   DriverMode,
   DriverStatus,
@@ -11,7 +12,7 @@ import type { Ledger } from "@acp/ledger";
 import { DATA_ROOT_DRILLS } from "../../constants/index.js";
 import type { DurableInvocation, OrchestrationDriver } from "../../contracts/index.js";
 import { deriveEventCoordinate } from "../../core/coordinates/index.js";
-import { LIFECYCLE_PLAN, PLAN_TERMINAL_STATE } from "../../core/lifecycle/index.js";
+import { PLAN_TERMINAL_STATE, planFor } from "../../core/lifecycle/index.js";
 import type { PlanStep } from "../../core/lifecycle/index.js";
 import {
   appendPlanStep,
@@ -54,6 +55,15 @@ export interface SqliteSupervisorOptions {
   readonly scenarioRoot: ScenarioRoot;
   readonly emittedBy: string;
   /**
+   * The packet's commit policy, which selects the plan this run walks.
+   *
+   * Required, with no default. Defaulting to the commit-capable plan would let
+   * a caller that never mentioned a policy walk a read-only packet into
+   * `READY_TO_COMMIT`, and a silent default is exactly the class of defect this
+   * program refuses.
+   */
+  readonly commitPolicy: CommitPolicy;
+  /**
    * Deliberate interruption seam, for the kill/restart drills only.
    *
    * Rollback and recovery are claims that cannot be verified by reading code.
@@ -79,6 +89,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
   readonly #invocation: DurableInvocation;
   readonly #scenarioRoot: ScenarioRoot;
   readonly #emittedBy: string;
+  readonly #plan: readonly PlanStep[];
   readonly #faultPoint: FaultPoint | undefined;
   readonly #onFault: (() => void) | undefined;
 
@@ -87,6 +98,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
     this.#invocation = options.invocation;
     this.#scenarioRoot = options.scenarioRoot;
     this.#emittedBy = options.emittedBy;
+    this.#plan = planFor(options.commitPolicy);
     this.#faultPoint = options.__faultPoint;
     this.#onFault = options.__onFault;
   }
@@ -209,7 +221,9 @@ export class SqliteSupervisor implements OrchestrationDriver {
     const context = this.#beat(this.#invocation);
     assertInvocationContinuity(context);
 
-    for (let guard = 0; guard <= LIFECYCLE_PLAN.length + 1; guard += 1) {
+    // The bound comes from the plan this run walks, never from the writer plan:
+    // a shorter plan must not be given a longer plan's budget to spin in.
+    for (let guard = 0; guard <= this.#plan.length + 1; guard += 1) {
       const current = executorCurrentState(context);
       if (current === PLAN_TERMINAL_STATE) {
         return { finalState: current, appended, replayed };
@@ -239,7 +253,13 @@ export class SqliteSupervisor implements OrchestrationDriver {
       },
       probe: (operation) => probeEffect(scenarioRoot, operation),
     };
-    return { ledger: this.#ledger, effects, invocation, emittedBy: this.#emittedBy };
+    return {
+      ledger: this.#ledger,
+      effects,
+      invocation,
+      emittedBy: this.#emittedBy,
+      plan: this.#plan,
+    };
   }
 
   /**

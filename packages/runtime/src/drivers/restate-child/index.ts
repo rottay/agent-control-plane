@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { CommitPolicy } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 
 import { RUNTIME_SERVICE_PORT } from "../../constants/index.js";
@@ -32,6 +33,8 @@ export interface RestateChildConfig {
   readonly scenarioId: string;
   readonly invocation: DurableInvocation;
   readonly emittedBy: string;
+  /** The packet's commit policy. Required in the JSON, never defaulted here. */
+  readonly commitPolicy: CommitPolicy;
   readonly faultPoint: string | null;
   /**
    * Beat at which to pause and announce, for the server-kill drill.
@@ -60,6 +63,12 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
 
   const scenarioId = value["scenarioId"];
   const emittedBy = value["emittedBy"];
+  // Admitted by the contract's own enum. A child that did not say which policy
+  // it runs under is refused rather than handed the commit-capable plan.
+  const commitPolicy = CommitPolicy.safeParse(value["commitPolicy"]);
+  if (!commitPolicy.success) {
+    throw new SupervisorError("child config requires an explicit commitPolicy");
+  }
   const rawFault = value["faultPoint"] ?? null;
   const faultPoint = typeof rawFault === "string" ? rawFault : null;
   const rawPause = value["pauseAt"] ?? null;
@@ -110,6 +119,7 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   return {
     scenarioId,
     emittedBy,
+    commitPolicy: commitPolicy.data,
     faultPoint,
     pauseAt,
     port: rawPort,
@@ -144,7 +154,7 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
   const scenarioRoot = resolveScenarioRoot(config.scenarioId);
   const ledger = openLedger(scenarioLedgerPath(scenarioRoot));
 
-  const beat = (invocation: DurableInvocation): BeatContext => ({
+  const beat = (invocation: DurableInvocation): Omit<BeatContext, "plan"> => ({
     ledger,
     effects: {
       apply: (operation) => {
@@ -186,7 +196,14 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
   };
 
   const endpoint = await startEndpoint({
-    services: [createAcpTaskObject({ beat, ledger, __onBeat: onBeat })],
+    services: [
+      createAcpTaskObject({
+        beat,
+        commitPolicy: config.commitPolicy,
+        ledger,
+        __onBeat: onBeat,
+      }),
+    ],
     port: config.port,
   });
 
