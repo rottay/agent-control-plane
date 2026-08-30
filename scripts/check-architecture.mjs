@@ -951,12 +951,20 @@ const P6F_WRITE_SET = [
  *
  * P7P opens the phase and is P7A's precondition: it makes the lifecycle plan
  * commit-policy-aware, so a `NO_COMMIT` packet has a lawful close. P7A is the
- * isolated pilot that walks the landed plan over the real machinery. P7 is
- * therefore **22 packet entries across 21 distinct paths**: 19 (P7P) + 3
- * (P7A) = 22 entries; the repeat is `scripts/check-architecture.mjs` itself
- * (P7P, P7A), so 22 - 1 = 21 distinct paths. P7A's other two paths --
- * `packages/runtime/test/pilots/index.test.ts` and
+ * isolated pilot that walks the landed plan over the real machinery. P7B is
+ * the second isolated pilot: kill/restart of the read-only walk over a real
+ * child process (runtime test tree), and the account switch played as values
+ * over a real ledger (accounts test tree) -- two drills, one per package that
+ * owns the machinery each exercises, per the P1B dependency law. P7 is
+ * therefore **27 packet entries across 25 distinct paths**: 19 (P7P) + 3
+ * (P7A) + 5 (P7B) = 27 entries; the repeat is `scripts/check-architecture.mjs`
+ * itself (P7P, P7A, P7B), so 27 - 1 - 1 = 25 distinct paths. P7A's other two
+ * paths -- `packages/runtime/test/pilots/index.test.ts` and
  * `packages/runtime/test/pilots/helpers/index.ts` -- are new to the phase.
+ * P7B's other four paths -- `packages/runtime/test/pilots/recovery/index.test.ts`,
+ * `packages/runtime/test/pilots/recovery/helpers/index.ts`,
+ * `packages/accounts/test/pilots/index.test.ts` and
+ * `packages/accounts/test/pilots/helpers/index.ts` -- are new to the phase.
  *
  * The plan is selected at the driver boundary, which is why the set reaches
  * into `@acp/daemon`: the two places that construct a driver must now say which
@@ -997,6 +1005,29 @@ const P7P_WRITE_SET = [
 const P7A_WRITE_SET = [
   "packages/runtime/test/pilots/index.test.ts",
   "packages/runtime/test/pilots/helpers/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P7B: the second isolated pilot -- kill/restart and the account switch.
+ *
+ * Two drills, two packages, per the P1B dependency law
+ * (`packages/runtime` may not import `@acp/accounts` and `packages/accounts`
+ * may not import `@acp/runtime`): leg 1 is a new subdomain,
+ * `test/pilots/recovery/`, under the runtime package's landed `pilots`
+ * domain -- the kill/restart drill for the `NO_COMMIT` walk over a real
+ * child process, SIGKILLed and restarted. Leg 2 mirrors the `pilots` domain
+ * shape into the accounts test tree for the first time -- the account-switch
+ * decision core (`decideSwitch`), played by the drill as the executor over a
+ * real `@acp/ledger` instance, closed and reopened. No production source
+ * changes in either package: leg 1 walks the plan P7P already landed, leg 2
+ * plays a plan `decideSwitch` already returns as a value.
+ */
+const P7B_WRITE_SET = [
+  "packages/runtime/test/pilots/recovery/index.test.ts",
+  "packages/runtime/test/pilots/recovery/helpers/index.ts",
+  "packages/accounts/test/pilots/index.test.ts",
+  "packages/accounts/test/pilots/helpers/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1228,6 +1259,7 @@ const WRITE_SET = [
   ...P6F_WRITE_SET,
   ...P7P_WRITE_SET,
   ...P7A_WRITE_SET,
+  ...P7B_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
