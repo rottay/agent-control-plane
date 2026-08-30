@@ -1215,12 +1215,34 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * judged against is not the same as meeting them, and a status line that
  * moved on a design packet would say it was.
  *
- * P8 is therefore **2 packet entries across 2 distinct paths** so far — P8-D
- * is the only array in the phase and repeats nothing within it. This file's
+ * P8-1 opens the implementation: the owned execution boundary as contracts,
+ * before any transport binds to it.
+ *
+ * P8 is therefore **6 packet entries across 5 distinct paths**: 2 (P8-D) + 4
+ * (P8-1) = 6 entries; the repeat is `scripts/check-architecture.mjs` itself
+ * (P8-D, P8-1), contributing 1. So 6 - 1 = 5 distinct paths. This file's
  * appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
+
+/**
+ * P8-1: the owned execution port.
+ *
+ * The ruling's laws 1-3 as contracts: `TransportKind`, the CLI provider
+ * vocabulary that lives here because this package imports nothing and
+ * everything imports it, `ResolvedRoute` with the route final and CLI-bound,
+ * the normalized `ExecutionEvent` superset, and `ModelExecutionPort` as an
+ * owned boundary type with its laws in doc comments. Contracts and tests only
+ * -- the adapters bind in P8-2, which also re-points their `ProviderName` at
+ * the vocabulary declared here.
+ */
+const P81_WRITE_SET = [
+  "packages/contracts/src/schemas/index.ts",
+  "packages/contracts/src/index.ts",
+  "packages/contracts/test/schemas/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
 
 /**
  * P7I-2: the ledger mappings.
@@ -1480,6 +1502,7 @@ const WRITE_SET = [
   ...P7I3_WRITE_SET,
   ...P7IE_WRITE_SET,
   ...P8D_WRITE_SET,
+  ...P81_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,

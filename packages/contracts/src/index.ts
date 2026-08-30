@@ -17,6 +17,9 @@ export {
   INITIATIVE_STATUSES,
   INITIATIVE_EVENT_TYPES,
   ROADMAP_VERSION_KINDS,
+  TRANSPORT_KINDS,
+  CLI_SUBSCRIPTION_PROVIDERS,
+  EXECUTION_REFUSALS,
   WorkerRole,
   WorkerIdentity,
   WorkerIdentityString,
@@ -57,6 +60,11 @@ export {
   InitiativeEventType,
   InitiativeIdempotencyCoordinates,
   InitiativeEvent,
+  TransportKind,
+  ExecutionRefusal,
+  ResolvedRoute,
+  ExecutionEvent,
+  ExecutionRequest,
   formatWorkerIdentity,
   parseWorkerIdentity,
   isLifecycleState,
@@ -69,4 +77,9 @@ export {
 } from "./schemas/index.js";
 
 export type { GuardViolation } from "./schemas/index.js";
+export type {
+  ExecutionRefused,
+  ExecutionSession,
+  ModelExecutionPort,
+} from "./schemas/index.js";
 export type { ReconciliationDiscrepancy } from "./schemas/index.js";

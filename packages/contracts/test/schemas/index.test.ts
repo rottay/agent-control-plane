@@ -28,6 +28,12 @@ import {
   ROADMAP_VERSION_KINDS,
   RECONCILIATION_VERDICTS,
   RoadmapVersion,
+  CLI_SUBSCRIPTION_PROVIDERS,
+  EXECUTION_REFUSALS,
+  ExecutionEvent,
+  ExecutionRequest,
+  ResolvedRoute,
+  TRANSPORT_KINDS,
   RESUMABLE_VERDICTS,
   ReconciliationReport,
   ReconciliationVerdict,
@@ -1356,5 +1362,224 @@ describe("TaskEnvelope initiative scoping", () => {
     const parsed = TaskEnvelope.parse(envelope({ initiativeId: OTHER_INITIATIVE_ID }));
     expect(parsed.initiativeId).toBe(OTHER_INITIATIVE_ID);
     expect(parsed.initiativeId).not.toBe(parsed.taskId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The owned execution boundary
+// ---------------------------------------------------------------------------
+
+const ROUTE_AT = "2026-08-30T14:00:00.000Z";
+
+function route(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    provider: "claude",
+    model: "opus",
+    accountId: "acct-primary",
+    transportKind: "CLI_SUBSCRIPTION",
+    capabilityPolicyVersion: "2026-08-30.1",
+    resolvedAt: ROUTE_AT,
+    ...overrides,
+  };
+}
+
+describe("transport kinds and the CLI provider vocabulary", () => {
+  it("closes the transport kinds at the ruling's three", () => {
+    expect([...TRANSPORT_KINDS]).toEqual([
+      "CLI_SUBSCRIPTION",
+      "API_KEY",
+      "LOCAL_OR_SELF_HOSTED",
+    ]);
+  });
+
+  it("declares the CLI providers here, sorted, as the one home", () => {
+    expect([...CLI_SUBSCRIPTION_PROVIDERS]).toEqual(["claude", "codex", "kimi"]);
+    expect([...CLI_SUBSCRIPTION_PROVIDERS]).toEqual([...CLI_SUBSCRIPTION_PROVIDERS].sort());
+    expect(new Set(CLI_SUBSCRIPTION_PROVIDERS).size).toBe(CLI_SUBSCRIPTION_PROVIDERS.length);
+  });
+
+  it("closes the refusal vocabulary, sorted and deduplicated", () => {
+    expect([...EXECUTION_REFUSALS]).toEqual([...EXECUTION_REFUSALS].sort());
+    expect(new Set(EXECUTION_REFUSALS).size).toBe(EXECUTION_REFUSALS.length);
+    expect([...EXECUTION_REFUSALS]).toEqual([
+      "CAPABILITY_UNSUPPORTED",
+      "REATTACH_UNAVAILABLE",
+      "ROUTE_INVALID",
+      "TRANSPORT_UNAVAILABLE",
+    ]);
+  });
+});
+
+describe("ResolvedRoute", () => {
+  it("accepts a complete route and survives a JSON round trip", () => {
+    const parsed = ResolvedRoute.parse(route());
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
+  });
+
+  it("binds a CLI route to the CLI provider vocabulary", () => {
+    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
+      expect(ResolvedRoute.safeParse(route({ provider })).success).toBe(true);
+    }
+    expect(ResolvedRoute.safeParse(route({ provider: "openai" })).success).toBe(false);
+  });
+
+  it("leaves the provider opaque for the transports that are not CLI", () => {
+    // A local or API-backed transport may name something the CLI list has
+    // never heard of; only the CLI kind is bound to the closed vocabulary.
+    expect(
+      ResolvedRoute.safeParse(route({ transportKind: "API_KEY", provider: "openai" })).success,
+    ).toBe(true);
+    expect(
+      ResolvedRoute.safeParse(
+        route({ transportKind: "LOCAL_OR_SELF_HOSTED", provider: "llama-cpp" }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("requires every field: nothing is optional-defaulted by an adapter", () => {
+    for (const field of [
+      "provider",
+      "model",
+      "accountId",
+      "transportKind",
+      "capabilityPolicyVersion",
+      "resolvedAt",
+    ]) {
+      const partial = Object.fromEntries(
+        Object.entries(route() as Record<string, unknown>).filter(([key]) => key !== field),
+      );
+      expect({ field, ok: ResolvedRoute.safeParse(partial).success }).toEqual({
+        field,
+        ok: false,
+      });
+    }
+  });
+
+  it("rejects an unknown transport kind and an unknown key", () => {
+    expect(ResolvedRoute.safeParse(route({ transportKind: "SSH" })).success).toBe(false);
+    expect(ResolvedRoute.safeParse(route({ fallbackModel: "sonnet" })).success).toBe(false);
+  });
+});
+
+describe("ExecutionEvent", () => {
+  it("carries both the routed alias and the provider's own resolution on started", () => {
+    const parsed = ExecutionEvent.parse({
+      kind: "started",
+      route: route(),
+      resolvedModel: "claude-opus-5-20260401",
+      protocolVersion: "1.2",
+    });
+    if (parsed.kind !== "started") throw new Error("expected started");
+    // The pair is the evidence that no adapter substituted a model: the alias
+    // the router chose, beside what the provider actually bound.
+    expect(parsed.route.model).toBe("opus");
+    expect(parsed.resolvedModel).toBe("claude-opus-5-20260401");
+    expect(parsed.resolvedModel).not.toBe(parsed.route.model);
+  });
+
+  it("normalizes a write action, which enforcement depends on seeing", () => {
+    const parsed = ExecutionEvent.safeParse({
+      kind: "write",
+      target: "packages/contracts/src/schemas/index.ts",
+    });
+    expect(parsed.success).toBe(true);
+    // A write target is a repo-relative path: it cannot escape the worktree.
+    expect(ExecutionEvent.safeParse({ kind: "write", target: "/etc/passwd" }).success).toBe(false);
+    expect(ExecutionEvent.safeParse({ kind: "write", target: "../outside" }).success).toBe(false);
+  });
+
+  it("carries the session machine's transition", () => {
+    expect(ExecutionEvent.safeParse({ kind: "state", toState: "STREAMING" }).success).toBe(true);
+    expect(ExecutionEvent.safeParse({ kind: "state", toState: "" }).success).toBe(false);
+  });
+
+  it("keeps step ordering on usage, so it folds in the order it happened", () => {
+    const parsed = ExecutionEvent.parse({ kind: "usage", stepIndex: 3, tokensUsed: 1_200 });
+    if (parsed.kind !== "usage") throw new Error("expected usage");
+    expect(parsed.stepIndex).toBe(3);
+    expect(ExecutionEvent.safeParse({ kind: "usage", tokensUsed: 5 }).success).toBe(false);
+    expect(
+      ExecutionEvent.safeParse({ kind: "usage", stepIndex: -1, tokensUsed: 5 }).success,
+    ).toBe(false);
+  });
+
+  it("accepts the rest of the normalized vocabulary", () => {
+    const cases: readonly unknown[] = [
+      { kind: "text", delta: "hello" },
+      { kind: "toolUse", tool: "read_file", detail: "packages/contracts" },
+      { kind: "checkpoint", digest: SHA256 },
+      { kind: "authRequired", reason: "subscription session expired" },
+      { kind: "error", refusal: "CAPABILITY_UNSUPPORTED", detail: "no tool support" },
+      { kind: "completed", stepIndex: 7 },
+    ];
+    for (const candidate of cases) {
+      const parsed = ExecutionEvent.safeParse(candidate);
+      expect({ candidate, ok: parsed.success }).toEqual({ candidate, ok: true });
+    }
+  });
+
+  it("classifies an error rather than carrying a provider message", () => {
+    expect(
+      ExecutionEvent.safeParse({ kind: "error", refusal: "BOOM", detail: "x" }).success,
+    ).toBe(false);
+    expect(
+      ExecutionEvent.safeParse({ kind: "error", detail: "raw provider stderr" }).success,
+    ).toBe(false);
+  });
+
+  it("closes the vocabulary: an unknown kind is refused", () => {
+    expect(ExecutionEvent.safeParse({ kind: "thinking", delta: "..." }).success).toBe(false);
+    expect(ExecutionEvent.safeParse({ kind: "checkpoint", digest: "nope" }).success).toBe(false);
+  });
+
+  it("is exactly the ten normalized variants", () => {
+    const kinds = ExecutionEvent.options.map((option) => option.shape.kind.value);
+    expect([...kinds].sort()).toEqual([
+      "authRequired",
+      "checkpoint",
+      "completed",
+      "error",
+      "started",
+      "state",
+      "text",
+      "toolUse",
+      "usage",
+      "write",
+    ]);
+  });
+});
+
+describe("ExecutionRequest", () => {
+  it("accepts an ordinary start, with no reattachment", () => {
+    const parsed = ExecutionRequest.parse({
+      taskId: TASK_ID,
+      attempt: 1,
+      identity: WRITER,
+      reattach: null,
+    });
+    expect(parsed.reattach).toBeNull();
+  });
+
+  it("accepts a reattach reference, and requires the field to be stated", () => {
+    expect(
+      ExecutionRequest.safeParse({
+        taskId: TASK_ID,
+        attempt: 2,
+        identity: WRITER,
+        reattach: "session-abc",
+      }).success,
+    ).toBe(true);
+    // Null is the ordinary case, but it is never implicit: a caller says which
+    // it means, so a transport can never read absence as "start fresh".
+    expect(
+      ExecutionRequest.safeParse({ taskId: TASK_ID, attempt: 1, identity: WRITER }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a non-uuid task, a zero attempt and an unknown key", () => {
+    const base = { taskId: TASK_ID, attempt: 1, identity: WRITER, reattach: null };
+    expect(ExecutionRequest.safeParse({ ...base, taskId: "task-1" }).success).toBe(false);
+    expect(ExecutionRequest.safeParse({ ...base, attempt: 0 }).success).toBe(false);
+    expect(ExecutionRequest.safeParse({ ...base, binary: "/usr/bin/claude" }).success).toBe(false);
   });
 });
