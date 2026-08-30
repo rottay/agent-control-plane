@@ -3,7 +3,7 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0, P1, P2, P3, P4, P5, P6 and P7 complete. Next: P7I.** Contracts,
+Status: **P0, P1, P2, P3, P4, P5, P6, P7 and P7I complete. Next: P8.** Contracts,
 fences, the append-only event ledger, a read-only observation plane over it — a
 loopback HTTP server, a CLI and a local UI — a durability plane with two
 orchestration drivers under a supervised local daemon, a shadow-mode

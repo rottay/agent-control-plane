@@ -1,6 +1,6 @@
 # Rottay Agent Control Plane — roadmap canónico
 
-Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / NEXT_P7I / NO_PRODUCT_CUTOVER`
+Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / P7I_COMPLETE / NEXT_P8 / NO_PRODUCT_CUTOVER`
 
 Fecha: 2026-08-27
 
@@ -447,6 +447,25 @@ contratos antes de cualquier implementación de UI).
   global;
 - cero UI en esta fase: sólo contratos, ledger mappings y pruebas.
 
+**P7I completo** (2026-08-30): el diseño se preauditó una vez
+(`DESIGN_ACCEPT_WITH_RULINGS`, siete rulings) y el DT adjudicó dos veces;
+los cuatro packets cerraron cada uno con verificación independiente,
+ACCEPT de Fable, receipt del DT y commit local — P7I-0 (`1e030369`), el
+salto de `CONTRACT_VERSION` a 2.0.0 con las fixtures des-hardcodeadas para
+que el próximo salto sea mecánico; P7I-1 (`586aed3c`), los contratos:
+`Initiative`, `RoadmapVersion`, el stream hermano `InitiativeEvent`, el
+vocabulario de uso/reserva de tokens en el stream de tareas y el
+`initiativeId` requerido en `TaskEnvelope`; P7I-2 (`110706c5`), los ledger
+mappings: la migración aditiva, el stream hermano bajo las mismas leyes
+append-only con su propia cadena y cabeza, y la decisión pura de
+`RoadmapVersion` junto al fold que consume; y P7I-3 (`0bdd223b`), los
+rollups de tokens por tarea y por iniciativa. Dos STOP se honraron sin
+ampliar ningún write-set: el radio de impacto del salto de versión en
+P7I-1 y el décimo path de P7I-2, ambos adjudicados antes de continuar.
+Cero UI, cero adopción y cero participación de Modern Rescue en toda la
+fase. Nada de esto queda adoptado: la adopción ocurre una sola vez, tras
+la certificación P8 y bajo una autorización P9 separada.
+
 ### P8 — Producto completo y certificación pre-cutover
 
 Kimi adjudica; Fable audita evidencia; Codex comunica una evaluación concisa al
@@ -481,6 +500,11 @@ owner.
   actualización y rollback reproducibles por una sesión fresca;
 - owner acepta explícitamente el producto completo. Esta aceptación certifica el
   candidato, pero todavía no toca Modern Rescue.
+- ruling del owner sobre ejecución y UI transport-agnostic:
+  `.acp-local/p8-transport-agnostic-owner-ruling.md`
+  (`11c7a81a759034405e652eb8af11cf9aa9bca567cbca64ac16de8c4b0cab1ab4`),
+  incorporado a la planificación de P8; su incorporación completa es su
+  propio packet de diseño, no este cierre.
 
 ### P9 — Cutover explícito y reversible
 

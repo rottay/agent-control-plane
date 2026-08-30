@@ -1113,16 +1113,21 @@ const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architectu
  * the read-model plane over the two usage types P7I-1 added and the
  * attribution P7I-2 landed.
  *
- * P7I is therefore **33 packet entries across 28 distinct paths**: 10 (P7I-0)
- * + 8 (P7I-1) + 10 (P7I-2) + 5 (P7I-3) = 33 entries. Three paths repeat:
- * `scripts/check-architecture.mjs` itself, named by all four packets,
- * contributing 3; `packages/contracts/src/schemas/index.ts`, named by P7I-0
+ * P7I-E closes the phase: the roadmap status line and its annotation, the root
+ * README's status sentence, and this file.
+ *
+ * P7I is therefore **36 packet entries across 30 distinct paths**: 10 (P7I-0)
+ * + 8 (P7I-1) + 10 (P7I-2) + 5 (P7I-3) + 3 (P7I-E) = 36 entries. Three paths
+ * repeat: `scripts/check-architecture.mjs` itself, named by all five packets,
+ * contributing 4; `packages/contracts/src/schemas/index.ts`, named by P7I-0
  * for the bump and by P7I-1 for the contracts, contributing 1; and
  * `packages/ledger/test/ledger/index.test.ts`, named by P7I-0 for the
  * de-hardcoding and by P7I-2 for the sibling stream's laws, contributing 1.
- * So 33 - 3 - 1 - 1 = 28 distinct paths. This file's appearances in earlier
- * phases are counted in those phases, since the standing convention scopes
- * the arithmetic to the phase.
+ * So 36 - 4 - 1 - 1 = 30 distinct paths. Both of P7I-E's other two paths --
+ * `docs/ROADMAP.md` and `README.md` -- are new to this phase, unlike P7's
+ * closure, where the roadmap had already been moved by P7P. This file's
+ * appearances in earlier phases are counted in those phases, since the
+ * standing convention scopes the arithmetic to the phase.
  *
  * P7I-2's tenth path, `packages/ledger/src/types/index.ts`, is where the
  * package declares every public value type. `TaskReadModel` is declared only
@@ -1181,6 +1186,18 @@ const P7I3_WRITE_SET = [
   "packages/observation/README.md",
   "scripts/check-architecture.mjs",
 ];
+
+/**
+ * P7I-E: closure. The status line moves here and nowhere else.
+ *
+ * The phase's own documents only: the roadmap's Estado line, its `P7I
+ * completo` annotation and a one-line pointer to the owner's
+ * transport-agnostic ruling in the P8 section; the root README's status
+ * sentence; and this file — the roadmap re-pin, the status literal, this array
+ * and the README status text the closure retires. No package is touched, and
+ * no test changes.
+ */
+const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architecture.mjs"];
 
 /**
  * P7I-2: the ledger mappings.
@@ -1438,6 +1455,7 @@ const WRITE_SET = [
   ...P7I1_WRITE_SET,
   ...P7I2_WRITE_SET,
   ...P7I3_WRITE_SET,
+  ...P7IE_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -1466,7 +1484,7 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "0afbc857399fd8636fbff8b4d3616440b67d4f54eaf15465002033d54dab79a0";
+  "591bc6512cda220595ce0b5d3435bd4e840109742f549413bc269b87f71042f7";
 
 /**
  * The Estado line P7 closure is allowed to have produced.
@@ -1491,12 +1509,29 @@ const ROADMAP_SHA256 =
  * canonical pre-push hook still refuses unconditionally. The pilots prove the
  * machinery; nothing is in service. P7I opens as *next*, not as started.
  *
- * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P7
- * built is in service, and adoption happens once, after P8 certification and
- * under a separate P9 authorisation.
+ * P7I closes on the same evidence, one phase later: the contract generation
+ * bump with every fixture de-hardcoded (P7I-0), the initiative and versioned
+ * roadmap contracts with the sibling event stream (P7I-1), the ledger mappings
+ * that give that stream a table, a chain, a head and both-chain verification
+ * (P7I-2), and the token rollups that close R4 (P7I-3). Its design was
+ * pre-audited once and adjudicated twice, and two STOPs were honored rather
+ * than worked around -- the write-set law held when a version bump reached
+ * four packages the brief had not named, and again when a tenth path proved
+ * structurally required.
+ *
+ * What P7I completion does NOT mean: nothing consumes any of it. No daemon,
+ * runtime or server path threads an initiative id, wires the sibling stream or
+ * calls the rollup fold; only tests append the two usage event types; and no
+ * UI exists at all, which is the phase's own scope law rather than an
+ * omission. The contracts and the mappings are proven; nothing is running on
+ * them. P8 opens as *next*, not as started.
+ *
+ * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P7 or
+ * P7I built is in service, and adoption happens once, after P8 certification
+ * and under a separate P9 authorisation.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / NEXT_P7I / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / P7I_COMPLETE / NEXT_P8 / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -1792,6 +1827,10 @@ const EXPIRED_LITERALS = {
     // the pilots landed. Pinned absent rather than merely rewritten, because a
     // sentence that is only deleted can come back.
     "P0, P1, P2, P3, P4, P5 and P6 complete. Next: P7.",
+    // Retired by the P7I closure, the same way every status sentence before
+    // it was. Pinned absent rather than merely rewritten, because a sentence
+    // that is only deleted can come back.
+    "P0, P1, P2, P3, P4, P5, P6 and P7 complete. Next: P7I.",
     // Falsified by the same commit that retires the status text above: P4
     // shipped three provider adapters. Pinned here rather than merely deleted,
     // because a sentence that is only removed can come back, and coming back
