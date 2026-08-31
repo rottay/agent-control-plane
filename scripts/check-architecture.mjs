@@ -1265,21 +1265,26 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * one-line `initiativeId: null` fixture fix the `Route` field addition made
  * unavoidable.
  *
- * P8 is therefore **117 packet entries across 90 distinct paths**: 2 (P8-D) +
+ * P8-T records the owner's blocking structural-topology tranche in the
+ * roadmap. A docs packet: both of its paths are already named elsewhere in the
+ * phase, so it adds two entries and **no new distinct path**.
+ *
+ * P8 is therefore **119 packet entries across 90 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
- * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) = 117 entries, with 27
- * duplicate entries. `scripts/check-architecture.mjs` is named by all twelve
- * packets (11 duplicates); the port, the barrel, the port's fixture and the
- * test doubles are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8
- * total); `pnpm-lock.yaml` is named by the four packets that moved a
- * dependency edge, P8-W, P8-8A, P8-8B and P8-8C (3 duplicates); and P8-8C
- * repeats five of P8-8B's own paths -- `packages/ui/package.json`,
+ * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 2 (P8-T) = 119 entries,
+ * with 29 duplicate entries. `scripts/check-architecture.mjs` is named by all
+ * thirteen packets (12 duplicates); the port, the barrel, the port's fixture
+ * and the test doubles are each named by P8-2, P8-3 and P8-4 (2 duplicates
+ * each, 8 total); `pnpm-lock.yaml` is named by the four packets that moved a
+ * dependency edge, P8-W, P8-8A, P8-8B and P8-8C (3 duplicates); P8-8C repeats
+ * five of P8-8B's own paths -- `packages/ui/package.json`,
  * `pnpm-workspace.yaml`, `packages/ui/src/app/index.tsx`,
  * `packages/ui/src/components/app-shell/index.tsx` and
  * `packages/ui/src/api/client/index.ts` -- each now named by exactly the two
- * packets (1 duplicate each, 5 total). P8-5 and P8-6 share no path with any
- * earlier P8 packet but the fence itself; P8-7 likewise. So
- * 11 + 8 + 3 + 5 = 27 duplicates, and 117 - 27 = 90 distinct paths. This
+ * packets (1 duplicate each, 5 total); and `docs/ROADMAP.md` is named by P8-D
+ * and P8-T (1 duplicate). P8-5 and P8-6 share no path with any earlier P8
+ * packet but the fence itself; P8-7 likewise. So
+ * 12 + 8 + 3 + 5 + 1 = 29 duplicates, and 119 - 29 = 90 distinct paths. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1602,6 +1607,23 @@ const P88C_WRITE_SET = [
 ];
 
 /**
+ * P8-T (docs): the blocking structural-topology tranche enters the roadmap.
+ *
+ * A records-only packet. The owner's ruling of 2026-08-31 makes a fresh joint
+ * structural audit mandatory and blocking before P8-E closes and before any
+ * P9 request — Kimi maps, Fable challenges, Codex checkpoints once, Opus
+ * implements the accepted topology, and the gate ends in a
+ * `STRUCTURAL_TOPOLOGY_CERTIFIED` receipt.
+ *
+ * The tranche's **execution** is scheduled at the final pre-closure point,
+ * after the product, UI, E2E and certification work is functionally complete.
+ * This packet only writes it down, which is why the status line does not move:
+ * recording a gate a phase will be judged against is not the same as meeting
+ * it, and a status that advanced on a docs packet would say it was.
+ */
+const P8T_DOC_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -1870,6 +1892,7 @@ const WRITE_SET = [
   ...P88A_WRITE_SET,
   ...P88B_WRITE_SET,
   ...P88C_WRITE_SET,
+  ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -1898,7 +1921,7 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * of them.
  */
 const ROADMAP_SHA256 =
-  "162aa28e0c6765669b40de7a64b10b06fd18520a28383138f1b980bda56da971";
+  "77929bb6e1a126c7d9c36e5405a26b00da6c46315e6b87aef45b4a45aa638058";
 
 /**
  * The Estado line P7 closure is allowed to have produced.

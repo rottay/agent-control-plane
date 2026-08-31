@@ -585,6 +585,29 @@ además de los criterios ya listados:
   todos los criterios P8 originales más estas adiciones y el owner
   autorice P9 explícitamente.
 
+#### Tranche bloqueante de topología estructural (ruling del owner, 2026-08-31)
+
+Antes del cierre de P8-E y de cualquier pedido de P9, una auditoría
+estructural conjunta y fresca es obligatoria y bloqueante:
+
+- Kimi K3 mapea el grafo de dependencias, los roles de paquete, los
+  exports públicos y los límites de runtime/proceso, y propone una
+  jerarquía declarativa;
+- Fable desafía independientemente la fuga de autoridad, los ciclos, la
+  agrupación falsa y la evidencia;
+- Codex realiza un único checkpoint independiente y conciso;
+- Opus implementa la topología aceptada: convenciones folder/index,
+  subgrupos de dominio significativos, topología de tests espejo, cero
+  nombres duplicados en paths, globs/tsconfig/exports/imports/fences
+  coherentes entre paquete y workspace, y eliminación de paths
+  obsoletos.
+
+Leyes: nada de anidamiento cosmético — cada movimiento se justifica por
+semántica de ownership/dependencias; gates de arquitectura, build y tests;
+cero imports obsoletos; commits locales; nunca push; recibo final
+`STRUCTURAL_TOPOLOGY_CERTIFIED`. P9 permanece imposible hasta que esta
+compuerta y todos los criterios de P8 pasen.
+
 ### P9 — Cutover explícito y reversible
 
 Owner: decisión exclusiva del owner. DT: Kimi. Integrator: Opus. Auditor: Fable.
