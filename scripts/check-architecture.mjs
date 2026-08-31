@@ -41,7 +41,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1271,42 +1271,36 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **174 packet entries across 103 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **179 packet entries across 106 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
- * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) =
- * 174 entries, with 71 duplicate entries, folded here rather than argued:
- * `scripts/check-architecture.mjs` is named by all seventeen packets (16);
+ * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) =
+ * 179 entries, with 73 duplicate entries, folded here rather than argued:
+ * `scripts/check-architecture.mjs` is named by all eighteen packets (17);
  * eleven api-contracts, server and cli paths are each named by P8-8A,
- * P8-8D-pre and P8-8D-c2 (2 each, 22); the port, the barrel, the port's
- * fixture and the test doubles are each named by P8-2, P8-3 and P8-4 (2 each,
- * 8); five of P8-8B's own paths -- `packages/ui/package.json`,
+ * P8-8D-pre and P8-8D-c2 (2 each, 22); five of P8-8B's paths are named again
+ * by P8-8C and once more by P8-8D -- `packages/ui/package.json`,
  * `pnpm-workspace.yaml`, `packages/ui/src/app/index.tsx`,
  * `packages/ui/src/components/app-shell/index.tsx` and
- * `packages/ui/src/api/client/index.ts` -- are repeated by both P8-8C and
- * P8-8D (2 each, 10); six of P8-8C's own paths --
- * `packages/ui/src/routing/hash-route/index.ts`,
- * `packages/ui/src/format/status-tone/index.ts`,
- * `packages/ui/src/styles/components.css`, and the three test files
- * (`test/routing/hash-route/index.test.ts`,
- * `test/components/app-shell/index.test.tsx`, `test/views/index.test.tsx`) --
- * are repeated once more by P8-8D (1 each, 6); `pnpm-lock.yaml` is named by
- * the five packets that moved a dependency edge, P8-W, P8-8A, P8-8B, P8-8C
- * and P8-8D (4); `docs/ROADMAP.md` is named by P8-D and both P8-T packets
- * (2); `packages/server/src/initiatives/index.ts` by P8-8A and P8-8D-c2 (1);
- * `packages/server/package.json` by P8-8A and P8-8D-pre (1); and P8-8D's 18th
- * path, `test/views/portfolio-view/index.test.tsx`, repeats P8-8C's own
- * creation of it (1). 16 + 22 + 8 + 10 + 6 + 4 + 2 + 1 + 1 + 1 = 71.
+ * `packages/ui/src/api/client/index.ts` (2 each, 10); seven further ui paths
+ * are shared by P8-8C and P8-8D alone -- the hash route, the status tone, the
+ * component stylesheet and four suites (1 each, 7); the port, the barrel, the
+ * port's fixture and the test doubles are each named by P8-2, P8-3 and P8-4
+ * (2 each, 8); `pnpm-lock.yaml` is named by the five packets that moved a
+ * dependency edge, P8-W, P8-8A, P8-8B, P8-8C and P8-8D (4);
+ * `docs/ROADMAP.md` by P8-D and the three P8-T packets (3);
+ * `packages/server/src/initiatives/index.ts` by P8-8A and P8-8D-c2 (1); and
+ * `packages/server/package.json` by P8-8A and P8-8D-pre (1).
+ * 17 + 22 + 10 + 7 + 8 + 4 + 3 + 1 + 1 = 73.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Three packets add entries without adding paths:
  * P8-8D-pre's 22nd (P8-8A created that suite), the whole of P8-8D-c2, and the
- * whole of P8-T-roadmap -- which rewrites the subsection P8-T-docs wrote and
- * re-pins the digest, both paths the phase already owned. A packet that only
- * extends surfaces the phase already owns moves the entry count and leaves
- * the path count alone. P8-8D is not a fourth: 4 of its 18 paths are novel
- * (`workspace-view/index.tsx`, `edit-roadmap-dialog/index.tsx` and both of
- * their test homes), so it moves both counts. This
+ * whole of P8-T-roadmap. P8-T2 adds five entries and **three** paths -- the
+ * ADR corpus's index, its template and record 0014, none of which existed
+ * before -- so it is the first P8-T packet to move the distinct count. A
+ * packet that only extends surfaces the phase already owns moves the entry
+ * count and leaves the path count alone. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1777,6 +1771,29 @@ const P8T_DOC_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 const P8T_ROADMAP_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
 /**
+ * P8-T2: the OSS elevation adjudication, and the ADR corpus's own law.
+ *
+ * The delta-2 pass produced one adjudication; this packet records it. The
+ * roadmap's tranche gains the delta block, and the ADR corpus gains the three
+ * things it never had -- an index, a template, and the topology record itself
+ * at 0014.
+ *
+ * The renumber is the packet's own evidence. The amended charter commissioned
+ * that record as 0013 while 0013 was already the first write route, and the
+ * commission passed a synthesis, a review, a verification and a post-audit
+ * without anyone comparing it to `docs/architecture/`. The fix is not the
+ * renumber -- that is bookkeeping -- it is `assertAdrNumbering` below, so the
+ * next commissioned number is checked by something that cannot forget.
+ */
+const P8T2_WRITE_SET = [
+  "docs/ROADMAP.md",
+  "docs/architecture/0014-repository-topology.md",
+  "docs/architecture/index.md",
+  "docs/architecture/_template.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2049,6 +2066,7 @@ const WRITE_SET = [
   ...P88D_C2_WRITE_SET,
   ...P88D_WRITE_SET,
   ...P8T_ROADMAP_WRITE_SET,
+  ...P8T2_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -2077,8 +2095,109 @@ const WRITE_SET_DISTINCT = [...new Set(WRITE_SET)];
  * that happened to carry a matching digest would still have to keep saying all
  * of them.
  */
+
+/**
+ * The ADR corpus's numbers are unique and contiguous.
+ *
+ * Added in P8-T2, after a topology record was commissioned as 0013 while 0013
+ * was already the plane's first write route. The corpus is append-only, so a
+ * duplicate resolves either as two records sharing a number or as one
+ * overwriting the other, and both destroy the property the corpus exists for.
+ * Nothing checked, through a full audit chain, because checking it was nobody's
+ * named job. It is this function's job now.
+ *
+ * Only `NNNN-*.md` files are records: `index.md` and `_template.md` are corpus
+ * furniture and are skipped by the shape of the pattern rather than by an
+ * exclusion list, so adding a second non-record file cannot silently widen the
+ * exemption.
+ */
+function assertAdrNumbering() {
+  const dir = join(REPO_ROOT, "docs/architecture");
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    fail("docs/architecture is unreadable; the ADR corpus is a required tree");
+    return;
+  }
+
+  const records = entries
+    .map((name) => /^(\d{4})-.+\.md$/.exec(name))
+    .filter((match) => match !== null)
+    .map((match) => ({ name: match[0], number: Number.parseInt(match[1], 10) }))
+    .sort((a, b) => a.number - b.number);
+
+  if (records.length === 0) {
+    fail("docs/architecture holds no NNNN-*.md records");
+    return;
+  }
+
+  const byNumber = new Map();
+  for (const record of records) {
+    const seen = byNumber.get(record.number);
+    if (seen !== undefined) {
+      fail(
+        "ADR number " +
+          String(record.number).padStart(4, "0") +
+          " is used twice: " +
+          seen +
+          " and " +
+          record.name,
+      );
+      return;
+    }
+    byNumber.set(record.number, record.name);
+  }
+
+  const first = records[0];
+  if (first === undefined || first.number !== 1) {
+    fail("the ADR corpus must start at 0001; it starts at " + String(first?.number));
+    return;
+  }
+
+  for (let index = 1; index < records.length; index += 1) {
+    const previous = records[index - 1];
+    const current = records[index];
+    if (previous === undefined || current === undefined) continue;
+    if (current.number !== previous.number + 1) {
+      fail(
+        "the ADR corpus is not contiguous: " +
+          previous.name +
+          " is followed by " +
+          current.name,
+      );
+      return;
+    }
+  }
+
+  // The index is the corpus's front door, so a record absent from it is a
+  // record nobody finds. Bijection both ways.
+  let index;
+  try {
+    index = readFileSync(join(dir, "index.md"), "utf8");
+  } catch {
+    fail("docs/architecture/index.md is missing; the corpus has no index");
+    return;
+  }
+  for (const record of records) {
+    if (!index.includes(record.name)) {
+      fail("ADR " + record.name + " is absent from docs/architecture/index.md");
+      return;
+    }
+  }
+  for (const linked of index.matchAll(/\((\d{4}-[^)]+\.md)\)/g)) {
+    const target = linked[1];
+    if (target !== undefined && !byNumber.has(Number.parseInt(target.slice(0, 4), 10))) {
+      fail("docs/architecture/index.md links " + target + ", which is not in the corpus");
+      return;
+    }
+  }
+
+  notes.push("ADR corpus: " + String(records.length) + " records, unique, contiguous, indexed");
+}
+
 const ROADMAP_SHA256 =
-  "2ecd8cb3dce6f0796029021b039a4d0db71a11fd5ad0ade27c068bfe798f84e9";
+  "ef8e8cf5b77b1c8635d749d3cde488f748637ebf2597c50fdcb2533731fddaca";
 
 /**
  * The Estado line P7 closure is allowed to have produced.
@@ -2632,6 +2751,8 @@ if (roadmap === null) {
   } else {
     notes.push("docs/ROADMAP.md matches its pinned digest");
   }
+
+  assertAdrNumbering();
 
   // The digest alone would let a re-pin smuggle in a rewritten roadmap, so the
   // structural statements are checked independently of it.

@@ -665,6 +665,42 @@ los pins de exports del fence y el threat model cita hechos grepeables.
 comisionado para registrar las adjudicaciones (incluida la arista
 scenarios y el movimiento de las constantes de topología al kernel).
 
+**Delta de elevación OSS (2026-08-31, adjudicada una vez):** ADR de
+topología renumerado a **0014** (0013 quedó ocupado por la primera write
+route) + regla del fence de numeración ADR única y contigua. Cada paquete
+se clasifica **público** (contracts, api-contracts, ledger, runtime,
+accounts, observation, adapters, durability) o **interno** (daemon,
+server, cli, ui) en la ley de estratos, y el fence lo aserta contra cada
+manifest. La extensibilidad queda así: la unión de transports cerrada;
+`ProviderId` extensible por descriptor validado con registro estático en
+el composition root; los providers first-party se distribuyen con el
+producto; **no** hay carga de plugins en runtime, ni código remoto, ni
+marketplace. `STRUCTURAL_TOPOLOGY_CERTIFIED` es una computación del fence
+(la tabla de capas en verde, cero paths obsoletos, el move-map aplicado
+completo, ningún path literal en ninguna ley, toda ley path-scoped con
+scope no vacío) — `P8_COMPLETE` igual. G0 ensaya el resolver sobre un
+layout sintético de dos niveles antes de mover el árbol real. La ley de
+dedup: un valor que dos contextos deben acordar tiene exactamente una
+declaración y una compuerta de duplicación; un predicado de cuatro líneas
+que dos contextos comparten por casualidad, no. El corpus ADR gana
+`index.md` + plantilla (status + supersedes/superseded-by) bajo la docs
+gate. La threat model nombra la frontera loopback como titular y la
+única write door gana un bearer local antes de cualquier release
+(funcional, en P8-8G, antes de P8-E). Nada publica ni se des-privatiza hasta que
+LICENSE + SECURITY.md + CONTRIBUTING.md aterricen juntos en G10. G0 lleva
+un fixture falliente por familia de leyes del fence. La falsa-roja
+intra-run se cierra antes de P8-9: un pool vitest serializado para toda
+suite de puertos/procesos reservados y aserciones de procesos por
+proveniencia. La vista de documento del roadmap (el segundo consumidor
+del content-read) aterriza en P8-8F por nombre. Mutation testing sólo en
+los tres módulos de decisión; thresholds sólo ahí.
+R1 aterriza en P8-8G — el techo de 1 MiB pineado a una sola autoridad,
+con el test de igualdad del server y la ley unitaria de caracteres contra
+bytes, cerrando el hallazgo de registro de P8-8D-pre — y los cuatro
+objetivos de property de R2 aterrizan en G9: el round-trip de la gramática
+de rutas, canonical-json, la derivación de digest/path del artifact store y
+los invariantes de `decideRoadmapVersion`.
+
 ### P9 — Cutover explícito y reversible
 
 Owner: decisión exclusiva del owner. DT: Kimi. Integrator: Opus. Auditor: Fable.
