@@ -80,6 +80,32 @@ export {
   computeTokenRollups,
 } from "./rollups/index.js";
 
+// P8-7: neutral telemetry (law 9) and the optional Langfuse boundary. The
+// neutral surface is emitted first and always; the vendor translator is a pure
+// value-producing function that nothing here calls, imports no SDK, and can be
+// removed by deleting one file. No observability vendor is required for
+// routing, recovery or evidence — a property of this import graph, not a
+// promise. The redaction gate lives inside `emitTelemetry`, and
+// `TelemetryEvent` is branded so nothing ungated can reach the translator.
+export type {
+  TelemetryAttribute,
+  TelemetryBatch,
+  TelemetryEvent,
+  TelemetryRefusal,
+  TelemetryRefusalReason,
+  TelemetryStatus,
+} from "./telemetry/index.js";
+export {
+  TELEMETRY_ATTRIBUTE_KEYS,
+  TELEMETRY_REFUSAL_REASONS,
+  TELEMETRY_SPAN_KIND,
+  emitTelemetry,
+  telemetrySpanName,
+} from "./telemetry/index.js";
+
+export type { LangfuseObservation, LangfuseTrace } from "./telemetry/langfuse/index.js";
+export { LANGFUSE_TRACE_NAME, toLangfuseTrace } from "./telemetry/langfuse/index.js";
+
 export type { ShadowReceipt, ShadowRefusal, ShadowSnapshot } from "./shadow-ledger/index.js";
 export {
   SHADOW_LEDGER_DIRECTORY,

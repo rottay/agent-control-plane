@@ -1243,15 +1243,20 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * operational, drilled over a real child process rather than only asserted,
  * plus the operator paragraph the drill backs.
  *
- * P8 is therefore **65 packet entries across 50 distinct paths**: 2 (P8-D) +
- * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) =
- * 65 entries, with 15 duplicate entries. `scripts/check-architecture.mjs` is
- * named by all eight packets (7 duplicates); the port, the barrel, the port's
- * fixture and the test doubles are each named by P8-2, P8-3 and P8-4 (2
- * duplicates each, 8 total). P8-5 and P8-6 share no path with any earlier P8
- * packet but the fence itself. So 65 - 15 = 50 distinct paths. This file's
- * appearances in earlier phases are counted in those phases, since the
- * standing convention scopes the arithmetic to the phase.
+ * P8-7 lands law 9's observability leg: the neutral OTel/OpenInference-shaped
+ * projection, the structural redaction gate inside it, and the optional
+ * Langfuse translator as a pure value-producing function no dependency backs.
+ *
+ * P8 is therefore **71 packet entries across 55 distinct paths**: 2 (P8-D) +
+ * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
+ * 6 (P8-7) = 71 entries, with 16 duplicate entries.
+ * `scripts/check-architecture.mjs` is named by all nine packets (8
+ * duplicates); the port, the barrel, the port's fixture and the test doubles
+ * are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8 total). P8-5,
+ * P8-6 and P8-7 share no path with any earlier P8 packet but the fence itself.
+ * So 71 - 16 = 55 distinct paths. This file's appearances in earlier phases
+ * are counted in those phases, since the standing convention scopes the
+ * arithmetic to the phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
@@ -1428,6 +1433,29 @@ const P85_WRITE_SET = [
 const P86_WRITE_SET = [
   "packages/daemon/test/fallback/index.test.ts",
   "packages/runtime/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-7: neutral observability, the redaction gate, and the optional exporter.
+ *
+ * Law 9's order of dependence, made structural. The neutral surface is a pure
+ * projection from ledger events to OTel/OpenInference-shaped values; the
+ * redaction gate runs inside it, refusing and counting rather than throwing,
+ * with diagnostics that carry coordinates only; and the Langfuse translator is
+ * one pure function typed on the gated output, importing no SDK.
+ *
+ * The package's pinned dependency surface does not move. That is what makes
+ * "no observability vendor is required" a property of the import graph rather
+ * than a paragraph: removing the exporter is deleting a file, not clearing a
+ * flag.
+ */
+const P87_WRITE_SET = [
+  "packages/observation/src/telemetry/index.ts",
+  "packages/observation/src/telemetry/langfuse/index.ts",
+  "packages/observation/src/index.ts",
+  "packages/observation/test/telemetry/index.test.ts",
+  "packages/observation/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1696,6 +1724,7 @@ const WRITE_SET = [
   ...P84_WRITE_SET,
   ...P85_WRITE_SET,
   ...P86_WRITE_SET,
+  ...P87_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -3911,6 +3940,22 @@ const OBSERVATION_PUBLIC_EXPORTS = [
   "ROLLUP_USAGE_TYPE",
   "UNSCOPED_INITIATIVE",
   "computeTokenRollups",
+  // P8-7: neutral telemetry (law 9) and the optional Langfuse boundary.
+  "TelemetryAttribute",
+  "TelemetryBatch",
+  "TelemetryEvent",
+  "TelemetryRefusal",
+  "TelemetryRefusalReason",
+  "TelemetryStatus",
+  "TELEMETRY_ATTRIBUTE_KEYS",
+  "TELEMETRY_REFUSAL_REASONS",
+  "TELEMETRY_SPAN_KIND",
+  "emitTelemetry",
+  "telemetrySpanName",
+  "LangfuseObservation",
+  "LangfuseTrace",
+  "LANGFUSE_TRACE_NAME",
+  "toLangfuseTrace",
 ];
 
 const observationIndex = readIfPresent("packages/observation/src/index.ts");

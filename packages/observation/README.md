@@ -99,6 +99,43 @@ integrity, measure, rebuild the read model, measure again, and compare digests.
 A divergence is refused, not reported. The receipt carries digests, counts and
 rebuild facts only — no path, no username, no run date, no wall clock.
 
+## Neutral telemetry, and the optional exporter
+
+Law 9 fixes an order of dependence: observability emits **neutral events
+first**, shaped to the OpenTelemetry and OpenInference conventions, and **no
+observability vendor is ever required** for routing, recovery or evidence.
+`emitTelemetry` is the neutral half — a pure projection from ledger events to
+OTel-shaped values, with no clock, no filesystem and no ledger of its own, so
+two runs over the same events are byte-identical.
+
+Where a convention already names a thing, its name is used
+(`gen_ai.usage.output_tokens`, `gen_ai.request.model`,
+`openinference.span.kind`); everything else is namespaced under `acp.`.
+Inventing a `gen_ai.*` key the convention has never defined would look
+standard while being ours alone. Only allowlisted payload keys become
+attributes: a projection that mirrored whatever a payload carried would export
+tomorrow's new field without anyone deciding to.
+
+**The redaction gate is structural, not procedural.** Every record passes the
+contracts' credential and transcript guards *inside* `emitTelemetry`, and a
+record that trips either is refused and **counted** rather than emitted. There
+is no path around it, because `TelemetryEvent` is branded and `emitTelemetry`
+is its only producer — so anything typed on a gated event, the Langfuse
+translator above all, is structurally incapable of receiving one that was not
+gated. Refusal diagnostics carry coordinates and counts only: the task, the
+attempt, the transition, the JSON paths, and a classified reason. Never the
+payload, never a fragment, never the matched content. A redaction report that
+quoted what it caught would be the leak it exists to prevent.
+
+Langfuse is permitted as the first **optional** exporter and taken at exactly
+that width: `toLangfuseTrace` is one pure translator that returns a
+Langfuse-shaped value. It imports no SDK, sends nothing and opens nothing, and
+nothing in this package calls it. So "disable the exporter" is not a flag that
+could be set wrong — it is the absence of a call, and removing Langfuse is
+deleting one file. The trace carries a refused **count** so a reader of the
+vendor surface can see that something was withheld without the vendor surface
+being told what.
+
 ## Capability is removed, not declined
 
 The roadmap forbids attaching, signalling and reaching out. Rather than promise
