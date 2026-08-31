@@ -10,6 +10,7 @@ import { TaskDetailView } from "../../src/views/task-detail-view/index.js";
 import { TasksListView } from "../../src/views/tasks-list-view/index.js";
 import { WorkerDetailView } from "../../src/views/worker-detail-view/index.js";
 import { WorkersListView } from "../../src/views/workers-list-view/index.js";
+import { WorkspaceView } from "../../src/views/workspace-view/index.js";
 
 /**
  * These views load their data through an effect, and effects do not run
@@ -94,6 +95,27 @@ describe("TaskDetailView", () => {
 
   it("falls back to the not-found view when the route carries no task id", () => {
     const html = renderToStaticMarkup(<TaskDetailView route={route({ view: "task-detail", taskId: null })} />);
+    expect(html).toContain("Not found");
+  });
+});
+
+describe("WorkspaceView", () => {
+  it("renders an announced loading state when the route carries an initiative id", () => {
+    // Unlike every view above, the workspace has no static title to show
+    // before the fetch resolves — "Overview" is known in advance, but this
+    // view's own heading is the initiative's name, which is earned by the
+    // fetch. The loading state is therefore the landed async-section
+    // skeleton alone, with no `<h1>` yet: asserted as what is actually
+    // there, not a heading this render cannot honestly show.
+    const html = renderToStaticMarkup(
+      <WorkspaceView route={route({ view: "workspace", initiativeId: "123e4567-e89b-12d3-a456-426614174000" })} />,
+    );
+    expect(html).toContain('role="status"');
+    expect(html).toContain("Loading the initiative");
+  });
+
+  it("falls back to the not-found view when the route carries no initiative id", () => {
+    const html = renderToStaticMarkup(<WorkspaceView route={route({ view: "workspace", initiativeId: null })} />);
     expect(html).toContain("Not found");
   });
 });

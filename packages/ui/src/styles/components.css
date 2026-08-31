@@ -678,3 +678,197 @@ input[type="text"] {
 .portfolio-card__facts code {
   overflow-wrap: anywhere;
 }
+
+/* The workspace (P8-8D, blueprint v2 §1-§3) */
+
+.workspace__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+
+.workspace__name {
+  margin: 0;
+  font-size: var(--text-xl);
+}
+
+.workspace__objective {
+  max-width: 62ch;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-5);
+}
+
+.workspace__objective--empty {
+  color: var(--color-text-faint);
+  font-style: italic;
+}
+
+/* The two-column body: roadmap first, work state second, so mobile's single
+   column stacks in the order blueprint v2 §2 asks for without any CSS order
+   trick — the fluid breakpoint matches the landed `.overview__grid` in
+   layout.css (not this file, and not touched), for one consistent point
+   where the app's two-column panels fold to one. */
+.workspace__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-5);
+}
+
+@media (max-width: 56rem) {
+  .workspace__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.roadmap-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.roadmap-head__digest {
+  overflow-wrap: anywhere;
+}
+
+.roadmap-head__meta {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.roadmap-history {
+  list-style: none;
+  margin: var(--space-3) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.roadmap-history__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) 0;
+  border-bottom: var(--border-width) solid var(--color-border);
+  font-size: var(--text-sm);
+}
+
+.roadmap-history__row:last-child {
+  border-bottom: none;
+}
+
+.roadmap-history__digest {
+  overflow-wrap: anywhere;
+}
+
+.roadmap-history__meta {
+  color: var(--color-text-muted);
+}
+
+/* The edit dialog (P8-8D, blueprint v2 §3-§4, C6) */
+
+.dialog__overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--color-text) 45%, transparent);
+  z-index: 2;
+}
+
+.dialog__content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  width: min(34rem, calc(100vw - var(--space-6)));
+  max-height: calc(100vh - var(--space-6));
+  overflow-y: auto;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-5);
+}
+
+.dialog__content:focus-visible {
+  outline: none;
+}
+
+.dialog__title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-lg);
+}
+
+.dialog__description {
+  margin: 0 0 var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.dialog__textarea {
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  resize: vertical;
+}
+
+.dialog__textarea.has-error {
+  border-color: var(--color-bad-fg);
+}
+
+.dialog__claim {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.dialog__claim code {
+  overflow-wrap: anywhere;
+}
+
+.dialog__outcome-region:empty {
+  display: none;
+}
+
+.dialog__outcome {
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+}
+
+.dialog__outcome--granted {
+  border: var(--border-width) solid var(--color-good-fg);
+  background: var(--color-good-bg);
+  color: var(--color-good-fg);
+}
+
+.dialog__outcome--refused {
+  border: var(--border-width) solid var(--color-bad-fg);
+  background: var(--color-bad-bg);
+  color: var(--color-bad-fg);
+}
+
+.dialog__outcome-title {
+  font-weight: 600;
+  margin: 0 0 var(--space-1);
+}
+
+.dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}

@@ -87,3 +87,23 @@ export function initiativeStatusTone(status: string): Tone {
       return "neutral";
   }
 }
+
+/**
+ * The roadmap-version kind enum's tones. (P8-8D.)
+ *
+ * `EDIT` is the ordinary case — a version moving forward — and reads
+ * `neutral`, not `good`: recording an edit is not an achievement, only an
+ * act. `ROLLBACK` reads `warn`: it is never wrong to restore an earlier
+ * version, but it is always worth a second look, since it means the roadmap
+ * is moving backward on purpose.
+ */
+export function roadmapVersionKindTone(kind: string): Tone {
+  switch (kind) {
+    case "EDIT":
+      return "neutral";
+    case "ROLLBACK":
+      return "warn";
+    default:
+      return "neutral";
+  }
+}

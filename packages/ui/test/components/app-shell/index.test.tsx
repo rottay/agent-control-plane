@@ -62,6 +62,19 @@ describe("AppShell", () => {
     expect(html.indexOf("unique-marker-content")).toBeGreaterThan(mainIndex);
   });
 
+  it("marks no primary nav entry current while viewing the workspace (P8-8D)", () => {
+    // The workspace is reached from the switcher, not the primary nav —
+    // `navMatches` names no entry for it, deliberately: NAV_ITEMS lists the
+    // six read views the header always offers, and the workspace is a
+    // seventh place a route can be, not an eighth item to add there.
+    const html = renderToStaticMarkup(
+      <AppShell route={route("workspace", "123e4567-e89b-12d3-a456-426614174000")}>
+        <p>content</p>
+      </AppShell>,
+    );
+    expect(html).not.toContain('aria-current="page"');
+  });
+
   describe("the initiative switcher (P8-8C, blueprint v2 §4)", () => {
     it("places the switcher trigger after the skip link and before the primary nav", () => {
       const html = renderToStaticMarkup(

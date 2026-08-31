@@ -8,11 +8,14 @@ import {
   IntegrityResult,
   LedgerStatusResponse,
   OverviewResponse,
+  RoadmapContentResponse,
+  RoadmapVersionWriteResponse,
   TaskDetailResponse,
   TaskPageResponse,
   WorkerDetailResponse,
   WorkerPageResponse,
   initiativePath,
+  initiativeRoadmapContentPath,
   initiativeRoadmapPath,
   taskPath,
   workerPath,
@@ -112,6 +115,74 @@ async function fetchAndParse<T>(
   }
 
   const parsed = schema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      kind: "contract-mismatch",
+      status: response.status,
+      detail: describeIssues(parsed.error.issues),
+    };
+  }
+  return { kind: "ok", data: parsed.data };
+}
+
+/**
+ * The one write this client makes. (P8-8D.)
+ *
+ * The request body is not validated here before it travels: the server's own
+ * schema is the one authority on what it accepts, and a client-side copy of
+ * that judgment is a second place it could drift from the server's. A
+ * malformed body comes back as the same classified `api-error` a caller of
+ * this module already knows how to read — the schema door and the decision
+ * door are both just shapes of the response, not a second code path here.
+ */
+async function postAndParse<T>(
+  path: string,
+  body: unknown,
+  schema: Parsable<T>,
+  signal: AbortSignal | undefined,
+): Promise<ApiResult<T>> {
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: signal ?? null,
+    });
+  } catch (cause) {
+    return { kind: "network-error", detail: describeThrown(cause) };
+  }
+
+  let responseBody: unknown;
+  try {
+    responseBody = await response.json();
+  } catch {
+    return {
+      kind: "contract-mismatch",
+      status: response.status,
+      detail: "the response body was not valid JSON",
+    };
+  }
+
+  if (!response.ok) {
+    const errorEnvelope = ApiError.safeParse(responseBody);
+    if (errorEnvelope.success) {
+      return {
+        kind: "api-error",
+        status: response.status,
+        code: errorEnvelope.data.error.code,
+        message: errorEnvelope.data.error.message,
+        detail: errorEnvelope.data.error.detail,
+      };
+    }
+    return {
+      kind: "contract-mismatch",
+      status: response.status,
+      detail: "an error response did not match the API error contract: " + describeIssues(errorEnvelope.error.issues),
+    };
+  }
+
+  const parsed = schema.safeParse(responseBody);
   if (!parsed.success) {
     return {
       kind: "contract-mismatch",
@@ -269,6 +340,71 @@ export function fetchInitiativeRoadmap(
   return fetchAndParse(path, InitiativeRoadmapResponse, signal);
 }
 
+/**
+ * The stored roadmap document for one version. (P8-8D-c2's read, this
+ * client's home for it.)
+ *
+ * Selected by version number, never by digest: the digest-addressed store is
+ * initiative-agnostic, and a version selector is what makes the fold do the
+ * authorization the store itself does not — see the server's own account of
+ * this in `.acp-local/p8-8d-c2-opus-source-ready.md`.
+ */
+export function fetchRoadmapContent(
+  initiativeId: string,
+  version: number,
+  signal?: AbortSignal,
+): Promise<ApiResult<RoadmapContentResponse>> {
+  let path: string;
+  try {
+    path = buildPath(initiativeRoadmapContentPath(initiativeId), { version });
+  } catch {
+    return Promise.resolve({
+      kind: "contract-mismatch",
+      status: null,
+      detail: "\"" + initiativeId + "\" is not a well formed initiative id",
+    });
+  }
+  return fetchAndParse(path, RoadmapContentResponse, signal);
+}
+
+export interface RoadmapVersionWriteInput {
+  readonly content: string;
+  readonly expectedHeadDigest: string | null;
+  readonly kind: "EDIT" | "ROLLBACK";
+  readonly restoresVersionId: string | null;
+  readonly recordedBy: string;
+}
+
+/**
+ * Record one roadmap version. (P8-8D-pre's write, this client's home for
+ * it.)
+ *
+ * The one POST this client ever issues. Its request body is not typed
+ * through `RoadmapVersionWriteRequest` here — the type is restated field by
+ * field in `RoadmapVersionWriteInput` above, the same reason `mappers`
+ * already gives elsewhere in this codebase for not spreading a contract type
+ * across a boundary: it keeps this function's own signature the single
+ * source of what a caller must supply, rather than a schema import a caller
+ * would have to go read to know.
+ */
+export function writeRoadmapVersion(
+  initiativeId: string,
+  input: RoadmapVersionWriteInput,
+  signal?: AbortSignal,
+): Promise<ApiResult<RoadmapVersionWriteResponse>> {
+  let path: string;
+  try {
+    path = initiativeRoadmapPath(initiativeId);
+  } catch {
+    return Promise.resolve({
+      kind: "contract-mismatch",
+      status: null,
+      detail: "\"" + initiativeId + "\" is not a well formed initiative id",
+    });
+  }
+  return postAndParse(path, input, RoadmapVersionWriteResponse, signal);
+}
+
 // ---------------------------------------------------------------------------
 // Query keys (P8-8B)
 // ---------------------------------------------------------------------------
@@ -298,4 +434,6 @@ export const queryKeys = {
   initiatives: () => ["acp", "initiatives"] as const,
   initiativeDetail: (initiativeId: string) => ["acp", "initiative", initiativeId] as const,
   initiativeRoadmap: (initiativeId: string) => ["acp", "initiative", initiativeId, "roadmap"] as const,
+  roadmapContent: (initiativeId: string, version: number) =>
+    ["acp", "initiative", initiativeId, "roadmap", "content", version] as const,
 };

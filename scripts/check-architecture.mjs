@@ -1271,24 +1271,32 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **156 packet entries across 99 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **174 packet entries across 103 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
- * 13 (P8-8D-c2) + 2 (P8-T-docs) + 2 (P8-T-roadmap) =
- * 156 entries, with 57 duplicate entries, folded here rather than argued:
- * `scripts/check-architecture.mjs` is named by all sixteen packets (15);
+ * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) =
+ * 174 entries, with 71 duplicate entries, folded here rather than argued:
+ * `scripts/check-architecture.mjs` is named by all seventeen packets (16);
  * eleven api-contracts, server and cli paths are each named by P8-8A,
  * P8-8D-pre and P8-8D-c2 (2 each, 22); the port, the barrel, the port's
  * fixture and the test doubles are each named by P8-2, P8-3 and P8-4 (2 each,
  * 8); five of P8-8B's own paths -- `packages/ui/package.json`,
  * `pnpm-workspace.yaml`, `packages/ui/src/app/index.tsx`,
  * `packages/ui/src/components/app-shell/index.tsx` and
- * `packages/ui/src/api/client/index.ts` -- are repeated by P8-8C (1 each, 5);
- * `pnpm-lock.yaml` is named by the four packets that moved a dependency edge,
- * P8-W, P8-8A, P8-8B and P8-8C (3); `docs/ROADMAP.md` is named by P8-D and
- * both P8-T packets (2); `packages/server/src/initiatives/index.ts` by P8-8A
- * and P8-8D-c2 (1); and `packages/server/package.json` by P8-8A and
- * P8-8D-pre (1). 15 + 22 + 8 + 5 + 3 + 2 + 1 + 1 = 57.
+ * `packages/ui/src/api/client/index.ts` -- are repeated by both P8-8C and
+ * P8-8D (2 each, 10); six of P8-8C's own paths --
+ * `packages/ui/src/routing/hash-route/index.ts`,
+ * `packages/ui/src/format/status-tone/index.ts`,
+ * `packages/ui/src/styles/components.css`, and the three test files
+ * (`test/routing/hash-route/index.test.ts`,
+ * `test/components/app-shell/index.test.tsx`, `test/views/index.test.tsx`) --
+ * are repeated once more by P8-8D (1 each, 6); `pnpm-lock.yaml` is named by
+ * the five packets that moved a dependency edge, P8-W, P8-8A, P8-8B, P8-8C
+ * and P8-8D (4); `docs/ROADMAP.md` is named by P8-D and both P8-T packets
+ * (2); `packages/server/src/initiatives/index.ts` by P8-8A and P8-8D-c2 (1);
+ * `packages/server/package.json` by P8-8A and P8-8D-pre (1); and P8-8D's 18th
+ * path, `test/views/portfolio-view/index.test.tsx`, repeats P8-8C's own
+ * creation of it (1). 16 + 22 + 8 + 10 + 6 + 4 + 2 + 1 + 1 + 1 = 71.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Three packets add entries without adding paths:
@@ -1296,7 +1304,9 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * whole of P8-T-roadmap -- which rewrites the subsection P8-T-docs wrote and
  * re-pins the digest, both paths the phase already owned. A packet that only
  * extends surfaces the phase already owns moves the entry count and leaves
- * the path count alone. This
+ * the path count alone. P8-8D is not a fourth: 4 of its 18 paths are novel
+ * (`workspace-view/index.tsx`, `edit-roadmap-dialog/index.tsx` and both of
+ * their test homes), so it moves both counts. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1694,6 +1704,46 @@ const P88D_C2_WRITE_SET = [
 ];
 
 /**
+ * P8-8D: the initiative workspace.
+ *
+ * The read surface plus the roadmap's one deliberate edit: the objective,
+ * the roadmap region (head, expandable history, the edit dialog on
+ * `@radix-ui/react-dialog`, adjudicated C6), and the work state — nothing
+ * the data plane does not serve (C1: no "agents active", no "reset in 2d",
+ * both cut to their own registered homes, P8-8E/P8-8F).
+ *
+ * The 18th path, adjudicated after a Sonnet STOP
+ * (`.acp-local/p8-8d-kimi-stop-adjudication.md`):
+ * `packages/ui/test/views/portfolio-view/index.test.tsx`, whose two
+ * `href="#/i/<id>/tasks"` expectations are the mechanical fallout of
+ * `buildInitiativeHash`'s own authorized change (bare `#/i/<id>` now lands
+ * on the workspace, C3) — a pre-existing test outside the original 17,
+ * falsified by an in-scope change, the same class C4 already named for
+ * P8-8D-pre and P8-8D-c2's own widenings.
+ */
+const P88D_WRITE_SET = [
+  "packages/ui/src/views/workspace-view/index.tsx",
+  "packages/ui/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/ui/src/app/index.tsx",
+  "packages/ui/src/routing/hash-route/index.ts",
+  "packages/ui/src/components/app-shell/index.tsx",
+  "packages/ui/src/format/status-tone/index.ts",
+  "packages/ui/src/styles/components.css",
+  "packages/ui/src/api/client/index.ts",
+  "packages/ui/test/views/workspace-view/index.test.tsx",
+  "packages/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/ui/test/routing/hash-route/index.test.ts",
+  "packages/ui/test/components/app-shell/index.test.tsx",
+  "packages/ui/test/views/index.test.tsx",
+  "packages/ui/package.json",
+  "pnpm-workspace.yaml",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+  // The 18th path, adjudicated (see the doc comment above).
+  "packages/ui/test/views/portfolio-view/index.test.tsx",
+];
+
+/**
  * P8-T (docs): the blocking structural-topology tranche enters the roadmap.
  *
  * A records-only packet. The owner's ruling of 2026-08-31 makes a fresh joint
@@ -1997,6 +2047,7 @@ const WRITE_SET = [
   ...P88C_WRITE_SET,
   ...P88D_PRE_WRITE_SET,
   ...P88D_C2_WRITE_SET,
+  ...P88D_WRITE_SET,
   ...P8T_ROADMAP_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -3055,8 +3106,12 @@ const P1B_DEPENDENCY_LAW = [
     //
     // P8-8C adds exactly one more, the blueprint's own adjudicated primitive:
     // `@radix-ui/react-dropdown-menu` (the initiative switcher).
+    //
+    // P8-8D adds exactly one more again: `@radix-ui/react-dialog` (the
+    // roadmap edit dialog, C6).
     dependencies: [
       "@acp/api-contracts",
+      "@radix-ui/react-dialog",
       "@radix-ui/react-dropdown-menu",
       "@radix-ui/react-navigation-menu",
       "@tanstack/react-query",

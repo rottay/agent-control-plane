@@ -20,10 +20,17 @@ import { SkipLink } from "../skip-link/index.js";
  * exist, what they are called, and which of them a route counts as current.
  *
  * P8-8C adds the initiative switcher to the brand block, on
- * `@radix-ui/react-dropdown-menu` (blueprint v2 §4) — the second and, for
- * this cohort, last interactive region. It is route-driven: it reads
- * `route.initiativeId`, never a client-side global, and fetches its own
- * initiative list because it is present regardless of which view is active.
+ * `@radix-ui/react-dropdown-menu` (blueprint v2 §4). It is route-driven: it
+ * reads `route.initiativeId`, never a client-side global, and fetches its
+ * own initiative list because it is present regardless of which view is
+ * active.
+ *
+ * **P8-8D.** Picking an initiative now lands on its workspace, bare
+ * (`buildInitiativeHash`'s own change, in `routing/hash-route/index.ts`) —
+ * this file needed no code change for that, since the switcher already
+ * calls the one function that decides the landing hash. It is declared in
+ * this packet's write-set anyway, and this paragraph is the honest reason
+ * why: nothing here moved.
  *
  * Everything visual comes from the design tokens in `styles/tokens.css` through
  * the class names below. No component in this package declares a raw color, a

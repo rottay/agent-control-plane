@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Local read-only observation UI for the Agent Control Plane. Browser-safe, contract-driven, no live writes.",
+  "description": "Local observation UI for the Agent Control Plane. Browser-safe, contract-driven; every route reads except one deliberate write, recording a roadmap version.",
   "license": "UNLICENSED",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@acp/api-contracts": "workspace:*",
+    "@radix-ui/react-dialog": "catalog:",
     "@radix-ui/react-dropdown-menu": "catalog:",
     "@radix-ui/react-navigation-menu": "catalog:",
     "@tanstack/react-query": "catalog:",

@@ -105,8 +105,8 @@ describe("PortfolioGrid — the fixture portfolio renders (blueprint v2 §2)", (
   });
 
   it("links each card to the initiative-scoped route, the name as the accessible name (C3)", () => {
-    expect(html).toContain('href="#/i/123e4567-e89b-12d3-a456-426614174000/tasks"');
-    expect(html).toContain('href="#/i/9f2e4567-e89b-12d3-a456-426614174111/tasks"');
+    expect(html).toContain('href="#/i/123e4567-e89b-12d3-a456-426614174000"');
+    expect(html).toContain('href="#/i/9f2e4567-e89b-12d3-a456-426614174111"');
   });
 
   it("carries a visually hidden status readout on the name-anchor link (C3)", () => {

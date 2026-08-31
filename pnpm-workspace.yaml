@@ -34,6 +34,12 @@ packages:
 # switcher), and adds NOTHING here either, verified the same way: every package
 # its graph pulls in was read out of the lockfile and none declares a
 # preinstall, install or postinstall script.
+#
+# P8-8D adds one more, @radix-ui/react-dialog (the roadmap edit dialog, C6),
+# and adds NOTHING here either, verified the same way: every package its
+# graph pulls in — new or already shared with the dropdown menu's own — was
+# read out of the lockfile and none declares a preinstall, install or
+# postinstall script.
 onlyBuiltDependencies:
   - better-sqlite3
 
@@ -56,3 +62,5 @@ catalog:
   "@radix-ui/react-navigation-menu": 1.2.22
   # P8-8C: the initiative switcher's one adjudicated primitive.
   "@radix-ui/react-dropdown-menu": 2.1.24
+  # P8-8D: the roadmap edit dialog's one adjudicated primitive (C6).
+  "@radix-ui/react-dialog": 1.1.23

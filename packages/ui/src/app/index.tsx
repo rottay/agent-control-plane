@@ -13,6 +13,7 @@ import { TaskDetailView } from "../views/task-detail-view/index.js";
 import { TasksListView } from "../views/tasks-list-view/index.js";
 import { WorkerDetailView } from "../views/worker-detail-view/index.js";
 import { WorkersListView } from "../views/workers-list-view/index.js";
+import { WorkspaceView } from "../views/workspace-view/index.js";
 
 /**
  * The observation shell.
@@ -64,6 +65,8 @@ export function App(): JSX.Element {
               return <OverviewView />;
             case "portfolio":
               return <PortfolioView />;
+            case "workspace":
+              return <WorkspaceView route={route} />;
             case "tasks":
               return <TasksListView route={route} navigate={navigate} />;
             case "task-detail":

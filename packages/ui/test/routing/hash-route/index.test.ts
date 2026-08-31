@@ -58,9 +58,15 @@ describe("parseHash — the initiative-scoped prefix (P8-8C, blueprint v2 §4)",
     expect(parseHash("#/i")).toMatchObject({ view: "portfolio", taskId: null, workerIdentity: null, initiativeId: null });
   });
 
-  it("renders the landed not-found view for an initiative id with no view named after it", () => {
+  it("parses a bare #/i/<id> to the workspace (P8-8D, blueprint v2 §3, C3)", () => {
     const route = parseHash("#/i/123e4567-e89b-12d3-a456-426614174000");
-    expect(route.view).toBe("not-found");
+    expect(route.view).toBe("workspace");
+    expect(route.initiativeId).toBe("123e4567-e89b-12d3-a456-426614174000");
+  });
+
+  it("parses a bare #/i/<id> with a trailing slash the same way", () => {
+    const route = parseHash("#/i/123e4567-e89b-12d3-a456-426614174000/");
+    expect(route.view).toBe("workspace");
     expect(route.initiativeId).toBe("123e4567-e89b-12d3-a456-426614174000");
   });
 
@@ -122,14 +128,15 @@ describe("buildPortfolioHash and buildInitiativeHash", () => {
     expect(parseHash(buildPortfolioHash())).toMatchObject({ view: "portfolio", initiativeId: null });
   });
 
-  it("builds an initiative hash that parses back scoped to the same id, landing on tasks", () => {
+  it("builds an initiative hash that parses back scoped to the same id, landing on the workspace (P8-8D, C3)", () => {
     const hash = buildInitiativeHash("123e4567-e89b-12d3-a456-426614174000");
-    expect(parseHash(hash)).toMatchObject({ view: "tasks", initiativeId: "123e4567-e89b-12d3-a456-426614174000" });
+    expect(hash).toBe("#/i/123e4567-e89b-12d3-a456-426614174000");
+    expect(parseHash(hash)).toMatchObject({ view: "workspace", initiativeId: "123e4567-e89b-12d3-a456-426614174000" });
   });
 
   it("encodes the initiative id", () => {
     const hash = buildInitiativeHash("has/slash");
-    expect(hash).toBe("#/i/has%2Fslash/tasks");
+    expect(hash).toBe("#/i/has%2Fslash");
   });
 });
 
