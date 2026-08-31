@@ -5,6 +5,8 @@
  * agree on lives here. Consumers must not redeclare these shapes locally.
  */
 export {
+  ROADMAP_CONTENT_MAX_BYTES,
+  utf8ByteLength,
   CONTRACT_VERSION,
   CHECKPOINT_MAX_BYTES,
   EVENT_PAYLOAD_MAX_BYTES,

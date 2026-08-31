@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  ROADMAP_CONTENT_MAX_BYTES,
+  utf8ByteLength,
   AccountRecord,
   CHECKPOINT_MAX_BYTES,
   CONTRACT_VERSION,
@@ -1581,5 +1583,32 @@ describe("ExecutionRequest", () => {
     expect(ExecutionRequest.safeParse({ ...base, taskId: "task-1" }).success).toBe(false);
     expect(ExecutionRequest.safeParse({ ...base, attempt: 0 }).success).toBe(false);
     expect(ExecutionRequest.safeParse({ ...base, binary: "/usr/bin/claude" }).success).toBe(false);
+  });
+});
+
+describe("the roadmap content ceiling is one declaration with one unit (P8-8G R2)", () => {
+  it("counts UTF-8 bytes, which is not the same as String.length", () => {
+    expect(utf8ByteLength("")).toBe(0);
+    expect(utf8ByteLength("abc")).toBe(3);
+    // The case the old bound got wrong: two-byte characters.
+    expect("é".length).toBe(1);
+    expect(utf8ByteLength("é")).toBe(2);
+    // And four-byte ones, where the gap is wider still: an emoji is two
+    // UTF-16 code units and four bytes.
+    expect("😀".length).toBe(2);
+    expect(utf8ByteLength("😀")).toBe(4);
+  });
+
+  it("states the ceiling once, at 1 MiB", () => {
+    expect(ROADMAP_CONTENT_MAX_BYTES).toBe(1024 * 1024);
+  });
+
+  it("agrees with the platform's own encoder", () => {
+    // Not a tautology: it pins that the helper measures UTF-8 specifically,
+    // so a future rewrite to `.length` would fail here rather than silently
+    // reintroduce the unit mismatch this constant exists to prevent.
+    const sample = "héllo 😀 — roadmap";
+    expect(utf8ByteLength(sample)).toBe(new TextEncoder().encode(sample).byteLength);
+    expect(utf8ByteLength(sample)).not.toBe(sample.length);
   });
 });

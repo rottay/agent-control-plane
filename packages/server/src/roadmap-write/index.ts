@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 
 import { LEDGER_CONTRACT_VERSION } from "@acp/api-contracts";
 import type { RoadmapVersionWriteRequest } from "@acp/api-contracts";
-import { openLedger, publishArtifact } from "@acp/ledger";
+import { LedgerError, openLedger, publishArtifact } from "@acp/ledger";
 import type { Ledger, RoadmapVersionReadModel } from "@acp/ledger";
 import { ROADMAP_VERSION_REFUSALS, decideRoadmapVersion } from "@acp/ledger";
 import type { RoadmapVersionRefusal } from "@acp/ledger";
@@ -91,7 +91,7 @@ export interface RoadmapWriteGranted {
 
 export interface RoadmapWriteRefused {
   readonly ok: false;
-  readonly reason: RoadmapVersionRefusal | "CONTENT_REJECTED";
+  readonly reason: RoadmapVersionRefusal | "CONTENT_REJECTED" | "WRITE_CONFLICT";
   /** A field path or a store observation. Never roadmap content. */
   readonly at: string;
 }
@@ -99,8 +99,29 @@ export interface RoadmapWriteRefused {
 export type RoadmapWriteOutcome = RoadmapWriteGranted | RoadmapWriteRefused;
 
 /** Every refusal this seam can answer with, for the route's own exhaustion. */
-export const ROADMAP_WRITE_REFUSALS: readonly (RoadmapVersionRefusal | "CONTENT_REJECTED")[] =
-  Object.freeze([...ROADMAP_VERSION_REFUSALS, "CONTENT_REJECTED" as const].sort());
+export const ROADMAP_WRITE_REFUSALS: readonly (
+  | RoadmapVersionRefusal
+  | "CONTENT_REJECTED"
+  | "WRITE_CONFLICT"
+)[] = Object.freeze(
+  [...ROADMAP_VERSION_REFUSALS, "CONTENT_REJECTED" as const, "WRITE_CONFLICT" as const].sort(),
+);
+
+/**
+ * The ledger codes that mean "another writer got there first" (P8-8G R1).
+ *
+ * Exactly two, matched **by name** rather than by catching everything the
+ * append can throw. The distinction is the whole point: a lost race is the
+ * caller's to retry and answers 409, while a ledger that failed for any other
+ * reason is this server's problem and must keep answering 500. A broad catch
+ * would convert every future ledger fault into a cheerful "try again", which
+ * is the most expensive kind of wrong answer — it tells a caller to repeat
+ * something that will never work.
+ */
+const RACE_LOST_CODES: readonly string[] = Object.freeze([
+  "LEDGER_IDEMPOTENCY_CONFLICT",
+  "LEDGER_EVENT_ID_CONFLICT",
+]);
 
 /**
  * Record one roadmap version.
@@ -166,7 +187,27 @@ export function recordRoadmapVersion(input: RoadmapWriteInput): RoadmapWriteOutc
   // held between requests and never reachable from the read path.
   const writable = openLedger(ledger.path);
   try {
-    const appended = writable.appendInitiativeEvent(event);
+    let appended;
+    try {
+      appended = writable.appendInitiativeEvent(event);
+    } catch (error: unknown) {
+      // The race loser hears the truth (R1). Two writers folded the same head
+      // and assembled the same version number; the ledger's uniqueness let
+      // exactly one through. The loser is not broken and its request was not
+      // malformed — it is late, and "late" is a 409 it can act on. A retry
+      // re-folds a head that has moved and gets a clean `HEAD_MISMATCH`.
+      //
+      // Narrow by name: anything else is re-thrown untouched and still
+      // classifies as `INTERNAL`.
+      if (error instanceof LedgerError && RACE_LOST_CODES.includes(error.code)) {
+        return Object.freeze({
+          ok: false as const,
+          reason: "WRITE_CONFLICT" as const,
+          at: "roadmapVersion",
+        });
+      }
+      throw error;
+    }
     const recorded = decision.version;
     return Object.freeze({
       ok: true as const,

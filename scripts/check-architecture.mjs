@@ -1271,51 +1271,37 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **270 packet entries across 129 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **291 packet entries across 131 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
- * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) +
- * 17 (P8-8E-pre) + 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) +
- * 2 (P8-debrief-ruling) + 19 (P8-8F-ui) + 2 (P8-8F-record) = 270 entries,
- * with 141 duplicate
- * entries, folded from a computed duplicate-owner table rather than argued:
- * `scripts/check-architecture.mjs` is named by all twenty-five packets (24);
- * `pnpm-lock.yaml` by the seven packets that moved a dependency edge (6) --
- * P8-8F-ui does not touch it, the dependency edge this cohort's UI packet
- * needed was zero; ten api-contracts, server and cli paths are each named by
- * P8-8A, P8-8D-pre, P8-8D-c2, P8-8E-pre and P8-8F-srv (4 each, 40);
- * `docs/ROADMAP.md` by P8-D, the three P8-T packets, P8-8E2, the
- * debrief-ruling record and this P8-8F record (6); the four runtime modules and their six suites
- * from P8-8E2 are each named twice, by P8-W and P8-8E2 (1 each, 10); the
- * port, the barrel, the port's fixture and the test doubles
- * by P8-2, P8-3 and P8-4 (2 each, 8); three ui paths -- the hash-route module,
- * `components.css` and the hash-route suite -- by P8-8C, P8-8D, P8-8E and now
- * P8-8F-ui (3 each, 9); two ui paths -- the app root and the api client -- by
- * P8-8B, P8-8C, P8-8D, P8-8E and now P8-8F-ui (4 each, 8); the app shell by
- * P8-8B, P8-8C, P8-8D and now P8-8F-ui (3); two ui paths -- the app-shell
- * suite and the views loading-smoke suite -- by P8-8C, P8-8D and now
- * P8-8F-ui (2 each, 4); two ui paths -- the workspace view and its suite --
- * by P8-8D, P8-8E and now P8-8F-ui (2 each, 4); `packages/ui/package.json`
- * and `pnpm-workspace.yaml` by P8-8B, P8-8C, P8-8D and P8-8E, unmoved by
- * P8-8F-ui -- the named non-sites, no new dependency (3 each, 6); the app
- * root's own test file by P8-8B and now P8-8F-ui (1); `packages/server/src/
- * initiatives/` by P8-8A, P8-8D-c2 and P8-8E-pre (2); `packages/server/
- * package.json` by P8-8A, P8-8D-pre and P8-8F-srv (2);
- * `packages/server/test/initiatives/` by four packets (3);
- * `packages/server/mappers/` by P8-8A and P8-8E-pre (1); the server's
- * tsconfig by P8-8A and P8-8F-srv (1); the contracts schema (the P1 one) by
- * P8-1 and P8-8E2 (1); and two ui paths -- `status-tone` and the portfolio
- * view's suite -- by P8-8C and P8-8D (1 each, 2).
- * 24 + 6 + 40 + 6 + 10 + 8 + 9 + 8 + 3 + 4 + 4 + 6 + 1 + 2 + 2 + 3 + 1 + 1 + 1 + 2 = 141.
+ * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
+ * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
+ * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 2 (P8-T-roadmap) =
+ * 291 entries, with 160 duplicate entries.
+ *
+ * Folded from a computed duplicate-owner table and grouped by how many times
+ * a path repeats, which is the form that stays checkable as the phase grows:
+ *
+ *   1 path  × 25 duplicates = 25   (`scripts/check-architecture.mjs`, every packet)
+ *   2 paths ×  6 duplicates = 12   (`docs/ROADMAP.md`, `pnpm-lock.yaml`)
+ *   7 paths ×  5 duplicates = 35   (the api-contracts surface the write and
+ *                                   read packets keep returning to)
+ *   6 paths ×  4 duplicates = 24
+ *   6 paths ×  3 duplicates = 18
+ *  11 paths ×  2 duplicates = 22
+ *  24 paths ×  1 duplicate  = 24
+ *
+ * 25 + 12 + 35 + 24 + 18 + 22 + 24 = 160.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Five packets add entries without adding paths:
  * P8-8D-pre's 22nd, the whole of P8-8D-c2, the whole of P8-T-roadmap, the
- * debrief-ruling record, and this P8-8F record. P8-T2 added three paths; P8-8E-pre three; P8-8E six;
- * P8-8E2 two; P8-8F-srv five; and P8-8F-ui adds **seven** -- the three new
- * views' own source files, their three test files, and the api client's own
- * test file, which no earlier P8 packet had touched (every other path this
- * packet names was already the phase's). This
+ * debrief-ruling record, and the P8-8F record. P8-T2 added three paths;
+ * P8-8E-pre three; P8-8E six; P8-8E2 two; P8-8F-srv five; P8-8F-ui seven; and
+ * P8-8G-a adds **two** — the bearer module and its mirrored suite, the only
+ * genuinely new files in a packet that otherwise hardens surfaces the phase
+ * already owned. Its twenty-first path,
+ * `packages/server/test/initiatives/index.test.ts`, was already the phase's. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -2031,6 +2017,60 @@ const P88F_UI_WRITE_SET = [
 const P88F_RECORD_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
 /**
+ * P8-8G packet 1: the write door, armed.
+ *
+ * Three hardenings that share a theme — the write surface was correct and
+ * unguarded, and each of these closes a way it could tell a caller something
+ * untrue.
+ *
+ * **R1.** A lost race used to surface as 500. Two writers folding the same
+ * head assemble the same version number and the ledger's uniqueness lets one
+ * through; the loser was not broken and its request was not malformed, so it
+ * now hears 409 `WRITE_CONFLICT` and can retry. Narrow **by name**: exactly
+ * the two conflict codes are caught and anything else still classifies
+ * `INTERNAL`, because a broad catch would turn every future ledger fault into
+ * a cheerful "try again".
+ *
+ * **R2.** One ceiling, one authority, one unit. The number lived in two
+ * packages measured two ways — the store weighed UTF-8 bytes, the API schema
+ * counted UTF-16 code units — so a multibyte document could pass the schema
+ * and be refused by the store. The declaration moves to `@acp/contracts` with
+ * the unit law, both packages re-export under their landed names, and the
+ * schema bound becomes a byte refinement using a browser-safe `TextEncoder`
+ * rather than `Buffer`.
+ *
+ * **The bearer.** Armed inside the write registrar rather than in a handler:
+ * structural, so a future write route is guarded by where it is registered and
+ * there is nowhere to forget the check from. Reads stay unguarded by design.
+ * Fail-closed — an unconfigured door answers 403, never proceeds — and the
+ * comparison is hash-then-`timingSafeEqual`, so neither the token nor its
+ * length leaks through timing.
+ */
+const P88G_A_WRITE_SET = [
+  "packages/contracts/src/schemas/index.ts",
+  "packages/contracts/src/index.ts",
+  "packages/contracts/test/schemas/index.test.ts",
+  "packages/api-contracts/src/schemas/index.ts",
+  "packages/api-contracts/src/version/index.ts",
+  "packages/api-contracts/src/index.ts",
+  "packages/api-contracts/test/schemas/index.test.ts",
+  "packages/ledger/src/artifact-store/index.ts",
+  "packages/ledger/test/artifact-store/index.test.ts",
+  "packages/server/src/bearer/index.ts",
+  "packages/server/src/errors/index.ts",
+  "packages/server/src/roadmap-write/index.ts",
+  "packages/server/src/routes/index.ts",
+  "packages/server/src/build-server/index.ts",
+  "packages/server/src/start/index.ts",
+  "packages/server/test/bearer/index.test.ts",
+  "packages/server/test/build-server/index.test.ts",
+  "packages/server/test/roadmap-write/index.test.ts",
+  "packages/server/test/initiatives/index.test.ts",
+  "packages/cli/test/cli/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2311,6 +2351,7 @@ const WRITE_SET = [
   ...P8_DEBRIEF_RULING_WRITE_SET,
   ...P88F_UI_WRITE_SET,
   ...P88F_RECORD_WRITE_SET,
+  ...P88G_A_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

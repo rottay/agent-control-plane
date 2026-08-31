@@ -96,6 +96,7 @@ export {
   OverviewState,
   ProjectionStatusDto,
   ROADMAP_CONTENT_MAX_BYTES,
+  ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
   ACCOUNTS_UNAVAILABLE_REASONS,
   AccountDto,
   AccountStatusDto,

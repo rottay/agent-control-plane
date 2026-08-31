@@ -881,6 +881,27 @@ describe("the served surface matches the frozen route table", () => {
     await app.close();
   });
 
+  it("keeps every 405 set byte-unchanged after the bearer guard (P8-8G)", async () => {
+    // The guard sits inside the write registrar, which also owns the 405 set.
+    // A guard that leaked into the method surface would show up here as a
+    // read route refusing a verb differently, or the write route's own 405
+    // list changing — neither of which is what a credential check is for.
+    const { path } = seedDatabase();
+    const app = buildServer({ ledgerPath: path });
+
+    for (const method of ["PUT", "PATCH", "DELETE"] as const) {
+      const response = await app.inject({
+        method,
+        url: "/api/v1/initiatives/" + randomUUID() + "/roadmap",
+      });
+      // 405 still, and emphatically not 401 or 403: an unallowed method is a
+      // router's answer and never reaches the guard.
+      expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
+    }
+    expect(API_WRITE_ROUTES).toEqual(["initiativeRoadmap"]);
+    await app.close();
+  });
+
   it("keeps every read route's 405 set byte-unchanged after the first write route (C1)", async () => {
     // The one write route mounts its own registrar with POST removed from the
     // 405 list. Every other route must be untouched by that: a registrar

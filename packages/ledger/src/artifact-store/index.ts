@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
+import { ROADMAP_CONTENT_MAX_BYTES } from "@acp/contracts";
+
 /**
  * The content-addressed artifact store.
  *
@@ -85,13 +87,16 @@ export type PublishOutcome = ArtifactPublished | ArtifactRefused;
 export type ReadOutcome = ArtifactRead | ArtifactRefused;
 
 /**
- * The largest artifact this store will hold.
+ * The largest artifact this store will hold, re-exported (P8-8G R2).
  *
- * A roadmap is a document, not a dataset. The ceiling is stated as a named
- * constant so the endpoint that guards on it and the store that enforces it
- * cannot drift to two different numbers.
+ * A roadmap is a document, not a dataset. The number now has a single
+ * declaration in `@acp/contracts` — with the unit law, since this store has
+ * always weighed **bytes** and the API schema used to count code units. The
+ * store's own name is kept so this package's public surface is byte-stable:
+ * `ARTIFACT_MAX_BYTES` is what a store's callers say, and aliasing it here is
+ * cheaper than making every one of them learn a document's name.
  */
-export const ARTIFACT_MAX_BYTES = 1024 * 1024;
+export { ROADMAP_CONTENT_MAX_BYTES as ARTIFACT_MAX_BYTES } from "@acp/contracts";
 
 /** The digest of some content, as the store names it. */
 export function artifactDigest(content: string): string {
@@ -136,7 +141,7 @@ export function publishArtifact(root: string, content: string): PublishOutcome {
   if (rootRefusal !== null) return rootRefusal;
 
   const byteLength = Buffer.byteLength(content, "utf8");
-  if (byteLength > ARTIFACT_MAX_BYTES) return deny("CONTENT_TOO_LARGE", "content");
+  if (byteLength > ROADMAP_CONTENT_MAX_BYTES) return deny("CONTENT_TOO_LARGE", "content");
 
   const digest = artifactDigest(content);
   const { dir, file } = objectPath(root, digest);

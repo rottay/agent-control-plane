@@ -3,6 +3,10 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { classifyFastifyError, sendApiError } from "../errors/index.js";
 import { openLedgerSource } from "../ledger-source/index.js";
 import { registerRoutes } from "../routes/index.js";
+import {
+  ROADMAP_CONTENT_MAX_BYTES,
+  ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
+} from "@acp/api-contracts";
 
 export interface BuildServerOptions {
   /**
@@ -28,6 +32,14 @@ export interface BuildServerOptions {
    * file nobody meant to give it.
    */
   readonly accountsFilePath?: string | undefined;
+  /**
+   * Path to the write bearer token file (P8-8G). Optional, no default and no
+   * environment fallback, exactly like the other two paths.
+   *
+   * Absent is **not** "no authentication" — it is "no write can be
+   * authorized", and every write answers 403. An unconfigured door is shut.
+   */
+  readonly writeBearerPath?: string | undefined;
   readonly logger?: boolean | undefined;
 }
 
@@ -64,6 +76,14 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   // own doing, never this package's route logic.
   const app = Fastify({
     logger: options.logger ?? false,
+    // Derived, never a second number (P8-8G A2). Fastify's default body limit
+    // is exactly 1 MiB — the same figure as the document ceiling — so a
+    // document *at* the ceiling was refused by the transport before the schema
+    // ever saw it, and the plane advertised a limit it could not accept. The
+    // allowance covers the JSON envelope around the document and nothing else:
+    // a document one byte over the ceiling is still refused, by the schema,
+    // which weighs the content itself.
+    bodyLimit: ROADMAP_CONTENT_MAX_BYTES + ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
     frameworkErrors: (error, _request, reply) => {
       const classified = classifyFastifyError(error);
       sendApiError(reply, classified.code, classified.message, classified.detail);
@@ -83,6 +103,6 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     sendApiError(reply, classified.code, classified.message, classified.detail);
   });
 
-  registerRoutes(app, source, options.accountsFilePath);
+  registerRoutes(app, source, options.accountsFilePath, options.writeBearerPath);
   return app;
 }

@@ -46,6 +46,8 @@ import {
   scopedTimeline,
 } from "../initiatives/index.js";
 import { readAccounts } from "../accounts/index.js";
+import { loadBearerGuard } from "../bearer/index.js";
+import type { BearerLoadOutcome } from "../bearer/index.js";
 import { artifactRootFor, recordRoadmapVersion } from "../roadmap-write/index.js";
 import {
   initiativeDetailDto,
@@ -180,14 +182,51 @@ function parseInitiativeIdParam(raw: string): string {
  * registrars therefore differ in exactly one thing: which methods fall through
  * to the 405, and every read route keeps the four-method set unchanged.
  */
+/** One request header, lower-cased by Fastify, or undefined. */
+function headerOf(request: FastifyRequest, name: string): string | undefined {
+  const value = request.headers[name];
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * Register a route that reads on GET and writes on POST.
+ *
+ * **The bearer guard lives here, not in the handler (P8-8G).** Structural
+ * rather than remembered: every write on this plane is registered through this
+ * one function, so a future write route is guarded by where it is registered
+ * and a contributor has nowhere to forget the check from. The GET half is
+ * deliberately *not* guarded — observation is free on this plane, and the
+ * asymmetry is the design rather than an oversight.
+ */
 function registerGetAndPost(
   app: FastifyInstance,
   path: string,
   getHandler: (request: FastifyRequest, reply: FastifyReply) => unknown,
   postHandler: (request: FastifyRequest, reply: FastifyReply) => unknown,
+  bearer: BearerLoadOutcome,
 ): void {
   app.get(path, guarded(getHandler));
-  app.post(path, guarded(postHandler));
+  app.post(
+    path,
+    guarded((request, reply) => {
+      // Fail-closed: no token file configured means no write proceeds, and the
+      // 403 says whose problem it is. A caller cannot fix this with a better
+      // header, so answering 401 would send it round a loop that cannot end.
+      if (!bearer.ok) {
+        throw new ApiRouteError(
+          "WRITE_BEARER_UNCONFIGURED",
+          "this server was started without a write bearer token, so no write can be authorized",
+        );
+      }
+      // Missing and wrong are one answer on purpose: telling them apart would
+      // confirm to an unauthenticated caller that a header it guessed had the
+      // right shape.
+      if (!bearer.guard.accepts(headerOf(request, "authorization"))) {
+        throw new ApiRouteError("AUTH_REQUIRED", "a valid Bearer credential is required to write");
+      }
+      return postHandler(request, reply);
+    }),
+  );
   app.route({
     method: [...OTHER_METHODS_ON_WRITE],
     url: path,
@@ -205,7 +244,14 @@ export function registerRoutes(
   app: FastifyInstance,
   source: LedgerSource,
   accountsFilePath?: string,
+  writeBearerPath?: string,
 ): void {
+  // Loaded once, at registration. A token re-read per request would let a
+  // file edited mid-flight change the answer between two writes of the same
+  // batch; loading here means the process authorizes against the credential
+  // it started with, and a rotation is a restart.
+  const bearer = loadBearerGuard(writeBearerPath);
+
   registerGet(app, API_ROUTES.health, (request) => {
     assertEmptyQuery(queryOf(request));
     return buildHealth(source);
@@ -633,6 +679,7 @@ export function registerRoutes(
         sequence: outcome.sequence,
       });
     },
+    bearer,
   );
 }
 

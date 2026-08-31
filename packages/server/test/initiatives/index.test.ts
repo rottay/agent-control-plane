@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -34,6 +34,26 @@ import { buildServer } from "../../src/build-server/index.js";
  */
 
 const temporaryDirectories: string[] = [];
+
+/**
+ * A write bearer token file (P8-8G A1).
+ *
+ * This suite's subject is the content-read surface, and it seeds that content
+ * through the write route — which is now guarded. The credential is fixture
+ * scaffolding, not the thing under test: no assertion here is about the door.
+ */
+const WRITE_TOKEN = "p8-8g-initiatives-" + "s".repeat(24);
+
+function bearerTokenFile(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "acp-init-bearer-")));
+  temporaryDirectories.push(dir);
+  const path = join(dir, "write.token");
+  writeFileSync(path, WRITE_TOKEN + "\n", "utf8");
+  chmodSync(path, 0o600);
+  return path;
+}
+
+const WRITE_AUTH = { authorization: "Bearer " + WRITE_TOKEN };
 
 function temporaryDatabase(): string {
   const directory = mkdtempSync(join(tmpdir(), "acp-p88a-"));
@@ -540,6 +560,7 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
         restoresVersionId: null,
         recordedBy: COORDINATOR,
       },
+      headers: WRITE_AUTH,
     });
     if (response.statusCode !== 200) throw new Error("write failed: " + String(response.statusCode));
     return RoadmapVersionWriteResponse.parse(response.json()).version;
@@ -556,7 +577,7 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
     ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
     ledger.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const document = "# Roadmap\n\nUnicode survives: café — ✓\n\n- one\n- two\n";
     const written = await write(app, initiativeId, document, null);
 
@@ -582,7 +603,7 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
     ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
     ledger.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const first = await write(app, initiativeId, "# one\n", null);
     await write(app, initiativeId, "# two\n", first.contentDigest);
 
@@ -595,7 +616,7 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
 
   it("404s a version this initiative never recorded", async () => {
     const { path, alpha } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: contentUrl(alpha, 99) });
     expect(response.statusCode).toBe(404);
     expect(ApiError.parse(response.json()).error.code).toBe("NOT_FOUND");
@@ -608,7 +629,7 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
     // disagreement this branch exists for — and the answer is a classified
     // refusal, never a 200 with an empty body.
     const { path, alpha } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: contentUrl(alpha, 1) });
     expect(response.statusCode).toBe(500);
     expect(ApiError.parse(response.json()).error.code).toBe("LEDGER_INTEGRITY");
@@ -617,7 +638,7 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
 
   it("404s an initiative that does not exist, and 400s a malformed selector", async () => {
     const { path, alpha } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
 
     expect((await app.inject({ method: "GET", url: contentUrl(randomUUID(), 1) })).statusCode).toBe(404);
     for (const query of ["", "?version=0", "?version=-1", "?version=abc", "?digest=" + "a".repeat(64)]) {
@@ -643,7 +664,7 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
     ledger.appendInitiativeEvent(makeInitiativeEvent(two, "initiative.registered"));
     ledger.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     await write(app, one, "# first initiative\n", null);
     await write(app, two, "# second initiative\n", null);
 
@@ -694,7 +715,7 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
     );
     ledger.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: contentUrl(initiativeId, 1) });
 
     expect(response.statusCode).toBeGreaterThanOrEqual(400);
@@ -710,7 +731,7 @@ describe("the initiative plane mutates nothing", () => {
     // The portfolio and the detail stay read-only: all four non-GET verbs
     // refuse, exactly as they did before the plane took a write route.
     const { path, alpha } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const readOnlyPaths = ["/api/v1/initiatives", "/api/v1/initiatives/" + alpha];
 
     for (const url of readOnlyPaths) {
@@ -730,7 +751,7 @@ describe("the initiative plane mutates nothing", () => {
     // that changed as a fact rather than deleting it. A test that had simply
     // dropped the roadmap path would have stopped watching it entirely.
     const { path, alpha } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const url = "/api/v1/initiatives/" + alpha + "/roadmap";
 
     for (const method of ["PUT", "PATCH", "DELETE"] as const) {
@@ -754,7 +775,7 @@ describe("the initiative plane mutates nothing", () => {
     const head = before.status();
     before.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     await app.inject({ method: "GET", url: "/api/v1/initiatives" });
     await app.inject({ method: "GET", url: "/api/v1/initiatives/" + alpha });
     await app.inject({ method: "GET", url: "/api/v1/initiatives/" + alpha + "/roadmap" });
@@ -775,7 +796,7 @@ describe("the initiative plane mutates nothing", () => {
 describe("GET /api/v1/initiatives/:id/events — the merged timeline (C2)", () => {
   it("merges both chains and tags every row with the chain it came from", async () => {
     const { path, alpha, taskA, taskB, unscopedTask } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + alpha + "/events" });
 
     expect(response.statusCode).toBe(200);
@@ -824,7 +845,7 @@ describe("GET /api/v1/initiatives/:id/events — the merged timeline (C2)", () =
     );
     ledger.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/events" });
     const body = InitiativeTimelineResponse.parse(response.json());
 
@@ -879,7 +900,7 @@ describe("GET /api/v1/initiatives/:id/events — the merged timeline (C2)", () =
     );
     ledger.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/events" });
     const body = InitiativeTimelineResponse.parse(response.json());
 
@@ -892,7 +913,7 @@ describe("GET /api/v1/initiatives/:id/events — the merged timeline (C2)", () =
 
   it("answers 404 for an initiative the ledger has never seen", async () => {
     const { path } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({
       method: "GET",
       url: "/api/v1/initiatives/" + randomUUID() + "/events",
@@ -903,7 +924,7 @@ describe("GET /api/v1/initiatives/:id/events — the merged timeline (C2)", () =
 
   it("gives a bare initiative an empty timeline rather than an error", async () => {
     const { path, beta } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + beta + "/events" });
     const body = InitiativeTimelineResponse.parse(response.json());
     // Registered, so one initiative row and no task rows: an initiative with
@@ -916,7 +937,7 @@ describe("GET /api/v1/initiatives/:id/events — the merged timeline (C2)", () =
 describe("GET /api/v1/initiatives/:id/agents — the scoped workers (C3)", () => {
   it("counts only what this initiative's tasks carry", async () => {
     const { path, alpha } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + alpha + "/agents" });
 
     expect(response.statusCode).toBe(200);
@@ -964,7 +985,7 @@ describe("GET /api/v1/initiatives/:id/agents — the scoped workers (C3)", () =>
     );
     ledger.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/agents" });
     const body = InitiativeAgentsResponse.parse(response.json());
 
@@ -1008,7 +1029,7 @@ describe("GET /api/v1/initiatives/:id/agents — the scoped workers (C3)", () =>
     );
     ledger.close();
 
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/agents" });
     const body = InitiativeAgentsResponse.parse(response.json());
 
@@ -1018,7 +1039,7 @@ describe("GET /api/v1/initiatives/:id/agents — the scoped workers (C3)", () =>
 
   it("answers 404 for an initiative the ledger has never seen", async () => {
     const { path } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({
       method: "GET",
       url: "/api/v1/initiatives/" + randomUUID() + "/agents",
@@ -1029,7 +1050,7 @@ describe("GET /api/v1/initiatives/:id/agents — the scoped workers (C3)", () =>
 
   it("gives an initiative with no task work an empty agent list", async () => {
     const { path, beta } = seed();
-    const app = buildServer({ ledgerPath: path });
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
     const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + beta + "/agents" });
     const body = InitiativeAgentsResponse.parse(response.json());
     expect(body.count).toBe(0);

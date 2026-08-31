@@ -23,6 +23,8 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  RoadmapVersionWriteRequest,
+  ApiErrorCode,
   ACCOUNTS_UNAVAILABLE_REASONS,
   AccountDto,
   AccountsResponse,
@@ -1687,5 +1689,61 @@ describe("the accounts read (P8-8F)", () => {
   it("is a read", () => {
     expect(isWriteRoute("accounts")).toBe(false);
     expect(API_ROUTES.accounts).toBe("/api/v1/accounts");
+  });
+});
+
+describe("the document bound is a byte bound (P8-8G R2)", () => {
+  function write(content: string): Record<string, unknown> {
+    return {
+      content,
+      expectedHeadDigest: null,
+      kind: "EDIT",
+      restoresVersionId: null,
+      recordedBy: WRITER,
+    };
+  }
+
+  it("admits a document at the ceiling and refuses one byte over", () => {
+    const atCeiling = "é".repeat(ROADMAP_CONTENT_MAX_BYTES / 2);
+    expect(RoadmapVersionWriteRequest.safeParse(write(atCeiling)).success).toBe(true);
+    expect(RoadmapVersionWriteRequest.safeParse(write(atCeiling + "x")).success).toBe(false);
+  });
+
+  it("refuses what a code-unit bound would have admitted", () => {
+    // The regression, stated as arithmetic. `.max()` counts UTF-16 code units,
+    // so this string passed the old bound while weighing twice the ceiling —
+    // and the store, which weighs bytes, would then have refused it. The API
+    // was accepting requests the plane could not honour.
+    const twiceTheBytes = "é".repeat(ROADMAP_CONTENT_MAX_BYTES);
+    expect(twiceTheBytes.length).toBe(ROADMAP_CONTENT_MAX_BYTES);
+    expect(RoadmapVersionWriteRequest.safeParse(write(twiceTheBytes)).success).toBe(false);
+  });
+
+  it("bounds the response's content the same way", () => {
+    const atCeiling = "é".repeat(ROADMAP_CONTENT_MAX_BYTES / 2);
+    const body = {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId: "44444444-4444-4444-8444-444444444444",
+      version: 1,
+      contentDigest: SHA256,
+      kind: "EDIT",
+      content: atCeiling,
+    };
+    expect(RoadmapContentResponse.safeParse(body).success).toBe(true);
+    expect(RoadmapContentResponse.safeParse({ ...body, content: atCeiling + "x" }).success).toBe(false);
+  });
+});
+
+describe("the write door's two authentication codes (P8-8G)", () => {
+  it("names both, and keeps them apart", () => {
+    expect(API_ERROR_CODES).toContain("AUTH_REQUIRED");
+    expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
+    // Two codes because they are two different people's problems: a caller
+    // can fix the first with a better header and can do nothing about the
+    // second.
+    expect(ApiErrorCode.safeParse("AUTH_REQUIRED").success).toBe(true);
+    expect(ApiErrorCode.safeParse("WRITE_BEARER_UNCONFIGURED").success).toBe(true);
+    expect(ApiErrorCode.safeParse("UNAUTHORIZED").success).toBe(false);
   });
 });

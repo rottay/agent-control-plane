@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { ROADMAP_CONTENT_MAX_BYTES } from "@acp/contracts";
+
 import {
   ARTIFACT_MAX_BYTES,
   ARTIFACT_REFUSALS,
@@ -207,5 +209,27 @@ describe("the store's limits and hermeticity", () => {
       readArtifact,
     });
     expect(surface.some((name) => /delete|remove|unlink|purge|prune/i.test(name))).toBe(false);
+  });
+});
+
+describe("the ceiling is re-exported, not redeclared (P8-8G R2)", () => {
+  it("keeps the store's landed name and the contracts package's number", () => {
+    // The public surface is byte-stable: callers still say
+    // `ARTIFACT_MAX_BYTES`, which is what a store's callers call it. Only the
+    // declaration moved.
+    expect(ARTIFACT_MAX_BYTES).toBe(ROADMAP_CONTENT_MAX_BYTES);
+    expect(ARTIFACT_MAX_BYTES).toBe(1024 * 1024);
+  });
+
+  it("weighs bytes, so a multibyte document is measured as the contract says", () => {
+    const store = root();
+    // Exactly at the ceiling in bytes, half of it in code units.
+    const atCeiling = "é".repeat(ARTIFACT_MAX_BYTES / 2);
+    expect(publishArtifact(store, atCeiling).ok).toBe(true);
+
+    const over = publishArtifact(store, atCeiling + "x");
+    expect(over.ok).toBe(false);
+    if (over.ok) throw new Error("expected a refusal");
+    expect(over.reason).toBe("CONTENT_TOO_LARGE");
   });
 });

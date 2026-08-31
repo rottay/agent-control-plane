@@ -18,6 +18,37 @@ import { z } from "zod";
 
 export const CONTRACT_VERSION = "2.1.0" as const;
 
+/**
+ * The largest roadmap document the plane accepts, in **UTF-8 bytes**.
+ *
+ * One declaration, one unit (P8-8G R2). It lived in two packages before this,
+ * with the same number written twice and a comment in each promising they
+ * would not drift — a promise nothing enforced. Worse, the two were measured
+ * differently: the store counted bytes and the API schema counted `String`
+ * length, which is UTF-16 code units. For ASCII those agree, which is why the
+ * gap survived; for any multibyte document they do not, and the surface that
+ * accepted a document the store would refuse was the API.
+ *
+ * **The unit is bytes, and it is the law.** Anything bounding a document
+ * against this constant measures UTF-8 bytes, never characters and never code
+ * units. `utf8ByteLength` below is the one measurement, so a caller, a schema
+ * and a store cannot disagree about what "one megabyte" means.
+ */
+export const ROADMAP_CONTENT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The UTF-8 byte length of a string, browser-safe.
+ *
+ * `TextEncoder` rather than `Buffer`: this package is the one every other
+ * imports, including the browser client, and a `node:` reference here would
+ * make the whole contract surface unloadable in a page. The encoder is a
+ * platform global in both runtimes, which is what makes one measurement
+ * possible at all.
+ */
+export function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
 /** Serialized byte budget for a single Checkpoint. */
 export const CHECKPOINT_MAX_BYTES = 16_384;
 

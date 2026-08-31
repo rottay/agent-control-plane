@@ -20,12 +20,38 @@ import type { FastifyReply } from "fastify";
  * second is worth retrying against a fresh head, and a caller can only know
  * that if the two carry different names.
  */
+/**
+ * The three meanings of 409 on this plane (P8-8G R1).
+ *
+ * `CONTRACT_VERSION_MISMATCH` — the caller and this build disagree about the
+ * contract; retrying changes nothing until one of them moves.
+ *
+ * `WRITE_REFUSED` covers two situations a caller must tell apart, and the
+ * refusal's own name in the body is what tells them:
+ *
+ *   - the decision refused a coherent request (`HEAD_MISMATCH` and its
+ *     siblings) — the caller's view of the head is stale, and re-reading it
+ *     and retrying is the correct response;
+ *   - the request lost a **race** (`WRITE_CONFLICT`) — the request was right
+ *     when it was made and another writer simply arrived first. Retrying is
+ *     also correct here, and the retry will fold the moved head and get a
+ *     clean `HEAD_MISMATCH` if it is now genuinely stale.
+ *
+ * Only the last two are worth distinguishing for retry, and both are
+ * retryable — which is exactly why the third, a build that cannot serve the
+ * caller at all, must not share their status.
+ */
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   BAD_REQUEST: 400,
   NOT_FOUND: 404,
   METHOD_NOT_ALLOWED: 405,
   CONTRACT_VERSION_MISMATCH: 409,
   WRITE_REFUSED: 409,
+  // 401: a credential is required and was not presented, or was wrong.
+  AUTH_REQUIRED: 401,
+  // 403, not 401: no credential would work, because this process holds none.
+  // A 401 invites a retry with better headers; there is no better header.
+  WRITE_BEARER_UNCONFIGURED: 403,
   LEDGER_UNAVAILABLE: 503,
   LEDGER_INTEGRITY: 500,
   INTERNAL: 500,

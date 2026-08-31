@@ -2,6 +2,8 @@ import {
   AccountStatus,
   ConfidenceLevel,
   ControlPlaneEventType,
+  ROADMAP_CONTENT_MAX_BYTES,
+  utf8ByteLength,
   EXCEPTIONAL_STATES,
   INITIATIVE_EVENT_TYPES,
   INITIATIVE_STATUSES,
@@ -205,6 +207,15 @@ export const API_ERROR_CODES = [
   // race against the recorded head need to tell each other apart, and only the
   // second is worth retrying against a fresh head.
   "WRITE_REFUSED",
+  // P8-8G: the write door's two authentication states, kept apart on purpose.
+  // `AUTH_REQUIRED` is a caller problem — no credential, or the wrong one, and
+  // presenting the right one fixes it. `WRITE_BEARER_UNCONFIGURED` is an
+  // operator problem: this process was started without a token file, so no
+  // credential exists that would work and a caller retrying with better
+  // headers is wasting its time. Collapsing them into one 401 would tell an
+  // operator's mistake in a caller's language.
+  "AUTH_REQUIRED",
+  "WRITE_BEARER_UNCONFIGURED",
   "LEDGER_UNAVAILABLE",
   "LEDGER_INTEGRITY",
   "INTERNAL",
@@ -1249,14 +1260,40 @@ export type InitiativeRoadmapResponse = z.infer<typeof InitiativeRoadmapResponse
 // ---------------------------------------------------------------------------
 
 /**
- * The largest roadmap document this API accepts. (N1.)
+ * The largest roadmap document this API accepts, re-exported (P8-8G R2).
  *
- * Named and numbered here so the endpoint that guards on it and the artifact
- * store that enforces it cannot drift to two different numbers — it is the
- * same 1 MiB the store states, restated as a contract term because a caller
- * needs to know the limit before it sends a megabyte.
+ * The number is no longer written here. It has one declaration, in
+ * `@acp/contracts`, together with the unit law that says it counts **UTF-8
+ * bytes** — and the re-export keeps this package's public surface
+ * byte-stable, so nothing that imported the name has to move.
  */
-export const ROADMAP_CONTENT_MAX_BYTES = 1024 * 1024;
+export { ROADMAP_CONTENT_MAX_BYTES } from "@acp/contracts";
+
+/**
+ * What the JSON envelope around a roadmap document is allowed to weigh
+ * (P8-8G A2).
+ *
+ * A write request is not the document alone: it is the document inside a JSON
+ * object, with keys, quoting, escaping and four other fields beside it. A
+ * transport limit set to the document ceiling therefore refuses a document
+ * *at* the ceiling — which is what happened here, because Fastify's default
+ * body limit is exactly 1 MiB and the envelope adds a hundred-odd bytes. The
+ * plane advertised a ceiling it could not accept.
+ *
+ * **The law: the transport limit derives from the one authority, never a
+ * second number.** `buildServer` computes
+ * `ROADMAP_CONTENT_MAX_BYTES + ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES`, so a
+ * change to the ceiling moves the transport with it and the two cannot drift.
+ *
+ * The allowance covers the envelope and nothing else. A document one byte over
+ * the ceiling is still refused — by the schema, which weighs the content
+ * itself. Sizing it at 64 KiB is deliberate slack over the ~120 bytes a
+ * minimal envelope actually costs: the other fields are bounded but not tiny
+ * (`recordedBy` is a worker identity, the digests are 64 hex characters each),
+ * and a transport limit that needed recomputing every time one of them grew
+ * would be a second authority wearing a disguise.
+ */
+export const ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES = 64 * 1024;
 
 /**
  * What a caller sends to record a roadmap version.
@@ -1280,7 +1317,21 @@ export const ROADMAP_CONTENT_MAX_BYTES = 1024 * 1024;
  */
 export const RoadmapVersionWriteRequest = z
   .strictObject({
-    content: z.string().min(1).max(ROADMAP_CONTENT_MAX_BYTES),
+    /**
+     * The document, bounded in **bytes** (P8-8G R2).
+     *
+     * This is the ingress bound, and the one that mattered: `.max()` counts
+     * UTF-16 code units, so a multibyte document could pass the schema and
+     * then be refused by the store, which weighs bytes. The API would have
+     * accepted a request the plane could not honour. One measurement now, on
+     * both surfaces.
+     */
+    content: z
+      .string()
+      .min(1)
+      .refine((value) => utf8ByteLength(value) <= ROADMAP_CONTENT_MAX_BYTES, {
+        message: "content exceeds " + String(ROADMAP_CONTENT_MAX_BYTES) + " UTF-8 bytes",
+      }),
     /** Null only when recording version 1. */
     expectedHeadDigest: Sha256Hex.nullable(),
     kind: RoadmapVersionKindDto,
@@ -1580,8 +1631,20 @@ export const RoadmapContentResponse = z
     version: z.number().int().positive(),
     contentDigest: Sha256Hex,
     kind: RoadmapVersionKindDto,
-    /** The stored bytes, verbatim. Bounded by what the write route admits. */
-    content: z.string().min(1).max(ROADMAP_CONTENT_MAX_BYTES),
+    /**
+     * The stored bytes, verbatim, bounded in **bytes** (P8-8G R2).
+     *
+     * `.max()` on a string counts UTF-16 code units, which for any multibyte
+     * document is a different number from the bytes the store weighs. This
+     * refinement measures what the store measures, so the two surfaces refuse
+     * the same document rather than nearly the same one.
+     */
+    content: z
+      .string()
+      .min(1)
+      .refine((value) => utf8ByteLength(value) <= ROADMAP_CONTENT_MAX_BYTES, {
+        message: "content exceeds " + String(ROADMAP_CONTENT_MAX_BYTES) + " UTF-8 bytes",
+      }),
   })
   .superRefine(attachGuards);
 export type RoadmapContentResponse = z.infer<typeof RoadmapContentResponse>;
