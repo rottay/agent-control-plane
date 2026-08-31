@@ -835,6 +835,33 @@ describe("the served surface matches the frozen route table", () => {
     await app.close();
   });
 
+  it("registers both scoped routes as reads: GET answers, every other verb 405s (P8-8E-pre)", async () => {
+    // Two more reads through `registerGet`. The GET-only law is untouched and
+    // the write surface stays at exactly one route — asserted, not assumed.
+    const { path } = seedDatabase();
+    const app = buildServer({ ledgerPath: path });
+    const initiativeId = randomUUID();
+
+    for (const suffix of ["/events", "/agents"] as const) {
+      const url = "/api/v1/initiatives/" + initiativeId + suffix;
+      for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
+        const response = await app.inject({ method, url });
+        expect({ suffix, method, status: response.statusCode }).toEqual({
+          suffix,
+          method,
+          status: 405,
+        });
+      }
+      // GET reaches a handler: 404 for an invented initiative is the handler's
+      // answer, not the router's.
+      expect({ suffix, status: (await app.inject({ method: "GET", url })).statusCode }).toEqual({
+        suffix,
+        status: 404,
+      });
+    }
+    await app.close();
+  });
+
   it("keeps every read route's 405 set byte-unchanged after the first write route (C1)", async () => {
     // The one write route mounts its own registrar with POST removed from the
     // 405 list. Every other route must be untouched by that: a registrar

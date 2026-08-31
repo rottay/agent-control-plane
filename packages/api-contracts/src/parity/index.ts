@@ -209,6 +209,44 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("items", "LEDGER"),
       bind("count", "LEDGER"),
     ]),
+    /**
+     * The merged timeline (P8-8E-pre, C2).
+     *
+     * `items` binds to `LEDGER` in the strong sense: every field of every entry
+     * is a value one of the two chains recorded, and the merge adds exactly one
+     * thing that neither chain contains — the `stream` tag, which is not a fact
+     * about an event but a statement of which chain it was read from. That is
+     * derivable by any client from the same two queries, which is why it stays
+     * comparable under the parity law rather than becoming an exception.
+     *
+     * `truncated` binds to the fold, not to the ledger: it reports whether this
+     * response stopped at the ceiling. Two clients folding the same ledger with
+     * the same ceiling agree on it, which is all parity asks.
+     */
+    initiativeEvents: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiativeId", "LEDGER"),
+      bind("items", "LEDGER"),
+      bind("count", "LEDGER"),
+      bind("truncated", "LEDGER"),
+    ]),
+    /**
+     * The scoped workers (P8-8E-pre, C3).
+     *
+     * Every field is folded from this initiative's own task events. The global
+     * worker projection is deliberately **not** the source: it would answer the
+     * same question faster and wrongly, because its `lastTaskId` names the last
+     * task anywhere. A binding of `LEDGER` here therefore means "folded from
+     * the scoped events", and two clients folding the same scope agree.
+     */
+    initiativeAgents: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiativeId", "LEDGER"),
+      bind("items", "LEDGER"),
+      bind("count", "LEDGER"),
+    ]),
   });
 
 /** Every route the contract covers, matching the frozen route table exactly. */

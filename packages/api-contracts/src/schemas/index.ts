@@ -1,6 +1,7 @@
 import {
   ControlPlaneEventType,
   EXCEPTIONAL_STATES,
+  INITIATIVE_EVENT_TYPES,
   INITIATIVE_STATUSES,
   LIFECYCLE_STATES,
   ROADMAP_VERSION_KINDS,
@@ -54,6 +55,17 @@ export const TASK_STATE_COUNT = LIFECYCLE_STATES.length + EXCEPTIONAL_STATES.len
 
 /** Ceiling on how many recent timeline items a detail response may inline. */
 export const MAX_DETAIL_TIMELINE_ITEMS = 100;
+
+/**
+ * Ceilings for the scoped initiative reads (P8-8E-pre).
+ *
+ * Bounded like every other page here, and bounded *visibly*: the timeline
+ * response carries a `truncated` flag rather than silently returning a prefix,
+ * because a graph drawn from a truncated timeline and a graph drawn from a
+ * complete one are different graphs, and only one of them is true.
+ */
+export const MAX_SCOPED_TIMELINE_ITEMS = 500;
+export const MAX_SCOPED_AGENTS = 200;
 
 // ---------------------------------------------------------------------------
 // Primitive value shapes
@@ -287,6 +299,20 @@ export const TimelineItem = z
     emittedBy: WorkerIdentityString,
     occurredAt: Timestamp,
     recordedAt: Timestamp,
+    /**
+     * The edge facts (P8-8E-pre, C1).
+     *
+     * The control-plane event has carried these since P0; the DTO surfaces
+     * them verbatim rather than deriving anything from them. That direction is
+     * the whole point: a task graph drawn from `causationId` is drawn from what
+     * the ledger recorded, and a graph that inferred its edges from adjacency
+     * or timing would be asserting a causality nobody wrote down.
+     *
+     * Null is the common case and is not an absence to paper over — most
+     * events cause nothing and answer nothing.
+     */
+    correlationId: Uuid.nullable(),
+    causationId: Uuid.nullable(),
     /** Chain position, so the UI can show tamper evidence rather than assert it. */
     previousSha256: Sha256Hex,
     eventSha256: Sha256Hex,
@@ -1064,6 +1090,9 @@ export type EventsQuery = z.infer<typeof EventsQuery>;
 export const InitiativeStatusDto = z.enum(INITIATIVE_STATUSES);
 export type InitiativeStatusDto = z.infer<typeof InitiativeStatusDto>;
 
+export const InitiativeEventTypeDto = z.enum(INITIATIVE_EVENT_TYPES);
+export type InitiativeEventTypeDto = z.infer<typeof InitiativeEventTypeDto>;
+
 export const RoadmapVersionKindDto = z.enum(ROADMAP_VERSION_KINDS);
 export type RoadmapVersionKindDto = z.infer<typeof RoadmapVersionKindDto>;
 
@@ -1287,6 +1316,119 @@ export type RoadmapVersionWriteResponse = z.infer<typeof RoadmapVersionWriteResp
  * shape of the request is what enforces it, rather than a check that could be
  * forgotten.
  */
+/**
+ * One entry in an initiative's merged timeline (P8-8E-pre, C2).
+ *
+ * Two chains feed this: the initiative stream and the task stream of every
+ * task the initiative owns. They are **tagged**, not blended — a reader must
+ * be able to tell which chain a row came from, because the two carry different
+ * facts (a task row has a task state transition; an initiative row has a status
+ * transition) and because their sequences are drawn from different counters.
+ *
+ * Sequence is therefore *not* comparable across streams, and this DTO does not
+ * pretend otherwise: it carries the row's own sequence for use within its
+ * chain, and the merge orders by `recordedAt`.
+ */
+export const ScopedTimelineEntry = z
+  .discriminatedUnion("stream", [
+    z.strictObject({
+      stream: z.literal("TASK"),
+      sequence: Sequence,
+      eventId: Uuid,
+      taskId: Uuid,
+      type: ControlPlaneEventType,
+      fromState: TaskState.nullable(),
+      toState: TaskState,
+      emittedBy: WorkerIdentityString,
+      occurredAt: Timestamp,
+      recordedAt: Timestamp,
+      correlationId: Uuid.nullable(),
+      causationId: Uuid.nullable(),
+    }),
+    z.strictObject({
+      stream: z.literal("INITIATIVE"),
+      sequence: Sequence,
+      eventId: Uuid,
+      initiativeId: Uuid,
+      type: InitiativeEventTypeDto,
+      fromStatus: InitiativeStatusDto.nullable(),
+      toStatus: InitiativeStatusDto,
+      emittedBy: WorkerIdentityString,
+      occurredAt: Timestamp,
+      recordedAt: Timestamp,
+    }),
+  ])
+  .superRefine(attachGuards);
+export type ScopedTimelineEntry = z.infer<typeof ScopedTimelineEntry>;
+
+/**
+ * An initiative's merged timeline.
+ *
+ * **The tie-break is stated, not implied.** The two chains have two clocks, so
+ * `recordedAt` collisions are expected rather than exotic. The total order is:
+ * `recordedAt` ascending, then stream with `INITIATIVE` before `TASK`, then
+ * `sequence` ascending within the stream. The middle term is the one that
+ * matters and the one an implicit sort would have left to chance: when a task
+ * event and an initiative event share a millisecond, the initiative row is the
+ * context for the task row, so it reads first. Declaring the rule here means
+ * two clients that sort the same page agree, which is what the parity law
+ * requires of every field below.
+ */
+export const InitiativeTimelineResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    items: z.array(ScopedTimelineEntry).max(MAX_SCOPED_TIMELINE_ITEMS),
+    count: Count,
+    /** True when the fold stopped at the ceiling rather than at the end. */
+    truncated: z.boolean(),
+  })
+  .superRefine(attachGuards);
+export type InitiativeTimelineResponse = z.infer<typeof InitiativeTimelineResponse>;
+
+/**
+ * One worker as this initiative saw it (P8-8E-pre, C3).
+ *
+ * Every count and every instant here is **scoped**: folded from the events this
+ * initiative's own tasks carry, never read off the global worker projection.
+ * The distinction is the requirement — a worker's global `lastTaskId` routinely
+ * names a task in a different initiative, and publishing that under a scoped
+ * title would be a lie told by a correct query.
+ */
+export const ScopedAgentSummary = z
+  .strictObject({
+    identity: WorkerIdentityString,
+    provider: z.string().min(1).max(40),
+    model: z.string().min(1).max(60),
+    role: WorkerRole,
+    instance: z.string().min(1).max(40),
+    /** Events this identity emitted on this initiative's tasks. */
+    eventCount: Count,
+    /** Distinct tasks of this initiative the identity touched. */
+    taskCount: Count,
+    firstSeenAt: Timestamp,
+    lastSeenAt: Timestamp,
+    /** The task it acted on most recently *within this initiative*. */
+    currentTaskId: Uuid,
+    /** That action's own type — the last thing it did here. */
+    lastEventType: ControlPlaneEventType,
+  })
+  .superRefine(attachGuards);
+export type ScopedAgentSummary = z.infer<typeof ScopedAgentSummary>;
+
+/** The workers that have acted on one initiative. */
+export const InitiativeAgentsResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    items: z.array(ScopedAgentSummary).max(MAX_SCOPED_AGENTS),
+    count: Count,
+  })
+  .superRefine(attachGuards);
+export type InitiativeAgentsResponse = z.infer<typeof InitiativeAgentsResponse>;
+
 export const RoadmapContentQuery = z.strictObject({
   version: DecimalNonNegativeInteger.pipe(z.number().int().positive().max(1_000_000)),
 });

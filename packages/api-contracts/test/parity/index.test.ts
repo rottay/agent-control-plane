@@ -30,6 +30,8 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  InitiativeAgentsResponse,
+  InitiativeTimelineResponse,
   RoadmapContentResponse,
 } from "../../src/schemas/index.js";
 
@@ -99,6 +101,8 @@ describe("the binding table matches the schemas it claims to bind", () => {
     initiativeById: InitiativeDetailResponse,
     initiativeRoadmap: InitiativeRoadmapResponse,
     initiativeRoadmapContent: RoadmapContentResponse,
+    initiativeEvents: InitiativeTimelineResponse,
+    initiativeAgents: InitiativeAgentsResponse,
   };
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {

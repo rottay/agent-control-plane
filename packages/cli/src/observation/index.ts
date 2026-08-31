@@ -134,6 +134,12 @@ export function toTimelineItem(record: LedgerEventRecord): TimelineItem {
     emittedBy: event.emittedBy,
     occurredAt: event.occurredAt,
     recordedAt: event.recordedAt,
+    // Passed through from the event, verbatim, exactly as the server's mapper
+    // does (P8-8E-pre, C1). The parity law is that three clients fold the same
+    // ledger identically; two of them deriving these and one omitting them
+    // would be the first way that law could quietly become false.
+    correlationId: event.correlationId,
+    causationId: event.causationId,
     previousSha256: record.previousSha256,
     eventSha256: record.eventSha256,
     payloadByteSize: payloadByteSize(event.payload),

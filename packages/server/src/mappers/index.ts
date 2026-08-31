@@ -100,6 +100,11 @@ export function timelineItem(record: LedgerEventRecord): TimelineItem {
     emittedBy: event.emittedBy,
     occurredAt: event.occurredAt,
     recordedAt: event.recordedAt,
+    // Passed through, never derived (C1). One constructor serves the global
+    // events route, task detail and the scoped timeline, so the facts reach
+    // all three from here or from nowhere.
+    correlationId: event.correlationId,
+    causationId: event.causationId,
     previousSha256: record.previousSha256,
     eventSha256: record.eventSha256,
     payloadByteSize: new TextEncoder().encode(payloadJson).byteLength,

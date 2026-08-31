@@ -8,7 +8,9 @@ import {
   ApiError,
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
+  InitiativeAgentsResponse,
   InitiativeRoadmapResponse,
+  InitiativeTimelineResponse,
   LEDGER_CONTRACT_VERSION,
   RoadmapContentResponse,
   RoadmapVersionWriteResponse,
@@ -59,6 +61,10 @@ interface EventInput {
   readonly fromState?: string | null;
   readonly toState?: string;
   readonly payload?: Record<string, unknown>;
+  readonly emittedBy?: string;
+  readonly recordedAt?: string;
+  readonly correlationId?: string | null;
+  readonly causationId?: string | null;
 }
 
 function makeEvent(input: EventInput): Record<string, unknown> {
@@ -75,11 +81,11 @@ function makeEvent(input: EventInput): Record<string, unknown> {
     type: input.type ?? "TASK_DISCOVERED",
     fromState: input.fromState ?? null,
     toState: input.toState ?? "DISCOVERED",
-    emittedBy: IMPLEMENTER,
-    occurredAt: AT,
-    recordedAt: AT,
-    correlationId: null,
-    causationId: null,
+    emittedBy: input.emittedBy ?? IMPLEMENTER,
+    occurredAt: input.recordedAt ?? AT,
+    recordedAt: input.recordedAt ?? AT,
+    correlationId: input.correlationId ?? null,
+    causationId: input.causationId ?? null,
     payload: input.payload ?? {},
   };
 }
@@ -759,5 +765,274 @@ describe("the initiative plane mutates nothing", () => {
     expect(after.status().eventCount).toBe(head.eventCount);
     expect(after.status().initiativeHeadEventSha256).toBe(head.initiativeHeadEventSha256);
     after.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The scoped reads (P8-8E-pre)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/initiatives/:id/events — the merged timeline (C2)", () => {
+  it("merges both chains and tags every row with the chain it came from", async () => {
+    const { path, alpha, taskA, taskB, unscopedTask } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + alpha + "/events" });
+
+    expect(response.statusCode).toBe(200);
+    const body = InitiativeTimelineResponse.parse(response.json());
+    expect(body.initiativeId).toBe(alpha);
+    expect(body.truncated).toBe(false);
+
+    const streams = new Set(body.items.map((item) => item.stream));
+    expect([...streams].sort()).toEqual(["INITIATIVE", "TASK"]);
+
+    // Scoped both ways: alpha's own tasks are here, and the task belonging to
+    // no initiative is not. A global page filtered by guesswork would have it.
+    const taskIds = new Set(
+      body.items.flatMap((item) => (item.stream === "TASK" ? [item.taskId] : [])),
+    );
+    expect(taskIds.has(taskA)).toBe(true);
+    expect(taskIds.has(taskB)).toBe(true);
+    expect(taskIds.has(unscopedTask)).toBe(false);
+
+    // Every initiative row belongs to this initiative, by construction.
+    for (const item of body.items) {
+      if (item.stream === "INITIATIVE") expect(item.initiativeId).toBe(alpha);
+    }
+    expect(body.count).toBe(body.items.length);
+  });
+
+  it("surfaces the edge facts verbatim on task rows (C1)", async () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    const taskId = randomUUID();
+    const cause = randomUUID();
+    const correlation = randomUUID();
+    ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
+    ledger.append(makeEvent({ taskId, transitionId: "discover", payload: { initiativeId } }));
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "caused",
+        type: "TASK_CLASSIFIED",
+        fromState: "DISCOVERED",
+        toState: "DT_CLASSIFIED",
+        causationId: cause,
+        correlationId: correlation,
+      }),
+    );
+    ledger.close();
+
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/events" });
+    const body = InitiativeTimelineResponse.parse(response.json());
+
+    const caused = body.items.find(
+      (item) => item.stream === "TASK" && item.type === "TASK_CLASSIFIED",
+    );
+    expect(caused?.stream).toBe("TASK");
+    if (caused?.stream !== "TASK") throw new Error("expected a task row");
+    // Verbatim: the values the ledger recorded, not values derived from
+    // adjacency. A graph drawn from these is drawn from what was written down.
+    expect(caused.causationId).toBe(cause);
+    expect(caused.correlationId).toBe(correlation);
+
+    const discovered = body.items.find(
+      (item) => item.stream === "TASK" && item.type === "TASK_DISCOVERED",
+    );
+    if (discovered?.stream !== "TASK") throw new Error("expected a task row");
+    // Null is the common case and is carried as null, not omitted.
+    expect(discovered.causationId).toBeNull();
+    expect(discovered.correlationId).toBeNull();
+  });
+
+  it("orders by recordedAt, and breaks a tie with INITIATIVE before TASK", async () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    const taskId = randomUUID();
+    const SAME = "2026-08-30T12:00:00.000Z";
+    const LATER = "2026-08-30T12:00:01.000Z";
+
+    // A task event and an initiative event sharing one millisecond: the tie
+    // the two clocks make routine, and the case an implicit sort leaves to
+    // chance.
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent(initiativeId, "initiative.registered", {
+        occurredAt: SAME,
+        recordedAt: SAME,
+      }),
+    );
+    ledger.append(
+      makeEvent({ taskId, transitionId: "discover", payload: { initiativeId }, recordedAt: SAME }),
+    );
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "later",
+        type: "TASK_CLASSIFIED",
+        fromState: "DISCOVERED",
+        toState: "DT_CLASSIFIED",
+        recordedAt: LATER,
+      }),
+    );
+    ledger.close();
+
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/events" });
+    const body = InitiativeTimelineResponse.parse(response.json());
+
+    expect(body.items.map((item) => item.stream + ":" + item.recordedAt)).toEqual([
+      "INITIATIVE:" + SAME,
+      "TASK:" + SAME,
+      "TASK:" + LATER,
+    ]);
+  });
+
+  it("answers 404 for an initiative the ledger has never seen", async () => {
+    const { path } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/initiatives/" + randomUUID() + "/events",
+    });
+    expect(response.statusCode).toBe(404);
+    expect(ApiError.parse(response.json()).error.code).toBe("NOT_FOUND");
+  });
+
+  it("gives a bare initiative an empty timeline rather than an error", async () => {
+    const { path, beta } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + beta + "/events" });
+    const body = InitiativeTimelineResponse.parse(response.json());
+    // Registered, so one initiative row and no task rows: an initiative with
+    // no work is a real state, not an absence.
+    expect(body.items.every((item) => item.stream === "INITIATIVE")).toBe(true);
+    expect(body.truncated).toBe(false);
+  });
+});
+
+describe("GET /api/v1/initiatives/:id/agents — the scoped workers (C3)", () => {
+  it("counts only what this initiative's tasks carry", async () => {
+    const { path, alpha } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + alpha + "/agents" });
+
+    expect(response.statusCode).toBe(200);
+    const body = InitiativeAgentsResponse.parse(response.json());
+    expect(body.initiativeId).toBe(alpha);
+    expect(body.count).toBe(1);
+
+    const agent = body.items[0];
+    if (agent === undefined) throw new Error("expected one agent");
+    expect(agent.identity).toBe(IMPLEMENTER);
+    // alpha has two tasks and two events each; the unscoped task's two events
+    // belong to no initiative and must not be counted here.
+    expect(agent.taskCount).toBe(2);
+    expect(agent.eventCount).toBe(4);
+  });
+
+  it("reports the task it acted on last *here*, not its last task anywhere", async () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    const other = randomUUID();
+    const scopedTask = randomUUID();
+    const elsewhere = randomUUID();
+
+    ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
+    ledger.appendInitiativeEvent(makeInitiativeEvent(other, "initiative.registered"));
+    ledger.append(
+      makeEvent({
+        taskId: scopedTask,
+        transitionId: "discover",
+        payload: { initiativeId },
+        recordedAt: "2026-08-30T12:00:00.000Z",
+      }),
+    );
+    // The same worker, later, on a different initiative's task. The global
+    // worker projection's `lastTaskId` is now this one — which is exactly the
+    // value a scoped surface must not publish.
+    ledger.append(
+      makeEvent({
+        taskId: elsewhere,
+        transitionId: "discover",
+        payload: { initiativeId: other },
+        recordedAt: "2026-08-30T18:00:00.000Z",
+      }),
+    );
+    ledger.close();
+
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/agents" });
+    const body = InitiativeAgentsResponse.parse(response.json());
+
+    const agent = body.items[0];
+    if (agent === undefined) throw new Error("expected one agent");
+    expect(agent.currentTaskId).toBe(scopedTask);
+    expect(agent.currentTaskId).not.toBe(elsewhere);
+    expect(agent.taskCount).toBe(1);
+    expect(agent.eventCount).toBe(1);
+    expect(agent.lastSeenAt).toBe("2026-08-30T12:00:00.000Z");
+  });
+
+  it("orders by scoped last activity, newest first, with a stated tie-break", async () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    const taskId = randomUUID();
+    const early = "anthropic/claude-sonnet-5/implementer/01";
+    const late = "anthropic/claude-opus-5/implementer/02";
+
+    ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "discover",
+        payload: { initiativeId },
+        emittedBy: early,
+        recordedAt: "2026-08-30T12:00:00.000Z",
+      }),
+    );
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "classify",
+        type: "TASK_CLASSIFIED",
+        fromState: "DISCOVERED",
+        toState: "DT_CLASSIFIED",
+        emittedBy: late,
+        recordedAt: "2026-08-30T13:00:00.000Z",
+      }),
+    );
+    ledger.close();
+
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/agents" });
+    const body = InitiativeAgentsResponse.parse(response.json());
+
+    expect(body.items.map((item) => item.identity)).toEqual([late, early]);
+    expect(body.items[0]?.lastEventType).toBe("TASK_CLASSIFIED");
+  });
+
+  it("answers 404 for an initiative the ledger has never seen", async () => {
+    const { path } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/initiatives/" + randomUUID() + "/agents",
+    });
+    expect(response.statusCode).toBe(404);
+    expect(ApiError.parse(response.json()).error.code).toBe("NOT_FOUND");
+  });
+
+  it("gives an initiative with no task work an empty agent list", async () => {
+    const { path, beta } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + beta + "/agents" });
+    const body = InitiativeAgentsResponse.parse(response.json());
+    expect(body.count).toBe(0);
+    expect(body.items).toEqual([]);
   });
 });

@@ -23,12 +23,18 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  InitiativeAgentsResponse,
   InitiativeSummary,
+  InitiativeTimelineResponse,
+  MAX_SCOPED_AGENTS,
+  MAX_SCOPED_TIMELINE_ITEMS,
   ROADMAP_CONTENT_MAX_BYTES,
   RoadmapContentQuery,
   RoadmapContentResponse,
   RoadmapVersionDto,
   RollupSummary,
+  initiativeAgentsPath,
+  initiativeEventsPath,
   initiativePath,
   initiativeRoadmapContentPath,
   initiativeRoadmapPath,
@@ -84,6 +90,8 @@ const TIMELINE_ITEM = {
   emittedBy: WRITER,
   occurredAt: AT,
   recordedAt: AT,
+  correlationId: null,
+  causationId: null,
   previousSha256: OTHER_SHA256,
   eventSha256: SHA256,
   payloadByteSize: 128,
@@ -1417,5 +1425,151 @@ describe("the roadmap content read", () => {
     expect(isWriteRoute("initiativeRoadmap")).toBe(true);
     expect(isWriteRoute("initiativeRoadmapContent")).toBe(false);
     expect(API_WRITE_ROUTES).not.toContain("initiativeRoadmapContent");
+  });
+});
+
+describe("the scoped initiative reads (P8-8E-pre)", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const OTHER_EVENT = "55555555-5555-4555-8555-555555555555";
+
+  const taskRow = {
+    stream: "TASK",
+    sequence: 3,
+    eventId: EVENT_ID,
+    taskId: TASK_ID,
+    type: "RUN_STARTED",
+    fromState: "READY",
+    toState: "RUNNING",
+    emittedBy: WRITER,
+    occurredAt: AT,
+    recordedAt: AT,
+    correlationId: null,
+    causationId: null,
+  };
+
+  const initiativeRow = {
+    stream: "INITIATIVE",
+    sequence: 1,
+    eventId: OTHER_EVENT,
+    initiativeId: INITIATIVE,
+    type: "INITIATIVE_REGISTERED",
+    fromStatus: null,
+    toStatus: "ACTIVE",
+    emittedBy: WRITER,
+    occurredAt: AT,
+    recordedAt: AT,
+  };
+
+  function timeline(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId: INITIATIVE,
+      items: [initiativeRow, taskRow],
+      count: 2,
+      truncated: false,
+      ...overrides,
+    };
+  }
+
+  it("surfaces the edge facts on the base event DTO (C1)", () => {
+    // The facts the graph's edges are drawn from. Nullable because most events
+    // cause nothing, and carried rather than omitted so a reader can tell
+    // "no cause recorded" from "this build does not report causes".
+    expect(TimelineItem.parse(TIMELINE_ITEM).causationId).toBeNull();
+    expect(TimelineItem.parse({ ...TIMELINE_ITEM, causationId: EVENT_ID }).causationId).toBe(EVENT_ID);
+    expect(TimelineItem.safeParse({ ...TIMELINE_ITEM, causationId: "nope" }).success).toBe(false);
+    // Absent is not the same as null, and strictness says so.
+    const withoutEdges: Record<string, unknown> = { ...TIMELINE_ITEM };
+    delete withoutEdges["causationId"];
+    expect(TimelineItem.safeParse(withoutEdges).success).toBe(false);
+  });
+
+  it("tags each timeline row with its stream, and keeps the two shapes apart", () => {
+    expect(InitiativeTimelineResponse.safeParse(timeline()).success).toBe(true);
+    // A task row carrying an initiative row's field, and the reverse: the
+    // discriminated union refuses both, which is what makes the tag load-bearing
+    // rather than decorative.
+    expect(
+      InitiativeTimelineResponse.safeParse(
+        timeline({ items: [{ ...taskRow, toStatus: "ACTIVE" }], count: 1 }),
+      ).success,
+    ).toBe(false);
+    expect(
+      InitiativeTimelineResponse.safeParse(
+        timeline({ items: [{ ...initiativeRow, causationId: null }], count: 1 }),
+      ).success,
+    ).toBe(false);
+    expect(
+      InitiativeTimelineResponse.safeParse(
+        timeline({ items: [{ ...taskRow, stream: "BOTH" }], count: 1 }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("bounds the timeline and makes truncation a stated fact", () => {
+    const many = Array.from({ length: MAX_SCOPED_TIMELINE_ITEMS }, () => taskRow);
+    expect(
+      InitiativeTimelineResponse.safeParse(timeline({ items: many, count: many.length })).success,
+    ).toBe(true);
+    expect(
+      InitiativeTimelineResponse.safeParse(
+        timeline({ items: [...many, taskRow], count: many.length + 1 }),
+      ).success,
+    ).toBe(false);
+    // `truncated` is required: a reader must never have to infer from a full
+    // page whether the fold stopped early.
+    const withoutFlag: Record<string, unknown> = timeline();
+    delete withoutFlag["truncated"];
+    expect(InitiativeTimelineResponse.safeParse(withoutFlag).success).toBe(false);
+  });
+
+  it("shapes a scoped agent row and refuses credential material in it", () => {
+    const agents = {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId: INITIATIVE,
+      items: [
+        {
+          identity: WRITER,
+          provider: "anthropic",
+          model: "claude-opus-5",
+          role: "implementer",
+          instance: "01",
+          eventCount: 4,
+          taskCount: 2,
+          firstSeenAt: AT,
+          lastSeenAt: LATER,
+          currentTaskId: TASK_ID,
+          lastEventType: "RUN_STARTED",
+        },
+      ],
+      count: 1,
+    };
+    expect(InitiativeAgentsResponse.safeParse(agents).success).toBe(true);
+    expect(InitiativeAgentsResponse.safeParse({ ...agents, extra: 1 }).success).toBe(false);
+    // The guards run here too: an agent row is a projection of free-ish text
+    // (provider, model) heading for a browser.
+    expect(
+      InitiativeAgentsResponse.safeParse({
+        ...agents,
+        items: [{ ...agents.items[0], model: "sk-ant-api03-" + "A".repeat(80) }],
+      }).success,
+    ).toBe(false);
+    const tooMany = Array.from({ length: MAX_SCOPED_AGENTS + 1 }, () => agents.items[0]);
+    expect(InitiativeAgentsResponse.safeParse({ ...agents, items: tooMany, count: tooMany.length }).success).toBe(false);
+  });
+
+  it("builds both scoped paths under the versioned prefix, validating first", () => {
+    expect(initiativeEventsPath(INITIATIVE)).toBe(API_ROUTES.initiatives + "/" + INITIATIVE + "/events");
+    expect(initiativeAgentsPath(INITIATIVE)).toBe(API_ROUTES.initiatives + "/" + INITIATIVE + "/agents");
+    expect(() => initiativeEventsPath("../../etc/passwd")).toThrow();
+    expect(() => initiativeAgentsPath("../../etc/passwd")).toThrow();
+  });
+
+  it("keeps both scoped routes reads", () => {
+    expect(isWriteRoute("initiativeRoadmap")).toBe(true);
+    expect(isWriteRoute("initiativeEvents")).toBe(false);
+    expect(isWriteRoute("initiativeAgents")).toBe(false);
   });
 });

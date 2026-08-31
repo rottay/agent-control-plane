@@ -1271,36 +1271,32 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **179 packet entries across 106 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **196 packet entries across 109 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
- * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) =
- * 179 entries, with 73 duplicate entries, folded here rather than argued:
- * `scripts/check-architecture.mjs` is named by all eighteen packets (17);
- * eleven api-contracts, server and cli paths are each named by P8-8A,
- * P8-8D-pre and P8-8D-c2 (2 each, 22); five of P8-8B's paths are named again
- * by P8-8C and once more by P8-8D -- `packages/ui/package.json`,
- * `pnpm-workspace.yaml`, `packages/ui/src/app/index.tsx`,
- * `packages/ui/src/components/app-shell/index.tsx` and
- * `packages/ui/src/api/client/index.ts` (2 each, 10); seven further ui paths
- * are shared by P8-8C and P8-8D alone -- the hash route, the status tone, the
- * component stylesheet and four suites (1 each, 7); the port, the barrel, the
- * port's fixture and the test doubles are each named by P8-2, P8-3 and P8-4
- * (2 each, 8); `pnpm-lock.yaml` is named by the five packets that moved a
- * dependency edge, P8-W, P8-8A, P8-8B, P8-8C and P8-8D (4);
+ * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) +
+ * 17 (P8-8E-pre) = 196 entries, with 87 duplicate entries, folded from a
+ * computed duplicate-owner table rather than argued:
+ * `scripts/check-architecture.mjs` is named by all nineteen packets (18);
+ * eleven api-contracts, server and cli paths are now each named by P8-8A,
+ * P8-8D-pre, P8-8D-c2 and P8-8E-pre (3 each, 33); five of P8-8B's paths are
+ * repeated by P8-8C and again by P8-8D (2 each, 10); seven further ui paths are
+ * shared by P8-8C and P8-8D alone (1 each, 7); the port, the barrel, the port's
+ * fixture and the test doubles are each named by P8-2, P8-3 and P8-4 (2 each,
+ * 8); `pnpm-lock.yaml` by the five packets that moved a dependency edge (4);
  * `docs/ROADMAP.md` by P8-D and the three P8-T packets (3);
- * `packages/server/src/initiatives/index.ts` by P8-8A and P8-8D-c2 (1); and
+ * `packages/server/src/initiatives/index.ts` by P8-8A, P8-8D-c2 and P8-8E-pre
+ * (2); `packages/server/src/mappers/index.ts` by P8-8A and P8-8E-pre (1); and
  * `packages/server/package.json` by P8-8A and P8-8D-pre (1).
- * 17 + 22 + 10 + 7 + 8 + 4 + 3 + 1 + 1 = 73.
+ * 18 + 33 + 10 + 7 + 8 + 4 + 3 + 2 + 1 + 1 = 87.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Three packets add entries without adding paths:
- * P8-8D-pre's 22nd (P8-8A created that suite), the whole of P8-8D-c2, and the
- * whole of P8-T-roadmap. P8-T2 adds five entries and **three** paths -- the
- * ADR corpus's index, its template and record 0014, none of which existed
- * before -- so it is the first P8-T packet to move the distinct count. A
- * packet that only extends surfaces the phase already owns moves the entry
- * count and leaves the path count alone. This
+ * P8-8D-pre's 22nd, the whole of P8-8D-c2, and the whole of P8-T-roadmap.
+ * P8-T2 added three paths (the ADR corpus's index, template and record 0014);
+ * P8-8E-pre adds one — `packages/cli/src/observation/index.ts`, the CLI's own
+ * timeline constructor, which no earlier P8 packet had touched. Its other
+ * sixteen paths the phase already owned. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1794,6 +1790,43 @@ const P8T2_WRITE_SET = [
 ];
 
 /**
+ * P8-8E-pre: the scoped edges/timeline/agents read surface.
+ *
+ * The graph/timeline/agents cohort's server prerequisite — three cores the
+ * cohort cannot derive for itself. The edge facts (`causationId`,
+ * `correlationId`) are surfaced rather than invented; the merged timeline tags
+ * each row with the chain it came from and states its tie-break; the scoped
+ * workers are folded from this initiative's own task events rather than read
+ * off the global projection, which would answer faster and wrongly.
+ *
+ * Seventeen paths, not thirteen. The brief declared thirteen; adding two required
+ * fields to `TimelineItem` broke its only constructor and two UI fixtures, all
+ * outside the set, and the DT approved those three after the STOP. The lesson
+ * is recorded where it will be read again: a `.parse()` on an object literal is
+ * invisible to `tsc`, so a type-driven probe under-reports the blast radius of
+ * a required DTO field. The full suite is the probe that does not.
+ */
+const P88E_PRE_WRITE_SET = [
+  "packages/api-contracts/src/routes/index.ts",
+  "packages/api-contracts/src/schemas/index.ts",
+  "packages/api-contracts/src/parity/index.ts",
+  "packages/api-contracts/src/version/index.ts",
+  "packages/api-contracts/src/index.ts",
+  "packages/api-contracts/test/schemas/index.test.ts",
+  "packages/api-contracts/test/parity/index.test.ts",
+  "packages/server/src/routes/index.ts",
+  "packages/server/src/initiatives/index.ts",
+  "packages/server/src/mappers/index.ts",
+  "packages/server/test/build-server/index.test.ts",
+  "packages/server/test/initiatives/index.test.ts",
+  "packages/ui/test/components/timeline-list/index.test.tsx",
+  "packages/ui/test/format/chain/index.test.ts",
+  "packages/cli/src/observation/index.ts",
+  "packages/cli/test/cli/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2067,6 +2100,7 @@ const WRITE_SET = [
   ...P88D_WRITE_SET,
   ...P8T_ROADMAP_WRITE_SET,
   ...P8T2_WRITE_SET,
+  ...P88E_PRE_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

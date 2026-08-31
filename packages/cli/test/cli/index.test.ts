@@ -287,11 +287,12 @@ describe("usage", () => {
     const result = invoke(["--version", "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_OK);
     expect(json(result)).toEqual({
-      // Moved 0.1.0 → 0.2.0 by P8-8A's additive initiative routes. Asserted as
+      // Moved 0.1.0 → 0.2.0 by P8-8A's additive initiative routes, and on to
+      // 0.5.0 as P8-8D and P8-8E-pre added routes. Asserted as
       // a literal on purpose: the CLI's job here is to report the number a
       // reader can pin against, and comparing it to the constant it prints
       // would assert only that the CLI can echo itself.
-      apiContractVersion: "0.4.0",
+      apiContractVersion: "0.5.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });

@@ -20,6 +20,8 @@ function item(overrides: Partial<TimelineItem> & Pick<TimelineItem, "sequence" |
     emittedBy: "claude/opus/implementer/01",
     occurredAt: "2026-01-01T00:00:00.000Z",
     recordedAt: "2026-01-01T00:00:00.100Z",
+    correlationId: null,
+    causationId: null,
     payloadByteSize: 0,
     payloadKeys: [],
     ...overrides,

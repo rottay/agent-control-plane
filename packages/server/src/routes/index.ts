@@ -7,6 +7,10 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  InitiativeAgentsResponse,
+  InitiativeTimelineResponse,
+  MAX_SCOPED_AGENTS,
+  MAX_SCOPED_TIMELINE_ITEMS,
   RoadmapContentQuery,
   RoadmapContentResponse,
   RoadmapVersionWriteRequest,
@@ -32,7 +36,14 @@ import { randomUUID } from "node:crypto";
 import { countTasks, countWorkers, recentEventsForTask, recentEventsForWorker } from "../aggregates/index.js";
 import { ApiRouteError, classifyUnexpectedError, sendApiError } from "../errors/index.js";
 import type { LedgerSource } from "../ledger-source/index.js";
-import { initiativeDetail, portfolio, roadmapContent, roadmapHistory } from "../initiatives/index.js";
+import {
+  initiativeDetail,
+  portfolio,
+  roadmapContent,
+  roadmapHistory,
+  scopedAgents,
+  scopedTimeline,
+} from "../initiatives/index.js";
 import { artifactRootFor, recordRoadmapVersion } from "../roadmap-write/index.js";
 import {
   initiativeDetailDto,
@@ -389,6 +400,99 @@ export function registerRoutes(app: FastifyInstance, source: LedgerSource): void
       contentDigest: outcome.version.contentDigest,
       kind: outcome.version.kind,
       content: outcome.content,
+    });
+  });
+
+  // The merged timeline (C2). A read, through `registerGet`.
+  registerGet(app, API_ROUTES.initiativeEvents, (request) => {
+    assertEmptyQuery(queryOf(request));
+    const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+    const { ledger } = requireOpen(source);
+
+    const model = scopedTimeline(ledger, initiativeId, MAX_SCOPED_TIMELINE_ITEMS);
+    if (model === null) {
+      throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+    }
+
+    return InitiativeTimelineResponse.parse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId,
+      items: model.rows.map((row) =>
+        row.stream === "TASK"
+          ? {
+              stream: "TASK",
+              sequence: row.record.sequence,
+              eventId: row.record.eventId,
+              taskId: row.record.event.taskId,
+              type: row.record.event.type,
+              fromState: row.record.event.fromState,
+              toState: row.record.event.toState,
+              emittedBy: row.record.event.emittedBy,
+              occurredAt: row.record.event.occurredAt,
+              recordedAt: row.record.event.recordedAt,
+              correlationId: row.record.event.correlationId,
+              causationId: row.record.event.causationId,
+            }
+          : {
+              stream: "INITIATIVE",
+              sequence: row.record.sequence,
+              eventId: row.record.eventId,
+              initiativeId: row.record.event.initiativeId,
+              type: row.record.event.type,
+              fromStatus: row.record.event.fromStatus,
+              toStatus: row.record.event.toStatus,
+              emittedBy: row.record.event.emittedBy,
+              occurredAt: row.record.event.occurredAt,
+              recordedAt: row.record.event.recordedAt,
+            },
+      ),
+      count: model.rows.length,
+      truncated: model.truncated,
+    });
+  });
+
+  // The scoped workers (C3). A read, through `registerGet`.
+  registerGet(app, API_ROUTES.initiativeAgents, (request) => {
+    assertEmptyQuery(queryOf(request));
+    const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+    const { ledger } = requireOpen(source);
+
+    const rows = scopedAgents(ledger, initiativeId, MAX_SCOPED_AGENTS);
+    if (rows === null) {
+      throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+    }
+
+    return InitiativeAgentsResponse.parse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId,
+      // The identity's parts come from the projection the ledger already keeps;
+      // every count and instant beside them is the scoped fold's own.
+      items: rows.map((row) => {
+        const worker = ledger.getWorker(row.identity);
+        if (worker === null) {
+          throw new ApiRouteError(
+            "LEDGER_INTEGRITY",
+            "an identity that emitted a recorded event is absent from the worker projection",
+            row.identity,
+          );
+        }
+        return {
+          identity: row.identity,
+          provider: worker.provider,
+          model: worker.model,
+          role: worker.role,
+          instance: worker.instance,
+          eventCount: row.eventCount,
+          taskCount: row.taskCount,
+          firstSeenAt: row.firstSeenAt,
+          lastSeenAt: row.lastSeenAt,
+          currentTaskId: row.currentTaskId,
+          lastEventType: row.lastEventType,
+        };
+      }),
+      count: rows.length,
     });
   });
 

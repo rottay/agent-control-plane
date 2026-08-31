@@ -42,6 +42,10 @@ export const API_ROUTES = Object.freeze({
   // versioned prefix, selected by `?version=` rather than by digest — see the
   // schema for why the version is the safer selector.
   initiativeRoadmapContent: "/api/v1/initiatives/:initiativeId/roadmap/content",
+  // P8-8E-pre: the scoped reads the graph/timeline/agents cohort needs. Both
+  // are reads under the same versioned prefix; the GET-only law is untouched.
+  initiativeEvents: "/api/v1/initiatives/:initiativeId/events",
+  initiativeAgents: "/api/v1/initiatives/:initiativeId/agents",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -134,6 +138,16 @@ export function initiativePath(initiativeId: string): string {
 /** Build the roadmap-history path for a single initiative. */
 export function initiativeRoadmapPath(initiativeId: string): string {
   return initiativePath(initiativeId) + "/roadmap";
+}
+
+/** Build the merged-timeline path for a single initiative. */
+export function initiativeEventsPath(initiativeId: string): string {
+  return initiativePath(initiativeId) + "/events";
+}
+
+/** Build the scoped-workers path for a single initiative. */
+export function initiativeAgentsPath(initiativeId: string): string {
+  return initiativePath(initiativeId) + "/agents";
 }
 
 /** Build the content path for a single initiative's roadmap. */

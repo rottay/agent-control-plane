@@ -20,6 +20,8 @@ const ITEMS: readonly TimelineItem[] = [
     emittedBy: "claude/opus/coordinator/01",
     occurredAt: "2026-01-01T00:00:00.000Z",
     recordedAt: "2026-01-01T00:00:00.050Z",
+    correlationId: null,
+    causationId: null,
     previousSha256: SHA_A,
     eventSha256: SHA_B,
     payloadByteSize: 12,
