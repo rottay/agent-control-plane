@@ -717,6 +717,23 @@ objetivos de property de R2 aterrizan en G9: el round-trip de la gramática
 de rutas, canonical-json, la derivación de digest/path del artifact store y
 los invariantes de `decideRoadmapVersion`.
 
+#### Ruling del owner (2026-08-31): debrief final acotado y P9 sin prioridad actual
+
+Antes de la certificación P8-E y de cualquier publicación open-source o
+afirmación de readiness, se programa **un único debrief final acotado**:
+Kimi K3 como DT, Fable como auditor estricto read-only y Codex como
+consultor independiente conciso. El debrief certifica: topología
+declarativa del repositorio; estructura de carpetas/index y tests espejo;
+fronteras público/interno; completitud y exactitud de la documentación
+OSS; onboarding de contribuidores; modelo de seguridad/amenazas; higiene
+de licencia y release; tests y evidencia; y ausencia de paths obsoletos o
+duplicados. Un debrief, una adjudicación, sin bucle recursivo de
+auditoría.
+
+P9 queda deliberadamente diferida: sin prioridad ni ETA actuales, sin
+esfuerzo de diseño o implementación ahora, y siempre tras autorización
+separada y explícita del owner.
+
 ### P9 — Cutover explícito y reversible
 
 Owner: decisión exclusiva del owner. DT: Kimi. Integrator: Opus. Auditor: Fable.
@@ -729,6 +746,9 @@ Checkpoint independiente: Codex.
 - mantener tmux disponible como rollback hasta completar el período de aceptación;
 - ante cualquier falsa evidencia, pérdida de checkpoint, write fuera de scope o
   fallo de continuidad, volver a la operatoria anterior sin limpiar worktrees.
+- P9 está deliberadamente diferida y sin prioridad ni ETA actuales (ruling
+  del owner, 2026-08-31): ningún esfuerzo de diseño o implementación hasta
+  nueva autorización explícita del owner.
 
 ## Criterio de paralelización
 

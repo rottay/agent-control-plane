@@ -1271,35 +1271,33 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **247 packet entries across 122 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **249 packet entries across 122 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) +
- * 17 (P8-8E-pre) + 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) = 247 entries,
- * with 125 duplicate entries, folded from a computed duplicate-owner table
- * rather than argued:
- * `scripts/check-architecture.mjs` is named by all twenty-two packets (21);
+ * 17 (P8-8E-pre) + 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) +
+ * 2 (P8-debrief-ruling) = 249 entries, with 127 duplicate entries, folded
+ * from a computed duplicate-owner table rather than argued:
+ * `scripts/check-architecture.mjs` is named by all twenty-three packets (22);
  * `pnpm-lock.yaml` by the seven packets that moved a dependency edge (6);
  * ten api-contracts, server and cli paths are each named by P8-8A, P8-8D-pre,
  * P8-8D-c2, P8-8E-pre and P8-8F-srv (4 each, 40); `docs/ROADMAP.md` by P8-D,
- * the three P8-T packets and P8-8E2 (4); `packages/server/test/initiatives/`
- * by four packets (3); four ui paths by P8-8B, P8-8C, P8-8D and P8-8E
- * (3 each, 12); the port, the barrel, the port's fixture and the test doubles
- * by P8-2, P8-3 and P8-4 (2 each, 8); `packages/server/src/initiatives/` (2);
- * `packages/server/package.json` by P8-8A, P8-8D-pre and P8-8F-srv (2);
- * four more ui paths by three packets each (2 each, 8); and nineteen paths
- * named by exactly two packets -- the contracts schema, the four runtime
- * modules and their six suites from P8-8E2, the server's mapper and its
- * tsconfig, and five ui paths (1 each, 19).
- * 21 + 6 + 40 + 4 + 3 + 12 + 8 + 2 + 2 + 8 + 19 = 125.
+ * the three P8-T packets, P8-8E2 and this debrief-ruling record (5);
+ * `packages/server/test/initiatives/` by four packets (3); four ui paths by
+ * P8-8B, P8-8C, P8-8D and P8-8E (3 each, 12); the port, the barrel, the port's
+ * fixture and the test doubles by P8-2, P8-3 and P8-4 (2 each, 8);
+ * `packages/server/src/initiatives/` (2); `packages/server/package.json` by
+ * P8-8A, P8-8D-pre and P8-8F-srv (2); four more ui paths by three packets each
+ * (2 each, 8); and nineteen paths named by exactly two packets -- the contracts
+ * schema, the four runtime modules and their six suites from P8-8E2, the
+ * server's mapper and its tsconfig, and five ui paths (1 each, 19).
+ * 22 + 6 + 40 + 5 + 3 + 12 + 8 + 2 + 2 + 8 + 19 = 127.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
- * itself; P8-7 likewise. Three packets add entries without adding paths:
- * P8-8D-pre's 22nd, the whole of P8-8D-c2, and the whole of P8-T-roadmap.
- * P8-T2 added three paths; P8-8E-pre three; P8-8E six; P8-8E2 two; and
- * P8-8F-srv adds five -- the accounts read model and its suite, the two
- * server entry modules it threads an option through, and the server's test
- * tsconfig, which no earlier P8 packet had needed to touch. This
+ * itself; P8-7 likewise. Four packets add entries without adding paths:
+ * P8-8D-pre's 22nd, the whole of P8-8D-c2, the whole of P8-T-roadmap, and this
+ * debrief-ruling record. P8-T2 added three paths; P8-8E-pre three; P8-8E six;
+ * P8-8E2 two; and P8-8F-srv five. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1954,6 +1952,18 @@ const P88F_SRV_WRITE_SET = [
 ];
 
 /**
+ * P8-debrief-ruling: the owner's final-debrief ruling recorded.
+ *
+ * A records-only packet, the same two paths as the earlier docs packets:
+ * the roadmap gains the bounded final debrief (its composition, its nine
+ * certification axes, the one-debrief/one-adjudication bound) and the P9
+ * deferral; this file's roadmap digest moves with it. Two entries, zero
+ * new paths — the status line does not move, and P9 stays exactly as
+ * owner-gated as the ruling says.
+ */
+const P8_DEBRIEF_RULING_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2231,6 +2241,7 @@ const WRITE_SET = [
   ...P88E_WRITE_SET,
   ...P88E2_WRITE_SET,
   ...P88F_SRV_WRITE_SET,
+  ...P8_DEBRIEF_RULING_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -2361,7 +2372,7 @@ function assertAdrNumbering() {
 }
 
 const ROADMAP_SHA256 =
-  "232d0eea30d14bc1ea9e4490dcd8a1f4167e0983134081aec1f0560da1132e38";
+  "595fe6bfbb1f22ed932b0a6dd1e60ebc5dabedbbebc30dc3465762e103506750";
 
 /**
  * The Estado line P7 closure is allowed to have produced.
