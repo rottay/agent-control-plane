@@ -27,6 +27,7 @@ import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
 import { RESTATE_MODE, RestateDriver, advanceHandler, reconcile } from "../../../src/drivers/restate-driver/index.js";
 import type { AdvanceContext } from "../../../src/drivers/restate-driver/index.js";
 import { parseCacheReply } from "../../../src/restate/submit/index.js";
+import { deterministicUuid } from "../../../src/core/coordinates/index.js";
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -54,7 +55,7 @@ function invocationFor(taskId: string): DurableInvocation {
   return {
     taskId,
     attempt: 1,
-    invocationId: "inv-" + taskId.slice(0, 8),
+    invocationId: deterministicUuid("inv/" + taskId),
     submittedAt: "2026-08-27T12:00:00.000Z",
     submissionDigest: "a".repeat(64),
   };

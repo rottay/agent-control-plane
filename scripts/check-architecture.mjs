@@ -1271,36 +1271,39 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **213 packet entries across 115 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **228 packet entries across 117 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) +
- * 17 (P8-8E-pre) + 17 (P8-8E) = 213 entries, with 98 duplicate entries, folded
- * from a computed duplicate-owner table rather than argued:
- * `scripts/check-architecture.mjs` is named by all twenty packets (19);
+ * 17 (P8-8E-pre) + 17 (P8-8E) + 15 (P8-8E2) = 228 entries, with 111 duplicate
+ * entries, folded from a computed duplicate-owner table rather than argued:
+ * `scripts/check-architecture.mjs` is named by all twenty-one packets (20);
  * eleven api-contracts, server and cli paths are each named by P8-8A,
- * P8-8D-pre, P8-8D-c2 and P8-8E-pre (3 each, 33); four ui paths --
- * `packages/ui/package.json`, `pnpm-workspace.yaml`,
- * `packages/ui/src/app/index.tsx` and `packages/ui/src/api/client/index.ts` --
- * are named by P8-8B, P8-8C, P8-8D and P8-8E (3 each, 12); three more --
- * the hash route, the component stylesheet and the route suite -- by P8-8C,
- * P8-8D and P8-8E (2 each, 6); the port, the barrel, the port's fixture and
- * the test doubles by P8-2, P8-3 and P8-4 (2 each, 8); `pnpm-lock.yaml` by the
- * six packets that moved a dependency edge (5); `docs/ROADMAP.md` by P8-D and
- * the three P8-T packets (3); `packages/server/src/initiatives/index.ts` by
- * P8-8A, P8-8D-c2 and P8-8E-pre (2); `packages/ui/src/components/app-shell/`
+ * P8-8D-pre, P8-8D-c2 and P8-8E-pre (3 each, 33); four ui paths by P8-8B,
+ * P8-8C, P8-8D and P8-8E (3 each, 12); three more ui paths by P8-8C, P8-8D and
+ * P8-8E (2 each, 6); the port, the barrel, the port's fixture and the test
+ * doubles by P8-2, P8-3 and P8-4 (2 each, 8); `pnpm-lock.yaml` by the six
+ * packets that moved a dependency edge (5); `docs/ROADMAP.md` by P8-D, the
+ * three P8-T packets and P8-8E2 (4); `packages/server/src/initiatives/index.ts`
+ * by P8-8A, P8-8D-c2 and P8-8E-pre (2); `packages/ui/src/components/app-shell/`
  * by P8-8B, P8-8C and P8-8D (2); four ui paths by P8-8C and P8-8D (1 each, 4);
  * the workspace view and its suite by P8-8D and P8-8E (1 each, 2);
- * `packages/server/src/mappers/index.ts` by P8-8A and P8-8E-pre (1); and
- * `packages/server/package.json` by P8-8A and P8-8D-pre (1).
- * 19 + 33 + 12 + 6 + 8 + 5 + 3 + 2 + 2 + 4 + 2 + 1 + 1 = 98.
+ * `packages/server/src/mappers/index.ts` by P8-8A and P8-8E-pre (1);
+ * `packages/server/package.json` by P8-8A and P8-8D-pre (1); and P8-8E2's
+ * eleven repeats -- ten P8-W paths (the two core modules, the usage and
+ * switch executors, and their six suites) plus P8-1's contracts schema
+ * (1 each, 11).
+ * 20 + 33 + 12 + 6 + 8 + 5 + 4 + 2 + 2 + 4 + 2 + 1 + 1 + 11 = 111.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Three packets add entries without adding paths:
  * P8-8D-pre's 22nd, the whole of P8-8D-c2, and the whole of P8-T-roadmap.
- * P8-T2 added three; P8-8E-pre added one; P8-8E adds six -- the three new
- * views and their three mirrored suites, which no earlier packet could have
- * touched because they did not exist. This
+ * P8-T2 added three paths; P8-8E-pre three (the CLI's timeline constructor
+ * and the two reserved UI fixtures); P8-8E six; and P8-8E2 adds two -- the
+ * two pilot invocation helpers, `test/pilots/recovery/helpers` and
+ * `test/pilots/writer/helpers`; the two driver suites it also reached were
+ * already P8-W's, their invocation fixtures illegal the moment
+ * `correlationId` started carrying one. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1872,6 +1875,46 @@ const P88E_WRITE_SET = [
 ];
 
 /**
+ * P8-8E2: the causation producers.
+ *
+ * P8-8E landed a task graph that was correct and empty: the surface existed
+ * end to end and every event constructor in the repository hardcoded
+ * `causationId` to null. This packet is the other half — the producers write
+ * the thread, so the view finally draws from a fact something records.
+ *
+ * Two properties are worth stating where they will be read again. The chain is
+ * **derived**, not remembered, from the invocation and the plan's previous
+ * transition id: that is why the resume law needs no special case, because a
+ * pure derivation lands on the same event before and after a kill. And
+ * causation is **advisory** — the ledger's integrity machinery verifies hash
+ * chains, not causal claims — so its trustworthiness rests entirely on two
+ * guards that do not trust each other: the producer refuses to append a link
+ * whose predecessor is not durably present, and the consumer refuses to draw
+ * an edge it cannot resolve on the page it holds.
+ *
+ * The blast radius is mostly fixtures. `correlationId` is a `Uuid`, and the
+ * suites had carried invocation ids like `"inv-0001"` since P1 — legal as
+ * opaque strings, illegal the moment one becomes a contract-checked field.
+ */
+const P88E2_WRITE_SET = [
+  "packages/runtime/src/core/events/index.ts",
+  "packages/runtime/src/core/step-executor/index.ts",
+  "packages/runtime/src/usage/index.ts",
+  "packages/runtime/src/switch-executor/index.ts",
+  "packages/contracts/src/schemas/index.ts",
+  "packages/runtime/test/core/events/index.test.ts",
+  "packages/runtime/test/core/step-executor/index.test.ts",
+  "packages/runtime/test/usage/index.test.ts",
+  "packages/runtime/test/switch-executor/index.test.ts",
+  "packages/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/runtime/test/pilots/recovery/helpers/index.ts",
+  "packages/runtime/test/pilots/writer/helpers/index.ts",
+  "docs/ROADMAP.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2147,6 +2190,7 @@ const WRITE_SET = [
   ...P8T2_WRITE_SET,
   ...P88E_PRE_WRITE_SET,
   ...P88E_WRITE_SET,
+  ...P88E2_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -2277,7 +2321,7 @@ function assertAdrNumbering() {
 }
 
 const ROADMAP_SHA256 =
-  "ef8e8cf5b77b1c8635d749d3cde488f748637ebf2597c50fdcb2533731fddaca";
+  "232d0eea30d14bc1ea9e4490dcd8a1f4167e0983134081aec1f0560da1132e38";
 
 /**
  * The Estado line P7 closure is allowed to have produced.

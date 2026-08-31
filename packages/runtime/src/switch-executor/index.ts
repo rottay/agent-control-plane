@@ -58,6 +58,18 @@ export interface SwitchExecutionInput {
    * decision — what to append — rather than two.
    */
   readonly taskState: TaskState;
+  /**
+   * The event that triggered this switch, when one genuinely exists.
+   *
+   * A switch is decided from routing state, not from a single event, so this
+   * is often null and null is the honest answer. When a caller *does* know the
+   * event that prompted it -- a quota-exhaustion recorded against another
+   * task, say -- naming it here is what makes the resulting link a real
+   * **cross-task** cause: the consumer draws an edge only when a causation
+   * resolves to a different task's event, so this field is the one place in
+   * the system that can produce one.
+   */
+  readonly causedBy?: string | null;
 }
 
 export interface SwitchExecutionResult {
@@ -73,7 +85,7 @@ export interface SwitchExecutionResult {
  * appends nothing the second time.
  */
 export function executeSwitchPlan(input: SwitchExecutionInput): SwitchExecutionResult {
-  const { ledger, invocation, plan, emittedBy, lease, taskState } = input;
+  const { ledger, invocation, plan, emittedBy, lease, taskState, causedBy } = input;
 
   const task = ledger.getTask(invocation.taskId);
   if (task === null) {
@@ -134,8 +146,8 @@ export function executeSwitchPlan(input: SwitchExecutionInput): SwitchExecutionR
       emittedBy,
       occurredAt: coordinate.occurredAt,
       recordedAt: coordinate.recordedAt,
-      correlationId: null,
-      causationId: null,
+      correlationId: invocation.invocationId,
+      causationId: causedBy ?? null,
       payload: payloadFor(candidate.type, candidate.payload, lease),
     });
 

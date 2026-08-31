@@ -790,6 +790,27 @@ export const ControlPlaneEvent = z
     occurredAt: Timestamp,
     recordedAt: Timestamp,
 
+    /**
+     * The causal thread. Definitional, and deliberately not enforced here.
+     *
+     * `correlationId` groups every event of one run: the producers set it to
+     * the invocation's own id, so "this attempt" is selectable without
+     * reconstructing it from coordinates.
+     *
+     * `causationId` names the event this one followed from. Within a walk that
+     * is the plan's previous step in the same attempt; across tasks it is the
+     * event that genuinely prompted the work, and null everywhere nothing
+     * caused anything -- nothing causes a task's discovery.
+     *
+     * **The ledger does not verify either.** Integrity here means the hash
+     * chain: `previousSha256`, `eventSha256`, the idempotency key. A row whose
+     * causation names a missing event, or an event in another task, is a valid
+     * row. Causation is therefore advisory, and its trustworthiness comes from
+     * two guards outside this contract: the producer refuses to append a link
+     * whose predecessor is not durably present, and the consumer refuses to
+     * draw an edge it cannot resolve. Reading these fields as verified facts
+     * about the world would be reading more than the contract promises.
+     */
     correlationId: Uuid.nullable(),
     causationId: Uuid.nullable(),
 

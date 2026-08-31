@@ -509,6 +509,22 @@ owner.
   incorporado a la planificación de P8; su incorporación completa es su
   propio packet de diseño, no este cierre.
 
+#### P8-8E2 — los productores de causación (checkpoint de Codex, 2026-08-31)
+
+P8-8E dejó el grafo correcto y vacío: la superficie existe end-to-end y
+ningún productor escribía `causationId`. P8-8E2 cierra eso antes de P8-9 —
+`buildEvent` hila la cadena del walk (`correlationId` = el `invocationId` de
+la invocación; `causationId` = el evento del paso anterior del mismo intento,
+derivado y no recordado, de modo que la ley de resume se cumple por
+construcción); el módulo de usage y el switch-executor hilan igual, con la
+causa explícita del llamador donde existe de verdad. El hilo intra-attempt
+alimenta el **timeline**; las aristas del grafo salen sólo de causas
+genuinamente cross-task, que es lo que el flujo de switch produce. La
+causación es **advisory**: el ledger verifica cadenas de hash, no causación —
+la garantía son dos guardas, el productor que se niega a apendar un enlace
+cuyo predecesor no está durablemente presente, y el consumidor que se niega a
+dibujar una arista que no puede resolver.
+
 #### Addendum vinculante del owner (2026-08-30): ejecución y UI agnósticas de transporte
 
 El owner ruling `.acp-local/p8-transport-agnostic-owner-ruling.md`

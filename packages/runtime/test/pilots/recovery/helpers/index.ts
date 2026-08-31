@@ -6,6 +6,7 @@ import { openLedger } from "@acp/ledger";
 import type { DurableInvocation } from "../../../../src/contracts/index.js";
 import type { FaultPoint } from "../../../../src/drivers/sqlite-supervisor/index.js";
 import type { ScenarioRoot } from "../../../../src/toy/repository/index.js";
+import { deterministicUuid } from "../../../../src/core/coordinates/index.js";
 
 /**
  * P7B leg 1 pilot helpers: fixed fixtures and a read-only ledger snapshot for
@@ -38,7 +39,7 @@ export function recoveryInvocation(taskId: string): DurableInvocation {
   return {
     taskId,
     attempt: 1,
-    invocationId: "p7b-recovery-invocation/" + taskId,
+    invocationId: deterministicUuid("p7b-recovery-invocation/" + taskId),
     submittedAt: RECOVERY_SUBMITTED_AT,
     submissionDigest: RECOVERY_SUBMISSION_DIGEST,
   };

@@ -7,6 +7,8 @@ import type {
   PostconditionVerdict,
 } from "../../contracts/index.js";
 import { deriveEventCoordinate } from "../coordinates/index.js";
+import { buildIdempotencyKey } from "@acp/contracts";
+
 import { buildEvent, operationForStep } from "../events/index.js";
 import { INTENT_STEP, OUTCOME_STEP, planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
@@ -91,7 +93,7 @@ export interface BeatResult {
  * task.
  */
 export function assertInvocationContinuity(context: BeatContext): void {
-  const { ledger, invocation, emittedBy, initiativeId } = context;
+  const { ledger, invocation, emittedBy, initiativeId, plan } = context;
   const task = ledger.getTask(invocation.taskId);
   if (task === null) return;
 
@@ -118,7 +120,7 @@ export function assertInvocationContinuity(context: BeatContext): void {
   // Step 0 is the same frozen object in every plan -- `READ_ONLY_PLAN` derives
   // steps 0-7 from the writer plan and the lifecycle test asserts the identity
   // -- so the rebuild does not depend on which plan this run walks.
-  const rebuilt = buildEvent({ invocation, step: planStep(0), emittedBy, initiativeId });
+  const rebuilt = buildEvent({ invocation, step: planStep(0), emittedBy, initiativeId, plan });
   if (recorded.canonicalJson !== canonicalJsonStringify(rebuilt)) {
     throw new SupervisorError(
       "refusing to resume: these coordinates were begun by a different" +
@@ -211,16 +213,90 @@ function stepAfter(plan: readonly PlanStep[], index: number): PlanStep {
 // The three beats, each one journal entry
 // ---------------------------------------------------------------------------
 
-/** Beat: append one plan step. Idempotent; a replay returns `inserted:false`. */
+/**
+ * Beat: append one plan step. Idempotent; a replay returns `inserted:false`.
+ *
+ * **Causation is advisory, and the guard below is why it is trustworthy
+ * anyway (P8-8E2, C5).** The ledger's integrity machinery verifies hash
+ * chains: `previousSha256`, `eventSha256`, the idempotency key. It does not
+ * verify `causationId` -- an event whose causation names nothing, or names an
+ * event in another task, is a perfectly valid ledger row. So the safety story
+ * has exactly two halves and no third: this producer refuses to append a link
+ * whose predecessor is not durably present, and the consumer
+ * (`deriveGraph`) refuses to draw an edge it cannot resolve from data it
+ * actually holds. Neither half trusts the other, and nothing between them
+ * asserts a causal claim the ledger could not corroborate.
+ */
 export function appendPlanStep(context: BeatContext, step: PlanStep): BeatResult {
   const event = buildEvent({
     invocation: context.invocation,
     step,
     emittedBy: context.emittedBy,
     initiativeId: context.initiativeId,
+    plan: context.plan,
   });
+
+  assertCausalPredecessor(context, step, event.causationId);
+
   const result = context.ledger.append(event);
   return { event: result.inserted ? result.record.event : null, inserted: result.inserted };
+}
+
+/**
+ * Refuse before appending when the causal predecessor is not durably there.
+ *
+ * The event this step threads to is derived, so the derivation always produces
+ * *an* id; whether the ledger actually holds that event is a different
+ * question, and the one worth asking. Two ways it can be false: the previous
+ * step was never appended (a caller walking the plan out of order), or the row
+ * under the predecessor's idempotency key is some other event (coordinates
+ * reused across invocations). Both produce a chain that reads as causal and is
+ * not, so both refuse **before** the append rather than after -- an append is a
+ * claim, and a log that only grows cannot retract one.
+ */
+function assertCausalPredecessor(
+  context: BeatContext,
+  step: PlanStep,
+  causationId: string | null,
+): void {
+  if (causationId === null) return;
+
+  const previousStep = context.plan[step.index - 1];
+  if (previousStep === undefined) {
+    throw new LifecyclePlanError(
+      "the plan has no step before index " + String(step.index) + "; the causal thread cannot be verified",
+    );
+  }
+
+  const key = buildIdempotencyKey({
+    taskId: context.invocation.taskId,
+    attempt: context.invocation.attempt,
+    transitionId: previousStep.transitionId,
+  });
+  const recorded = context.ledger.getEventByIdempotencyKey(key);
+  if (recorded === null) {
+    throw new SupervisorError(
+      "refusing to append " +
+        step.transitionId +
+        ": its causal predecessor " +
+        previousStep.transitionId +
+        " is not in the ledger, so the link would name an event that does not exist",
+    );
+  }
+
+  const parsed: unknown = JSON.parse(recorded.canonicalJson);
+  const recordedId =
+    typeof parsed === "object" && parsed !== null && "eventId" in parsed
+      ? (parsed as { readonly eventId: unknown }).eventId
+      : undefined;
+  if (recordedId !== causationId) {
+    throw new SupervisorError(
+      "refusing to append " +
+        step.transitionId +
+        ": the row under its predecessor's coordinates is a different event," +
+        " so the causal link would point at work this attempt did not do",
+    );
+  }
 }
 
 /** Beat: perform the intent's effect. Idempotent by content. */

@@ -4,6 +4,7 @@ import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts"
 import type { DurableInvocation, OperationCoordinate } from "../../contracts/index.js";
 import { deriveEventCoordinate, deriveOperationCoordinate, operationDigest } from "../coordinates/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
+import { LifecyclePlanError } from "../../errors/index.js";
 
 /**
  * Event construction.
@@ -34,6 +35,16 @@ export interface BuildEventInput {
    * different task.
    */
   readonly initiativeId: string;
+  /**
+   * The plan this run walks, so the causal predecessor is the plan's own
+   * previous step rather than a guess.
+   *
+   * Passed in rather than read from a module constant, for the same reason
+   * `BeatContext` carries it: a run walks the plan its packet's commit policy
+   * chose, and a module-global here would thread every event against a plan the
+   * run is not walking.
+   */
+  readonly plan: readonly PlanStep[];
 }
 
 /**
@@ -111,6 +122,30 @@ export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
   );
   const coordinate = deriveEventCoordinate(invocation, step.transitionId, step.index);
 
+  // The causal thread (P8-8E2).
+  //
+  // `correlationId` is the invocation's own id: every event of one attempt
+  // shares it, which is what makes "this run" a thing a reader can select on
+  // without reconstructing it from coordinates.
+  //
+  // `causationId` is the id of the plan's previous step *in this same
+  // attempt*, derived rather than remembered. Derivation is what makes the
+  // resume law hold for free: after a kill the beat's in-memory "previous" is
+  // gone, but `deriveEventCoordinate` is pure over the invocation and the
+  // transition id, so a resumed step threads to exactly the event the ledger
+  // already durably holds. Step 0 has no predecessor and is honestly null --
+  // nothing causes a task's discovery.
+  const previousStep = step.index === 0 ? undefined : input.plan[step.index - 1];
+  if (step.index > 0 && previousStep === undefined) {
+    throw new LifecyclePlanError(
+      "the plan has no step before index " + String(step.index) + "; the causal thread cannot be derived",
+    );
+  }
+  const causationId =
+    previousStep === undefined
+      ? null
+      : deriveEventCoordinate(invocation, previousStep.transitionId, previousStep.index).eventId;
+
   return ControlPlaneEvent.parse({
     contractVersion: CONTRACT_VERSION,
     eventId: coordinate.eventId,
@@ -124,8 +159,8 @@ export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
     emittedBy,
     occurredAt: coordinate.occurredAt,
     recordedAt: coordinate.recordedAt,
-    correlationId: null,
-    causationId: null,
+    correlationId: invocation.invocationId,
+    causationId,
     payload: payloadFor(invocation, step, operation, initiativeId),
   });
 }

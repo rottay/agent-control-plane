@@ -24,6 +24,7 @@ import {
   nextStep,
 } from "../../../src/core/step-executor/index.js";
 import type { BeatContext, EffectPort } from "../../../src/core/step-executor/index.js";
+import { deterministicUuid } from "../../../src/core/coordinates/index.js";
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -51,7 +52,7 @@ function invocationFor(taskId: string): DurableInvocation {
   return {
     taskId,
     attempt: 1,
-    invocationId: "inv-" + taskId.slice(0, 8),
+    invocationId: deterministicUuid("inv/" + taskId),
     submittedAt: "2026-08-27T12:00:00.000Z",
     submissionDigest: "a".repeat(64),
   };
@@ -285,5 +286,58 @@ describe("the shared beat executor", () => {
     closeIntent(context);
     // One effect, addressed once, whichever beat asked for it.
     expect(log.filter((entry) => entry === "EFFECT")).toHaveLength(1);
+  });
+});
+
+describe("the producer guard: a broken causal chain refuses before any append (C5)", () => {
+  it("refuses a step whose predecessor was never appended, and appends nothing", () => {
+    const { context, ledger, invocation } = contextFor("causal-missing", "20202020-2020-4202-8202-202020202021", []);
+
+    // Step 0 lands, then step 2 is attempted — skipping step 1. The event that
+    // step 2's causation names has therefore never been written, so the link
+    // would point at nothing.
+    appendPlanStep(context, planStep(0));
+    const before = ledger.status().eventCount;
+
+    expect(() => appendPlanStep(context, planStep(2))).toThrow(SupervisorError);
+
+    // Before, not after: the refusal happens ahead of the append, so the ledger
+    // never holds the event whose claim could not be corroborated.
+    expect(ledger.status().eventCount).toBe(before);
+    expect(ledger.getTask(invocation.taskId)?.currentState).toBe(planStep(0).toState);
+  });
+
+  it("refuses when the predecessor's coordinates hold a different event", () => {
+    const { context, ledger } = contextFor("causal-forged", "20202020-2020-4202-8202-202020202022", []);
+    appendPlanStep(context, planStep(0));
+
+    // A forged chain: the predecessor's row exists, but it is some other
+    // event. The guard compares identity, not mere presence, because a row
+    // under the right key carrying the wrong event is the failure a presence
+    // check would wave through.
+    const forged: BeatContext = {
+      ...context,
+      ledger: {
+        append: context.ledger.append.bind(context.ledger),
+        getTask: context.ledger.getTask.bind(context.ledger),
+        getEventBySequence: context.ledger.getEventBySequence.bind(context.ledger),
+        getEventByIdempotencyKey: () => ({
+          canonicalJson: JSON.stringify({ eventId: "00000000-0000-4000-8000-0000000000ff" }),
+        }),
+      },
+    };
+    const before = ledger.status().eventCount;
+
+    expect(() => appendPlanStep(forged, planStep(1))).toThrow(SupervisorError);
+    expect(ledger.status().eventCount).toBe(before);
+  });
+
+  it("lets a well-formed chain through, step after step", () => {
+    const { context, ledger } = contextFor("causal-intact", "20202020-2020-4202-8202-202020202023", []);
+    for (let index = 0; index < 3; index += 1) {
+      const result = appendPlanStep(context, planStep(index));
+      expect({ index, inserted: result.inserted }).toEqual({ index, inserted: true });
+    }
+    expect(ledger.status().eventCount).toBe(3);
   });
 });

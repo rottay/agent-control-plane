@@ -18,6 +18,7 @@ import {
   scenarioLedgerPath,
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
+import { deterministicUuid } from "../../src/core/coordinates/index.js";
 
 /**
  * Evidence for the switch executor.
@@ -55,7 +56,7 @@ function invocationFor(taskId: string): DurableInvocation {
   return {
     taskId,
     attempt: 1,
-    invocationId: "switch/" + taskId,
+    invocationId: deterministicUuid("switch/" + taskId),
     submittedAt: AT,
     submissionDigest: "d".repeat(64),
   };
@@ -152,6 +153,23 @@ function leaseFor(worktreePath: string): Lease {
     acquiredAt: AT,
     expiresAt: RESET_AT,
   };
+}
+
+/** Seed one more discovered task into a ledger that is already open. */
+function addTask(ledger: Ledger, taskId: string): DurableInvocation {
+  const invocation = invocationFor(taskId);
+  const context: BeatContext = {
+    ledger,
+    effects: { apply: () => undefined, probe: () => "DONE" },
+    invocation,
+    emittedBy: EMITTED_BY,
+    plan: LIFECYCLE_PLAN,
+    initiativeId: INITIATIVE_ID,
+  };
+  const step = LIFECYCLE_PLAN[0];
+  if (step === undefined) throw new Error("no plan step");
+  appendPlanStep(context, step);
+  return invocation;
 }
 
 function openWithTask(id: string, taskId: string): { ledger: Ledger; invocation: DurableInvocation } {
@@ -329,5 +347,99 @@ describe("the executor holds no authority it was not given", () => {
       }),
     ).toThrow(SupervisorError);
     expect(ledger.status().eventCount).toBe(0);
+  });
+});
+
+describe("the causal thread, and the cross-task edge it produces (P8-8E2, C1)", () => {
+  it("gives every appended event the invocation's correlation", () => {
+    const { ledger, invocation } = openWithTask(
+      "switch-correlation",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c11",
+    );
+    const outcome = switchPlan();
+    if (!outcome.ok) throw new Error("expected a switch plan");
+
+    const result = executeSwitchPlan({
+      ledger,
+      invocation,
+      plan: outcome.plan,
+      emittedBy: EMITTED_BY,
+      lease: leaseFor("/tmp/acp-p8w-worktree"),
+      taskState: ledger.getTask(invocation.taskId)?.currentState ?? "DISCOVERED",
+    });
+
+    const correlations = new Set(result.events.map((event) => event.correlationId));
+    expect(correlations).toEqual(new Set([invocation.invocationId]));
+    // No trigger was named, so no cause is claimed. A switch is decided from
+    // routing state rather than from one event, and inventing a cause to fill
+    // the field is exactly what the consumer refuses to draw from.
+    expect(new Set(result.events.map((event) => event.causationId))).toEqual(new Set([null]));
+  });
+
+  /**
+   * The packet's proof-of-headline (C1).
+   *
+   * `deriveGraph` draws an edge for exactly one shape: a TASK row whose
+   * `causationId` resolves to an event of a **different** task on the same
+   * page. Nothing in the walk can produce that — a walk threads to its own
+   * previous step, which is the same task and is therefore timeline threading,
+   * not a graph edge. The switch flow can, because its trigger genuinely lives
+   * on another task.
+   *
+   * This drill builds that shape end to end in the ledger and asserts it in
+   * `deriveGraph`'s own terms, without importing the view: the predicate is
+   * quoted here so the two cannot drift silently apart.
+   */
+  it("produces at least one cross-task cause — the shape deriveGraph turns into an edge", () => {
+    // ONE ledger, two tasks: `deriveGraph` resolves causation against the events
+    // on the page it was handed, so a drill across two ledgers would prove the
+    // value and not the edge.
+    const { ledger, invocation: triggering } = openWithTask(
+      "switch-edge",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c12",
+    );
+    const switching = addTask(ledger, "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c13");
+
+    const triggerEvent = ledger.listEvents({ taskId: triggering.taskId }).events[0];
+    if (triggerEvent === undefined) throw new Error("expected a seeded event on the triggering task");
+
+    const outcome = switchPlan();
+    if (!outcome.ok) throw new Error("expected a switch plan");
+
+    const result = executeSwitchPlan({
+      ledger,
+      invocation: switching,
+      plan: outcome.plan,
+      emittedBy: EMITTED_BY,
+      lease: leaseFor("/tmp/acp-p8w-worktree"),
+      taskState: ledger.getTask(switching.taskId)?.currentState ?? "DISCOVERED",
+      causedBy: triggerEvent.event.eventId,
+    });
+
+    // The page a scoped timeline would hand the view: every event in this
+    // ledger, both tasks together.
+    const page = ledger.listEvents({}).events;
+    const eventIdToTaskId = new Map(page.map((record) => [record.eventId, record.event.taskId]));
+
+    // deriveGraph's predicate, restated so the two cannot drift apart silently:
+    // a TASK row whose causationId resolves, ON THIS PAGE, to a different
+    // task's event.
+    const edges = page.filter((record) => {
+      const cause = record.event.causationId;
+      if (cause === null) return false;
+      const fromTaskId = eventIdToTaskId.get(cause);
+      return fromTaskId !== undefined && fromTaskId !== record.event.taskId;
+    });
+
+    expect(edges.length).toBeGreaterThan(0);
+    expect(result.appended).toBeGreaterThan(0);
+
+    // Each half separately true, so the conjunction cannot pass by coincidence.
+    const edge = edges[0];
+    if (edge === undefined) throw new Error("expected an edge");
+    expect(edge.event.causationId).toBe(triggerEvent.event.eventId);
+    expect(edge.event.taskId).toBe(switching.taskId);
+    expect(eventIdToTaskId.get(triggerEvent.event.eventId)).toBe(triggering.taskId);
+    expect(edge.event.taskId).not.toBe(triggering.taskId);
   });
 });

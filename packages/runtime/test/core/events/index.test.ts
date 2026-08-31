@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { DurableInvocation } from "../../../src/contracts/index.js";
 import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP } from "../../../src/core/lifecycle/index.js";
+import { deterministicUuid } from "../../../src/core/coordinates/index.js";
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -11,7 +12,7 @@ const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
 const INVOCATION: DurableInvocation = {
   taskId: "22222222-2222-4222-8222-222222222222",
   attempt: 1,
-  invocationId: "inv-0002",
+  invocationId: deterministicUuid("inv/0002"),
   submittedAt: "2026-08-27T12:00:00.000Z",
   submissionDigest: "b".repeat(64),
 };
@@ -21,13 +22,13 @@ const EMITTED_BY = "claude/opus/implementer/01";
 function build(index: number): ReturnType<typeof buildEvent> {
   const step = LIFECYCLE_PLAN[index];
   if (step === undefined) throw new Error("no such plan step");
-  return buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
+  return buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN });
 }
 
 describe("event construction", () => {
   it("produces a valid ControlPlaneEvent for every plan step", () => {
     for (const step of LIFECYCLE_PLAN) {
-      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
+      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN });
       expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
       expect(event.type).toBe(step.eventType);
       expect(event.fromState).toBe(step.fromState);
@@ -65,7 +66,7 @@ describe("event construction", () => {
 
   it("carries no credential, transcript, path or free text in any payload", () => {
     for (const step of LIFECYCLE_PLAN) {
-      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
+      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN });
       expect(findCredentialViolations(event.payload)).toHaveLength(0);
       expect(findTranscriptViolations(event.payload)).toHaveLength(0);
       const serialized = JSON.stringify(event.payload);
@@ -91,7 +92,7 @@ describe("event construction", () => {
 
   it("binds the submission digest into every canonical body", () => {
     for (const step of LIFECYCLE_PLAN) {
-      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
+      const event = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN });
       expect(event.payload["submissionDigest"]).toBe(INVOCATION.submissionDigest);
     }
   });
@@ -103,16 +104,83 @@ describe("event construction", () => {
     // caller silently inherits an outcome for work it did not ask for.
     const step = LIFECYCLE_PLAN[0];
     if (step === undefined) throw new Error("no plan");
-    const a = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
+    const a = buildEvent({ invocation: INVOCATION, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN });
     const b = buildEvent({
       invocation: { ...INVOCATION, submissionDigest: "9".repeat(64) },
       step,
       emittedBy: EMITTED_BY,
       initiativeId: TEST_INITIATIVE_ID,
+      plan: LIFECYCLE_PLAN,
     });
 
     expect(b.idempotencyKey).toBe(a.idempotencyKey);
     expect(b.eventId).toBe(a.eventId);
     expect(JSON.stringify(b)).not.toBe(JSON.stringify(a));
+  });
+});
+
+describe("the causal thread (P8-8E2)", () => {
+  it("gives every event of one attempt the invocation's own correlation", () => {
+    const ids = LIFECYCLE_PLAN.map(
+      (step) =>
+        buildEvent({
+          invocation: INVOCATION,
+          step,
+          emittedBy: EMITTED_BY,
+          initiativeId: TEST_INITIATIVE_ID,
+          plan: LIFECYCLE_PLAN,
+        }).correlationId,
+    );
+    // One value, and it is the invocation's — not a value invented per event.
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toBe(INVOCATION.invocationId);
+  });
+
+  it("threads causation to the plan's previous step, and leaves step 0 null", () => {
+    const events = LIFECYCLE_PLAN.map((step) =>
+      buildEvent({
+        invocation: INVOCATION,
+        step,
+        emittedBy: EMITTED_BY,
+        initiativeId: TEST_INITIATIVE_ID,
+        plan: LIFECYCLE_PLAN,
+      }),
+    );
+
+    // Nothing causes a task's discovery, and saying so with null is the honest
+    // answer rather than a self-reference or a placeholder.
+    expect(events[0]?.causationId).toBeNull();
+
+    for (let index = 1; index < events.length; index += 1) {
+      expect({ index, causationId: events[index]?.causationId }).toEqual({
+        index,
+        causationId: events[index - 1]?.eventId,
+      });
+    }
+  });
+
+  it("is derived, not remembered: rebuilding after a restart threads identically", () => {
+    // The resume law's discriminator (C3). Nothing here carries state between
+    // the two builds, which is exactly the situation after a kill: the beat's
+    // in-memory "previous" is gone and the chain must still land on the event
+    // the ledger durably holds.
+    const step = LIFECYCLE_PLAN[3];
+    if (step === undefined) throw new Error("the plan is shorter than the fixture assumes");
+    const first = buildEvent({
+      invocation: INVOCATION,
+      step,
+      emittedBy: EMITTED_BY,
+      initiativeId: TEST_INITIATIVE_ID,
+      plan: LIFECYCLE_PLAN,
+    });
+    const afterRestart = buildEvent({
+      invocation: { ...INVOCATION },
+      step,
+      emittedBy: EMITTED_BY,
+      initiativeId: TEST_INITIATIVE_ID,
+      plan: LIFECYCLE_PLAN,
+    });
+    expect(afterRestart).toEqual(first);
+    expect(afterRestart.causationId).toBe(LIFECYCLE_PLAN[2] === undefined ? null : first.causationId);
   });
 });

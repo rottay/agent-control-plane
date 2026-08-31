@@ -14,6 +14,7 @@ import {
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
 import { recordTokenObservation } from "../../src/usage/index.js";
 import type { DurableInvocation } from "../../src/contracts/index.js";
+import { deterministicUuid } from "../../src/core/coordinates/index.js";
 
 /**
  * Evidence for usage and reservation emission.
@@ -39,7 +40,7 @@ function invocationFor(taskId: string): DurableInvocation {
   return {
     taskId,
     attempt: 1,
-    invocationId: "usage/" + taskId,
+    invocationId: deterministicUuid("usage/" + taskId),
     submittedAt: AT,
     submissionDigest: "c".repeat(64),
   };
@@ -206,5 +207,46 @@ describe("the module never opens a task", () => {
       SupervisorError,
     );
     expect(ledger.status().eventCount).toBe(1);
+  });
+});
+
+describe("the causal thread (P8-8E2)", () => {
+  it("rides the walk's correlation, and carries no cause by default", () => {
+    const { ledger, invocation } = openWithTask(
+      "usage-thread",
+      "8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a07",
+    );
+    const result = recordTokenObservation(ledger, {
+      invocation,
+      kind: "USAGE",
+      accountId: "acct-primary",
+      tokens: 10,
+      transitionId: "usage.step-1",
+      emittedBy: EMITTED_BY,
+    });
+    // An observation rides an attempt rather than starting one, so it belongs
+    // to that run's thread.
+    expect(result.event.correlationId).toBe(invocation.invocationId);
+    // Spend accrues; it is not caused by one event. Null is the honest answer
+    // rather than a fabricated link.
+    expect(result.event.causationId).toBeNull();
+  });
+
+  it("carries a cause when the caller genuinely has one", () => {
+    const { ledger, invocation } = openWithTask(
+      "usage-caused",
+      "8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a08",
+    );
+    const cause = "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c99";
+    const result = recordTokenObservation(ledger, {
+      invocation,
+      kind: "USAGE",
+      accountId: "acct-primary",
+      tokens: 10,
+      transitionId: "usage.caused",
+      emittedBy: EMITTED_BY,
+      causedBy: cause,
+    });
+    expect(result.event.causationId).toBe(cause);
   });
 });

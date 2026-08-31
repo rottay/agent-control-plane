@@ -46,6 +46,14 @@ export interface TokenObservation {
   readonly accountId: string;
   readonly tokens: number;
   /**
+   * The event that prompted this observation, when one genuinely did.
+   *
+   * Optional and normally absent: spend accrues across a run rather than being
+   * caused by a single event, and inventing a cause to fill the field would be
+   * exactly the fabricated causality the consumer refuses to draw.
+   */
+  readonly causedBy?: string | null;
+  /**
    * A durable name for this observation, unique within the task's attempt.
    *
    * It is the caller's, not this module's: only the caller knows whether two
@@ -112,8 +120,13 @@ export function recordTokenObservation(
     emittedBy,
     occurredAt: coordinate.occurredAt,
     recordedAt: coordinate.recordedAt,
-    correlationId: null,
-    causationId: null,
+    // The correlation is the walk's own invocation id: a usage observation
+    // rides an attempt rather than starting one, so it belongs to that run's
+    // thread and says so. Causation is the caller's to supply when a specific
+    // event genuinely prompted the observation; spend is normally continuous
+    // rather than caused, so null is the honest common case and not a gap.
+    correlationId: invocation.invocationId,
+    causationId: observation.causedBy ?? null,
     // Verbatim, and exactly the pair the rollup fold reads. The plural key is
     // load bearing: the contract's credential guard denies a singular `token`.
     payload: { accountId, tokens },

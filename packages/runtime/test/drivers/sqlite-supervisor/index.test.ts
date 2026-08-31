@@ -20,6 +20,7 @@ import {
 import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
 import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
 import type { FaultPoint } from "../../../src/drivers/sqlite-supervisor/index.js";
+import { deterministicUuid } from "../../../src/core/coordinates/index.js";
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -47,7 +48,7 @@ function invocationFor(seed: string): DurableInvocation {
   return {
     taskId: seed,
     attempt: 1,
-    invocationId: "inv-" + seed.slice(0, 8),
+    invocationId: deterministicUuid("inv/" + seed),
     submittedAt: "2026-08-27T12:00:00.000Z",
     submissionDigest: "d".repeat(64),
   };
@@ -309,7 +310,7 @@ describe("the supervisor", () => {
 
     // Re-appending every plan event directly must be an exact replay.
     for (const step of LIFECYCLE_PLAN) {
-      const event = buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID });
+      const event = buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN });
       expect(step.transitionId + ":" + String(ledger.append(event).inserted)).toBe(
         step.transitionId + ":false",
       );
@@ -325,7 +326,7 @@ describe("the supervisor", () => {
     const step = LIFECYCLE_PLAN[0];
     if (step === undefined) throw new Error("no plan");
     const tampered = {
-      ...buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }),
+      ...buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }),
       emittedBy: "kimi/k3/coordinator/01",
     };
     let name = "";
@@ -345,7 +346,7 @@ describe("the supervisor", () => {
     // outcome leaves behind: the intent is recorded, the task is RUNNING, and
     // no outcome exists. Then make the marker unreadable to the probe.
     for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) {
-      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }));
+      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }));
     }
     expect(ledger.getTask(taskId)?.currentState).toBe("RUNNING");
 
@@ -445,7 +446,7 @@ describe("the supervisor", () => {
     const taskId = "77777777-7777-4777-8777-777777777771";
     const { supervisor, ledger, root, invocation } = supervisorFor("advance-not-done", taskId);
     for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) {
-      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }));
+      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }));
     }
     expect(effectMarkerCount(root)).toBe(0);
 
@@ -461,7 +462,7 @@ describe("the supervisor", () => {
     const taskId = "77777777-7777-4777-8777-777777777772";
     const { supervisor, ledger, root, invocation } = supervisorFor("advance-done", taskId);
     for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) {
-      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }));
+      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }));
     }
     applyEffect(root, operationForStep(invocation, INTENT_STEP));
     expect(effectMarkerCount(root)).toBe(1);
@@ -484,7 +485,7 @@ describe("the supervisor", () => {
     const taskId = "77777777-7777-4777-8777-777777777773";
     const { supervisor, ledger, root, invocation } = supervisorFor("advance-unknown", taskId);
     for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) {
-      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }));
+      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }));
     }
     const operation = operationForStep(invocation, INTENT_STEP);
     const marker = join(root, "effects", operation.operationId + ".marker");
@@ -519,7 +520,7 @@ describe("the supervisor", () => {
 
     let name = "";
     try {
-      ledger.append(buildEvent({ invocation: resubmitted, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }));
+      ledger.append(buildEvent({ invocation: resubmitted, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }));
     } catch (error: unknown) {
       name = error instanceof Error ? error.name : "";
     }
@@ -529,7 +530,7 @@ describe("the supervisor", () => {
     expect(effectMarkerCount(root)).toBe(markersBefore);
 
     // The original submission still replays exactly.
-    expect(ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID })).inserted).toBe(
+    expect(ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN })).inserted).toBe(
       false,
     );
     expect(ledger.status().headEventSha256).toBe(headBefore);
@@ -560,7 +561,7 @@ describe("the supervisor", () => {
     // appended an attempt-2 outcome onto an attempt-1 task.
     { label: "attempt", mutate: (i) => ({ ...i, attempt: 2 }) },
     { label: "digest", mutate: (i) => ({ ...i, submissionDigest: "b".repeat(64) }) },
-    { label: "invocationId", mutate: (i) => ({ ...i, invocationId: "inv-other" }) },
+    { label: "invocationId", mutate: (i) => ({ ...i, invocationId: deterministicUuid("inv/other") }) },
     { label: "submittedAt", mutate: (i) => ({ ...i, submittedAt: "2026-08-27T13:00:00.000Z" }) },
   ];
 
@@ -575,7 +576,7 @@ describe("the supervisor", () => {
       // Leave the task exactly mid-flight: intent recorded, effect applied,
       // outcome outstanding.
       for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) {
-        ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }));
+        ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }));
       }
       applyEffect(root, operationForStep(invocation, INTENT_STEP));
 
@@ -631,7 +632,7 @@ describe("the supervisor", () => {
     // Mid-flight, exactly as the mismatch cases above leave it.
     for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) {
       ledger.append(
-        buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }),
+        buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }),
       );
     }
     applyEffect(root, operationForStep(invocation, INTENT_STEP));
@@ -707,7 +708,7 @@ describe("the supervisor", () => {
 
     // Stop at RESERVED: the intent step is deliberately NOT recorded.
     for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index)) {
-      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID }));
+      ledger.append(buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN }));
     }
     expect(ledger.getTask(taskId)?.currentState).toBe("RESERVED");
     const headBefore = ledger.status().headEventSha256;

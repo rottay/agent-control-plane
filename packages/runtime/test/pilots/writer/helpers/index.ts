@@ -3,6 +3,7 @@ import { CONTRACT_VERSION, ControlPlaneEvent } from "@acp/contracts";
 import type { AuthorizationEvent } from "../../../../src/commit-authorization/index.js";
 import type { DurableInvocation } from "../../../../src/contracts/index.js";
 import { deriveEventCoordinate } from "../../../../src/core/coordinates/index.js";
+import { deterministicUuid } from "../../../../src/core/coordinates/index.js";
 
 /**
  * P7C pilot helpers: fixed fixtures and the authorization-event assembler for
@@ -50,7 +51,7 @@ export function writerInvocation(taskId: string): DurableInvocation {
   return {
     taskId,
     attempt: 1,
-    invocationId: "p7c-writer-invocation/" + taskId,
+    invocationId: deterministicUuid("p7c-writer-invocation/" + taskId),
     submittedAt: WRITER_ISSUED_AT,
     submissionDigest: "c".repeat(64),
   };
