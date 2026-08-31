@@ -1238,15 +1238,20 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * outside application code, its schema and loader in the accounts package, and
  * `routeWithPolicy` as the one seam that stamps `capabilityPolicyVersion`.
  *
- * P8 is therefore **62 packet entries across 48 distinct paths**: 2 (P8-D) +
- * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) = 62
- * entries, with 14 duplicate entries. `scripts/check-architecture.mjs` is named
- * by all seven packets (6 duplicates); the port, the barrel, the port's fixture
- * and the test doubles are each named by P8-2, P8-3 and P8-4 (2 duplicates
- * each, 8 total). P8-5 shares no path with any earlier P8 packet but the fence
- * itself. So 62 - 14 = 48 distinct paths. This file's appearances in earlier
- * phases are counted in those phases, since the standing convention scopes the
- * arithmetic to the phase.
+ * P8-6 is the runtime fallback gate: the positive certification that
+ * disabling Restate leaves the documented `SQLITE_SUPERVISOR` path
+ * operational, drilled over a real child process rather than only asserted,
+ * plus the operator paragraph the drill backs.
+ *
+ * P8 is therefore **65 packet entries across 50 distinct paths**: 2 (P8-D) +
+ * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) =
+ * 65 entries, with 15 duplicate entries. `scripts/check-architecture.mjs` is
+ * named by all eight packets (7 duplicates); the port, the barrel, the port's
+ * fixture and the test doubles are each named by P8-2, P8-3 and P8-4 (2
+ * duplicates each, 8 total). P8-5 and P8-6 share no path with any earlier P8
+ * packet but the fence itself. So 65 - 15 = 50 distinct paths. This file's
+ * appearances in earlier phases are counted in those phases, since the
+ * standing convention scopes the arithmetic to the phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
@@ -1405,6 +1410,24 @@ const P85_WRITE_SET = [
   "packages/accounts/src/index.ts",
   "packages/accounts/test/policy/index.test.ts",
   "packages/accounts/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-6: the runtime fallback gate.
+ *
+ * Law 5's removal bullet, drilled rather than only claimed: disabling Restate
+ * leaves the documented `SQLITE_SUPERVISOR` path operational. P2 already
+ * proved the machinery (D4 fails closed; the 3/3 kill/restart drill;
+ * byte-equivalence) -- this packet is the positive certification gate none of
+ * those is, over a real child process with the pinned Restate ports checked
+ * unbound before and after, plus the operator paragraph the drill backs. No
+ * production source changes: the packet proves the landed fallback, it does
+ * not build one.
+ */
+const P86_WRITE_SET = [
+  "packages/daemon/test/fallback/index.test.ts",
+  "packages/runtime/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1672,6 +1695,7 @@ const WRITE_SET = [
   ...P83_WRITE_SET,
   ...P84_WRITE_SET,
   ...P85_WRITE_SET,
+  ...P86_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,

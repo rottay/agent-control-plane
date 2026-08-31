@@ -121,6 +121,19 @@ back from a driver in order to make a decision. That is how a derived
 orchestrator becomes an authority in practice while a document still claims it
 is derived.
 
+**The fallback path an operator uses.** Disabling Restate, or never installing
+it, does not degrade what a task means: pass `mode: "SQLITE_SUPERVISOR"` to
+`startDaemon` (or the packaged binary's config) and the daemon reconciles and
+walks the same plan documented above, binding no socket and spawning no
+child — the server acquisition in "External tools" below is simply never
+reached. The ledger stays the sole authority either way; only which driver
+walks it changes. This is the documented, drilled path: P8-6's fallback gate
+(`packages/daemon/test/fallback/index.test.ts`) runs the mode to
+`CHECKPOINTED` over a real child process, the full plan trail asserted event
+by event, with the pinned Restate ports checked unbound before and after — so
+"the fallback is operational" is a claim proven by a re-runnable drill, not
+one left to a comment.
+
 ### Recovery order
 
 Ledger-first **intent**, then an idempotent and probeable **effect**, then a
