@@ -135,3 +135,39 @@ teardown, and touches no repository path.
 The concurrency tests spawn real child processes. Two handles in one event loop
 would prove nothing, because `better-sqlite3` is synchronous and the calls would
 simply run in sequence with the file lock never contended.
+
+## The artifact store
+
+The Checkpoint law says a record carries **digests and references**, never
+content. A roadmap document cannot fit in an event payload and should not: the
+ledger is a chain of small canonical facts. So content lives beside the
+database, in a content-addressed store this package owns, and the event records
+only the digest.
+
+The store is here rather than in a caller because this package already owns the
+data root and the CLI already resolves references through it. A second package
+owning the bytes would be a second authority over what a digest in this ledger
+means, and there would be two ways to resolve one reference.
+
+Two laws, both about what a filesystem actually promises:
+
+- **Publication is atomic.** Bytes are written to a temporary name in the same
+  directory and renamed into place, so a reader sees a complete object or none.
+  A plain write at the final path leaves a torn file after any crash — and a
+  torn file whose *name is a digest* is worse than a missing one, because its
+  name is a claim about content it does not have. The temporary name is derived
+  from the digest rather than from a clock, so a retry after a crash overwrites
+  its own partial file instead of leaving a new orphan on every attempt.
+- **An existing object is verified, never trusted.** Publishing content whose
+  digest already exists re-reads the stored bytes. Equal bytes are a no-op,
+  which is what makes a retried write safe. Unequal bytes are refused rather
+  than overwritten: replacing them would destroy the evidence of a collision or
+  a corruption at the exact moment it mattered.
+
+**There is no delete.** No function removes an object, and none is exposed that
+could. An append-only ledger whose referenced bytes can disappear is
+append-only in name only. Removing an artifact is a deliberate operator act
+against the filesystem, outside this API.
+
+The root is an explicit absolute path the caller supplies — no default, no
+discovery, no environment read — exactly as `openLedger` takes its own.

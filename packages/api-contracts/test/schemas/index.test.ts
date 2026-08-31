@@ -6,11 +6,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   API_ALLOWED_METHODS,
+  API_WRITE_METHODS,
+  API_WRITE_ROUTES,
   API_BASE_PATH,
   API_CONTRACT_VERSION,
   API_ERROR_CODES,
   API_ROUTES,
   API_ROUTE_PATTERNS,
+  isWriteRoute,
   ApiError,
   CursorPageMeta,
   DEFAULT_PAGE_LIMIT,
@@ -324,6 +327,14 @@ describe("routes", () => {
 
   it("answers reads only", () => {
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+    // P8-8D-pre: the read plane's method list did not move when the first
+    // write route arrived. The exception lives in its own frozen table, so
+    // this assertion still describes every one of the nine reads.
+    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap"]);
+    expect([...API_WRITE_METHODS]).toEqual(["GET", "POST"]);
+    expect(Object.isFrozen(API_WRITE_ROUTES)).toBe(true);
+    expect(isWriteRoute("initiativeRoadmap")).toBe(true);
+    expect(isWriteRoute("tasks")).toBe(false);
   });
 
   it("builds a task path from a validated identifier", () => {

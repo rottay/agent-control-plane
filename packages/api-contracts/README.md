@@ -38,8 +38,13 @@ than trusting this table.
   serialized size, never its payload. Payload contents are the one part of an
   event the contract does not fix, so they are the one part a browser must not
   hold.
-- **GET only.** Every route is a read. There is no mutating shape in this
-  package because P1 has no write surface to describe.
+- **Reads are GET; the one write is named.** Every route was a read through
+  P8-8C, and `API_ALLOWED_METHODS` still says `["GET"]` because that describes
+  the read plane, which did not change. P8-8D-pre adds the plane's first write
+  — `POST /api/v1/initiatives/:initiativeId/roadmap` — and records it in a
+  separate frozen table, `API_WRITE_ROUTES`, rather than by softening the
+  first. A reader asking "what can mutate?" gets one short answer; a reader
+  asking "is this route a read?" gets the unchanged one.
 - **Explicit emptiness.** The overview distinguishes `EMPTY` from `UNAVAILABLE`
   and `ACTIVE` from `DEGRADED`, and states in data that routing, accounts and
   leases do not exist in this phase.

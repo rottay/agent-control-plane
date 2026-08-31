@@ -38,6 +38,27 @@ export {
   LedgerQueryError,
 } from "./errors/index.js";
 
+// P8-8D-pre: the content-addressed artifact store. The Checkpoint law's twin —
+// the ledger records a digest, and the bytes it names live here, in the package
+// that owns the data root. Publication is atomic and an existing object is
+// verified rather than trusted; there is no delete.
+export type {
+  ArtifactPublished,
+  ArtifactRead,
+  ArtifactRefusal,
+  ArtifactRefused,
+  PublishOutcome,
+  ReadOutcome,
+} from "./artifact-store/index.js";
+export {
+  ARTIFACT_MAX_BYTES,
+  ARTIFACT_REFUSALS,
+  artifactDigest,
+  hasArtifact,
+  publishArtifact,
+  readArtifact,
+} from "./artifact-store/index.js";
+
 export type { LedgerErrorCode, LedgerValidationIssue } from "./errors/index.js";
 
 export type { Migration } from "./migrations/index.js";

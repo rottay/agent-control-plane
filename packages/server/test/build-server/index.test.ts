@@ -817,6 +817,23 @@ describe("import purity", () => {
 });
 
 describe("the served surface matches the frozen route table", () => {
+  it("keeps every read route's 405 set byte-unchanged after the first write route (C1)", async () => {
+    // The one write route mounts its own registrar with POST removed from the
+    // 405 list. Every other route must be untouched by that: a registrar
+    // change that leaked would show up here as a read route suddenly
+    // accepting a POST, which is the failure this asserts against.
+    const { path } = seedDatabase();
+    const app = buildServer({ ledgerPath: path });
+
+    for (const url of API_ROUTE_PATTERNS.filter((pattern) => !pattern.includes(":"))) {
+      for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
+        const response = await app.inject({ method, url });
+        expect({ url, method, status: response.statusCode }).toEqual({ url, method, status: 405 });
+      }
+    }
+    await app.close();
+  });
+
   it("answers every parameterless frozen pattern, and 405s every non-GET on it", async () => {
     // Derived from the contract's own table rather than from a list restated
     // here: a route added to `API_ROUTES` and never registered would answer

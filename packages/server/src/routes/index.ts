@@ -7,6 +7,8 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  RoadmapVersionWriteRequest,
+  RoadmapVersionWriteResponse,
   IntegrityResult,
   LEDGER_CONTRACT_VERSION,
   type LedgerDatabaseIdentity,
@@ -23,10 +25,13 @@ import {
 import type { Ledger } from "@acp/ledger";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
+import { randomUUID } from "node:crypto";
+
 import { countTasks, countWorkers, recentEventsForTask, recentEventsForWorker } from "../aggregates/index.js";
 import { ApiRouteError, classifyUnexpectedError, sendApiError } from "../errors/index.js";
 import type { LedgerSource } from "../ledger-source/index.js";
 import { initiativeDetail, portfolio, roadmapHistory } from "../initiatives/index.js";
+import { recordRoadmapVersion } from "../roadmap-write/index.js";
 import {
   initiativeDetailDto,
   initiativeSummary,
@@ -58,6 +63,15 @@ const CAPABILITIES: ObservationCapabilities = Object.freeze({
 });
 
 const OTHER_METHODS = ["POST", "PUT", "PATCH", "DELETE"] as const;
+
+/**
+ * The methods a **write** route refuses. (C1.)
+ *
+ * `OTHER_METHODS` above stays exactly as it was, because every read route's
+ * 405 set must be byte-unchanged; the write route needs its own list with
+ * `POST` removed, since POST is now answered rather than refused there.
+ */
+const OTHER_METHODS_ON_WRITE = ["PUT", "PATCH", "DELETE"] as const;
 
 function registerGet(
   app: FastifyInstance,
@@ -138,6 +152,38 @@ function parseInitiativeIdParam(raw: string): string {
     throw new ApiRouteError("BAD_REQUEST", "initiativeId must be a UUID");
   }
   return raw;
+}
+
+/**
+ * Register a route that answers GET **and** POST.
+ *
+ * Written as its own registrar rather than as `registerGet` plus an
+ * `app.post`: `registerGet` mounts `[POST, PUT, PATCH, DELETE]` as one 405
+ * catch-all on the same URL, so adding a POST beside it is a duplicate-route
+ * error at boot — Fastify refuses the second registration for a method it has
+ * already seen on that path, and the server would not start at all. The two
+ * registrars therefore differ in exactly one thing: which methods fall through
+ * to the 405, and every read route keeps the four-method set unchanged.
+ */
+function registerGetAndPost(
+  app: FastifyInstance,
+  path: string,
+  getHandler: (request: FastifyRequest, reply: FastifyReply) => unknown,
+  postHandler: (request: FastifyRequest, reply: FastifyReply) => unknown,
+): void {
+  app.get(path, guarded(getHandler));
+  app.post(path, guarded(postHandler));
+  app.route({
+    method: [...OTHER_METHODS_ON_WRITE],
+    url: path,
+    handler: (request, reply) => {
+      sendApiError(
+        reply,
+        "METHOD_NOT_ALLOWED",
+        "method " + request.method + " is not allowed on this route; only GET and POST are",
+      );
+    },
+  });
 }
 
 export function registerRoutes(app: FastifyInstance, source: LedgerSource): void {
@@ -299,28 +345,103 @@ export function registerRoutes(app: FastifyInstance, source: LedgerSource): void
     });
   });
 
-  registerGet(app, API_ROUTES.initiativeRoadmap, (request) => {
-    assertEmptyQuery(queryOf(request));
-    const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
-    const { ledger } = requireOpen(source);
-    // The initiative must exist before its history can be empty: a 200 with no
-    // versions for an id the ledger has never seen would say "this initiative
-    // has no roadmap" about something that does not exist.
-    if (ledger.getInitiative(initiativeId) === null) {
-      throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
-    }
-    const items = roadmapHistory(ledger, initiativeId).map((entry) =>
-      roadmapVersion(entry.version, entry.head),
-    );
-    return InitiativeRoadmapResponse.parse({
-      apiContractVersion: API_CONTRACT_VERSION,
-      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
-      initiativeId,
-      items,
-      count: items.length,
-    });
-  });
+  // The one write route. GET is unchanged; POST is the plane's first write.
+  registerGetAndPost(
+    app,
+    API_ROUTES.initiativeRoadmap,
+    (request) => {
+      assertEmptyQuery(queryOf(request));
+      const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+      const { ledger } = requireOpen(source);
+      // The initiative must exist before its history can be empty: a 200 with no
+      // versions for an id the ledger has never seen would say "this initiative
+      // has no roadmap" about something that does not exist.
+      if (ledger.getInitiative(initiativeId) === null) {
+        throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+      }
+      const items = roadmapHistory(ledger, initiativeId).map((entry) =>
+        roadmapVersion(entry.version, entry.head),
+      );
+      return InitiativeRoadmapResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        initiativeId,
+        items,
+        count: items.length,
+      });
+    },
+    (request) => {
+      assertEmptyQuery(queryOf(request));
+      const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+      const { ledger } = requireOpen(source);
 
+      // An initiative that does not exist cannot have a roadmap recorded
+      // against it, and saying so is a 404 rather than a refusal: the
+      // request is not in conflict with anything, it names nothing.
+      if (ledger.getInitiative(initiativeId) === null) {
+        throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+      }
+
+      // Door one: the schema. A body this fails is malformed, and malformed
+      // is the caller's typing rather than the caller's timing — 400.
+      const parsed = RoadmapVersionWriteRequest.safeParse(request.body);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw new ApiRouteError(
+          "BAD_REQUEST",
+          "the roadmap version request did not satisfy the contract",
+          // The failing field, never its value: the body is the one place
+          // free text enters this plane.
+          (issue?.path ?? []).map((segment) => String(segment)).join(".") || "(root)",
+        );
+      }
+
+      const outcome = recordRoadmapVersion({
+        ledger,
+        initiativeId,
+        request: parsed.data,
+        // Injected at the seam rather than read inside it: the write module
+        // builds the same envelope from the same inputs on every run.
+        recordedAt: new Date().toISOString(),
+        roadmapVersionId: randomUUID(),
+        eventId: randomUUID(),
+      });
+
+      // Door two: the decision. A well-formed request it refuses conflicts
+      // with the recorded state — 409, carrying the refusal's own name, so
+      // a caller can tell a lost race from a bad request and retry the one
+      // that is worth retrying.
+      if (!outcome.ok) {
+        throw new ApiRouteError(
+          "WRITE_REFUSED",
+          "the roadmap version was refused: " + outcome.reason,
+          outcome.at,
+        );
+      }
+
+      return RoadmapVersionWriteResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        // Field by field, and `head` supplied here: a recorded version is by
+        // definition the newest, so it is the head of the history a reader
+        // will fetch next.
+        version: {
+          roadmapVersionId: outcome.version.roadmapVersionId,
+          initiativeId: outcome.version.initiativeId,
+          version: outcome.version.version,
+          contentDigest: outcome.version.contentDigest,
+          parentVersionId: outcome.version.parentVersionId,
+          kind: outcome.version.kind,
+          restoresVersionId: outcome.version.restoresVersionId,
+          recordedBy: outcome.version.recordedBy,
+          recordedAt: outcome.version.recordedAt,
+          sequence: outcome.sequence,
+          head: true,
+        },
+        sequence: outcome.sequence,
+      });
+    },
+  );
 }
 
 function buildHealth(source: LedgerSource) {

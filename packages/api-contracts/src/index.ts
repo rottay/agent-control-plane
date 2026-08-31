@@ -20,12 +20,21 @@ export {
   API_BASE_PATH,
   API_ROUTES,
   API_ROUTE_PATTERNS,
+  API_WRITE_METHODS,
+  API_WRITE_ROUTES,
   initiativePath,
   initiativeRoadmapPath,
   taskPath,
+  isWriteRoute,
   workerPath,
 } from "./routes/index.js";
-export type { ApiAllowedMethod, ApiRouteName, ApiRoutePattern } from "./routes/index.js";
+export type {
+  ApiAllowedMethod,
+  ApiRouteName,
+  ApiRoutePattern,
+  ApiWriteMethod,
+  ApiWriteRouteName,
+} from "./routes/index.js";
 
 /**
  * The ledger-to-client parity contract (P3D).
@@ -83,8 +92,11 @@ export {
   OverviewResponse,
   OverviewState,
   ProjectionStatusDto,
+  ROADMAP_CONTENT_MAX_BYTES,
   RoadmapVersionDto,
   RoadmapVersionKindDto,
+  RoadmapVersionWriteRequest,
+  RoadmapVersionWriteResponse,
   RollupSummary,
   TASK_STATE_COUNT,
   TaskDetail,

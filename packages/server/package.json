@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Read-only observation server for the Agent Control Plane. Serves every frozen GET route over Fastify, loopback only.",
+  "description": "Observation server for the Agent Control Plane. Serves every frozen GET route over Fastify, loopback only, plus one named write route for roadmap versions.",
   "license": "UNLICENSED",
   "exports": {
     ".": {

@@ -291,7 +291,7 @@ describe("usage", () => {
       // a literal on purpose: the CLI's job here is to report the number a
       // reader can pin against, and comparing it to the constant it prints
       // would assert only that the CLI can echo itself.
-      apiContractVersion: "0.2.0",
+      apiContractVersion: "0.3.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });

@@ -511,22 +511,45 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap", () => {
 // ---------------------------------------------------------------------------
 
 describe("the initiative plane mutates nothing", () => {
-  it("answers every non-GET on every new path with 405", async () => {
+  it("answers every non-GET on the read-only initiative paths with 405", async () => {
+    // The portfolio and the detail stay read-only: all four non-GET verbs
+    // refuse, exactly as they did before the plane took a write route.
     const { path, alpha } = seed();
     const app = buildServer({ ledgerPath: path });
-    const paths = [
-      "/api/v1/initiatives",
-      "/api/v1/initiatives/" + alpha,
-      "/api/v1/initiatives/" + alpha + "/roadmap",
-    ];
+    const readOnlyPaths = ["/api/v1/initiatives", "/api/v1/initiatives/" + alpha];
 
-    for (const url of paths) {
+    for (const url of readOnlyPaths) {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
         const response = await app.inject({ method, url });
         expect({ url, method, status: response.statusCode }).toEqual({ url, method, status: 405 });
         expect(ApiError.parse(response.json()).error.code).toBe("METHOD_NOT_ALLOWED");
       }
     }
+    await app.close();
+  });
+
+  it("refuses PUT, PATCH and DELETE on the roadmap path, but no longer POST", async () => {
+    // P8-8D-pre falsified one cell of this file's original twelve: POST on the
+    // roadmap path is the plane's first write route. The split keeps the
+    // assertion that matters — three verbs still refuse — and states the one
+    // that changed as a fact rather than deleting it. A test that had simply
+    // dropped the roadmap path would have stopped watching it entirely.
+    const { path, alpha } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const url = "/api/v1/initiatives/" + alpha + "/roadmap";
+
+    for (const method of ["PUT", "PATCH", "DELETE"] as const) {
+      const response = await app.inject({ method, url });
+      expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
+      expect(ApiError.parse(response.json()).error.code).toBe("METHOD_NOT_ALLOWED");
+    }
+
+    // POST is answered, not refused. Asserted as "not 405" rather than as a
+    // specific success, because what this file owns is the method surface —
+    // the write's own behaviour belongs to `test/roadmap-write`, and pinning
+    // it here too would make one change fail in two places for one reason.
+    const posted = await app.inject({ method: "POST", url, payload: {} });
+    expect(posted.statusCode).not.toBe(405);
     await app.close();
   });
 

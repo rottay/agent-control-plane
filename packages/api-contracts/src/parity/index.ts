@@ -169,6 +169,11 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
       bind("initiative", "LEDGER"),
     ]),
+    // The roadmap route answers a GET with the history and a POST with the
+    // recorded version. Parity is about what the three clients *read*, so the
+    // binding below stays the GET's response — the write's own shape is
+    // asserted by the schema and the endpoint's tests, and binding it here
+    // would claim a CLI and a browser render it, which neither does.
     initiativeRoadmap: Object.freeze([
       bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
       bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),

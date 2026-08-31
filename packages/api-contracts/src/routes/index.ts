@@ -49,13 +49,42 @@ export const API_ROUTE_PATTERNS: readonly ApiRoutePattern[] = Object.freeze(
 );
 
 /**
- * The only method the observation plane answers.
+ * The methods the observation plane answers on a **read** route.
  *
  * Stated as data rather than as prose so the server lane can assert it instead
- * of remembering it.
+ * of remembering it. This list stays exactly `["GET"]`: it describes the read
+ * plane, which did not change when the first write route arrived. A route that
+ * accepts a write is named in `API_WRITE_ROUTES` below and is the exception the
+ * table makes visible, rather than a widening of this one that would quietly
+ * reclassify all nine reads.
  */
 export const API_ALLOWED_METHODS = Object.freeze(["GET"] as const);
 export type ApiAllowedMethod = (typeof API_ALLOWED_METHODS)[number];
+
+/**
+ * The write routes, frozen — and deliberately a **separate** table. (P8-8D-pre.)
+ *
+ * The plane was GET-only through P8-8C, and the honest way to record its first
+ * exception is a second closed list rather than a softened first one. A reader
+ * asking "what can mutate?" gets one short answer here; a reader asking "is
+ * this route a read?" still gets the unchanged answer above. One route is in
+ * this table, and adding a second is a visible edit to a list whose whole
+ * purpose is to be short.
+ *
+ * The value is the route **name**, not the pattern, so the two tables cannot
+ * disagree about a path: the pattern always comes from `API_ROUTES`.
+ */
+export const API_WRITE_ROUTES = Object.freeze(["initiativeRoadmap"] as const);
+export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
+
+/** The methods a write route answers: its read, plus the one write. */
+export const API_WRITE_METHODS = Object.freeze(["GET", "POST"] as const);
+export type ApiWriteMethod = (typeof API_WRITE_METHODS)[number];
+
+/** Does this route accept a write? Data, so the server asserts rather than recalls. */
+export function isWriteRoute(route: ApiRouteName): boolean {
+  return (API_WRITE_ROUTES as readonly string[]).includes(route);
+}
 
 const TaskIdParam = z.uuid();
 const InitiativeIdParam = z.uuid();

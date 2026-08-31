@@ -178,6 +178,12 @@ export const API_ERROR_CODES = [
   "NOT_FOUND",
   "METHOD_NOT_ALLOWED",
   "CONTRACT_VERSION_MISMATCH",
+  // P8-8D-pre: the plane's first write route needs a code that means "the
+  // decision refused". It is distinct from BAD_REQUEST on purpose: a caller
+  // that sent something malformed and a caller whose coherent request lost a
+  // race against the recorded head need to tell each other apart, and only the
+  // second is worth retrying against a fresh head.
+  "WRITE_REFUSED",
   "LEDGER_UNAVAILABLE",
   "LEDGER_INTEGRITY",
   "INTERNAL",
@@ -1199,3 +1205,67 @@ export const InitiativeRoadmapResponse = z.strictObject({
   count: z.number().int().nonnegative(),
 });
 export type InitiativeRoadmapResponse = z.infer<typeof InitiativeRoadmapResponse>;
+
+// ---------------------------------------------------------------------------
+// The roadmap-version write (P8-8D-pre)
+// ---------------------------------------------------------------------------
+
+/**
+ * The largest roadmap document this API accepts. (N1.)
+ *
+ * Named and numbered here so the endpoint that guards on it and the artifact
+ * store that enforces it cannot drift to two different numbers — it is the
+ * same 1 MiB the store states, restated as a contract term because a caller
+ * needs to know the limit before it sends a megabyte.
+ */
+export const ROADMAP_CONTENT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * What a caller sends to record a roadmap version.
+ *
+ * The bytes travel; the digest does not. A caller that supplied its own
+ * content digest would be asking this plane to trust an arithmetic claim it
+ * can make itself for nothing, and the one thing the ledger records about the
+ * content is exactly that digest. `expectedHeadDigest` is the *other* kind of
+ * digest — a claim about what the caller believes the head to be — and it is
+ * required, nullable only for the first version, exactly as the landed
+ * `RoadmapVersion` contract already demands of the value it produces.
+ *
+ * **The guards run on the content, deliberately (N2).** A roadmap document is
+ * free text and this is the one route on which free text enters the plane, so
+ * it is scanned for credential and transcript material on ingest. That is a
+ * conscious cost: a document that legitimately discusses an `apiKey` field
+ * will be refused. The alternative — admitting unscanned free text into an
+ * append-only store the UI and CLI both read — is the failure this repository
+ * has spent four surfaces preventing, and a roadmap is not worth the
+ * exception.
+ */
+export const RoadmapVersionWriteRequest = z
+  .strictObject({
+    content: z.string().min(1).max(ROADMAP_CONTENT_MAX_BYTES),
+    /** Null only when recording version 1. */
+    expectedHeadDigest: Sha256Hex.nullable(),
+    kind: RoadmapVersionKindDto,
+    /** Set exactly when the kind is ROLLBACK; the contract re-checks it. */
+    restoresVersionId: z.uuid().nullable(),
+    recordedBy: WorkerIdentityString,
+  })
+  .superRefine(attachGuards);
+export type RoadmapVersionWriteRequest = z.infer<typeof RoadmapVersionWriteRequest>;
+
+/**
+ * What the plane answers when a version is recorded.
+ *
+ * The recorded version and the sequence it landed at, so a caller can follow
+ * its own write into the history it will read back. No content echoes: the
+ * caller already has the bytes, and echoing them would put the one unscannable
+ * thing on the response path as well as the request path.
+ */
+export const RoadmapVersionWriteResponse = z.strictObject({
+  apiContractVersion: ApiContractVersion,
+  ledgerContractVersion: LedgerContractVersion,
+  version: RoadmapVersionDto,
+  /** The initiative-stream position the append landed at. */
+  sequence: z.number().int().positive(),
+});
+export type RoadmapVersionWriteResponse = z.infer<typeof RoadmapVersionWriteResponse>;

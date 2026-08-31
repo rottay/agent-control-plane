@@ -99,6 +99,17 @@ describe("the binding table matches the schemas it claims to bind", () => {
     initiativeRoadmap: InitiativeRoadmapResponse,
   };
 
+  it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {
+    // Parity is an equality over what the three clients *render*. The write
+    // route's response is not rendered by any of them — the CLI and the
+    // browser read histories, they do not record versions — so binding it here
+    // would claim a parity that does not exist. The write's own shape is held
+    // by its schema and its endpoint tests instead.
+    const bound = PARITY_BINDINGS.initiativeRoadmap.map((binding) => binding.field).sort();
+    expect(bound).toEqual(shapeKeys(InitiativeRoadmapResponse));
+    expect(bound).not.toContain("sequence");
+  });
+
   it("has a schema for every bound route, so the comparison below can be total", () => {
     // Without this, a route added to the table with no schema beside it would
     // make `shapeKeys(undefined)` return `[]` and the field comparison would

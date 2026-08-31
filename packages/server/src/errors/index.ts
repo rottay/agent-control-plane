@@ -9,14 +9,23 @@ import type { FastifyReply } from "fastify";
  * inline: `BAD_REQUEST`/`NOT_FOUND`/`METHOD_NOT_ALLOWED` are the caller's
  * fault, `CONTRACT_VERSION_MISMATCH` and `LEDGER_UNAVAILABLE` mean this build
  * cannot currently serve this database, `LEDGER_INTEGRITY` means the database
- * answered but the answer failed a trust check, and `INTERNAL` is reserved for
- * anything this module did not deliberately classify.
+ * answered but the answer failed a trust check, `WRITE_REFUSED` means a
+ * well-formed write was refused by the decision that owns it, and `INTERNAL`
+ * is reserved for anything this module did not deliberately classify.
+ *
+ * `WRITE_REFUSED` answers **409**, beside `CONTRACT_VERSION_MISMATCH` and
+ * deliberately not merged into it. Both are conflicts, but they are conflicts
+ * about different things: one says this build cannot serve this database, the
+ * other says this request lost a race against the recorded state. Only the
+ * second is worth retrying against a fresh head, and a caller can only know
+ * that if the two carry different names.
  */
 const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   BAD_REQUEST: 400,
   NOT_FOUND: 404,
   METHOD_NOT_ALLOWED: 405,
   CONTRACT_VERSION_MISMATCH: 409,
+  WRITE_REFUSED: 409,
   LEDGER_UNAVAILABLE: 503,
   LEDGER_INTEGRITY: 500,
   INTERNAL: 500,

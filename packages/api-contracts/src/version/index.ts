@@ -23,8 +23,16 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * it read before. The minor moves rather than the patch because new surface is
  * new contract, and a reader that wants to know whether the initiative routes
  * exist should be able to ask this number rather than probe for a 404.
+ *
+ * `0.2.0` → `0.3.0` at P8-8D-pre: the plane accepts its **first write**. Still
+ * additive — no existing route, field or type changed, and every read a pinned
+ * reader made before it still answers identically — but the minor moves for a
+ * reason no read-only addition ever had: what this API *is* changed. A reader
+ * that assumed "every route here is safe to retry, and nothing I send mutates
+ * anything" was right at 0.2.0 and is wrong at 0.3.0, and that is precisely
+ * what a version number exists to tell it.
  */
-export const API_CONTRACT_VERSION = "0.2.0" as const;
+export const API_CONTRACT_VERSION = "0.3.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**
