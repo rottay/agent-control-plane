@@ -1,6 +1,7 @@
 import {
   API_ROUTES,
   ApiError,
+  AccountsResponse,
   EventPageResponse,
   InitiativeAgentsResponse,
   InitiativeDetailResponse,
@@ -459,6 +460,19 @@ export function fetchInitiativeAgents(
   return fetchAndParse(path, InitiativeAgentsResponse, signal);
 }
 
+/**
+ * The owner's accounts (P8-8F).
+ *
+ * `AccountsResponse` is a closed union — `READY` or `UNAVAILABLE` — and both
+ * arms are a 200 at the transport level, so this fetcher never classifies
+ * `UNAVAILABLE` as a failure: parsing succeeds and the view branches on
+ * `data.status` itself. Only a genuine transport, contract or unexpected-
+ * status failure reaches `ApiResult`'s other kinds.
+ */
+export function fetchAccounts(signal?: AbortSignal): Promise<ApiResult<AccountsResponse>> {
+  return fetchAndParse(API_ROUTES.accounts, AccountsResponse, signal);
+}
+
 // ---------------------------------------------------------------------------
 // Query keys (P8-8B)
 // ---------------------------------------------------------------------------
@@ -492,4 +506,5 @@ export const queryKeys = {
     ["acp", "initiative", initiativeId, "roadmap", "content", version] as const,
   initiativeTimeline: (initiativeId: string) => ["acp", "initiative", initiativeId, "timeline"] as const,
   initiativeAgents: (initiativeId: string) => ["acp", "initiative", initiativeId, "agents"] as const,
+  accounts: () => ["acp", "accounts"] as const,
 };

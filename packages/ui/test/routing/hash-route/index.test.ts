@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildAccountsHash,
   buildHash,
   buildInitiativeAgentsHash,
   buildInitiativeGraphHash,
   buildInitiativeHash,
+  buildInitiativeLogsHash,
+  buildInitiativeRoadmapHash,
   buildInitiativeTimelineHash,
   buildPortfolioHash,
   buildTaskDetailHash,
@@ -28,6 +31,7 @@ describe("parseHash", () => {
     expect(parseHash("#/events")).toMatchObject({ view: "events" });
     expect(parseHash("#/status")).toMatchObject({ view: "status" });
     expect(parseHash("#/integrity")).toMatchObject({ view: "integrity" });
+    expect(parseHash("#/accounts")).toMatchObject({ view: "accounts", initiativeId: null });
   });
 
   it("parses a task detail route", () => {
@@ -144,6 +148,38 @@ describe("parseHash — the three scope-only views (P8-8E, C5)", () => {
   });
 });
 
+describe("parseHash — logs and the roadmap document, scoped-only (P8-8F)", () => {
+  it("parses the scoped logs route", () => {
+    const route = parseHash("#/i/" + INITIATIVE_ID + "/logs");
+    expect(route).toMatchObject({ view: "logs", taskId: null, workerIdentity: null, initiativeId: INITIATIVE_ID });
+  });
+
+  it("parses the scoped roadmap document route", () => {
+    const route = parseHash("#/i/" + INITIATIVE_ID + "/roadmap");
+    expect(route).toMatchObject({ view: "roadmap-document", taskId: null, workerIdentity: null, initiativeId: INITIATIVE_ID });
+  });
+
+  it("carries query parameters on both scoped routes", () => {
+    const logs = parseHash("#/i/" + INITIATIVE_ID + "/logs?stream=TASK&idMatch=abc");
+    expect(logs.view).toBe("logs");
+    expect(logs.query).toEqual({ stream: "TASK", idMatch: "abc" });
+
+    const roadmap = parseHash("#/i/" + INITIATIVE_ID + "/roadmap?version=3");
+    expect(roadmap.view).toBe("roadmap-document");
+    expect(roadmap.query).toEqual({ version: "3" });
+  });
+
+  it("has no unscoped counterpart: bare #/logs and #/roadmap are not-found", () => {
+    expect(parseHash("#/logs").view).toBe("not-found");
+    expect(parseHash("#/roadmap").view).toBe("not-found");
+  });
+
+  it("falls back to not-found for a scoped logs/roadmap route with an extra segment", () => {
+    expect(parseHash("#/i/" + INITIATIVE_ID + "/logs/extra").view).toBe("not-found");
+    expect(parseHash("#/i/" + INITIATIVE_ID + "/roadmap/extra").view).toBe("not-found");
+  });
+});
+
 describe("buildHash and serializeQuery", () => {
   it("builds a bare view hash with no query", () => {
     expect(buildHash("overview")).toBe("#/overview");
@@ -228,5 +264,46 @@ describe("buildInitiativeGraphHash, buildInitiativeTimelineHash and buildInitiat
     expect(buildInitiativeGraphHash("has/slash")).toBe("#/i/has%2Fslash/graph");
     expect(buildInitiativeAgentsHash("has/slash")).toBe("#/i/has%2Fslash/agents");
     expect(buildInitiativeTimelineHash("has/slash")).toBe("#/i/has%2Fslash/events");
+  });
+});
+
+describe("buildAccountsHash, buildInitiativeLogsHash and buildInitiativeRoadmapHash (P8-8F)", () => {
+  it("builds the bare, unscoped accounts hash", () => {
+    expect(buildAccountsHash()).toBe("#/accounts");
+    expect(parseHash(buildAccountsHash())).toMatchObject({ view: "accounts", initiativeId: null });
+  });
+
+  it("builds a bare logs hash that parses back to the logs view, scoped", () => {
+    const hash = buildInitiativeLogsHash(INITIATIVE_ID);
+    expect(hash).toBe("#/i/" + INITIATIVE_ID + "/logs");
+    expect(parseHash(hash)).toMatchObject({ view: "logs", initiativeId: INITIATIVE_ID });
+  });
+
+  it("builds a logs hash with query parameters that round-trip", () => {
+    const hash = buildInitiativeLogsHash(INITIATIVE_ID, { stream: "TASK", idMatch: "abc" });
+    expect(hash).toBe("#/i/" + INITIATIVE_ID + "/logs?stream=TASK&idMatch=abc");
+    const route = parseHash(hash);
+    expect(route.view).toBe("logs");
+    expect(route.query["stream"]).toBe("TASK");
+    expect(route.query["idMatch"]).toBe("abc");
+  });
+
+  it("builds a bare roadmap document hash that parses back to the roadmap-document view, scoped", () => {
+    const hash = buildInitiativeRoadmapHash(INITIATIVE_ID);
+    expect(hash).toBe("#/i/" + INITIATIVE_ID + "/roadmap");
+    expect(parseHash(hash)).toMatchObject({ view: "roadmap-document", initiativeId: INITIATIVE_ID });
+  });
+
+  it("builds a roadmap document hash carrying a version that round-trips", () => {
+    const hash = buildInitiativeRoadmapHash(INITIATIVE_ID, { version: 3 });
+    expect(hash).toBe("#/i/" + INITIATIVE_ID + "/roadmap?version=3");
+    const route = parseHash(hash);
+    expect(route.view).toBe("roadmap-document");
+    expect(route.query["version"]).toBe("3");
+  });
+
+  it("encodes the initiative id on both scoped builders", () => {
+    expect(buildInitiativeLogsHash("has/slash")).toBe("#/i/has%2Fslash/logs");
+    expect(buildInitiativeRoadmapHash("has/slash")).toBe("#/i/has%2Fslash/roadmap");
   });
 });

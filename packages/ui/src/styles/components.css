@@ -975,3 +975,75 @@ input[type="text"] {
 .graph-canvas__node-label code {
   font-size: var(--text-xs);
 }
+
+/* Accounts (P8-8F, blueprint §3a) */
+
+.accounts-estimated-at {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-3);
+}
+
+/* The models disclosure (v2, N1): a native <details>, keyboard-reachable
+   without a new dependency or a title-only affordance. */
+.models-disclosure summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.models-disclosure ul {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* Logs (P8-8F, blueprint §3c): dense and monospaced, distinct from the
+   timeline's own reading-oriented rhythm. A CSS-only wrapper around the
+   landed `DataTable` rather than a new table primitive. */
+.log-table table {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.log-table th,
+.log-table td {
+  padding-top: var(--space-1);
+  padding-bottom: var(--space-1);
+}
+
+/* Roadmap document (P8-8F, blueprint §3d) */
+
+.roadmap-document__version-field {
+  margin-bottom: var(--space-4);
+}
+
+.roadmap-document__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.roadmap-document__recorded {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.roadmap-document__body {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: var(--space-4);
+  max-height: 40rem;
+  overflow-y: auto;
+}

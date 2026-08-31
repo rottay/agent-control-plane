@@ -34,6 +34,30 @@ describe("AppShell", () => {
     expect(html).toContain("<footer");
   });
 
+  it("gains an Accounts entry after Workers (P8-8F)", () => {
+    const html = renderToStaticMarkup(
+      <AppShell route={route("overview")}>
+        <p>content</p>
+      </AppShell>,
+    );
+    const navStart = html.indexOf('class="app-shell__nav"');
+    const nav = html.slice(navStart);
+    const workersIndex = nav.indexOf("Workers");
+    const accountsIndex = nav.indexOf("Accounts");
+    expect(workersIndex).toBeGreaterThan(-1);
+    expect(accountsIndex).toBeGreaterThan(-1);
+    expect(workersIndex).toBeLessThan(accountsIndex);
+  });
+
+  it("marks the Accounts nav entry current on the accounts route", () => {
+    const html = renderToStaticMarkup(
+      <AppShell route={route("accounts")}>
+        <p>content</p>
+      </AppShell>,
+    );
+    expect(html).toContain('aria-current="page"');
+  });
+
   it("marks the current view's nav entry with aria-current", () => {
     const html = renderToStaticMarkup(
       <AppShell route={route("tasks")}>

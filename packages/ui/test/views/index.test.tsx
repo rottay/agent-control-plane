@@ -2,9 +2,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { type Route } from "../../src/routing/hash-route/index.js";
+import { AccountsView } from "../../src/views/accounts-view/index.js";
 import { EventsView } from "../../src/views/events-view/index.js";
 import { IntegrityView } from "../../src/views/integrity-view/index.js";
+import { LogsView } from "../../src/views/logs-view/index.js";
 import { OverviewView } from "../../src/views/overview-view/index.js";
+import { RoadmapDocumentView } from "../../src/views/roadmap-document-view/index.js";
 import { StatusView } from "../../src/views/status-view/index.js";
 import { TaskDetailView } from "../../src/views/task-detail-view/index.js";
 import { TasksListView } from "../../src/views/tasks-list-view/index.js";
@@ -131,6 +134,49 @@ describe("WorkerDetailView", () => {
 
   it("falls back to the not-found view when the route carries no identity", () => {
     const html = renderToStaticMarkup(<WorkerDetailView route={route({ view: "worker-detail", workerIdentity: null })} />);
+    expect(html).toContain("Not found");
+  });
+});
+
+describe("AccountsView (P8-8F)", () => {
+  it("renders a heading and an announced loading state", () => {
+    const html = renderToStaticMarkup(<AccountsView />);
+    expect(html).toContain("Accounts");
+    expect(html).toContain('role="status"');
+  });
+});
+
+describe("LogsView (P8-8F)", () => {
+  it("renders a heading and an announced loading state when the route carries an initiative id", () => {
+    const html = renderToStaticMarkup(
+      <LogsView route={route({ view: "logs", initiativeId: "123e4567-e89b-12d3-a456-426614174000" })} navigate={noop} />,
+    );
+    expect(html).toContain("Logs");
+    expect(html).toContain('role="status"');
+  });
+
+  it("falls back to the not-found view when the route carries no initiative id", () => {
+    const html = renderToStaticMarkup(<LogsView route={route({ view: "logs", initiativeId: null })} navigate={noop} />);
+    expect(html).toContain("Not found");
+  });
+});
+
+describe("RoadmapDocumentView (P8-8F)", () => {
+  it("renders a heading and an announced loading state when the route carries an initiative id", () => {
+    const html = renderToStaticMarkup(
+      <RoadmapDocumentView
+        route={route({ view: "roadmap-document", initiativeId: "123e4567-e89b-12d3-a456-426614174000" })}
+        navigate={noop}
+      />,
+    );
+    expect(html).toContain("Roadmap document");
+    expect(html).toContain('role="status"');
+  });
+
+  it("falls back to the not-found view when the route carries no initiative id", () => {
+    const html = renderToStaticMarkup(
+      <RoadmapDocumentView route={route({ view: "roadmap-document", initiativeId: null })} navigate={noop} />,
+    );
     expect(html).toContain("Not found");
   });
 });

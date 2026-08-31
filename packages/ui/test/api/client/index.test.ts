@@ -1,7 +1,7 @@
 import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "@acp/api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchEvents, fetchOverview, fetchTaskDetail, fetchTasks, fetchWorkerDetail } from "../../../src/api/client/index.js";
+import { fetchAccounts, fetchEvents, fetchOverview, fetchTaskDetail, fetchTasks, fetchWorkerDetail } from "../../../src/api/client/index.js";
 
 const SHA = "a".repeat(64);
 
@@ -88,6 +88,54 @@ describe("fetchOverview", () => {
     if (result.kind === "network-error") {
       expect(result.detail).toContain("connection refused");
     }
+  });
+});
+
+describe("fetchAccounts (P8-8F)", () => {
+  it("parses the READY arm as ok", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          status: "READY",
+          apiContractVersion: API_CONTRACT_VERSION,
+          ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+          items: [],
+          count: 0,
+          estimatedAt: "2026-08-31T12:00:00.000Z",
+        }),
+      ),
+    );
+    const result = await fetchAccounts();
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.data.status).toBe("READY");
+    }
+  });
+
+  it("parses the UNAVAILABLE arm as ok too — it is a 200, not a failure this client classifies", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(200, {
+          status: "UNAVAILABLE",
+          apiContractVersion: API_CONTRACT_VERSION,
+          ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+          reason: "ACCOUNTS_FILE_UNCONFIGURED",
+        }),
+      ),
+    );
+    const result = await fetchAccounts();
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.data.status).toBe("UNAVAILABLE");
+    }
+  });
+
+  it("reports contract-mismatch for a body satisfying neither union arm", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(200, { status: "NONSENSE" })));
+    const result = await fetchAccounts();
+    expect(result.kind).toBe("contract-mismatch");
   });
 });
 

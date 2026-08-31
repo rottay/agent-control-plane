@@ -33,6 +33,15 @@
  * worker roster is only ever a fact about one initiative. `parseScopedOnlySegments`
  * is checked first, before the shared grammar, so the two never drift into
  * resolving the same segment two different ways.
+ *
+ * **P8-8F.** `#/accounts` joins the plain grammar: accounts and quota are
+ * global by roadmap law (provider/account quota is not a fact about one
+ * initiative), exactly like the portfolio — a scoped `#/i/<id>/accounts`
+ * would be a contradiction, not a narrower view. `#/i/<id>/logs` and
+ * `#/i/<id>/roadmap` join `parseScopedOnlySegments` beside `graph`/`events`/
+ * `agents`, for the same reason those three are scoped-only: an initiative's
+ * log or its roadmap document is only ever a fact about that initiative, and
+ * neither has an unprefixed counterpart to share.
  */
 
 export const VIEW_NAMES = [
@@ -47,6 +56,9 @@ export const VIEW_NAMES = [
   "graph",
   "timeline",
   "agents",
+  "accounts",
+  "logs",
+  "roadmap-document",
   "status",
   "integrity",
   "not-found",
@@ -125,6 +137,9 @@ function parseViewSegments(
   if (head === "integrity" && segments.length === 1) {
     return { view: "integrity", taskId: null, workerIdentity: null, initiativeId, query, raw };
   }
+  if (head === "accounts" && segments.length === 1) {
+    return { view: "accounts", taskId: null, workerIdentity: null, initiativeId, query, raw };
+  }
   return { view: "not-found", taskId: null, workerIdentity: null, initiativeId, query, raw };
 }
 
@@ -151,6 +166,12 @@ function parseScopedOnlySegments(
   }
   if (segments[0] === "agents") {
     return { view: "agents", taskId: null, workerIdentity: null, initiativeId, query, raw };
+  }
+  if (segments[0] === "logs") {
+    return { view: "logs", taskId: null, workerIdentity: null, initiativeId, query, raw };
+  }
+  if (segments[0] === "roadmap") {
+    return { view: "roadmap-document", taskId: null, workerIdentity: null, initiativeId, query, raw };
   }
   return null;
 }
@@ -242,6 +263,27 @@ export function buildInitiativeTimelineHash(
 /** The scoped agents route (P8-8E). */
 export function buildInitiativeAgentsHash(initiativeId: string): string {
   return "#/i/" + encodeURIComponent(initiativeId) + "/agents";
+}
+
+/** The accounts route (P8-8F): plain, unscoped — accounts are global. */
+export function buildAccountsHash(): string {
+  return "#/accounts";
+}
+
+/** The scoped operator log route (P8-8F). */
+export function buildInitiativeLogsHash(
+  initiativeId: string,
+  query: Readonly<Record<string, string | number | undefined | null>> = {},
+): string {
+  return "#/i/" + encodeURIComponent(initiativeId) + "/logs" + serializeQuery(query);
+}
+
+/** The scoped roadmap document route (P8-8F). */
+export function buildInitiativeRoadmapHash(
+  initiativeId: string,
+  query: Readonly<Record<string, string | number | undefined | null>> = {},
+): string {
+  return "#/i/" + encodeURIComponent(initiativeId) + "/roadmap" + serializeQuery(query);
 }
 
 export function buildWorkerDetailHash(identity: string): string {

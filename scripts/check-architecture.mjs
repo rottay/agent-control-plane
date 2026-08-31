@@ -1271,33 +1271,50 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **249 packet entries across 122 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **268 packet entries across 129 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) +
  * 17 (P8-8E-pre) + 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) +
- * 2 (P8-debrief-ruling) = 249 entries, with 127 duplicate entries, folded
- * from a computed duplicate-owner table rather than argued:
- * `scripts/check-architecture.mjs` is named by all twenty-three packets (22);
- * `pnpm-lock.yaml` by the seven packets that moved a dependency edge (6);
- * ten api-contracts, server and cli paths are each named by P8-8A, P8-8D-pre,
- * P8-8D-c2, P8-8E-pre and P8-8F-srv (4 each, 40); `docs/ROADMAP.md` by P8-D,
- * the three P8-T packets, P8-8E2 and this debrief-ruling record (5);
- * `packages/server/test/initiatives/` by four packets (3); four ui paths by
- * P8-8B, P8-8C, P8-8D and P8-8E (3 each, 12); the port, the barrel, the port's
- * fixture and the test doubles by P8-2, P8-3 and P8-4 (2 each, 8);
- * `packages/server/src/initiatives/` (2); `packages/server/package.json` by
- * P8-8A, P8-8D-pre and P8-8F-srv (2); four more ui paths by three packets each
- * (2 each, 8); and nineteen paths named by exactly two packets -- the contracts
- * schema, the four runtime modules and their six suites from P8-8E2, the
- * server's mapper and its tsconfig, and five ui paths (1 each, 19).
- * 22 + 6 + 40 + 5 + 3 + 12 + 8 + 2 + 2 + 8 + 19 = 127.
+ * 2 (P8-debrief-ruling) + 19 (P8-8F-ui) = 268 entries, with 139 duplicate
+ * entries, folded from a computed duplicate-owner table rather than argued:
+ * `scripts/check-architecture.mjs` is named by all twenty-four packets (23);
+ * `pnpm-lock.yaml` by the seven packets that moved a dependency edge (6) --
+ * P8-8F-ui does not touch it, the dependency edge this cohort's UI packet
+ * needed was zero; ten api-contracts, server and cli paths are each named by
+ * P8-8A, P8-8D-pre, P8-8D-c2, P8-8E-pre and P8-8F-srv (4 each, 40);
+ * `docs/ROADMAP.md` by P8-D, the three P8-T packets, P8-8E2 and the
+ * debrief-ruling record (5); the four runtime modules and their six suites
+ * from P8-8E2 are each named twice, by P8-W and P8-8E2 (1 each, 10); the
+ * port, the barrel, the port's fixture and the test doubles
+ * by P8-2, P8-3 and P8-4 (2 each, 8); three ui paths -- the hash-route module,
+ * `components.css` and the hash-route suite -- by P8-8C, P8-8D, P8-8E and now
+ * P8-8F-ui (3 each, 9); two ui paths -- the app root and the api client -- by
+ * P8-8B, P8-8C, P8-8D, P8-8E and now P8-8F-ui (4 each, 8); the app shell by
+ * P8-8B, P8-8C, P8-8D and now P8-8F-ui (3); two ui paths -- the app-shell
+ * suite and the views loading-smoke suite -- by P8-8C, P8-8D and now
+ * P8-8F-ui (2 each, 4); two ui paths -- the workspace view and its suite --
+ * by P8-8D, P8-8E and now P8-8F-ui (2 each, 4); `packages/ui/package.json`
+ * and `pnpm-workspace.yaml` by P8-8B, P8-8C, P8-8D and P8-8E, unmoved by
+ * P8-8F-ui -- the named non-sites, no new dependency (3 each, 6); the app
+ * root's own test file by P8-8B and now P8-8F-ui (1); `packages/server/src/
+ * initiatives/` by P8-8A, P8-8D-c2 and P8-8E-pre (2); `packages/server/
+ * package.json` by P8-8A, P8-8D-pre and P8-8F-srv (2);
+ * `packages/server/test/initiatives/` by four packets (3);
+ * `packages/server/mappers/` by P8-8A and P8-8E-pre (1); the server's
+ * tsconfig by P8-8A and P8-8F-srv (1); the contracts schema (the P1 one) by
+ * P8-1 and P8-8E2 (1); and two ui paths -- `status-tone` and the portfolio
+ * view's suite -- by P8-8C and P8-8D (1 each, 2).
+ * 23 + 6 + 40 + 5 + 10 + 8 + 9 + 8 + 3 + 4 + 4 + 6 + 1 + 2 + 2 + 3 + 1 + 1 + 1 + 2 = 139.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Four packets add entries without adding paths:
- * P8-8D-pre's 22nd, the whole of P8-8D-c2, the whole of P8-T-roadmap, and this
+ * P8-8D-pre's 22nd, the whole of P8-8D-c2, the whole of P8-T-roadmap, and the
  * debrief-ruling record. P8-T2 added three paths; P8-8E-pre three; P8-8E six;
- * P8-8E2 two; and P8-8F-srv five. This
+ * P8-8E2 two; P8-8F-srv five; and P8-8F-ui adds **seven** -- the three new
+ * views' own source files, their three test files, and the api client's own
+ * test file, which no earlier P8 packet had touched (every other path this
+ * packet names was already the phase's). This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1964,6 +1981,45 @@ const P88F_SRV_WRITE_SET = [
 const P8_DEBRIEF_RULING_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
 /**
+ * P8-8F packet 2: the UI over the landed 0.6.0 contract.
+ *
+ * Three new views over the accounts read, the scoped operator log and the
+ * roadmap document, plus the P8-8D C1 deferral's named home: the workspace's
+ * quota-confidence row, read from the detail fetch it already makes (no new
+ * fetch). `AccountsResponse` is a closed union and both arms are a 200, so
+ * the accounts view branches on `data.status` inside its own success render
+ * rather than treating `UNAVAILABLE` as this package's landed error idiom —
+ * it is the state a fresh machine actually shows. The scoped logs and the
+ * roadmap document join `graph`/`events`/`agents` in
+ * `parseScopedOnlySegments`; `accounts` joins the plain grammar beside
+ * `tasks`/`workers`/`events`, since accounts are global by roadmap law. No
+ * new dependency and no new primitive: the version selector is a native
+ * `select`, and the document body is pre-wrapped monospace text, not a
+ * markdown renderer.
+ */
+const P88F_UI_WRITE_SET = [
+  "packages/ui/src/views/accounts-view/index.tsx",
+  "packages/ui/src/views/logs-view/index.tsx",
+  "packages/ui/src/views/roadmap-document-view/index.tsx",
+  "packages/ui/src/app/index.tsx",
+  "packages/ui/src/routing/hash-route/index.ts",
+  "packages/ui/src/views/workspace-view/index.tsx",
+  "packages/ui/src/api/client/index.ts",
+  "packages/ui/src/components/app-shell/index.tsx",
+  "packages/ui/src/styles/components.css",
+  "packages/ui/test/views/accounts-view/index.test.tsx",
+  "packages/ui/test/views/logs-view/index.test.tsx",
+  "packages/ui/test/views/roadmap-document-view/index.test.tsx",
+  "packages/ui/test/views/workspace-view/index.test.tsx",
+  "packages/ui/test/views/index.test.tsx",
+  "packages/ui/test/routing/hash-route/index.test.ts",
+  "packages/ui/test/app/index.test.tsx",
+  "packages/ui/test/components/app-shell/index.test.tsx",
+  "packages/ui/test/api/client/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2242,6 +2298,7 @@ const WRITE_SET = [
   ...P88E2_WRITE_SET,
   ...P88F_SRV_WRITE_SET,
   ...P8_DEBRIEF_RULING_WRITE_SET,
+  ...P88F_UI_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

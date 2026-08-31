@@ -160,6 +160,12 @@ describe("WorkspaceSection — the fixture renders (blueprint v2 §2)", () => {
     expect(html).toContain("Running"); // BarBreakdown's humanized state label
   });
 
+  it("renders the quota-confidence row: the fold's confidence badge and unscoped tokens used (P8-8D C1's deferral, P8-8F)", () => {
+    expect(html).toContain("Quota confidence");
+    expect(html).toContain("High");
+    expect(html).toContain("Unscoped tokens used");
+  });
+
   it("carries nothing the data plane does not serve (C1)", () => {
     expect(html).not.toContain("agents active");
     expect(html).not.toContain("reset in");
@@ -261,15 +267,75 @@ describe("WorkspaceSection — the states contract (blueprint v2 §5)", () => {
     expect(html).not.toContain("500 used");
     expect(html).toContain("2 records were skipped as malformed");
   });
+
+  it("quota confidence HIGH: unscoped tokens used renders a real count, never —", () => {
+    const html = renderToStaticMarkup(
+      <WorkspaceSection
+        route={route()}
+        initiativeId={INITIATIVE_ID}
+        detailResource={successResource(
+          detailResponse({ quota: quotaConfidence({ confidence: "HIGH", unscopedTokensUsed: 4_200 }) }),
+        )}
+        detailLastFetchedAt={new Date()}
+        onRefreshDetail={noop}
+        roadmapResource={successResource(roadmapResponse([roadmapVersion()]))}
+        roadmapLastFetchedAt={new Date()}
+        onRefreshRoadmap={noop}
+      />,
+    );
+    expect(html).toContain("High");
+    expect(html).toContain("4,200");
+  });
+
+  it("quota confidence LOW marks the unscoped-tokens field —, with an explaining title (P8-8D C1's degraded law)", () => {
+    const html = renderToStaticMarkup(
+      <WorkspaceSection
+        route={route()}
+        initiativeId={INITIATIVE_ID}
+        detailResource={successResource(
+          detailResponse({ quota: quotaConfidence({ confidence: "LOW", unscopedTokensUsed: 4_200 }) }),
+        )}
+        detailLastFetchedAt={new Date()}
+        onRefreshDetail={noop}
+        roadmapResource={successResource(roadmapResponse([roadmapVersion()]))}
+        roadmapLastFetchedAt={new Date()}
+        onRefreshRoadmap={noop}
+      />,
+    );
+    expect(html).toContain("Low");
+    expect(html).not.toContain("4,200");
+    expect(html).toMatch(/title="[^"]*confidence is low[^"]*">—</);
+  });
+
+  it("a nonzero skip count on the quota fold also marks the field —, even at HIGH confidence", () => {
+    const html = renderToStaticMarkup(
+      <WorkspaceSection
+        route={route()}
+        initiativeId={INITIATIVE_ID}
+        detailResource={successResource(
+          detailResponse({ quota: quotaConfidence({ confidence: "HIGH", skippedMalformed: 3, unscopedTokensUsed: 4_200 }) }),
+        )}
+        detailLastFetchedAt={new Date()}
+        onRefreshDetail={noop}
+        roadmapResource={successResource(roadmapResponse([roadmapVersion()]))}
+        roadmapLastFetchedAt={new Date()}
+        onRefreshRoadmap={noop}
+      />,
+    );
+    expect(html).not.toContain("4,200");
+    expect(html).toMatch(/title="[^"]*3 records were skipped as malformed during the unscoped quota fold[^"]*">—</);
+  });
 });
 
-describe("WorkspaceSubnav — the four initiative pages (P8-8E, C5)", () => {
-  it("renders all four links, scoped to the initiative", () => {
+describe("WorkspaceSubnav — the six initiative pages (P8-8E/P8-8F, C5)", () => {
+  it("renders all six links, scoped to the initiative", () => {
     const html = renderToStaticMarkup(<WorkspaceSubnav route={route()} initiativeId={INITIATIVE_ID} />);
     expect(html).toContain('href="#/i/' + INITIATIVE_ID + '"');
     expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/graph"');
     expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/events"');
     expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/agents"');
+    expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/roadmap"');
+    expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/logs"');
   });
 
   it("marks the current page's link with an explicit aria-current, and no other", () => {

@@ -13,6 +13,8 @@ import {
   buildInitiativeAgentsHash,
   buildInitiativeGraphHash,
   buildInitiativeHash,
+  buildInitiativeLogsHash,
+  buildInitiativeRoadmapHash,
   buildInitiativeTimelineHash,
   type Route,
   type ViewName,
@@ -87,6 +89,8 @@ const SUBNAV_ITEMS: readonly {
   { view: "graph", label: "Graph", hash: buildInitiativeGraphHash },
   { view: "timeline", label: "Timeline", hash: buildInitiativeTimelineHash },
   { view: "agents", label: "Agents", hash: buildInitiativeAgentsHash },
+  { view: "roadmap-document", label: "Roadmap", hash: buildInitiativeRoadmapHash },
+  { view: "logs", label: "Logs", hash: buildInitiativeLogsHash },
 ];
 
 export interface WorkspaceSubnavProps {
@@ -178,6 +182,10 @@ export function WorkspaceSection({
         const initiative = data.initiative;
         const name = initiative.slug ?? initiative.title ?? truncateMiddle(initiative.initiativeId);
         const degraded = initiative.rollup.skippedMalformed > 0;
+        // The P8-8D C1 deferral's degraded law, restated for the fold's own
+        // confidence: LOW confidence or a nonzero skip count marks the total
+        // unplaceable rather than reporting a number the fold does not trust.
+        const quotaDegraded = data.quota.confidence === "LOW" || data.quota.skippedMalformed > 0;
         const stateCounts = new Map<string, number>();
         for (const task of data.tasks) {
           stateCounts.set(task.currentState, (stateCounts.get(task.currentState) ?? 0) + 1);
@@ -334,6 +342,25 @@ export function WorkspaceSection({
                       )}
                     </dd>
                   </div>
+                  <div>
+                    <dt>Quota confidence</dt>
+                    <dd>
+                      <StatusBadge
+                        label={humanizeConstant(data.quota.confidence)}
+                        tone={data.quota.confidence === "HIGH" ? "good" : "warn"}
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Unscoped tokens used</dt>
+                    <dd>
+                      {quotaDegraded ? (
+                        <span title={quotaDegradedTitle(data.quota)}>—</span>
+                      ) : (
+                        formatCount(data.quota.unscopedTokensUsed)
+                      )}
+                    </dd>
+                  </div>
                 </dl>
                 {stateCounts.size > 0 ? (
                   <BarBreakdown
@@ -371,6 +398,18 @@ export function WorkspaceSection({
       }}
     </AsyncSection>
   );
+}
+
+/** The explaining title for the unscoped-tokens field when the fold cannot place it. */
+function quotaDegradedTitle(quota: { readonly confidence: string; readonly skippedMalformed: number }): string {
+  if (quota.skippedMalformed > 0) {
+    return (
+      String(quota.skippedMalformed) +
+      (quota.skippedMalformed === 1 ? " record was" : " records were") +
+      " skipped as malformed during the unscoped quota fold; the total is incomplete."
+    );
+  }
+  return "The unscoped quota fold's confidence is low; the total may be incomplete.";
 }
 
 function HeadVersionCard({ version }: { readonly version: RoadmapVersionDto }): JSX.Element {

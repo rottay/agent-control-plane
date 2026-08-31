@@ -47,6 +47,7 @@ const NAV_ITEMS: readonly { readonly view: ViewName; readonly label: string; rea
   { view: "overview", label: "Overview", hash: buildHash("overview") },
   { view: "tasks", label: "Tasks", hash: buildHash("tasks") },
   { view: "workers", label: "Workers", hash: buildHash("workers") },
+  { view: "accounts", label: "Accounts", hash: buildHash("accounts") },
   { view: "events", label: "Timeline", hash: buildHash("events") },
   { view: "status", label: "Status", hash: buildHash("status") },
   { view: "integrity", label: "Integrity", hash: buildHash("integrity") },

@@ -45,6 +45,7 @@ describe("the query key vocabulary", () => {
       queryKeys.workers({}),
       queryKeys.workerDetail("kimi/k3/coordinator/01"),
       queryKeys.events({}),
+      queryKeys.accounts(),
     ];
     for (const key of keys) {
       expect(key[0]).toBe("acp");
