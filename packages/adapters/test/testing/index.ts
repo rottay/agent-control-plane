@@ -14,6 +14,11 @@ import type {
   ApiStreamRequest,
   ApiStreamingClient,
 } from "../../src/providers/api-key/index.js";
+import type {
+  LocalChatChunk,
+  LocalChatRequest,
+  LocalChatClient,
+} from "../../src/providers/local/index.js";
 
 /**
  * A scripted stand-in for a provider.
@@ -214,6 +219,47 @@ export function fakeApiClient(script: FakeApiScript, secret = "unused"): ApiStre
     async *stream(request: ApiStreamRequest): AsyncIterable<ApiStreamChunk> {
       // The credential lives here, in the implementation's closure, and the
       // request cannot carry it: `ApiStreamRequest` has no field it would fit
+      // in. That is the "credential-free by shape" claim, exercised.
+      void secret;
+      void request;
+      for (const chunk of script.chunks) yield chunk;
+      if (script.failAfter === true) {
+        throw new AdapterError("MALFORMED_EVENT", { provider: script.provider, taskId: "" });
+      }
+    },
+  };
+}
+
+/**
+ * A scripted stand-in for a local or self-hosted server. (P8-4.)
+ *
+ * Same reasoning as the API leg's fake, applied to the OpenAI-compatible
+ * chat/completions shape: the fake is the client itself, a scripted
+ * implementation of the owned `LocalChatClient` interface, not a fake HTTP
+ * server. What it proves is our normalization and our boundary, never
+ * anything about a real local server.
+ *
+ * The `secret` parameter carries the same drill as the API leg's: it stands
+ * where a real implementation would hold whatever an optional local bearer
+ * token would be, closed over here and reachable by nothing the interface
+ * exposes.
+ */
+export interface FakeLocalScript {
+  readonly provider: string;
+  readonly models: readonly string[];
+  readonly chunks: readonly LocalChatChunk[];
+  /** Thrown after the listed chunks, to drive the failure path. */
+  readonly failAfter?: boolean;
+}
+
+export function fakeLocalClient(script: FakeLocalScript, secret = "unused"): LocalChatClient {
+  return {
+    provider: script.provider,
+    models: script.models,
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async *stream(request: LocalChatRequest): AsyncIterable<LocalChatChunk> {
+      // The credential lives here, in the implementation's closure, and the
+      // request cannot carry it: `LocalChatRequest` has no field it would fit
       // in. That is the "credential-free by shape" claim, exercised.
       void secret;
       void request;

@@ -21,7 +21,8 @@ import type { ApiKeyBinding, ApiStreamChunk } from "../../src/providers/api-key/
 import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "../../src/providers/claude/index.js";
 import { CODEX_APP_SERVER_PROTOCOL, codexAdapter } from "../../src/providers/codex/index.js";
 import { KIMI_ACP_PROTOCOL, kimiAdapter } from "../../src/providers/kimi/index.js";
-import { fakeApiClient, scriptedAdapter } from "../testing/index.js";
+import type { LocalBinding, LocalChatChunk } from "../../src/providers/local/index.js";
+import { fakeApiClient, fakeLocalClient, scriptedAdapter } from "../testing/index.js";
 import type { FakeScript } from "../testing/index.js";
 
 /**
@@ -98,12 +99,14 @@ function request(overrides: Partial<ExecutionRequest> = {}): ExecutionRequest {
 function portFor(
   bindings: Readonly<Record<string, CliBinding>>,
   apiBindings?: Readonly<Record<string, ApiKeyBinding>>,
+  localBindings?: Readonly<Record<string, LocalBinding>>,
 ): ModelExecutionPort {
   return createExecutionPort({
     bindings: new Map(Object.entries(bindings)),
     // Absent, not empty: a port constructed without this does not have the API
-    // transport at all, which is what the law-6 drill turns on.
+    // (or local) transport at all, which is what the law-6 drill turns on.
     ...(apiBindings === undefined ? {} : { apiBindings: new Map(Object.entries(apiBindings)) }),
+    ...(localBindings === undefined ? {} : { localBindings: new Map(Object.entries(localBindings)) }),
   });
 }
 
@@ -339,26 +342,6 @@ describe("the same fixture runs through an API_KEY adapter", () => {
     assertSharedTrail("api/" + API_PROVIDER, await drain(dualPort(), apiRoute()), apiRoute());
   });
 
-  it("agrees kind-for-kind with every CLI leg in the same port", async () => {
-    // The acceptance bullet, stated directly: one fixture, at least one
-    // CLI_SUBSCRIPTION adapter and one API_KEY adapter, the same normalized
-    // event/lifecycle contract. All four legs are compared to each other, not
-    // each to a constant, so a change that moved all of them together would
-    // still have to move this too.
-    const legs: Record<string, readonly string[]> = {};
-    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
-      legs["cli/" + provider] = (await trailFor(provider)).map((event) => event.kind);
-    }
-    legs["api/" + API_PROVIDER] = (await drain(dualPort(), apiRoute())).map((event) => event.kind);
-
-    const distinct = new Set(Object.values(legs).map((kinds) => kinds.join(",")));
-    expect({ legs: Object.keys(legs).length, distinctTrails: distinct.size }).toEqual({
-      legs: 4,
-      distinctTrails: 1,
-    });
-    expect([...distinct][0]).toBe(SHARED_KINDS.join(","));
-  });
-
   it("carries the provider's own resolution verbatim, beside the echoed route", async () => {
     const trail = await drain(dualPort(), apiRoute({ model: "alias-model" }));
     const started = trail.find((event) => event.kind === "started");
@@ -457,25 +440,121 @@ describe("the same fixture runs through an API_KEY adapter", () => {
   });
 });
 
-describe("law 6: subscription operation does not depend on the API transport", () => {
-  it("serves CLI routes and refuses API routes when built without an API binding", async () => {
+// ---------------------------------------------------------------------------
+// The LOCAL_OR_SELF_HOSTED leg: the third kind, same shape as the API one
+// ---------------------------------------------------------------------------
+
+const LOCAL_ACCOUNT = "acct-local";
+const LOCAL_PROVIDER = "llama-cpp";
+const LOCAL_MODEL = "qwen3-32b-instruct";
+const LOCAL_PROTOCOL = "openai-compatible/chat-1";
+
+/** The transport intersection, as this transport speaks it. */
+const LOCAL_SCENARIO: readonly LocalChatChunk[] = [
+  { kind: "started", resolvedModel: LOCAL_MODEL, protocolVersion: LOCAL_PROTOCOL },
+  { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+  { kind: "state", toState: TERMINAL_STATE },
+];
+
+function localBinding(chunks: readonly LocalChatChunk[], secret = "unused"): LocalBinding {
+  return {
+    client: fakeLocalClient(
+      { provider: LOCAL_PROVIDER, models: [LOCAL_MODEL, "alias-model"], chunks },
+      secret,
+    ),
+  };
+}
+
+function localRoute(overrides: Partial<ResolvedRoute> = {}): ResolvedRoute {
+  return route({
+    provider: LOCAL_PROVIDER,
+    model: LOCAL_MODEL,
+    accountId: LOCAL_ACCOUNT,
+    transportKind: "LOCAL_OR_SELF_HOSTED",
+    ...overrides,
+  });
+}
+
+/** A port serving the CLI and local transports, but not the API one. */
+function localPort(chunks: readonly LocalChatChunk[] = LOCAL_SCENARIO, secret = "unused"): ModelExecutionPort {
+  return portFor(
+    { "acct-primary": binding(claudeAdapter, CLAUDE_LINES) },
+    undefined,
+    { [LOCAL_ACCOUNT]: localBinding(chunks, secret) },
+  );
+}
+
+describe("the same fixture runs through a LOCAL_OR_SELF_HOSTED adapter", () => {
+  it("produces the same normalized trail as the CLI/API legs, through the shared assertion", async () => {
+    assertSharedTrail("local/" + LOCAL_PROVIDER, await drain(localPort(), localRoute()), localRoute());
+  });
+
+  it("refuses a model the client did not declare, and never substitutes one", async () => {
+    const outcome = await localPort().start(localRoute({ model: "some-other-model" }), request());
+    expect(outcome).toEqual({ ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "route.model" });
+  });
+
+  it("refuses a local account it holds no binding for, and a provider mismatch", async () => {
+    const noAccount = await localPort().start(localRoute({ accountId: "acct-unknown" }), request());
+    expect(noAccount).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.accountId" });
+
+    const wrongProvider = await localPort().start(localRoute({ provider: "vllm" }), request());
+    expect(wrongProvider).toEqual({ ok: false, refusal: "ROUTE_INVALID", at: "route.provider" });
+  });
+});
+
+describe("the dual-transport acceptance bullet", () => {
+  it("collapses every transport leg to one normalized trail", async () => {
+    // The acceptance criterion, stated directly: the same conformance fixture
+    // through CLI_SUBSCRIPTION and API_KEY adapters — and now the local one
+    // too — producing the same normalized event/lifecycle contract.
+    //
+    // The legs are compared to each other, not each to a constant, so a change
+    // that moved all of them together would still have to move this. It lives
+    // here rather than inside one transport's describe because it belongs to
+    // none of them: adding a fourth leg means adding it to this map, and the
+    // count below is what makes forgetting impossible.
+    const legs: Record<string, readonly string[]> = {};
+    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
+      legs["cli/" + provider] = (await trailFor(provider)).map((event) => event.kind);
+    }
+    legs["api/" + API_PROVIDER] = (await drain(dualPort(), apiRoute())).map((event) => event.kind);
+    legs["local/" + LOCAL_PROVIDER] = (await drain(localPort(), localRoute())).map((event) => event.kind);
+
+    const distinct = new Set(Object.values(legs).map((kinds) => kinds.join(",")));
+    expect({ legs: Object.keys(legs).length, distinctTrails: distinct.size }).toEqual({
+      legs: 5,
+      distinctTrails: 1,
+    });
+    expect([...distinct][0]).toBe(SHARED_KINDS.join(","));
+  });
+});
+
+describe("law 6: subscription operation does not depend on the API or local transport", () => {
+  it("serves CLI routes and refuses non-CLI routes when built without their bindings", async () => {
     // Constructed with the CLI binding alone — the deployment law 6 describes.
     const cliOnly = portFor({ "acct-primary": binding(claudeAdapter, CLAUDE_LINES) });
 
     // The CLI leg is untouched: the full trail, not a degraded one.
     assertSharedTrail("cli-only/claude", await drain(cliOnly, route()), route());
 
-    // And the API transport does not exist here. Not an empty account list, not
-    // a lazy failure at stream time: a classified refusal at the transport,
-    // before anything is attempted.
-    const outcome = await cliOnly.start(apiRoute(), request());
-    expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.transportKind" });
-    expect(await cliOnly.healthProbe(apiRoute())).toEqual({
-      status: "FAILED",
-      checkedAt: AT,
-      latencyMs: null,
-      classifiedError: "TRANSPORT_UNAVAILABLE",
-    });
+    // Neither the API nor the local transport exists here. Not an empty
+    // account list, not a lazy failure at stream time: a classified refusal
+    // at the transport, before anything is attempted, for both kinds.
+    for (const [leg, missingRoute] of [
+      ["api", apiRoute()],
+      ["local", localRoute()],
+    ] as const) {
+      const outcome = await cliOnly.start(missingRoute, request());
+      expect({ leg, outcome }).toEqual({
+        leg,
+        outcome: { ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.transportKind" },
+      });
+      expect({ leg, probe: await cliOnly.healthProbe(missingRoute) }).toEqual({
+        leg,
+        probe: { status: "FAILED", checkedAt: AT, latencyMs: null, classifiedError: "TRANSPORT_UNAVAILABLE" },
+      });
+    }
   });
 
   it("distinguishes an absent API transport from one with no accounts", async () => {
@@ -484,6 +563,14 @@ describe("law 6: subscription operation does not depend on the API transport", (
     // a caller can tell "not built for this" from "not configured for you".
     const empty = portFor({ "acct-primary": binding(claudeAdapter, CLAUDE_LINES) }, {});
     const outcome = await empty.start(apiRoute(), request());
+    expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.accountId" });
+  });
+
+  it("distinguishes an absent local transport from one with no accounts", async () => {
+    // The same distinction, generalized to the local leg: an empty map still
+    // means "this port serves local routes, for no account yet".
+    const empty = portFor({ "acct-primary": binding(claudeAdapter, CLAUDE_LINES) }, undefined, {});
+    const outcome = await empty.start(localRoute(), request());
     expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.accountId" });
   });
 });
@@ -512,6 +599,33 @@ describe("credentials are unrepresentable at this boundary", () => {
     // not the mechanism.
     expect(JSON.stringify(trail)).not.toContain(secret);
     expect(JSON.stringify(trail)).not.toContain("sk-");
+    expect(trail.map((event) => event.kind)).toEqual(["started", "text", "usage", "completed"]);
+  });
+
+  it("never surfaces a secret the local client implementation holds", async () => {
+    // The same drill on the local leg, run rather than scaffolded. A local or
+    // self-hosted server behind an optional bearer token is the likeliest
+    // place for a credential to be reached for, so it is the leg where the
+    // proof matters most — and the `secret` parameter that threads through
+    // `localPort` is only evidence when a test actually spends it.
+    const secret = "lk-p84-do-not-emit-9876543210";
+    const trail = await drain(
+      localPort(
+        [
+          { kind: "started", resolvedModel: LOCAL_MODEL, protocolVersion: LOCAL_PROTOCOL },
+          { kind: "text", delta: "a delta that does not name the token" },
+          { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+        ],
+        secret,
+      ),
+      localRoute(),
+    );
+
+    // Same mechanism, same evidence: no member of `LocalChatRequest` or
+    // `LocalChatClient` can carry a token, so the port is never handed one and
+    // has nothing to strip.
+    expect(JSON.stringify(trail)).not.toContain(secret);
+    expect(JSON.stringify(trail)).not.toContain("lk-");
     expect(trail.map((event) => event.kind)).toEqual(["started", "text", "usage", "completed"]);
   });
 });

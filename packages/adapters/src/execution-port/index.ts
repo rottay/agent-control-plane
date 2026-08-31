@@ -19,6 +19,8 @@ import { AdapterError } from "../errors/index.js";
 import type { NormalizedEvent } from "../events/index.js";
 import type { ApiKeyBinding } from "../providers/api-key/index.js";
 import { API_TRANSPORT_KIND, admitApiRoute, apiExecutionEvents } from "../providers/api-key/index.js";
+import type { LocalBinding } from "../providers/local/index.js";
+import { LOCAL_TRANSPORT_KIND, admitLocalRoute, localExecutionEvents } from "../providers/local/index.js";
 import type { AdapterSession } from "../session/index.js";
 import { startSession } from "../session/index.js";
 
@@ -27,23 +29,26 @@ import { startSession } from "../session/index.js";
  *
  * `ModelExecutionPort` is the contract every transport implements. This module
  * is the one factory that builds it: `CLI_SUBSCRIPTION` over the landed
- * session machinery, and `API_KEY` over an injected streaming client. It adds
- * no authority of its own — routing, quota, leases and evidence stay with the
- * control plane — and turns a route into an execution and an execution's
- * output into normalized events, in that order and nothing else.
+ * session machinery, `API_KEY` over an injected streaming client, and
+ * `LOCAL_OR_SELF_HOSTED` over an injected client of the same shape bound to a
+ * local or self-hosted server instead. It adds no authority of its own —
+ * routing, quota, leases and evidence stay with the control plane — and turns
+ * a route into an execution and an execution's output into normalized events,
+ * in that order and nothing else.
  *
  * **One factory, not one per transport.** A second factory would let a caller
- * hold a port that silently serves only half the routes it is handed, and the
- * two would drift on exactly the laws they are supposed to share: the terminal
- * shape of a stream, the refusal vocabulary, the session naming. Those laws
- * are written once here and applied to both legs.
+ * hold a port that silently serves only some of the routes it is handed, and
+ * the legs would drift on exactly the laws they are supposed to share: the
+ * terminal shape of a stream, the refusal vocabulary, the session naming.
+ * Those laws are written once here and applied to every leg.
  *
- * **The API transport is optional at construction, and that is law 6.** The
- * CLI binding is always present; `apiBindings` may be absent entirely, and a
- * port built without it serves CLI routes exactly as before and refuses an
- * `API_KEY` route with a classified reason. So subscription operation does not
- * depend on an API key, an AI Gateway or a paid API account — by construction,
- * not by assertion.
+ * **The API and local transports are optional at construction, and that is
+ * law 6.** The CLI binding is always present; `apiBindings` and
+ * `localBindings` may each be absent entirely, and a port built without one
+ * serves the routes it does have exactly as before and refuses the missing
+ * kind with a classified reason. So subscription operation does not depend on
+ * an API key, an AI Gateway, a paid API account or a local server — by
+ * construction, not by assertion.
  *
  * **The transport is a wall, not a preference.** `start` executes the
  * transport the route names or refuses. It never downgrades an API route to a
@@ -109,6 +114,15 @@ export interface ExecutionPortInput {
    * different statement "this port serves API routes, for no account yet".
    */
   readonly apiBindings?: ReadonlyMap<string, ApiKeyBinding>;
+  /**
+   * The LOCAL_OR_SELF_HOSTED bindings, when this port serves that transport
+   * at all.
+   *
+   * Optional in exactly the same sense and for exactly the same reason as
+   * `apiBindings`: absence means this port does not have the local transport,
+   * not that it has one nobody has configured yet.
+   */
+  readonly localBindings?: ReadonlyMap<string, LocalBinding>;
 }
 
 /** The subscription-CLI transport kind, served over the session machinery. */
@@ -288,6 +302,7 @@ async function* terminated(
 export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPort {
   const bindings = input.bindings;
   const apiBindings = input.apiBindings;
+  const localBindings = input.localBindings;
   const live = new Map<string, AdapterSession>();
 
   /** The CLI leg's mapping. Throws on anything it cannot express. */
@@ -361,7 +376,16 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
 
       const sessionId = executionSessionId(asked.taskId, asked.attempt, admitted.accountId);
 
-      if (admitted.transportKind === API_TRANSPORT_KIND) {
+      // Dispatched with a switch rather than a chain of `if`s so the
+      // exhaustiveness is the compiler's to check. The alternative the auditor
+      // weighed — a trailing `!==` guard — is provably dead code today: after
+      // the two non-CLI cases return, TypeScript narrows `transportKind` to
+      // the CLI literal, and lint rejects the comparison as always false. The
+      // `never` default below is the same protection that survives being
+      // right: add a fourth kind to the contract and the assignment stops
+      // compiling, so it cannot fall through to a CLI spawn unnoticed.
+      switch (admitted.transportKind) {
+        case API_TRANSPORT_KIND: {
         if (apiBindings === undefined) {
           // Law 6, as a refusal rather than a promise: this port was built
           // without the API transport, so it does not have one. Nothing about
@@ -391,10 +415,51 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
               () => Promise.resolve(null),
             ),
         });
-      }
+        }
 
-      if (admitted.transportKind !== CLI_TRANSPORT_KIND) {
-        return refuse("TRANSPORT_UNAVAILABLE", "route.transportKind");
+        case LOCAL_TRANSPORT_KIND: {
+        if (localBindings === undefined) {
+          // The same law-6 refusal as the API leg, for the same reason: this
+          // port was built without the local transport, so it does not have
+          // one.
+          return refuse("TRANSPORT_UNAVAILABLE", "route.transportKind");
+        }
+        const admittedLocal = admitLocalRoute(admitted, localBindings);
+        if (!admittedLocal.ok) return admittedLocal;
+
+        const localRequest = {
+          model: admitted.model,
+          taskId: asked.taskId,
+          attempt: asked.attempt,
+          identity: asked.identity,
+        };
+        return Object.freeze({
+          ok: true as const,
+          sessionId,
+          route: admitted,
+          events: (): AsyncIterable<ExecutionEvent> =>
+            // The same terminal law again, applied to the local leg's
+            // producer: a local stream that ended without throwing ended
+            // cleanly, exactly like the API one.
+            terminated(
+              localExecutionEvents(admittedLocal.binding, admitted, localRequest),
+              () => Promise.resolve(null),
+            ),
+        });
+        }
+
+        case CLI_TRANSPORT_KIND:
+          // Falls through to the CLI leg below, which is the rest of `start`.
+          break;
+
+        default: {
+          // Unreachable while the contract names exactly these three kinds.
+          // Typed `never`, so a fourth kind is a compile error here rather
+          // than a silent fall-through — and still a classified refusal at
+          // runtime if one ever arrives from a build that skipped the check.
+          const unreachable: never = admitted.transportKind;
+          return refuse("TRANSPORT_UNAVAILABLE", "route.transportKind/" + String(unreachable));
+        }
       }
 
       const binding = bindings.get(admitted.accountId);
@@ -456,14 +521,31 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
 
       if (!parsed.success) return failed("ROUTE_INVALID");
 
-      if (parsed.data.transportKind === API_TRANSPORT_KIND) {
-        if (apiBindings === undefined) return failed("TRANSPORT_UNAVAILABLE");
-        const admittedApi = admitApiRoute(parsed.data, apiBindings);
-        if (!admittedApi.ok) return failed(admittedApi.refusal);
-      } else {
-        if (parsed.data.transportKind !== CLI_TRANSPORT_KIND) return failed("TRANSPORT_UNAVAILABLE");
-        const binding = bindings.get(parsed.data.accountId);
-        if (binding === undefined) return failed("TRANSPORT_UNAVAILABLE");
+      // The same compiler-checked exhaustiveness as `start`: a fourth
+      // transport kind breaks the `never` assignment rather than being
+      // answered for out of the CLI leg's binding table.
+      switch (parsed.data.transportKind) {
+        case API_TRANSPORT_KIND: {
+          if (apiBindings === undefined) return failed("TRANSPORT_UNAVAILABLE");
+          const admittedApi = admitApiRoute(parsed.data, apiBindings);
+          if (!admittedApi.ok) return failed(admittedApi.refusal);
+          break;
+        }
+        case LOCAL_TRANSPORT_KIND: {
+          if (localBindings === undefined) return failed("TRANSPORT_UNAVAILABLE");
+          const admittedLocal = admitLocalRoute(parsed.data, localBindings);
+          if (!admittedLocal.ok) return failed(admittedLocal.refusal);
+          break;
+        }
+        case CLI_TRANSPORT_KIND: {
+          const binding = bindings.get(parsed.data.accountId);
+          if (binding === undefined) return failed("TRANSPORT_UNAVAILABLE");
+          break;
+        }
+        default: {
+          const unreachable: never = parsed.data.transportKind;
+          return failed("TRANSPORT_UNAVAILABLE/" + String(unreachable));
+        }
       }
 
       // A binding exists, and nothing was spawned to ask. `UNKNOWN` is the

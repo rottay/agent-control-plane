@@ -1229,12 +1229,17 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * owns rather than an SDK's: law 6 keeps the SDK optional, so the real binding
  * is registered as P8-3b and the dependency graph does not move here.
  *
- * P8 is therefore **50 packet entries across 42 distinct paths**: 2 (P8-D) +
- * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) = 50 entries, with 8 duplicate
- * entries. Five paths repeat: `scripts/check-architecture.mjs`, named by all
- * five packets (4 duplicates), and the four paths P8-2 and P8-3 share — the
- * port, the barrel, the port's fixture and the test doubles — one duplicate
- * each. So 50 - 8 = 42 distinct paths. This file's appearances in earlier
+ * P8-4 binds the third transport, `LOCAL_OR_SELF_HOSTED`, in P8-3's adjudicated
+ * shape: the same optional-at-construction discipline, the same shared trail
+ * assertion, an injected client of the same OpenAI-compatible chat/completions
+ * shape bound to a local or self-hosted server instead of a provider API.
+ *
+ * P8 is therefore **56 packet entries across 43 distinct paths**: 2 (P8-D) +
+ * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) = 56 entries, with 13
+ * duplicate entries. `scripts/check-architecture.mjs` is named by all six
+ * packets (5 duplicates); the port, the barrel, the port's fixture and the
+ * test doubles are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8
+ * total). So 56 - 13 = 43 distinct paths. This file's appearances in earlier
  * phases are counted in those phases, since the standing convention scopes the
  * arithmetic to the phase.
  */
@@ -1348,6 +1353,26 @@ const P82_WRITE_SET = [
  */
 const P83_WRITE_SET = [
   "packages/adapters/src/providers/api-key/index.ts",
+  "packages/adapters/src/execution-port/index.ts",
+  "packages/adapters/src/index.ts",
+  "packages/adapters/test/execution-port/index.test.ts",
+  "packages/adapters/test/testing/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-4: the LOCAL_OR_SELF_HOSTED execution surface.
+ *
+ * The third transport on the same boundary, in P8-3's adjudicated shape: an
+ * injected client this repository owns, this time shaped like an
+ * OpenAI-compatible chat/completions stream a local or self-hosted server
+ * would present, and no real server anywhere. No dependency moves and no new
+ * package: the local binding is optional at construction exactly like the API
+ * one, so law 6 generalizes -- a CLI-only-constructed port refuses both
+ * non-CLI kinds, classified, by construction.
+ */
+const P84_WRITE_SET = [
+  "packages/adapters/src/providers/local/index.ts",
   "packages/adapters/src/execution-port/index.ts",
   "packages/adapters/src/index.ts",
   "packages/adapters/test/execution-port/index.test.ts",
@@ -1617,6 +1642,7 @@ const WRITE_SET = [
   ...P8W_WRITE_SET,
   ...P82_WRITE_SET,
   ...P83_WRITE_SET,
+  ...P84_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -4566,11 +4592,11 @@ const ADAPTERS_PUBLIC_EXPORTS = [
   "descriptorEnablesWrites",
   "isReadOnlyIdentity",
   "startSession",
-  // P8-2/P8-3: the execution port. The admitted values arrive per account
+  // P8-2/P8-3/P8-4: the execution port. The admitted values arrive per account
   // through `CliBinding`, so the contract's request stays transport-neutral.
   // P8-3 renamed the factory and the session-id helper: one factory now builds
-  // a port serving both transports, and a name that said CLI would invite the
-  // second factory the design refused.
+  // a port serving more than one transport, and a name that said CLI would
+  // invite the second (and now third) factory the design refused.
   "CliBinding",
   "ExecutionPortInput",
   "CLI_TRANSPORT_KIND",
@@ -4586,6 +4612,16 @@ const ADAPTERS_PUBLIC_EXPORTS = [
   "API_TRANSPORT_KIND",
   "admitApiRoute",
   "apiExecutionEvents",
+  // P8-4: the LOCAL_OR_SELF_HOSTED transport, over the same shape of owned,
+  // credential-free client interface as the API leg.
+  "LocalAdmission",
+  "LocalBinding",
+  "LocalChatChunk",
+  "LocalChatClient",
+  "LocalChatRequest",
+  "LOCAL_TRANSPORT_KIND",
+  "admitLocalRoute",
+  "localExecutionEvents",
   // P4B
   "CLAUDE_STREAM_PROTOCOL",
   "claudeAdapter",
@@ -4764,19 +4800,82 @@ const API_CLIENT_SHAPE = {
   ApiStreamingClient: ["provider", "models", "stream"],
 };
 
-const apiKeyModule = readIfPresent("packages/adapters/src/providers/api-key/index.ts");
-if (apiKeyModule !== null) {
-  const source = stripComments(apiKeyModule);
-  for (const [name, expected] of Object.entries(API_CLIENT_SHAPE)) {
-    const declaration = source.match(new RegExp("export interface " + name + "\\s*\\{([^}]*)\\}"));
-    if (declaration === null) {
-      fail("packages/adapters/src/providers/api-key/index.ts no longer declares " + name);
+/**
+ * The same pin for the local leg. (P8-4, C1.)
+ *
+ * Identical shape to the API leg's, and pinned for a sharper reason: a local
+ * or self-hosted server sitting behind an optional bearer token is exactly the
+ * case a future contributor would reach for a credential field to serve. The
+ * pin is what makes that reach fail rather than land.
+ */
+const LOCAL_CLIENT_SHAPE = {
+  LocalChatRequest: ["model", "taskId", "attempt", "identity"],
+  LocalChatClient: ["provider", "models", "stream"],
+};
+
+/**
+ * Every module a client library could be smuggled into, and what it may not
+ * import.
+ *
+ * The API leg refuses the AI SDK families; the local leg refuses those plus
+ * the OpenAI client and the fetch-client families, because "OpenAI-compatible"
+ * is precisely the phrase that makes reaching for `openai` or `undici` feel
+ * reasonable. Taking any of them would make an optional dependency a
+ * compile-time one, which is what law 6 forbids.
+ */
+const OWNED_CLIENT_MODULES = [
+  {
+    path: "packages/adapters/src/providers/api-key/index.ts",
+    shape: API_CLIENT_SHAPE,
+    forbidden: ["ai", "@ai-sdk/", "@vercel/"],
+    note: "the API client interface is credential-free by shape, pinned member by member",
+  },
+  {
+    path: "packages/adapters/src/providers/local/index.ts",
+    shape: LOCAL_CLIENT_SHAPE,
+    forbidden: [
+      "ai",
+      "@ai-sdk/",
+      "@vercel/",
+      "openai",
+      "undici",
+      "axios",
+      "node-fetch",
+      "got",
+      "ky",
+    ],
+    note: "the local client interface is credential-free by shape, pinned member by member",
+  },
+];
+
+/**
+ * Read one interface's member names, in declaration order.
+ *
+ * Written once and used for every owned client rather than copied per module:
+ * a pin that exists to stop two shapes drifting apart is a poor place to keep
+ * two copies of the same check.
+ */
+function interfaceMembers(source, name) {
+  const declaration = source.match(new RegExp("export interface " + name + "\\s*\\{([^}]*)\\}"));
+  if (declaration === null) return null;
+  const members = [];
+  for (const line of (declaration[1] ?? "").split("\n")) {
+    const member = line.trim().replace(/^readonly\s+/, "").match(/^([A-Za-z_$][\w$]*)\s*[(:?]/);
+    if (member !== null) members.push(member[1]);
+  }
+  return members;
+}
+
+for (const owned of OWNED_CLIENT_MODULES) {
+  const module = readIfPresent(owned.path);
+  if (module === null) continue;
+  const source = stripComments(module);
+
+  for (const [name, expected] of Object.entries(owned.shape)) {
+    const members = interfaceMembers(source, name);
+    if (members === null) {
+      fail(owned.path + " no longer declares " + name);
       continue;
-    }
-    const members = [];
-    for (const line of (declaration[1] ?? "").split("\n")) {
-      const member = line.trim().replace(/^readonly\s+/, "").match(/^([A-Za-z_$][\w$]*)\s*[(:?]/);
-      if (member !== null) members.push(member[1]);
     }
     if (members.join(",") !== expected.join(",")) {
       fail(
@@ -4790,15 +4889,16 @@ if (apiKeyModule !== null) {
     }
   }
 
-  // The transport is bound through an interface this repository owns. An SDK
-  // import here would make the optional dependency a compile-time one, which
-  // is precisely what law 6 forbids and what P8-3b exists to do deliberately.
-  for (const forbidden of ["ai", "@ai-sdk/", "@vercel/"]) {
+  // The transport is bound through an interface this repository owns. A client
+  // library imported here would make the optional dependency a compile-time
+  // one, which is precisely what law 6 forbids and what P8-3b exists to do
+  // deliberately.
+  for (const forbidden of owned.forbidden) {
     if (new RegExp('from "' + forbidden).test(source)) {
-      fail("packages/adapters/src/providers/api-key/index.ts imports " + forbidden + "; law 6 keeps the SDK optional");
+      fail(owned.path + " imports " + forbidden + "; law 6 keeps the client binding optional");
     }
   }
-  notes.push("the API client interface is credential-free by shape, pinned member by member");
+  notes.push(owned.note);
 }
 
 const adaptersConfigRoot = readIfPresent("packages/adapters/src/config-root/index.ts");

@@ -92,17 +92,17 @@ export { admitBinary } from "./process/spawn/index.js";
 export type { AdapterSession } from "./session/index.js";
 export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./session/index.js";
 
-// P8-2/P8-3: the contracts' `ModelExecutionPort` and the transports bound to
-// it. The port is the only thing here that a control plane talks to; the
+// P8-2/P8-3/P8-4: the contracts' `ModelExecutionPort` and the transports bound
+// to it. The port is the only thing here that a control plane talks to; the
 // session machinery above stays available because the drills and the daemon
 // use it directly. Admitted binaries, configuration roots, working directories
 // and budgets arrive per account at binding time, never inside the contract's
 // strict `ExecutionRequest`.
 //
-// One factory, two legs. P8-3 renamed `createCliExecutionPort` to
-// `createExecutionPort` because it now builds a port that serves both
-// transports: a factory named for one of the two would invite the second
-// factory that the design explicitly refused.
+// One factory, three legs. P8-3 renamed `createCliExecutionPort` to
+// `createExecutionPort` because it now builds a port that serves more than
+// one transport: a factory named for one of them would invite the second (and
+// now third) factory that the design explicitly refused.
 export type { CliBinding, ExecutionPortInput } from "./execution-port/index.js";
 export {
   CLI_TRANSPORT_KIND,
@@ -123,6 +123,20 @@ export type {
   ApiStreamingClient,
 } from "./providers/api-key/index.js";
 export { API_TRANSPORT_KIND, admitApiRoute, apiExecutionEvents } from "./providers/api-key/index.js";
+
+// P8-4: the LOCAL_OR_SELF_HOSTED transport, over the same shape of injected,
+// credential-free client interface as the API leg — an OpenAI-compatible
+// chat/completions streaming surface instead of a provider API's. No real
+// server anywhere and no client library imported; law 6 generalizes: a
+// CLI-only-constructed port refuses this kind too, classified.
+export type {
+  LocalAdmission,
+  LocalBinding,
+  LocalChatChunk,
+  LocalChatClient,
+  LocalChatRequest,
+} from "./providers/local/index.js";
+export { LOCAL_TRANSPORT_KIND, admitLocalRoute, localExecutionEvents } from "./providers/local/index.js";
 
 // P4B: the Claude headless descriptor. Kimi and Codex arrive in P4C and P4D.
 // Every Claude capability leaves P4 `UNKNOWN`: the adapter is complete, the
