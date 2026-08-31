@@ -1247,16 +1247,21 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * projection, the structural redaction gate inside it, and the optional
  * Langfuse translator as a pure value-producing function no dependency backs.
  *
- * P8 is therefore **71 packet entries across 55 distinct paths**: 2 (P8-D) +
+ * P8-8A opens the UI phase's data plane: three read-only initiative routes,
+ * the ledger's portfolio enumerator, and the server's first edge to the
+ * observation package's rollup folds.
+ *
+ * P8 is therefore **90 packet entries across 72 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
- * 6 (P8-7) = 71 entries, with 16 duplicate entries.
- * `scripts/check-architecture.mjs` is named by all nine packets (8
+ * 6 (P8-7) + 19 (P8-8A) = 90 entries, with 18 duplicate entries.
+ * `scripts/check-architecture.mjs` is named by all ten packets (9
  * duplicates); the port, the barrel, the port's fixture and the test doubles
- * are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8 total). P8-5,
- * P8-6 and P8-7 share no path with any earlier P8 packet but the fence itself.
- * So 71 - 16 = 55 distinct paths. This file's appearances in earlier phases
- * are counted in those phases, since the standing convention scopes the
- * arithmetic to the phase.
+ * are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8 total); and
+ * `pnpm-lock.yaml` is named by both packets that moved a dependency edge,
+ * P8-W and P8-8A (1 duplicate). P8-5, P8-6 and P8-7 share no path with any
+ * earlier P8 packet but the fence itself. So 90 - 18 = 72 distinct paths.
+ * This file's appearances in earlier phases are counted in those phases,
+ * since the standing convention scopes the arithmetic to the phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
@@ -1456,6 +1461,41 @@ const P87_WRITE_SET = [
   "packages/observation/src/index.ts",
   "packages/observation/test/telemetry/index.test.ts",
   "packages/observation/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-8A: the initiative data plane.
+ *
+ * The UI phase's first packet, and read-only like every route before it: three
+ * GETs, the response shapes they answer with, the ledger's portfolio
+ * enumerator, and the server read-model module where the three folds meet.
+ * `registerGet` still answers every other method 405, and that law does not
+ * move.
+ *
+ * The one dependency edge — server → observation — lands with its full kit,
+ * because a manifest entry without a lockfile, a fence law and a project
+ * reference is an edge that works on one machine.
+ */
+const P88A_WRITE_SET = [
+  "packages/api-contracts/src/routes/index.ts",
+  "packages/api-contracts/src/schemas/index.ts",
+  "packages/api-contracts/src/parity/index.ts",
+  "packages/api-contracts/src/version/index.ts",
+  "packages/api-contracts/src/index.ts",
+  "packages/api-contracts/test/schemas/index.test.ts",
+  "packages/api-contracts/test/parity/index.test.ts",
+  "packages/server/src/routes/index.ts",
+  "packages/server/src/mappers/index.ts",
+  "packages/server/src/initiatives/index.ts",
+  "packages/server/package.json",
+  "packages/server/tsconfig.json",
+  "packages/server/test/build-server/index.test.ts",
+  "packages/server/test/initiatives/index.test.ts",
+  "packages/ledger/src/ledger/index.ts",
+  "packages/ledger/test/ledger/index.test.ts",
+  "packages/cli/test/cli/index.test.ts",
+  "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1725,6 +1765,7 @@ const WRITE_SET = [
   ...P85_WRITE_SET,
   ...P86_WRITE_SET,
   ...P87_WRITE_SET,
+  ...P88A_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -2757,7 +2798,12 @@ const P1B_DEPENDENCY_LAW = [
   },
   {
     manifest: "packages/server/package.json",
-    dependencies: ["@acp/api-contracts", "@acp/ledger", "fastify"],
+    // P8-8A: `@acp/observation` joins the surface so the initiative plane can
+    // fold token rollups. The direction is the lawful one — the server reads
+    // the observation plane's pure folds; nothing in observation knows a
+    // server exists — and the edge is declared everywhere it has to be: the
+    // manifest, this law, the lockfile and the project reference.
+    dependencies: ["@acp/api-contracts", "@acp/ledger", "@acp/observation", "fastify"],
     devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
@@ -4614,7 +4660,18 @@ const SERVER_TS_ALIASES = {
   "@acp/cli/observation-rows": "../cli/dist/observation/index.d.ts",
   "@acp/ui/row-model": "../ui/dist/app/api/client/index.d.ts",
 };
-const SERVER_TS_REFERENCES = ["../api-contracts", "../cli", "../ledger", "../ui"];
+// P8-8A adds `../observation`: the initiative plane folds token rollups, and
+// `tsc --build` resolves a workspace package through project references rather
+// than through the manifest, so the edge has to be declared here as well as
+// there. Sorted, because the pin is an equality and an unsorted list would
+// make a reordering look like a change.
+const SERVER_TS_REFERENCES = [
+  "../api-contracts",
+  "../cli",
+  "../ledger",
+  "../observation",
+  "../ui",
+];
 const serverTsconfigRaw = readIfPresent("packages/server/tsconfig.json");
 if (serverTsconfigRaw !== null) {
   let parsed = null;

@@ -2351,6 +2351,28 @@ export class Ledger {
   }
 
   /**
+   * Every initiative the stream has registered, in a stable order.
+   *
+   * The portfolio enumerator. It is deliberately **unpaged**, like
+   * `listRoadmapVersions` beside it and unlike `listEvents` or `listTasks`: a
+   * page belongs to a stream that grows without bound, and an initiative is
+   * not one. A portfolio is a small, deliberately-declared set — offering a
+   * cursor here would promise an advance that never comes and would make every
+   * caller write a loop that runs once.
+   *
+   * Ordered by creation and then by id, so two reads of an unchanged ledger
+   * return the same rows in the same order. Ordering by `updatedAt` would have
+   * made a portfolio reshuffle itself as unrelated initiatives moved.
+   */
+  listInitiatives(): readonly InitiativeReadModel[] {
+    this.#assertOpen("listInitiatives");
+    const rows = this.#stmt(
+      "SELECT * FROM initiative_read_model ORDER BY created_at ASC, initiative_id ASC",
+    ).all() as InitiativeRow[];
+    return rows.map(initiativeRowToModel);
+  }
+
+  /**
    * Every recorded roadmap version for one initiative, in version order.
    *
    * This is what a caller folds into the head the roadmap-version decision

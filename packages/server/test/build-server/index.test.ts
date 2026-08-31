@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   API_CONTRACT_VERSION,
+  API_ROUTE_PATTERNS,
   ApiError,
   EventPageResponse,
   HealthResponse,
@@ -815,6 +816,26 @@ describe("import purity", () => {
   });
 });
 
+describe("the served surface matches the frozen route table", () => {
+  it("answers every parameterless frozen pattern, and 405s every non-GET on it", async () => {
+    // Derived from the contract's own table rather than from a list restated
+    // here: a route added to `API_ROUTES` and never registered would answer
+    // 404 and this would catch it, which a hand-kept list could not.
+    const { path } = seedDatabase();
+    const app = buildServer({ ledgerPath: path });
+    const parameterless = API_ROUTE_PATTERNS.filter((pattern) => !pattern.includes(":"));
+
+    for (const url of parameterless) {
+      const get = await app.inject({ method: "GET", url });
+      expect({ url, ok: get.statusCode < 400 }).toEqual({ url, ok: true });
+
+      const post = await app.inject({ method: "POST", url });
+      expect({ url, status: post.statusCode }).toEqual({ url, status: 405 });
+    }
+    await app.close();
+  });
+});
+
 describe("no mutation", () => {
   it("leaves the ledger byte-for-byte unchanged after every route is hit", async () => {
     const { path } = seedDatabase();
@@ -831,6 +852,8 @@ describe("no mutation", () => {
       "/api/v1/tasks",
       "/api/v1/workers",
       "/api/v1/events",
+      // P8-8A: the initiative plane reads three folds and writes nothing.
+      "/api/v1/initiatives",
     ];
     for (const url of routes) {
       await app.inject({ method: "GET", url });

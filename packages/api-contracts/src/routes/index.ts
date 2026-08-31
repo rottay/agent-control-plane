@@ -32,6 +32,12 @@ export const API_ROUTES = Object.freeze({
   events: "/api/v1/events",
   status: "/api/v1/status",
   integrity: "/api/v1/integrity",
+  // P8-8A: the initiative data plane. Read-only like every route above it,
+  // and under the same versioned prefix — an unversioned path would be one
+  // this package did not describe.
+  initiatives: "/api/v1/initiatives",
+  initiativeById: "/api/v1/initiatives/:initiativeId",
+  initiativeRoadmap: "/api/v1/initiatives/:initiativeId/roadmap",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -52,6 +58,7 @@ export const API_ALLOWED_METHODS = Object.freeze(["GET"] as const);
 export type ApiAllowedMethod = (typeof API_ALLOWED_METHODS)[number];
 
 const TaskIdParam = z.uuid();
+const InitiativeIdParam = z.uuid();
 
 /**
  * Build the path for a single task.
@@ -78,4 +85,20 @@ export function workerPath(identity: string): string {
     "/" +
     encodeURIComponent(WorkerIdentityString.parse(identity))
   );
+}
+
+/**
+ * Build the path for a single initiative.
+ *
+ * Validated before it is encoded, exactly as `taskPath` is: a caller that
+ * passes a traversal segment or a query string gets a thrown validation error
+ * rather than a request to somewhere else.
+ */
+export function initiativePath(initiativeId: string): string {
+  return API_ROUTES.initiatives + "/" + encodeURIComponent(InitiativeIdParam.parse(initiativeId));
+}
+
+/** Build the roadmap-history path for a single initiative. */
+export function initiativeRoadmapPath(initiativeId: string): string {
+  return initiativePath(initiativeId) + "/roadmap";
 }

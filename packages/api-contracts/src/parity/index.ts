@@ -68,11 +68,11 @@ export const VOLATILE_FIELDS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Every field of every one of the nine frozen routes, bound to its source.
+ * Every field of every one of the twelve frozen routes, bound to its source.
  *
  * `health` is the only route with no ledger content, and it is declared in full
- * rather than omitted — an unlisted route would let "all nine routes are
- * parity-proven" be true of a table that covered eight.
+ * rather than omitted — an unlisted route would let "every route is
+ * parity-proven" be true of a table that covered all but one.
  */
 function bind(field: string, source: ParitySource, because?: string): FieldBinding {
   return because === undefined ? { field, source } : { field, source, because };
@@ -154,9 +154,31 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("truncated", "LEDGER"),
       bind("checkedAt", "OBSERVED_AT", "the instant of the verification"),
     ]),
+    // P8-8A: the initiative data plane. Every field is ledger-derived —
+    // including the rollups, which are a fold over ledger events rather than a
+    // measurement taken anywhere else — so the initiative routes add no new
+    // non-ledger exception to the table.
+    initiatives: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("items", "LEDGER"),
+      bind("count", "LEDGER"),
+    ]),
+    initiativeById: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiative", "LEDGER"),
+    ]),
+    initiativeRoadmap: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiativeId", "LEDGER"),
+      bind("items", "LEDGER"),
+      bind("count", "LEDGER"),
+    ]),
   });
 
-/** Every route the contract covers. Nine, matching the frozen route table. */
+/** Every route the contract covers, matching the frozen route table exactly. */
 export const PARITY_ROUTES: readonly ApiRouteName[] = Object.freeze(
   Object.keys(PARITY_BINDINGS) as ApiRouteName[],
 );
@@ -211,7 +233,7 @@ export function canonicalRows(route: ApiRouteName, response: unknown): unknown {
   return canonicalize(response);
 }
 
-/** Are the nine frozen routes exactly the routes this contract binds? */
+/** Are the frozen routes exactly the routes this contract binds? */
 export function bindingCoversAllRoutes(): boolean {
   const frozen = Object.keys(API_ROUTES).sort().join(",");
   const bound = [...PARITY_ROUTES].sort().join(",");

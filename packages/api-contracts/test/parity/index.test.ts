@@ -26,14 +26,23 @@ import {
   declaredExceptions,
   hasObservationPrivacyViolation,
 } from "../../src/parity/index.js";
+import {
+  InitiativeDetailResponse,
+  InitiativePortfolioResponse,
+  InitiativeRoadmapResponse,
+} from "../../src/schemas/index.js";
 
 describe("the contract covers every frozen route", () => {
-  it("binds all nine, not eight", () => {
-    // The preaudit's B1: an eight-route table with a nine-route claim is the
-    // overclaim shape this repository keeps finding. `health` is bound as a
-    // named exception rather than left out.
-    expect(PARITY_ROUTES).toHaveLength(9);
-    expect(Object.keys(API_ROUTES)).toHaveLength(9);
+  it("binds every frozen route, not all but one", () => {
+    // The preaudit's B1: a table that covers all but one route while claiming
+    // to cover every one is the overclaim shape this repository keeps finding.
+    // `health` is bound as a named exception rather than left out.
+    //
+    // The count is asserted against the route table rather than against a
+    // literal, so adding a route cannot pass by editing one number here: the
+    // two lists have to agree, and the equality below is what actually holds
+    // them together.
+    expect(PARITY_ROUTES.length).toBe(Object.keys(API_ROUTES).length);
     expect(bindingCoversAllRoutes()).toBe(true);
     expect([...PARITY_ROUTES].sort()).toEqual(Object.keys(API_ROUTES).sort());
   });
@@ -85,7 +94,17 @@ describe("the binding table matches the schemas it claims to bind", () => {
     events: EventPageResponse,
     status: LedgerStatusResponse,
     integrity: IntegrityResult,
+    initiatives: InitiativePortfolioResponse,
+    initiativeById: InitiativeDetailResponse,
+    initiativeRoadmap: InitiativeRoadmapResponse,
   };
+
+  it("has a schema for every bound route, so the comparison below can be total", () => {
+    // Without this, a route added to the table with no schema beside it would
+    // make `shapeKeys(undefined)` return `[]` and the field comparison would
+    // quietly pass for a route nothing checked.
+    expect(Object.keys(schemas).sort()).toEqual([...PARITY_ROUTES].sort());
+  });
 
   it("binds exactly the fields each response actually has", () => {
     // This is the check that would have caught the first draft of the table,

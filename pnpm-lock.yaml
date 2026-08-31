@@ -197,6 +197,9 @@ importers:
       '@acp/ledger':
         specifier: workspace:*
         version: link:../ledger
+      '@acp/observation':
+        specifier: workspace:*
+        version: link:../observation
       fastify:
         specifier: 'catalog:'
         version: 5.12.1

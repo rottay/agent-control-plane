@@ -1,5 +1,17 @@
-import type { TaskDetail, TaskSummary, TimelineItem, WorkerDetail, WorkerSummary } from "@acp/api-contracts";
-import type { LedgerEventRecord, TaskReadModel, WorkerReadModel } from "@acp/ledger";
+import type {
+  InitiativeDetail,
+  InitiativeSummary,
+  InitiativeTaskDto,
+  RoadmapVersionDto,
+  TaskDetail,
+  TaskSummary,
+  TimelineItem,
+  WorkerDetail,
+  WorkerSummary,
+} from "@acp/api-contracts";
+import type { LedgerEventRecord, RoadmapVersionReadModel, TaskReadModel, WorkerReadModel } from "@acp/ledger";
+
+import type { InitiativeDetailModel, InitiativePortfolioRow } from "../initiatives/index.js";
 
 /**
  * Ledger read models to observation DTOs.
@@ -92,5 +104,81 @@ export function timelineItem(record: LedgerEventRecord): TimelineItem {
     eventSha256: record.eventSha256,
     payloadByteSize: new TextEncoder().encode(payloadJson).byteLength,
     payloadKeys: Object.keys(event.payload),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Initiatives (P8-8A)
+// ---------------------------------------------------------------------------
+
+export function initiativeSummary(row: InitiativePortfolioRow): InitiativeSummary {
+  return {
+    initiativeId: row.initiative.initiativeId,
+    slug: row.detail.slug,
+    title: row.detail.title,
+    objective: row.detail.objective,
+    status: row.initiative.currentStatus,
+    eventCount: row.initiative.eventCount,
+    headRoadmapDigest: row.headRoadmapDigest,
+    roadmapVersionCount: row.roadmapVersionCount,
+    taskCount: row.taskCount,
+    rollup: {
+      tokensUsed: row.rollup.tokensUsed,
+      tokensReserved: row.rollup.tokensReserved,
+      skippedMalformed: row.rollup.skippedMalformed,
+    },
+    createdAt: row.initiative.createdAt,
+    updatedAt: row.initiative.updatedAt,
+  };
+}
+
+export function roadmapVersion(version: RoadmapVersionReadModel, head: boolean): RoadmapVersionDto {
+  return {
+    roadmapVersionId: version.roadmapVersionId,
+    initiativeId: version.initiativeId,
+    version: version.version,
+    contentDigest: version.contentDigest,
+    parentVersionId: version.parentVersionId,
+    kind: version.kind,
+    restoresVersionId: version.restoresVersionId,
+    recordedBy: version.recordedBy,
+    recordedAt: version.recordedAt,
+    sequence: version.sequence,
+    head,
+  };
+}
+
+export function initiativeTask(
+  task: TaskReadModel,
+  rollup: { readonly tokensUsed: number; readonly tokensReserved: number; readonly skippedMalformed: number } | null,
+): InitiativeTaskDto {
+  return {
+    taskId: task.taskId,
+    currentState: task.currentState,
+    eventCount: task.eventCount,
+    // A task the fold never saw has spent nothing, which is a zero rather than
+    // an absence: the task exists in the projection either way, and reporting
+    // null here would make a caller distinguish "no spend" from "no data" when
+    // the ledger draws no such distinction.
+    rollup: {
+      tokensUsed: rollup?.tokensUsed ?? 0,
+      tokensReserved: rollup?.tokensReserved ?? 0,
+      skippedMalformed: rollup?.skippedMalformed ?? 0,
+    },
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+  };
+}
+
+export function initiativeDetailDto(model: InitiativeDetailModel): InitiativeDetail {
+  return {
+    initiative: initiativeSummary(model.row),
+    roadmap: model.roadmap.map((entry) => roadmapVersion(entry.version, entry.head)),
+    tasks: model.tasks.map((entry) => initiativeTask(entry.task, entry.rollup)),
+    quota: {
+      confidence: model.quota.confidence,
+      skippedMalformed: model.quota.skippedMalformed,
+      unscopedTokensUsed: model.quota.unscopedTokensUsed,
+    },
   };
 }

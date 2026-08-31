@@ -22,6 +22,7 @@
   "dependencies": {
     "@acp/api-contracts": "workspace:*",
     "@acp/ledger": "workspace:*",
+    "@acp/observation": "workspace:*",
     "fastify": "catalog:"
   },
   "devDependencies": {

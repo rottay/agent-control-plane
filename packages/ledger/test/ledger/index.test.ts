@@ -1663,6 +1663,52 @@ describe("the initiative stream appends under the ledger's own laws", () => {
     expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 
+  it("enumerates the portfolio in a stable order, and holds nothing a stream did not say", () => {
+    const ledger = open(temporaryDatabase());
+    expect(ledger.listInitiatives()).toEqual([]);
+
+    // Registered out of creation order on purpose: the enumerator sorts, it
+    // does not echo insertion order.
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({ initiativeId: INITIATIVE_B, occurredAt: "2026-08-30T13:00:00.000Z" }),
+    );
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({ initiativeId: INITIATIVE_A, occurredAt: "2026-08-30T12:00:00.000Z" }),
+    );
+
+    const portfolio = ledger.listInitiatives();
+    expect(portfolio.map((initiative) => initiative.initiativeId)).toEqual([
+      INITIATIVE_A,
+      INITIATIVE_B,
+    ]);
+    // Two reads of an unchanged ledger return the same rows in the same order.
+    expect(ledger.listInitiatives()).toEqual(portfolio);
+    // Every row is the projection's own, carrying no fact the stream did not
+    // record: `getInitiative` and the enumerator agree exactly.
+    for (const initiative of portfolio) {
+      expect(ledger.getInitiative(initiative.initiativeId)).toEqual(initiative);
+    }
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("moves an initiative's row with its status rather than adding a second", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({
+        transitionId: "initiative.paused",
+        type: "INITIATIVE_STATE_CHANGED",
+        fromStatus: "ACTIVE",
+        toStatus: "PAUSED",
+      }),
+    );
+
+    const portfolio = ledger.listInitiatives();
+    expect(portfolio.length).toBe(1);
+    expect(portfolio[0]?.currentStatus).toBe("PAUSED");
+    expect(portfolio[0]?.eventCount).toBe(2);
+  });
+
   it("chains a second event onto the first", () => {
     const ledger = open(temporaryDatabase());
     const first = ledger.appendInitiativeEvent(makeInitiativeEvent());

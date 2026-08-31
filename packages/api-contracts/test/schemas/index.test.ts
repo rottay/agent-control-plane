@@ -17,6 +17,14 @@ import {
   EventPageResponse,
   EventsQuery,
   HealthResponse,
+  InitiativeDetailResponse,
+  InitiativePortfolioResponse,
+  InitiativeRoadmapResponse,
+  InitiativeSummary,
+  RoadmapVersionDto,
+  RollupSummary,
+  initiativePath,
+  initiativeRoadmapPath,
   INTEGRITY_PROBLEM_KINDS,
   IntegrityResult,
   LEDGER_CONTRACT_VERSION,
@@ -1173,4 +1181,133 @@ describe("browser safety", () => {
     }
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Initiatives (P8-8A)
+// ---------------------------------------------------------------------------
+
+describe("the initiative data plane's shapes", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const TASK = "11111111-1111-4111-8111-111111111111";
+  const DIGEST = "a".repeat(64);
+  const AT = "2026-08-30T12:00:00.000Z";
+
+  const rollup = { tokensUsed: 10, tokensReserved: 5, skippedMalformed: 0 };
+
+  function summary(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      initiativeId: INITIATIVE,
+      slug: "acp-p8",
+      title: "The P8 initiative",
+      objective: "Land the control plane's execution boundary",
+      status: "ACTIVE",
+      eventCount: 3,
+      headRoadmapDigest: DIGEST,
+      roadmapVersionCount: 2,
+      taskCount: 1,
+      rollup,
+      createdAt: AT,
+      updatedAt: AT,
+      ...overrides,
+    };
+  }
+
+  it("accepts a portfolio row and rejects an unknown field", () => {
+    expect(InitiativeSummary.safeParse(summary()).success).toBe(true);
+    expect(InitiativeSummary.safeParse({ ...summary(), extra: 1 }).success).toBe(false);
+  });
+
+  it("carries an absent registration detail as null rather than as an empty string", () => {
+    // The registration payload is a bounded free-form record, so an initiative
+    // registered without a title has none. Null says the stream never carried
+    // one; "" would invent a value that reads as a title nobody wrote.
+    expect(
+      InitiativeSummary.safeParse(summary({ slug: null, title: null, objective: null })).success,
+    ).toBe(true);
+    expect(InitiativeSummary.safeParse(summary({ title: "" })).success).toBe(false);
+  });
+
+  it("refuses a portfolio row that would carry credential material", () => {
+    // The landed guard refinements, on the way out as well as in. The
+    // projection layer between the ledger and the client is new code, and a
+    // boundary that only trusts the layer below it is not a boundary.
+    const parsed = InitiativeSummary.safeParse({ ...summary(), apiKey: "sk-live-000" });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("marks exactly one roadmap version as the head", () => {
+    const version = {
+      roadmapVersionId: "66666666-6666-4666-8666-666666666666",
+      initiativeId: INITIATIVE,
+      version: 1,
+      contentDigest: DIGEST,
+      parentVersionId: null,
+      kind: "EDIT",
+      restoresVersionId: null,
+      recordedBy: "kimi/k3/coordinator/01",
+      recordedAt: AT,
+      sequence: 1,
+      head: true,
+    };
+    expect(RoadmapVersionDto.safeParse(version).success).toBe(true);
+    expect(RoadmapVersionDto.safeParse({ ...version, contentDigest: "nope" }).success).toBe(false);
+    expect(RoadmapVersionDto.safeParse({ ...version, kind: "REWRITE" }).success).toBe(false);
+  });
+
+  it("bounds a rollup by the same ceiling the fold uses", () => {
+    expect(RollupSummary.safeParse(rollup).success).toBe(true);
+    expect(RollupSummary.safeParse({ ...rollup, tokensUsed: 10_000_001 }).success).toBe(false);
+    expect(RollupSummary.safeParse({ ...rollup, tokensUsed: -1 }).success).toBe(false);
+  });
+
+  it("shapes the three responses, each carrying both contract versions", () => {
+    const portfolio = InitiativePortfolioResponse.safeParse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      items: [summary()],
+      count: 1,
+    });
+    expect(portfolio.success).toBe(true);
+
+    const detail = InitiativeDetailResponse.safeParse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiative: {
+        initiative: summary(),
+        roadmap: [],
+        tasks: [
+          {
+            taskId: TASK,
+            currentState: "RUNNING",
+            eventCount: 4,
+            rollup,
+            createdAt: AT,
+            updatedAt: AT,
+          },
+        ],
+        quota: { confidence: "HIGH", skippedMalformed: 0, unscopedTokensUsed: 0 },
+      },
+    });
+    expect(detail.success).toBe(true);
+
+    const roadmap = InitiativeRoadmapResponse.safeParse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId: INITIATIVE,
+      items: [],
+      count: 0,
+    });
+    expect(roadmap.success).toBe(true);
+  });
+
+  it("builds initiative paths under the versioned prefix, validating first", () => {
+    expect(initiativePath(INITIATIVE)).toBe(API_ROUTES.initiatives + "/" + INITIATIVE);
+    expect(initiativeRoadmapPath(INITIATIVE)).toBe(
+      API_ROUTES.initiatives + "/" + INITIATIVE + "/roadmap",
+    );
+    // A traversal segment is refused at the validator, not encoded into a
+    // request to somewhere else.
+    expect(() => initiativePath("../../etc/passwd")).toThrow();
+  });
 });

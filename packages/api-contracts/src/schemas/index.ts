@@ -1,7 +1,9 @@
 import {
   ControlPlaneEventType,
   EXCEPTIONAL_STATES,
+  INITIATIVE_STATUSES,
   LIFECYCLE_STATES,
+  ROADMAP_VERSION_KINDS,
   TaskState,
   WORKER_IDENTITY_PATTERN,
   WORKER_ROLES,
@@ -1041,3 +1043,159 @@ export const EventsQuery = z.strictObject({
   limit: PageLimit,
 });
 export type EventsQuery = z.infer<typeof EventsQuery>;
+
+// ---------------------------------------------------------------------------
+// Initiatives (P8-8A)
+// ---------------------------------------------------------------------------
+
+/**
+ * The initiative data plane's shared vocabularies.
+ *
+ * Re-derived from the contract's own frozen lists rather than restated: an
+ * initiative status the ledger can hold and this API cannot express would be a
+ * projection that quietly drops rows.
+ */
+export const InitiativeStatusDto = z.enum(INITIATIVE_STATUSES);
+export type InitiativeStatusDto = z.infer<typeof InitiativeStatusDto>;
+
+export const RoadmapVersionKindDto = z.enum(ROADMAP_VERSION_KINDS);
+export type RoadmapVersionKindDto = z.infer<typeof RoadmapVersionKindDto>;
+
+/**
+ * What a rollup says about one initiative or one task.
+ *
+ * Both numbers come from the observation plane's fold, and both are bounded by
+ * the same ceiling the fold itself uses. `tokensReserved` is a **current hold**
+ * rather than a history — the fold's own law — and the name is kept identical
+ * to the fold's so the two cannot drift apart under different words.
+ */
+export const RollupSummary = z.strictObject({
+  tokensUsed: z.number().int().nonnegative().max(10_000_000),
+  tokensReserved: z.number().int().nonnegative().max(10_000_000),
+  /** Records the fold skipped because their payload did not carry the shape. */
+  skippedMalformed: z.number().int().nonnegative(),
+});
+export type RollupSummary = z.infer<typeof RollupSummary>;
+
+/**
+ * One initiative in the portfolio.
+ *
+ * `slug`, `title` and `objective` are **nullable**, and that is a statement
+ * about the ledger rather than about the API: they live in the registration
+ * event's payload, which is a bounded free-form record, so an initiative
+ * registered without them has none. Reporting an empty string would invent a
+ * value; reporting null says the stream never carried one.
+ *
+ * `headRoadmapDigest` is the newest recorded version's content digest, or null
+ * when the initiative has no roadmap version yet. A digest is all that travels:
+ * the bytes it names live outside the ledger by the Checkpoint law.
+ */
+export const InitiativeSummary = z
+  .strictObject({
+    initiativeId: z.uuid(),
+    slug: z.string().min(1).max(120).nullable(),
+    title: z.string().min(1).max(200).nullable(),
+    objective: z.string().min(1).max(4_000).nullable(),
+    status: InitiativeStatusDto,
+    eventCount: z.number().int().nonnegative(),
+    headRoadmapDigest: Sha256Hex.nullable(),
+    roadmapVersionCount: z.number().int().nonnegative(),
+    taskCount: z.number().int().nonnegative(),
+    rollup: RollupSummary,
+    createdAt: Timestamp,
+    updatedAt: Timestamp,
+  })
+  .superRefine(attachGuards);
+export type InitiativeSummary = z.infer<typeof InitiativeSummary>;
+
+/** One recorded roadmap version, newest-first in the history responses. */
+export const RoadmapVersionDto = z
+  .strictObject({
+    roadmapVersionId: z.uuid(),
+    initiativeId: z.uuid(),
+    version: z.number().int().positive(),
+    contentDigest: Sha256Hex,
+    parentVersionId: z.uuid().nullable(),
+    kind: RoadmapVersionKindDto,
+    restoresVersionId: z.uuid().nullable(),
+    recordedBy: WorkerIdentityString,
+    recordedAt: Timestamp,
+    sequence: z.number().int().positive(),
+    /** True for exactly one version per initiative: the newest recorded. */
+    head: z.boolean(),
+  })
+  .superRefine(attachGuards);
+export type RoadmapVersionDto = z.infer<typeof RoadmapVersionDto>;
+
+/** One task of an initiative, with the spend folded for it alone. */
+export const InitiativeTaskDto = z
+  .strictObject({
+    taskId: z.uuid(),
+    currentState: TaskState,
+    eventCount: z.number().int().nonnegative(),
+    rollup: RollupSummary,
+    createdAt: Timestamp,
+    updatedAt: Timestamp,
+  })
+  .superRefine(attachGuards);
+export type InitiativeTaskDto = z.infer<typeof InitiativeTaskDto>;
+
+/**
+ * The quota-confidence surface for one initiative.
+ *
+ * Derived from what the fold could and could not place, and deliberately not
+ * from an account registry this plane cannot reach. `unscopedTokensUsed` is
+ * the spend the fold could attribute to no initiative at all — reported rather
+ * than hidden, because a rollup that quietly loses spend is worse than one
+ * that admits it cannot place it.
+ */
+export const InitiativeQuotaConfidence = z.strictObject({
+  /** LOW when anything was skipped or unplaceable; HIGH when nothing was. */
+  confidence: z.enum(["HIGH", "LOW"]),
+  skippedMalformed: z.number().int().nonnegative(),
+  unscopedTokensUsed: z.number().int().nonnegative().max(10_000_000),
+});
+export type InitiativeQuotaConfidence = z.infer<typeof InitiativeQuotaConfidence>;
+
+export const InitiativeDetail = z
+  .strictObject({
+    initiative: InitiativeSummary,
+    roadmap: z.array(RoadmapVersionDto).max(MAX_PAGE_LIMIT),
+    tasks: z.array(InitiativeTaskDto).max(MAX_PAGE_LIMIT),
+    quota: InitiativeQuotaConfidence,
+  })
+  .superRefine(attachGuards);
+export type InitiativeDetail = z.infer<typeof InitiativeDetail>;
+
+/**
+ * The portfolio.
+ *
+ * `items` and a `count`, and deliberately **no cursor**: the ledger's
+ * enumerator is unpaged because a portfolio is a small declared set rather
+ * than a stream, and a cursor that never advances would be a promise this API
+ * cannot keep.
+ */
+export const InitiativePortfolioResponse = z.strictObject({
+  apiContractVersion: ApiContractVersion,
+  ledgerContractVersion: LedgerContractVersion,
+  items: z.array(InitiativeSummary).max(MAX_PAGE_LIMIT),
+  count: z.number().int().nonnegative(),
+});
+export type InitiativePortfolioResponse = z.infer<typeof InitiativePortfolioResponse>;
+
+export const InitiativeDetailResponse = z.strictObject({
+  apiContractVersion: ApiContractVersion,
+  ledgerContractVersion: LedgerContractVersion,
+  initiative: InitiativeDetail,
+});
+export type InitiativeDetailResponse = z.infer<typeof InitiativeDetailResponse>;
+
+/** The roadmap history alone, newest first, with the head marked. */
+export const InitiativeRoadmapResponse = z.strictObject({
+  apiContractVersion: ApiContractVersion,
+  ledgerContractVersion: LedgerContractVersion,
+  initiativeId: z.uuid(),
+  items: z.array(RoadmapVersionDto).max(MAX_PAGE_LIMIT),
+  count: z.number().int().nonnegative(),
+});
+export type InitiativeRoadmapResponse = z.infer<typeof InitiativeRoadmapResponse>;

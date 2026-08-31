@@ -16,8 +16,15 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * cosmetic field rename in a DTO would look like a ledger migration, and a
  * genuine ledger migration would look like a UI change. Every response carries
  * both numbers so a reader can tell which one moved.
+ *
+ * `0.1.0` → `0.2.0` at P8-8A: the initiative data plane adds three routes and
+ * their response shapes. **Additive** — no existing route, field or type
+ * changed, so a reader pinned to the older shapes still reads every response
+ * it read before. The minor moves rather than the patch because new surface is
+ * new contract, and a reader that wants to know whether the initiative routes
+ * exist should be able to ask this number rather than probe for a 404.
  */
-export const API_CONTRACT_VERSION = "0.1.0" as const;
+export const API_CONTRACT_VERSION = "0.2.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

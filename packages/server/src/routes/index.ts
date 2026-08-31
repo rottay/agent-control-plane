@@ -4,6 +4,9 @@ import {
   EventPageResponse,
   EventsQuery,
   HealthResponse,
+  InitiativeDetailResponse,
+  InitiativePortfolioResponse,
+  InitiativeRoadmapResponse,
   IntegrityResult,
   LEDGER_CONTRACT_VERSION,
   type LedgerDatabaseIdentity,
@@ -23,7 +26,17 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { countTasks, countWorkers, recentEventsForTask, recentEventsForWorker } from "../aggregates/index.js";
 import { ApiRouteError, classifyUnexpectedError, sendApiError } from "../errors/index.js";
 import type { LedgerSource } from "../ledger-source/index.js";
-import { taskDetail, taskSummary, timelineItem, workerDetail, workerSummary } from "../mappers/index.js";
+import { initiativeDetail, portfolio, roadmapHistory } from "../initiatives/index.js";
+import {
+  initiativeDetailDto,
+  initiativeSummary,
+  roadmapVersion,
+  taskDetail,
+  taskSummary,
+  timelineItem,
+  workerDetail,
+  workerSummary,
+} from "../mappers/index.js";
 import { assertEmptyQuery, parseQuery, parseTaskIdParam } from "../query-schemas/index.js";
 
 /**
@@ -107,6 +120,24 @@ function queryOf(request: FastifyRequest): Record<string, unknown> {
 
 function paramsOf(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
+}
+
+const UUID_PARAM = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Validate an initiative id from the path.
+ *
+ * Checked here rather than in `query-schemas` because this packet does not own
+ * that module, and a validator is cheap to state twice while a widened
+ * write-set is not. The refusal is the same classified `BAD_REQUEST` the task
+ * id parser raises, so a caller sees one shape of error for one class of
+ * mistake.
+ */
+function parseInitiativeIdParam(raw: string): string {
+  if (!UUID_PARAM.test(raw)) {
+    throw new ApiRouteError("BAD_REQUEST", "initiativeId must be a UUID");
+  }
+  return raw;
 }
 
 export function registerRoutes(app: FastifyInstance, source: LedgerSource): void {
@@ -237,6 +268,59 @@ export function registerRoutes(app: FastifyInstance, source: LedgerSource): void
   app.setNotFoundHandler((request, reply) => {
     sendApiError(reply, "NOT_FOUND", "no route matches " + request.method + " " + request.url);
   });
+  // -------------------------------------------------------------------------
+  // P8-8A: the initiative data plane. Read-only, like every route above it.
+  // -------------------------------------------------------------------------
+
+  registerGet(app, API_ROUTES.initiatives, (request) => {
+    assertEmptyQuery(queryOf(request));
+    const { ledger } = requireOpen(source);
+    const items = portfolio(ledger).map(initiativeSummary);
+    return InitiativePortfolioResponse.parse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      items,
+      count: items.length,
+    });
+  });
+
+  registerGet(app, API_ROUTES.initiativeById, (request) => {
+    assertEmptyQuery(queryOf(request));
+    const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+    const { ledger } = requireOpen(source);
+    const model = initiativeDetail(ledger, initiativeId);
+    if (model === null) {
+      throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+    }
+    return InitiativeDetailResponse.parse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiative: initiativeDetailDto(model),
+    });
+  });
+
+  registerGet(app, API_ROUTES.initiativeRoadmap, (request) => {
+    assertEmptyQuery(queryOf(request));
+    const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+    const { ledger } = requireOpen(source);
+    // The initiative must exist before its history can be empty: a 200 with no
+    // versions for an id the ledger has never seen would say "this initiative
+    // has no roadmap" about something that does not exist.
+    if (ledger.getInitiative(initiativeId) === null) {
+      throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+    }
+    const items = roadmapHistory(ledger, initiativeId).map((entry) =>
+      roadmapVersion(entry.version, entry.head),
+    );
+    return InitiativeRoadmapResponse.parse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId,
+      items,
+      count: items.length,
+    });
+  });
+
 }
 
 function buildHealth(source: LedgerSource) {

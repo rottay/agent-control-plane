@@ -13,6 +13,7 @@
   "references": [
     { "path": "../api-contracts" },
     { "path": "../ledger" },
+    { "path": "../observation" },
     { "path": "../cli" },
     { "path": "../ui" }
   ]

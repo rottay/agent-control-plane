@@ -287,7 +287,11 @@ describe("usage", () => {
     const result = invoke(["--version", "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_OK);
     expect(json(result)).toEqual({
-      apiContractVersion: "0.1.0",
+      // Moved 0.1.0 → 0.2.0 by P8-8A's additive initiative routes. Asserted as
+      // a literal on purpose: the CLI's job here is to report the number a
+      // reader can pin against, and comparing it to the constant it prints
+      // would assert only that the CLI can echo itself.
+      apiContractVersion: "0.2.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });
