@@ -525,6 +525,30 @@ la garantía son dos guardas, el productor que se niega a apendar un enlace
 cuyo predecesor no está durablemente presente, y el consumidor que se niega a
 dibujar una arista que no puede resolver.
 
+#### P8-8F — cuentas, confianza de cuota/reset, logs y la vista de documento (2026-08-31)
+
+La vista de documento del roadmap aterriza por nombre como el segundo
+consumidor del content-read: read-only por construcción (cero affordances
+de escritura), con selector de versión nativo, deep link `?version=` y
+estados nombrados (versión desconocida distinguida del 404 por id). La
+superficie de cuentas nace del primer endpoint no-ledger del plano
+(`GET /api/v1/accounts`, contrato 0.6.0): la unión cerrada
+`READY | UNAVAILABLE` responde 200 en ambos brazos — un owner file ausente
+es el estado honesto de una máquina fresca, no un 500 — con el vocabulario
+de cinco razones congelado sobre un mapa total por compilación (14 → 5; la
+coarsening es el argumento de seguridad), la omisión de `credentialRef` y
+`authProfileRef` forzada por strictness y taladrada hasta el substring, y
+el reloj inyectado en el handler (`estimatedAt`). La confianza de
+cuota/reset se muestra por cuenta (ratio restante, confianza compuesta,
+calendario de reset) y por iniciativa (la fila diferida del workspace desde
+P8-8D C1: el fold HIGH/LOW y el gasto no ubicable, con la ley de
+degradación). Los logs scoped (`#/i/<id>/logs`) renderizan el mismo
+endpoint del timeline en densidad de depuración: ids copiables, timestamps
+absolutos, filtros puros en memoria con round-trip por la URL. Blueprint v2
+adjudicado una vez (C1–C5 de Fable incorporados, N1–N2 adoptados). La
+evidencia renderizada crece la lista de P8-9 por nombre: el bridge del
+navegador sigue sin conectar (resultado standing de la fase).
+
 #### Addendum vinculante del owner (2026-08-30): ejecución y UI agnósticas de transporte
 
 El owner ruling `.acp-local/p8-transport-agnostic-owner-ruling.md`

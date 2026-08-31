@@ -1271,20 +1271,21 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **268 packet entries across 129 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **270 packet entries across 129 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) +
  * 17 (P8-8E-pre) + 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) +
- * 2 (P8-debrief-ruling) + 19 (P8-8F-ui) = 268 entries, with 139 duplicate
+ * 2 (P8-debrief-ruling) + 19 (P8-8F-ui) + 2 (P8-8F-record) = 270 entries,
+ * with 141 duplicate
  * entries, folded from a computed duplicate-owner table rather than argued:
- * `scripts/check-architecture.mjs` is named by all twenty-four packets (23);
+ * `scripts/check-architecture.mjs` is named by all twenty-five packets (24);
  * `pnpm-lock.yaml` by the seven packets that moved a dependency edge (6) --
  * P8-8F-ui does not touch it, the dependency edge this cohort's UI packet
  * needed was zero; ten api-contracts, server and cli paths are each named by
  * P8-8A, P8-8D-pre, P8-8D-c2, P8-8E-pre and P8-8F-srv (4 each, 40);
- * `docs/ROADMAP.md` by P8-D, the three P8-T packets, P8-8E2 and the
- * debrief-ruling record (5); the four runtime modules and their six suites
+ * `docs/ROADMAP.md` by P8-D, the three P8-T packets, P8-8E2, the
+ * debrief-ruling record and this P8-8F record (6); the four runtime modules and their six suites
  * from P8-8E2 are each named twice, by P8-W and P8-8E2 (1 each, 10); the
  * port, the barrel, the port's fixture and the test doubles
  * by P8-2, P8-3 and P8-4 (2 each, 8); three ui paths -- the hash-route module,
@@ -1305,12 +1306,12 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * tsconfig by P8-8A and P8-8F-srv (1); the contracts schema (the P1 one) by
  * P8-1 and P8-8E2 (1); and two ui paths -- `status-tone` and the portfolio
  * view's suite -- by P8-8C and P8-8D (1 each, 2).
- * 23 + 6 + 40 + 5 + 10 + 8 + 9 + 8 + 3 + 4 + 4 + 6 + 1 + 2 + 2 + 3 + 1 + 1 + 1 + 2 = 139.
+ * 24 + 6 + 40 + 6 + 10 + 8 + 9 + 8 + 3 + 4 + 4 + 6 + 1 + 2 + 2 + 3 + 1 + 1 + 1 + 2 = 141.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
- * itself; P8-7 likewise. Four packets add entries without adding paths:
- * P8-8D-pre's 22nd, the whole of P8-8D-c2, the whole of P8-T-roadmap, and the
- * debrief-ruling record. P8-T2 added three paths; P8-8E-pre three; P8-8E six;
+ * itself; P8-7 likewise. Five packets add entries without adding paths:
+ * P8-8D-pre's 22nd, the whole of P8-8D-c2, the whole of P8-T-roadmap, the
+ * debrief-ruling record, and this P8-8F record. P8-T2 added three paths; P8-8E-pre three; P8-8E six;
  * P8-8E2 two; P8-8F-srv five; and P8-8F-ui adds **seven** -- the three new
  * views' own source files, their three test files, and the api client's own
  * test file, which no earlier P8 packet had touched (every other path this
@@ -2020,6 +2021,16 @@ const P88F_UI_WRITE_SET = [
 ];
 
 /**
+ * P8-8F-record: the cohort's own record enters the roadmap.
+ *
+ * A records-only packet, the same two paths as the earlier docs packets:
+ * the roadmap gains the `#### P8-8F` block at its declared home; this
+ * file's roadmap digest moves with it. Two entries, zero new paths — the
+ * status line does not move.
+ */
+const P88F_RECORD_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2299,6 +2310,7 @@ const WRITE_SET = [
   ...P88F_SRV_WRITE_SET,
   ...P8_DEBRIEF_RULING_WRITE_SET,
   ...P88F_UI_WRITE_SET,
+  ...P88F_RECORD_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -2429,7 +2441,7 @@ function assertAdrNumbering() {
 }
 
 const ROADMAP_SHA256 =
-  "595fe6bfbb1f22ed932b0a6dd1e60ebc5dabedbbebc30dc3465762e103506750";
+  "0c26111823da84b28a202bd7772ff688ac2facbab910ce20fd7bdad7f364cefe";
 
 /**
  * The Estado line P7 closure is allowed to have produced.
