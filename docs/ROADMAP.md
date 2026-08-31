@@ -585,28 +585,85 @@ además de los criterios ya listados:
   todos los criterios P8 originales más estas adiciones y el owner
   autorice P9 explícitamente.
 
-#### Tranche bloqueante de topología estructural (ruling del owner, 2026-08-31)
+#### Tranche bloqueante de topología estructural (ruling del owner, 2026-08-31; enmendada tras la auditoría conjunta)
 
-Antes del cierre de P8-E y de cualquier pedido de P9, una auditoría
-estructural conjunta y fresca es obligatoria y bloqueante:
+La auditoría conjunta cerró: tres memos (Kimi/Opus/Fable), la síntesis
+aceptada (`3cd869f1…`), la revisión de Fable (ACCEPT con BC1–BC3,
+`a5c86006…`), el delta-debrief de Opus y Fable sobre las 10 leyes del
+owner, y la adjudicación consolidada del DT
+(`.acp-local/p8-oss-delta-kimi-adjudication.md`). La tranche queda así
+(emendada; binding):
 
-- Kimi K3 mapea el grafo de dependencias, los roles de paquete, los
-  exports públicos y los límites de runtime/proceso, y propone una
-  jerarquía declarativa;
-- Fable desafía independientemente la fuga de autoridad, los ciclos, la
-  agrupación falsa y la evidencia;
-- Codex realiza un único checkpoint independiente y conciso;
-- Opus implementa la topología aceptada: convenciones folder/index,
-  subgrupos de dominio significativos, topología de tests espejo, cero
-  nombres duplicados en paths, globs/tsconfig/exports/imports/fences
-  coherentes entre paquete y workspace, y eliminación de paths
-  obsoletos.
+**Secuencia (ley del owner 9):** primero todo el P8 funcional hasta
+P8-10 (la batería live-DOM/axe aterriza en P8-9, lado funcional);
+después P8-T; P8-E y cualquier pedido de P9 quedan aguas abajo. P9
+permanece imposible hasta que esta compuerta y todos los criterios de
+P8 pasen.
 
-Leyes: nada de anidamiento cosmético — cada movimiento se justifica por
-semántica de ownership/dependencias; gates de arquitectura, build y tests;
-cero imports obsoletos; commits locales; nunca push; recibo final
-`STRUCTURAL_TOPOLOGY_CERTIFIED`. P9 permanece imposible hasta que esta
-compuerta y todos los criterios de P8 pasen.
+**Topología objetivo (cinco estratos, fence-verificables):** `kernel/`
+(contracts, api-contracts); `persistence/` (ledger); `domains/`
+(runtime, accounts, observation); `edges/` (adapters, durability);
+`entrypoints/` (daemon, server, cli, ui). Nombre de carpeta = nombre de
+paquete; máximo dos niveles. Reglas de capa: kernel sin imports internos
+salvo `api-contracts → contracts`; persistence → kernel; domains →
+persistence+kernel con `runtime → accounts` como única arista
+dominio-dominio; edges → domains+persistence+kernel, con
+`durability → runtime` implementando el port y `edges →
+runtime/scenarios` declarado; entrypoints → cualquier estrato inferior;
+nada importa un entrypoint desde `src/`; ui → kernel/api-contracts
+solamente. Nombres npm `@acp/*` invariantes salvo la única excepción
+registrada `@acp/durability`.
+
+**Leyes de lectura (adjudicadas una vez):** los tipos/interfaces/enums
+pertenecen a su contexto acotado y se exponen por su entrypoint
+folder/index; la co-ubicación de los tipos de un módulo con su
+implementación es conforme; la prohibición es sobre bolsas globales de
+tipos y tipos sueltos fuera de todo entrypoint. Pre-release, "consumidor"
+significa consumidores in-repo, y la prueba de compatibilidad es la
+actualización atómica del consumidor en el mismo commit más los gates
+en verde; tras cualquier release pública, la ley 8 se endurece a
+compatibilidad externa real.
+
+**Los paquetes (G-packets, cada uno verde y commiteado localmente, sin
+push):** G0 — portabilidad del fence, bloqueante: un único resolver de
+raíces de paquete, los 291 prefijos literales retirados, toda ley
+path-scoped falla cerrada con scope vacío, el inventario de superficies
+path-shaped con su ley, las sondas de fallo deliberado, el epoch del
+fence (arrays históricos congelados; el move-map bidireccional gobierna;
+los paths viejos entran en RETIRED_PATHS; el epoch se prueba fallando
+ante un archivo pre-epoch genuinamente borrado), y `RUNTIME_PUBLIC_EXPORTS`
+pineado contra el barrel intacto. G1' — el movimiento atómico único del
+árbol (todos los paquetes en un commit; cada referencia
+tsconfig/vitest/glob reescrita exactamente una vez; el move-map como
+obligación de prueba; la compuerta es un `tsc --build` limpio desde
+`.tsbuildinfo` vacío más la suite completa y el fence). G5 — el split
+runtime/durability (el único de alto riesgo; pre-audit obligatorio), con
+el test de conformidad del port dentro de `edges/durability` y la
+compuerta de cero referencias `@restatedev/restate-sdk` por especificador
+de import, nunca por substring. G6 — subdivisión de contracts in place,
+barrel byte-estable. G7 — naming + dedup (incluida la democión de la
+arista accounts→ledger a devDependency con su evidencia grep en el memo,
+moviendo manifest + fence + comentario juntos). G8 — higiene de
+superficies (las referencias de parity fuera del tsconfig de producción;
+fixtures dorados compartidos; dietas de barrel bajo la compuerta de
+cero-importadores). G9 — las clases de test faltantes (residuo
+estructural únicamente), cada una con su prueba de fixture falliente.
+G10 — la tranche de documentación con la docs-gate viva. Compuerta de
+fase: `STRUCTURAL_TOPOLOGY_CERTIFIED`. Rollback = el move-map invertido,
+nunca un force.
+
+**Leyes transversales:** una verificadora pesada serial en todo momento
+(el pool file-locked es ley local; CI la hereda si P9 la crea); toda
+clase de test nueva aterriza con su prueba de fixture falliente y los
+memos reportan qué discriminan los tests, nunca cuántos hay; los
+cohortes llevan cero commits en su branch; la referencia de la API se
+fence-checks contra la fuente (la tabla de parity es la autoridad), y
+una referencia TypeScript tipo typedoc es el único lugar donde
+"generada" es apropiada; el README de cada paquete se verifica contra
+los pins de exports del fence y el threat model cita hechos grepeables.
+**ADR 0013** (`docs/architecture/0013-repository-topology.md`) queda
+comisionado para registrar las adjudicaciones (incluida la arista
+scenarios y el movimiento de las constantes de topología al kernel).
 
 ### P9 — Cutover explícito y reversible
 
