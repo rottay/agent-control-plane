@@ -1234,12 +1234,17 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * assertion, an injected client of the same OpenAI-compatible chat/completions
  * shape bound to a local or self-hosted server instead of a provider API.
  *
- * P8 is therefore **56 packet entries across 43 distinct paths**: 2 (P8-D) +
- * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) = 56 entries, with 13
- * duplicate entries. `scripts/check-architecture.mjs` is named by all six
- * packets (5 duplicates); the port, the barrel, the port's fixture and the
- * test doubles are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8
- * total). So 56 - 13 = 43 distinct paths. This file's appearances in earlier
+ * P8-5 lands law 4's versioned capability/policy registry: the document as data
+ * outside application code, its schema and loader in the accounts package, and
+ * `routeWithPolicy` as the one seam that stamps `capabilityPolicyVersion`.
+ *
+ * P8 is therefore **62 packet entries across 48 distinct paths**: 2 (P8-D) +
+ * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) = 62
+ * entries, with 14 duplicate entries. `scripts/check-architecture.mjs` is named
+ * by all seven packets (6 duplicates); the port, the barrel, the port's fixture
+ * and the test doubles are each named by P8-2, P8-3 and P8-4 (2 duplicates
+ * each, 8 total). P8-5 shares no path with any earlier P8 packet but the fence
+ * itself. So 62 - 14 = 48 distinct paths. This file's appearances in earlier
  * phases are counted in those phases, since the standing convention scopes the
  * arithmetic to the phase.
  */
@@ -1377,6 +1382,29 @@ const P84_WRITE_SET = [
   "packages/adapters/src/index.ts",
   "packages/adapters/test/execution-port/index.test.ts",
   "packages/adapters/test/testing/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-5: the versioned capability/policy registry.
+ *
+ * Law 4's record, as data outside application code: the document under
+ * `packages/accounts/policy/`, its schema and loader inside the accounts
+ * package, and `routeWithPolicy` — the single seam that stamps
+ * `capabilityPolicyVersion`, leaving `rankAccounts` version-less. No contracts
+ * bump: the registry is the accounts domain's to own, and nothing outside it
+ * needs the shape.
+ *
+ * The data file needs no import admission. The accounts purity scan is scoped
+ * to `src/` and `test/` `.ts` sources, so a `.json` document rides the
+ * write-set membership scan and nothing else.
+ */
+const P85_WRITE_SET = [
+  "packages/accounts/policy/capability-policy.json",
+  "packages/accounts/src/policy/index.ts",
+  "packages/accounts/src/index.ts",
+  "packages/accounts/test/policy/index.test.ts",
+  "packages/accounts/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1643,6 +1671,7 @@ const WRITE_SET = [
   ...P82_WRITE_SET,
   ...P83_WRITE_SET,
   ...P84_WRITE_SET,
+  ...P85_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -4015,6 +4044,62 @@ if (tracked.status === 0) {
   );
 }
 
+// --- P8-5: the capability/policy registry's editorial law ---------------------
+//
+// **A content change to the registry requires a version change.** Same content
+// under a new version is lawful — a re-cut, when an evaluation is repeated and
+// nothing moved. Same version under different content is invalid, and invalid
+// in the way that matters: every `capabilityPolicyVersion` already written into
+// a route or an event becomes a lie about what was in force when it was chosen.
+//
+// The loader cannot enforce this. It sees one document and has no idea what
+// that version meant yesterday. The fence can, by pinning each published
+// version to the digest of the content published under it: change the bytes
+// without changing the version and the digest stops matching that version's
+// pin; change the version and a new row has to be added deliberately.
+const POLICY_VERSION_DIGESTS = {
+  "2026-08-30.1": "6fee0b392f19e44ebcd01b29d83d23ee09941e839d1f13c9243a141613d83922",
+};
+
+const policyDocumentPath = "packages/accounts/policy/capability-policy.json";
+const policyDocument = readIfPresent(policyDocumentPath);
+if (policyDocument !== null) {
+  let policy = null;
+  try {
+    policy = JSON.parse(policyDocument);
+  } catch {
+    fail(policyDocumentPath + " is not JSON");
+  }
+  if (policy !== null) {
+    const version = policy.policyVersion;
+    if (typeof version !== "string" || version === "") {
+      fail(policyDocumentPath + " declares no policyVersion");
+    } else {
+      const digest = createHash("sha256").update(policyDocument, "utf8").digest("hex");
+      const pinned = Object.hasOwn(POLICY_VERSION_DIGESTS, version)
+        ? POLICY_VERSION_DIGESTS[version]
+        : null;
+      if (pinned === null) {
+        fail(
+          policyDocumentPath +
+            " publishes policyVersion " +
+            version +
+            ", which POLICY_VERSION_DIGESTS does not pin; add its digest in the same commit",
+        );
+      } else if (pinned !== digest) {
+        fail(
+          policyDocumentPath +
+            " changed content under an unchanged policyVersion " +
+            version +
+            "; a content change requires a version change",
+        );
+      } else {
+        notes.push("the capability policy " + version + " matches its pinned digest");
+      }
+    }
+  }
+}
+
 // --- 21. the mirrored-topology law (owner rule, P5N) -------------------------
 //
 // Owner law, repository-wide once every tree is activated:
@@ -4352,6 +4437,22 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "SWITCH_STEPS",
   "SWITCH_TRIGGERS",
   "decideSwitch",
+  // P8-5: the versioned capability/policy registry (law 4).
+  "PolicyConfidence",
+  "PolicyEntry",
+  "PolicyLoadOutcome",
+  "PolicyRefusal",
+  "PolicyRefused",
+  "PolicyRegistry",
+  "PolicyRouteChoice",
+  "PolicyRouteOutcome",
+  "PolicyRouteRequest",
+  "PolicySupport",
+  "POLICY_FILE_MAX_BYTES",
+  "POLICY_REFUSALS",
+  "buildPolicyRegistry",
+  "loadPolicyRegistry",
+  "routeWithPolicy",
 ];
 
 const accountsIndex = readIfPresent("packages/accounts/src/index.ts");

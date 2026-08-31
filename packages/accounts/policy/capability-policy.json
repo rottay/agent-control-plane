@@ -1,0 +1,81 @@
+{
+  "policyVersion": "2026-08-30.1",
+  "evaluatedAt": "2026-08-30T00:00:00.000Z",
+  "models": [
+    {
+      "model": "opus",
+      "provider": "claude",
+      "release": null,
+      "eligibleRoles": ["coordinator", "implementer", "reviewer", "consultant", "verifier"],
+      "quality": { "score": null, "confidence": "UNKNOWN" },
+      "latency": { "p50Seconds": null, "confidence": "UNKNOWN" },
+      "contextTokens": null,
+      "supports": { "tools": "UNKNOWN", "vision": "UNKNOWN", "streaming": "UNKNOWN" },
+      "transports": ["CLI_SUBSCRIPTION"],
+      "quotaConfidence": "LOW",
+      "costPerMillionTokens": null,
+      "evaluatedAt": "2026-08-30T00:00:00.000Z",
+      "allowedFallbacks": ["sonnet"]
+    },
+    {
+      "model": "sonnet",
+      "provider": "claude",
+      "release": null,
+      "eligibleRoles": ["implementer", "reviewer", "consultant", "verifier"],
+      "quality": { "score": null, "confidence": "UNKNOWN" },
+      "latency": { "p50Seconds": null, "confidence": "UNKNOWN" },
+      "contextTokens": null,
+      "supports": { "tools": "UNKNOWN", "vision": "UNKNOWN", "streaming": "UNKNOWN" },
+      "transports": ["CLI_SUBSCRIPTION"],
+      "quotaConfidence": "LOW",
+      "costPerMillionTokens": null,
+      "evaluatedAt": "2026-08-30T00:00:00.000Z",
+      "allowedFallbacks": ["haiku"]
+    },
+    {
+      "model": "haiku",
+      "provider": "claude",
+      "release": null,
+      "eligibleRoles": ["verifier"],
+      "quality": { "score": null, "confidence": "UNKNOWN" },
+      "latency": { "p50Seconds": null, "confidence": "UNKNOWN" },
+      "contextTokens": null,
+      "supports": { "tools": "UNKNOWN", "vision": "UNKNOWN", "streaming": "UNKNOWN" },
+      "transports": ["CLI_SUBSCRIPTION"],
+      "quotaConfidence": "LOW",
+      "costPerMillionTokens": null,
+      "evaluatedAt": "2026-08-30T00:00:00.000Z",
+      "allowedFallbacks": []
+    },
+    {
+      "model": "k3",
+      "provider": "kimi",
+      "release": null,
+      "eligibleRoles": ["coordinator", "consultant"],
+      "quality": { "score": null, "confidence": "UNKNOWN" },
+      "latency": { "p50Seconds": null, "confidence": "UNKNOWN" },
+      "contextTokens": null,
+      "supports": { "tools": "UNKNOWN", "vision": "UNKNOWN", "streaming": "UNKNOWN" },
+      "transports": ["CLI_SUBSCRIPTION"],
+      "quotaConfidence": "LOW",
+      "costPerMillionTokens": null,
+      "evaluatedAt": "2026-08-30T00:00:00.000Z",
+      "allowedFallbacks": []
+    },
+    {
+      "model": "gpt-5-codex",
+      "provider": "codex",
+      "release": null,
+      "eligibleRoles": ["implementer", "verifier"],
+      "quality": { "score": null, "confidence": "UNKNOWN" },
+      "latency": { "p50Seconds": null, "confidence": "UNKNOWN" },
+      "contextTokens": null,
+      "supports": { "tools": "UNKNOWN", "vision": "UNKNOWN", "streaming": "UNKNOWN" },
+      "transports": ["CLI_SUBSCRIPTION"],
+      "quotaConfidence": "LOW",
+      "costPerMillionTokens": null,
+      "evaluatedAt": "2026-08-30T00:00:00.000Z",
+      "allowedFallbacks": []
+    }
+  ]
+}

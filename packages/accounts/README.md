@@ -136,6 +136,53 @@ package.
 `@acp/accounts` never imports `@acp/runtime`. The direction is settled in ADR
 0011 and runs the other way: `runtime` will consume this package in P6.
 
+## The capability/policy registry
+
+The P8 addendum's law 4 asks for a versioned capability and policy record that
+lives **outside application code**, so that updating which model is preferred
+never requires an orchestration change. It lives at
+`policy/capability-policy.json` — data, not source — and this package carries
+its schema, its loader and the one seam that reads it.
+
+Each entry states the eleven things law 4 names: the model's release, the roles
+it is eligible for, measured quality, latency, context, modality and tool
+support, the transports it is reachable through, the confidence in that
+account's quota and reset picture, cost where it applies, the date it was
+evaluated, and the fallbacks it is allowed. Preference is document order: the
+first eligible entry a candidate account can actually serve is the one chosen.
+Reordering the array is a policy update, and it is also the entire diff.
+
+The seed is deliberately conservative. Every measurement is `null` with
+confidence `UNKNOWN`, because none of them has been measured — the same
+discipline P4 applied to provider capabilities, where nothing was `CONFIRMED`
+without evidence about the thing itself. A registry that defaulted an
+unmeasured quality to a number would be inventing exactly the evidence law 4
+exists to record.
+
+**The update law: a content change requires a version change.** Same content
+under a new version is lawful — a re-cut, when an evaluation is repeated and
+nothing moved. Same version under different content is invalid, because every
+`capabilityPolicyVersion` already written into a route or an event becomes a
+lie about what was in force when it was chosen. The current document is
+`policyVersion` `2026-08-30.1`. A loader sees one document and cannot know its
+history, so the architecture fence enforces this instead: it pins each
+published version to the digest of the content published under it, and changing
+bytes without changing the version fails the build.
+
+`routeWithPolicy` is the **only** place `capabilityPolicyVersion` is produced.
+`rankAccounts` knows nothing about a policy and stays that way — the policy
+chooses *which model*, the router chooses *which account*, and anything that
+later builds a `ResolvedRoute` takes the version from the seam's outcome rather
+than reading the registry a second time. Two readers of one document is two
+answers the moment the document is re-cut between them.
+
+Loading follows the same hermeticity law as the owner file: an explicit
+absolute path, no default, no discovery, no environment read. What it does not
+inherit is the owner file's ownership and permission ladder — that exists
+because the owner file names where credentials live, and demanding `0600` of a
+committed document every contributor reads would fail on any shared checkout
+while protecting nothing.
+
 ## What is deferred, and to where
 
 The accounts **UI** and the `drain` / `account-ready` / `reauth-required`

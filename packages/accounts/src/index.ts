@@ -100,3 +100,29 @@ export type {
   SwitchTrigger,
 } from "./switching/index.js";
 export { SWITCH_REFUSALS, SWITCH_STEPS, SWITCH_TRIGGERS, decideSwitch } from "./switching/index.js";
+
+// P8-5: the versioned capability/policy registry (law 4). The document is data
+// under `policy/`, outside application code; this package carries its schema,
+// its loader and the one seam that reads it. `routeWithPolicy` is the **only**
+// producer of `capabilityPolicyVersion` — `rankAccounts` still knows nothing
+// about a policy, and anything that later builds a `ResolvedRoute` takes the
+// version from the seam's outcome rather than reading the registry again.
+export type {
+  PolicyConfidence,
+  PolicyEntry,
+  PolicyLoadOutcome,
+  PolicyRefusal,
+  PolicyRefused,
+  PolicyRegistry,
+  PolicyRouteChoice,
+  PolicyRouteOutcome,
+  PolicyRouteRequest,
+  PolicySupport,
+} from "./policy/index.js";
+export {
+  POLICY_FILE_MAX_BYTES,
+  POLICY_REFUSALS,
+  buildPolicyRegistry,
+  loadPolicyRegistry,
+  routeWithPolicy,
+} from "./policy/index.js";
