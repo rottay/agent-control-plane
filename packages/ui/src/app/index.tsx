@@ -3,7 +3,9 @@ import { type JSX, useState } from "react";
 
 import { AppShell } from "../components/app-shell/index.js";
 import { useHashRoute } from "../routing/use-hash-route/index.js";
+import { AgentsView } from "../views/agents-view/index.js";
 import { EventsView } from "../views/events-view/index.js";
+import { GraphView } from "../views/graph-view/index.js";
 import { IntegrityView } from "../views/integrity-view/index.js";
 import { NotFoundView } from "../views/not-found-view/index.js";
 import { OverviewView } from "../views/overview-view/index.js";
@@ -11,6 +13,7 @@ import { PortfolioView } from "../views/portfolio-view/index.js";
 import { StatusView } from "../views/status-view/index.js";
 import { TaskDetailView } from "../views/task-detail-view/index.js";
 import { TasksListView } from "../views/tasks-list-view/index.js";
+import { TimelineView } from "../views/timeline-view/index.js";
 import { WorkerDetailView } from "../views/worker-detail-view/index.js";
 import { WorkersListView } from "../views/workers-list-view/index.js";
 import { WorkspaceView } from "../views/workspace-view/index.js";
@@ -77,6 +80,12 @@ export function App(): JSX.Element {
               return <WorkerDetailView route={route} />;
             case "events":
               return <EventsView route={route} navigate={navigate} />;
+            case "graph":
+              return <GraphView route={route} />;
+            case "timeline":
+              return <TimelineView route={route} navigate={navigate} />;
+            case "agents":
+              return <AgentsView route={route} />;
             case "status":
               return <StatusView />;
             case "integrity":

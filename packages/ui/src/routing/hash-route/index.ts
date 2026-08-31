@@ -23,6 +23,16 @@
  * from inside the view, per the id-validation law; the sibling scoped routes
  * (`#/i/<id>/tasks`, `#/i/<id>/workers`, …) keep their own, unvalidated
  * shape, deferred to their own cohorts by name.
+ *
+ * **P8-8E's three scope-only views.** `#/i/<id>/graph`, `#/i/<id>/events` and
+ * `#/i/<id>/agents` do not share the plain grammar `parseViewSegments`
+ * builds: the scoped `/events` in particular must render a different view
+ * from the unprefixed `#/events` (the merged, stream-tagged timeline, not the
+ * global `EventsView` with a filter applied), and `/graph` and `/agents` have
+ * no unprefixed counterpart to share with at all — a task graph or a scoped
+ * worker roster is only ever a fact about one initiative. `parseScopedOnlySegments`
+ * is checked first, before the shared grammar, so the two never drift into
+ * resolving the same segment two different ways.
  */
 
 export const VIEW_NAMES = [
@@ -34,6 +44,9 @@ export const VIEW_NAMES = [
   "workers",
   "worker-detail",
   "events",
+  "graph",
+  "timeline",
+  "agents",
   "status",
   "integrity",
   "not-found",
@@ -115,6 +128,33 @@ function parseViewSegments(
   return { view: "not-found", taskId: null, workerIdentity: null, initiativeId, query, raw };
 }
 
+/**
+ * Routes that only make sense scoped to one initiative — the task graph, the
+ * scoped timeline and the agents surface (P8-8E). Returns `null` for
+ * anything that is not exactly one of these three single-segment routes, so
+ * the caller falls through to the shared grammar unchanged.
+ */
+function parseScopedOnlySegments(
+  segments: readonly string[],
+  initiativeId: string,
+  query: Readonly<Record<string, string>>,
+  raw: string,
+): Route | null {
+  if (segments.length !== 1) {
+    return null;
+  }
+  if (segments[0] === "graph") {
+    return { view: "graph", taskId: null, workerIdentity: null, initiativeId, query, raw };
+  }
+  if (segments[0] === "events") {
+    return { view: "timeline", taskId: null, workerIdentity: null, initiativeId, query, raw };
+  }
+  if (segments[0] === "agents") {
+    return { view: "agents", taskId: null, workerIdentity: null, initiativeId, query, raw };
+  }
+  return null;
+}
+
 export function parseHash(hash: string): Route {
   const raw = hash;
   const withoutMarker = hash.startsWith("#") ? hash.slice(1) : hash;
@@ -144,7 +184,12 @@ export function parseHash(hash: string): Route {
       // an id its own fetch cannot resolve (the id-validation law, C3).
       return { view: "workspace", taskId: null, workerIdentity: null, initiativeId, query, raw };
     }
-    return parseViewSegments(segments.slice(2), initiativeId, query, raw);
+    const rest = segments.slice(2);
+    const scopedOnly = parseScopedOnlySegments(rest, initiativeId, query, raw);
+    if (scopedOnly !== null) {
+      return scopedOnly;
+    }
+    return parseViewSegments(rest, initiativeId, query, raw);
   }
 
   return parseViewSegments(segments, null, query, raw);
@@ -177,6 +222,26 @@ export function buildInitiativeHash(initiativeId: string): string {
 
 export function buildTaskDetailHash(taskId: string): string {
   return "#/tasks/" + encodeURIComponent(taskId);
+}
+
+/** The scoped task graph route (P8-8E). */
+export function buildInitiativeGraphHash(initiativeId: string): string {
+  return "#/i/" + encodeURIComponent(initiativeId) + "/graph";
+}
+
+/** The scoped, merged timeline route (P8-8E). Shares `/events` with the
+ * unprefixed grammar in spelling only — `parseHash` resolves it to the
+ * distinct `"timeline"` view, never the global `EventsView`. */
+export function buildInitiativeTimelineHash(
+  initiativeId: string,
+  query: Readonly<Record<string, string | number | undefined | null>> = {},
+): string {
+  return "#/i/" + encodeURIComponent(initiativeId) + "/events" + serializeQuery(query);
+}
+
+/** The scoped agents route (P8-8E). */
+export function buildInitiativeAgentsHash(initiativeId: string): string {
+  return "#/i/" + encodeURIComponent(initiativeId) + "/agents";
 }
 
 export function buildWorkerDetailHash(identity: string): string {

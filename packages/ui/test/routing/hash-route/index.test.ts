@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildHash,
+  buildInitiativeAgentsHash,
+  buildInitiativeGraphHash,
   buildInitiativeHash,
+  buildInitiativeTimelineHash,
   buildPortfolioHash,
   buildTaskDetailHash,
   buildWorkerDetailHash,
   parseHash,
   serializeQuery,
 } from "../../../src/routing/hash-route/index.js";
+
+const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 
 describe("parseHash", () => {
   it("defaults an empty hash to the overview", () => {
@@ -99,6 +104,46 @@ describe("parseHash — the initiative-scoped prefix (P8-8C, blueprint v2 §4)",
   });
 });
 
+describe("parseHash — the three scope-only views (P8-8E, C5)", () => {
+  it("parses the scoped task graph route", () => {
+    const route = parseHash("#/i/" + INITIATIVE_ID + "/graph");
+    expect(route).toMatchObject({ view: "graph", taskId: null, workerIdentity: null, initiativeId: INITIATIVE_ID });
+  });
+
+  it("parses the scoped agents route", () => {
+    const route = parseHash("#/i/" + INITIATIVE_ID + "/agents");
+    expect(route).toMatchObject({ view: "agents", taskId: null, workerIdentity: null, initiativeId: INITIATIVE_ID });
+  });
+
+  it("parses the scoped /events route to the distinct 'timeline' view, never the global EventsView", () => {
+    const scoped = parseHash("#/i/" + INITIATIVE_ID + "/events");
+    expect(scoped.view).toBe("timeline");
+    expect(scoped.initiativeId).toBe(INITIATIVE_ID);
+
+    // The unprefixed route keeps resolving to the ordinary global view — the
+    // divergence exists only when an initiative scopes the route.
+    const unscoped = parseHash("#/events");
+    expect(unscoped.view).toBe("events");
+    expect(unscoped.initiativeId).toBeNull();
+  });
+
+  it("carries query parameters on a scoped timeline route", () => {
+    const route = parseHash("#/i/" + INITIATIVE_ID + "/events?stream=TASK&type=TASK_STATE_CHANGED");
+    expect(route.view).toBe("timeline");
+    expect(route.query).toEqual({ stream: "TASK", type: "TASK_STATE_CHANGED" });
+  });
+
+  it("has no unscoped counterpart: bare #/graph and #/agents are not-found", () => {
+    expect(parseHash("#/graph").view).toBe("not-found");
+    expect(parseHash("#/agents").view).toBe("not-found");
+  });
+
+  it("falls back to not-found for a scoped graph/agents route with an extra segment", () => {
+    expect(parseHash("#/i/" + INITIATIVE_ID + "/graph/extra").view).toBe("not-found");
+    expect(parseHash("#/i/" + INITIATIVE_ID + "/agents/extra").view).toBe("not-found");
+  });
+});
+
 describe("buildHash and serializeQuery", () => {
   it("builds a bare view hash with no query", () => {
     expect(buildHash("overview")).toBe("#/overview");
@@ -149,5 +194,39 @@ describe("buildTaskDetailHash and buildWorkerDetailHash", () => {
   it("builds a worker detail hash that parses back to the same identity", () => {
     const hash = buildWorkerDetailHash("claude/opus/implementer/01");
     expect(parseHash(hash)).toMatchObject({ view: "worker-detail", workerIdentity: "claude/opus/implementer/01" });
+  });
+});
+
+describe("buildInitiativeGraphHash, buildInitiativeTimelineHash and buildInitiativeAgentsHash (P8-8E)", () => {
+  it("builds a graph hash that parses back to the graph view, scoped", () => {
+    const hash = buildInitiativeGraphHash(INITIATIVE_ID);
+    expect(hash).toBe("#/i/" + INITIATIVE_ID + "/graph");
+    expect(parseHash(hash)).toMatchObject({ view: "graph", initiativeId: INITIATIVE_ID });
+  });
+
+  it("builds an agents hash that parses back to the agents view, scoped", () => {
+    const hash = buildInitiativeAgentsHash(INITIATIVE_ID);
+    expect(hash).toBe("#/i/" + INITIATIVE_ID + "/agents");
+    expect(parseHash(hash)).toMatchObject({ view: "agents", initiativeId: INITIATIVE_ID });
+  });
+
+  it("builds a bare timeline hash that parses back to the timeline view, scoped", () => {
+    const hash = buildInitiativeTimelineHash(INITIATIVE_ID);
+    expect(hash).toBe("#/i/" + INITIATIVE_ID + "/events");
+    expect(parseHash(hash)).toMatchObject({ view: "timeline", initiativeId: INITIATIVE_ID });
+  });
+
+  it("builds a timeline hash with query parameters that round-trip", () => {
+    const hash = buildInitiativeTimelineHash(INITIATIVE_ID, { stream: "TASK", type: undefined });
+    expect(hash).toBe("#/i/" + INITIATIVE_ID + "/events?stream=TASK");
+    const route = parseHash(hash);
+    expect(route.view).toBe("timeline");
+    expect(route.query["stream"]).toBe("TASK");
+  });
+
+  it("encodes the initiative id on every builder", () => {
+    expect(buildInitiativeGraphHash("has/slash")).toBe("#/i/has%2Fslash/graph");
+    expect(buildInitiativeAgentsHash("has/slash")).toBe("#/i/has%2Fslash/agents");
+    expect(buildInitiativeTimelineHash("has/slash")).toBe("#/i/has%2Fslash/events");
   });
 });

@@ -2,9 +2,11 @@ import {
   API_ROUTES,
   ApiError,
   EventPageResponse,
+  InitiativeAgentsResponse,
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  InitiativeTimelineResponse,
   IntegrityResult,
   LedgerStatusResponse,
   OverviewResponse,
@@ -14,6 +16,8 @@ import {
   TaskPageResponse,
   WorkerDetailResponse,
   WorkerPageResponse,
+  initiativeAgentsPath,
+  initiativeEventsPath,
   initiativePath,
   initiativeRoadmapContentPath,
   initiativeRoadmapPath,
@@ -405,6 +409,56 @@ export function writeRoadmapVersion(
   return postAndParse(path, input, RoadmapVersionWriteResponse, signal);
 }
 
+/**
+ * The scoped, merged timeline (P8-8E, C2 of P8-8E-pre).
+ *
+ * One initiative's own stream merged with every task it owns, stream-tagged,
+ * ordered `recordedAt` ascending. The task graph and the scoped timeline view
+ * both read this same response — the graph derives nodes and edges from it,
+ * the timeline view renders its rows directly — so there is exactly one
+ * fetcher for it, not one per consumer.
+ */
+export function fetchInitiativeTimeline(
+  initiativeId: string,
+  signal?: AbortSignal,
+): Promise<ApiResult<InitiativeTimelineResponse>> {
+  let path: string;
+  try {
+    path = initiativeEventsPath(initiativeId);
+  } catch {
+    return Promise.resolve({
+      kind: "contract-mismatch",
+      status: null,
+      detail: "\"" + initiativeId + "\" is not a well formed initiative id",
+    });
+  }
+  return fetchAndParse(path, InitiativeTimelineResponse, signal);
+}
+
+/**
+ * The scoped workers surface (P8-8E, C3 of P8-8E-pre).
+ *
+ * Folded from this initiative's own tasks alone — never the global worker
+ * projection, which would report a worker's globally-latest task rather than
+ * the one it last touched here.
+ */
+export function fetchInitiativeAgents(
+  initiativeId: string,
+  signal?: AbortSignal,
+): Promise<ApiResult<InitiativeAgentsResponse>> {
+  let path: string;
+  try {
+    path = initiativeAgentsPath(initiativeId);
+  } catch {
+    return Promise.resolve({
+      kind: "contract-mismatch",
+      status: null,
+      detail: "\"" + initiativeId + "\" is not a well formed initiative id",
+    });
+  }
+  return fetchAndParse(path, InitiativeAgentsResponse, signal);
+}
+
 // ---------------------------------------------------------------------------
 // Query keys (P8-8B)
 // ---------------------------------------------------------------------------
@@ -436,4 +490,6 @@ export const queryKeys = {
   initiativeRoadmap: (initiativeId: string) => ["acp", "initiative", initiativeId, "roadmap"] as const,
   roadmapContent: (initiativeId: string, version: number) =>
     ["acp", "initiative", initiativeId, "roadmap", "content", version] as const,
+  initiativeTimeline: (initiativeId: string) => ["acp", "initiative", initiativeId, "timeline"] as const,
+  initiativeAgents: (initiativeId: string) => ["acp", "initiative", initiativeId, "agents"] as const,
 };

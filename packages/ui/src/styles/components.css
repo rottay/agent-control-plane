@@ -196,11 +196,15 @@
   font-weight: 600;
 }
 
-.field input {
+.field input,
+.field select {
   border: var(--border-width) solid var(--color-border-strong);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
+  color: var(--color-text);
   padding: var(--space-2) var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-sm);
 }
 
 input[type="text"] {
@@ -871,4 +875,103 @@ input[type="text"] {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+/* The initiative sub-navigation (P8-8E, C5) — a second, independent
+   navigation region beside the app shell's primary one, so it gets its own
+   look rather than borrowing `.app-shell__nav`'s. */
+
+.workspace-subnav {
+  margin: var(--space-3) 0 var(--space-5);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.workspace-subnav ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+}
+
+.workspace-subnav a {
+  display: inline-block;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  font-size: var(--text-sm);
+}
+
+.workspace-subnav a:visited {
+  color: var(--color-text-muted);
+}
+
+.workspace-subnav a:hover {
+  color: var(--color-text);
+}
+
+.workspace-subnav a.is-current {
+  color: var(--color-text);
+  border-bottom-color: var(--color-accent);
+  font-weight: 600;
+}
+
+/* The task graph (P8-8E, blueprint §1, C6) */
+
+.graph-list {
+  margin-top: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.graph-list h2 {
+  font-size: var(--text-md);
+  margin: var(--space-4) 0 var(--space-2);
+}
+
+.graph-list h2:first-child {
+  margin-top: 0;
+}
+
+/* The canvas itself is `aria-hidden` (see graph-view/index.tsx's header
+   comment) — every rule below is purely visual, overriding `@xyflow/react`'s
+   own default palette into this package's token vocabulary rather than its
+   shipped colors. Set as custom properties on the wrapper, per xyflow's own
+   theming contract, so this holds regardless of the two stylesheets' load
+   order. */
+.graph-canvas {
+  --xy-background-color-default: var(--color-surface);
+  --xy-background-pattern-color-default: var(--color-border);
+  --xy-node-background-color-default: var(--color-surface-raised);
+  --xy-node-border-default: var(--border-width) solid var(--color-border-strong);
+  --xy-node-border-radius-default: var(--radius-sm);
+  --xy-node-color-default: var(--color-text);
+  --xy-node-boxshadow-hover-default: var(--shadow-sm);
+  --xy-node-boxshadow-selected-default: var(--shadow-sm);
+  --xy-edge-stroke-default: var(--color-border-strong);
+  --xy-edge-stroke-width-default: 1.5;
+  --xy-edge-stroke-selected-default: var(--color-accent-strong);
+  --xy-edge-label-background-color-default: var(--color-surface-raised);
+  --xy-edge-label-color-default: var(--color-text-muted);
+  --xy-attribution-background-color-default: transparent;
+  height: 24rem;
+  margin-bottom: var(--space-5);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.graph-canvas__node-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+
+.graph-canvas__node-label code {
+  font-size: var(--text-xs);
 }

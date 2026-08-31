@@ -9,7 +9,14 @@ import { StatusBadge } from "../../components/status-badge/index.js";
 import { formatCount, formatRelativeTime, formatTimestamp, humanizeConstant, truncateMiddle } from "../../format/index.js";
 import { initiativeStatusTone, roadmapVersionKindTone } from "../../format/status-tone/index.js";
 import { type Resource, useAsyncResource } from "../../hooks/use-async-resource/index.js";
-import { type Route } from "../../routing/hash-route/index.js";
+import {
+  buildInitiativeAgentsHash,
+  buildInitiativeGraphHash,
+  buildInitiativeHash,
+  buildInitiativeTimelineHash,
+  type Route,
+  type ViewName,
+} from "../../routing/hash-route/index.js";
 import { NotFoundView } from "../not-found-view/index.js";
 
 /**
@@ -68,6 +75,53 @@ function WorkspaceHooked({ route, initiativeId }: { readonly route: Route; reado
       roadmapLastFetchedAt={roadmap.lastFetchedAt}
       onRefreshRoadmap={roadmap.refresh}
     />
+  );
+}
+
+const SUBNAV_ITEMS: readonly {
+  readonly view: ViewName;
+  readonly label: string;
+  readonly hash: (initiativeId: string) => string;
+}[] = [
+  { view: "workspace", label: "Overview", hash: buildInitiativeHash },
+  { view: "graph", label: "Graph", hash: buildInitiativeGraphHash },
+  { view: "timeline", label: "Timeline", hash: buildInitiativeTimelineHash },
+  { view: "agents", label: "Agents", hash: buildInitiativeAgentsHash },
+];
+
+export interface WorkspaceSubnavProps {
+  readonly route: Route;
+  readonly initiativeId: string;
+}
+
+/**
+ * The initiative's sub-navigation (P8-8E, C5): overview, graph, timeline,
+ * agents — the four pages one initiative has. Defined here, beside the
+ * workspace it was born on, and imported by the three new scoped views so
+ * all four pages carry the same four links rather than the workspace alone
+ * knowing how to get to them.
+ *
+ * `aria-current="page"` is set explicitly per item rather than left to a
+ * library to infer (C5: "specified, not implied") — the same discipline the
+ * app shell's own primary navigation already holds, restated here because
+ * this is a second, independent navigation region.
+ */
+export function WorkspaceSubnav({ route, initiativeId }: WorkspaceSubnavProps): JSX.Element {
+  return (
+    <nav className="workspace-subnav" aria-label="Initiative views">
+      <ul>
+        {SUBNAV_ITEMS.map((item) => {
+          const current = route.view === item.view;
+          return (
+            <li key={item.view}>
+              <a href={item.hash(initiativeId)} aria-current={current ? "page" : undefined} className={current ? "is-current" : undefined}>
+                {item.label}
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
 
@@ -137,6 +191,7 @@ export function WorkspaceSection({
               </h1>
               <StatusBadge label={humanizeConstant(initiative.status)} tone={initiativeStatusTone(initiative.status)} />
             </div>
+            <WorkspaceSubnav route={route} initiativeId={initiativeId} />
             {initiative.objective !== null ? (
               <p className="workspace__objective">{initiative.objective}</p>
             ) : (

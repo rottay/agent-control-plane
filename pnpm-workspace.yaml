@@ -40,6 +40,15 @@ packages:
 # graph pulls in — new or already shared with the dropdown menu's own — was
 # read out of the lockfile and none declares a preinstall, install or
 # postinstall script.
+#
+# P8-8E adds @xyflow/react (the task graph's canvas) and its own graph —
+# including the d3-family modules it rides in on (d3-drag, d3-selection,
+# d3-zoom and their shared d3-dispatch/d3-ease/d3-interpolate/d3-timer
+# dependencies) — and adds NOTHING here either, verified the same way: every
+# package the whole added graph pulls in was read out of the lockfile and,
+# for each, its installed `node_modules/.pnpm/*/node_modules/*/package.json`
+# `scripts` field was read directly and none declares a preinstall, install
+# or postinstall script.
 onlyBuiltDependencies:
   - better-sqlite3
 
@@ -64,3 +73,5 @@ catalog:
   "@radix-ui/react-dropdown-menu": 2.1.24
   # P8-8D: the roadmap edit dialog's one adjudicated primitive (C6).
   "@radix-ui/react-dialog": 1.1.23
+  # P8-8E: the task graph's canvas (C6).
+  "@xyflow/react": 12.11.5

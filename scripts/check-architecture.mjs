@@ -1271,32 +1271,36 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **196 packet entries across 109 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **213 packet entries across 115 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) +
- * 17 (P8-8E-pre) = 196 entries, with 87 duplicate entries, folded from a
- * computed duplicate-owner table rather than argued:
- * `scripts/check-architecture.mjs` is named by all nineteen packets (18);
- * eleven api-contracts, server and cli paths are now each named by P8-8A,
- * P8-8D-pre, P8-8D-c2 and P8-8E-pre (3 each, 33); five of P8-8B's paths are
- * repeated by P8-8C and again by P8-8D (2 each, 10); seven further ui paths are
- * shared by P8-8C and P8-8D alone (1 each, 7); the port, the barrel, the port's
- * fixture and the test doubles are each named by P8-2, P8-3 and P8-4 (2 each,
- * 8); `pnpm-lock.yaml` by the five packets that moved a dependency edge (4);
- * `docs/ROADMAP.md` by P8-D and the three P8-T packets (3);
- * `packages/server/src/initiatives/index.ts` by P8-8A, P8-8D-c2 and P8-8E-pre
- * (2); `packages/server/src/mappers/index.ts` by P8-8A and P8-8E-pre (1); and
+ * 17 (P8-8E-pre) + 17 (P8-8E) = 213 entries, with 98 duplicate entries, folded
+ * from a computed duplicate-owner table rather than argued:
+ * `scripts/check-architecture.mjs` is named by all twenty packets (19);
+ * eleven api-contracts, server and cli paths are each named by P8-8A,
+ * P8-8D-pre, P8-8D-c2 and P8-8E-pre (3 each, 33); four ui paths --
+ * `packages/ui/package.json`, `pnpm-workspace.yaml`,
+ * `packages/ui/src/app/index.tsx` and `packages/ui/src/api/client/index.ts` --
+ * are named by P8-8B, P8-8C, P8-8D and P8-8E (3 each, 12); three more --
+ * the hash route, the component stylesheet and the route suite -- by P8-8C,
+ * P8-8D and P8-8E (2 each, 6); the port, the barrel, the port's fixture and
+ * the test doubles by P8-2, P8-3 and P8-4 (2 each, 8); `pnpm-lock.yaml` by the
+ * six packets that moved a dependency edge (5); `docs/ROADMAP.md` by P8-D and
+ * the three P8-T packets (3); `packages/server/src/initiatives/index.ts` by
+ * P8-8A, P8-8D-c2 and P8-8E-pre (2); `packages/ui/src/components/app-shell/`
+ * by P8-8B, P8-8C and P8-8D (2); four ui paths by P8-8C and P8-8D (1 each, 4);
+ * the workspace view and its suite by P8-8D and P8-8E (1 each, 2);
+ * `packages/server/src/mappers/index.ts` by P8-8A and P8-8E-pre (1); and
  * `packages/server/package.json` by P8-8A and P8-8D-pre (1).
- * 18 + 33 + 10 + 7 + 8 + 4 + 3 + 2 + 1 + 1 = 87.
+ * 19 + 33 + 12 + 6 + 8 + 5 + 3 + 2 + 2 + 4 + 2 + 1 + 1 = 98.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Three packets add entries without adding paths:
  * P8-8D-pre's 22nd, the whole of P8-8D-c2, and the whole of P8-T-roadmap.
- * P8-T2 added three paths (the ADR corpus's index, template and record 0014);
- * P8-8E-pre adds one — `packages/cli/src/observation/index.ts`, the CLI's own
- * timeline constructor, which no earlier P8 packet had touched. Its other
- * sixteen paths the phase already owned. This
+ * P8-T2 added three; P8-8E-pre added one; P8-8E adds six -- the three new
+ * views and their three mirrored suites, which no earlier packet could have
+ * touched because they did not exist. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1827,6 +1831,47 @@ const P88E_PRE_WRITE_SET = [
 ];
 
 /**
+ * P8-8E: the task graph, the scoped timeline, and the agents surface.
+ *
+ * The blueprint made real, the design review and the DT adjudication
+ * incorporated. Nodes are tasks, state-toned; edges are real causal facts
+ * derived from `ScopedTimelineEntry`'s `causationId` chain, never invented —
+ * a `causationId` that resolves to nothing on the fetched page, or to the
+ * same task's own earlier event, produces no edge. The layout is a pure
+ * exported function (`layoutGraph`), unit-tested without a canvas; the
+ * `@xyflow/react` canvas mounts behind a client-only seam and is
+ * `aria-hidden`, since the same edges rendered as a list are this view's
+ * actual keyboard surface and static-testable contract. The scoped timeline
+ * and agents views round out the cohort, each reading one of the two new
+ * P8-8E-pre endpoints; the sub-navigation between all four initiative pages
+ * is defined once, in `workspace-view`, and imported by the three new views.
+ *
+ * `@xyflow/react` is the one new dependency: pinned exactly, catalog-listed,
+ * and the whole graph it pulls in — including the d3-family and zustand —
+ * carries no install-time script, verified the same way every dependency
+ * addition before it was.
+ */
+const P88E_WRITE_SET = [
+  "packages/ui/src/views/graph-view/index.tsx",
+  "packages/ui/src/views/timeline-view/index.tsx",
+  "packages/ui/src/views/agents-view/index.tsx",
+  "packages/ui/src/app/index.tsx",
+  "packages/ui/src/routing/hash-route/index.ts",
+  "packages/ui/src/views/workspace-view/index.tsx",
+  "packages/ui/src/api/client/index.ts",
+  "packages/ui/src/styles/components.css",
+  "packages/ui/test/views/graph-view/index.test.tsx",
+  "packages/ui/test/views/timeline-view/index.test.tsx",
+  "packages/ui/test/views/agents-view/index.test.tsx",
+  "packages/ui/test/views/workspace-view/index.test.tsx",
+  "packages/ui/test/routing/hash-route/index.test.ts",
+  "packages/ui/package.json",
+  "pnpm-workspace.yaml",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2101,6 +2146,7 @@ const WRITE_SET = [
   ...P8T_ROADMAP_WRITE_SET,
   ...P8T2_WRITE_SET,
   ...P88E_PRE_WRITE_SET,
+  ...P88E_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3264,12 +3310,17 @@ const P1B_DEPENDENCY_LAW = [
     //
     // P8-8D adds exactly one more again: `@radix-ui/react-dialog` (the
     // roadmap edit dialog, C6).
+    //
+    // P8-8E adds the deferred `@xyflow/react` named above: the task graph's
+    // canvas (C6), mounted behind a client-only seam. `d3-*` and `zustand`
+    // are transitive (its own graph), not a second manifest entry.
     dependencies: [
       "@acp/api-contracts",
       "@radix-ui/react-dialog",
       "@radix-ui/react-dropdown-menu",
       "@radix-ui/react-navigation-menu",
       "@tanstack/react-query",
+      "@xyflow/react",
       "react",
       "react-dom",
     ],

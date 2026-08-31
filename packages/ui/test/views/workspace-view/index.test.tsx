@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchInitiativeDetail, fetchInitiativeRoadmap } from "../../../src/api/client/index.js";
 import { type Resource } from "../../../src/hooks/use-async-resource/index.js";
 import { type Route } from "../../../src/routing/hash-route/index.js";
-import { WorkspaceSection, WorkspaceView } from "../../../src/views/workspace-view/index.js";
+import { WorkspaceSection, WorkspaceSubnav, WorkspaceView } from "../../../src/views/workspace-view/index.js";
 
 const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const DIGEST_A = "a".repeat(64);
@@ -260,6 +260,54 @@ describe("WorkspaceSection — the states contract (blueprint v2 §5)", () => {
     expect(html).toContain("— used · — reserved");
     expect(html).not.toContain("500 used");
     expect(html).toContain("2 records were skipped as malformed");
+  });
+});
+
+describe("WorkspaceSubnav — the four initiative pages (P8-8E, C5)", () => {
+  it("renders all four links, scoped to the initiative", () => {
+    const html = renderToStaticMarkup(<WorkspaceSubnav route={route()} initiativeId={INITIATIVE_ID} />);
+    expect(html).toContain('href="#/i/' + INITIATIVE_ID + '"');
+    expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/graph"');
+    expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/events"');
+    expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/agents"');
+  });
+
+  it("marks the current page's link with an explicit aria-current, and no other", () => {
+    const html = renderToStaticMarkup(<WorkspaceSubnav route={route({ view: "graph" })} initiativeId={INITIATIVE_ID} />);
+    const overviewHref = 'href="#/i/' + INITIATIVE_ID + '"';
+    const graphHref = 'href="#/i/' + INITIATIVE_ID + '/graph"';
+    // The Graph link carries aria-current="page"...
+    expect(html).toContain(graphHref + " aria-current=\"page\"");
+    // ...and the sibling Overview link does not carry aria-current at all
+    // (React omits a `false`/`undefined` boolean-ish attribute entirely
+    // rather than rendering `aria-current="false"`, which is not a valid
+    // token of the aria-current enumeration).
+    expect(html).toContain(overviewHref);
+    expect(html).not.toContain(overviewHref + " aria-current");
+  });
+
+  it("renders on the bare workspace page too, with Overview marked current", () => {
+    const html = renderToStaticMarkup(<WorkspaceSubnav route={route({ view: "workspace" })} initiativeId={INITIATIVE_ID} />);
+    expect(html).toMatch(/href="#\/i\/[^"]+" aria-current="page"/);
+  });
+});
+
+describe("WorkspaceSection — includes the sub-navigation (P8-8E, C5)", () => {
+  it("renders the four-page sub-navigation alongside the workspace content", () => {
+    const html = renderToStaticMarkup(
+      <WorkspaceSection
+        route={route()}
+        initiativeId={INITIATIVE_ID}
+        detailResource={successResource(detailResponse())}
+        detailLastFetchedAt={new Date()}
+        onRefreshDetail={noop}
+        roadmapResource={successResource(roadmapResponse([roadmapVersion()]))}
+        roadmapLastFetchedAt={new Date()}
+        onRefreshRoadmap={noop}
+      />,
+    );
+    expect(html).toContain('aria-label="Initiative views"');
+    expect(html).toContain('href="#/i/' + INITIATIVE_ID + '/graph"');
   });
 });
 
