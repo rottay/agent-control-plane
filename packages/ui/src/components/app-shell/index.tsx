@@ -1,7 +1,13 @@
+import { type InitiativeSummary } from "@acp/api-contracts";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as NavigationMenu from "@radix-ui/react-navigation-menu";
 import { type JSX, type ReactNode } from "react";
 
-import { buildHash, type Route, type ViewName } from "../../routing/hash-route/index.js";
+import { fetchInitiatives } from "../../api/client/index.js";
+import { classNames, humanizeConstant, truncateMiddle } from "../../format/index.js";
+import { initiativeStatusTone } from "../../format/status-tone/index.js";
+import { useAsyncResource } from "../../hooks/use-async-resource/index.js";
+import { buildHash, buildInitiativeHash, buildPortfolioHash, type Route, type ViewName } from "../../routing/hash-route/index.js";
 import { SkipLink } from "../skip-link/index.js";
 
 /**
@@ -12,6 +18,12 @@ import { SkipLink } from "../skip-link/index.js";
  * semantics, the roving focus and the `active` → `aria-current="page"` mapping
  * that this component previously hand-rolled; what stays here is which views
  * exist, what they are called, and which of them a route counts as current.
+ *
+ * P8-8C adds the initiative switcher to the brand block, on
+ * `@radix-ui/react-dropdown-menu` (blueprint v2 §4) — the second and, for
+ * this cohort, last interactive region. It is route-driven: it reads
+ * `route.initiativeId`, never a client-side global, and fetches its own
+ * initiative list because it is present regardless of which view is active.
  *
  * Everything visual comes from the design tokens in `styles/tokens.css` through
  * the class names below. No component in this package declares a raw color, a
@@ -54,6 +66,106 @@ function navMatches(current: ViewName, item: ViewName): boolean {
   return false;
 }
 
+/** The display name for an initiative that may have registered without a slug or a title. */
+function initiativeName(initiative: InitiativeSummary): string {
+  return initiative.slug ?? initiative.title ?? truncateMiddle(initiative.initiativeId);
+}
+
+/**
+ * The trigger's resting label.
+ *
+ * "All initiatives" on every route with no `:initiativeId` (N2), unconditionally
+ * — the portfolio is the view of every initiative, so there is nothing to look
+ * up. On a scoped route the label is the initiative's name once the portfolio
+ * fetch resolves it, and the literal "…" otherwise: while the list is loading,
+ * on a fetch error, or naming an id the list does not contain, this reads the
+ * honest "unknown" rather than guessing.
+ */
+function switcherLabel(route: Route, items: readonly InitiativeSummary[] | null): string {
+  if (route.initiativeId === null) {
+    return "All initiatives";
+  }
+  const match = items?.find((item) => item.initiativeId === route.initiativeId);
+  return match !== undefined ? initiativeName(match) : "…";
+}
+
+/** The initiative switcher: the boundary made physical (blueprint v2 §4). */
+function InitiativeSwitcher({ route }: { readonly route: Route }): JSX.Element {
+  const { resource } = useAsyncResource(fetchInitiatives, []);
+  const items =
+    resource.status === "success" || resource.status === "refreshing" || resource.status === "stale"
+      ? resource.data.items
+      : null;
+
+  const label = switcherLabel(route, items);
+
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        {/*
+          The accessible name is explicit and lives on the **trigger**, which
+          is the control a reader actually reaches. It was previously implied
+          by the visible text alone while the only `aria-label` in this subtree
+          sat on the menu content — so a name existed in the markup and none
+          existed on the button, and a substring test could not tell the
+          difference. The visible label is interpolated into the name so the
+          two never diverge: what the button says and what it is called are one
+          string.
+        */}
+        <button
+          type="button"
+          className="switcher__trigger"
+          aria-label={"Switch initiative, currently " + label}
+        >
+          {label}
+          <span aria-hidden="true" className="switcher__caret">
+            ▾
+          </span>
+        </button>
+      </DropdownMenu.Trigger>
+      {/*
+        No `Portal`: this menu's content stays in normal document flow rather
+        than teleported to `document.body`.
+        No `forceMount` either, and that removal is the point of this
+        correction. Keeping closed content mounted was chosen so a DOM-less
+        `renderToStaticMarkup` pass could see the menu's structure — but a
+        closed `DropdownMenu.Content` that stays in the tree makes Radix apply
+        its accessibility isolation, which marked the skip link, the brand, the
+        trigger itself, the primary navigation, the `h1` and the footer
+        `aria-hidden="true"`. The pixels looked right and the accessibility
+        tree was materially false. Test convenience is not worth a live tree
+        that lies, so the menu now mounts on open and unmounts on close, which
+        is the Radix default.
+      */}
+      <DropdownMenu.Content className="switcher__content" aria-label="Switch initiative" align="start" sideOffset={4}>
+        <DropdownMenu.Item asChild>
+          <a
+            href={buildPortfolioHash()}
+            className={classNames("switcher__item", route.initiativeId === null && "is-current")}
+          >
+            All initiatives
+          </a>
+        </DropdownMenu.Item>
+        {items?.map((initiative) => (
+          <DropdownMenu.Item asChild key={initiative.initiativeId}>
+            <a
+              href={buildInitiativeHash(initiative.initiativeId)}
+              className={classNames("switcher__item", route.initiativeId === initiative.initiativeId && "is-current")}
+            >
+              <span
+                aria-hidden="true"
+                className={"switcher__dot switcher__dot--" + initiativeStatusTone(initiative.status)}
+              />
+              {initiativeName(initiative)}
+              <span className="sr-only">{", " + humanizeConstant(initiative.status)}</span>
+            </a>
+          </DropdownMenu.Item>
+        ))}
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
+  );
+}
+
 /** Landmarks, primary navigation and the skip target every view renders into. */
 export function AppShell({ route, children }: AppShellProps): JSX.Element {
   return (
@@ -61,8 +173,11 @@ export function AppShell({ route, children }: AppShellProps): JSX.Element {
       <SkipLink />
       <header className="app-shell__header">
         <div className="app-shell__brand">
-          <p className="app-shell__title">Agent Control Plane</p>
-          <p className="app-shell__subtitle">Read-only observation surface</p>
+          <div className="app-shell__identity">
+            <p className="app-shell__title">Agent Control Plane</p>
+            <p className="app-shell__subtitle">Read-only observation surface</p>
+          </div>
+          <InitiativeSwitcher route={route} />
         </div>
         {/*
           `asChild` so the rendered element is the `<nav>` this shell's

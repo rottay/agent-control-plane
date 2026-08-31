@@ -62,3 +62,28 @@ export function integrityTone(ok: boolean | null): Tone {
   }
   return ok ? "good" : "bad";
 }
+
+/**
+ * The initiative status enum's tones. (P8-8C.)
+ *
+ * None of the four states — `ACTIVE`, `PAUSED`, `COMPLETED`, `ARCHIVED` — is a
+ * failure, so `bad` never appears here: an initiative does not have a failed
+ * status, only ones that are moving, resting, finished or shelved. This lives
+ * beside every other tone mapping rather than in the portfolio view, which is
+ * the law this module exists to hold — a view-local map is a second place a
+ * tone could drift from the ones already named here.
+ */
+export function initiativeStatusTone(status: string): Tone {
+  switch (status) {
+    case "ACTIVE":
+      return "good";
+    case "PAUSED":
+      return "warn";
+    case "COMPLETED":
+      return "good";
+    case "ARCHIVED":
+      return "neutral";
+    default:
+      return "neutral";
+  }
+}

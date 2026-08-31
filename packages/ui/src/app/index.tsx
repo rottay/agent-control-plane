@@ -7,6 +7,7 @@ import { EventsView } from "../views/events-view/index.js";
 import { IntegrityView } from "../views/integrity-view/index.js";
 import { NotFoundView } from "../views/not-found-view/index.js";
 import { OverviewView } from "../views/overview-view/index.js";
+import { PortfolioView } from "../views/portfolio-view/index.js";
 import { StatusView } from "../views/status-view/index.js";
 import { TaskDetailView } from "../views/task-detail-view/index.js";
 import { TasksListView } from "../views/tasks-list-view/index.js";
@@ -61,6 +62,8 @@ export function App(): JSX.Element {
           switch (route.view) {
             case "overview":
               return <OverviewView />;
+            case "portfolio":
+              return <PortfolioView />;
             case "tasks":
               return <TasksListView route={route} navigate={navigate} />;
             case "task-detail":

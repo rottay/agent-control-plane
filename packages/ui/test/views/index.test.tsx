@@ -21,7 +21,7 @@ import { WorkersListView } from "../../src/views/workers-list-view/index.js";
  */
 
 function route(overrides: Partial<Route>): Route {
-  return { view: "overview", taskId: null, workerIdentity: null, query: {}, raw: "", ...overrides };
+  return { view: "overview", taskId: null, workerIdentity: null, initiativeId: null, query: {}, raw: "", ...overrides };
 }
 
 const noop = (): void => {

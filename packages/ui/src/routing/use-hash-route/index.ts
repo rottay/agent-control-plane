@@ -26,6 +26,11 @@ function currentHash(): string {
  * an explicit `replace` mode for updates that should not grow the back stack
  * (filter edits within a view), and a re-render when the hash moves through
  * either a link click or an in-app navigation call.
+ *
+ * **P8-8C.** `route.initiativeId` rides through unchanged from `parseHash` —
+ * this hook stays the one place `location.hash` is read, so the switcher and
+ * every view see the same field from the same parse rather than a second copy
+ * of it kept in some client-side global.
  */
 export function useHashRoute(): HashRouteHandle {
   const [rawHash, setRawHash] = useState<string>(currentHash);

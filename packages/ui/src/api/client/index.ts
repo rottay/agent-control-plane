@@ -2,6 +2,9 @@ import {
   API_ROUTES,
   ApiError,
   EventPageResponse,
+  InitiativeDetailResponse,
+  InitiativePortfolioResponse,
+  InitiativeRoadmapResponse,
   IntegrityResult,
   LedgerStatusResponse,
   OverviewResponse,
@@ -9,6 +12,8 @@ import {
   TaskPageResponse,
   WorkerDetailResponse,
   WorkerPageResponse,
+  initiativePath,
+  initiativeRoadmapPath,
   taskPath,
   workerPath,
   type ApiErrorCode,
@@ -223,6 +228,48 @@ export function fetchEvents(
 }
 
 // ---------------------------------------------------------------------------
+// Initiatives (P8-8C)
+// ---------------------------------------------------------------------------
+
+export function fetchInitiatives(signal?: AbortSignal): Promise<ApiResult<InitiativePortfolioResponse>> {
+  return fetchAndParse(API_ROUTES.initiatives, InitiativePortfolioResponse, signal);
+}
+
+export function fetchInitiativeDetail(
+  initiativeId: string,
+  signal?: AbortSignal,
+): Promise<ApiResult<InitiativeDetailResponse>> {
+  let path: string;
+  try {
+    path = initiativePath(initiativeId);
+  } catch {
+    return Promise.resolve({
+      kind: "contract-mismatch",
+      status: null,
+      detail: "\"" + initiativeId + "\" is not a well formed initiative id",
+    });
+  }
+  return fetchAndParse(path, InitiativeDetailResponse, signal);
+}
+
+export function fetchInitiativeRoadmap(
+  initiativeId: string,
+  signal?: AbortSignal,
+): Promise<ApiResult<InitiativeRoadmapResponse>> {
+  let path: string;
+  try {
+    path = initiativeRoadmapPath(initiativeId);
+  } catch {
+    return Promise.resolve({
+      kind: "contract-mismatch",
+      status: null,
+      detail: "\"" + initiativeId + "\" is not a well formed initiative id",
+    });
+  }
+  return fetchAndParse(path, InitiativeRoadmapResponse, signal);
+}
+
+// ---------------------------------------------------------------------------
 // Query keys (P8-8B)
 // ---------------------------------------------------------------------------
 
@@ -248,4 +295,7 @@ export const queryKeys = {
   workers: (filters: WorkersFilters) => ["acp", "workers", filters] as const,
   workerDetail: (identity: string) => ["acp", "worker", identity] as const,
   events: (filters: EventsFilters) => ["acp", "events", filters] as const,
+  initiatives: () => ["acp", "initiatives"] as const,
+  initiativeDetail: (initiativeId: string) => ["acp", "initiative", initiativeId] as const,
+  initiativeRoadmap: (initiativeId: string) => ["acp", "initiative", initiativeId, "roadmap"] as const,
 };

@@ -454,3 +454,227 @@ input[type="text"] {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
 }
+
+/* Brand block (P8-8C: the switcher joins it) */
+
+.app-shell__brand {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+}
+
+/* The initiative switcher (P8-8C, blueprint v2 §4) */
+
+.switcher__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  transition: background var(--motion-fast) var(--motion-easing);
+}
+
+.switcher__trigger:hover {
+  background: var(--color-neutral-bg);
+}
+
+.switcher__trigger:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.switcher__caret {
+  font-size: 0.7em;
+  color: var(--color-text-faint);
+}
+
+.switcher__content {
+  z-index: 1;
+  min-width: 14rem;
+  margin-top: var(--space-1);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-1);
+}
+
+/*
+ * The closed-state rule is gone with the `forceMount` it existed to serve.
+ *
+ * `display: none` on a mounted-but-closed menu is what made the pixels look
+ * right while Radix's accessibility isolation marked the rest of the shell
+ * `aria-hidden`. The menu now unmounts on close, so there is no closed content
+ * to hide, and a rule that hid one would be dead CSS keeping a defect's shape
+ * alive in the stylesheet.
+ */
+
+.switcher__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.switcher__item.is-current {
+  font-weight: 600;
+  background: var(--color-neutral-bg);
+}
+
+.switcher__item[data-highlighted] {
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  outline: none;
+}
+
+.switcher__dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+
+.switcher__dot--good {
+  background: var(--color-good-fg);
+}
+
+.switcher__dot--warn {
+  background: var(--color-warn-fg);
+}
+
+.switcher__dot--bad {
+  background: var(--color-bad-fg);
+}
+
+.switcher__dot--neutral {
+  background: var(--color-neutral-fg);
+}
+
+/* The portfolio (P8-8C, blueprint v2 §2-§3) */
+
+.portfolio-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: var(--space-4);
+}
+
+.portfolio-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+.portfolio-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.portfolio-card__name {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.portfolio-card__link {
+  color: var(--color-text);
+  text-decoration: none;
+}
+
+.portfolio-card__link:hover {
+  text-decoration: underline;
+}
+
+/* The extended hit area: the whole card activates the one link inside it,
+   whose accessible name stays just the initiative's name (blueprint v2 §6). */
+.portfolio-card__link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.portfolio-card__link:focus-visible {
+  outline: none;
+}
+
+.portfolio-card__link:focus-visible::after {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.portfolio-card__objective {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+
+.portfolio-card__objective--empty {
+  color: var(--color-text-faint);
+  font-style: italic;
+}
+
+@media (max-width: 48rem) {
+  .portfolio-card__objective {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+}
+
+.portfolio-card__facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.portfolio-card__facts div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.portfolio-card__facts dt {
+  flex: none;
+  width: 5.5rem;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.portfolio-card__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.portfolio-card__facts code {
+  overflow-wrap: anywhere;
+}

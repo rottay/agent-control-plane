@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { buildHash, buildTaskDetailHash, buildWorkerDetailHash, parseHash, serializeQuery } from "../../../src/routing/hash-route/index.js";
+import {
+  buildHash,
+  buildInitiativeHash,
+  buildPortfolioHash,
+  buildTaskDetailHash,
+  buildWorkerDetailHash,
+  parseHash,
+  serializeQuery,
+} from "../../../src/routing/hash-route/index.js";
 
 describe("parseHash", () => {
   it("defaults an empty hash to the overview", () => {
-    expect(parseHash("")).toMatchObject({ view: "overview", taskId: null, workerIdentity: null });
+    expect(parseHash("")).toMatchObject({ view: "overview", taskId: null, workerIdentity: null, initiativeId: null });
     expect(parseHash("#/")).toMatchObject({ view: "overview" });
     expect(parseHash("#/overview")).toMatchObject({ view: "overview" });
   });
@@ -45,6 +53,46 @@ describe("parseHash", () => {
   });
 });
 
+describe("parseHash — the initiative-scoped prefix (P8-8C, blueprint v2 §4)", () => {
+  it("parses the bare portfolio route, unscoped", () => {
+    expect(parseHash("#/i")).toMatchObject({ view: "portfolio", taskId: null, workerIdentity: null, initiativeId: null });
+  });
+
+  it("renders the landed not-found view for an initiative id with no view named after it", () => {
+    const route = parseHash("#/i/123e4567-e89b-12d3-a456-426614174000");
+    expect(route.view).toBe("not-found");
+    expect(route.initiativeId).toBe("123e4567-e89b-12d3-a456-426614174000");
+  });
+
+  it("parses a plain view route the same way whether or not it is initiative-scoped", () => {
+    const unscoped = parseHash("#/tasks");
+    const scoped = parseHash("#/i/123e4567-e89b-12d3-a456-426614174000/tasks");
+    expect(scoped.view).toBe(unscoped.view);
+    expect(scoped.taskId).toBe(unscoped.taskId);
+    expect(scoped.initiativeId).toBe("123e4567-e89b-12d3-a456-426614174000");
+    expect(unscoped.initiativeId).toBeNull();
+  });
+
+  it("parses an initiative-scoped task detail route, carrying both ids", () => {
+    const route = parseHash("#/i/123e4567-e89b-12d3-a456-426614174000/tasks/9f2e4567-e89b-12d3-a456-426614174111");
+    expect(route.view).toBe("task-detail");
+    expect(route.initiativeId).toBe("123e4567-e89b-12d3-a456-426614174000");
+    expect(route.taskId).toBe("9f2e4567-e89b-12d3-a456-426614174111");
+  });
+
+  it("parses an initiative-scoped worker detail route, keeping every identity segment", () => {
+    const route = parseHash("#/i/123e4567-e89b-12d3-a456-426614174000/workers/claude/opus/implementer/01");
+    expect(route.view).toBe("worker-detail");
+    expect(route.initiativeId).toBe("123e4567-e89b-12d3-a456-426614174000");
+    expect(route.workerIdentity).toBe("claude/opus/implementer/01");
+  });
+
+  it("falls back to not-found for an unroutable scoped path, the same grammar as unscoped", () => {
+    expect(parseHash("#/i/123e4567-e89b-12d3-a456-426614174000/tasks/abc/extra").view).toBe("not-found");
+    expect(parseHash("#/i/123e4567-e89b-12d3-a456-426614174000/nonsense").view).toBe("not-found");
+  });
+});
+
 describe("buildHash and serializeQuery", () => {
   it("builds a bare view hash with no query", () => {
     expect(buildHash("overview")).toBe("#/overview");
@@ -65,6 +113,23 @@ describe("buildHash and serializeQuery", () => {
   it("serializeQuery mirrors the same omission rules", () => {
     expect(serializeQuery({ a: "1", b: undefined })).toBe("?a=1");
     expect(serializeQuery({})).toBe("");
+  });
+});
+
+describe("buildPortfolioHash and buildInitiativeHash", () => {
+  it("builds the bare portfolio hash", () => {
+    expect(buildPortfolioHash()).toBe("#/i");
+    expect(parseHash(buildPortfolioHash())).toMatchObject({ view: "portfolio", initiativeId: null });
+  });
+
+  it("builds an initiative hash that parses back scoped to the same id, landing on tasks", () => {
+    const hash = buildInitiativeHash("123e4567-e89b-12d3-a456-426614174000");
+    expect(parseHash(hash)).toMatchObject({ view: "tasks", initiativeId: "123e4567-e89b-12d3-a456-426614174000" });
+  });
+
+  it("encodes the initiative id", () => {
+    const hash = buildInitiativeHash("has/slash");
+    expect(hash).toBe("#/i/has%2Fslash/tasks");
   });
 });
 

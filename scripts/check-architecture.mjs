@@ -1255,18 +1255,33 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * the packet, the design tokens' elevation dimension completed and consumed,
  * and the shell rebuilt on the adopted primitive.
  *
- * P8 is therefore **100 packet entries across 80 distinct paths**: 2 (P8-D) +
+ * P8-8C lands the portfolio view and the initiative switcher: the one
+ * adjudicated new primitive (`@radix-ui/react-dropdown-menu`), the
+ * initiative-scoped route prefix over the landed grammar, and the tone
+ * mapping and card styles the blueprint names. The write-set widened by two
+ * paths after the packet's own STOP (`p8-8c-kimi-widening-adjudication.md`):
+ * `packages/ui/test/views/index.test.tsx` and
+ * `packages/ui/test/views/not-found-view/index.test.tsx`, each carrying the
+ * one-line `initiativeId: null` fixture fix the `Route` field addition made
+ * unavoidable.
+ *
+ * P8 is therefore **117 packet entries across 90 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
- * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) = 100 entries, with 20 duplicate entries.
- * `scripts/check-architecture.mjs` is named by all eleven packets (10
- * duplicates); the port, the barrel, the port's fixture and the test doubles
- * are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8 total); and
- * `pnpm-lock.yaml` is named by the three packets that moved a dependency
- * edge, P8-W, P8-8A and P8-8B (2 duplicates). P8-5, P8-6 and P8-7 share no
- * path with any earlier P8 packet but the fence itself. So 100 - 20 = 80
- * distinct paths. This file's appearances in earlier phases are counted in
- * those phases, since the standing convention scopes the arithmetic to the
- * phase.
+ * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) = 117 entries, with 27
+ * duplicate entries. `scripts/check-architecture.mjs` is named by all twelve
+ * packets (11 duplicates); the port, the barrel, the port's fixture and the
+ * test doubles are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8
+ * total); `pnpm-lock.yaml` is named by the four packets that moved a
+ * dependency edge, P8-W, P8-8A, P8-8B and P8-8C (3 duplicates); and P8-8C
+ * repeats five of P8-8B's own paths -- `packages/ui/package.json`,
+ * `pnpm-workspace.yaml`, `packages/ui/src/app/index.tsx`,
+ * `packages/ui/src/components/app-shell/index.tsx` and
+ * `packages/ui/src/api/client/index.ts` -- each now named by exactly the two
+ * packets (1 duplicate each, 5 total). P8-5 and P8-6 share no path with any
+ * earlier P8 packet but the fence itself; P8-7 likewise. So
+ * 11 + 8 + 3 + 5 = 27 duplicates, and 117 - 27 = 90 distinct paths. This
+ * file's appearances in earlier phases are counted in those phases, since the
+ * standing convention scopes the arithmetic to the phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
@@ -1538,6 +1553,55 @@ const P88B_WRITE_SET = [
 ];
 
 /**
+ * P8-8C: the portfolio view and the initiative switcher.
+ *
+ * The blueprint v2 made real (`.acp-local/p8-8c-blueprint.md`): the portfolio
+ * card grid over `GET /api/initiatives`, the route-driven switcher on the one
+ * adjudicated new primitive (`@radix-ui/react-dropdown-menu`), and the
+ * initiative-scoped route prefix layered onto the landed grammar rather than
+ * a second one beside it.
+ *
+ * Two paths were not in the original 17-item brief and were added only after
+ * a Sonnet STOP and a DT widening adjudication
+ * (`.acp-local/p8-8c-kimi-widening-adjudication.md`):
+ * `packages/ui/test/views/index.test.tsx` and
+ * `packages/ui/test/views/not-found-view/index.test.tsx`. Both are
+ * pre-existing test files, unrelated to initiative scoping in what they
+ * assert, that construct a `Route` object literal inline; `Route` gaining the
+ * required `initiativeId` field (this packet, in
+ * `packages/ui/src/routing/hash-route/index.ts`) made both fail to typecheck
+ * until each gained the same one-line, additive `initiativeId: null` fix
+ * `packages/ui/test/components/app-shell/index.test.tsx` (in the original
+ * 15) already needed for the identical reason.
+ *
+ * `packages/ui/src/styles/components.css` is named here and
+ * `packages/ui/src/styles/layout.css` and `tokens.css` are not: every new
+ * rule (the switcher, the portfolio grid, the card, the extended hit area,
+ * the objective's line-clamp) is expressed in existing tokens, and the brand
+ * block gained a wrapper div rather than a change to the header layout the
+ * landed file already declares.
+ */
+const P88C_WRITE_SET = [
+  "packages/ui/src/views/portfolio-view/index.tsx",
+  "packages/ui/src/components/app-shell/index.tsx",
+  "packages/ui/src/routing/hash-route/index.ts",
+  "packages/ui/src/routing/use-hash-route/index.ts",
+  "packages/ui/src/app/index.tsx",
+  "packages/ui/src/format/status-tone/index.ts",
+  "packages/ui/src/styles/components.css",
+  "packages/ui/src/api/client/index.ts",
+  "packages/ui/test/views/portfolio-view/index.test.tsx",
+  "packages/ui/test/components/app-shell/index.test.tsx",
+  "packages/ui/test/routing/hash-route/index.test.ts",
+  "packages/ui/package.json",
+  "pnpm-workspace.yaml",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+  "packages/ui/test/views/index.test.tsx",
+  "packages/ui/test/views/not-found-view/index.test.tsx",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -1805,6 +1869,7 @@ const WRITE_SET = [
   ...P87_WRITE_SET,
   ...P88A_WRITE_SET,
   ...P88B_WRITE_SET,
+  ...P88C_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -2854,8 +2919,12 @@ const P1B_DEPENDENCY_LAW = [
     // Deferred adoption, not all-at-once: TanStack Table, TanStack Virtual,
     // @xyflow/react, Recharts and dnd-kit each have a named cohort and none is
     // in this graph.
+    //
+    // P8-8C adds exactly one more, the blueprint's own adjudicated primitive:
+    // `@radix-ui/react-dropdown-menu` (the initiative switcher).
     dependencies: [
       "@acp/api-contracts",
+      "@radix-ui/react-dropdown-menu",
       "@radix-ui/react-navigation-menu",
       "@tanstack/react-query",
       "react",
