@@ -206,6 +206,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@acp/accounts':
+        specifier: workspace:*
+        version: link:../accounts
       '@acp/api-contracts':
         specifier: workspace:*
         version: link:../api-contracts

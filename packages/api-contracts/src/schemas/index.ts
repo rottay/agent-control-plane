@@ -1,4 +1,6 @@
 import {
+  AccountStatus,
+  ConfidenceLevel,
   ControlPlaneEventType,
   EXCEPTIONAL_STATES,
   INITIATIVE_EVENT_TYPES,
@@ -66,6 +68,13 @@ export const MAX_DETAIL_TIMELINE_ITEMS = 100;
  */
 export const MAX_SCOPED_TIMELINE_ITEMS = 500;
 export const MAX_SCOPED_AGENTS = 200;
+
+/**
+ * The owner's accounts are a hand-maintained file, not a collection that grows
+ * with use; the bound exists so the response is bounded like every other, not
+ * because anyone is expected to approach it.
+ */
+export const MAX_ACCOUNTS = 100;
 
 // ---------------------------------------------------------------------------
 // Primitive value shapes
@@ -1428,6 +1437,121 @@ export const InitiativeAgentsResponse = z
   })
   .superRefine(attachGuards);
 export type InitiativeAgentsResponse = z.infer<typeof InitiativeAgentsResponse>;
+
+/**
+ * The words this plane uses when it cannot show accounts (P8-8F).
+ *
+ * Five, closed, and **mapped** from the accounts registry's own fourteen
+ * refusals rather than invented beside them. The mapping is total: every
+ * landed refusal reaches exactly one of these, so a refusal the loader learns
+ * to make cannot fall through into a generic answer.
+ *
+ * They are deliberately coarser than the loader's vocabulary. A reader of this
+ * API is being told whether to wire a path, create a file, fix its permissions,
+ * fix its contents, or shrink it — five different actions. The loader's finer
+ * distinctions (`OWNER_FILE_NOT_OWNED` vs `OWNER_FILE_UNSAFE_PERMISSIONS`)
+ * separate two facts that call for the same action and, said over HTTP, would
+ * describe the operator's filesystem to anyone who can reach the port.
+ */
+/**
+ * The account vocabularies, derived from the contract rather than restated.
+ *
+ * `.options` reads the members off the landed Zod enums, so a status added in
+ * `@acp/contracts` cannot silently fail to reach the API, and a DTO member that
+ * the domain does not have cannot be invented here.
+ */
+export const AccountStatusDto = z.enum(AccountStatus.options);
+export type AccountStatusDto = z.infer<typeof AccountStatusDto>;
+
+export const ConfidenceLevelDto = z.enum(ConfidenceLevel.options);
+export type ConfidenceLevelDto = z.infer<typeof ConfidenceLevelDto>;
+
+export const ACCOUNTS_UNAVAILABLE_REASONS = Object.freeze([
+  "ACCOUNTS_FILE_UNCONFIGURED",
+  "ACCOUNTS_FILE_ABSENT",
+  "ACCOUNTS_FILE_UNREADABLE",
+  "ACCOUNTS_FILE_SCHEMA_REFUSED",
+  "ACCOUNTS_FILE_OVERSIZE",
+] as const);
+export const AccountsUnavailableReason = z.enum(ACCOUNTS_UNAVAILABLE_REASONS);
+export type AccountsUnavailableReason = z.infer<typeof AccountsUnavailableReason>;
+
+/**
+ * One account, as the observation plane may describe it.
+ *
+ * **What is missing is the point.** `credentialRef` and `authProfileRef` exist
+ * on the landed `AccountRecord` and are *absent from this schema entirely* —
+ * not nulled, not redacted, not replaced by a placeholder. A field that is
+ * present-but-opaque still tells a reader that a secret reference exists, what
+ * it is called, and where to look for it; omission tells them nothing, which is
+ * the correct amount. Strictness makes the omission enforceable rather than
+ * conventional: a server that grew the field would fail here.
+ *
+ * Quota and reset each carry their own confidence because they are separately
+ * knowable. An account can have a well-observed spend rate and no idea when its
+ * window rolls over, and collapsing the two into one number would report the
+ * better-known fact as if the worse-known one were equally sound.
+ */
+export const AccountDto = z
+  .strictObject({
+    accountId: z.string().min(1).max(80),
+    provider: z.string().min(1).max(40),
+    models: z.array(z.string().min(1).max(60)).max(50),
+    plan: z.string().max(80).nullable(),
+    state: AccountStatusDto,
+    quota: z.strictObject({
+      /** Null when the fold could not estimate — never a zero standing in for it. */
+      remainingRatio: z.number().min(0).max(1).nullable(),
+      confidence: ConfidenceLevelDto,
+    }),
+    reset: z.strictObject({
+      nextResetAt: Timestamp.nullable(),
+      /** Where the instant came from: the provider declared it, or we observed it. */
+      source: z.enum(["OBSERVED", "DECLARED", "UNKNOWN"]),
+      confidence: ConfidenceLevelDto,
+    }),
+    lastProbeAt: Timestamp.nullable(),
+    lastError: z.string().max(200).nullable(),
+  })
+  .superRefine(attachGuards);
+export type AccountDto = z.infer<typeof AccountDto>;
+
+/**
+ * The accounts read, as a closed union rather than a list plus an error field.
+ *
+ * A missing or refused owner file is not an error of this endpoint — it is the
+ * plane's honest state, and the commonest one on a fresh machine. Modelling it
+ * as a 200 with `UNAVAILABLE` says so; a 500 would say the server broke, and an
+ * empty `items` array would say the owner has no accounts, which is a different
+ * and false claim.
+ *
+ * `detail` carries **field paths only, never file values or lines**. The
+ * registry's landed law is that nothing from the owner file is ever forwarded;
+ * this is that law surviving the trip through HTTP, and the guards below are
+ * what make it checkable rather than promised.
+ */
+export const AccountsResponse = z
+  .discriminatedUnion("status", [
+    z.strictObject({
+      status: z.literal("READY"),
+      apiContractVersion: ApiContractVersion,
+      ledgerContractVersion: LedgerContractVersion,
+      items: z.array(AccountDto).max(MAX_ACCOUNTS),
+      count: Count,
+      /** The injected instant every estimate here was computed against. */
+      estimatedAt: Timestamp,
+    }),
+    z.strictObject({
+      status: z.literal("UNAVAILABLE"),
+      apiContractVersion: ApiContractVersion,
+      ledgerContractVersion: LedgerContractVersion,
+      reason: AccountsUnavailableReason,
+      /** A JSON path or a shape observation. Never a value from the file. */
+      detail: z.string().max(200).optional(),
+    }),
+  ])
+  .superRefine(attachGuards);
+export type AccountsResponse = z.infer<typeof AccountsResponse>;
 
 export const RoadmapContentQuery = z.strictObject({
   version: DecimalNonNegativeInteger.pipe(z.number().int().positive().max(1_000_000)),

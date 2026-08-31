@@ -13,6 +13,21 @@ export interface BuildServerOptions {
    * appends, rebuilds or migrates, and neither does anything it calls.
    */
   readonly ledgerPath: string;
+  /**
+   * Path to the owner's accounts file, when the operator wired one (P8-8F).
+   *
+   * Optional, and with **no default and no environment fallback**: the accounts
+   * loader's standing law is that it takes the path from its caller, and this
+   * server is that caller. Absent means the accounts route answers
+   * `UNAVAILABLE(ACCOUNTS_FILE_UNCONFIGURED)` — a true statement about this
+   * process, not an error.
+   *
+   * Operator wiring: the start invocation passes the path explicitly, exactly
+   * as it passes `ledgerPath`. Nothing infers it from `$HOME` or a convention,
+   * because a plane that guesses where secrets live is a plane that reads a
+   * file nobody meant to give it.
+   */
+  readonly accountsFilePath?: string | undefined;
   readonly logger?: boolean | undefined;
 }
 
@@ -68,6 +83,6 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     sendApiError(reply, classified.code, classified.message, classified.detail);
   });
 
-  registerRoutes(app, source);
+  registerRoutes(app, source, options.accountsFilePath);
   return app;
 }

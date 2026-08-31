@@ -4,6 +4,7 @@ import { findCredentialViolations, findTranscriptViolations } from "@acp/contrac
 
 import { API_ROUTES } from "../../src/routes/index.js";
 import {
+  AccountsResponse,
   EventPageResponse,
   HealthResponse,
   IntegrityResult,
@@ -65,8 +66,17 @@ describe("the contract covers every frozen route", () => {
       "apiContractVersion",
       "ledgerContractVersion",
     ]);
+    // `accounts` is the second route with no ledger content, and it is named
+    // here rather than skipped by a predicate: the law is "every route folds
+    // the ledger unless this list says why not", and a list of two is still a
+    // list a reader can check. Its source is the owner's accounts file, which
+    // the ledger never sees — see the recorded exception in the parity module.
+    expect(comparableFields("accounts")).toEqual([
+      "apiContractVersion",
+      "ledgerContractVersion",
+    ]);
     for (const route of PARITY_ROUTES) {
-      if (route === "health") continue;
+      if (route === "health" || route === "accounts") continue;
       const ledgerFields = PARITY_BINDINGS[route].filter((b) => b.source === "LEDGER");
       expect(ledgerFields.length).toBeGreaterThan(0);
     }
@@ -84,7 +94,18 @@ describe("the binding table matches the schemas it claims to bind", () => {
     const resolved =
       typeof direct === "function" ? (direct as () => Record<string, unknown>)() : direct;
     const inner = candidate._def?.schema?.shape;
-    return Object.keys(resolved ?? inner ?? {}).sort();
+    const direct_keys = Object.keys(resolved ?? inner ?? {});
+    if (direct_keys.length > 0) return direct_keys.sort();
+
+    // A discriminated union has no single shape (P8-8F's accounts read is the
+    // first response that is one). Its bindable surface is the union of its
+    // arms' keys: every field a client can render, whichever arm it gets.
+    const options = (candidate as { _def?: { options?: readonly unknown[] } })._def?.options
+      ?? (candidate as { _def?: { schema?: { _def?: { options?: readonly unknown[] } } } })._def?.schema?._def?.options;
+    if (options === undefined) return [];
+    const keys = new Set<string>();
+    for (const option of options) for (const key of shapeKeys(option)) keys.add(key);
+    return [...keys].sort();
   }
 
   const schemas: Readonly<Record<string, unknown>> = {
@@ -103,6 +124,7 @@ describe("the binding table matches the schemas it claims to bind", () => {
     initiativeRoadmapContent: RoadmapContentResponse,
     initiativeEvents: InitiativeTimelineResponse,
     initiativeAgents: InitiativeAgentsResponse,
+    accounts: AccountsResponse,
   };
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {

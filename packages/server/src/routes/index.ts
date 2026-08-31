@@ -7,6 +7,7 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  AccountsResponse,
   InitiativeAgentsResponse,
   InitiativeTimelineResponse,
   MAX_SCOPED_AGENTS,
@@ -44,6 +45,7 @@ import {
   scopedAgents,
   scopedTimeline,
 } from "../initiatives/index.js";
+import { readAccounts } from "../accounts/index.js";
 import { artifactRootFor, recordRoadmapVersion } from "../roadmap-write/index.js";
 import {
   initiativeDetailDto,
@@ -199,7 +201,11 @@ function registerGetAndPost(
   });
 }
 
-export function registerRoutes(app: FastifyInstance, source: LedgerSource): void {
+export function registerRoutes(
+  app: FastifyInstance,
+  source: LedgerSource,
+  accountsFilePath?: string,
+): void {
   registerGet(app, API_ROUTES.health, (request) => {
     assertEmptyQuery(queryOf(request));
     return buildHealth(source);
@@ -493,6 +499,41 @@ export function registerRoutes(app: FastifyInstance, source: LedgerSource): void
         };
       }),
       count: rows.length,
+    });
+  });
+
+  // The owner's accounts (P8-8F). A read, through `registerGet` like every
+  // other read — the GET-only law and every 405 set stay byte-unchanged, and
+  // the write surface stays at exactly one route.
+  //
+  // The instant is taken once, here, and injected: the read model never reads a
+  // clock, so this handler is the single place where "now" enters, and two
+  // requests at the same instant over the same file produce identical bytes.
+  registerGet(app, API_ROUTES.accounts, (request) => {
+    assertEmptyQuery(queryOf(request));
+    const outcome = readAccounts(accountsFilePath, new Date().toISOString());
+
+    if (!outcome.ok) {
+      // A 200, deliberately. A missing owner file is not this endpoint
+      // failing — it is the plane's honest state, and the commonest one on a
+      // fresh machine. The union says so in the body rather than in a status
+      // code that would claim the server broke.
+      return AccountsResponse.parse({
+        status: "UNAVAILABLE",
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        reason: outcome.reason,
+        detail: outcome.detail,
+      });
+    }
+
+    return AccountsResponse.parse({
+      status: "READY",
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      items: outcome.items,
+      count: outcome.items.length,
+      estimatedAt: outcome.estimatedAt,
     });
   });
 

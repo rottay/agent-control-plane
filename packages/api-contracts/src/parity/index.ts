@@ -39,7 +39,19 @@ export type ParitySource =
   /** Not from the ledger, and not comparable: process liveness. */
   | "LIVENESS"
   /** Not from the ledger, and not comparable: an observation instant. */
-  | "OBSERVED_AT";
+  | "OBSERVED_AT"
+  /**
+   * Not from the ledger: the owner's accounts file, read at request time.
+   *
+   * Added in P8-8F, and the first source in this table that is neither ledger
+   * state nor a constant. Two clients handed the same file at the same instant
+   * agree, so the value is deterministic — but "the same file" is a
+   * precondition none of the ledger's own routes need, and the CLI and UI row
+   * models never read it at all. Binding these fields to `LEDGER` would make
+   * this table assert a provenance the data does not have, so the honest move
+   * is a source of its own that must say why.
+   */
+  | "ACCOUNTS_FILE";
 
 export interface FieldBinding {
   readonly field: string;
@@ -53,6 +65,7 @@ export const NON_LEDGER_SOURCES: readonly ParitySource[] = Object.freeze([
   "CONTRACT_VERSION",
   "LIVENESS",
   "OBSERVED_AT",
+  "ACCOUNTS_FILE",
 ]);
 
 /**
@@ -246,6 +259,32 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("initiativeId", "LEDGER"),
       bind("items", "LEDGER"),
       bind("count", "LEDGER"),
+    ]),
+    /**
+     * The accounts read (P8-8F).
+     *
+     * The recorded exception, and the sharpest one in this table: **the source
+     * is not the ledger.** Every other route folds the append-only stream;
+     * this one reads the owner's accounts file and computes quota and reset
+     * against an injected instant. Two clients handed the same file and the
+     * same instant agree, which is the property the parity law actually
+     * protects — but "the same file" is a precondition the ledger's own
+     * routes never need, and pretending otherwise by binding these to `LEDGER`
+     * would make the table say something false about where the data lives.
+     *
+     * `status` binds to the fold in the same sense: whether the file is
+     * readable is a fact about the machine at request time, and two clients
+     * on the same machine at the same instant agree about it.
+     */
+    accounts: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("status", "ACCOUNTS_FILE", "the owner's accounts file, read at request time"),
+      bind("items", "ACCOUNTS_FILE", "the owner's accounts file, read at request time"),
+      bind("count", "ACCOUNTS_FILE", "the owner's accounts file, read at request time"),
+      bind("estimatedAt", "OBSERVED_AT", "the instant injected into this request, not ledger state"),
+      bind("reason", "ACCOUNTS_FILE", "the loader's refusal, mapped to the closed API vocabulary"),
+      bind("detail", "ACCOUNTS_FILE", "a field path from the loader; never a value from the file"),
     ]),
   });
 

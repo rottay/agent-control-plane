@@ -15,7 +15,7 @@
   },
   "include": ["**/*.ts", "../src/**/*.ts"],
   "references": [
-    { "path": "../../api-contracts" },
+    { "path": "../../accounts" }, { "path": "../../api-contracts" },
     { "path": "../../ledger" },
     { "path": "../../cli" },
     { "path": "../../ui" }

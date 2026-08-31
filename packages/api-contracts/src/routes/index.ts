@@ -46,6 +46,10 @@ export const API_ROUTES = Object.freeze({
   // are reads under the same versioned prefix; the GET-only law is untouched.
   initiativeEvents: "/api/v1/initiatives/:initiativeId/events",
   initiativeAgents: "/api/v1/initiatives/:initiativeId/agents",
+  // P8-8F: the owner's accounts, with quota and reset confidence. A read, and
+  // deliberately not scoped to an initiative — accounts are the plane's, not an
+  // initiative's.
+  accounts: "/api/v1/accounts",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;

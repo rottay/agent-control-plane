@@ -12,6 +12,7 @@ import {
   ApiError,
   EventPageResponse,
   HealthResponse,
+  API_WRITE_ROUTES,
   IntegrityResult,
   LEDGER_CONTRACT_VERSION,
   LedgerStatusResponse,
@@ -859,6 +860,24 @@ describe("the served surface matches the frozen route table", () => {
         status: 404,
       });
     }
+    await app.close();
+  });
+
+  it("registers the accounts route as a read, and the write surface is still one route (P8-8F)", async () => {
+    // The accounts read adds a route whose source is not the ledger, which is
+    // new — but it adds nothing to the write surface, which is the property
+    // worth re-asserting each time the table grows.
+    const { path } = seedDatabase();
+    const app = buildServer({ ledgerPath: path });
+
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
+      const response = await app.inject({ method, url: "/api/v1/accounts" });
+      expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
+    }
+    // Unconfigured, so a 200 carrying UNAVAILABLE — a handler's answer, not a
+    // router's.
+    expect((await app.inject({ method: "GET", url: "/api/v1/accounts" })).statusCode).toBe(200);
+    expect(API_WRITE_ROUTES).toEqual(["initiativeRoadmap"]);
     await app.close();
   });
 

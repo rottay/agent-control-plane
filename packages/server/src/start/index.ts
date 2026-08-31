@@ -10,6 +10,12 @@ export interface StartServerOptions {
    * explicitly which database this process observes.
    */
   readonly ledgerPath: string;
+  /**
+   * Path to the owner's accounts file (P8-8F). Optional, no default, no
+   * environment fallback — passed through to `buildServer`, which passes it to
+   * the loader unchanged. Absent is a lawful configuration, not a failure.
+   */
+  readonly accountsFilePath?: string | undefined;
   readonly port?: number | undefined;
   /**
    * Present only so an unsafe bind is rejected loudly rather than silently
@@ -48,7 +54,11 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     );
   }
   const requestedPort = options.port ?? SERVER_DEFAULT_PORT;
-  const app = buildServer({ ledgerPath: options.ledgerPath, logger: options.logger });
+  const app = buildServer({
+    ledgerPath: options.ledgerPath,
+    accountsFilePath: options.accountsFilePath,
+    logger: options.logger,
+  });
   await app.listen({ host, port: requestedPort });
 
   // The OS assigns the real port when `requestedPort` is 0; report that one,

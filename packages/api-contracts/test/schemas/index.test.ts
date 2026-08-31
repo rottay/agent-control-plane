@@ -23,6 +23,9 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  ACCOUNTS_UNAVAILABLE_REASONS,
+  AccountDto,
+  AccountsResponse,
   InitiativeAgentsResponse,
   InitiativeSummary,
   InitiativeTimelineResponse,
@@ -1571,5 +1574,118 @@ describe("the scoped initiative reads (P8-8E-pre)", () => {
     expect(isWriteRoute("initiativeRoadmap")).toBe(true);
     expect(isWriteRoute("initiativeEvents")).toBe(false);
     expect(isWriteRoute("initiativeAgents")).toBe(false);
+  });
+});
+
+describe("the accounts read (P8-8F)", () => {
+  const ACCOUNT = {
+    accountId: "acct-primary",
+    provider: "anthropic",
+    models: ["opus", "sonnet"],
+    plan: "max",
+    state: "AVAILABLE",
+    quota: { remainingRatio: 0.5, confidence: "MEDIUM" },
+    reset: { nextResetAt: AT, source: "DECLARED", confidence: "HIGH" },
+    lastProbeAt: null,
+    lastError: null,
+  };
+
+  function ready(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      status: "READY",
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      items: [ACCOUNT],
+      count: 1,
+      estimatedAt: AT,
+      ...overrides,
+    };
+  }
+
+  it("shapes an account and refuses an unknown field", () => {
+    expect(AccountDto.safeParse(ACCOUNT).success).toBe(true);
+    expect(AccountDto.safeParse({ ...ACCOUNT, extra: 1 }).success).toBe(false);
+  });
+
+  it("has no place to put a credential or profile reference at all", () => {
+    // Not nulled, not redacted — absent. Strictness makes the omission
+    // enforceable: a server that grew either field fails here rather than
+    // shipping a name that says a secret exists and where to look for it.
+    expect(AccountDto.safeParse({ ...ACCOUNT, credentialRef: null }).success).toBe(false);
+    expect(AccountDto.safeParse({ ...ACCOUNT, authProfileRef: "profile://x" }).success).toBe(false);
+    expect(Object.keys(AccountDto.shape)).not.toContain("credentialRef");
+  });
+
+  it("keeps quota and reset confidence separate, because they are separately known", () => {
+    // An account can have a well-observed spend rate and no idea when its
+    // window rolls over. One shared confidence would report the better-known
+    // fact as if the worse-known one were equally sound.
+    expect(
+      AccountDto.safeParse({
+        ...ACCOUNT,
+        quota: { remainingRatio: 0.9, confidence: "HIGH" },
+        reset: { nextResetAt: null, source: "UNKNOWN", confidence: "LOW" },
+      }).success,
+    ).toBe(true);
+    // Null ratio is a real answer — the fold could not estimate. Zero would be
+    // a different and false claim.
+    expect(AccountDto.safeParse({ ...ACCOUNT, quota: { remainingRatio: null, confidence: "LOW" } }).success).toBe(true);
+    expect(AccountDto.safeParse({ ...ACCOUNT, quota: { remainingRatio: 1.5, confidence: "LOW" } }).success).toBe(false);
+  });
+
+  it("accepts both union arms and keeps them apart", () => {
+    expect(AccountsResponse.safeParse(ready()).success).toBe(true);
+    const unavailable = {
+      status: "UNAVAILABLE",
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      reason: "ACCOUNTS_FILE_ABSENT",
+    };
+    expect(AccountsResponse.safeParse(unavailable).success).toBe(true);
+    // Detail is optional; a refusal that has nothing to point at says nothing.
+    expect(AccountsResponse.safeParse({ ...unavailable, detail: "accounts[0].provider" }).success).toBe(true);
+    // The arms do not blend: a READY body may not carry a reason, and an
+    // UNAVAILABLE body may not carry items.
+    expect(AccountsResponse.safeParse({ ...ready(), reason: "ACCOUNTS_FILE_ABSENT" }).success).toBe(false);
+    expect(AccountsResponse.safeParse({ ...unavailable, items: [], count: 0 }).success).toBe(false);
+  });
+
+  it("round-trips every word of the closed vocabulary, and refuses one outside it", () => {
+    for (const reason of ACCOUNTS_UNAVAILABLE_REASONS) {
+      const parsed = AccountsResponse.safeParse({
+        status: "UNAVAILABLE",
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        reason,
+      });
+      expect({ reason, ok: parsed.success }).toEqual({ reason, ok: true });
+    }
+    expect(
+      AccountsResponse.safeParse({
+        status: "UNAVAILABLE",
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        reason: "ACCOUNTS_FILE_HAUNTED",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("refuses credential material anywhere in either arm", () => {
+    const planted = "sk-ant-api03-" + "A".repeat(80);
+    expect(AccountsResponse.safeParse(ready({ items: [{ ...ACCOUNT, plan: planted }] })).success).toBe(false);
+    expect(
+      AccountsResponse.safeParse({
+        status: "UNAVAILABLE",
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        reason: "ACCOUNTS_FILE_SCHEMA_REFUSED",
+        detail: planted,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("is a read", () => {
+    expect(isWriteRoute("accounts")).toBe(false);
+    expect(API_ROUTES.accounts).toBe("/api/v1/accounts");
   });
 });

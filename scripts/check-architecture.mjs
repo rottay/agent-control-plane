@@ -1271,39 +1271,35 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **228 packet entries across 117 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **247 packet entries across 122 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 2 (P8-T-roadmap) + 5 (P8-T2) +
- * 17 (P8-8E-pre) + 17 (P8-8E) + 15 (P8-8E2) = 228 entries, with 111 duplicate
- * entries, folded from a computed duplicate-owner table rather than argued:
- * `scripts/check-architecture.mjs` is named by all twenty-one packets (20);
- * eleven api-contracts, server and cli paths are each named by P8-8A,
- * P8-8D-pre, P8-8D-c2 and P8-8E-pre (3 each, 33); four ui paths by P8-8B,
- * P8-8C, P8-8D and P8-8E (3 each, 12); three more ui paths by P8-8C, P8-8D and
- * P8-8E (2 each, 6); the port, the barrel, the port's fixture and the test
- * doubles by P8-2, P8-3 and P8-4 (2 each, 8); `pnpm-lock.yaml` by the six
- * packets that moved a dependency edge (5); `docs/ROADMAP.md` by P8-D, the
- * three P8-T packets and P8-8E2 (4); `packages/server/src/initiatives/index.ts`
- * by P8-8A, P8-8D-c2 and P8-8E-pre (2); `packages/ui/src/components/app-shell/`
- * by P8-8B, P8-8C and P8-8D (2); four ui paths by P8-8C and P8-8D (1 each, 4);
- * the workspace view and its suite by P8-8D and P8-8E (1 each, 2);
- * `packages/server/src/mappers/index.ts` by P8-8A and P8-8E-pre (1);
- * `packages/server/package.json` by P8-8A and P8-8D-pre (1); and P8-8E2's
- * eleven repeats -- ten P8-W paths (the two core modules, the usage and
- * switch executors, and their six suites) plus P8-1's contracts schema
- * (1 each, 11).
- * 20 + 33 + 12 + 6 + 8 + 5 + 4 + 2 + 2 + 4 + 2 + 1 + 1 + 11 = 111.
+ * 17 (P8-8E-pre) + 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) = 247 entries,
+ * with 125 duplicate entries, folded from a computed duplicate-owner table
+ * rather than argued:
+ * `scripts/check-architecture.mjs` is named by all twenty-two packets (21);
+ * `pnpm-lock.yaml` by the seven packets that moved a dependency edge (6);
+ * ten api-contracts, server and cli paths are each named by P8-8A, P8-8D-pre,
+ * P8-8D-c2, P8-8E-pre and P8-8F-srv (4 each, 40); `docs/ROADMAP.md` by P8-D,
+ * the three P8-T packets and P8-8E2 (4); `packages/server/test/initiatives/`
+ * by four packets (3); four ui paths by P8-8B, P8-8C, P8-8D and P8-8E
+ * (3 each, 12); the port, the barrel, the port's fixture and the test doubles
+ * by P8-2, P8-3 and P8-4 (2 each, 8); `packages/server/src/initiatives/` (2);
+ * `packages/server/package.json` by P8-8A, P8-8D-pre and P8-8F-srv (2);
+ * four more ui paths by three packets each (2 each, 8); and nineteen paths
+ * named by exactly two packets -- the contracts schema, the four runtime
+ * modules and their six suites from P8-8E2, the server's mapper and its
+ * tsconfig, and five ui paths (1 each, 19).
+ * 21 + 6 + 40 + 4 + 3 + 12 + 8 + 2 + 2 + 8 + 19 = 125.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Three packets add entries without adding paths:
  * P8-8D-pre's 22nd, the whole of P8-8D-c2, and the whole of P8-T-roadmap.
- * P8-T2 added three paths; P8-8E-pre three (the CLI's timeline constructor
- * and the two reserved UI fixtures); P8-8E six; and P8-8E2 adds two -- the
- * two pilot invocation helpers, `test/pilots/recovery/helpers` and
- * `test/pilots/writer/helpers`; the two driver suites it also reached were
- * already P8-W's, their invocation fixtures illegal the moment
- * `correlationId` started carrying one. This
+ * P8-T2 added three paths; P8-8E-pre three; P8-8E six; P8-8E2 two; and
+ * P8-8F-srv adds five -- the accounts read model and its suite, the two
+ * server entry modules it threads an option through, and the server's test
+ * tsconfig, which no earlier P8 packet had needed to touch. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1915,6 +1911,49 @@ const P88E2_WRITE_SET = [
 ];
 
 /**
+ * P8-8F packet 1: the accounts read, and the plane's first non-ledger source.
+ *
+ * Every route before this one folds the append-only stream. This one reads the
+ * owner's accounts file and computes quota and reset against an injected
+ * instant, which is why the parity table gains a source of its own
+ * (`ACCOUNTS_FILE`) rather than binding these fields to `LEDGER` and asserting
+ * a provenance the data does not have.
+ *
+ * Two properties are the packet's point. The five UNAVAILABLE words are
+ * **mapped** from the accounts domain's fourteen refusals by a `Record` keyed
+ * on the refusal type, so the map is exhaustive by compilation and a refusal
+ * added downstream cannot fall through to a default. And `credentialRef` and
+ * `authProfileRef` are **absent from the DTO**, not nulled or redacted: a
+ * projection that never reads a field cannot leak it, and strictness makes the
+ * omission fail the build rather than depend on care.
+ *
+ * The dependency edge is the second one this phase has added and is declared at
+ * all five sites: the manifest, `P1B_DEPENDENCY_LAW` below, the lockfile, and
+ * both project references.
+ */
+const P88F_SRV_WRITE_SET = [
+  "packages/api-contracts/src/routes/index.ts",
+  "packages/api-contracts/src/schemas/index.ts",
+  "packages/api-contracts/src/parity/index.ts",
+  "packages/api-contracts/src/version/index.ts",
+  "packages/api-contracts/src/index.ts",
+  "packages/api-contracts/test/schemas/index.test.ts",
+  "packages/api-contracts/test/parity/index.test.ts",
+  "packages/server/src/accounts/index.ts",
+  "packages/server/src/routes/index.ts",
+  "packages/server/src/build-server/index.ts",
+  "packages/server/src/start/index.ts",
+  "packages/server/package.json",
+  "packages/server/tsconfig.json",
+  "packages/server/test/tsconfig.json",
+  "packages/server/test/build-server/index.test.ts",
+  "packages/server/test/accounts/index.test.ts",
+  "packages/cli/test/cli/index.test.ts",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2191,6 +2230,7 @@ const WRITE_SET = [
   ...P88E_PRE_WRITE_SET,
   ...P88E_WRITE_SET,
   ...P88E2_WRITE_SET,
+  ...P88F_SRV_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3336,7 +3376,13 @@ const P1B_DEPENDENCY_LAW = [
     // the observation plane's pure folds; nothing in observation knows a
     // server exists — and the edge is declared everywhere it has to be: the
     // manifest, this law, the lockfile and the project reference.
-    dependencies: ["@acp/api-contracts", "@acp/ledger", "@acp/observation", "fastify"],
+    // P8-8F: `@acp/accounts` joins the surface so the plane can read the
+    // owner's accounts with quota and reset confidence. Same lawful direction
+    // as observation's — the server consumes the pure, clock-injected accounts
+    // domain, and nothing in accounts names a server, transitively or
+    // otherwise. Five declaration sites, all in this packet's write-set: the
+    // manifest, this law, the lockfile, and both project references.
+    dependencies: ["@acp/accounts", "@acp/api-contracts", "@acp/ledger", "@acp/observation", "fastify"],
     devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
@@ -5224,6 +5270,7 @@ const SERVER_TS_ALIASES = {
 // there. Sorted, because the pin is an equality and an unsorted list would
 // make a reordering look like a change.
 const SERVER_TS_REFERENCES = [
+  "../accounts",
   "../api-contracts",
   "../cli",
   "../ledger",

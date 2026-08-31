@@ -36,7 +36,7 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * document. Additive, and a read — the plane's write surface is unchanged at
  * exactly one route.
  */
-export const API_CONTRACT_VERSION = "0.5.0" as const;
+export const API_CONTRACT_VERSION = "0.6.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**
