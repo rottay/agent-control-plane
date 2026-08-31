@@ -1271,37 +1271,39 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **291 packet entries across 131 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **318 packet entries across 137 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
  * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
- * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 2 (P8-T-roadmap) =
- * 291 entries, with 160 duplicate entries.
+ * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
+ * 2 (P8-T-roadmap) = 318 entries, with 181 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 25 duplicates = 25   (`scripts/check-architecture.mjs`, every packet)
- *   2 paths ×  6 duplicates = 12   (`docs/ROADMAP.md`, `pnpm-lock.yaml`)
- *   7 paths ×  5 duplicates = 35   (the api-contracts surface the write and
- *                                   read packets keep returning to)
- *   6 paths ×  4 duplicates = 24
- *   6 paths ×  3 duplicates = 18
+ *   1 path  × 26 duplicates = 26   (`scripts/check-architecture.mjs`, every packet)
+ *   9 paths ×  6 duplicates = 54   (the contracts/api-contracts/server surface
+ *                                   the write packets keep returning to)
+ *   3 paths ×  5 duplicates = 15
+ *   3 paths ×  4 duplicates = 12
+ *   8 paths ×  3 duplicates = 24
  *  11 paths ×  2 duplicates = 22
- *  24 paths ×  1 duplicate  = 24
+ *  28 paths ×  1 duplicate  = 28
  *
- * 25 + 12 + 35 + 24 + 18 + 22 + 24 = 160.
+ * 26 + 54 + 15 + 12 + 24 + 22 + 28 = 181.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Five packets add entries without adding paths:
  * P8-8D-pre's 22nd, the whole of P8-8D-c2, the whole of P8-T-roadmap, the
  * debrief-ruling record, and the P8-8F record. P8-T2 added three paths;
- * P8-8E-pre three; P8-8E six; P8-8E2 two; P8-8F-srv five; P8-8F-ui seven; and
- * P8-8G-a adds **two** — the bearer module and its mirrored suite, the only
- * genuinely new files in a packet that otherwise hardens surfaces the phase
- * already owned. Its twenty-first path,
- * `packages/server/test/initiatives/index.test.ts`, was already the phase's. This
+ * P8-8E-pre three; P8-8E six; P8-8E2 two; P8-8F-srv five; P8-8F-ui seven;
+ * P8-8G-a two; and P8-8G-b adds **six** — the migrations and types modules
+ * the account stream needed, the actions seam and the operator entry, and
+ * their two mirrored suites. The two paths the DT granted after the packet's
+ * STOP (the api-contracts barrel and the accounts-view suite) are entries
+ * without distinct paths: both are already owned by earlier P8 packets, which
+ * is why the distinct count holds at 137 while the entries move 316 → 318. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -2071,6 +2073,72 @@ const P88G_A_WRITE_SET = [
 ];
 
 /**
+ * P8-8G packet 2: the account-actions stream and the operator entry.
+ *
+ * The accounts surface becomes operable rather than merely visible. Three
+ * things land, and the first is the one worth reading twice.
+ *
+ * **The authority law, including its silent case.** An account's existence,
+ * plan and limits always come from the owner file. Its *operational state* has
+ * two possible owners, decided by one fact: whether any action has ever been
+ * recorded. None → the file governs. Any → the ledger owns the lifecycle from
+ * then on, and the newest action wins. The case a reader would otherwise
+ * assume backwards: **a later owner-file edit does not override an earlier
+ * action.** Authority never returns to the file implicitly, because the file
+ * cannot know what the operator did on Monday, and letting it win would erase
+ * a recorded decision with an unrecorded one. The correction path is always an
+ * explicit act, recorded with its own receipt.
+ *
+ * **The second write door**, registered through the same guarded registrar as
+ * the first — so the bearer is inherited by *where it is written* rather than
+ * by anyone remembering. `API_WRITE_ROUTES` grows visibly to two, which is
+ * what that separate frozen table is for.
+ *
+ * **The operator entry**, so starting this server is no longer a script an
+ * operator writes themselves. Hand-rolled argv, the daemon entry's
+ * classified-exit idiom, and no new dependency.
+ *
+ * The migration is worth a note. Its first draft created `account_events`
+ * without the append-only triggers its two sibling streams carry, and
+ * `EXPECTED_SCHEMA_OBJECTS` refused the schema — the inventory caught a
+ * silently mutable log before any test did, which is the whole reason that
+ * list exists.
+ */
+const P88G_B_WRITE_SET = [
+  "packages/contracts/src/schemas/index.ts",
+  "packages/contracts/src/index.ts",
+  "packages/contracts/test/schemas/index.test.ts",
+  "packages/ledger/src/migrations/index.ts",
+  "packages/ledger/src/ledger/index.ts",
+  "packages/ledger/src/types/index.ts",
+  "packages/ledger/src/index.ts",
+  "packages/ledger/test/ledger/index.test.ts",
+  "packages/api-contracts/src/routes/index.ts",
+  "packages/api-contracts/src/schemas/index.ts",
+  "packages/api-contracts/src/parity/index.ts",
+  "packages/api-contracts/src/version/index.ts",
+  "packages/api-contracts/test/schemas/index.test.ts",
+  "packages/api-contracts/test/parity/index.test.ts",
+  // Granted after the STOP: the barrel is the package's only export surface,
+  // so the action schemas are unreachable without it, and the UI fixture is
+  // typed against `AccountDto` and must satisfy its three new fields or `tsc`
+  // refuses the whole graph.
+  "packages/api-contracts/src/index.ts",
+  "packages/ui/test/views/accounts-view/index.test.tsx",
+  "packages/server/src/account-actions/index.ts",
+  "packages/server/src/accounts/index.ts",
+  "packages/server/src/routes/index.ts",
+  "packages/server/src/bin/index.ts",
+  "packages/server/package.json",
+  "packages/server/test/account-actions/index.test.ts",
+  "packages/server/test/accounts/index.test.ts",
+  "packages/server/test/bin/index.test.ts",
+  "packages/server/test/build-server/index.test.ts",
+  "packages/cli/test/cli/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2352,6 +2420,7 @@ const WRITE_SET = [
   ...P88F_UI_WRITE_SET,
   ...P88F_RECORD_WRITE_SET,
   ...P88G_A_WRITE_SET,
+  ...P88G_B_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

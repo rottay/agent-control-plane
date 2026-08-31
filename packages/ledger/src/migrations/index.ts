@@ -264,6 +264,42 @@ INSERT INTO projection_meta
   ('roadmap_version_read_model', 0, 0, '0000000000000000000000000000000000000000000000000000000000000000', '1970-01-01T00:00:00.000Z');
 `,
   },
+  {
+    version: 5,
+    name: "account_events",
+    sql: `
+CREATE TABLE account_events (
+  sequence         INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id         TEXT    NOT NULL UNIQUE,
+  idempotency_key  TEXT    NOT NULL UNIQUE,
+  account_id       TEXT    NOT NULL,
+  version          INTEGER NOT NULL,
+  action           TEXT    NOT NULL,
+  resulting_state  TEXT    NOT NULL,
+  actor            TEXT    NOT NULL,
+  note             TEXT,
+  occurred_at      TEXT    NOT NULL,
+  recorded_at      TEXT    NOT NULL,
+  contract_version TEXT    NOT NULL,
+  event_json       TEXT    NOT NULL
+) STRICT;
+
+CREATE INDEX account_events_by_account
+  ON account_events (account_id, version);
+
+CREATE TRIGGER account_events_deny_update
+BEFORE UPDATE ON account_events
+BEGIN
+  SELECT RAISE(ABORT, 'account_events is append-only: UPDATE is denied');
+END;
+
+CREATE TRIGGER account_events_deny_delete
+BEFORE DELETE ON account_events
+BEGIN
+  SELECT RAISE(ABORT, 'account_events is append-only: DELETE is denied');
+END;
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -348,6 +384,16 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "initiative_read_model_by_status" },
   { type: "table", name: "roadmap_version_read_model" },
   { type: "index", name: "roadmap_version_read_model_by_initiative" },
+  // P8-8G packet 2. The triggers are here for the same reason the other two
+  // event streams have them: an operator-action log that could be updated or
+  // deleted in place is not a log. The inventory is what caught their absence
+  // — the first draft of this migration created the table without them, and
+  // the integrity check refused the schema rather than letting a silently
+  // mutable stream through.
+  { type: "table", name: "account_events" },
+  { type: "index", name: "account_events_by_account" },
+  { type: "trigger", name: "account_events_deny_update" },
+  { type: "trigger", name: "account_events_deny_delete" },
 ];
 
 export interface MigrationConformance {

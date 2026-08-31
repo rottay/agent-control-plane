@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 
-import { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
+import { AccountActionEvent, ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 
 import {
   GENESIS_SHA256,
@@ -74,6 +74,8 @@ import type {
   WorkerPage,
   WorkerQuery,
   WorkerReadModel,
+  AccountActionAppendResult,
+  AccountActionRecordRow,
 } from "../types/index.js";
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
@@ -2386,6 +2388,117 @@ export class Ledger {
       "SELECT * FROM roadmap_version_read_model WHERE initiative_id = ? ORDER BY version ASC",
     ).all(initiativeId) as RoadmapVersionRow[];
     return rows.map(roadmapVersionRowToModel);
+  }
+
+  /**
+   * Record one operator action against one account (P8-8G packet 2).
+   *
+   * The ledger decides no account policy. It records what the seam decided,
+   * and refuses only what it alone can see: a replayed key, a reused event id.
+   * There is no lifecycle guard here of the kind the task and initiative
+   * streams carry, and that absence is deliberate — an account's lawful
+   * transitions are the seam's to know, and duplicating them here would put
+   * the same policy in two places with no mechanism keeping them equal.
+   */
+  appendAccountAction(candidate: unknown): AccountActionAppendResult {
+    this.#assertOpen("appendAccountAction");
+    this.#assertWritable("appendAccountAction");
+
+    const parsed = AccountActionEvent.safeParse(candidate);
+    if (!parsed.success) {
+      throw new LedgerValidationError(toValidationIssues(parsed.error.issues));
+    }
+    const event = parsed.data;
+    const canonicalJson = canonicalJsonStringify(event);
+
+    const run = this.#db.transaction((): AccountActionAppendResult => {
+      const existingByKey = this.#stmt(
+        "SELECT sequence, event_id, event_json FROM account_events WHERE idempotency_key = ?",
+      ).get(event.idempotencyKey) as
+        | { readonly sequence: number; readonly event_id: string; readonly event_json: string }
+        | undefined;
+
+      if (existingByKey !== undefined) {
+        if (existingByKey.event_json === canonicalJson) {
+          return {
+            inserted: false,
+            record: {
+              sequence: existingByKey.sequence,
+              eventId: existingByKey.event_id,
+              event: AccountActionEvent.parse(JSON.parse(existingByKey.event_json)),
+            },
+          };
+        }
+        throw new LedgerIdempotencyConflictError(
+          event.idempotencyKey,
+          sha256Hex(existingByKey.event_json),
+          sha256Hex(canonicalJson),
+        );
+      }
+
+      const existingById = this.#stmt(
+        "SELECT idempotency_key FROM account_events WHERE event_id = ?",
+      ).get(event.eventId) as { readonly idempotency_key: string } | undefined;
+      if (existingById !== undefined) {
+        throw new LedgerEventIdConflictError(
+          event.eventId,
+          existingById.idempotency_key,
+          event.idempotencyKey,
+        );
+      }
+
+      const info = this.#stmt(
+        "INSERT INTO account_events (event_id, idempotency_key, account_id, version, action," +
+          " resulting_state, actor, note, occurred_at, recorded_at, contract_version, event_json)" +
+          " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        event.eventId,
+        event.idempotencyKey,
+        event.accountId,
+        event.version,
+        event.action,
+        event.resultingState,
+        event.actor,
+        event.note,
+        event.occurredAt,
+        event.recordedAt,
+        event.contractVersion,
+        canonicalJson,
+      );
+
+      return {
+        inserted: true,
+        record: { sequence: Number(info.lastInsertRowid), eventId: event.eventId, event },
+      };
+    });
+    return run.immediate();
+  }
+
+  /**
+   * One account's action history, oldest first.
+   *
+   * Oldest first because the fold that derives an account's effective state
+   * walks it forward, and a reader wanting the current state takes the last
+   * entry rather than re-sorting.
+   */
+  listAccountActions(accountId: string): readonly AccountActionRecordRow[] {
+    this.#assertOpen("listAccountActions");
+    const rows = this.#stmt(
+      "SELECT sequence, event_id, event_json FROM account_events" +
+        " WHERE account_id = ? ORDER BY version ASC",
+    ).all(accountId) as {
+      readonly sequence: number;
+      readonly event_id: string;
+      readonly event_json: string;
+    }[];
+
+    return Object.freeze(
+      rows.map((row) => ({
+        sequence: row.sequence,
+        eventId: row.event_id,
+        event: AccountActionEvent.parse(JSON.parse(row.event_json)),
+      })),
+    );
   }
 
   listInitiativeEvents(query: InitiativeEventQuery = {}): InitiativeEventPage {

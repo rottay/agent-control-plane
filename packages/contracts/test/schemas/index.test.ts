@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  ACCOUNT_ACTIONS,
+  ACCOUNT_ACTION_NOTE_MAX,
+  ACCOUNT_ACTION_STATE,
+  AccountActionEvent,
   ROADMAP_CONTENT_MAX_BYTES,
   utf8ByteLength,
   AccountRecord,
@@ -1610,5 +1614,90 @@ describe("the roadmap content ceiling is one declaration with one unit (P8-8G R2
     const sample = "héllo 😀 — roadmap";
     expect(utf8ByteLength(sample)).toBe(new TextEncoder().encode(sample).byteLength);
     expect(utf8ByteLength(sample)).not.toBe(sample.length);
+  });
+});
+
+describe("the account-action vocabulary (P8-8G packet 2)", () => {
+  const ACTOR = "kimi/k3/coordinator/01";
+  const AT = "2026-08-31T12:00:00.000Z";
+
+  function event(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const version = (overrides["version"] as number | undefined) ?? 1;
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "11111111-1111-4111-8111-111111111111",
+      accountId: "acct-primary",
+      version,
+      idempotencyKey: "acct-primary/1/action." + String(version),
+      action: "DRAIN",
+      resultingState: "DRAINING",
+      actor: ACTOR,
+      note: null,
+      occurredAt: AT,
+      recordedAt: AT,
+      ...overrides,
+    };
+  }
+
+  it("is closed at four verbs", () => {
+    expect([...ACCOUNT_ACTIONS]).toEqual([
+      "DRAIN",
+      "ACCOUNT_READY",
+      "REAUTH_REQUIRED",
+      "OWNER_OVERRIDE",
+    ]);
+    expect(AccountActionEvent.safeParse(event({ action: "DELETE_ACCOUNT" })).success).toBe(false);
+  });
+
+  it("maps three verbs to a state and leaves the fourth to say its own", () => {
+    // The table is the mapping, so a reader checks it against the vocabulary
+    // rather than tracing a switch. `OWNER_OVERRIDE` is null precisely because
+    // its state is not implied by the verb.
+    expect(ACCOUNT_ACTION_STATE.DRAIN).toBe("DRAINING");
+    expect(ACCOUNT_ACTION_STATE.ACCOUNT_READY).toBe("AVAILABLE");
+    expect(ACCOUNT_ACTION_STATE.REAUTH_REQUIRED).toBe("AUTH_REQUIRED");
+    expect(ACCOUNT_ACTION_STATE.OWNER_OVERRIDE).toBeNull();
+    // Total over the vocabulary: a verb added without a mapping fails here.
+    for (const action of ACCOUNT_ACTIONS) {
+      expect({ action, mapped: action in ACCOUNT_ACTION_STATE }).toEqual({ action, mapped: true });
+    }
+  });
+
+  it("refuses a resulting state its action does not imply", () => {
+    expect(AccountActionEvent.safeParse(event()).success).toBe(true);
+    // The claim and the verb must agree — this is what stops an event saying
+    // "I drained it" beside "it is now AVAILABLE".
+    expect(AccountActionEvent.safeParse(event({ resultingState: "AVAILABLE" })).success).toBe(false);
+    // The override may name any state, because its verb implies none.
+    expect(
+      AccountActionEvent.safeParse(
+        event({ action: "OWNER_OVERRIDE", resultingState: "COOLDOWN" }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("ties the idempotency key to the account and the version", () => {
+    expect(AccountActionEvent.safeParse(event({ idempotencyKey: "wrong" })).success).toBe(false);
+    expect(
+      AccountActionEvent.safeParse(event({ version: 2, idempotencyKey: "acct-primary/1/action.2" }))
+        .success,
+    ).toBe(true);
+    // The key must follow the version it claims, not any version.
+    expect(
+      AccountActionEvent.safeParse(event({ version: 2, idempotencyKey: "acct-primary/1/action.1" }))
+        .success,
+    ).toBe(false);
+  });
+
+  it("guards the note, which is the only free text it carries", () => {
+    const planted = "sk-ant-api03-" + "A".repeat(80);
+    expect(AccountActionEvent.safeParse(event({ note: planted })).success).toBe(false);
+    // A real reason is fine, and null is fine.
+    expect(AccountActionEvent.safeParse(event({ note: "weekly quota exhausted" })).success).toBe(true);
+    expect(AccountActionEvent.safeParse(event({ note: null })).success).toBe(true);
+    // Bounded: a note is a reason, not a document.
+    expect(
+      AccountActionEvent.safeParse(event({ note: "x".repeat(ACCOUNT_ACTION_NOTE_MAX + 1) })).success,
+    ).toBe(false);
   });
 });

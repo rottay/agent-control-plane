@@ -1,4 +1,6 @@
 import {
+  ACCOUNT_ACTIONS,
+  ACCOUNT_ACTION_NOTE_MAX,
   AccountStatus,
   ConfidenceLevel,
   ControlPlaneEventType,
@@ -77,6 +79,9 @@ export const MAX_SCOPED_AGENTS = 200;
  * because anyone is expected to approach it.
  */
 export const MAX_ACCOUNTS = 100;
+
+/** An account's action history is a log of operator decisions, not telemetry. */
+export const MAX_ACCOUNT_ACTIONS = 500;
 
 // ---------------------------------------------------------------------------
 // Primitive value shapes
@@ -1543,6 +1548,20 @@ export type AccountsUnavailableReason = z.infer<typeof AccountsUnavailableReason
  * window rolls over, and collapsing the two into one number would report the
  * better-known fact as if the worse-known one were equally sound.
  */
+/** The action vocabulary, derived from the contract rather than restated. */
+export const AccountActionDto = z.enum(ACCOUNT_ACTIONS);
+export type AccountActionDto = z.infer<typeof AccountActionDto>;
+
+/** Why an action was refused. Closed, and mapped from the seam's own words. */
+export const ACCOUNT_ACTION_REFUSAL_WORDS = Object.freeze([
+  "ACCOUNTS_UNAVAILABLE",
+  "UNKNOWN_ACCOUNT",
+  "ALREADY_IN_STATE",
+  "WRITE_CONFLICT",
+] as const);
+export const AccountActionRefusalDto = z.enum(ACCOUNT_ACTION_REFUSAL_WORDS);
+export type AccountActionRefusalDto = z.infer<typeof AccountActionRefusalDto>;
+
 export const AccountDto = z
   .strictObject({
     accountId: z.string().min(1).max(80),
@@ -1563,9 +1582,100 @@ export const AccountDto = z
     }),
     lastProbeAt: Timestamp.nullable(),
     lastError: z.string().max(200).nullable(),
+    /**
+     * The authority overlay (P8-8G packet 2).
+     *
+     * `state` above is what the owner file says; `effectiveState` is what
+     * actually governs, and `stateSource` says which of the two answered.
+     * Both are published because a reader comparing them is how an operator
+     * notices that the file and the ledger disagree — a real thing to see,
+     * not a discrepancy to collapse into one number.
+     */
+    effectiveState: AccountStatusDto,
+    stateSource: z.enum(["OWNER_FILE", "OPERATOR_ACTION"]),
+    lastAction: z
+      .strictObject({
+        action: AccountActionDto,
+        at: Timestamp,
+        by: WorkerIdentityString,
+      })
+      .nullable(),
   })
   .superRefine(attachGuards);
 export type AccountDto = z.infer<typeof AccountDto>;
+
+/**
+ * What an operator sends to act on an account.
+ *
+ * `setState` is required for `OWNER_OVERRIDE` and refused for every other
+ * action — the two mismatched shapes are refused here rather than discovered
+ * in the seam, so a caller learns the rule from the contract.
+ */
+export const AccountActionRequest = z
+  .strictObject({
+    action: AccountActionDto,
+    setState: AccountStatusDto.nullable(),
+    note: z.string().max(ACCOUNT_ACTION_NOTE_MAX).nullable(),
+    actor: WorkerIdentityString,
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx);
+    if (value.action === "OWNER_OVERRIDE" && value.setState === null) {
+      ctx.addIssue({
+        code: "custom",
+        message: "OWNER_OVERRIDE must say which state it sets",
+        path: ["setState"],
+      });
+    }
+    if (value.action !== "OWNER_OVERRIDE" && value.setState !== null) {
+      ctx.addIssue({
+        code: "custom",
+        message: "only OWNER_OVERRIDE may name a state; " + value.action + " implies its own",
+        path: ["setState"],
+      });
+    }
+  });
+export type AccountActionRequest = z.infer<typeof AccountActionRequest>;
+
+/** One recorded action, as the history and the write receipt render it. */
+export const AccountActionDtoRecord = z
+  .strictObject({
+    sequence: Sequence,
+    eventId: Uuid,
+    accountId: z.string().min(1).max(80),
+    version: z.number().int().positive(),
+    action: AccountActionDto,
+    resultingState: AccountStatusDto,
+    actor: WorkerIdentityString,
+    note: z.string().max(ACCOUNT_ACTION_NOTE_MAX).nullable(),
+    recordedAt: Timestamp,
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx);
+  });
+export type AccountActionDtoRecord = z.infer<typeof AccountActionDtoRecord>;
+
+/** The write receipt: the recorded action, with the coordinates that name it. */
+export const AccountActionWriteResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    action: AccountActionDtoRecord,
+  })
+  .superRefine(attachGuards);
+export type AccountActionWriteResponse = z.infer<typeof AccountActionWriteResponse>;
+
+/** One account's action history, oldest first. */
+export const AccountActionsResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    accountId: z.string().min(1).max(80),
+    items: z.array(AccountActionDtoRecord).max(MAX_ACCOUNT_ACTIONS),
+    count: Count,
+  })
+  .superRefine(attachGuards);
+export type AccountActionsResponse = z.infer<typeof AccountActionsResponse>;
 
 /**
  * The accounts read, as a closed union rather than a list plus an error field.

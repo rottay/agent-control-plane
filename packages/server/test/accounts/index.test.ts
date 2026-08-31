@@ -8,6 +8,7 @@ import {
   ACCOUNTS_UNAVAILABLE_REASONS,
   LEDGER_CONTRACT_VERSION,
 } from "@acp/api-contracts";
+import { openLedger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildServer } from "../../src/build-server/index.js";
@@ -38,10 +39,21 @@ function temporaryRoot(): string {
   return root;
 }
 
+/**
+ * A real, created ledger.
+ *
+ * The accounts read now folds the action overlay (P8-8G packet 2), so it needs
+ * an open ledger where before it needed none. That is the honest dependency:
+ * answering "which source governs this account's state" requires reading the
+ * action history, and returning file-only state when the history is
+ * unreadable would publish an authority claim that might be wrong.
+ */
 function ledgerPath(root: string): string {
   const dir = join(root, "ledger");
   mkdirSync(dir, { recursive: true });
-  return join(dir, "acp.sqlite3");
+  const path = join(dir, "acp.sqlite3");
+  openLedger(path).close();
+  return path;
 }
 
 /** A valid account, with the two reference fields deliberately present. */
@@ -269,3 +281,20 @@ describe("the accounts route is a read", () => {
 });
 
 void randomUUID;
+
+describe("the authority overlay on the accounts read (P8-8G packet 2)", () => {
+  it("reports the owner file as the source while no action exists", async () => {
+    const root = temporaryRoot();
+    const path = writeOwnerFile(root, ownerDocument([account()]));
+    const body = await get(root, path);
+    if (body.status !== "READY") throw new Error("expected READY");
+
+    const item = body.items[0];
+    if (item === undefined) throw new Error("expected one account");
+    // Nothing has been recorded, so the file is the only thing that has
+    // spoken — and it is the answer.
+    expect(item.stateSource).toBe("OWNER_FILE");
+    expect(item.effectiveState).toBe(item.state);
+    expect(item.lastAction).toBeNull();
+  });
+});

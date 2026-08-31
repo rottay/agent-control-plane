@@ -50,6 +50,10 @@ export const API_ROUTES = Object.freeze({
   // deliberately not scoped to an initiative — accounts are the plane's, not an
   // initiative's.
   accounts: "/api/v1/accounts",
+  // P8-8G packet 2: the plane's second write door. GET reads one account's
+  // action history; POST records an action. Registered through the same
+  // guarded registrar as the first, so the bearer is inherited structurally.
+  accountActions: "/api/v1/accounts/:accountId/actions",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -86,7 +90,18 @@ export type ApiAllowedMethod = (typeof API_ALLOWED_METHODS)[number];
  * The value is the route **name**, not the pattern, so the two tables cannot
  * disagree about a path: the pattern always comes from `API_ROUTES`.
  */
-export const API_WRITE_ROUTES = Object.freeze(["initiativeRoadmap"] as const);
+/**
+ * The write routes, frozen — now two (P8-8G packet 2).
+ *
+ * The table grows **visibly**, which is the point of keeping it separate from
+ * `API_ALLOWED_METHODS`: a reader asking "what can mutate?" still gets a short
+ * answer they can read in one glance, and adding to it is an edit that shows
+ * up in review rather than a method quietly appearing on a route.
+ */
+export const API_WRITE_ROUTES = Object.freeze([
+  "initiativeRoadmap",
+  "accountActions",
+] as const);
 export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 
 /** The methods a write route answers: its read, plus the one write. */
@@ -100,6 +115,18 @@ export function isWriteRoute(route: ApiRouteName): boolean {
 
 const TaskIdParam = z.uuid();
 const InitiativeIdParam = z.uuid();
+
+/**
+ * An account id is not a uuid — it is the operator's own label from the owner
+ * file — so it is bounded and pattern-checked rather than parsed as one. The
+ * pattern refuses path separators and traversal segments, which is the same
+ * property the uuid check buys for initiatives.
+ */
+const AccountIdParam = z
+  .string()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "expected an account id, not a path segment");
 
 /**
  * Build the path for a single task.
@@ -142,6 +169,11 @@ export function initiativePath(initiativeId: string): string {
 /** Build the roadmap-history path for a single initiative. */
 export function initiativeRoadmapPath(initiativeId: string): string {
   return initiativePath(initiativeId) + "/roadmap";
+}
+
+/** Build the actions path for a single account. */
+export function accountActionsPath(accountId: string): string {
+  return API_ROUTES.accounts + "/" + encodeURIComponent(AccountIdParam.parse(accountId)) + "/actions";
 }
 
 /** Build the merged-timeline path for a single initiative. */

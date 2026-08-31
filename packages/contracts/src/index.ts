@@ -5,6 +5,12 @@
  * agree on lives here. Consumers must not redeclare these shapes locally.
  */
 export {
+  ACCOUNT_ACTIONS,
+  ACCOUNT_ACTION_NOTE_MAX,
+  ACCOUNT_ACTION_STATE,
+  AccountAction,
+  AccountActionEvent,
+  AccountActionRecord,
   ROADMAP_CONTENT_MAX_BYTES,
   utf8ByteLength,
   CONTRACT_VERSION,

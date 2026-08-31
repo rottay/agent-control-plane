@@ -7,6 +7,9 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  AccountActionRequest,
+  AccountActionWriteResponse,
+  AccountActionsResponse,
   AccountsResponse,
   InitiativeAgentsResponse,
   InitiativeTimelineResponse,
@@ -46,6 +49,7 @@ import {
   scopedTimeline,
 } from "../initiatives/index.js";
 import { readAccounts } from "../accounts/index.js";
+import { recordAccountAction } from "../account-actions/index.js";
 import { loadBearerGuard } from "../bearer/index.js";
 import type { BearerLoadOutcome } from "../bearer/index.js";
 import { artifactRootFor, recordRoadmapVersion } from "../roadmap-write/index.js";
@@ -164,6 +168,20 @@ const UUID_PARAM = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
  * id parser raises, so a caller sees one shape of error for one class of
  * mistake.
  */
+/**
+ * An account id is the operator's own label, not a uuid, so it is bounded and
+ * pattern-checked. The pattern refuses path separators and traversal segments,
+ * which is the property the uuid check buys for the initiative routes.
+ */
+const ACCOUNT_ID_PARAM = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+
+function parseAccountIdParam(raw: string): string {
+  if (!ACCOUNT_ID_PARAM.test(raw)) {
+    throw new ApiRouteError("BAD_REQUEST", "accountId must be an account label");
+  }
+  return raw;
+}
+
 function parseInitiativeIdParam(raw: string): string {
   if (!UUID_PARAM.test(raw)) {
     throw new ApiRouteError("BAD_REQUEST", "initiativeId must be a UUID");
@@ -557,7 +575,14 @@ export function registerRoutes(
   // requests at the same instant over the same file produce identical bytes.
   registerGet(app, API_ROUTES.accounts, (request) => {
     assertEmptyQuery(queryOf(request));
-    const outcome = readAccounts(accountsFilePath, new Date().toISOString());
+    // The action history is handed in, so the read model folds the authority
+    // overlay with the same function the write seam decides against — one
+    // implementation of the law, so the two cannot disagree about which
+    // source governs.
+    const { ledger: openLedgerForActions } = requireOpen(source);
+    const outcome = readAccounts(accountsFilePath, new Date().toISOString(), (accountId) =>
+      openLedgerForActions.listAccountActions(accountId),
+    );
 
     if (!outcome.ok) {
       // A 200, deliberately. A missing owner file is not this endpoint
@@ -582,6 +607,92 @@ export function registerRoutes(
       estimatedAt: outcome.estimatedAt,
     });
   });
+
+  // The second write door (P8-8G packet 2). Registered through the same
+  // guarded registrar as the first, so the bearer is inherited by *where this
+  // is written* rather than by anyone remembering to add a check — which is
+  // the property packet 1 built the registrar to have.
+  registerGetAndPost(
+    app,
+    API_ROUTES.accountActions,
+    (request) => {
+      assertEmptyQuery(queryOf(request));
+      const accountId = parseAccountIdParam(paramsOf(request)["accountId"] ?? "");
+      const { ledger } = requireOpen(source);
+
+      const items = ledger.listAccountActions(accountId).map((row) => ({
+        sequence: row.sequence,
+        eventId: row.eventId,
+        accountId: row.event.accountId,
+        version: row.event.version,
+        action: row.event.action,
+        resultingState: row.event.resultingState,
+        actor: row.event.actor,
+        note: row.event.note,
+        recordedAt: row.event.recordedAt,
+      }));
+
+      return AccountActionsResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        accountId,
+        items,
+        count: items.length,
+      });
+    },
+    (request) => {
+      const accountId = parseAccountIdParam(paramsOf(request)["accountId"] ?? "");
+      const parsedBody = AccountActionRequest.safeParse(request.body);
+      if (!parsedBody.success) {
+        const issue = parsedBody.error.issues[0];
+        throw new ApiRouteError(
+          "BAD_REQUEST",
+          "the account action request did not satisfy the contract",
+          // The failing field, never its value — the note is free text.
+          (issue?.path ?? []).map((segment) => String(segment)).join(".") || "(root)",
+        );
+      }
+      const body = parsedBody.data;
+      const { ledger } = requireOpen(source);
+
+      const outcome = recordAccountAction({
+        ledger,
+        accountsFilePath,
+        accountId,
+        request: body,
+        recordedAt: new Date().toISOString(),
+        eventId: randomUUID(),
+      });
+
+      if (!outcome.ok) {
+        // Every refusal is a 409 carrying its own name, exactly as the first
+        // door does: the caller sent something coherent that the recorded
+        // state refuses, and the name is what tells it which.
+        throw new ApiRouteError(
+          "WRITE_REFUSED",
+          "the account action was refused: " + outcome.reason,
+          outcome.at,
+        );
+      }
+
+      return AccountActionWriteResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        action: {
+          sequence: outcome.record.sequence,
+          eventId: outcome.record.eventId,
+          accountId: outcome.record.event.accountId,
+          version: outcome.record.event.version,
+          action: outcome.record.event.action,
+          resultingState: outcome.record.event.resultingState,
+          actor: outcome.record.event.actor,
+          note: outcome.record.event.note,
+          recordedAt: outcome.record.event.recordedAt,
+        },
+      });
+    },
+    bearer,
+  );
 
   // The one write route. GET is unchanged; POST is the plane's first write.
   registerGetAndPost(

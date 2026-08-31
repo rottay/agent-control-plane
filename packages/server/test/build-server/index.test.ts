@@ -877,7 +877,7 @@ describe("the served surface matches the frozen route table", () => {
     // Unconfigured, so a 200 carrying UNAVAILABLE — a handler's answer, not a
     // router's.
     expect((await app.inject({ method: "GET", url: "/api/v1/accounts" })).statusCode).toBe(200);
-    expect(API_WRITE_ROUTES).toEqual(["initiativeRoadmap"]);
+    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
     await app.close();
   });
 
@@ -898,7 +898,7 @@ describe("the served surface matches the frozen route table", () => {
       // router's answer and never reaches the guard.
       expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
     }
-    expect(API_WRITE_ROUTES).toEqual(["initiativeRoadmap"]);
+    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
     await app.close();
   });
 

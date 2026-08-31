@@ -16,7 +16,7 @@ import { z } from "zod";
  *    the next safe action, never by replaying a provider conversation.
  */
 
-export const CONTRACT_VERSION = "2.1.0" as const;
+export const CONTRACT_VERSION = "2.2.0" as const;
 
 /**
  * The largest roadmap document the plane accepts, in **UTF-8 bytes**.
@@ -1455,6 +1455,118 @@ export function buildInitiativeIdempotencyKey(
  * would mean either a column that cannot be null being null, or an
  * initiative id living in a field named `taskId`.
  */
+/**
+ * What an operator may do to an account (P8-8G packet 2).
+ *
+ * Four verbs, closed. Three name an intent whose resulting state is a fact
+ * about the verb rather than a parameter — draining an account puts it in
+ * `DRAINING` and nothing else — and the fourth exists because an operator
+ * sometimes knows something the vocabulary does not, and needs to say the
+ * state outright rather than pick the nearest verb and hope.
+ */
+export const ACCOUNT_ACTIONS = ["DRAIN", "ACCOUNT_READY", "REAUTH_REQUIRED", "OWNER_OVERRIDE"] as const;
+export const AccountAction = z.enum(ACCOUNT_ACTIONS);
+export type AccountAction = z.infer<typeof AccountAction>;
+
+/**
+ * The state each verb produces, as a frozen fact rather than a branch.
+ *
+ * A table, so the mapping is one thing a reader can check against the
+ * vocabulary above rather than a switch spread across a decision function.
+ * `OWNER_OVERRIDE` is `null` here precisely because it is the one verb whose
+ * resulting state is not implied by the verb — it comes from the request's
+ * own `setState`, and the schema below refuses the two mismatched shapes:
+ * an override without a state, and a non-override that supplies one.
+ */
+export const ACCOUNT_ACTION_STATE: Readonly<Record<AccountAction, AccountStatus | null>> =
+  Object.freeze({
+    DRAIN: "DRAINING",
+    ACCOUNT_READY: "AVAILABLE",
+    REAUTH_REQUIRED: "AUTH_REQUIRED",
+    OWNER_OVERRIDE: null,
+  });
+
+/** The largest note an operator may attach. A reason, not a document. */
+export const ACCOUNT_ACTION_NOTE_MAX = 500;
+
+/**
+ * One recorded operator action against one account.
+ *
+ * A sibling of `InitiativeEvent` and deliberately shaped like it: the same
+ * envelope, the same idempotency law, the same guards. What differs is the
+ * subject — an account rather than an initiative — and that the resulting
+ * state is derived from the action rather than claimed independently, which is
+ * what stops a caller recording "I drained it" beside "it is now AVAILABLE".
+ *
+ * `note` is the only free text this event carries, and it rides the standing
+ * content guards: an operator explaining why they drained an account must not
+ * be the way a credential reaches the ledger.
+ */
+export const AccountActionEvent = z
+  .strictObject({
+    contractVersion: ContractVersion,
+    eventId: Uuid,
+
+    accountId: z.string().min(1).max(80),
+    /** Monotone per account, assigned by the seam from the folded history. */
+    version: z.number().int().positive(),
+    /** Must equal accountId/1/action.<version>. The ledger uniques on this. */
+    idempotencyKey: z.string().min(1).max(300),
+
+    action: AccountAction,
+    /** The state this action put the account into. Derived, never claimed. */
+    resultingState: AccountStatus,
+
+    actor: WorkerIdentityString,
+    note: z.string().max(ACCOUNT_ACTION_NOTE_MAX).nullable(),
+    occurredAt: Timestamp,
+    recordedAt: Timestamp,
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: true });
+
+    const expected =
+      value.accountId + "/1/action." + String(value.version);
+    if (value.idempotencyKey !== expected) {
+      ctx.addIssue({
+        code: "custom",
+        message: "idempotencyKey must be exactly accountId/1/action.<version>",
+        path: ["idempotencyKey"],
+      });
+    }
+
+    // The verb governs the state, except for the one verb that does not.
+    const implied = ACCOUNT_ACTION_STATE[value.action];
+    if (implied !== null && value.resultingState !== implied) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "action " + value.action + " always results in " + implied + ", never " + value.resultingState,
+        path: ["resultingState"],
+      });
+    }
+  });
+export type AccountActionEvent = z.infer<typeof AccountActionEvent>;
+
+/** One account's action history entry, as the ledger projects it. */
+export const AccountActionRecord = z
+  .strictObject({
+    sequence: z.number().int().positive(),
+    eventId: Uuid,
+    accountId: z.string().min(1).max(80),
+    version: z.number().int().positive(),
+    action: AccountAction,
+    resultingState: AccountStatus,
+    actor: WorkerIdentityString,
+    note: z.string().max(ACCOUNT_ACTION_NOTE_MAX).nullable(),
+    occurredAt: Timestamp,
+    recordedAt: Timestamp,
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: true });
+  });
+export type AccountActionRecord = z.infer<typeof AccountActionRecord>;
+
 export const InitiativeEvent = z
   .strictObject({
     contractVersion: ContractVersion,

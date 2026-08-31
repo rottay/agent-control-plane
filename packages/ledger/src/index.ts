@@ -105,3 +105,21 @@ export type {
   WorkerQuery,
   WorkerReadModel,
 } from "./types/index.js";
+
+export type { AccountActionAppendResult, AccountActionRecordRow } from "./types/index.js";
+
+/**
+ * The account-action vocabulary, re-exported for the server (P8-8G packet 2).
+ *
+ * The server's dependency surface does not include `@acp/contracts` and the
+ * fence enforces that, so the seam reaches these through the package it does
+ * depend on. Re-exported rather than restated: one declaration, and a name
+ * added upstream cannot fail to arrive here.
+ */
+export {
+  ACCOUNT_ACTIONS,
+  ACCOUNT_ACTION_NOTE_MAX,
+  ACCOUNT_ACTION_STATE,
+  CONTRACT_VERSION as LEDGER_ACCOUNT_CONTRACT_VERSION,
+} from "@acp/contracts";
+export type { AccountAction, AccountStatus } from "@acp/contracts";

@@ -4,6 +4,7 @@ import { findCredentialViolations, findTranscriptViolations } from "@acp/contrac
 
 import { API_ROUTES } from "../../src/routes/index.js";
 import {
+  AccountActionsResponse,
   AccountsResponse,
   EventPageResponse,
   HealthResponse,
@@ -125,6 +126,7 @@ describe("the binding table matches the schemas it claims to bind", () => {
     initiativeEvents: InitiativeTimelineResponse,
     initiativeAgents: InitiativeAgentsResponse,
     accounts: AccountsResponse,
+    accountActions: AccountActionsResponse,
   };
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {

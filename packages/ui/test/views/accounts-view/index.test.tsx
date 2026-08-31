@@ -16,6 +16,11 @@ function account(overrides: Partial<AccountDto> = {}): AccountDto {
     reset: { nextResetAt: "2026-09-01T00:00:00.000Z", source: "DECLARED", confidence: "HIGH" },
     lastProbeAt: "2026-08-31T12:00:00.000Z",
     lastError: null,
+    // P8-8G packet 2: the authority overlay. Minimal fixture values — the
+    // file governs while no action exists, which is this fixture's case.
+    effectiveState: "AVAILABLE",
+    stateSource: "OWNER_FILE",
+    lastAction: null,
     ...overrides,
   };
 }

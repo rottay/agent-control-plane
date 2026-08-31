@@ -6,6 +6,9 @@ import {
   resetCalendar,
 } from "@acp/accounts";
 import type { AccountsRefusal } from "@acp/accounts";
+import type { AccountActionRecordRow, AccountStatus } from "@acp/ledger";
+
+import { foldEffectiveState } from "../account-actions/index.js";
 
 /**
  * The accounts read model (P8-8F).
@@ -100,6 +103,21 @@ export interface AccountReadModel {
   };
   readonly lastProbeAt: string | null;
   readonly lastError: string | null;
+  /**
+   * The state that actually governs, and where it came from (P8-8G packet 2).
+   *
+   * The raw `state` above stays: it is what the owner file says, and a reader
+   * comparing the two is exactly how an operator notices that the file and
+   * the ledger disagree — which is a real and useful thing to see, not a
+   * discrepancy to hide behind one number.
+   */
+  readonly effectiveState: string;
+  readonly stateSource: "OWNER_FILE" | "OPERATOR_ACTION";
+  readonly lastAction: {
+    readonly action: string;
+    readonly at: string;
+    readonly by: string;
+  } | null;
 }
 
 export type AccountsOutcome =
@@ -119,7 +137,20 @@ export type AccountsOutcome =
  * "no default path" law is only true if this module declines to invent one, and
  * the loader answers `PATH_NOT_SUPPLIED` for exactly this case.
  */
-export function readAccounts(accountsFilePath: string | undefined, now: string): AccountsOutcome {
+export function readAccounts(
+  accountsFilePath: string | undefined,
+  now: string,
+  /**
+   * The action history source, when one is available.
+   *
+   * Optional so the seam can fold the baseline without recursing into itself:
+   * `recordAccountAction` calls this to find the account, and handing it a
+   * ledger here would make the baseline depend on the history it is the
+   * baseline for. Absent means "file only", which is the honest answer when
+   * nobody asked about actions.
+   */
+  actionsFor?: (accountId: string) => readonly AccountActionRecordRow[],
+): AccountsOutcome {
   const loaded = loadAccountsFile(accountsFilePath);
   if (!loaded.ok) {
     return { ok: false, reason: REASON_BY_REFUSAL[loaded.reason], detail: loaded.at };
@@ -157,6 +188,7 @@ export function readAccounts(accountsFilePath: string | undefined, now: string):
       }),
       lastProbeAt: record.lastHealthProbe === null ? null : record.lastHealthProbe.checkedAt,
       lastError: record.lastClassifiedError,
+      ...overlayFor(record.status, actionsFor?.(record.accountId) ?? []),
     });
   });
 
@@ -165,3 +197,26 @@ export function readAccounts(accountsFilePath: string | undefined, now: string):
 
 /** Re-exported so the route's bound can be stated from one place. */
 export { ACCOUNTS_FILE_MAX_BYTES };
+
+/**
+ * The authority overlay, applied per account.
+ *
+ * Delegates to the seam's own fold so there is exactly one implementation of
+ * the law — the read and the write cannot disagree about which state governs,
+ * because they compute it with the same function.
+ */
+function overlayFor(
+  fileState: string,
+  history: readonly AccountActionRecordRow[],
+): {
+  readonly effectiveState: string;
+  readonly stateSource: "OWNER_FILE" | "OPERATOR_ACTION";
+  readonly lastAction: { readonly action: string; readonly at: string; readonly by: string } | null;
+} {
+  const folded = foldEffectiveState(fileState as AccountStatus, history);
+  return Object.freeze({
+    effectiveState: folded.effectiveState,
+    stateSource: folded.stateSource,
+    lastAction: folded.lastAction,
+  });
+}

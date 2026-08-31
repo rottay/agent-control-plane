@@ -1,4 +1,5 @@
 import type {
+  AccountActionEvent,
   ControlPlaneEvent,
   ControlPlaneEventType,
   InitiativeEvent,
@@ -311,4 +312,17 @@ export interface RoadmapVersionReadModel {
   readonly recordedAt: string;
   /** The initiative-stream position the version was recorded at. */
   readonly sequence: number;
+}
+
+/** One recorded operator action, as the ledger returns it (P8-8G packet 2). */
+export interface AccountActionRecordRow {
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly event: AccountActionEvent;
+}
+
+export interface AccountActionAppendResult {
+  /** false means this was an exact replay and nothing new was written. */
+  readonly inserted: boolean;
+  readonly record: AccountActionRecordRow;
 }

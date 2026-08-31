@@ -16,6 +16,9 @@
   "files": [
     "dist"
   ],
+  "bin": {
+    "acp-server": "./dist/bin/index.js"
+  },
   "scripts": {
     "build": "tsc --build"
   },

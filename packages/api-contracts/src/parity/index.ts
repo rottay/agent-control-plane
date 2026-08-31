@@ -286,6 +286,22 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("reason", "ACCOUNTS_FILE", "the loader's refusal, mapped to the closed API vocabulary"),
       bind("detail", "ACCOUNTS_FILE", "a field path from the loader; never a value from the file"),
     ]),
+    /**
+     * The account-actions door (P8-8G packet 2).
+     *
+     * The GET arm's history is ledger state in the ordinary sense — it folds
+     * the `account_events` stream, and three clients folding it agree. It is
+     * bound to `ACCOUNTS_FILE` rather than `LEDGER` for one field only,
+     * `accountId`, because the account the history belongs to is named by the
+     * owner file; everything else here the ledger recorded.
+     */
+    accountActions: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("accountId", "ACCOUNTS_FILE", "the account the owner file names; the history hangs off it"),
+      bind("items", "LEDGER"),
+      bind("count", "LEDGER"),
+    ]),
   });
 
 /** Every route the contract covers, matching the frozen route table exactly. */

@@ -347,7 +347,7 @@ describe("routes", () => {
     // P8-8D-pre: the read plane's method list did not move when the first
     // write route arrived. The exception lives in its own frozen table, so
     // this assertion still describes every one of the nine reads.
-    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap"]);
+    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
     expect([...API_WRITE_METHODS]).toEqual(["GET", "POST"]);
     expect(Object.isFrozen(API_WRITE_ROUTES)).toBe(true);
     expect(isWriteRoute("initiativeRoadmap")).toBe(true);
@@ -1590,6 +1590,9 @@ describe("the accounts read (P8-8F)", () => {
     reset: { nextResetAt: AT, source: "DECLARED", confidence: "HIGH" },
     lastProbeAt: null,
     lastError: null,
+    effectiveState: "AVAILABLE",
+    stateSource: "OWNER_FILE",
+    lastAction: null,
   };
 
   function ready(overrides: Record<string, unknown> = {}): Record<string, unknown> {
