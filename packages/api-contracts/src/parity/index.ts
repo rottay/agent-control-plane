@@ -174,6 +174,34 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
     // binding below stays the GET's response — the write's own shape is
     // asserted by the schema and the endpoint's tests, and binding it here
     // would claim a CLI and a browser render it, which neither does.
+    /**
+     * The content route's parity exception (P8-8D-c2), recorded here rather
+     * than left as an omission — which is this module's own rule for every
+     * exception it makes.
+     *
+     * Every other route's response is a **projection**: a set of fields folded
+     * out of ledger state, and the parity law is that three clients fold them
+     * identically. This one serves a **document** — bytes the ledger does not
+     * contain, named by a digest it does. `content` is therefore bound to the
+     * ledger in a different sense from every field above it: the ledger fixes
+     * *which* bytes, and the artifact store holds them.
+     *
+     * That distinction is why the binding is still `LEDGER` and still
+     * comparable: two clients asking for version 3 must receive the same
+     * bytes, and the digest beside them is what makes that checkable rather
+     * than assumed. What does not carry over is the row-model framing — there
+     * is no row here, and `canonicalize` sorting keys of a markdown string
+     * would be sorting nothing.
+     */
+    initiativeRoadmapContent: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiativeId", "LEDGER"),
+      bind("version", "LEDGER"),
+      bind("contentDigest", "LEDGER"),
+      bind("kind", "LEDGER"),
+      bind("content", "LEDGER"),
+    ]),
     initiativeRoadmap: Object.freeze([
       bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
       bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),

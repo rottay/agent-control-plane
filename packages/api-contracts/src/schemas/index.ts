@@ -1269,3 +1269,53 @@ export const RoadmapVersionWriteResponse = z.strictObject({
   sequence: z.number().int().positive(),
 });
 export type RoadmapVersionWriteResponse = z.infer<typeof RoadmapVersionWriteResponse>;
+
+// ---------------------------------------------------------------------------
+// The roadmap content read (P8-8D-c2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which version's content to serve.
+ *
+ * **By version, not by digest**, and the choice is a boundary decision rather
+ * than a convenience. The artifact store is content-addressed, so a digest
+ * selector would have been the shorter path — and it would have let any caller
+ * fetch any object in the store by naming its digest, including one recorded
+ * against a different initiative. A version is meaningless outside the
+ * initiative it belongs to, so resolving version → digest through that
+ * initiative's own fold scopes the read to the initiative in the path. The
+ * shape of the request is what enforces it, rather than a check that could be
+ * forgotten.
+ */
+export const RoadmapContentQuery = z.strictObject({
+  version: DecimalNonNegativeInteger.pipe(z.number().int().positive().max(1_000_000)),
+});
+export type RoadmapContentQuery = z.infer<typeof RoadmapContentQuery>;
+
+/**
+ * One roadmap document, with the record that names it.
+ *
+ * The content travels beside its own digest and version so a reader can verify
+ * what it was given rather than trusting the transport: the digest here is the
+ * one the ledger recorded, and re-hashing the content is a check the caller can
+ * make for itself.
+ *
+ * **The guards run on the way out.** They ran on ingest, and they run again
+ * here — not because the store is distrusted, but because this is the response
+ * that carries free text to a browser and a terminal, and a boundary that only
+ * trusts the layer below it is not a boundary. A document that somehow reached
+ * the store carrying a credential shape does not leave through this route.
+ */
+export const RoadmapContentResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    version: z.number().int().positive(),
+    contentDigest: Sha256Hex,
+    kind: RoadmapVersionKindDto,
+    /** The stored bytes, verbatim. Bounded by what the write route admits. */
+    content: z.string().min(1).max(ROADMAP_CONTENT_MAX_BYTES),
+  })
+  .superRefine(attachGuards);
+export type RoadmapContentResponse = z.infer<typeof RoadmapContentResponse>;

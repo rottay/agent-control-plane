@@ -817,6 +817,24 @@ describe("import purity", () => {
 });
 
 describe("the served surface matches the frozen route table", () => {
+  it("registers the content route as a read: GET answers, every other verb 405s", async () => {
+    // P8-8D-c2 adds a read, so it goes through `registerGet` and inherits the
+    // four-verb 405 set unchanged. The plane's write surface stays at exactly
+    // one route, and this is where that stops being a claim.
+    const { path } = seedDatabase();
+    const app = buildServer({ ledgerPath: path });
+    const url = "/api/v1/initiatives/" + randomUUID() + "/roadmap/content?version=1";
+
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
+      const response = await app.inject({ method, url });
+      expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
+    }
+    // GET reaches a handler rather than the 405 branch — a 404 here, since the
+    // initiative is invented, which is a handler's answer and not a router's.
+    expect((await app.inject({ method: "GET", url })).statusCode).toBe(404);
+    await app.close();
+  });
+
   it("keeps every read route's 405 set byte-unchanged after the first write route (C1)", async () => {
     // The one write route mounts its own registrar with POST removed from the
     // 405 list. Every other route must be untouched by that: a registrar

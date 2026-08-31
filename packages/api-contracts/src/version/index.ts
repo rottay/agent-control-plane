@@ -31,8 +31,12 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * that assumed "every route here is safe to retry, and nothing I send mutates
  * anything" was right at 0.2.0 and is wrong at 0.3.0, and that is precisely
  * what a version number exists to tell it.
+ *
+ * `0.3.0` → `0.4.0` at P8-8D-c2: a read route that serves the stored roadmap
+ * document. Additive, and a read — the plane's write surface is unchanged at
+ * exactly one route.
  */
-export const API_CONTRACT_VERSION = "0.3.0" as const;
+export const API_CONTRACT_VERSION = "0.4.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

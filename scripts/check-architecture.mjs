@@ -1271,10 +1271,10 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **141 packet entries across 99 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **154 packet entries across 99 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
- * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) + 2 (P8-T) =
- * 141 entries, with 42 duplicate entries. `scripts/check-architecture.mjs` is named by all
+ * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) + 13 (P8-8D-c2) + 2 (P8-T) =
+ * 154 entries, with 55 duplicate entries. `scripts/check-architecture.mjs` is named by all
  * thirteen packets (12 duplicates); the port, the barrel, the port's fixture
  * and the test doubles are each named by P8-2, P8-3 and P8-4 (2 duplicates
  * each, 8 total); `pnpm-lock.yaml` is named by the four packets that moved a
@@ -1289,9 +1289,11 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * P8-8A and P8-8C had already touched (12 duplicates once the fence's own
  * count moves to thirteen packets). P8-5 and P8-6 share no path with any
  * earlier P8 packet but the fence itself; P8-7 likewise. Folded rather than
- * argued: 141 entries, 99 distinct, 42 duplicates. The 22nd path is not a
- * new distinct path: P8-8A created that suite, so widening P8-8D-pre onto it
- * adds an entry and a duplicate rather than a path. This
+ * argued: 154 entries, 99 distinct, 55 duplicates. Two packets add entries
+ * without adding paths: P8-8D-pre's 22nd (P8-8A created that suite), and the
+ * whole of P8-8D-c2, every one of whose thirteen paths an earlier P8 packet
+ * already created. A packet that only extends surfaces the phase already owns
+ * moves the entry count and leaves the path count alone. This
  * file's appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  */
@@ -1659,6 +1661,36 @@ const P88D_PRE_WRITE_SET = [
 ];
 
 /**
+ * P8-8D-c2: the roadmap content read.
+ *
+ * Fable's C2 from the workspace design review: the central region needs to
+ * show a roadmap document, and no surface served one. A read, through
+ * `registerGet` like every other read, so the plane's write surface stays at
+ * exactly one route.
+ *
+ * Selected by **version**, not by digest. The store is content-addressed and a
+ * digest selector would have been shorter — and would have let any caller
+ * fetch any object by naming it, including one recorded against a different
+ * initiative. Resolving version → digest through that initiative's own fold
+ * makes the request's shape enforce the scoping.
+ */
+const P88D_C2_WRITE_SET = [
+  "packages/api-contracts/src/routes/index.ts",
+  "packages/api-contracts/src/schemas/index.ts",
+  "packages/api-contracts/src/parity/index.ts",
+  "packages/api-contracts/src/version/index.ts",
+  "packages/api-contracts/src/index.ts",
+  "packages/api-contracts/test/schemas/index.test.ts",
+  "packages/api-contracts/test/parity/index.test.ts",
+  "packages/server/src/routes/index.ts",
+  "packages/server/src/initiatives/index.ts",
+  "packages/server/test/build-server/index.test.ts",
+  "packages/server/test/initiatives/index.test.ts",
+  "packages/cli/test/cli/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P8-T (docs): the blocking structural-topology tranche enters the roadmap.
  *
  * A records-only packet. The owner's ruling of 2026-08-31 makes a fresh joint
@@ -1945,6 +1977,7 @@ const WRITE_SET = [
   ...P88B_WRITE_SET,
   ...P88C_WRITE_SET,
   ...P88D_PRE_WRITE_SET,
+  ...P88D_C2_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

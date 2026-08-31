@@ -1,3 +1,4 @@
+import { readArtifact } from "@acp/ledger";
 import { UNSCOPED_INITIATIVE, computeTokenRollups } from "@acp/observation";
 import type { TaskTokenRollup, TokenRollups } from "@acp/observation";
 import type {
@@ -224,6 +225,50 @@ export function initiativeDetail(ledger: Ledger, initiativeId: string): Initiati
       unscopedTokensUsed,
     }),
   });
+}
+
+/**
+ * One version's stored content, resolved through the initiative's own fold.
+ *
+ * The store is content-addressed, but the lookup starts from a **version**:
+ * the fold turns it into the digest the ledger recorded, and only then does
+ * the store see a digest. That order is what scopes the read — a caller cannot
+ * name a digest belonging to another initiative, because it never names a
+ * digest at all.
+ *
+ * Two absences that are not the same absence, and are not reported as one:
+ * a version this initiative's history does not contain is `UNKNOWN_VERSION`,
+ * and a version whose digest the store cannot produce is `CONTENT_MISSING`.
+ * The first is a caller asking for something that was never recorded; the
+ * second is the ledger and the store disagreeing about what exists, which is
+ * an integrity problem and must never be answered with an empty body.
+ */
+export type RoadmapContentOutcome =
+  | {
+      readonly ok: true;
+      readonly version: RoadmapVersionReadModel;
+      readonly content: string;
+    }
+  | { readonly ok: false; readonly reason: "UNKNOWN_VERSION" | "CONTENT_MISSING" };
+
+export function roadmapContent(
+  ledger: Ledger,
+  initiativeId: string,
+  version: number,
+  artifactRoot: string,
+): RoadmapContentOutcome {
+  const recorded = ledger
+    .listRoadmapVersions(initiativeId)
+    .find((entry) => entry.version === version);
+  if (recorded === undefined) return Object.freeze({ ok: false as const, reason: "UNKNOWN_VERSION" as const });
+
+  const stored = readArtifact(artifactRoot, recorded.contentDigest);
+  // `readArtifact` re-digests on the way out, so a corrupt object is refused
+  // there rather than returned. Either failure lands here as the same
+  // classification: the ledger names bytes the store cannot honestly produce.
+  if (!stored.ok) return Object.freeze({ ok: false as const, reason: "CONTENT_MISSING" as const });
+
+  return Object.freeze({ ok: true as const, version: recorded, content: stored.content });
 }
 
 /** The roadmap history alone, newest first, with the head marked. */

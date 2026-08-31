@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   API_CONTRACT_VERSION,
@@ -10,8 +10,10 @@ import {
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
   LEDGER_CONTRACT_VERSION,
+  RoadmapContentResponse,
+  RoadmapVersionWriteResponse,
 } from "@acp/api-contracts";
-import { openLedger } from "@acp/ledger";
+import { openLedger, publishArtifact } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildServer } from "../../src/build-server/index.js";
@@ -509,6 +511,193 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap", () => {
 // ---------------------------------------------------------------------------
 // Still read-only
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The content read (P8-8D-c2)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
+  /** Record one version through the write route, returning what it answered. */
+  async function write(
+    app: ReturnType<typeof buildServer>,
+    initiativeId: string,
+    content: string,
+    expectedHeadDigest: string | null,
+  ): Promise<{ readonly version: number; readonly contentDigest: string }> {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/initiatives/" + initiativeId + "/roadmap",
+      payload: {
+        content,
+        expectedHeadDigest,
+        kind: "EDIT",
+        restoresVersionId: null,
+        recordedBy: COORDINATOR,
+      },
+    });
+    if (response.statusCode !== 200) throw new Error("write failed: " + String(response.statusCode));
+    return RoadmapVersionWriteResponse.parse(response.json()).version;
+  }
+
+  function contentUrl(initiativeId: string, version: number): string {
+    return "/api/v1/initiatives/" + initiativeId + "/roadmap/content?version=" + String(version);
+  }
+
+  it("serves the stored bytes byte-exact, with the digest that names them", async () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
+    ledger.close();
+
+    const app = buildServer({ ledgerPath: path });
+    const document = "# Roadmap\n\nUnicode survives: café — ✓\n\n- one\n- two\n";
+    const written = await write(app, initiativeId, document, null);
+
+    const response = await app.inject({ method: "GET", url: contentUrl(initiativeId, written.version) });
+    expect(response.statusCode).toBe(200);
+    // Parsed through the contract rather than cast: asserting against a shape
+    // I wrote myself would prove only that I wrote it consistently.
+    const body = RoadmapContentResponse.parse(response.json());
+
+    // Byte-exact, not merely equal-looking: the digest the ledger recorded is
+    // returned beside the content, so a reader can re-hash and check for
+    // itself rather than trusting the transport.
+    expect(body.content).toBe(document);
+    expect(body.contentDigest).toBe(written.contentDigest);
+    expect({ version: body.version, kind: body.kind }).toEqual({ version: 1, kind: "EDIT" });
+    await app.close();
+  });
+
+  it("serves each version's own bytes, not the head's", async () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
+    ledger.close();
+
+    const app = buildServer({ ledgerPath: path });
+    const first = await write(app, initiativeId, "# one\n", null);
+    await write(app, initiativeId, "# two\n", first.contentDigest);
+
+    const v1 = await app.inject({ method: "GET", url: contentUrl(initiativeId, 1) });
+    const v2 = await app.inject({ method: "GET", url: contentUrl(initiativeId, 2) });
+    expect(RoadmapContentResponse.parse(v1.json()).content).toBe("# one\n");
+    expect(RoadmapContentResponse.parse(v2.json()).content).toBe("# two\n");
+    await app.close();
+  });
+
+  it("404s a version this initiative never recorded", async () => {
+    const { path, alpha } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: contentUrl(alpha, 99) });
+    expect(response.statusCode).toBe(404);
+    expect(ApiError.parse(response.json()).error.code).toBe("NOT_FOUND");
+    await app.close();
+  });
+
+  it("refuses as an integrity failure when the ledger names bytes the store lacks", async () => {
+    // The P8-8A fixture records roadmap versions directly on the stream, so
+    // their content was never published. That is exactly the ledger/store
+    // disagreement this branch exists for — and the answer is a classified
+    // refusal, never a 200 with an empty body.
+    const { path, alpha } = seed();
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: contentUrl(alpha, 1) });
+    expect(response.statusCode).toBe(500);
+    expect(ApiError.parse(response.json()).error.code).toBe("LEDGER_INTEGRITY");
+    await app.close();
+  });
+
+  it("404s an initiative that does not exist, and 400s a malformed selector", async () => {
+    const { path, alpha } = seed();
+    const app = buildServer({ ledgerPath: path });
+
+    expect((await app.inject({ method: "GET", url: contentUrl(randomUUID(), 1) })).statusCode).toBe(404);
+    for (const query of ["", "?version=0", "?version=-1", "?version=abc", "?digest=" + "a".repeat(64)]) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/v1/initiatives/" + alpha + "/roadmap/content" + query,
+      });
+      expect({ query, status: response.statusCode }).toEqual({ query, status: 400 });
+    }
+    await app.close();
+  });
+
+  it("cannot be used to read another initiative's document (the version selector's point)", async () => {
+    // Two initiatives, one version each. Asking the first for version 1 gives
+    // the first's bytes; there is no way to ask it for the second's, because a
+    // caller never names a digest — the fold resolves it inside the
+    // initiative in the path.
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const one = randomUUID();
+    const two = randomUUID();
+    ledger.appendInitiativeEvent(makeInitiativeEvent(one, "initiative.registered"));
+    ledger.appendInitiativeEvent(makeInitiativeEvent(two, "initiative.registered"));
+    ledger.close();
+
+    const app = buildServer({ ledgerPath: path });
+    await write(app, one, "# first initiative\n", null);
+    await write(app, two, "# second initiative\n", null);
+
+    expect((await app.inject({ method: "GET", url: contentUrl(one, 1) })).json()).toMatchObject({
+      content: "# first initiative\n",
+    });
+    expect((await app.inject({ method: "GET", url: contentUrl(two, 1) })).json()).toMatchObject({
+      content: "# second initiative\n",
+    });
+    await app.close();
+  });
+
+  it("the guards run on egress: a credential-shaped document does not leave", async () => {
+    // The write route scans on ingest, so reaching this state needs the store
+    // seeded behind it — which is precisely the case the egress guard exists
+    // for. The response schema refuses, and the endpoint answers a classified
+    // error rather than the document.
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
+
+    const secret = "sk-ant-api03-BBBBBBBBBBBBBBBBBBBB";
+    const planted = "# Roadmap\n\napiKey: " + secret + "\n";
+    const published = publishArtifact(join(dirname(path), "artifacts"), planted);
+    if (!published.ok) throw new Error("could not seed the store");
+
+    const versionId = randomUUID();
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent(initiativeId, "roadmap.v1", {
+        type: "ROADMAP_VERSION_RECORDED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: {
+          contractVersion: LEDGER_CONTRACT_VERSION,
+          roadmapVersionId: versionId,
+          initiativeId,
+          version: 1,
+          contentDigest: published.digest,
+          parentVersionId: null,
+          expectedHeadDigest: null,
+          kind: "EDIT",
+          restoresVersionId: null,
+          recordedBy: COORDINATOR,
+          recordedAt: AT,
+        },
+      }),
+    );
+    ledger.close();
+
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: contentUrl(initiativeId, 1) });
+
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    const serialized = JSON.stringify(response.json());
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("sk-");
+    await app.close();
+  });
+});
 
 describe("the initiative plane mutates nothing", () => {
   it("answers every non-GET on the read-only initiative paths with 405", async () => {

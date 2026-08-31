@@ -7,6 +7,8 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  RoadmapContentQuery,
+  RoadmapContentResponse,
   RoadmapVersionWriteRequest,
   RoadmapVersionWriteResponse,
   IntegrityResult,
@@ -30,8 +32,8 @@ import { randomUUID } from "node:crypto";
 import { countTasks, countWorkers, recentEventsForTask, recentEventsForWorker } from "../aggregates/index.js";
 import { ApiRouteError, classifyUnexpectedError, sendApiError } from "../errors/index.js";
 import type { LedgerSource } from "../ledger-source/index.js";
-import { initiativeDetail, portfolio, roadmapHistory } from "../initiatives/index.js";
-import { recordRoadmapVersion } from "../roadmap-write/index.js";
+import { initiativeDetail, portfolio, roadmapContent, roadmapHistory } from "../initiatives/index.js";
+import { artifactRootFor, recordRoadmapVersion } from "../roadmap-write/index.js";
 import {
   initiativeDetailDto,
   initiativeSummary,
@@ -342,6 +344,51 @@ export function registerRoutes(app: FastifyInstance, source: LedgerSource): void
       apiContractVersion: API_CONTRACT_VERSION,
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       initiative: initiativeDetailDto(model),
+    });
+  });
+
+  // The stored document itself. A read, through `registerGet` like every
+  // other read — the GET-only law is untouched, and the write surface stays at
+  // exactly one route.
+  registerGet(app, API_ROUTES.initiativeRoadmapContent, (request) => {
+    const query = parseQuery(RoadmapContentQuery, queryOf(request));
+    const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+    const { ledger } = requireOpen(source);
+
+    if (ledger.getInitiative(initiativeId) === null) {
+      throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+    }
+
+    const outcome = roadmapContent(
+      ledger,
+      initiativeId,
+      query.version,
+      artifactRootFor(ledger.path),
+    );
+
+    if (!outcome.ok) {
+      // Two absences, answered differently on purpose. A version that was
+      // never recorded is the caller's mistake — 404. A version whose bytes
+      // the store cannot produce is the ledger and the store disagreeing,
+      // which is an integrity failure and is never a quiet empty body.
+      if (outcome.reason === "UNKNOWN_VERSION") {
+        throw new ApiRouteError("NOT_FOUND", "no roadmap version with that number was found");
+      }
+      throw new ApiRouteError(
+        "LEDGER_INTEGRITY",
+        "the recorded roadmap content could not be read from the artifact store",
+        outcome.reason,
+      );
+    }
+
+    return RoadmapContentResponse.parse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId,
+      version: outcome.version.version,
+      contentDigest: outcome.version.contentDigest,
+      kind: outcome.version.kind,
+      content: outcome.content,
     });
   });
 

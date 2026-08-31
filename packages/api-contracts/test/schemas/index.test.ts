@@ -24,9 +24,13 @@ import {
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
   InitiativeSummary,
+  ROADMAP_CONTENT_MAX_BYTES,
+  RoadmapContentQuery,
+  RoadmapContentResponse,
   RoadmapVersionDto,
   RollupSummary,
   initiativePath,
+  initiativeRoadmapContentPath,
   initiativeRoadmapPath,
   INTEGRITY_PROBLEM_KINDS,
   IntegrityResult,
@@ -1320,5 +1324,98 @@ describe("the initiative data plane's shapes", () => {
     // A traversal segment is refused at the validator, not encoded into a
     // request to somewhere else.
     expect(() => initiativePath("../../etc/passwd")).toThrow();
+  });
+});
+
+describe("the roadmap content read", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const DIGEST = "a".repeat(64);
+
+  function body(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId: INITIATIVE,
+      version: 2,
+      contentDigest: DIGEST,
+      kind: "EDIT",
+      content: "# The P8 roadmap\n",
+      ...overrides,
+    };
+  }
+
+  it("reads the selector as a version number, not as whatever Number() would take", () => {
+    expect(RoadmapContentQuery.parse({ version: "3" }).version).toBe(3);
+    expect(RoadmapContentQuery.parse({ version: 3 }).version).toBe(3);
+    for (const version of ["0x2", "1e3", " 3", "3.0", "+3", "", "3 "]) {
+      expect(version + ":" + String(RoadmapContentQuery.safeParse({ version }).success)).toBe(
+        version + ":false",
+      );
+    }
+  });
+
+  it("requires a version and refuses the ones no fold can hold", () => {
+    // Versions are one-based, so 0 is not a lower bound to clamp to — it is a
+    // selector for a version that cannot exist. Absent is refused outright
+    // rather than defaulted to the head: a caller that meant the head can ask
+    // the metadata route which version that is and say so.
+    expect(RoadmapContentQuery.safeParse({}).success).toBe(false);
+    expect(RoadmapContentQuery.safeParse({ version: "0" }).success).toBe(false);
+    expect(RoadmapContentQuery.safeParse({ version: -1 }).success).toBe(false);
+    expect(RoadmapContentQuery.safeParse({ version: "1000001" }).success).toBe(false);
+  });
+
+  it("refuses a digest selector, which is the boundary and not an omission", () => {
+    // The strictness here is load-bearing. A digest selector would have let any
+    // caller fetch any object in the store by naming its digest, including one
+    // recorded against a different initiative; the version selector can only
+    // name something the initiative's own fold already knows.
+    expect(RoadmapContentQuery.safeParse({ digest: DIGEST }).success).toBe(false);
+    expect(RoadmapContentQuery.safeParse({ version: 1, digest: DIGEST }).success).toBe(false);
+  });
+
+  it("shapes the response around the content and the record that names it", () => {
+    expect(RoadmapContentResponse.safeParse(body()).success).toBe(true);
+    expect(RoadmapContentResponse.safeParse({ ...body(), extra: 1 }).success).toBe(false);
+    expect(RoadmapContentResponse.safeParse({ ...body(), contentDigest: "nope" }).success).toBe(
+      false,
+    );
+    expect(RoadmapContentResponse.safeParse({ ...body(), kind: "REWRITE" }).success).toBe(false);
+    expect(RoadmapContentResponse.safeParse({ ...body(), version: 0 }).success).toBe(false);
+  });
+
+  it("bounds the content by the same ceiling the store enforces", () => {
+    // Restated as a contract term rather than re-derived, so the route and the
+    // store cannot drift to two different megabytes.
+    const at = "x".repeat(ROADMAP_CONTENT_MAX_BYTES);
+    expect(RoadmapContentResponse.safeParse(body({ content: at })).success).toBe(true);
+    expect(RoadmapContentResponse.safeParse(body({ content: at + "x" })).success).toBe(false);
+    // An empty document is refused: the store never admitted one, so a response
+    // carrying one would be reporting a store the plane does not have.
+    expect(RoadmapContentResponse.safeParse(body({ content: "" })).success).toBe(false);
+  });
+
+  it("refuses to carry a credential shape out of the store", () => {
+    // The guards ran on ingest and they run again here. Not because the store
+    // is distrusted, but because this is the response that carries free text to
+    // a browser and a terminal, and a boundary that only trusts the layer below
+    // it is not a boundary.
+    const planted = "# Setup\n\nRun with sk-ant-api03-" + "B".repeat(80) + "\n";
+    expect(RoadmapContentResponse.safeParse(body({ content: planted })).success).toBe(false);
+  });
+
+  it("builds the content path under the versioned prefix, validating first", () => {
+    expect(initiativeRoadmapContentPath(INITIATIVE)).toBe(
+      API_ROUTES.initiatives + "/" + INITIATIVE + "/roadmap/content",
+    );
+    expect(() => initiativeRoadmapContentPath("../../etc/passwd")).toThrow();
+  });
+
+  it("is a read: the content route is not among the write routes", () => {
+    // Asserted against the one route that IS a write, so this discriminates
+    // rather than restating that most routes are reads.
+    expect(isWriteRoute("initiativeRoadmap")).toBe(true);
+    expect(isWriteRoute("initiativeRoadmapContent")).toBe(false);
+    expect(API_WRITE_ROUTES).not.toContain("initiativeRoadmapContent");
   });
 });

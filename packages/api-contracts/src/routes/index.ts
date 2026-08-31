@@ -38,6 +38,10 @@ export const API_ROUTES = Object.freeze({
   initiatives: "/api/v1/initiatives",
   initiativeById: "/api/v1/initiatives/:initiativeId",
   initiativeRoadmap: "/api/v1/initiatives/:initiativeId/roadmap",
+  // P8-8D-c2: the stored roadmap document itself. A read, under the same
+  // versioned prefix, selected by `?version=` rather than by digest — see the
+  // schema for why the version is the safer selector.
+  initiativeRoadmapContent: "/api/v1/initiatives/:initiativeId/roadmap/content",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -130,4 +134,9 @@ export function initiativePath(initiativeId: string): string {
 /** Build the roadmap-history path for a single initiative. */
 export function initiativeRoadmapPath(initiativeId: string): string {
   return initiativePath(initiativeId) + "/roadmap";
+}
+
+/** Build the content path for a single initiative's roadmap. */
+export function initiativeRoadmapContentPath(initiativeId: string): string {
+  return initiativeRoadmapPath(initiativeId) + "/content";
 }

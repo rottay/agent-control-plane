@@ -30,6 +30,7 @@ import {
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
   InitiativeRoadmapResponse,
+  RoadmapContentResponse,
 } from "../../src/schemas/index.js";
 
 describe("the contract covers every frozen route", () => {
@@ -97,6 +98,7 @@ describe("the binding table matches the schemas it claims to bind", () => {
     initiatives: InitiativePortfolioResponse,
     initiativeById: InitiativeDetailResponse,
     initiativeRoadmap: InitiativeRoadmapResponse,
+    initiativeRoadmapContent: RoadmapContentResponse,
   };
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {
