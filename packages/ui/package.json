@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@acp/api-contracts": "workspace:*",
+    "@radix-ui/react-navigation-menu": "catalog:",
+    "@tanstack/react-query": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:"
   },

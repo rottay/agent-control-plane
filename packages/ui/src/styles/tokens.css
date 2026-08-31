@@ -70,7 +70,14 @@
 
   --border-width: 1px;
 
+  /*
+   * Elevation. Two steps and no more: `sm` for a resting surface that needs a
+   * hairline of separation, `md` for chrome that sits above content which
+   * scrolls under it. A third step would be a decision about depth that no
+   * surface in this UI has needed to make.
+   */
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-md: 0 1px 3px rgb(0 0 0 / 0.08), 0 4px 12px rgb(0 0 0 / 0.05);
 
   --motion-fast: 120ms;
   --motion-normal: 200ms;
@@ -105,7 +112,9 @@
     --color-neutral-fg: #cac9c3;
     --color-neutral-bg: #2b2d30;
 
+    /* Deeper in dark, where a light-mode shadow reads as nothing at all. */
     --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-md: 0 1px 3px rgb(0 0 0 / 0.5), 0 4px 12px rgb(0 0 0 / 0.35);
   }
 }
 

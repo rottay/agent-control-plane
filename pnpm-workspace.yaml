@@ -23,6 +23,12 @@ packages:
 # postinstall is a network beacon. The 1.7.7 server is acquired as an external
 # pinned binary under the ignored .acp-local/tools/ by an explicit operator
 # command with platform and SHA-256 verification, never by an install hook.
+#
+# P8-8B adds the UI foundation's two runtime dependencies — @tanstack/react-query
+# and @radix-ui/react-navigation-menu — and adds NOTHING here. Verified rather
+# than assumed, the same way P1B and P2A were: every package the two pull into
+# the graph was read out of the lockfile and none declares a preinstall,
+# install or postinstall script, so the allow-list stays exactly one name long.
 onlyBuiltDependencies:
   - better-sqlite3
 
@@ -39,3 +45,7 @@ catalog:
   vite: 8.2.2
   "@vitejs/plugin-react": 6.1.0
   "@restatedev/restate-sdk": 1.16.9
+  # P8-8B: the UI foundation. Pinned exactly, like every entry above — a range
+  # here would let a rendering or cache-semantics change arrive unreviewed.
+  "@tanstack/react-query": 5.102.8
+  "@radix-ui/react-navigation-menu": 1.2.22

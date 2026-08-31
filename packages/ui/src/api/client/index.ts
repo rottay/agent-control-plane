@@ -221,3 +221,31 @@ export function fetchEvents(
   const path = buildPath(API_ROUTES.events, { ...filters });
   return fetchAndParse(path, EventPageResponse, signal);
 }
+
+// ---------------------------------------------------------------------------
+// Query keys (P8-8B)
+// ---------------------------------------------------------------------------
+
+/**
+ * The cache vocabulary TanStack Query indexes this client by.
+ *
+ * Declared here, beside the fetchers, rather than at the call sites: a key
+ * assembled inline is a key another call site can spell differently, and two
+ * spellings of the same request are two caches that disagree while both look
+ * correct. Every key starts with `"acp"` so this UI's entries are
+ * distinguishable in a devtools panel from anything else a host page caches.
+ *
+ * The filters are part of the key because they are part of the request. A key
+ * that ignored them would serve the first page's rows for the second page's
+ * question and never look wrong doing it.
+ */
+export const queryKeys = {
+  overview: () => ["acp", "overview"] as const,
+  status: () => ["acp", "status"] as const,
+  integrity: () => ["acp", "integrity"] as const,
+  tasks: (filters: TasksFilters) => ["acp", "tasks", filters] as const,
+  taskDetail: (taskId: string) => ["acp", "task", taskId] as const,
+  workers: (filters: WorkersFilters) => ["acp", "workers", filters] as const,
+  workerDetail: (identity: string) => ["acp", "worker", identity] as const,
+  events: (filters: EventsFilters) => ["acp", "events", filters] as const,
+};

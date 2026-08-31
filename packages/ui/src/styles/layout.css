@@ -15,6 +15,13 @@
   padding: var(--space-4) var(--space-5);
   border-bottom: var(--border-width) solid var(--color-border);
   background: var(--color-surface);
+  /*
+   * The shell's chrome sits above content that scrolls under it, so it takes
+   * the elevation token rather than a border alone. Before P8-8B the elevation
+   * dimension was declared and consumed by nothing — a token no surface used
+   * is a token that drifts out of the language unnoticed.
+   */
+  box-shadow: var(--shadow-md);
 }
 
 .app-shell__brand .app-shell__title {

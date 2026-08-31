@@ -1251,17 +1251,22 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * the ledger's portfolio enumerator, and the server's first edge to the
  * observation package's rollup folds.
  *
- * P8 is therefore **90 packet entries across 72 distinct paths**: 2 (P8-D) +
+ * P8-8B adopts the UI foundation: two runtime dependencies with use sites in
+ * the packet, the design tokens' elevation dimension completed and consumed,
+ * and the shell rebuilt on the adopted primitive.
+ *
+ * P8 is therefore **100 packet entries across 80 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
- * 6 (P8-7) + 19 (P8-8A) = 90 entries, with 18 duplicate entries.
- * `scripts/check-architecture.mjs` is named by all ten packets (9
+ * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) = 100 entries, with 20 duplicate entries.
+ * `scripts/check-architecture.mjs` is named by all eleven packets (10
  * duplicates); the port, the barrel, the port's fixture and the test doubles
  * are each named by P8-2, P8-3 and P8-4 (2 duplicates each, 8 total); and
- * `pnpm-lock.yaml` is named by both packets that moved a dependency edge,
- * P8-W and P8-8A (1 duplicate). P8-5, P8-6 and P8-7 share no path with any
- * earlier P8 packet but the fence itself. So 90 - 18 = 72 distinct paths.
- * This file's appearances in earlier phases are counted in those phases,
- * since the standing convention scopes the arithmetic to the phase.
+ * `pnpm-lock.yaml` is named by the three packets that moved a dependency
+ * edge, P8-W, P8-8A and P8-8B (2 duplicates). P8-5, P8-6 and P8-7 share no
+ * path with any earlier P8 packet but the fence itself. So 100 - 20 = 80
+ * distinct paths. This file's appearances in earlier phases are counted in
+ * those phases, since the standing convention scopes the arithmetic to the
+ * phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
@@ -1496,6 +1501,39 @@ const P88A_WRITE_SET = [
   "packages/ledger/test/ledger/index.test.ts",
   "packages/cli/test/cli/index.test.ts",
   "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+];
+
+/**
+ * P8-8B: the UI foundation.
+ *
+ * Deferred adoption, and the write-set shows it: two runtime dependencies with
+ * use sites in this packet, the catalog pins and the law-comment record that
+ * the added graph declares no install script, the tokens' elevation dimension
+ * completed and actually consumed, and the shell rebuilt on the one adopted
+ * primitive. `onlyBuiltDependencies` stays exactly `better-sqlite3`.
+ *
+ * The two style files that moved are named here because the brief asked which
+ * of the five did: `tokens.css` (the elevation scale) and `layout.css` (the
+ * header that consumes it). `base.css`, `components.css` and `index.css` stood.
+ *
+ * `test/components/app-shell/index.test.tsx` was declared in the brief and is
+ * deliberately **absent** here: the rebuild preserved the shell's landmarks and
+ * its `aria-current` contract exactly, so the landed test passes unmodified.
+ * Declaring a path the packet does not touch would make this array a wish
+ * rather than a record — and the test standing untouched is the packet's own
+ * evidence that the landed views keep working identically.
+ */
+const P88B_WRITE_SET = [
+  "packages/ui/package.json",
+  "pnpm-workspace.yaml",
+  "pnpm-lock.yaml",
+  "packages/ui/src/styles/tokens.css",
+  "packages/ui/src/styles/layout.css",
+  "packages/ui/src/app/index.tsx",
+  "packages/ui/src/components/app-shell/index.tsx",
+  "packages/ui/src/api/client/index.ts",
+  "packages/ui/test/app/index.test.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1766,6 +1804,7 @@ const WRITE_SET = [
   ...P86_WRITE_SET,
   ...P87_WRITE_SET,
   ...P88A_WRITE_SET,
+  ...P88B_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
   ...P5N_C2_WRITE_SET,
@@ -2809,7 +2848,19 @@ const P1B_DEPENDENCY_LAW = [
   },
   {
     manifest: "packages/ui/package.json",
-    dependencies: ["@acp/api-contracts", "react", "react-dom"],
+    // P8-8B adds exactly two runtime dependencies, each with a use site in
+    // this packet: `@tanstack/react-query` (the cache the app root owns) and
+    // `@radix-ui/react-navigation-menu` (the shell's primary navigation).
+    // Deferred adoption, not all-at-once: TanStack Table, TanStack Virtual,
+    // @xyflow/react, Recharts and dnd-kit each have a named cohort and none is
+    // in this graph.
+    dependencies: [
+      "@acp/api-contracts",
+      "@radix-ui/react-navigation-menu",
+      "@tanstack/react-query",
+      "react",
+      "react-dom",
+    ],
     devDependencies: [
       "@types/react",
       "@types/react-dom",
