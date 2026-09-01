@@ -93,8 +93,8 @@ pnpm --filter @acp/cli build
 pnpm --filter @acp/server build
 ```
 
-- `@acp/cli` produces `acp` (`packages/cli/dist/index.js`).
-- `@acp/server` produces `acp-server` (`packages/server/dist/bin/index.js`).
+- `@acp/cli` produces `acp` (`packages/entrypoints/cli/dist/index.js`).
+- `@acp/server` produces `acp-server` (`packages/entrypoints/server/dist/bin/index.js`).
 
 ## Reading a ledger with `acp`
 
@@ -111,7 +111,7 @@ inventing one — worth seeing once, because it is the shape of every refusal
 this CLI makes:
 
 ```sh
-node packages/cli/dist/index.js status --database /tmp/acp-ops/ledger/acp.sqlite3
+node packages/entrypoints/cli/dist/index.js status --database /tmp/acp-ops/ledger/acp.sqlite3
 echo "exit: $?"
 ```
 
@@ -126,12 +126,12 @@ To get a real reading, create the ledger first (this is the same snippet
 ```sh
 mkdir -p /tmp/acp-ops/ledger
 node -e '
-const { openLedger } = require("./packages/ledger/dist/index.js");
+const { openLedger } = require("./packages/persistence/ledger/dist/index.js");
 const ledger = openLedger("/tmp/acp-ops/ledger/acp.sqlite3");
 ledger.close();
 console.log("ledger created and closed cleanly");
 '
-node packages/cli/dist/index.js status --database /tmp/acp-ops/ledger/acp.sqlite3
+node packages/entrypoints/cli/dist/index.js status --database /tmp/acp-ops/ledger/acp.sqlite3
 ```
 
 Now it prints the head, the event count, the applied migrations and the
@@ -153,7 +153,7 @@ The verbs are exactly these eight — no more:
 ## Starting the server
 
 ```sh
-node packages/server/dist/bin/index.js --ledger /tmp/acp-ops/ledger/acp.sqlite3
+node packages/entrypoints/server/dist/bin/index.js --ledger /tmp/acp-ops/ledger/acp.sqlite3
 ```
 
 The flags are:
@@ -195,7 +195,7 @@ Run this verbatim to see the whole fail-closed path with no secret involved:
 
 ```sh
 mkdir -p /tmp/acp-ops/ledger
-node packages/server/dist/bin/index.js --ledger /tmp/acp-ops/ledger/acp.sqlite3 --port 70000
+node packages/entrypoints/server/dist/bin/index.js --ledger /tmp/acp-ops/ledger/acp.sqlite3 --port 70000
 echo "exit: $?"
 ```
 

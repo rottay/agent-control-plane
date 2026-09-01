@@ -1,5 +1,5 @@
 packages:
-  - "packages/*"
+  - "packages/*/*"
 
 # P0 law: no package may execute install-time scripts. The allow-list stays
 # empty unless the owner authorises a named exception.

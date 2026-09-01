@@ -178,7 +178,7 @@ You can read history without touching the working tree at all:
 
 ```sh
 git show 66b1153fb7e5c8eeac45d5aa4f1b232fe28c5c10:docs/ROADMAP.md | head -40
-git diff 66b1153fb7e5c8eeac45d5aa4f1b232fe28c5c10 -- packages/server/src
+git diff 66b1153fb7e5c8eeac45d5aa4f1b232fe28c5c10 -- packages/entrypoints/server/src
 ```
 
 This answers "what did it look like then" without a checkout, which is almost

@@ -36,10 +36,29 @@ import {
   inAnyArea,
   inArea,
   inPackage,
+  packageLocation,
   packageOf,
   packagePrefix,
   packagesIn,
+  stratumOf,
+  topSegmentOf,
 } from "./roots.mjs";
+
+/**
+ * The strata table the resolver is handed, matching the fence's own.
+ *
+ * It is written out here rather than imported because the resolver's contract
+ * is "answer against the table you are given": a probe that shared the fence's
+ * object could not tell a resolver that reads the table from one that ignores
+ * it and happens to agree.
+ */
+const STRATA = {
+  kernel: ["contracts", "api-contracts"],
+  persistence: ["ledger"],
+  domains: ["runtime", "accounts", "observation"],
+  edges: ["adapters", "durability"],
+  entrypoints: ["daemon", "server", "cli", "ui"],
+};
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FENCE = resolve(HERE, "..", "check-architecture.mjs");
@@ -91,44 +110,107 @@ function runFenceAgainst(root) {
 
 describe("the resolver answers package-path questions (L1)", () => {
   it("gives a prefix that cannot match a differently-named sibling", () => {
-    expect(packagePrefix("ui")).toBe("packages/ui/");
-    expect(inPackage("packages/ui/src/app.ts", "ui")).toBe(true);
+    expect(packagePrefix("ui", STRATA)).toBe("packages/entrypoints/ui/");
+    expect(inPackage("packages/entrypoints/ui/src/app.ts", "ui", STRATA)).toBe(true);
     // The trailing separator is the whole point: without it this is a match.
-    expect(inPackage("packages/ui-extras/src/app.ts", "ui")).toBe(false);
+    expect(inPackage("packages/entrypoints/ui-extras/src/app.ts", "ui", STRATA)).toBe(false);
   });
 
   it("scopes to an area, including a nested one", () => {
-    expect(inArea("packages/ui/src/a.ts", "ui", "src")).toBe(true);
-    expect(inArea("packages/ui/test/a.ts", "ui", "src")).toBe(false);
-    expect(inArea("packages/daemon/src/launchd/a.ts", "daemon", "src/launchd")).toBe(true);
-    expect(inArea("packages/daemon/src/bin/a.ts", "daemon", "src/launchd")).toBe(false);
+    expect(inArea("packages/entrypoints/ui/src/a.ts", "ui", "src", STRATA)).toBe(true);
+    expect(inArea("packages/entrypoints/ui/test/a.ts", "ui", "src", STRATA)).toBe(false);
+    expect(
+      inArea("packages/entrypoints/daemon/src/launchd/a.ts", "daemon", "src/launchd", STRATA),
+    ).toBe(true);
+    expect(
+      inArea("packages/entrypoints/daemon/src/bin/a.ts", "daemon", "src/launchd", STRATA),
+    ).toBe(false);
   });
 
   it("scopes to several areas at once", () => {
-    expect(inAnyArea("packages/server/test/a.ts", "server", ["src", "test"])).toBe(true);
-    expect(inAnyArea("packages/server/docs/a.md", "server", ["src", "test"])).toBe(false);
+    expect(
+      inAnyArea("packages/entrypoints/server/test/a.ts", "server", ["src", "test"], STRATA),
+    ).toBe(true);
+    expect(
+      inAnyArea("packages/entrypoints/server/docs/a.md", "server", ["src", "test"], STRATA),
+    ).toBe(false);
   });
 
   it("names the package a path belongs to, and refuses to guess", () => {
-    expect(packageOf("packages/runtime/src/a.ts")).toBe("runtime");
-    expect(packageOf("scripts/check-architecture.mjs")).toBeNull();
-    expect(packageOf("packages/runtime")).toBeNull();
-    expect(packageOf(PACKAGES_DIR + "/")).toBeNull();
+    expect(packageOf("packages/domains/runtime/src/a.ts", STRATA)).toBe("runtime");
+    expect(packageOf("scripts/check-architecture.mjs", STRATA)).toBeNull();
+    expect(packageOf("packages/domains/runtime", STRATA)).toBeNull();
+    expect(packageOf(PACKAGES_DIR + "/", STRATA)).toBeNull();
   });
 
-  it("rehearses on a synthetic two-level layout before G1' trusts it (L9)", () => {
-    // The shape G1' will produce: packages grouped one level deeper. The
-    // resolver is asked the same questions it will be asked then.
+  it("reads the table it is handed rather than one of its own", () => {
+    // The purity claim, made falsifiable: the same path resolves differently
+    // under a different table, and a resolver holding its own inventory could
+    // not produce the second answer.
+    const moved = { kernel: ["contracts"], entrypoints: ["runtime"] };
+    expect(packagePrefix("runtime", STRATA)).toBe("packages/domains/runtime/");
+    expect(packagePrefix("runtime", moved)).toBe("packages/entrypoints/runtime/");
+    expect(stratumOf("runtime", STRATA)).toBe("domains");
+    expect(stratumOf("nothing-owns-this", STRATA)).toBeNull();
+    expect(() => packagePrefix("nothing-owns-this", STRATA)).toThrow(/no stratum classifies/);
+  });
+
+  it("resolves a package two levels down, stratum and name together (G1')", () => {
+    // The shape G1' produced. This was a rehearsal over a synthetic listing
+    // while the packages still sat one level up; it is now the real layout, and
+    // the resolver is asked the questions the fence actually asks it.
     const listing = [
       "packages/kernel/contracts/src/index.ts",
       "packages/kernel/contracts/test/index.test.ts",
-      "packages/edges/durability/src/index.ts",
+      "packages/edges/adapters/src/index.ts",
       "docs/ROADMAP.md",
     ];
-    expect(packagesIn(listing)).toEqual(["edges", "kernel"]);
-    expect(inArea("packages/kernel/contracts/src/index.ts", "kernel", "contracts/src")).toBe(true);
-    expect(inPackage("packages/edges/durability/src/index.ts", "edges")).toBe(true);
-    expect(inPackage("packages/edges/durability/src/index.ts", "kernel")).toBe(false);
+    expect(packagesIn(listing, STRATA)).toEqual(["adapters", "contracts"]);
+    expect(packageLocation("packages/kernel/contracts/src/index.ts", STRATA)).toEqual({
+      stratum: "kernel",
+      name: "contracts",
+    });
+    expect(inArea("packages/kernel/contracts/src/index.ts", "contracts", "src", STRATA)).toBe(true);
+    expect(inPackage("packages/edges/adapters/src/index.ts", "adapters", STRATA)).toBe(true);
+    expect(inPackage("packages/edges/adapters/src/index.ts", "contracts", STRATA)).toBe(false);
+    // `durability` is classified and does not exist yet. Naming a destination
+    // is not the same as having files there, and the resolver says so.
+    expect(packagePrefix("durability", STRATA)).toBe("packages/edges/durability/");
+    expect(packagesIn(listing, STRATA)).not.toContain("durability");
+  });
+
+  it("refuses a file left under an old single-level prefix (G1')", () => {
+    // The failure the move-map's absence law is written against: a file at the
+    // pre-G1' location. It must not resolve — if it did, a half-completed
+    // relocation would keep passing every path-scoped law that reads it.
+    for (const stale of [
+      "packages/contracts/src/index.ts",
+      "packages/ui/src/app/index.tsx",
+      "packages/daemon/test/fallback/index.test.ts",
+    ]) {
+      expect(packageLocation(stale, STRATA)).toBeNull();
+      expect(packageOf(stale, STRATA)).toBeNull();
+    }
+    // It is unresolvable, but it is still describable — which is what lets the
+    // fence fail on it by name instead of skipping it in silence.
+    expect(topSegmentOf("packages/contracts/src/index.ts")).toBe("contracts");
+    expect(packagesIn(["packages/contracts/src/index.ts"], STRATA)).toEqual([]);
+  });
+
+  it("refuses a package directory that never got its stratum (G1')", () => {
+    // "At most two levels" has a floor as well as a ceiling. A package sitting
+    // directly under `packages/`, and a stratum directory with loose files in
+    // it, are both refused: neither is `packages/<stratum>/<name>/`.
+    expect(packageLocation("packages/durability/src/index.ts", STRATA)).toBeNull();
+    expect(packageLocation("packages/kernel/README.md", STRATA)).toBeNull();
+    expect(packageLocation("packages/kernel", STRATA)).toBeNull();
+    // A stratum that exists but does not own the name is refused too, so a
+    // package cannot be filed under the wrong one and still resolve.
+    expect(packageLocation("packages/kernel/ledger/src/index.ts", STRATA)).toBeNull();
+    expect(packageLocation("packages/persistence/ledger/src/index.ts", STRATA)).toEqual({
+      stratum: "persistence",
+      name: "ledger",
+    });
   });
 });
 
@@ -150,12 +232,20 @@ describe("the injectable root defaults to the real one (L7, L10)", () => {
   });
 });
 
-describe("the classification law covers every package (L8)", () => {
+describe("the classification law covers every package (L8, G1')", () => {
   it("refuses a package that exists but no stratum classifies", () => {
     // The synthetic tree carries a package the strata table does not name, so
     // the completeness half of the law has to speak. This is the failure a
     // hand-maintained second list would eventually produce for real: a package
     // lands, and nothing says which stratum owns it.
+    //
+    // G1' merged the two halves of that guarantee rather than weakening it.
+    // Before the move a package could sit at a valid location and still be
+    // unclassified; now a valid location *is* a classified one, so it is the
+    // two-level shape law that refuses this tree, by name and with a message
+    // that says which part is missing. The property under test is unchanged —
+    // a package the table does not name cannot exist — and this asserts it
+    // through the law that now enforces it.
     const root = syntheticTree();
     write(root, "packages/unclassified/package.json", '{"name":"@acp/unclassified","private":true,"license":"UNLICENSED"}\n');
     commitAll(root);
@@ -245,6 +335,6 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const { output } = runFenceAgainst(root);
     // Whatever it reported, it reported about the synthetic tree: the real
     // repository's own paths cannot appear in a run rooted somewhere else.
-    expect(output).not.toContain(join(REAL_REPO, "packages", "runtime"));
+    expect(output).not.toContain(join(REAL_REPO, "packages", "domains", "runtime"));
   });
 });

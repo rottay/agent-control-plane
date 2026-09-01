@@ -97,13 +97,13 @@ import { defineConfig } from 'vitest/config';
  */
 
 const contractsSource = fileURLToPath(
-  new URL('./packages/contracts/src/index.ts', import.meta.url),
+  new URL('./packages/kernel/contracts/src/index.ts', import.meta.url),
 );
 const ledgerSource = fileURLToPath(
-  new URL('./packages/ledger/src/index.ts', import.meta.url),
+  new URL('./packages/persistence/ledger/src/index.ts', import.meta.url),
 );
 const apiContractsSource = fileURLToPath(
-  new URL('./packages/api-contracts/src/index.ts', import.meta.url),
+  new URL('./packages/kernel/api-contracts/src/index.ts', import.meta.url),
 );
 
 /** The contract packages, resolved to source for every downstream project. */
@@ -114,7 +114,7 @@ const workspaceSourceAliases = [
 ];
 
 const runtimeSource = fileURLToPath(
-  new URL('./packages/runtime/src/index.ts', import.meta.url),
+  new URL('./packages/domains/runtime/src/index.ts', import.meta.url),
 );
 
 /** The daemon additionally resolves the runtime to source, for the same reason. */
@@ -134,13 +134,13 @@ const daemonSourceAliases = [
  * byte-untouched.
  *
  * The architecture fence asserts these two targets and that the specifiers are
- * imported only by `packages/server/test/parity/index.test.ts`.
+ * imported only by `packages/entrypoints/server/test/parity/index.test.ts`.
  */
 const cliRowModelSource = fileURLToPath(
-  new URL('./packages/cli/src/observation/index.ts', import.meta.url),
+  new URL('./packages/entrypoints/cli/src/observation/index.ts', import.meta.url),
 );
 const uiRowModelSource = fileURLToPath(
-  new URL('./packages/ui/src/api/client/index.ts', import.meta.url),
+  new URL('./packages/entrypoints/ui/src/api/client/index.ts', import.meta.url),
 );
 const parityAliases = [
   ...workspaceSourceAliases,
@@ -178,7 +178,7 @@ export default defineConfig({
           // cohort has landed — a project that stopped looking at `src/` would
           // silently run nothing in a package whose turn had not come yet.
           name: 'contracts',
-          root: './packages/contracts',
+          root: './packages/kernel/contracts',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -192,7 +192,7 @@ export default defineConfig({
           // the mirrored `test/` tree. The `src/**` glob stays until every
           // cohort has landed.
           name: 'ledger',
-          root: './packages/ledger',
+          root: './packages/persistence/ledger',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -212,7 +212,7 @@ export default defineConfig({
           // live in the mirrored `test/` tree. The `src/**` glob stays until
           // every cohort has landed.
           name: 'api-contracts',
-          root: './packages/api-contracts',
+          root: './packages/kernel/api-contracts',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -237,7 +237,7 @@ export default defineConfig({
           // and a single fork bound that sharing to one file at a time; the
           // cross-project group is unaffected.
           name: 'observation',
-          root: './packages/observation',
+          root: './packages/domains/observation',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -257,7 +257,7 @@ export default defineConfig({
           // PIDs it created, rather than one global sweep that could not tell
           // another file's live child from a leak.
           name: 'adapters',
-          root: './packages/adapters',
+          root: './packages/edges/adapters',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -280,7 +280,7 @@ export default defineConfig({
           // from the observation project, which shares fixed roots and must run
           // one file at a time.
           name: 'accounts',
-          root: './packages/accounts',
+          root: './packages/domains/accounts',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -292,7 +292,7 @@ export default defineConfig({
       {
         test: {
           name: 'server',
-          root: './packages/server',
+          root: './packages/entrypoints/server',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -307,7 +307,7 @@ export default defineConfig({
       {
         test: {
           name: 'cli',
-          root: './packages/cli',
+          root: './packages/entrypoints/cli',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -322,7 +322,7 @@ export default defineConfig({
       {
         test: {
           name: 'ui',
-          root: './packages/ui',
+          root: './packages/entrypoints/ui',
           include: [
             'src/**/*.test.ts',
             'src/**/*.test.tsx',
@@ -339,7 +339,7 @@ export default defineConfig({
       {
         test: {
           name: 'runtime',
-          root: './packages/runtime',
+          root: './packages/domains/runtime',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -359,7 +359,7 @@ export default defineConfig({
       {
         test: {
           name: 'daemon',
-          root: './packages/daemon',
+          root: './packages/entrypoints/daemon',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,

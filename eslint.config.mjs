@@ -31,6 +31,7 @@ export default tseslint.config(
       '**/coverage/**',
       '**/*.tsbuildinfo',
       'pnpm-lock.yaml',
+      '.acp-local/**',
     ],
   },
 
@@ -75,7 +76,7 @@ export default tseslint.config(
   // still applies to these files, including no-console.
   {
     name: 'acp/ui-browser',
-    files: ['packages/ui/src/**/*.ts', 'packages/ui/src/**/*.tsx'],
+    files: ['packages/entrypoints/ui/src/**/*.ts', 'packages/entrypoints/ui/src/**/*.tsx'],
     languageOptions: {
       globals: {
         ...globals.browser,

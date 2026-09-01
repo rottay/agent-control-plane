@@ -45,7 +45,7 @@ Nothing here touches `~/.rottay-agent-control-plane/accounts.local.json`.
 ```sh
 mkdir -p /tmp/acp-ops/ledger /tmp/acp-ops/backup
 node -e '
-const { openLedger } = require("./packages/ledger/dist/index.js");
+const { openLedger } = require("./packages/persistence/ledger/dist/index.js");
 const ledger = openLedger("/tmp/acp-ops/ledger/acp.sqlite3");
 ledger.close();
 console.log("ledger created and closed cleanly");
@@ -92,7 +92,7 @@ If your backup includes sidecars, copy those too, into the same directory.
 
 ```sh
 pnpm --filter @acp/cli build
-node packages/cli/dist/index.js integrity --database /tmp/acp-ops/restored/acp.sqlite3
+node packages/entrypoints/cli/dist/index.js integrity --database /tmp/acp-ops/restored/acp.sqlite3
 ```
 
 `integrity` is the operator-reachable wrapper over the ledger's own
@@ -103,7 +103,7 @@ whose recorded history is intact.
 ### Proof step 2 — a surface starts cleanly against it
 
 ```sh
-node packages/server/dist/bin/index.js --ledger /tmp/acp-ops/restored/acp.sqlite3
+node packages/entrypoints/server/dist/bin/index.js --ledger /tmp/acp-ops/restored/acp.sqlite3
 ```
 
 A clean start against the restored ledger is the second half of the proof: the

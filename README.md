@@ -159,7 +159,7 @@ CI runs the identical `pnpm check` against a frozen lockfile.
 
 ## What P0 froze
 
-`packages/contracts` holds the runtime contracts every later phase must agree
+`packages/kernel/contracts` holds the runtime contracts every later phase must agree
 on. They are strict, versioned and provider-neutral:
 
 | Contract | Purpose |
@@ -179,9 +179,9 @@ never by replaying a provider transcript.
 
 ## What P1A adds
 
-`packages/ledger` implements the authority decided in ADR 0001: an append-only
+`packages/persistence/ledger` implements the authority decided in ADR 0001: an append-only
 `ControlPlaneEvent` log in SQLite WAL, with derived, rebuildable read models.
-See `packages/ledger/README.md` for the API and
+See `packages/persistence/ledger/README.md` for the API and
 `docs/architecture/0002-sqlite-event-ledger.md` for the decision.
 
 | Guarantee | How it is enforced |
@@ -219,10 +219,10 @@ followed literally; each page says where a real operator substitutes their own.
 scripts/check-architecture.mjs     authority and write-set fence
 docs/ROADMAP.md                    canonical authority (byte-exact copy)
 docs/architecture/                 architecture decision records
-packages/contracts/                frozen runtime contracts
-packages/ledger/                   append-only event ledger and read models
-packages/runtime/                  durability plane: one lifecycle, two drivers
-packages/daemon/                   supervised process and inert launchd template
+packages/kernel/contracts/         frozen runtime contracts
+packages/persistence/ledger/       append-only event ledger and read models
+packages/domains/runtime/          durability plane: one lifecycle, two drivers
+packages/entrypoints/daemon/       supervised process and inert launchd template
 ```
 
 ## Secrets

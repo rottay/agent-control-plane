@@ -40,7 +40,7 @@ Which file the plane reads is decided by the start invocation, not by a
 convention or an environment variable:
 
 ```sh
-node packages/server/dist/bin/index.js \
+node packages/entrypoints/server/dist/bin/index.js \
   --ledger /tmp/acp-ops/ledger/acp.sqlite3 \
   --accounts-file /tmp/acp-ops/accounts/accounts.local.json
 ```
@@ -95,7 +95,7 @@ tokens in notes; the guard is there because someone eventually would.
 ## Reading the effective state back
 
 ```sh
-node packages/cli/dist/index.js status --database /tmp/acp-ops/ledger/acp.sqlite3
+node packages/entrypoints/cli/dist/index.js status --database /tmp/acp-ops/ledger/acp.sqlite3
 ```
 
 In the UI, an account whose state comes from a recorded action is marked

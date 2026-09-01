@@ -45,7 +45,16 @@ import { accessSync, constants, readdirSync, readFileSync, statSync } from "node
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { fenceRoot, inAnyArea, inArea, inPackage, packageOf, packagePrefix } from "./architecture/roots.mjs";
+import {
+  fenceRoot,
+  inAnyArea,
+  inArea,
+  inPackage,
+  packageLocation,
+  packageOf,
+  packagePrefix,
+  topSegmentOf,
+} from "./architecture/roots.mjs";
 
 /**
  * The tree this run inspects (P8-T G0, L7).
@@ -59,6 +68,28 @@ import { fenceRoot, inAnyArea, inArea, inPackage, packageOf, packagePrefix } fro
  */
 const DEFAULT_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = fenceRoot(process.env, DEFAULT_REPO_ROOT);
+
+/**
+ * The five strata, and which packages each one owns (P8-T G0 L8; G1').
+ *
+ * This is the repository's topology table, and after G1' it is also the thing
+ * that makes a package path readable: a package lives at
+ * `packages/<stratum>/<name>/`, so every question the resolver answers is asked
+ * against this table. It is declared here, before the first law, because the
+ * first law already needs it.
+ *
+ * `durability` is named and does not yet exist. That is deliberate: G5 creates
+ * it under `edges/`, and naming the destination now means the package cannot
+ * land anywhere else without the classification law noticing. A stratum member
+ * with no files is not a violation; an unclassified package is.
+ */
+const PACKAGE_STRATA = Object.freeze({
+  kernel: ["contracts", "api-contracts"],
+  persistence: ["ledger"],
+  domains: ["runtime", "accounts", "observation"],
+  edges: ["adapters", "durability"],
+  entrypoints: ["daemon", "server", "cli", "ui"],
+});
 
 /**
  * Phase write-sets.
@@ -88,28 +119,28 @@ const P0_WRITE_SET = [
   "scripts/check-architecture.mjs",
   "docs/ROADMAP.md",
   "docs/architecture/0001-control-plane-authority.md",
-  "packages/contracts/package.json",
-  "packages/contracts/tsconfig.json",
-  "packages/contracts/src/index.ts",
-  "packages/contracts/src/schemas/index.ts",
-  "packages/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/package.json",
+  "packages/kernel/contracts/tsconfig.json",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
 ];
 
 /** The exact P1A additions. No twenty-fourth ledger path is authorized. */
 const P1A_WRITE_SET = [
   "docs/architecture/0002-sqlite-event-ledger.md",
-  "packages/ledger/package.json",
-  "packages/ledger/tsconfig.json",
-  "packages/ledger/README.md",
-  "packages/ledger/src/index.ts",
-  "packages/ledger/src/types/index.ts",
-  "packages/ledger/src/errors/index.ts",
-  "packages/ledger/src/canonical-json/index.ts",
-  "packages/ledger/src/migrations/index.ts",
-  "packages/ledger/src/projection/index.ts",
-  "packages/ledger/src/ledger/index.ts",
-  "packages/ledger/test/concurrent-writer-worker/index.ts",
-  "packages/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/package.json",
+  "packages/persistence/ledger/tsconfig.json",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/errors/index.ts",
+  "packages/persistence/ledger/src/canonical-json/index.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/test/concurrent-writer-worker/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
 ];
 
 /**
@@ -123,27 +154,27 @@ const P1A_WRITE_SET = [
 const P1B_SHARED_WRITE_SET = [
   "vitest.config.ts",
   "docs/architecture/0003-read-only-observation-plane.md",
-  "packages/api-contracts/package.json",
-  "packages/api-contracts/tsconfig.json",
-  "packages/api-contracts/README.md",
-  "packages/api-contracts/src/index.ts",
-  "packages/api-contracts/src/version/index.ts",
-  "packages/api-contracts/src/routes/index.ts",
-  "packages/api-contracts/src/schemas/index.ts",
-  "packages/api-contracts/test/schemas/index.test.ts",
-  "packages/cli/package.json",
-  "packages/cli/tsconfig.json",
-  "packages/cli/src/index.ts",
-  "packages/server/package.json",
-  "packages/server/tsconfig.json",
-  "packages/server/src/index.ts",
-  "packages/ui/package.json",
-  "packages/ui/tsconfig.json",
-  "packages/ui/tsconfig.node.json",
-  "packages/ui/vite.config.ts",
-  "packages/ui/index.html",
-  "packages/ui/src/index.tsx",
-  "packages/ui/src/app/index.tsx",
+  "packages/kernel/api-contracts/package.json",
+  "packages/kernel/api-contracts/tsconfig.json",
+  "packages/kernel/api-contracts/README.md",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/kernel/api-contracts/src/version/index.ts",
+  "packages/kernel/api-contracts/src/routes/index.ts",
+  "packages/kernel/api-contracts/src/schemas/index.ts",
+  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/entrypoints/cli/package.json",
+  "packages/entrypoints/cli/tsconfig.json",
+  "packages/entrypoints/cli/src/index.ts",
+  "packages/entrypoints/server/package.json",
+  "packages/entrypoints/server/tsconfig.json",
+  "packages/entrypoints/server/src/index.ts",
+  "packages/entrypoints/ui/package.json",
+  "packages/entrypoints/ui/tsconfig.json",
+  "packages/entrypoints/ui/tsconfig.node.json",
+  "packages/entrypoints/ui/vite.config.ts",
+  "packages/entrypoints/ui/index.html",
+  "packages/entrypoints/ui/src/index.tsx",
+  "packages/entrypoints/ui/src/app/index.tsx",
 ];
 
 /**
@@ -395,7 +426,7 @@ const RETIRED_PATHS = [
  * still subject to every content check below: the envelope widens where a lane
  * may write, never what it may write.
  */
-const P1B_LANE_ENVELOPES = ["packages/cli/", "packages/server/", "packages/ui/"];
+const P1B_LANE_ENVELOPES = ["packages/entrypoints/cli/", "packages/entrypoints/server/", "packages/entrypoints/ui/"];
 
 /**
  * The exact P1 lane additions, enumerated at P1 closure.
@@ -408,70 +439,70 @@ const P1B_LANE_ENVELOPES = ["packages/cli/", "packages/server/", "packages/ui/"]
  * anything.
  */
 const P1_WRITE_SET = [
-  "packages/cli/README.md",
-  "packages/cli/test/cli/index.test.ts",
-  "packages/cli/src/cli/index.ts",
-  "packages/cli/src/format/index.ts",
-  "packages/cli/src/observation/index.ts",
-  "packages/server/src/aggregates/index.ts",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/server/src/build-server/index.ts",
-  "packages/server/src/constants/index.ts",
-  "packages/server/src/database-identity/index.ts",
-  "packages/server/src/errors/index.ts",
-  "packages/server/src/ledger-source/index.ts",
-  "packages/server/src/mappers/index.ts",
-  "packages/server/src/query-schemas/index.ts",
-  "packages/server/src/routes/index.ts",
-  "packages/server/src/start/index.ts",
-  "packages/ui/test/api/client/index.test.ts",
-  "packages/ui/src/api/client/index.ts",
-  "packages/ui/src/api/query-string/index.ts",
-  "packages/ui/test/components/app-shell/index.test.tsx",
-  "packages/ui/src/components/app-shell/index.tsx",
-  "packages/ui/test/components/async-section/index.test.tsx",
-  "packages/ui/src/components/async-section/index.tsx",
-  "packages/ui/test/components/bar-breakdown/index.test.tsx",
-  "packages/ui/src/components/bar-breakdown/index.tsx",
-  "packages/ui/test/components/data-table/index.test.tsx",
-  "packages/ui/src/components/data-table/index.tsx",
-  "packages/ui/test/components/filter-bar/index.test.tsx",
-  "packages/ui/src/components/filter-bar/index.tsx",
-  "packages/ui/test/components/id-value/index.test.tsx",
-  "packages/ui/src/components/id-value/index.tsx",
-  "packages/ui/test/components/pagination/index.test.tsx",
-  "packages/ui/src/components/pagination/index.tsx",
-  "packages/ui/src/components/skip-link/index.tsx",
-  "packages/ui/test/components/status-badge/index.test.tsx",
-  "packages/ui/src/components/status-badge/index.tsx",
-  "packages/ui/test/components/timeline-list/index.test.tsx",
-  "packages/ui/src/components/timeline-list/index.tsx",
-  "packages/ui/test/format/chain/index.test.ts",
-  "packages/ui/src/format/chain/index.ts",
-  "packages/ui/test/format/index.test.ts",
-  "packages/ui/src/format/index.ts",
-  "packages/ui/test/format/status-tone/index.test.ts",
-  "packages/ui/src/format/status-tone/index.ts",
-  "packages/ui/src/hooks/use-async-resource/index.ts",
-  "packages/ui/test/routing/hash-route/index.test.ts",
-  "packages/ui/src/routing/hash-route/index.ts",
-  "packages/ui/src/routing/use-hash-route/index.ts",
-  "packages/ui/src/styles/base.css",
-  "packages/ui/src/styles/components.css",
-  "packages/ui/src/styles/index.css",
-  "packages/ui/src/styles/layout.css",
-  "packages/ui/src/styles/tokens.css",
-  "packages/ui/src/views/events-view/index.tsx",
-  "packages/ui/src/views/integrity-view/index.tsx",
-  "packages/ui/test/views/not-found-view/index.test.tsx",
-  "packages/ui/src/views/not-found-view/index.tsx",
-  "packages/ui/src/views/overview-view/index.tsx",
-  "packages/ui/src/views/status-view/index.tsx",
-  "packages/ui/src/views/task-detail-view/index.tsx",
-  "packages/ui/src/views/tasks-list-view/index.tsx",
-  "packages/ui/src/views/worker-detail-view/index.tsx",
-  "packages/ui/src/views/workers-list-view/index.tsx",
-  "packages/ui/test/views/index.test.tsx",
+  "packages/entrypoints/cli/README.md",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/format/index.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/server/src/aggregates/index.ts",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/src/build-server/index.ts",
+  "packages/entrypoints/server/src/constants/index.ts",
+  "packages/entrypoints/server/src/database-identity/index.ts",
+  "packages/entrypoints/server/src/errors/index.ts",
+  "packages/entrypoints/server/src/ledger-source/index.ts",
+  "packages/entrypoints/server/src/mappers/index.ts",
+  "packages/entrypoints/server/src/query-schemas/index.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/start/index.ts",
+  "packages/entrypoints/ui/test/api/client/index.test.ts",
+  "packages/entrypoints/ui/src/api/client/index.ts",
+  "packages/entrypoints/ui/src/api/query-string/index.ts",
+  "packages/entrypoints/ui/test/components/app-shell/index.test.tsx",
+  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
+  "packages/entrypoints/ui/test/components/async-section/index.test.tsx",
+  "packages/entrypoints/ui/src/components/async-section/index.tsx",
+  "packages/entrypoints/ui/test/components/bar-breakdown/index.test.tsx",
+  "packages/entrypoints/ui/src/components/bar-breakdown/index.tsx",
+  "packages/entrypoints/ui/test/components/data-table/index.test.tsx",
+  "packages/entrypoints/ui/src/components/data-table/index.tsx",
+  "packages/entrypoints/ui/test/components/filter-bar/index.test.tsx",
+  "packages/entrypoints/ui/src/components/filter-bar/index.tsx",
+  "packages/entrypoints/ui/test/components/id-value/index.test.tsx",
+  "packages/entrypoints/ui/src/components/id-value/index.tsx",
+  "packages/entrypoints/ui/test/components/pagination/index.test.tsx",
+  "packages/entrypoints/ui/src/components/pagination/index.tsx",
+  "packages/entrypoints/ui/src/components/skip-link/index.tsx",
+  "packages/entrypoints/ui/test/components/status-badge/index.test.tsx",
+  "packages/entrypoints/ui/src/components/status-badge/index.tsx",
+  "packages/entrypoints/ui/test/components/timeline-list/index.test.tsx",
+  "packages/entrypoints/ui/src/components/timeline-list/index.tsx",
+  "packages/entrypoints/ui/test/format/chain/index.test.ts",
+  "packages/entrypoints/ui/src/format/chain/index.ts",
+  "packages/entrypoints/ui/test/format/index.test.ts",
+  "packages/entrypoints/ui/src/format/index.ts",
+  "packages/entrypoints/ui/test/format/status-tone/index.test.ts",
+  "packages/entrypoints/ui/src/format/status-tone/index.ts",
+  "packages/entrypoints/ui/src/hooks/use-async-resource/index.ts",
+  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
+  "packages/entrypoints/ui/src/routing/use-hash-route/index.ts",
+  "packages/entrypoints/ui/src/styles/base.css",
+  "packages/entrypoints/ui/src/styles/components.css",
+  "packages/entrypoints/ui/src/styles/index.css",
+  "packages/entrypoints/ui/src/styles/layout.css",
+  "packages/entrypoints/ui/src/styles/tokens.css",
+  "packages/entrypoints/ui/src/views/events-view/index.tsx",
+  "packages/entrypoints/ui/src/views/integrity-view/index.tsx",
+  "packages/entrypoints/ui/test/views/not-found-view/index.test.tsx",
+  "packages/entrypoints/ui/src/views/not-found-view/index.tsx",
+  "packages/entrypoints/ui/src/views/overview-view/index.tsx",
+  "packages/entrypoints/ui/src/views/status-view/index.tsx",
+  "packages/entrypoints/ui/src/views/task-detail-view/index.tsx",
+  "packages/entrypoints/ui/src/views/tasks-list-view/index.tsx",
+  "packages/entrypoints/ui/src/views/worker-detail-view/index.tsx",
+  "packages/entrypoints/ui/src/views/workers-list-view/index.tsx",
+  "packages/entrypoints/ui/test/views/index.test.tsx",
 ];
 
 /**
@@ -483,12 +514,12 @@ const P1_WRITE_SET = [
  */
 const P2A_WRITE_SET = [
   "docs/architecture/0004-durability-and-supervisor.md",
-  "packages/runtime/package.json",
-  "packages/runtime/tsconfig.json",
-  "packages/runtime/README.md",
-  "packages/runtime/src/index.ts",
-  "packages/runtime/src/contracts/index.ts",
-  "packages/runtime/src/constants/index.ts",
+  "packages/domains/runtime/package.json",
+  "packages/domains/runtime/tsconfig.json",
+  "packages/domains/runtime/README.md",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/src/contracts/index.ts",
+  "packages/domains/runtime/src/constants/index.ts",
 ];
 
 /**
@@ -499,18 +530,18 @@ const P2A_WRITE_SET = [
  * here, and no eighth path is authorized.
  */
 const P2B_WRITE_SET = [
-  "packages/runtime/src/errors/index.ts",
-  "packages/runtime/src/core/coordinates/index.ts",
-  "packages/runtime/test/core/coordinates/index.test.ts",
-  "packages/runtime/src/core/events/index.ts",
-  "packages/runtime/test/core/events/index.test.ts",
-  "packages/runtime/src/core/lifecycle/index.ts",
-  "packages/runtime/test/core/lifecycle/index.test.ts",
-  "packages/runtime/src/toy/repository/index.ts",
-  "packages/runtime/test/toy/repository/index.test.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor/index.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor-child/index.ts",
-  "packages/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/src/errors/index.ts",
+  "packages/domains/runtime/src/core/coordinates/index.ts",
+  "packages/domains/runtime/test/core/coordinates/index.test.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/src/core/lifecycle/index.ts",
+  "packages/domains/runtime/test/core/lifecycle/index.test.ts",
+  "packages/domains/runtime/src/toy/repository/index.ts",
+  "packages/domains/runtime/test/toy/repository/index.test.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
 ];
 
 /**
@@ -521,15 +552,15 @@ const P2B_WRITE_SET = [
  */
 const P2C_WRITE_SET = [
   "docs/architecture/0005-restate-driver-and-adoption.md",
-  "packages/runtime/src/core/step-executor/index.ts",
-  "packages/runtime/test/core/step-executor/index.test.ts",
-  "packages/runtime/src/drivers/restate-driver/index.ts",
-  "packages/runtime/src/drivers/restate-endpoint/index.ts",
-  "packages/runtime/test/drivers/restate-driver/index.test.ts",
-  "packages/runtime/test/drivers/drills/index.test.ts",
-  "packages/runtime/src/drivers/restate-child/index.ts",
-  "packages/runtime/src/restate/server-handle/index.ts",
-  "packages/runtime/src/restate/submit/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/src/drivers/restate-driver/index.ts",
+  "packages/domains/runtime/src/drivers/restate-endpoint/index.ts",
+  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/domains/runtime/test/drivers/drills/index.test.ts",
+  "packages/domains/runtime/src/drivers/restate-child/index.ts",
+  "packages/domains/runtime/src/restate/server-handle/index.ts",
+  "packages/domains/runtime/src/restate/submit/index.ts",
   "scripts/acquire-restate-server.mjs",
   "scripts/restate-server.pin.json",
 ];
@@ -545,35 +576,35 @@ const RETIRED = new Set(RETIRED_PATHS);
  * The displayed count below deduplicates, so a path in two phases is one path.
  */
 const P2D_WRITE_SET = [
-  "packages/daemon/package.json",
-  "packages/daemon/tsconfig.json",
-  "packages/daemon/README.md",
-  "packages/daemon/src/index.ts",
-  "packages/daemon/src/constants/index.ts",
-  "packages/daemon/src/errors/index.ts",
-  "packages/daemon/src/paths/index.ts",
-  "packages/daemon/test/paths/index.test.ts",
-  "packages/daemon/src/singleton/index.ts",
-  "packages/daemon/test/singleton/index.test.ts",
-  "packages/daemon/src/identity-probe/index.ts",
-  "packages/daemon/test/identity-probe/index.test.ts",
-  "packages/daemon/src/status/index.ts",
-  "packages/daemon/test/status/index.test.ts",
-  "packages/daemon/src/log/index.ts",
-  "packages/daemon/test/log/index.test.ts",
-  "packages/daemon/src/lifecycle/index.ts",
-  "packages/daemon/test/lifecycle/index.test.ts",
-  "packages/daemon/src/mode-sqlite/index.ts",
-  "packages/daemon/src/mode-restate/index.ts",
-  "packages/daemon/src/signals/index.ts",
-  "packages/daemon/src/daemon-child/index.ts",
-  "packages/daemon/test/drills/index.test.ts",
-  "packages/daemon/test/index.test.ts",
+  "packages/entrypoints/daemon/package.json",
+  "packages/entrypoints/daemon/tsconfig.json",
+  "packages/entrypoints/daemon/README.md",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/constants/index.ts",
+  "packages/entrypoints/daemon/src/errors/index.ts",
+  "packages/entrypoints/daemon/src/paths/index.ts",
+  "packages/entrypoints/daemon/test/paths/index.test.ts",
+  "packages/entrypoints/daemon/src/singleton/index.ts",
+  "packages/entrypoints/daemon/test/singleton/index.test.ts",
+  "packages/entrypoints/daemon/src/identity-probe/index.ts",
+  "packages/entrypoints/daemon/test/identity-probe/index.test.ts",
+  "packages/entrypoints/daemon/src/status/index.ts",
+  "packages/entrypoints/daemon/test/status/index.test.ts",
+  "packages/entrypoints/daemon/src/log/index.ts",
+  "packages/entrypoints/daemon/test/log/index.test.ts",
+  "packages/entrypoints/daemon/src/lifecycle/index.ts",
+  "packages/entrypoints/daemon/test/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/src/signals/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/index.test.ts",
   "docs/architecture/0006-daemon-process-lifecycle.md",
-  "packages/runtime/src/restate/server-handle/index.ts",
-  "packages/runtime/src/index.ts",
-  "packages/runtime/README.md",
-  "packages/runtime/package.json",
+  "packages/domains/runtime/src/restate/server-handle/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/README.md",
+  "packages/domains/runtime/package.json",
   "docs/ROADMAP.md",
   "tsconfig.base.json",
   "vitest.config.ts",
@@ -589,16 +620,16 @@ const P2D_WRITE_SET = [
  * change, and they bind no port, so the P2D serialization law is untouched.
  */
 const P2E_WRITE_SET = [
-  "packages/daemon/launchd/com.rottay.agent-control-plane.plist.template",
-  "packages/daemon/launchd/README.md",
-  "packages/daemon/src/launchd/render/index.ts",
-  "packages/daemon/test/launchd/render/index.test.ts",
-  "packages/daemon/src/launchd/validate/index.ts",
-  "packages/daemon/test/launchd/validate/index.test.ts",
-  "packages/daemon/test/launchd/drills/index.test.ts",
+  "packages/entrypoints/daemon/launchd/com.rottay.agent-control-plane.plist.template",
+  "packages/entrypoints/daemon/launchd/README.md",
+  "packages/entrypoints/daemon/src/launchd/render/index.ts",
+  "packages/entrypoints/daemon/test/launchd/render/index.test.ts",
+  "packages/entrypoints/daemon/src/launchd/validate/index.ts",
+  "packages/entrypoints/daemon/test/launchd/validate/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/drills/index.test.ts",
   "docs/architecture/0007-launchd-template-and-p2-closure.md",
-  "packages/daemon/src/index.ts",
-  "packages/daemon/README.md",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/README.md",
   "README.md",
   "docs/ROADMAP.md",
   "scripts/check-architecture.mjs",
@@ -611,15 +642,15 @@ const P2E_WRITE_SET = [
  * claim and its evidence never land at the same instant.
  */
 const P2F_STAGE_A_WRITE_SET = [
-  "packages/daemon/src/bin/acp-daemon/index.ts",
-  "packages/daemon/src/bin/config-file/index.ts",
-  "packages/daemon/test/bin/acp-daemon/index.test.ts",
-  "packages/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/src/bin/acp-daemon/index.ts",
+  "packages/entrypoints/daemon/src/bin/config-file/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
   "docs/architecture/0008-packaged-entry-and-launchd-lifecycle.md",
-  "packages/daemon/package.json",
-  "packages/daemon/src/daemon-child/index.ts",
-  "packages/daemon/README.md",
-  "packages/daemon/launchd/README.md",
+  "packages/entrypoints/daemon/package.json",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/README.md",
+  "packages/entrypoints/daemon/launchd/README.md",
   "docs/architecture/0006-daemon-process-lifecycle.md",
   "docs/architecture/0007-launchd-template-and-p2-closure.md",
   "scripts/check-architecture.mjs",
@@ -630,24 +661,24 @@ const P2F_STAGE_A_WRITE_SET = [
  * rest of P3 — collectors (P3B), baseline (P3C), parity (P3D), closure (P3E).
  *
  * P3 is 31 distinct paths across 37 packet entries. Four paths are touched
- * more than once: `packages/observation/src/index.ts` (A, C),
- * `packages/observation/README.md` (A, E), `vitest.config.ts` (A, B) and
+ * more than once: `packages/domains/observation/src/index.ts` (A, C),
+ * `packages/domains/observation/README.md` (A, E), `vitest.config.ts` (A, B) and
  * `scripts/check-architecture.mjs` (A, C, D, E — four touches). Check:
- * 37 − (1 + 1 + 1 + 3) = 31. `packages/server/src/routes/index.ts` and
- * `packages/server/tsconfig.json` are each new distinct paths *within P3*;
+ * 37 − (1 + 1 + 1 + 3) = 31. `packages/entrypoints/server/src/routes/index.ts` and
+ * `packages/entrypoints/server/tsconfig.json` are each new distinct paths *within P3*;
  * their P1 array membership is historical and outside the scope this count
  * describes, which is the treatment the ordering ruling set for `routes.ts`.
  * The earlier arrays stay as the historical record and the displayed count
  * deduplicates, as P2D established.
  */
 const P3A_WRITE_SET = [
-  "packages/observation/package.json",
-  "packages/observation/tsconfig.json",
-  "packages/observation/README.md",
-  "packages/observation/src/index.ts",
-  "packages/observation/src/roots/index.ts",
-  "packages/observation/test/roots/index.test.ts",
-  "packages/observation/src/errors/index.ts",
+  "packages/domains/observation/package.json",
+  "packages/domains/observation/tsconfig.json",
+  "packages/domains/observation/README.md",
+  "packages/domains/observation/src/index.ts",
+  "packages/domains/observation/src/roots/index.ts",
+  "packages/domains/observation/test/roots/index.test.ts",
+  "packages/domains/observation/src/errors/index.ts",
   "docs/architecture/0009-shadow-observation-boundary.md",
   "tsconfig.base.json",
   "vitest.config.ts",
@@ -662,21 +693,21 @@ const P3A_WRITE_SET = [
  * topology ruling put it here rather than letting an integrator add it later.
  */
 const P3B_WRITE_SET = [
-  "packages/observation/src/collect/artifact/index.ts",
-  "packages/observation/test/collect/artifact/index.test.ts",
-  "packages/observation/src/collect/scenario/index.ts",
-  "packages/observation/test/collect/scenario/index.test.ts",
-  "packages/observation/src/collect/index.ts",
+  "packages/domains/observation/src/collect/artifact/index.ts",
+  "packages/domains/observation/test/collect/artifact/index.test.ts",
+  "packages/domains/observation/src/collect/scenario/index.ts",
+  "packages/domains/observation/test/collect/scenario/index.test.ts",
+  "packages/domains/observation/src/collect/index.ts",
   "vitest.config.ts",
 ];
 
 /** P3C: the baseline and its disposable shadow ledger. */
 const P3C_WRITE_SET = [
-  "packages/observation/src/baseline/index.ts",
-  "packages/observation/test/baseline/index.test.ts",
-  "packages/observation/src/shadow-ledger/index.ts",
-  "packages/observation/test/shadow-ledger/index.test.ts",
-  "packages/observation/src/index.ts",
+  "packages/domains/observation/src/baseline/index.ts",
+  "packages/domains/observation/test/baseline/index.test.ts",
+  "packages/domains/observation/src/shadow-ledger/index.ts",
+  "packages/domains/observation/test/shadow-ledger/index.test.ts",
+  "packages/domains/observation/src/index.ts",
   // The export re-pin, the sole-writer law and the count restatement all live
   // in the fence, so P3C touches it like P3A and P3D did.
   "scripts/check-architecture.mjs",
@@ -684,29 +715,29 @@ const P3C_WRITE_SET = [
 
 /** P3D: the ledger-to-client parity contract and its three-way proof. */
 const P3D_WRITE_SET = [
-  "packages/api-contracts/src/parity/index.ts",
-  "packages/api-contracts/test/parity/index.test.ts",
-  "packages/api-contracts/src/index.ts",
-  "packages/cli/src/observation/index.ts",
-  "packages/ui/src/api/client/index.ts",
-  "packages/server/test/parity/index.test.ts",
+  "packages/kernel/api-contracts/src/parity/index.ts",
+  "packages/kernel/api-contracts/test/parity/index.test.ts",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/ui/src/api/client/index.ts",
+  "packages/entrypoints/server/test/parity/index.test.ts",
   "scripts/check-architecture.mjs",
   // Sorting only, at the two aggregate emit sites. The server was emitting
   // `Map` insertion order while the CLI sorted; ordering is part of the parity
   // law, so the server converges onto the CLI's existing deterministic order.
-  "packages/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
   // The TypeScript counterpart of the P3A deep aliases. Those live in
   // `vitest.config.ts`, which `tsc` and type-aware eslint never read, so the
   // parity test resolved at run time and nowhere else. Declaration-based, so
   // no foreign source enters this project's `rootDir`.
-  "packages/server/tsconfig.json",
+  "packages/entrypoints/server/tsconfig.json",
 ];
 
 /** P3E: closure. The status line moves here and nowhere else. */
 const P3E_WRITE_SET = [
   "docs/ROADMAP.md",
   "README.md",
-  "packages/observation/README.md",
+  "packages/domains/observation/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -718,7 +749,7 @@ const P3E_WRITE_SET = [
  * array lengths, distinct is `new Set` over their union, within phase scope.
  * 24 + 4 + 4 + 4 + 4 = 40 entries; the repeats are
  * `scripts/check-architecture.mjs` (A, B, C, D, E), `src/index.ts`
- * (A, B, C, D) and `packages/adapters/README.md` (A, E), contributing
+ * (A, B, C, D) and `packages/edges/adapters/README.md` (A, E), contributing
  * 4 + 3 + 1 = 8 duplicate entries, so 40 − 8 = 32.
  *
  * One number, stated once. An earlier revision of this comment opened with 31
@@ -732,25 +763,25 @@ const P3E_WRITE_SET = [
  * co-located test paths and `session.ts`. A test file is its own path.
  */
 const P4A_WRITE_SET = [
-  "packages/adapters/package.json",
-  "packages/adapters/tsconfig.json",
-  "packages/adapters/README.md",
-  "packages/adapters/src/index.ts",
-  "packages/adapters/src/errors/index.ts",
-  "packages/adapters/src/contract/index.ts",
-  "packages/adapters/src/events/index.ts",
-  "packages/adapters/src/redact/index.ts",
-  "packages/adapters/src/config-root/index.ts",
-  "packages/adapters/src/session/index.ts",
-  "packages/adapters/src/process/spawn/index.ts",
-  "packages/adapters/src/process/handle/index.ts",
-  "packages/adapters/test/testing/index.ts",
-  "packages/adapters/test/contract/index.test.ts",
-  "packages/adapters/test/events/index.test.ts",
-  "packages/adapters/test/redact/index.test.ts",
-  "packages/adapters/test/config-root/index.test.ts",
-  "packages/adapters/test/session/index.test.ts",
-  "packages/adapters/test/process/spawn/index.test.ts",
+  "packages/edges/adapters/package.json",
+  "packages/edges/adapters/tsconfig.json",
+  "packages/edges/adapters/README.md",
+  "packages/edges/adapters/src/index.ts",
+  "packages/edges/adapters/src/errors/index.ts",
+  "packages/edges/adapters/src/contract/index.ts",
+  "packages/edges/adapters/src/events/index.ts",
+  "packages/edges/adapters/src/redact/index.ts",
+  "packages/edges/adapters/src/config-root/index.ts",
+  "packages/edges/adapters/src/session/index.ts",
+  "packages/edges/adapters/src/process/spawn/index.ts",
+  "packages/edges/adapters/src/process/handle/index.ts",
+  "packages/edges/adapters/test/testing/index.ts",
+  "packages/edges/adapters/test/contract/index.test.ts",
+  "packages/edges/adapters/test/events/index.test.ts",
+  "packages/edges/adapters/test/redact/index.test.ts",
+  "packages/edges/adapters/test/config-root/index.test.ts",
+  "packages/edges/adapters/test/session/index.test.ts",
+  "packages/edges/adapters/test/process/spawn/index.test.ts",
   "tsconfig.base.json",
   "vitest.config.ts",
   "pnpm-lock.yaml",
@@ -760,25 +791,25 @@ const P4A_WRITE_SET = [
 
 /** P4B: the Claude headless descriptor. */
 const P4B_WRITE_SET = [
-  "packages/adapters/src/providers/claude/index.ts",
-  "packages/adapters/test/providers/claude/index.test.ts",
-  "packages/adapters/src/index.ts",
+  "packages/edges/adapters/src/providers/claude/index.ts",
+  "packages/edges/adapters/test/providers/claude/index.test.ts",
+  "packages/edges/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 /** P4C: the Kimi ACP descriptor. */
 const P4C_WRITE_SET = [
-  "packages/adapters/src/providers/kimi/index.ts",
-  "packages/adapters/test/providers/kimi/index.test.ts",
-  "packages/adapters/src/index.ts",
+  "packages/edges/adapters/src/providers/kimi/index.ts",
+  "packages/edges/adapters/test/providers/kimi/index.test.ts",
+  "packages/edges/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 /** P4D: the Codex App Server descriptor. */
 const P4D_WRITE_SET = [
-  "packages/adapters/src/providers/codex/index.ts",
-  "packages/adapters/test/providers/codex/index.test.ts",
-  "packages/adapters/src/index.ts",
+  "packages/edges/adapters/src/providers/codex/index.ts",
+  "packages/edges/adapters/test/providers/codex/index.test.ts",
+  "packages/edges/adapters/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -786,7 +817,7 @@ const P4D_WRITE_SET = [
 const P4E_WRITE_SET = [
   "docs/ROADMAP.md",
   "README.md",
-  "packages/adapters/README.md",
+  "packages/edges/adapters/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -798,7 +829,7 @@ const P4E_WRITE_SET = [
  * distinct is `new Set` over their union, within phase scope.
  * 12 + 4 + 4 + 4 + 4 = 28 entries; the repeats are
  * `scripts/check-architecture.mjs` (A, B, C, D, E), `src/index.ts` (A, B, C, D)
- * and `packages/accounts/README.md` (A, E), contributing 4 + 3 + 1 = 8
+ * and `packages/domains/accounts/README.md` (A, E), contributing 4 + 3 + 1 = 8
  * duplicate entries, so 28 − 8 = 20.
  *
  * A path an earlier phase also edited is still in P5's scope: the convention
@@ -807,13 +838,13 @@ const P4E_WRITE_SET = [
  * arithmetic is used here from the start.
  */
 const P5A_WRITE_SET = [
-  "packages/accounts/package.json",
-  "packages/accounts/tsconfig.json",
-  "packages/accounts/README.md",
-  "packages/accounts/src/index.ts",
-  "packages/accounts/src/errors/index.ts",
-  "packages/accounts/src/registry/index.ts",
-  "packages/accounts/test/registry/index.test.ts",
+  "packages/domains/accounts/package.json",
+  "packages/domains/accounts/tsconfig.json",
+  "packages/domains/accounts/README.md",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/src/errors/index.ts",
+  "packages/domains/accounts/src/registry/index.ts",
+  "packages/domains/accounts/test/registry/index.test.ts",
   "tsconfig.base.json",
   "vitest.config.ts",
   "pnpm-lock.yaml",
@@ -832,23 +863,23 @@ const P5A_WRITE_SET = [
  * into a packet that was supposed to be about a router.
  */
 const P5B_WRITE_SET = [
-  "packages/accounts/src/quota/index.ts",
-  "packages/accounts/test/quota/index.test.ts",
-  "packages/accounts/src/index.ts",
+  "packages/domains/accounts/src/quota/index.ts",
+  "packages/domains/accounts/test/quota/index.test.ts",
+  "packages/domains/accounts/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 const P5C_WRITE_SET = [
-  "packages/accounts/src/routing/index.ts",
-  "packages/accounts/test/routing/index.test.ts",
-  "packages/accounts/src/index.ts",
+  "packages/domains/accounts/src/routing/index.ts",
+  "packages/domains/accounts/test/routing/index.test.ts",
+  "packages/domains/accounts/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 const P5D_WRITE_SET = [
-  "packages/accounts/src/switching/index.ts",
-  "packages/accounts/test/switching/index.test.ts",
-  "packages/accounts/src/index.ts",
+  "packages/domains/accounts/src/switching/index.ts",
+  "packages/domains/accounts/test/switching/index.test.ts",
+  "packages/domains/accounts/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -871,7 +902,7 @@ const P5N_A_WRITE_SET = [
 const P5E_WRITE_SET = [
   "docs/ROADMAP.md",
   "README.md",
-  "packages/accounts/README.md",
+  "packages/domains/accounts/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -882,12 +913,12 @@ const P5E_WRITE_SET = [
  * applies: entries are the sum of the packet array lengths, distinct is
  * `new Set` over their union, within phase scope. 5 + 4 + 6 + 4 + 6 = 25
  * entries; the repeats are `scripts/check-architecture.mjs` (A, B, C, E, F)
- * contributing 4, `packages/runtime/src/enforcement/index.ts` (A, C, F) and
- * `packages/runtime/test/enforcement/index.test.ts` (A, C, F) and
- * `packages/runtime/README.md` (A, E, F) contributing 2 each,
- * `packages/runtime/src/index.ts` (A, B, C) contributing 2, and
- * `packages/runtime/src/commit-authorization/index.ts` (C, F) and
- * `packages/runtime/test/commit-authorization/index.test.ts` (C, F)
+ * contributing 4, `packages/domains/runtime/src/enforcement/index.ts` (A, C, F) and
+ * `packages/domains/runtime/test/enforcement/index.test.ts` (A, C, F) and
+ * `packages/domains/runtime/README.md` (A, E, F) contributing 2 each,
+ * `packages/domains/runtime/src/index.ts` (A, B, C) contributing 2, and
+ * `packages/domains/runtime/src/commit-authorization/index.ts` (C, F) and
+ * `packages/domains/runtime/test/commit-authorization/index.test.ts` (C, F)
  * contributing 1 each: 14 duplicate entries, so 25 - 14 = 11. P6F adds no path
  * that was not already in the phase.
  *
@@ -909,26 +940,26 @@ const P5E_WRITE_SET = [
  * thing being prevented. Production wiring is a separate authorized packet.
  */
 const P6A_WRITE_SET = [
-  "packages/runtime/src/enforcement/index.ts",
-  "packages/runtime/test/enforcement/index.test.ts",
-  "packages/runtime/src/index.ts",
-  "packages/runtime/README.md",
+  "packages/domains/runtime/src/enforcement/index.ts",
+  "packages/domains/runtime/test/enforcement/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/README.md",
   "scripts/check-architecture.mjs",
 ];
 
 const P6B_WRITE_SET = [
-  "packages/runtime/src/conflict-graph/index.ts",
-  "packages/runtime/test/conflict-graph/index.test.ts",
-  "packages/runtime/src/index.ts",
+  "packages/domains/runtime/src/conflict-graph/index.ts",
+  "packages/domains/runtime/test/conflict-graph/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 const P6C_WRITE_SET = [
-  "packages/runtime/src/commit-authorization/index.ts",
-  "packages/runtime/test/commit-authorization/index.test.ts",
-  "packages/runtime/src/enforcement/index.ts",
-  "packages/runtime/test/enforcement/index.test.ts",
-  "packages/runtime/src/index.ts",
+  "packages/domains/runtime/src/commit-authorization/index.ts",
+  "packages/domains/runtime/test/commit-authorization/index.test.ts",
+  "packages/domains/runtime/src/enforcement/index.ts",
+  "packages/domains/runtime/test/enforcement/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -936,7 +967,7 @@ const P6C_WRITE_SET = [
 const P6E_WRITE_SET = [
   "docs/ROADMAP.md",
   "README.md",
-  "packages/runtime/README.md",
+  "packages/domains/runtime/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -951,11 +982,11 @@ const P6E_WRITE_SET = [
  * this packet edits it for its own reasons.
  */
 const P6F_WRITE_SET = [
-  "packages/runtime/src/enforcement/index.ts",
-  "packages/runtime/test/enforcement/index.test.ts",
-  "packages/runtime/src/commit-authorization/index.ts",
-  "packages/runtime/test/commit-authorization/index.test.ts",
-  "packages/runtime/README.md",
+  "packages/domains/runtime/src/enforcement/index.ts",
+  "packages/domains/runtime/test/enforcement/index.test.ts",
+  "packages/domains/runtime/src/commit-authorization/index.ts",
+  "packages/domains/runtime/test/commit-authorization/index.test.ts",
+  "packages/domains/runtime/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -981,14 +1012,14 @@ const P6F_WRITE_SET = [
  * `docs/ROADMAP.md`, named by P7P -- which moved the roadmap when it opened
  * the phase -- and again by P7E, contributing 1. So 33 - 4 - 1 = 28 distinct
  * paths. P7A's other two paths --
- * `packages/runtime/test/pilots/index.test.ts` and
- * `packages/runtime/test/pilots/helpers/index.ts` -- are new to the phase.
- * P7B's other four paths -- `packages/runtime/test/pilots/recovery/index.test.ts`,
- * `packages/runtime/test/pilots/recovery/helpers/index.ts`,
- * `packages/accounts/test/pilots/index.test.ts` and
- * `packages/accounts/test/pilots/helpers/index.ts` -- are new to the phase.
- * P7C's other two paths -- `packages/runtime/test/pilots/writer/index.test.ts`
- * and `packages/runtime/test/pilots/writer/helpers/index.ts` -- are new to
+ * `packages/domains/runtime/test/pilots/index.test.ts` and
+ * `packages/domains/runtime/test/pilots/helpers/index.ts` -- are new to the phase.
+ * P7B's other four paths -- `packages/domains/runtime/test/pilots/recovery/index.test.ts`,
+ * `packages/domains/runtime/test/pilots/recovery/helpers/index.ts`,
+ * `packages/domains/accounts/test/pilots/index.test.ts` and
+ * `packages/domains/accounts/test/pilots/helpers/index.ts` -- are new to the phase.
+ * P7C's other two paths -- `packages/domains/runtime/test/pilots/writer/index.test.ts`
+ * and `packages/domains/runtime/test/pilots/writer/helpers/index.ts` -- are new to
  * the phase. Of P7E's other two, only `README.md` is new to the phase;
  * `docs/ROADMAP.md` is the second repeat named above.
  *
@@ -999,25 +1030,25 @@ const P6F_WRITE_SET = [
  * untouched.
  */
 const P7P_WRITE_SET = [
-  "packages/runtime/src/core/lifecycle/index.ts",
-  "packages/runtime/src/core/step-executor/index.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor/index.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor-child/index.ts",
-  "packages/runtime/src/drivers/restate-driver/index.ts",
-  "packages/runtime/src/drivers/restate-child/index.ts",
-  "packages/runtime/src/index.ts",
-  "packages/runtime/test/core/lifecycle/index.test.ts",
-  "packages/runtime/test/core/step-executor/index.test.ts",
-  "packages/runtime/test/drivers/sqlite-supervisor/index.test.ts",
-  "packages/runtime/test/drivers/restate-driver/index.test.ts",
-  "packages/runtime/test/drivers/drills/index.test.ts",
-  "packages/runtime/README.md",
+  "packages/domains/runtime/src/core/lifecycle/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/domains/runtime/src/drivers/restate-driver/index.ts",
+  "packages/domains/runtime/src/drivers/restate-child/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/core/lifecycle/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/domains/runtime/test/drivers/drills/index.test.ts",
+  "packages/domains/runtime/README.md",
   "docs/ROADMAP.md",
   "scripts/check-architecture.mjs",
-  "packages/daemon/src/index.ts",
-  "packages/daemon/src/mode-sqlite/index.ts",
-  "packages/daemon/src/mode-restate/index.ts",
-  "packages/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
 ];
 
 /**
@@ -1029,8 +1060,8 @@ const P7P_WRITE_SET = [
  * changes: the pilot walks the plan P7P already landed.
  */
 const P7A_WRITE_SET = [
-  "packages/runtime/test/pilots/index.test.ts",
-  "packages/runtime/test/pilots/helpers/index.ts",
+  "packages/domains/runtime/test/pilots/index.test.ts",
+  "packages/domains/runtime/test/pilots/helpers/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1038,7 +1069,7 @@ const P7A_WRITE_SET = [
  * P7B: the second isolated pilot -- kill/restart and the account switch.
  *
  * Two drills, two packages, per the P1B dependency law
- * (`packages/runtime` may not import `@acp/accounts` and `packages/accounts`
+ * (`packages/domains/runtime` may not import `@acp/accounts` and `packages/domains/accounts`
  * may not import `@acp/runtime`): leg 1 is a new subdomain,
  * `test/pilots/recovery/`, under the runtime package's landed `pilots`
  * domain -- the kill/restart drill for the `NO_COMMIT` walk over a real
@@ -1050,10 +1081,10 @@ const P7A_WRITE_SET = [
  * plays a plan `decideSwitch` already returns as a value.
  */
 const P7B_WRITE_SET = [
-  "packages/runtime/test/pilots/recovery/index.test.ts",
-  "packages/runtime/test/pilots/recovery/helpers/index.ts",
-  "packages/accounts/test/pilots/index.test.ts",
-  "packages/accounts/test/pilots/helpers/index.ts",
+  "packages/domains/runtime/test/pilots/recovery/index.test.ts",
+  "packages/domains/runtime/test/pilots/recovery/helpers/index.ts",
+  "packages/domains/accounts/test/pilots/index.test.ts",
+  "packages/domains/accounts/test/pilots/helpers/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1069,8 +1100,8 @@ const P7B_WRITE_SET = [
  * receipt `commit-authorization` (P6C) already produces.
  */
 const P7C_WRITE_SET = [
-  "packages/runtime/test/pilots/writer/index.test.ts",
-  "packages/runtime/test/pilots/writer/helpers/index.ts",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "packages/domains/runtime/test/pilots/writer/helpers/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1102,8 +1133,8 @@ const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architectu
  * errors while 125 tests would have failed -- and why, for a contract-shape
  * change, the **full test suite** is the completeness proof and typecheck is
  * not. Two packages reach the constant through `@acp/api-contracts`'s
- * `LEDGER_CONTRACT_VERSION` re-export rather than directly: `packages/cli` and
- * `packages/server` may not depend on `@acp/contracts` under the P1B
+ * `LEDGER_CONTRACT_VERSION` re-export rather than directly: `packages/entrypoints/cli` and
+ * `packages/entrypoints/server` may not depend on `@acp/contracts` under the P1B
  * dependency law, and the re-export exists for exactly this.
  *
  * P7I-1 is the contracts themselves, on top of the landed bump: `Initiative`,
@@ -1132,9 +1163,9 @@ const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architectu
  * P7I is therefore **36 packet entries across 30 distinct paths**: 10 (P7I-0)
  * + 8 (P7I-1) + 10 (P7I-2) + 5 (P7I-3) + 3 (P7I-E) = 36 entries. Three paths
  * repeat: `scripts/check-architecture.mjs` itself, named by all five packets,
- * contributing 4; `packages/contracts/src/schemas/index.ts`, named by P7I-0
+ * contributing 4; `packages/kernel/contracts/src/schemas/index.ts`, named by P7I-0
  * for the bump and by P7I-1 for the contracts, contributing 1; and
- * `packages/ledger/test/ledger/index.test.ts`, named by P7I-0 for the
+ * `packages/persistence/ledger/test/ledger/index.test.ts`, named by P7I-0 for the
  * de-hardcoding and by P7I-2 for the sibling stream's laws, contributing 1.
  * So 36 - 4 - 1 - 1 = 30 distinct paths. Both of P7I-E's other two paths --
  * `docs/ROADMAP.md` and `README.md` -- are new to this phase, unlike P7's
@@ -1142,22 +1173,22 @@ const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architectu
  * appearances in earlier phases are counted in those phases, since the
  * standing convention scopes the arithmetic to the phase.
  *
- * P7I-2's tenth path, `packages/ledger/src/types/index.ts`, is where the
+ * P7I-2's tenth path, `packages/persistence/ledger/src/types/index.ts`, is where the
  * package declares every public value type. `TaskReadModel` is declared only
  * there, so Q6's nullable `initiativeId` has nowhere else to land; the sibling
  * stream's value shapes and the both-chains fields on `RebuildResult` and
  * `LedgerStatus` follow it by the same convention.
  */
 const P7I0_WRITE_SET = [
-  "packages/contracts/src/schemas/index.ts",
-  "packages/ledger/test/ledger/index.test.ts",
-  "packages/cli/test/cli/index.test.ts",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/server/test/parity/index.test.ts",
-  "packages/observation/test/shadow-ledger/index.test.ts",
-  "packages/observation/test/collect/scenario/index.test.ts",
-  "packages/observation/test/collect/artifact/index.test.ts",
-  "packages/observation/test/baseline/index.test.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/test/parity/index.test.ts",
+  "packages/domains/observation/test/shadow-ledger/index.test.ts",
+  "packages/domains/observation/test/collect/scenario/index.test.ts",
+  "packages/domains/observation/test/collect/artifact/index.test.ts",
+  "packages/domains/observation/test/baseline/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1166,18 +1197,18 @@ const P7I0_WRITE_SET = [
  *
  * The contracts package and the fixtures the required `initiativeId` forces,
  * plus the two stale sentences this phase falsifies. Nothing outside
- * `packages/contracts` changes in substance: the runtime and observation
+ * `packages/kernel/contracts` changes in substance: the runtime and observation
  * entries are a fixture factory, a pilot helper's fixed initiative id and one
  * comment line, and the accounts entry is one line of a JSON example.
  */
 const P7I1_WRITE_SET = [
-  "packages/contracts/src/schemas/index.ts",
-  "packages/contracts/src/index.ts",
-  "packages/contracts/test/schemas/index.test.ts",
-  "packages/runtime/test/conflict-graph/index.test.ts",
-  "packages/runtime/test/pilots/helpers/index.ts",
-  "packages/observation/src/baseline/index.ts",
-  "packages/accounts/README.md",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/domains/runtime/test/conflict-graph/index.test.ts",
+  "packages/domains/runtime/test/pilots/helpers/index.ts",
+  "packages/domains/observation/src/baseline/index.ts",
+  "packages/domains/accounts/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1193,10 +1224,10 @@ const P7I1_WRITE_SET = [
  * equality in both directions.
  */
 const P7I3_WRITE_SET = [
-  "packages/observation/src/rollups/index.ts",
-  "packages/observation/src/index.ts",
-  "packages/observation/test/rollups/index.test.ts",
-  "packages/observation/README.md",
+  "packages/domains/observation/src/rollups/index.ts",
+  "packages/domains/observation/src/index.ts",
+  "packages/domains/observation/test/rollups/index.test.ts",
+  "packages/domains/observation/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1273,8 +1304,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * initiative-scoped route prefix over the landed grammar, and the tone
  * mapping and card styles the blueprint names. The write-set widened by two
  * paths after the packet's own STOP (`p8-8c-kimi-widening-adjudication.md`):
- * `packages/ui/test/views/index.test.tsx` and
- * `packages/ui/test/views/not-found-view/index.test.tsx`, each carrying the
+ * `packages/entrypoints/ui/test/views/index.test.tsx` and
+ * `packages/entrypoints/ui/test/views/not-found-view/index.test.tsx`, each carrying the
  * one-line `initiativeId: null` fixture fix the `Route` field addition made
  * unavoidable.
  *
@@ -1284,7 +1315,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **382 packet entries across 152 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **395 packet entries across 154 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1292,28 +1323,28 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
- * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) = 382 entries,
- * with 230 duplicate entries.
+ * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
+ * 13 (P8-T-G1') = 395 entries, with 241 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 38 duplicates = 38   (`scripts/check-architecture.mjs`, every packet)
- *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the routes source, the
- *                                   build-server drill suite, and the lockfile)
+ *   1 path  × 39 duplicates = 39   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  ×  8 duplicates =  8   (the lockfile)
+ *   3 paths ×  7 duplicates = 21   (`docs/ROADMAP.md`, the routes source and
+ *                                   the build-server drill suite)
  *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
  *                                   mirror suite)
- *   5 paths ×  5 duplicates = 25   (the api-contracts route and parity surface
- *                                   with its parity suite, and the UI's api
- *                                   client and app root)
- *   5 paths ×  4 duplicates = 20   (the initiatives suite, the UI manifest, the
- *                                   UI styles sheet, the accounts-view suite
- *                                   and the workspace file)
+ *   6 paths ×  5 duplicates = 30   (the api-contracts route and parity surface
+ *                                   with its parity suite, the UI's api client
+ *                                   and app root, and the workspace file)
+ *   4 paths ×  4 duplicates = 16   (the initiatives suite, the UI manifest, the
+ *                                   UI styles sheet and the accounts-view suite)
  *  10 paths ×  3 duplicates = 30
  *  12 paths ×  2 duplicates = 24
- *  35 paths ×  1 duplicate  = 35
+ *  43 paths ×  1 duplicate  = 43
  *
- * 38 + 28 + 30 + 25 + 20 + 30 + 24 + 35 = 230.
+ * 39 + 8 + 21 + 30 + 30 + 16 + 30 + 24 + 43 = 241.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1383,7 +1414,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-9-3 was widened by one path after its own report, adjudicated by the DT
  * (`p8-9-3-kimi-widening-adjudication.md`) against the packet's own
- * STOP-adjacent finding: `packages/ui/src/views/accounts-view/index.tsx`,
+ * STOP-adjacent finding: `packages/entrypoints/ui/src/views/accounts-view/index.tsx`,
  * already owned by P8-8F-ui and P8-8G-ui, gains a third owner here rather
  * than opening a new distinct path — so distinct still holds at 141 while
  * entries move 359 → 360. Its one group step: the path had two occurrences
@@ -1437,6 +1468,31 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * belong to P2D and P7P and are counted in those phases by the standing
  * convention — the same shape P8-9-1 had for the runtime drill file.
  *
+ * P8-T-G1' moves every package and adds **two** distinct paths, which is the
+ * whole point of the arithmetic here: 302 files change location and the fold
+ * does not notice. The eleven-prefix substitution is injective, so each of the
+ * 152 pre-image paths maps to exactly one post-image path and every array keeps
+ * its shape — expressed in the new coordinates, the pre-image is still 382
+ * entries across 152 distinct paths. A relocation that moved the fold would
+ * have meant two paths collapsed into one, and that is precisely what the
+ * transformation proof in the packet's report rules out.
+ *
+ * What does move the table is this packet's own thirteen entries. Eleven of
+ * them are already owned, and each is one band step: the fence's own row, 38 →
+ * 39 duplicates; the lockfile leaves the ×7 row alone into a new ×8 row, which
+ * is why ×7 reads three paths rather than four; the workspace file steps from
+ * the ×4 row to the ×5 row, which is the one move that changes two rows at once
+ * (5 → 4 paths and 5 → 6); and eight paths with exactly one earlier in-phase
+ * owner each — `README.md`, the four operations pages, the resolver, its probes
+ * and `vitest.config.ts` — enter the ×1 row together, 35 → 43.
+ *
+ * The other two entries are new paths. `tsconfig.base.json` and
+ * `eslint.config.mjs` have existed since P0, and neither had a P8 owner until
+ * now, so distinct moves 152 → 154 while entries move 382 → 395 — eleven
+ * duplicates added, 230 → 241. Files older than the phase counting as novel
+ * inside it is the same convention `vitest.config.ts` met in P8-T-G0, not an
+ * exception made for this packet.
+ *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
  * arithmetic to the phase.
@@ -1455,9 +1511,9 @@ const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
  * the vocabulary declared here.
  */
 const P81_WRITE_SET = [
-  "packages/contracts/src/schemas/index.ts",
-  "packages/contracts/src/index.ts",
-  "packages/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1476,39 +1532,39 @@ const P81_WRITE_SET = [
  * `@acp/runtime` by name, so the cycle stays refused.
  */
 const P8W_WRITE_SET = [
-  "packages/runtime/src/core/events/index.ts",
-  "packages/runtime/src/core/step-executor/index.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor/index.ts",
-  "packages/runtime/src/drivers/sqlite-supervisor-child/index.ts",
-  "packages/runtime/src/drivers/restate-driver/index.ts",
-  "packages/runtime/src/drivers/restate-child/index.ts",
-  "packages/runtime/src/usage/index.ts",
-  "packages/runtime/src/switch-executor/index.ts",
-  "packages/runtime/src/index.ts",
-  "packages/runtime/package.json",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/domains/runtime/src/drivers/restate-driver/index.ts",
+  "packages/domains/runtime/src/drivers/restate-child/index.ts",
+  "packages/domains/runtime/src/usage/index.ts",
+  "packages/domains/runtime/src/switch-executor/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/package.json",
   // The build-graph edges the authorized dependency needs. Runtime is the
   // repository's first accounts consumer, and `tsc --build` resolves workspace
   // packages through project references rather than the manifest, so without
   // these two the switch executor does not compile at all.
-  "packages/runtime/tsconfig.json",
-  "packages/runtime/test/tsconfig.json",
-  "packages/runtime/test/usage/index.test.ts",
-  "packages/runtime/test/switch-executor/index.test.ts",
-  "packages/runtime/test/core/events/index.test.ts",
-  "packages/runtime/test/core/step-executor/index.test.ts",
-  "packages/runtime/test/drivers/sqlite-supervisor/index.test.ts",
-  "packages/runtime/test/drivers/drills/index.test.ts",
-  "packages/runtime/test/drivers/restate-driver/index.test.ts",
-  "packages/runtime/test/pilots/index.test.ts",
-  "packages/runtime/test/pilots/recovery/index.test.ts",
-  "packages/runtime/test/pilots/writer/index.test.ts",
-  "packages/daemon/src/index.ts",
-  "packages/daemon/src/mode-sqlite/index.ts",
-  "packages/daemon/src/mode-restate/index.ts",
-  "packages/daemon/src/daemon-child/index.ts",
-  "packages/daemon/test/bin/acp-daemon/index.test.ts",
-  "packages/daemon/test/launchd/lifecycle/index.test.ts",
-  "packages/daemon/test/drills/index.test.ts",
+  "packages/domains/runtime/tsconfig.json",
+  "packages/domains/runtime/test/tsconfig.json",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/domains/runtime/test/switch-executor/index.test.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/test/drivers/drills/index.test.ts",
+  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/domains/runtime/test/pilots/index.test.ts",
+  "packages/domains/runtime/test/pilots/recovery/index.test.ts",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
 ];
@@ -1528,12 +1584,12 @@ const P8W_WRITE_SET = [
  * widening.
  */
 const P82_WRITE_SET = [
-  "packages/adapters/src/execution-port/index.ts",
-  "packages/adapters/src/contract/index.ts",
-  "packages/adapters/src/index.ts",
-  "packages/adapters/test/execution-port/index.test.ts",
-  "packages/adapters/test/contract/index.test.ts",
-  "packages/adapters/test/testing/index.ts",
+  "packages/edges/adapters/src/execution-port/index.ts",
+  "packages/edges/adapters/src/contract/index.ts",
+  "packages/edges/adapters/src/index.ts",
+  "packages/edges/adapters/test/execution-port/index.test.ts",
+  "packages/edges/adapters/test/contract/index.test.ts",
+  "packages/edges/adapters/test/testing/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1550,11 +1606,11 @@ const P82_WRITE_SET = [
  * API key, because no API key exists in the graph.
  */
 const P83_WRITE_SET = [
-  "packages/adapters/src/providers/api-key/index.ts",
-  "packages/adapters/src/execution-port/index.ts",
-  "packages/adapters/src/index.ts",
-  "packages/adapters/test/execution-port/index.test.ts",
-  "packages/adapters/test/testing/index.ts",
+  "packages/edges/adapters/src/providers/api-key/index.ts",
+  "packages/edges/adapters/src/execution-port/index.ts",
+  "packages/edges/adapters/src/index.ts",
+  "packages/edges/adapters/test/execution-port/index.test.ts",
+  "packages/edges/adapters/test/testing/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1570,11 +1626,11 @@ const P83_WRITE_SET = [
  * non-CLI kinds, classified, by construction.
  */
 const P84_WRITE_SET = [
-  "packages/adapters/src/providers/local/index.ts",
-  "packages/adapters/src/execution-port/index.ts",
-  "packages/adapters/src/index.ts",
-  "packages/adapters/test/execution-port/index.test.ts",
-  "packages/adapters/test/testing/index.ts",
+  "packages/edges/adapters/src/providers/local/index.ts",
+  "packages/edges/adapters/src/execution-port/index.ts",
+  "packages/edges/adapters/src/index.ts",
+  "packages/edges/adapters/test/execution-port/index.test.ts",
+  "packages/edges/adapters/test/testing/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1582,7 +1638,7 @@ const P84_WRITE_SET = [
  * P8-5: the versioned capability/policy registry.
  *
  * Law 4's record, as data outside application code: the document under
- * `packages/accounts/policy/`, its schema and loader inside the accounts
+ * `packages/domains/accounts/policy/`, its schema and loader inside the accounts
  * package, and `routeWithPolicy` — the single seam that stamps
  * `capabilityPolicyVersion`, leaving `rankAccounts` version-less. No contracts
  * bump: the registry is the accounts domain's to own, and nothing outside it
@@ -1593,11 +1649,11 @@ const P84_WRITE_SET = [
  * write-set membership scan and nothing else.
  */
 const P85_WRITE_SET = [
-  "packages/accounts/policy/capability-policy.json",
-  "packages/accounts/src/policy/index.ts",
-  "packages/accounts/src/index.ts",
-  "packages/accounts/test/policy/index.test.ts",
-  "packages/accounts/README.md",
+  "packages/domains/accounts/policy/capability-policy.json",
+  "packages/domains/accounts/src/policy/index.ts",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/test/policy/index.test.ts",
+  "packages/domains/accounts/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1614,8 +1670,8 @@ const P85_WRITE_SET = [
  * not build one.
  */
 const P86_WRITE_SET = [
-  "packages/daemon/test/fallback/index.test.ts",
-  "packages/runtime/README.md",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/domains/runtime/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1634,11 +1690,11 @@ const P86_WRITE_SET = [
  * flag.
  */
 const P87_WRITE_SET = [
-  "packages/observation/src/telemetry/index.ts",
-  "packages/observation/src/telemetry/langfuse/index.ts",
-  "packages/observation/src/index.ts",
-  "packages/observation/test/telemetry/index.test.ts",
-  "packages/observation/README.md",
+  "packages/domains/observation/src/telemetry/index.ts",
+  "packages/domains/observation/src/telemetry/langfuse/index.ts",
+  "packages/domains/observation/src/index.ts",
+  "packages/domains/observation/test/telemetry/index.test.ts",
+  "packages/domains/observation/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1656,23 +1712,23 @@ const P87_WRITE_SET = [
  * reference is an edge that works on one machine.
  */
 const P88A_WRITE_SET = [
-  "packages/api-contracts/src/routes/index.ts",
-  "packages/api-contracts/src/schemas/index.ts",
-  "packages/api-contracts/src/parity/index.ts",
-  "packages/api-contracts/src/version/index.ts",
-  "packages/api-contracts/src/index.ts",
-  "packages/api-contracts/test/schemas/index.test.ts",
-  "packages/api-contracts/test/parity/index.test.ts",
-  "packages/server/src/routes/index.ts",
-  "packages/server/src/mappers/index.ts",
-  "packages/server/src/initiatives/index.ts",
-  "packages/server/package.json",
-  "packages/server/tsconfig.json",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/server/test/initiatives/index.test.ts",
-  "packages/ledger/src/ledger/index.ts",
-  "packages/ledger/test/ledger/index.test.ts",
-  "packages/cli/test/cli/index.test.ts",
+  "packages/kernel/api-contracts/src/routes/index.ts",
+  "packages/kernel/api-contracts/src/schemas/index.ts",
+  "packages/kernel/api-contracts/src/parity/index.ts",
+  "packages/kernel/api-contracts/src/version/index.ts",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/kernel/api-contracts/test/parity/index.test.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/mappers/index.ts",
+  "packages/entrypoints/server/src/initiatives/index.ts",
+  "packages/entrypoints/server/package.json",
+  "packages/entrypoints/server/tsconfig.json",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
 ];
@@ -1698,15 +1754,15 @@ const P88A_WRITE_SET = [
  * evidence that the landed views keep working identically.
  */
 const P88B_WRITE_SET = [
-  "packages/ui/package.json",
+  "packages/entrypoints/ui/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
-  "packages/ui/src/styles/tokens.css",
-  "packages/ui/src/styles/layout.css",
-  "packages/ui/src/app/index.tsx",
-  "packages/ui/src/components/app-shell/index.tsx",
-  "packages/ui/src/api/client/index.ts",
-  "packages/ui/test/app/index.test.tsx",
+  "packages/entrypoints/ui/src/styles/tokens.css",
+  "packages/entrypoints/ui/src/styles/layout.css",
+  "packages/entrypoints/ui/src/app/index.tsx",
+  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
+  "packages/entrypoints/ui/src/api/client/index.ts",
+  "packages/entrypoints/ui/test/app/index.test.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1722,41 +1778,41 @@ const P88B_WRITE_SET = [
  * Two paths were not in the original 17-item brief and were added only after
  * a Sonnet STOP and a DT widening adjudication
  * (`.acp-local/p8-8c-kimi-widening-adjudication.md`):
- * `packages/ui/test/views/index.test.tsx` and
- * `packages/ui/test/views/not-found-view/index.test.tsx`. Both are
+ * `packages/entrypoints/ui/test/views/index.test.tsx` and
+ * `packages/entrypoints/ui/test/views/not-found-view/index.test.tsx`. Both are
  * pre-existing test files, unrelated to initiative scoping in what they
  * assert, that construct a `Route` object literal inline; `Route` gaining the
  * required `initiativeId` field (this packet, in
- * `packages/ui/src/routing/hash-route/index.ts`) made both fail to typecheck
+ * `packages/entrypoints/ui/src/routing/hash-route/index.ts`) made both fail to typecheck
  * until each gained the same one-line, additive `initiativeId: null` fix
- * `packages/ui/test/components/app-shell/index.test.tsx` (in the original
+ * `packages/entrypoints/ui/test/components/app-shell/index.test.tsx` (in the original
  * 15) already needed for the identical reason.
  *
- * `packages/ui/src/styles/components.css` is named here and
- * `packages/ui/src/styles/layout.css` and `tokens.css` are not: every new
+ * `packages/entrypoints/ui/src/styles/components.css` is named here and
+ * `packages/entrypoints/ui/src/styles/layout.css` and `tokens.css` are not: every new
  * rule (the switcher, the portfolio grid, the card, the extended hit area,
  * the objective's line-clamp) is expressed in existing tokens, and the brand
  * block gained a wrapper div rather than a change to the header layout the
  * landed file already declares.
  */
 const P88C_WRITE_SET = [
-  "packages/ui/src/views/portfolio-view/index.tsx",
-  "packages/ui/src/components/app-shell/index.tsx",
-  "packages/ui/src/routing/hash-route/index.ts",
-  "packages/ui/src/routing/use-hash-route/index.ts",
-  "packages/ui/src/app/index.tsx",
-  "packages/ui/src/format/status-tone/index.ts",
-  "packages/ui/src/styles/components.css",
-  "packages/ui/src/api/client/index.ts",
-  "packages/ui/test/views/portfolio-view/index.test.tsx",
-  "packages/ui/test/components/app-shell/index.test.tsx",
-  "packages/ui/test/routing/hash-route/index.test.ts",
-  "packages/ui/package.json",
+  "packages/entrypoints/ui/src/views/portfolio-view/index.tsx",
+  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
+  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
+  "packages/entrypoints/ui/src/routing/use-hash-route/index.ts",
+  "packages/entrypoints/ui/src/app/index.tsx",
+  "packages/entrypoints/ui/src/format/status-tone/index.ts",
+  "packages/entrypoints/ui/src/styles/components.css",
+  "packages/entrypoints/ui/src/api/client/index.ts",
+  "packages/entrypoints/ui/test/views/portfolio-view/index.test.tsx",
+  "packages/entrypoints/ui/test/components/app-shell/index.test.tsx",
+  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/ui/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
-  "packages/ui/test/views/index.test.tsx",
-  "packages/ui/test/views/not-found-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/index.test.tsx",
+  "packages/entrypoints/ui/test/views/not-found-view/index.test.tsx",
 ];
 
 /**
@@ -1774,33 +1830,33 @@ const P88C_WRITE_SET = [
  * `["GET"]`, and the exception is a second frozen table. ADR 0013 records why.
  */
 const P88D_PRE_WRITE_SET = [
-  "packages/api-contracts/src/routes/index.ts",
-  "packages/api-contracts/src/schemas/index.ts",
-  "packages/api-contracts/src/parity/index.ts",
-  "packages/api-contracts/src/version/index.ts",
-  "packages/api-contracts/src/index.ts",
-  "packages/api-contracts/README.md",
-  "packages/api-contracts/test/schemas/index.test.ts",
-  "packages/api-contracts/test/parity/index.test.ts",
-  "packages/server/package.json",
-  "packages/server/src/routes/index.ts",
-  "packages/server/src/roadmap-write/index.ts",
+  "packages/kernel/api-contracts/src/routes/index.ts",
+  "packages/kernel/api-contracts/src/schemas/index.ts",
+  "packages/kernel/api-contracts/src/parity/index.ts",
+  "packages/kernel/api-contracts/src/version/index.ts",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/kernel/api-contracts/README.md",
+  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/kernel/api-contracts/test/parity/index.test.ts",
+  "packages/entrypoints/server/package.json",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/roadmap-write/index.ts",
   // The 21st path, adjudicated: `STATUS_BY_CODE` is an exhaustive Record over
   // the closed code set, so `WRITE_REFUSED` cannot exist without its 409
   // mapping here. Proved by probe before it was asked for.
-  "packages/server/src/errors/index.ts",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/server/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/server/src/errors/index.ts",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/test/roadmap-write/index.test.ts",
   // The 22nd path, adjudicated: P8-8A's initiatives suite asserted that every
   // non-GET refuses on every initiative path, which this packet falsifies for
   // exactly one cell. The C4 class, missed by C4's own enumeration.
-  "packages/server/test/initiatives/index.test.ts",
-  "packages/ledger/src/artifact-store/index.ts",
-  "packages/ledger/src/index.ts",
-  "packages/ledger/test/artifact-store/index.test.ts",
-  "packages/ledger/README.md",
+  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/persistence/ledger/src/artifact-store/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/artifact-store/index.test.ts",
+  "packages/persistence/ledger/README.md",
   "docs/architecture/0013-the-first-write-route.md",
-  "packages/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1819,18 +1875,18 @@ const P88D_PRE_WRITE_SET = [
  * makes the request's shape enforce the scoping.
  */
 const P88D_C2_WRITE_SET = [
-  "packages/api-contracts/src/routes/index.ts",
-  "packages/api-contracts/src/schemas/index.ts",
-  "packages/api-contracts/src/parity/index.ts",
-  "packages/api-contracts/src/version/index.ts",
-  "packages/api-contracts/src/index.ts",
-  "packages/api-contracts/test/schemas/index.test.ts",
-  "packages/api-contracts/test/parity/index.test.ts",
-  "packages/server/src/routes/index.ts",
-  "packages/server/src/initiatives/index.ts",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/server/test/initiatives/index.test.ts",
-  "packages/cli/test/cli/index.test.ts",
+  "packages/kernel/api-contracts/src/routes/index.ts",
+  "packages/kernel/api-contracts/src/schemas/index.ts",
+  "packages/kernel/api-contracts/src/parity/index.ts",
+  "packages/kernel/api-contracts/src/version/index.ts",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/kernel/api-contracts/test/parity/index.test.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/initiatives/index.ts",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1845,7 +1901,7 @@ const P88D_C2_WRITE_SET = [
  *
  * The 18th path, adjudicated after a Sonnet STOP
  * (`.acp-local/p8-8d-kimi-stop-adjudication.md`):
- * `packages/ui/test/views/portfolio-view/index.test.tsx`, whose two
+ * `packages/entrypoints/ui/test/views/portfolio-view/index.test.tsx`, whose two
  * `href="#/i/<id>/tasks"` expectations are the mechanical fallout of
  * `buildInitiativeHash`'s own authorized change (bare `#/i/<id>` now lands
  * on the workspace, C3) — a pre-existing test outside the original 17,
@@ -1853,25 +1909,25 @@ const P88D_C2_WRITE_SET = [
  * P8-8D-pre and P8-8D-c2's own widenings.
  */
 const P88D_WRITE_SET = [
-  "packages/ui/src/views/workspace-view/index.tsx",
-  "packages/ui/src/components/edit-roadmap-dialog/index.tsx",
-  "packages/ui/src/app/index.tsx",
-  "packages/ui/src/routing/hash-route/index.ts",
-  "packages/ui/src/components/app-shell/index.tsx",
-  "packages/ui/src/format/status-tone/index.ts",
-  "packages/ui/src/styles/components.css",
-  "packages/ui/src/api/client/index.ts",
-  "packages/ui/test/views/workspace-view/index.test.tsx",
-  "packages/ui/test/components/edit-roadmap-dialog/index.test.tsx",
-  "packages/ui/test/routing/hash-route/index.test.ts",
-  "packages/ui/test/components/app-shell/index.test.tsx",
-  "packages/ui/test/views/index.test.tsx",
-  "packages/ui/package.json",
+  "packages/entrypoints/ui/src/views/workspace-view/index.tsx",
+  "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/entrypoints/ui/src/app/index.tsx",
+  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
+  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
+  "packages/entrypoints/ui/src/format/status-tone/index.ts",
+  "packages/entrypoints/ui/src/styles/components.css",
+  "packages/entrypoints/ui/src/api/client/index.ts",
+  "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/ui/test/components/app-shell/index.test.tsx",
+  "packages/entrypoints/ui/test/views/index.test.tsx",
+  "packages/entrypoints/ui/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
   // The 18th path, adjudicated (see the doc comment above).
-  "packages/ui/test/views/portfolio-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/portfolio-view/index.test.tsx",
 ];
 
 /**
@@ -1948,22 +2004,22 @@ const P8T2_WRITE_SET = [
  * a required DTO field. The full suite is the probe that does not.
  */
 const P88E_PRE_WRITE_SET = [
-  "packages/api-contracts/src/routes/index.ts",
-  "packages/api-contracts/src/schemas/index.ts",
-  "packages/api-contracts/src/parity/index.ts",
-  "packages/api-contracts/src/version/index.ts",
-  "packages/api-contracts/src/index.ts",
-  "packages/api-contracts/test/schemas/index.test.ts",
-  "packages/api-contracts/test/parity/index.test.ts",
-  "packages/server/src/routes/index.ts",
-  "packages/server/src/initiatives/index.ts",
-  "packages/server/src/mappers/index.ts",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/server/test/initiatives/index.test.ts",
-  "packages/ui/test/components/timeline-list/index.test.tsx",
-  "packages/ui/test/format/chain/index.test.ts",
-  "packages/cli/src/observation/index.ts",
-  "packages/cli/test/cli/index.test.ts",
+  "packages/kernel/api-contracts/src/routes/index.ts",
+  "packages/kernel/api-contracts/src/schemas/index.ts",
+  "packages/kernel/api-contracts/src/parity/index.ts",
+  "packages/kernel/api-contracts/src/version/index.ts",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/kernel/api-contracts/test/parity/index.test.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/initiatives/index.ts",
+  "packages/entrypoints/server/src/mappers/index.ts",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/entrypoints/ui/test/components/timeline-list/index.test.tsx",
+  "packages/entrypoints/ui/test/format/chain/index.test.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1989,20 +2045,20 @@ const P88E_PRE_WRITE_SET = [
  * addition before it was.
  */
 const P88E_WRITE_SET = [
-  "packages/ui/src/views/graph-view/index.tsx",
-  "packages/ui/src/views/timeline-view/index.tsx",
-  "packages/ui/src/views/agents-view/index.tsx",
-  "packages/ui/src/app/index.tsx",
-  "packages/ui/src/routing/hash-route/index.ts",
-  "packages/ui/src/views/workspace-view/index.tsx",
-  "packages/ui/src/api/client/index.ts",
-  "packages/ui/src/styles/components.css",
-  "packages/ui/test/views/graph-view/index.test.tsx",
-  "packages/ui/test/views/timeline-view/index.test.tsx",
-  "packages/ui/test/views/agents-view/index.test.tsx",
-  "packages/ui/test/views/workspace-view/index.test.tsx",
-  "packages/ui/test/routing/hash-route/index.test.ts",
-  "packages/ui/package.json",
+  "packages/entrypoints/ui/src/views/graph-view/index.tsx",
+  "packages/entrypoints/ui/src/views/timeline-view/index.tsx",
+  "packages/entrypoints/ui/src/views/agents-view/index.tsx",
+  "packages/entrypoints/ui/src/app/index.tsx",
+  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
+  "packages/entrypoints/ui/src/views/workspace-view/index.tsx",
+  "packages/entrypoints/ui/src/api/client/index.ts",
+  "packages/entrypoints/ui/src/styles/components.css",
+  "packages/entrypoints/ui/test/views/graph-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/timeline-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/agents-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/ui/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
@@ -2031,19 +2087,19 @@ const P88E_WRITE_SET = [
  * opaque strings, illegal the moment one becomes a contract-checked field.
  */
 const P88E2_WRITE_SET = [
-  "packages/runtime/src/core/events/index.ts",
-  "packages/runtime/src/core/step-executor/index.ts",
-  "packages/runtime/src/usage/index.ts",
-  "packages/runtime/src/switch-executor/index.ts",
-  "packages/contracts/src/schemas/index.ts",
-  "packages/runtime/test/core/events/index.test.ts",
-  "packages/runtime/test/core/step-executor/index.test.ts",
-  "packages/runtime/test/usage/index.test.ts",
-  "packages/runtime/test/switch-executor/index.test.ts",
-  "packages/runtime/test/drivers/sqlite-supervisor/index.test.ts",
-  "packages/runtime/test/drivers/restate-driver/index.test.ts",
-  "packages/runtime/test/pilots/recovery/helpers/index.ts",
-  "packages/runtime/test/pilots/writer/helpers/index.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/usage/index.ts",
+  "packages/domains/runtime/src/switch-executor/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/domains/runtime/test/switch-executor/index.test.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/domains/runtime/test/pilots/recovery/helpers/index.ts",
+  "packages/domains/runtime/test/pilots/writer/helpers/index.ts",
   "docs/ROADMAP.md",
   "scripts/check-architecture.mjs",
 ];
@@ -2070,23 +2126,23 @@ const P88E2_WRITE_SET = [
  * both project references.
  */
 const P88F_SRV_WRITE_SET = [
-  "packages/api-contracts/src/routes/index.ts",
-  "packages/api-contracts/src/schemas/index.ts",
-  "packages/api-contracts/src/parity/index.ts",
-  "packages/api-contracts/src/version/index.ts",
-  "packages/api-contracts/src/index.ts",
-  "packages/api-contracts/test/schemas/index.test.ts",
-  "packages/api-contracts/test/parity/index.test.ts",
-  "packages/server/src/accounts/index.ts",
-  "packages/server/src/routes/index.ts",
-  "packages/server/src/build-server/index.ts",
-  "packages/server/src/start/index.ts",
-  "packages/server/package.json",
-  "packages/server/tsconfig.json",
-  "packages/server/test/tsconfig.json",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/server/test/accounts/index.test.ts",
-  "packages/cli/test/cli/index.test.ts",
+  "packages/kernel/api-contracts/src/routes/index.ts",
+  "packages/kernel/api-contracts/src/schemas/index.ts",
+  "packages/kernel/api-contracts/src/parity/index.ts",
+  "packages/kernel/api-contracts/src/version/index.ts",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/kernel/api-contracts/test/parity/index.test.ts",
+  "packages/entrypoints/server/src/accounts/index.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/build-server/index.ts",
+  "packages/entrypoints/server/src/start/index.ts",
+  "packages/entrypoints/server/package.json",
+  "packages/entrypoints/server/tsconfig.json",
+  "packages/entrypoints/server/test/tsconfig.json",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/test/accounts/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
 ];
@@ -2121,24 +2177,24 @@ const P8_DEBRIEF_RULING_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architect
  * markdown renderer.
  */
 const P88F_UI_WRITE_SET = [
-  "packages/ui/src/views/accounts-view/index.tsx",
-  "packages/ui/src/views/logs-view/index.tsx",
-  "packages/ui/src/views/roadmap-document-view/index.tsx",
-  "packages/ui/src/app/index.tsx",
-  "packages/ui/src/routing/hash-route/index.ts",
-  "packages/ui/src/views/workspace-view/index.tsx",
-  "packages/ui/src/api/client/index.ts",
-  "packages/ui/src/components/app-shell/index.tsx",
-  "packages/ui/src/styles/components.css",
-  "packages/ui/test/views/accounts-view/index.test.tsx",
-  "packages/ui/test/views/logs-view/index.test.tsx",
-  "packages/ui/test/views/roadmap-document-view/index.test.tsx",
-  "packages/ui/test/views/workspace-view/index.test.tsx",
-  "packages/ui/test/views/index.test.tsx",
-  "packages/ui/test/routing/hash-route/index.test.ts",
-  "packages/ui/test/app/index.test.tsx",
-  "packages/ui/test/components/app-shell/index.test.tsx",
-  "packages/ui/test/api/client/index.test.ts",
+  "packages/entrypoints/ui/src/views/accounts-view/index.tsx",
+  "packages/entrypoints/ui/src/views/logs-view/index.tsx",
+  "packages/entrypoints/ui/src/views/roadmap-document-view/index.tsx",
+  "packages/entrypoints/ui/src/app/index.tsx",
+  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
+  "packages/entrypoints/ui/src/views/workspace-view/index.tsx",
+  "packages/entrypoints/ui/src/api/client/index.ts",
+  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
+  "packages/entrypoints/ui/src/styles/components.css",
+  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/logs-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/roadmap-document-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/index.test.tsx",
+  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/ui/test/app/index.test.tsx",
+  "packages/entrypoints/ui/test/components/app-shell/index.test.tsx",
+  "packages/entrypoints/ui/test/api/client/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2183,26 +2239,26 @@ const P88F_RECORD_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mj
  * length leaks through timing.
  */
 const P88G_A_WRITE_SET = [
-  "packages/contracts/src/schemas/index.ts",
-  "packages/contracts/src/index.ts",
-  "packages/contracts/test/schemas/index.test.ts",
-  "packages/api-contracts/src/schemas/index.ts",
-  "packages/api-contracts/src/version/index.ts",
-  "packages/api-contracts/src/index.ts",
-  "packages/api-contracts/test/schemas/index.test.ts",
-  "packages/ledger/src/artifact-store/index.ts",
-  "packages/ledger/test/artifact-store/index.test.ts",
-  "packages/server/src/bearer/index.ts",
-  "packages/server/src/errors/index.ts",
-  "packages/server/src/roadmap-write/index.ts",
-  "packages/server/src/routes/index.ts",
-  "packages/server/src/build-server/index.ts",
-  "packages/server/src/start/index.ts",
-  "packages/server/test/bearer/index.test.ts",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/server/test/roadmap-write/index.test.ts",
-  "packages/server/test/initiatives/index.test.ts",
-  "packages/cli/test/cli/index.test.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/api-contracts/src/schemas/index.ts",
+  "packages/kernel/api-contracts/src/version/index.ts",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/persistence/ledger/src/artifact-store/index.ts",
+  "packages/persistence/ledger/test/artifact-store/index.test.ts",
+  "packages/entrypoints/server/src/bearer/index.ts",
+  "packages/entrypoints/server/src/errors/index.ts",
+  "packages/entrypoints/server/src/roadmap-write/index.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/build-server/index.ts",
+  "packages/entrypoints/server/src/start/index.ts",
+  "packages/entrypoints/server/test/bearer/index.test.ts",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2239,36 +2295,36 @@ const P88G_A_WRITE_SET = [
  * list exists.
  */
 const P88G_B_WRITE_SET = [
-  "packages/contracts/src/schemas/index.ts",
-  "packages/contracts/src/index.ts",
-  "packages/contracts/test/schemas/index.test.ts",
-  "packages/ledger/src/migrations/index.ts",
-  "packages/ledger/src/ledger/index.ts",
-  "packages/ledger/src/types/index.ts",
-  "packages/ledger/src/index.ts",
-  "packages/ledger/test/ledger/index.test.ts",
-  "packages/api-contracts/src/routes/index.ts",
-  "packages/api-contracts/src/schemas/index.ts",
-  "packages/api-contracts/src/parity/index.ts",
-  "packages/api-contracts/src/version/index.ts",
-  "packages/api-contracts/test/schemas/index.test.ts",
-  "packages/api-contracts/test/parity/index.test.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/kernel/api-contracts/src/routes/index.ts",
+  "packages/kernel/api-contracts/src/schemas/index.ts",
+  "packages/kernel/api-contracts/src/parity/index.ts",
+  "packages/kernel/api-contracts/src/version/index.ts",
+  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/kernel/api-contracts/test/parity/index.test.ts",
   // Granted after the STOP: the barrel is the package's only export surface,
   // so the action schemas are unreachable without it, and the UI fixture is
   // typed against `AccountDto` and must satisfy its three new fields or `tsc`
   // refuses the whole graph.
-  "packages/api-contracts/src/index.ts",
-  "packages/ui/test/views/accounts-view/index.test.tsx",
-  "packages/server/src/account-actions/index.ts",
-  "packages/server/src/accounts/index.ts",
-  "packages/server/src/routes/index.ts",
-  "packages/server/src/bin/index.ts",
-  "packages/server/package.json",
-  "packages/server/test/account-actions/index.test.ts",
-  "packages/server/test/accounts/index.test.ts",
-  "packages/server/test/bin/index.test.ts",
-  "packages/server/test/build-server/index.test.ts",
-  "packages/cli/test/cli/index.test.ts",
+  "packages/kernel/api-contracts/src/index.ts",
+  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/server/src/account-actions/index.ts",
+  "packages/entrypoints/server/src/accounts/index.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/src/bin/index.ts",
+  "packages/entrypoints/server/package.json",
+  "packages/entrypoints/server/test/account-actions/index.test.ts",
+  "packages/entrypoints/server/test/accounts/index.test.ts",
+  "packages/entrypoints/server/test/bin/index.test.ts",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2287,22 +2343,22 @@ const P88G_B_WRITE_SET = [
  * current token without that file, or the ones between it and the root,
  * needing to change.
  *
- * `packages/api-contracts/src/index.ts` is not listed again here: packet 2
+ * `packages/kernel/api-contracts/src/index.ts` is not listed again here: packet 2
  * already added every DTO and route name this packet's UI reads, and
  * nothing here grows that barrel further.
  */
 const P88G_UI_WRITE_SET = [
-  "packages/ui/src/api/client/index.ts",
-  "packages/ui/src/app/index.tsx",
-  "packages/ui/src/components/bearer-field/index.tsx",
-  "packages/ui/src/views/accounts-view/index.tsx",
-  "packages/ui/src/components/edit-roadmap-dialog/index.tsx",
-  "packages/ui/src/styles/components.css",
-  "packages/ui/test/api/client/index.test.ts",
-  "packages/ui/test/app/index.test.tsx",
-  "packages/ui/test/components/bearer-field/index.test.tsx",
-  "packages/ui/test/views/accounts-view/index.test.tsx",
-  "packages/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/ui/src/api/client/index.ts",
+  "packages/entrypoints/ui/src/app/index.tsx",
+  "packages/entrypoints/ui/src/components/bearer-field/index.tsx",
+  "packages/entrypoints/ui/src/views/accounts-view/index.tsx",
+  "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/entrypoints/ui/src/styles/components.css",
+  "packages/entrypoints/ui/test/api/client/index.test.ts",
+  "packages/entrypoints/ui/test/app/index.test.tsx",
+  "packages/entrypoints/ui/test/components/bearer-field/index.test.tsx",
+  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2338,11 +2394,11 @@ const P88G_RECORD_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mj
  * operator use, which the drill asserts rather than assumes.
  */
 const P88G_CAUSAL_WRITE_SET = [
-  "packages/server/src/build-server/index.ts",
-  "packages/server/src/routes/index.ts",
-  "packages/server/test/accounts/index.test.ts",
-  "packages/server/test/account-actions/index.test.ts",
-  "packages/server/test/build-server/index.test.ts",
+  "packages/entrypoints/server/src/build-server/index.ts",
+  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/server/test/accounts/index.test.ts",
+  "packages/entrypoints/server/test/account-actions/index.test.ts",
+  "packages/entrypoints/server/test/build-server/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2359,7 +2415,7 @@ const P88G_CAUSAL_WRITE_SET = [
  * impossible by construction. Test-side only: no `src/` path moves.
  */
 const P89_1_WRITE_SET = [
-  "packages/runtime/test/drivers/drills/index.test.ts",
+  "packages/domains/runtime/test/drivers/drills/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2377,12 +2433,12 @@ const P89_1_WRITE_SET = [
  * Zero `src/` paths: nothing here reaches a shipped bundle.
  */
 const P89_2_WRITE_SET = [
-  "packages/ui/package.json",
+  "packages/entrypoints/ui/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
-  "packages/ui/test/live-dom/index.ts",
-  "packages/ui/test/live-dom/index.test.tsx",
+  "packages/entrypoints/ui/test/live-dom/index.ts",
+  "packages/entrypoints/ui/test/live-dom/index.test.tsx",
 ];
 
 /**
@@ -2408,7 +2464,7 @@ const P89_2_WRITE_SET = [
  *
  * Widened by exactly one path, adjudicated by the DT
  * (`p8-9-3-kimi-widening-adjudication.md`) against the packet's own
- * STOP-adjacent finding: `packages/ui/src/views/accounts-view/index.tsx`.
+ * STOP-adjacent finding: `packages/entrypoints/ui/src/views/accounts-view/index.tsx`.
  * The account action's granted receipt (its sequence, in the live region)
  * was unmounting before it ever painted — `AccountActionsCell`'s `onGranted`
  * closed the dialog in the same batch `AccountActionDialogBody` set
@@ -2419,19 +2475,19 @@ const P89_2_WRITE_SET = [
  * matrix is untouched since it never drove `openAction` in the first place.
  */
 const P89_3_WRITE_SET = [
-  "packages/ui/test/live-dom/index.ts",
-  "packages/ui/test/views/index.test.tsx",
-  "packages/ui/test/views/accounts-view/index.test.tsx",
-  "packages/ui/test/components/bearer-field/index.test.tsx",
-  "packages/ui/test/views/logs-view/index.test.tsx",
-  "packages/ui/test/views/roadmap-document-view/index.test.tsx",
-  "packages/ui/test/views/workspace-view/index.test.tsx",
-  "packages/ui/test/views/graph-view/index.test.tsx",
-  "packages/ui/test/views/timeline-view/index.test.tsx",
-  "packages/ui/test/views/agents-view/index.test.tsx",
-  "packages/ui/src/components/edit-roadmap-dialog/index.tsx",
-  "packages/ui/test/components/edit-roadmap-dialog/index.test.tsx",
-  "packages/ui/src/views/accounts-view/index.tsx",
+  "packages/entrypoints/ui/test/live-dom/index.ts",
+  "packages/entrypoints/ui/test/views/index.test.tsx",
+  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/ui/test/components/bearer-field/index.test.tsx",
+  "packages/entrypoints/ui/test/views/logs-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/roadmap-document-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/graph-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/timeline-view/index.test.tsx",
+  "packages/entrypoints/ui/test/views/agents-view/index.test.tsx",
+  "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/ui/src/views/accounts-view/index.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2449,7 +2505,7 @@ const P89_3_WRITE_SET = [
  * SIGKILL only for a hang, and processes before roots. Test-side only.
  */
 const P89_1B_WRITE_SET = [
-  "packages/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2469,10 +2525,10 @@ const P89_1B_WRITE_SET = [
  * each row's own buttons.
  */
 const P89_4_WRITE_SET = [
-  "packages/ui/src/components/edit-roadmap-dialog/index.tsx",
-  "packages/ui/src/views/accounts-view/index.tsx",
-  "packages/ui/test/components/edit-roadmap-dialog/index.test.tsx",
-  "packages/ui/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/entrypoints/ui/src/views/accounts-view/index.tsx",
+  "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2558,6 +2614,42 @@ const P8T_G0_WRITE_SET = [
 ];
 
 /**
+ * P8-T G1': the single atomic tree move.
+ *
+ * The eleven package trees relocate into their five strata in one commit —
+ * 302 tracked files, every one a rename, none a rewrite. What the packet
+ * *edits* is this list: the thirteen files that name a package path and do not
+ * themselves move, each reference recomputed exactly once.
+ *
+ * The 302 moved paths are not repeated here. They are declared where they have
+ * always been declared — in the phase arrays that created them, rewritten from
+ * old prefix to new — because a relocation moves a declaration with its file
+ * rather than opening a second home for it. `G1_MOVE_MAP` below is the record
+ * of which path became which, and `RETIRED_PATHS` is deliberately untouched:
+ * the paths it names are still forbidden, which is still true.
+ *
+ * Two of the thirteen are novel in this phase: `tsconfig.base.json` and
+ * `eslint.config.mjs` have existed since P0 and P0/P5N-C2 respectively, and no
+ * P8 array had yet named either. The standing convention scopes the arithmetic
+ * to the phase, so they count as new distinct paths here.
+ */
+const P8T_G1_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "vitest.config.ts",
+  "tsconfig.base.json",
+  "pnpm-workspace.yaml",
+  "pnpm-lock.yaml",
+  "eslint.config.mjs",
+  "README.md",
+  "docs/operations/account-switch.md",
+  "docs/operations/backup-restore.md",
+  "docs/operations/runbook.md",
+  "docs/operations/update-rollback.md",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2566,15 +2658,15 @@ const P8T_G0_WRITE_SET = [
  * keeping it separate is what makes that checkable.
  */
 const P7I2_WRITE_SET = [
-  "packages/ledger/src/migrations/index.ts",
-  "packages/ledger/src/ledger/index.ts",
-  "packages/ledger/src/projection/index.ts",
-  "packages/ledger/src/roadmap-version/index.ts",
-  "packages/ledger/src/types/index.ts",
-  "packages/ledger/src/index.ts",
-  "packages/ledger/test/ledger/index.test.ts",
-  "packages/ledger/test/roadmap-version/index.test.ts",
-  "packages/ledger/README.md",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/roadmap-version/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/roadmap-version/index.test.ts",
+  "packages/persistence/ledger/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2600,7 +2692,7 @@ const P7I2_WRITE_SET = [
  * and not a cohort's to decide.
  */
 const P5N_C1_WRITE_SET = [
-  "packages/contracts/test/tsconfig.json",
+  "packages/kernel/contracts/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2618,7 +2710,7 @@ const P5N_C1_WRITE_SET = [
  * code. Both recur for every package whose test tree emits.
  */
 const P5N_C2_WRITE_SET = [
-  "packages/ledger/test/tsconfig.json",
+  "packages/persistence/ledger/test/tsconfig.json",
   ".gitignore",
   "eslint.config.mjs",
   "tsconfig.base.json",
@@ -2636,7 +2728,7 @@ const P5N_C2_WRITE_SET = [
  * tree typechecks with `noEmit`, so it produces no build output to ignore.
  */
 const P5N_C3_WRITE_SET = [
-  "packages/api-contracts/test/tsconfig.json",
+  "packages/kernel/api-contracts/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2652,7 +2744,7 @@ const P5N_C3_WRITE_SET = [
  * a package that has one.
  */
 const P5N_C4_WRITE_SET = [
-  "packages/observation/test/tsconfig.json",
+  "packages/domains/observation/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2664,7 +2756,7 @@ const P5N_C4_WRITE_SET = [
  * As with C1-C4 the relocated source paths are not listed here — they are
  * carried by `P1_WRITE_SET` and `P3D_WRITE_SET`, rewritten 1:1 — so this array
  * declares only the test tree's own `tsconfig.json` and the config files the
- * cohort edits. This cohort additionally edits `packages/server/tsconfig.json`:
+ * cohort edits. This cohort additionally edits `packages/entrypoints/server/tsconfig.json`:
  * the DT's binding deep-alias adjudication moves the
  * `@acp/cli/observation-rows` half of the P3D alias update here rather than to
  * the server cohort, so every commit keeps the server's typecheck green. No
@@ -2672,8 +2764,8 @@ const P5N_C4_WRITE_SET = [
  * `noEmit`, so it produces no build output to ignore.
  */
 const P5N_C5_WRITE_SET = [
-  "packages/cli/test/tsconfig.json",
-  "packages/server/tsconfig.json",
+  "packages/entrypoints/cli/test/tsconfig.json",
+  "packages/entrypoints/server/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2686,7 +2778,7 @@ const P5N_C5_WRITE_SET = [
  * the fence itself. Enumerated by the C6 brief, item 8.
  */
 const P5N_C6_WRITE_SET = [
-  "packages/adapters/test/tsconfig.json",
+  "packages/edges/adapters/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2702,9 +2794,9 @@ const P5N_C6_WRITE_SET = [
  * and no second tsconfig here.
  */
 const P5N_C7_WRITE_SET = [
-  "packages/daemon/test/tsconfig.json",
-  "packages/daemon/package.json",
-  "packages/daemon/README.md",
+  "packages/entrypoints/daemon/test/tsconfig.json",
+  "packages/entrypoints/daemon/package.json",
+  "packages/entrypoints/daemon/README.md",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2718,8 +2810,8 @@ const P5N_C7_WRITE_SET = [
  * tsconfig.json and the config/doc files the cohort edits.
  */
 const P5N_C8_WRITE_SET = [
-  "packages/runtime/test/tsconfig.json",
-  "packages/runtime/README.md",
+  "packages/domains/runtime/test/tsconfig.json",
+  "packages/domains/runtime/README.md",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2730,14 +2822,14 @@ const P5N_C8_WRITE_SET = [
  * carried by P1B_SHARED_WRITE_SET, P1_WRITE_SET and P3D_WRITE_SET, rewritten
  * 1:1. This array declares the test tree's own tsconfig.json, the one admitted
  * index.html line, the config files, and — per adjudication C9-F —
- * packages/server/tsconfig.json, whose @acp/ui/row-model declaration alias is
+ * packages/entrypoints/server/tsconfig.json, whose @acp/ui/row-model declaration alias is
  * pinned by equality against SERVER_TS_ALIASES and so must move in the same
  * change as the ui path it names.
  */
 const P5N_C9_WRITE_SET = [
-  "packages/ui/test/tsconfig.json",
-  "packages/ui/index.html",
-  "packages/server/tsconfig.json",
+  "packages/entrypoints/ui/test/tsconfig.json",
+  "packages/entrypoints/ui/index.html",
+  "packages/entrypoints/server/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2747,12 +2839,12 @@ const P5N_C9_WRITE_SET = [
  * P5N cohort C10: server, the tenth and last tree normalized. The relocated
  * source paths are carried by P1_WRITE_SET and P3D_WRITE_SET, rewritten 1:1.
  * This array declares only the test tree's own tsconfig.json and the config
- * files the cohort edits. packages/server/tsconfig.json is deliberately
+ * files the cohort edits. packages/entrypoints/server/tsconfig.json is deliberately
  * absent — adjudication C: its aliases and references were already correct
  * once C5 and C9-F landed, and it is not touched here.
  */
 const P5N_C10_WRITE_SET = [
-  "packages/server/test/tsconfig.json",
+  "packages/entrypoints/server/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2767,7 +2859,7 @@ const P5N_C10_WRITE_SET = [
  * frozen routing test leaves src/.
  */
 const P5N_C11_WRITE_SET = [
-  "packages/accounts/test/tsconfig.json",
+  "packages/domains/accounts/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2852,6 +2944,7 @@ const WRITE_SET = [
   ...P810_B_WRITE_SET,
   ...P810_C_WRITE_SET,
   ...P8T_G0_WRITE_SET,
+  ...P8T_G1_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3143,7 +3236,7 @@ const AUTHORITY_LITERALS = {
     "P1A is not P1 completion",
     "no product adoption",
   ],
-  "packages/ledger/README.md": [
+  "packages/persistence/ledger/README.md": [
     "append-only",
     "rebuild",
     "verifyIntegrity",
@@ -3177,7 +3270,7 @@ const AUTHORITY_LITERALS = {
     "no product adoption",
     "no partial",
   ],
-  "packages/runtime/README.md": [
+  "packages/domains/runtime/README.md": [
     "authority",
     "no side effects",
     "fails closed",
@@ -3187,7 +3280,7 @@ const AUTHORITY_LITERALS = {
     // completion disclaimer it carried survives as "no product adoption".
     "no product adoption",
   ],
-  "packages/daemon/README.md": [
+  "packages/entrypoints/daemon/README.md": [
     "no side effects",
     "adds no authority",
     "no auto-detection",
@@ -3195,7 +3288,7 @@ const AUTHORITY_LITERALS = {
     "P2E is not product adoption",
     "nothing invokes `launchctl`",
   ],
-  "packages/daemon/launchd/README.md": [
+  "packages/entrypoints/daemon/launchd/README.md": [
     "template",
     "RunAtLoad",
     "never automated",
@@ -3231,7 +3324,7 @@ const AUTHORITY_LITERALS = {
     "no product adoption",
     "no partial cutover",
   ],
-  "packages/api-contracts/README.md": [
+  "packages/kernel/api-contracts/README.md": [
     "browser-safe",
     "P1B is not P1 completion",
     "no product adoption",
@@ -3280,7 +3373,7 @@ const AUTHORITY_LITERALS = {
  * Text that must no longer appear, now that a later phase has falsified it.
  *
  * The mirror of AUTHORITY_LITERALS, and it exists because of a real miss. P2C
- * shipped with `packages/runtime/README.md` still saying "There is no Restate
+ * shipped with `packages/domains/runtime/README.md` still saying "There is no Restate
  * driver" in the same commit that added one, and the full suite passed over it:
  * the literal table can require a sentence to be PRESENT but has no way to
  * require one to be GONE. A document could therefore satisfy every assertion it
@@ -3288,7 +3381,7 @@ const AUTHORITY_LITERALS = {
  * file carried, the more confident the green looked.
  */
 const EXPIRED_LITERALS = {
-  "packages/runtime/README.md": [
+  "packages/domains/runtime/README.md": [
     "There is no Restate driver",
     "This is P2B",
     "will walk the same one in P2C",
@@ -3315,8 +3408,8 @@ const EXPIRED_LITERALS = {
     "P6B adds the conflict graph",
     "P6C adds commit authorization and quarantine",
   ],
-  "packages/runtime/src/index.ts": ["This is P2B", "This is P2D"],
-  "packages/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
+  "packages/domains/runtime/src/index.ts": ["This is P2B", "This is P2D"],
+  "packages/domains/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
   "README.md": [
     "There is no orchestrator",
     "P0 and P1 complete. Next: P2.",
@@ -3339,23 +3432,23 @@ const EXPIRED_LITERALS = {
     // is the exact drift this table exists to catch.
     "There is no provider adapter yet",
   ],
-  "packages/daemon/README.md": ["This is P2D", "The launchd template is P2E"],
+  "packages/entrypoints/daemon/README.md": ["This is P2D", "The launchd template is P2E"],
   // The P3A-only frame the observation README carried until P3 closed. Both
   // literals are lifted byte-exactly from the pre-edit file (lines 7 and 19).
-  "packages/observation/README.md": ["This is P3A", "P3A is not P3 completion"],
+  "packages/domains/observation/README.md": ["This is P3A", "P3A is not P3 completion"],
   // The P4A-only frame the adapters README carried until P4 closed. Both
   // literals are lifted byte-exactly from the pre-edit file: the scope section
   // opened "This is P4A" and closed by saying the three descriptors "are not
   // exported yet". All three are exported now, so both sentences are false and
   // pinned absent.
-  "packages/adapters/README.md": ["This is P4A", "are not exported yet"],
+  "packages/edges/adapters/README.md": ["This is P4A", "are not exported yet"],
   // The P5A-only frame the accounts README carried until the router landed.
   // Both literals are lifted byte-exactly from the pre-edit file: the scope
   // section deferred quota estimation and the router to P5B/P5C as "not
   // exported yet", and the shadow-mode paragraph spoke of the router as still
   // to arrive. Both are exported and arrived now, so both sentences are false
   // and pinned absent.
-  "packages/accounts/README.md": [
+  "packages/domains/accounts/README.md": [
     "Quota estimation, the quota-aware router and the switching policy arrive in P5B, P5C and P5D and are not exported yet",
     "The router and the switching machine that arrive later",
     // The P5C-era frame the accounts README carried until the switching policy
@@ -3409,19 +3502,21 @@ function git(args) {
  * must agree, so adding one without the other fails the fence.
  */
 const PATH_SCOPED_LAWS = [
-  { law: "the browser package links no ledger and no database driver", scope: "packages/ui/**" },
-  { law: "the live-DOM evidence tools stay test-scope", scope: "packages/ui/src/**" },
-  { law: "the durability plane's import purity", scope: "packages/runtime/{src,test}/**" },
-  { law: "a supervised process imports only what it is allowed", scope: "packages/daemon/{src,test}/**" },
-  { law: "no module spawns for plutil", scope: "packages/daemon/src/launchd/**" },
-  { law: "the packaged entry reads no environment", scope: "packages/daemon/src/bin/**" },
-  { law: "observation collectors stay passive", scope: "packages/observation/{src,test}/**" },
-  { law: "the accounts domain reaches nothing", scope: "packages/accounts/{src,test}/**" },
-  { law: "adapters keep one spawn authority and no network", scope: "packages/adapters/{src,test}/**" },
-  { law: "providers stay pure", scope: "packages/adapters/src/providers/**" },
-  { law: "the server names @acp/contracts nowhere in live code", scope: "packages/server/{src,test}/**" },
+  { law: "the browser package links no ledger and no database driver", scope: "packages/entrypoints/ui/**" },
+  { law: "the live-DOM evidence tools stay test-scope", scope: "packages/entrypoints/ui/src/**" },
+  { law: "the durability plane's import purity", scope: "packages/domains/runtime/{src,test}/**" },
+  { law: "a supervised process imports only what it is allowed", scope: "packages/entrypoints/daemon/{src,test}/**" },
+  { law: "no module spawns for plutil", scope: "packages/entrypoints/daemon/src/launchd/**" },
+  { law: "the packaged entry reads no environment", scope: "packages/entrypoints/daemon/src/bin/**" },
+  { law: "observation collectors stay passive", scope: "packages/domains/observation/{src,test}/**" },
+  { law: "the accounts domain reaches nothing", scope: "packages/domains/accounts/{src,test}/**" },
+  { law: "adapters keep one spawn authority and no network", scope: "packages/edges/adapters/{src,test}/**" },
+  { law: "providers stay pure", scope: "packages/edges/adapters/src/providers/**" },
+  { law: "the server names @acp/contracts nowhere in live code", scope: "packages/entrypoints/server/{src,test}/**" },
   { law: "the mirrored-topology law", scope: "TOPOLOGY_ACTIVE_TREES (activated trees)" },
   { law: "the public/internal classification", scope: "every package present in packages/" },
+  { law: "no tracked path under a pre-G1' package prefix", scope: "packages/** (the eleven retired prefixes)" },
+  { law: "every package sits at packages/<stratum>/<name>/", scope: "packages/**" },
 ];
 
 /**
@@ -3858,15 +3953,15 @@ if (rootManifest !== null && rootManifest.includes("onlyBuiltDependencies")) {
 const LEDGER_DEPENDENCIES = ["@acp/contracts", "better-sqlite3"];
 const LEDGER_DEV_DEPENDENCIES = ["@types/better-sqlite3", "vitest"];
 
-const ledgerManifestText = readIfPresent("packages/ledger/package.json");
+const ledgerManifestText = readIfPresent("packages/persistence/ledger/package.json");
 if (ledgerManifestText === null) {
-  fail("packages/ledger/package.json is missing");
+  fail("packages/persistence/ledger/package.json is missing");
 } else {
   let ledgerManifest = null;
   try {
     ledgerManifest = JSON.parse(ledgerManifestText);
   } catch {
-    fail("packages/ledger/package.json is not valid JSON");
+    fail("packages/persistence/ledger/package.json is not valid JSON");
   }
 
   if (ledgerManifest !== null) {
@@ -3877,7 +3972,7 @@ if (ledgerManifestText === null) {
 
     if (actual.join(",") !== expected.join(",")) {
       fail(
-        "packages/ledger dependencies must be exactly [" +
+        "packages/persistence/ledger dependencies must be exactly [" +
           expected.join(", ") +
           "], found: [" +
           actual.join(", ") +
@@ -3886,7 +3981,7 @@ if (ledgerManifestText === null) {
     }
     if (actualDev.join(",") !== expectedDev.join(",")) {
       fail(
-        "packages/ledger devDependencies must be exactly [" +
+        "packages/persistence/ledger devDependencies must be exactly [" +
           expectedDev.join(", ") +
           "], found: [" +
           actualDev.join(", ") +
@@ -3894,7 +3989,7 @@ if (ledgerManifestText === null) {
       );
     }
     if (ledgerManifest.private !== true) {
-      fail("packages/ledger must stay private; this repository publishes nothing");
+      fail("packages/persistence/ledger must stay private; this repository publishes nothing");
     }
     if (actual.join(",") === expected.join(",") && actualDev.join(",") === expectedDev.join(",")) {
       notes.push("ledger dependency surface is exactly what P1A authorized");
@@ -3997,7 +4092,7 @@ const CREDENTIAL_MATERIAL_PATTERNS = [
  * function it no longer tests. A production source file can never take this
  * route at all.
  */
-const CREDENTIAL_FIXTURE_EXEMPT = new Set(["packages/contracts/test/schemas/index.test.ts"]);
+const CREDENTIAL_FIXTURE_EXEMPT = new Set(["packages/kernel/contracts/test/schemas/index.test.ts"]);
 
 /** An actual invocation, not a mention. */
 const CREDENTIAL_SCANNER_CALL_SITE = /\bfindCredentialViolations\s*\(/;
@@ -4058,7 +4153,7 @@ if (tracked.status === 0) {
 // file, which is the whole point of pinning the foundation first.
 const P1B_DEPENDENCY_LAW = [
   {
-    manifest: "packages/api-contracts/package.json",
+    manifest: "packages/kernel/api-contracts/package.json",
     dependencies: ["@acp/contracts", "zod"],
     devDependencies: ["vitest"],
     // The observation contract is the package the browser links. It may never
@@ -4066,13 +4161,13 @@ const P1B_DEPENDENCY_LAW = [
     forbidden: ["@acp/ledger", "better-sqlite3"],
   },
   {
-    manifest: "packages/cli/package.json",
+    manifest: "packages/entrypoints/cli/package.json",
     dependencies: ["@acp/api-contracts", "@acp/ledger"],
     devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
   {
-    manifest: "packages/server/package.json",
+    manifest: "packages/entrypoints/server/package.json",
     // P8-8A: `@acp/observation` joins the surface so the initiative plane can
     // fold token rollups. The direction is the lawful one — the server reads
     // the observation plane's pure folds; nothing in observation knows a
@@ -4089,7 +4184,7 @@ const P1B_DEPENDENCY_LAW = [
     forbidden: ["better-sqlite3"],
   },
   {
-    manifest: "packages/ui/package.json",
+    manifest: "packages/entrypoints/ui/package.json",
     // P8-8B adds exactly two runtime dependencies, each with a use site in
     // this packet: `@tanstack/react-query` (the cache the app root owns) and
     // `@radix-ui/react-navigation-menu` (the shell's primary navigation).
@@ -4133,7 +4228,7 @@ const P1B_DEPENDENCY_LAW = [
     forbidden: ["@acp/ledger", "@acp/contracts", "better-sqlite3", "sqlite3", "node:sqlite"],
   },
   {
-    manifest: "packages/runtime/package.json",
+    manifest: "packages/domains/runtime/package.json",
     // P8-W adds `@acp/accounts`: the switch executor plays a plan the accounts
     // module produced. The direction is the one this file already states --
     // runtime consumes accounts, never the reverse -- and the accounts entry
@@ -4145,7 +4240,7 @@ const P1B_DEPENDENCY_LAW = [
     forbidden: ["@restatedev/restate-server", "@scarf/scarf", "@restatedev/restate"],
   },
   {
-    manifest: "packages/accounts/package.json",
+    manifest: "packages/domains/accounts/package.json",
     // The ledger is a read-only dependency: P5D reads quota observations from
     // the event log, and the `.append(` scan below asserts that no production
     // source in the package ever writes one. `@acp/runtime` is forbidden by
@@ -4165,7 +4260,7 @@ const P1B_DEPENDENCY_LAW = [
     ],
   },
   {
-    manifest: "packages/adapters/package.json",
+    manifest: "packages/edges/adapters/package.json",
     // The adapters are pure producers of normalized events. They never open,
     // append to or even name a ledger, which is what keeps the provider
     // boundary from acquiring an authority it has no business holding.
@@ -4243,7 +4338,7 @@ const UI_FORBIDDEN_IMPORTS = [
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  const uiFiles = present.filter((relativePath) => inPackage(relativePath, "ui"));
+  const uiFiles = present.filter((relativePath) => inPackage(relativePath, "ui", PACKAGE_STRATA));
   requireScope("the browser package links no ledger and no database driver", uiFiles.length);
   for (const relativePath of uiFiles) {
     const content = readIfPresent(relativePath);
@@ -4272,7 +4367,7 @@ if (tracked.status === 0) {
   // test-scope by convention — nothing stops a `src/` module importing one and
   // pulling a DOM implementation and an accessibility engine into the bundle.
   // The test tree is deliberately not scanned: using them there is the point.
-  const uiSourceFiles = uiFiles.filter((relativePath) => inArea(relativePath, "ui", "src"));
+  const uiSourceFiles = uiFiles.filter((relativePath) => inArea(relativePath, "ui", "src", PACKAGE_STRATA));
   requireScope("the live-DOM evidence tools stay test-scope", uiSourceFiles.length);
   for (const relativePath of uiSourceFiles) {
     const content = readIfPresent(relativePath);
@@ -4306,21 +4401,18 @@ if (tracked.status === 0) {
 // exactly once. G10 is what flips the public side; until then the law's value
 // is that no package can be added, moved between strata, or quietly relicensed
 // without this failing.
-const PACKAGE_STRATA = Object.freeze({
-  kernel: ["contracts", "api-contracts"],
-  persistence: ["ledger"],
-  domains: ["runtime", "accounts", "observation"],
-  edges: ["adapters", "durability"],
-  entrypoints: ["daemon", "server", "cli", "ui"],
-});
-
+//
+// The table itself is declared at the top of this file, because G1' made it
+// something the resolver needs before any law runs: a package path cannot be
+// read at all without knowing which stratum owns the name. It is one table in
+// one place, read here and handed to every resolver call.
 /** Public is every stratum but the entrypoints. Derived, never restated. */
 const PUBLIC_STRATA = Object.keys(PACKAGE_STRATA).filter((stratum) => stratum !== "entrypoints");
 
 if (tracked.status === 0) {
   const presentPackages = new Set();
   for (const relativePath of tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
-    const name = packageOf(relativePath);
+    const name = packageOf(relativePath, PACKAGE_STRATA);
     if (name !== null) presentPackages.add(name);
   }
 
@@ -4345,23 +4437,23 @@ if (tracked.status === 0) {
   // Uniformity, asserted against the manifests rather than assumed.
   let classified = 0;
   for (const name of [...presentPackages].sort()) {
-    const manifestSource = readIfPresent(packagePrefix(name) + "package.json");
+    const manifestSource = readIfPresent(packagePrefix(name, PACKAGE_STRATA) + "package.json");
     if (manifestSource === null) {
-      fail(packagePrefix(name) + "package.json is missing; a package must declare itself");
+      fail(packagePrefix(name, PACKAGE_STRATA) + "package.json is missing; a package must declare itself");
       continue;
     }
     let manifest;
     try {
       manifest = JSON.parse(manifestSource);
     } catch {
-      fail(packagePrefix(name) + "package.json is not valid JSON");
+      fail(packagePrefix(name, PACKAGE_STRATA) + "package.json is not valid JSON");
       continue;
     }
     if (manifest.private !== true) {
-      fail(packagePrefix(name) + "package.json must declare private: true until G10 flips the public side");
+      fail(packagePrefix(name, PACKAGE_STRATA) + "package.json must declare private: true until G10 flips the public side");
     }
     if (manifest.license !== "UNLICENSED") {
-      fail(packagePrefix(name) + "package.json must declare the UNLICENSED license until G10");
+      fail(packagePrefix(name, PACKAGE_STRATA) + "package.json must declare the UNLICENSED license until G10");
     }
     classified += 1;
   }
@@ -4378,6 +4470,392 @@ if (tracked.status === 0) {
       (classified - publicCount) +
       " entrypoints), all private and UNLICENSED",
   );
+}
+
+// --- the G1' move map, and the two laws it makes checkable ------------------
+//
+// **This table is an epoch-frozen record, not a live law scope (G1' C3.2).**
+// Its 604 path literals are the packet's rollback authority and its proof
+// obligation: which path became which, in one place, bidirectionally. It sits
+// beside `RETIRED_PATHS` and the write-set arrays in that classification —
+// history the fence keeps so a move can be undone and audited — and the
+// certification computation's "no path literal in any law" reads it as record
+// for the same reason it reads those. A law is a rule applied to the tree; this
+// is a statement about what already happened, and the two laws below are what
+// actually apply rules.
+//
+// The map is injective in both directions — 302 pairs, no collision on either
+// side — which is the property the fold arithmetic rests on: a substitution
+// that merged two paths into one would change the distinct count, and it does
+// not. Rollback is this table read right to left, never a force.
+const G1_MOVE_MAP = Object.freeze([
+  ["packages/accounts/README.md", "packages/domains/accounts/README.md"],
+  ["packages/accounts/package.json", "packages/domains/accounts/package.json"],
+  ["packages/accounts/policy/capability-policy.json", "packages/domains/accounts/policy/capability-policy.json"],
+  ["packages/accounts/src/errors/index.ts", "packages/domains/accounts/src/errors/index.ts"],
+  ["packages/accounts/src/index.ts", "packages/domains/accounts/src/index.ts"],
+  ["packages/accounts/src/policy/index.ts", "packages/domains/accounts/src/policy/index.ts"],
+  ["packages/accounts/src/quota/index.ts", "packages/domains/accounts/src/quota/index.ts"],
+  ["packages/accounts/src/registry/index.ts", "packages/domains/accounts/src/registry/index.ts"],
+  ["packages/accounts/src/routing/index.ts", "packages/domains/accounts/src/routing/index.ts"],
+  ["packages/accounts/src/switching/index.ts", "packages/domains/accounts/src/switching/index.ts"],
+  ["packages/accounts/test/pilots/helpers/index.ts", "packages/domains/accounts/test/pilots/helpers/index.ts"],
+  ["packages/accounts/test/pilots/index.test.ts", "packages/domains/accounts/test/pilots/index.test.ts"],
+  ["packages/accounts/test/policy/index.test.ts", "packages/domains/accounts/test/policy/index.test.ts"],
+  ["packages/accounts/test/quota/index.test.ts", "packages/domains/accounts/test/quota/index.test.ts"],
+  ["packages/accounts/test/registry/index.test.ts", "packages/domains/accounts/test/registry/index.test.ts"],
+  ["packages/accounts/test/routing/index.test.ts", "packages/domains/accounts/test/routing/index.test.ts"],
+  ["packages/accounts/test/switching/index.test.ts", "packages/domains/accounts/test/switching/index.test.ts"],
+  ["packages/accounts/test/tsconfig.json", "packages/domains/accounts/test/tsconfig.json"],
+  ["packages/accounts/tsconfig.json", "packages/domains/accounts/tsconfig.json"],
+  ["packages/adapters/README.md", "packages/edges/adapters/README.md"],
+  ["packages/adapters/package.json", "packages/edges/adapters/package.json"],
+  ["packages/adapters/src/config-root/index.ts", "packages/edges/adapters/src/config-root/index.ts"],
+  ["packages/adapters/src/contract/index.ts", "packages/edges/adapters/src/contract/index.ts"],
+  ["packages/adapters/src/errors/index.ts", "packages/edges/adapters/src/errors/index.ts"],
+  ["packages/adapters/src/events/index.ts", "packages/edges/adapters/src/events/index.ts"],
+  ["packages/adapters/src/execution-port/index.ts", "packages/edges/adapters/src/execution-port/index.ts"],
+  ["packages/adapters/src/index.ts", "packages/edges/adapters/src/index.ts"],
+  ["packages/adapters/src/process/handle/index.ts", "packages/edges/adapters/src/process/handle/index.ts"],
+  ["packages/adapters/src/process/spawn/index.ts", "packages/edges/adapters/src/process/spawn/index.ts"],
+  ["packages/adapters/src/providers/api-key/index.ts", "packages/edges/adapters/src/providers/api-key/index.ts"],
+  ["packages/adapters/src/providers/claude/index.ts", "packages/edges/adapters/src/providers/claude/index.ts"],
+  ["packages/adapters/src/providers/codex/index.ts", "packages/edges/adapters/src/providers/codex/index.ts"],
+  ["packages/adapters/src/providers/kimi/index.ts", "packages/edges/adapters/src/providers/kimi/index.ts"],
+  ["packages/adapters/src/providers/local/index.ts", "packages/edges/adapters/src/providers/local/index.ts"],
+  ["packages/adapters/src/redact/index.ts", "packages/edges/adapters/src/redact/index.ts"],
+  ["packages/adapters/src/session/index.ts", "packages/edges/adapters/src/session/index.ts"],
+  ["packages/adapters/test/config-root/index.test.ts", "packages/edges/adapters/test/config-root/index.test.ts"],
+  ["packages/adapters/test/contract/index.test.ts", "packages/edges/adapters/test/contract/index.test.ts"],
+  ["packages/adapters/test/events/index.test.ts", "packages/edges/adapters/test/events/index.test.ts"],
+  ["packages/adapters/test/execution-port/index.test.ts", "packages/edges/adapters/test/execution-port/index.test.ts"],
+  ["packages/adapters/test/process/spawn/index.test.ts", "packages/edges/adapters/test/process/spawn/index.test.ts"],
+  ["packages/adapters/test/providers/claude/index.test.ts", "packages/edges/adapters/test/providers/claude/index.test.ts"],
+  ["packages/adapters/test/providers/codex/index.test.ts", "packages/edges/adapters/test/providers/codex/index.test.ts"],
+  ["packages/adapters/test/providers/kimi/index.test.ts", "packages/edges/adapters/test/providers/kimi/index.test.ts"],
+  ["packages/adapters/test/redact/index.test.ts", "packages/edges/adapters/test/redact/index.test.ts"],
+  ["packages/adapters/test/session/index.test.ts", "packages/edges/adapters/test/session/index.test.ts"],
+  ["packages/adapters/test/testing/index.ts", "packages/edges/adapters/test/testing/index.ts"],
+  ["packages/adapters/test/tsconfig.json", "packages/edges/adapters/test/tsconfig.json"],
+  ["packages/adapters/tsconfig.json", "packages/edges/adapters/tsconfig.json"],
+  ["packages/api-contracts/README.md", "packages/kernel/api-contracts/README.md"],
+  ["packages/api-contracts/package.json", "packages/kernel/api-contracts/package.json"],
+  ["packages/api-contracts/src/index.ts", "packages/kernel/api-contracts/src/index.ts"],
+  ["packages/api-contracts/src/parity/index.ts", "packages/kernel/api-contracts/src/parity/index.ts"],
+  ["packages/api-contracts/src/routes/index.ts", "packages/kernel/api-contracts/src/routes/index.ts"],
+  ["packages/api-contracts/src/schemas/index.ts", "packages/kernel/api-contracts/src/schemas/index.ts"],
+  ["packages/api-contracts/src/version/index.ts", "packages/kernel/api-contracts/src/version/index.ts"],
+  ["packages/api-contracts/test/parity/index.test.ts", "packages/kernel/api-contracts/test/parity/index.test.ts"],
+  ["packages/api-contracts/test/schemas/index.test.ts", "packages/kernel/api-contracts/test/schemas/index.test.ts"],
+  ["packages/api-contracts/test/tsconfig.json", "packages/kernel/api-contracts/test/tsconfig.json"],
+  ["packages/api-contracts/tsconfig.json", "packages/kernel/api-contracts/tsconfig.json"],
+  ["packages/cli/README.md", "packages/entrypoints/cli/README.md"],
+  ["packages/cli/package.json", "packages/entrypoints/cli/package.json"],
+  ["packages/cli/src/cli/index.ts", "packages/entrypoints/cli/src/cli/index.ts"],
+  ["packages/cli/src/format/index.ts", "packages/entrypoints/cli/src/format/index.ts"],
+  ["packages/cli/src/index.ts", "packages/entrypoints/cli/src/index.ts"],
+  ["packages/cli/src/observation/index.ts", "packages/entrypoints/cli/src/observation/index.ts"],
+  ["packages/cli/test/cli/index.test.ts", "packages/entrypoints/cli/test/cli/index.test.ts"],
+  ["packages/cli/test/tsconfig.json", "packages/entrypoints/cli/test/tsconfig.json"],
+  ["packages/cli/tsconfig.json", "packages/entrypoints/cli/tsconfig.json"],
+  ["packages/contracts/package.json", "packages/kernel/contracts/package.json"],
+  ["packages/contracts/src/index.ts", "packages/kernel/contracts/src/index.ts"],
+  ["packages/contracts/src/schemas/index.ts", "packages/kernel/contracts/src/schemas/index.ts"],
+  ["packages/contracts/test/schemas/index.test.ts", "packages/kernel/contracts/test/schemas/index.test.ts"],
+  ["packages/contracts/test/tsconfig.json", "packages/kernel/contracts/test/tsconfig.json"],
+  ["packages/contracts/tsconfig.json", "packages/kernel/contracts/tsconfig.json"],
+  ["packages/daemon/README.md", "packages/entrypoints/daemon/README.md"],
+  ["packages/daemon/launchd/README.md", "packages/entrypoints/daemon/launchd/README.md"],
+  ["packages/daemon/launchd/com.rottay.agent-control-plane.plist.template", "packages/entrypoints/daemon/launchd/com.rottay.agent-control-plane.plist.template"],
+  ["packages/daemon/package.json", "packages/entrypoints/daemon/package.json"],
+  ["packages/daemon/src/bin/acp-daemon/index.ts", "packages/entrypoints/daemon/src/bin/acp-daemon/index.ts"],
+  ["packages/daemon/src/bin/config-file/index.ts", "packages/entrypoints/daemon/src/bin/config-file/index.ts"],
+  ["packages/daemon/src/constants/index.ts", "packages/entrypoints/daemon/src/constants/index.ts"],
+  ["packages/daemon/src/daemon-child/index.ts", "packages/entrypoints/daemon/src/daemon-child/index.ts"],
+  ["packages/daemon/src/errors/index.ts", "packages/entrypoints/daemon/src/errors/index.ts"],
+  ["packages/daemon/src/identity-probe/index.ts", "packages/entrypoints/daemon/src/identity-probe/index.ts"],
+  ["packages/daemon/src/index.ts", "packages/entrypoints/daemon/src/index.ts"],
+  ["packages/daemon/src/launchd/render/index.ts", "packages/entrypoints/daemon/src/launchd/render/index.ts"],
+  ["packages/daemon/src/launchd/validate/index.ts", "packages/entrypoints/daemon/src/launchd/validate/index.ts"],
+  ["packages/daemon/src/lifecycle/index.ts", "packages/entrypoints/daemon/src/lifecycle/index.ts"],
+  ["packages/daemon/src/log/index.ts", "packages/entrypoints/daemon/src/log/index.ts"],
+  ["packages/daemon/src/mode-restate/index.ts", "packages/entrypoints/daemon/src/mode-restate/index.ts"],
+  ["packages/daemon/src/mode-sqlite/index.ts", "packages/entrypoints/daemon/src/mode-sqlite/index.ts"],
+  ["packages/daemon/src/paths/index.ts", "packages/entrypoints/daemon/src/paths/index.ts"],
+  ["packages/daemon/src/signals/index.ts", "packages/entrypoints/daemon/src/signals/index.ts"],
+  ["packages/daemon/src/singleton/index.ts", "packages/entrypoints/daemon/src/singleton/index.ts"],
+  ["packages/daemon/src/status/index.ts", "packages/entrypoints/daemon/src/status/index.ts"],
+  ["packages/daemon/test/bin/acp-daemon/index.test.ts", "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts"],
+  ["packages/daemon/test/drills/index.test.ts", "packages/entrypoints/daemon/test/drills/index.test.ts"],
+  ["packages/daemon/test/fallback/index.test.ts", "packages/entrypoints/daemon/test/fallback/index.test.ts"],
+  ["packages/daemon/test/identity-probe/index.test.ts", "packages/entrypoints/daemon/test/identity-probe/index.test.ts"],
+  ["packages/daemon/test/index.test.ts", "packages/entrypoints/daemon/test/index.test.ts"],
+  ["packages/daemon/test/launchd/drills/index.test.ts", "packages/entrypoints/daemon/test/launchd/drills/index.test.ts"],
+  ["packages/daemon/test/launchd/lifecycle/index.test.ts", "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts"],
+  ["packages/daemon/test/launchd/render/index.test.ts", "packages/entrypoints/daemon/test/launchd/render/index.test.ts"],
+  ["packages/daemon/test/launchd/validate/index.test.ts", "packages/entrypoints/daemon/test/launchd/validate/index.test.ts"],
+  ["packages/daemon/test/lifecycle/index.test.ts", "packages/entrypoints/daemon/test/lifecycle/index.test.ts"],
+  ["packages/daemon/test/log/index.test.ts", "packages/entrypoints/daemon/test/log/index.test.ts"],
+  ["packages/daemon/test/paths/index.test.ts", "packages/entrypoints/daemon/test/paths/index.test.ts"],
+  ["packages/daemon/test/singleton/index.test.ts", "packages/entrypoints/daemon/test/singleton/index.test.ts"],
+  ["packages/daemon/test/status/index.test.ts", "packages/entrypoints/daemon/test/status/index.test.ts"],
+  ["packages/daemon/test/tsconfig.json", "packages/entrypoints/daemon/test/tsconfig.json"],
+  ["packages/daemon/tsconfig.json", "packages/entrypoints/daemon/tsconfig.json"],
+  ["packages/ledger/README.md", "packages/persistence/ledger/README.md"],
+  ["packages/ledger/package.json", "packages/persistence/ledger/package.json"],
+  ["packages/ledger/src/artifact-store/index.ts", "packages/persistence/ledger/src/artifact-store/index.ts"],
+  ["packages/ledger/src/canonical-json/index.ts", "packages/persistence/ledger/src/canonical-json/index.ts"],
+  ["packages/ledger/src/errors/index.ts", "packages/persistence/ledger/src/errors/index.ts"],
+  ["packages/ledger/src/index.ts", "packages/persistence/ledger/src/index.ts"],
+  ["packages/ledger/src/ledger/index.ts", "packages/persistence/ledger/src/ledger/index.ts"],
+  ["packages/ledger/src/migrations/index.ts", "packages/persistence/ledger/src/migrations/index.ts"],
+  ["packages/ledger/src/projection/index.ts", "packages/persistence/ledger/src/projection/index.ts"],
+  ["packages/ledger/src/roadmap-version/index.ts", "packages/persistence/ledger/src/roadmap-version/index.ts"],
+  ["packages/ledger/src/types/index.ts", "packages/persistence/ledger/src/types/index.ts"],
+  ["packages/ledger/test/artifact-store/index.test.ts", "packages/persistence/ledger/test/artifact-store/index.test.ts"],
+  ["packages/ledger/test/concurrent-writer-worker/index.ts", "packages/persistence/ledger/test/concurrent-writer-worker/index.ts"],
+  ["packages/ledger/test/ledger/index.test.ts", "packages/persistence/ledger/test/ledger/index.test.ts"],
+  ["packages/ledger/test/roadmap-version/index.test.ts", "packages/persistence/ledger/test/roadmap-version/index.test.ts"],
+  ["packages/ledger/test/tsconfig.json", "packages/persistence/ledger/test/tsconfig.json"],
+  ["packages/ledger/tsconfig.json", "packages/persistence/ledger/tsconfig.json"],
+  ["packages/observation/README.md", "packages/domains/observation/README.md"],
+  ["packages/observation/package.json", "packages/domains/observation/package.json"],
+  ["packages/observation/src/baseline/index.ts", "packages/domains/observation/src/baseline/index.ts"],
+  ["packages/observation/src/collect/artifact/index.ts", "packages/domains/observation/src/collect/artifact/index.ts"],
+  ["packages/observation/src/collect/index.ts", "packages/domains/observation/src/collect/index.ts"],
+  ["packages/observation/src/collect/scenario/index.ts", "packages/domains/observation/src/collect/scenario/index.ts"],
+  ["packages/observation/src/errors/index.ts", "packages/domains/observation/src/errors/index.ts"],
+  ["packages/observation/src/index.ts", "packages/domains/observation/src/index.ts"],
+  ["packages/observation/src/rollups/index.ts", "packages/domains/observation/src/rollups/index.ts"],
+  ["packages/observation/src/roots/index.ts", "packages/domains/observation/src/roots/index.ts"],
+  ["packages/observation/src/shadow-ledger/index.ts", "packages/domains/observation/src/shadow-ledger/index.ts"],
+  ["packages/observation/src/telemetry/index.ts", "packages/domains/observation/src/telemetry/index.ts"],
+  ["packages/observation/src/telemetry/langfuse/index.ts", "packages/domains/observation/src/telemetry/langfuse/index.ts"],
+  ["packages/observation/test/baseline/index.test.ts", "packages/domains/observation/test/baseline/index.test.ts"],
+  ["packages/observation/test/collect/artifact/index.test.ts", "packages/domains/observation/test/collect/artifact/index.test.ts"],
+  ["packages/observation/test/collect/scenario/index.test.ts", "packages/domains/observation/test/collect/scenario/index.test.ts"],
+  ["packages/observation/test/rollups/index.test.ts", "packages/domains/observation/test/rollups/index.test.ts"],
+  ["packages/observation/test/roots/index.test.ts", "packages/domains/observation/test/roots/index.test.ts"],
+  ["packages/observation/test/shadow-ledger/index.test.ts", "packages/domains/observation/test/shadow-ledger/index.test.ts"],
+  ["packages/observation/test/telemetry/index.test.ts", "packages/domains/observation/test/telemetry/index.test.ts"],
+  ["packages/observation/test/tsconfig.json", "packages/domains/observation/test/tsconfig.json"],
+  ["packages/observation/tsconfig.json", "packages/domains/observation/tsconfig.json"],
+  ["packages/runtime/README.md", "packages/domains/runtime/README.md"],
+  ["packages/runtime/package.json", "packages/domains/runtime/package.json"],
+  ["packages/runtime/src/commit-authorization/index.ts", "packages/domains/runtime/src/commit-authorization/index.ts"],
+  ["packages/runtime/src/conflict-graph/index.ts", "packages/domains/runtime/src/conflict-graph/index.ts"],
+  ["packages/runtime/src/constants/index.ts", "packages/domains/runtime/src/constants/index.ts"],
+  ["packages/runtime/src/contracts/index.ts", "packages/domains/runtime/src/contracts/index.ts"],
+  ["packages/runtime/src/core/coordinates/index.ts", "packages/domains/runtime/src/core/coordinates/index.ts"],
+  ["packages/runtime/src/core/events/index.ts", "packages/domains/runtime/src/core/events/index.ts"],
+  ["packages/runtime/src/core/lifecycle/index.ts", "packages/domains/runtime/src/core/lifecycle/index.ts"],
+  ["packages/runtime/src/core/step-executor/index.ts", "packages/domains/runtime/src/core/step-executor/index.ts"],
+  ["packages/runtime/src/drivers/restate-child/index.ts", "packages/domains/runtime/src/drivers/restate-child/index.ts"],
+  ["packages/runtime/src/drivers/restate-driver/index.ts", "packages/domains/runtime/src/drivers/restate-driver/index.ts"],
+  ["packages/runtime/src/drivers/restate-endpoint/index.ts", "packages/domains/runtime/src/drivers/restate-endpoint/index.ts"],
+  ["packages/runtime/src/drivers/sqlite-supervisor-child/index.ts", "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts"],
+  ["packages/runtime/src/drivers/sqlite-supervisor/index.ts", "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts"],
+  ["packages/runtime/src/enforcement/index.ts", "packages/domains/runtime/src/enforcement/index.ts"],
+  ["packages/runtime/src/errors/index.ts", "packages/domains/runtime/src/errors/index.ts"],
+  ["packages/runtime/src/index.ts", "packages/domains/runtime/src/index.ts"],
+  ["packages/runtime/src/restate/server-handle/index.ts", "packages/domains/runtime/src/restate/server-handle/index.ts"],
+  ["packages/runtime/src/restate/submit/index.ts", "packages/domains/runtime/src/restate/submit/index.ts"],
+  ["packages/runtime/src/switch-executor/index.ts", "packages/domains/runtime/src/switch-executor/index.ts"],
+  ["packages/runtime/src/toy/repository/index.ts", "packages/domains/runtime/src/toy/repository/index.ts"],
+  ["packages/runtime/src/usage/index.ts", "packages/domains/runtime/src/usage/index.ts"],
+  ["packages/runtime/test/commit-authorization/index.test.ts", "packages/domains/runtime/test/commit-authorization/index.test.ts"],
+  ["packages/runtime/test/conflict-graph/index.test.ts", "packages/domains/runtime/test/conflict-graph/index.test.ts"],
+  ["packages/runtime/test/core/coordinates/index.test.ts", "packages/domains/runtime/test/core/coordinates/index.test.ts"],
+  ["packages/runtime/test/core/events/index.test.ts", "packages/domains/runtime/test/core/events/index.test.ts"],
+  ["packages/runtime/test/core/lifecycle/index.test.ts", "packages/domains/runtime/test/core/lifecycle/index.test.ts"],
+  ["packages/runtime/test/core/step-executor/index.test.ts", "packages/domains/runtime/test/core/step-executor/index.test.ts"],
+  ["packages/runtime/test/drivers/drills/index.test.ts", "packages/domains/runtime/test/drivers/drills/index.test.ts"],
+  ["packages/runtime/test/drivers/restate-driver/index.test.ts", "packages/domains/runtime/test/drivers/restate-driver/index.test.ts"],
+  ["packages/runtime/test/drivers/sqlite-supervisor/index.test.ts", "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts"],
+  ["packages/runtime/test/enforcement/index.test.ts", "packages/domains/runtime/test/enforcement/index.test.ts"],
+  ["packages/runtime/test/pilots/helpers/index.ts", "packages/domains/runtime/test/pilots/helpers/index.ts"],
+  ["packages/runtime/test/pilots/index.test.ts", "packages/domains/runtime/test/pilots/index.test.ts"],
+  ["packages/runtime/test/pilots/recovery/helpers/index.ts", "packages/domains/runtime/test/pilots/recovery/helpers/index.ts"],
+  ["packages/runtime/test/pilots/recovery/index.test.ts", "packages/domains/runtime/test/pilots/recovery/index.test.ts"],
+  ["packages/runtime/test/pilots/writer/helpers/index.ts", "packages/domains/runtime/test/pilots/writer/helpers/index.ts"],
+  ["packages/runtime/test/pilots/writer/index.test.ts", "packages/domains/runtime/test/pilots/writer/index.test.ts"],
+  ["packages/runtime/test/switch-executor/index.test.ts", "packages/domains/runtime/test/switch-executor/index.test.ts"],
+  ["packages/runtime/test/toy/repository/index.test.ts", "packages/domains/runtime/test/toy/repository/index.test.ts"],
+  ["packages/runtime/test/tsconfig.json", "packages/domains/runtime/test/tsconfig.json"],
+  ["packages/runtime/test/usage/index.test.ts", "packages/domains/runtime/test/usage/index.test.ts"],
+  ["packages/runtime/tsconfig.json", "packages/domains/runtime/tsconfig.json"],
+  ["packages/server/package.json", "packages/entrypoints/server/package.json"],
+  ["packages/server/src/account-actions/index.ts", "packages/entrypoints/server/src/account-actions/index.ts"],
+  ["packages/server/src/accounts/index.ts", "packages/entrypoints/server/src/accounts/index.ts"],
+  ["packages/server/src/aggregates/index.ts", "packages/entrypoints/server/src/aggregates/index.ts"],
+  ["packages/server/src/bearer/index.ts", "packages/entrypoints/server/src/bearer/index.ts"],
+  ["packages/server/src/bin/index.ts", "packages/entrypoints/server/src/bin/index.ts"],
+  ["packages/server/src/build-server/index.ts", "packages/entrypoints/server/src/build-server/index.ts"],
+  ["packages/server/src/constants/index.ts", "packages/entrypoints/server/src/constants/index.ts"],
+  ["packages/server/src/database-identity/index.ts", "packages/entrypoints/server/src/database-identity/index.ts"],
+  ["packages/server/src/errors/index.ts", "packages/entrypoints/server/src/errors/index.ts"],
+  ["packages/server/src/index.ts", "packages/entrypoints/server/src/index.ts"],
+  ["packages/server/src/initiatives/index.ts", "packages/entrypoints/server/src/initiatives/index.ts"],
+  ["packages/server/src/ledger-source/index.ts", "packages/entrypoints/server/src/ledger-source/index.ts"],
+  ["packages/server/src/mappers/index.ts", "packages/entrypoints/server/src/mappers/index.ts"],
+  ["packages/server/src/query-schemas/index.ts", "packages/entrypoints/server/src/query-schemas/index.ts"],
+  ["packages/server/src/roadmap-write/index.ts", "packages/entrypoints/server/src/roadmap-write/index.ts"],
+  ["packages/server/src/routes/index.ts", "packages/entrypoints/server/src/routes/index.ts"],
+  ["packages/server/src/start/index.ts", "packages/entrypoints/server/src/start/index.ts"],
+  ["packages/server/test/account-actions/index.test.ts", "packages/entrypoints/server/test/account-actions/index.test.ts"],
+  ["packages/server/test/accounts/index.test.ts", "packages/entrypoints/server/test/accounts/index.test.ts"],
+  ["packages/server/test/bearer/index.test.ts", "packages/entrypoints/server/test/bearer/index.test.ts"],
+  ["packages/server/test/bin/index.test.ts", "packages/entrypoints/server/test/bin/index.test.ts"],
+  ["packages/server/test/build-server/index.test.ts", "packages/entrypoints/server/test/build-server/index.test.ts"],
+  ["packages/server/test/initiatives/index.test.ts", "packages/entrypoints/server/test/initiatives/index.test.ts"],
+  ["packages/server/test/parity/index.test.ts", "packages/entrypoints/server/test/parity/index.test.ts"],
+  ["packages/server/test/roadmap-write/index.test.ts", "packages/entrypoints/server/test/roadmap-write/index.test.ts"],
+  ["packages/server/test/tsconfig.json", "packages/entrypoints/server/test/tsconfig.json"],
+  ["packages/server/tsconfig.json", "packages/entrypoints/server/tsconfig.json"],
+  ["packages/ui/index.html", "packages/entrypoints/ui/index.html"],
+  ["packages/ui/package.json", "packages/entrypoints/ui/package.json"],
+  ["packages/ui/src/api/client/index.ts", "packages/entrypoints/ui/src/api/client/index.ts"],
+  ["packages/ui/src/api/query-string/index.ts", "packages/entrypoints/ui/src/api/query-string/index.ts"],
+  ["packages/ui/src/app/index.tsx", "packages/entrypoints/ui/src/app/index.tsx"],
+  ["packages/ui/src/components/app-shell/index.tsx", "packages/entrypoints/ui/src/components/app-shell/index.tsx"],
+  ["packages/ui/src/components/async-section/index.tsx", "packages/entrypoints/ui/src/components/async-section/index.tsx"],
+  ["packages/ui/src/components/bar-breakdown/index.tsx", "packages/entrypoints/ui/src/components/bar-breakdown/index.tsx"],
+  ["packages/ui/src/components/bearer-field/index.tsx", "packages/entrypoints/ui/src/components/bearer-field/index.tsx"],
+  ["packages/ui/src/components/data-table/index.tsx", "packages/entrypoints/ui/src/components/data-table/index.tsx"],
+  ["packages/ui/src/components/edit-roadmap-dialog/index.tsx", "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx"],
+  ["packages/ui/src/components/filter-bar/index.tsx", "packages/entrypoints/ui/src/components/filter-bar/index.tsx"],
+  ["packages/ui/src/components/id-value/index.tsx", "packages/entrypoints/ui/src/components/id-value/index.tsx"],
+  ["packages/ui/src/components/pagination/index.tsx", "packages/entrypoints/ui/src/components/pagination/index.tsx"],
+  ["packages/ui/src/components/skip-link/index.tsx", "packages/entrypoints/ui/src/components/skip-link/index.tsx"],
+  ["packages/ui/src/components/status-badge/index.tsx", "packages/entrypoints/ui/src/components/status-badge/index.tsx"],
+  ["packages/ui/src/components/timeline-list/index.tsx", "packages/entrypoints/ui/src/components/timeline-list/index.tsx"],
+  ["packages/ui/src/format/chain/index.ts", "packages/entrypoints/ui/src/format/chain/index.ts"],
+  ["packages/ui/src/format/index.ts", "packages/entrypoints/ui/src/format/index.ts"],
+  ["packages/ui/src/format/status-tone/index.ts", "packages/entrypoints/ui/src/format/status-tone/index.ts"],
+  ["packages/ui/src/hooks/use-async-resource/index.ts", "packages/entrypoints/ui/src/hooks/use-async-resource/index.ts"],
+  ["packages/ui/src/index.tsx", "packages/entrypoints/ui/src/index.tsx"],
+  ["packages/ui/src/routing/hash-route/index.ts", "packages/entrypoints/ui/src/routing/hash-route/index.ts"],
+  ["packages/ui/src/routing/use-hash-route/index.ts", "packages/entrypoints/ui/src/routing/use-hash-route/index.ts"],
+  ["packages/ui/src/styles/base.css", "packages/entrypoints/ui/src/styles/base.css"],
+  ["packages/ui/src/styles/components.css", "packages/entrypoints/ui/src/styles/components.css"],
+  ["packages/ui/src/styles/index.css", "packages/entrypoints/ui/src/styles/index.css"],
+  ["packages/ui/src/styles/layout.css", "packages/entrypoints/ui/src/styles/layout.css"],
+  ["packages/ui/src/styles/tokens.css", "packages/entrypoints/ui/src/styles/tokens.css"],
+  ["packages/ui/src/views/accounts-view/index.tsx", "packages/entrypoints/ui/src/views/accounts-view/index.tsx"],
+  ["packages/ui/src/views/agents-view/index.tsx", "packages/entrypoints/ui/src/views/agents-view/index.tsx"],
+  ["packages/ui/src/views/events-view/index.tsx", "packages/entrypoints/ui/src/views/events-view/index.tsx"],
+  ["packages/ui/src/views/graph-view/index.tsx", "packages/entrypoints/ui/src/views/graph-view/index.tsx"],
+  ["packages/ui/src/views/integrity-view/index.tsx", "packages/entrypoints/ui/src/views/integrity-view/index.tsx"],
+  ["packages/ui/src/views/logs-view/index.tsx", "packages/entrypoints/ui/src/views/logs-view/index.tsx"],
+  ["packages/ui/src/views/not-found-view/index.tsx", "packages/entrypoints/ui/src/views/not-found-view/index.tsx"],
+  ["packages/ui/src/views/overview-view/index.tsx", "packages/entrypoints/ui/src/views/overview-view/index.tsx"],
+  ["packages/ui/src/views/portfolio-view/index.tsx", "packages/entrypoints/ui/src/views/portfolio-view/index.tsx"],
+  ["packages/ui/src/views/roadmap-document-view/index.tsx", "packages/entrypoints/ui/src/views/roadmap-document-view/index.tsx"],
+  ["packages/ui/src/views/status-view/index.tsx", "packages/entrypoints/ui/src/views/status-view/index.tsx"],
+  ["packages/ui/src/views/task-detail-view/index.tsx", "packages/entrypoints/ui/src/views/task-detail-view/index.tsx"],
+  ["packages/ui/src/views/tasks-list-view/index.tsx", "packages/entrypoints/ui/src/views/tasks-list-view/index.tsx"],
+  ["packages/ui/src/views/timeline-view/index.tsx", "packages/entrypoints/ui/src/views/timeline-view/index.tsx"],
+  ["packages/ui/src/views/worker-detail-view/index.tsx", "packages/entrypoints/ui/src/views/worker-detail-view/index.tsx"],
+  ["packages/ui/src/views/workers-list-view/index.tsx", "packages/entrypoints/ui/src/views/workers-list-view/index.tsx"],
+  ["packages/ui/src/views/workspace-view/index.tsx", "packages/entrypoints/ui/src/views/workspace-view/index.tsx"],
+  ["packages/ui/test/api/client/index.test.ts", "packages/entrypoints/ui/test/api/client/index.test.ts"],
+  ["packages/ui/test/app/index.test.tsx", "packages/entrypoints/ui/test/app/index.test.tsx"],
+  ["packages/ui/test/components/app-shell/index.test.tsx", "packages/entrypoints/ui/test/components/app-shell/index.test.tsx"],
+  ["packages/ui/test/components/async-section/index.test.tsx", "packages/entrypoints/ui/test/components/async-section/index.test.tsx"],
+  ["packages/ui/test/components/bar-breakdown/index.test.tsx", "packages/entrypoints/ui/test/components/bar-breakdown/index.test.tsx"],
+  ["packages/ui/test/components/bearer-field/index.test.tsx", "packages/entrypoints/ui/test/components/bearer-field/index.test.tsx"],
+  ["packages/ui/test/components/data-table/index.test.tsx", "packages/entrypoints/ui/test/components/data-table/index.test.tsx"],
+  ["packages/ui/test/components/edit-roadmap-dialog/index.test.tsx", "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx"],
+  ["packages/ui/test/components/filter-bar/index.test.tsx", "packages/entrypoints/ui/test/components/filter-bar/index.test.tsx"],
+  ["packages/ui/test/components/id-value/index.test.tsx", "packages/entrypoints/ui/test/components/id-value/index.test.tsx"],
+  ["packages/ui/test/components/pagination/index.test.tsx", "packages/entrypoints/ui/test/components/pagination/index.test.tsx"],
+  ["packages/ui/test/components/status-badge/index.test.tsx", "packages/entrypoints/ui/test/components/status-badge/index.test.tsx"],
+  ["packages/ui/test/components/timeline-list/index.test.tsx", "packages/entrypoints/ui/test/components/timeline-list/index.test.tsx"],
+  ["packages/ui/test/format/chain/index.test.ts", "packages/entrypoints/ui/test/format/chain/index.test.ts"],
+  ["packages/ui/test/format/index.test.ts", "packages/entrypoints/ui/test/format/index.test.ts"],
+  ["packages/ui/test/format/status-tone/index.test.ts", "packages/entrypoints/ui/test/format/status-tone/index.test.ts"],
+  ["packages/ui/test/live-dom/index.test.tsx", "packages/entrypoints/ui/test/live-dom/index.test.tsx"],
+  ["packages/ui/test/live-dom/index.ts", "packages/entrypoints/ui/test/live-dom/index.ts"],
+  ["packages/ui/test/routing/hash-route/index.test.ts", "packages/entrypoints/ui/test/routing/hash-route/index.test.ts"],
+  ["packages/ui/test/tsconfig.json", "packages/entrypoints/ui/test/tsconfig.json"],
+  ["packages/ui/test/views/accounts-view/index.test.tsx", "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx"],
+  ["packages/ui/test/views/agents-view/index.test.tsx", "packages/entrypoints/ui/test/views/agents-view/index.test.tsx"],
+  ["packages/ui/test/views/graph-view/index.test.tsx", "packages/entrypoints/ui/test/views/graph-view/index.test.tsx"],
+  ["packages/ui/test/views/index.test.tsx", "packages/entrypoints/ui/test/views/index.test.tsx"],
+  ["packages/ui/test/views/logs-view/index.test.tsx", "packages/entrypoints/ui/test/views/logs-view/index.test.tsx"],
+  ["packages/ui/test/views/not-found-view/index.test.tsx", "packages/entrypoints/ui/test/views/not-found-view/index.test.tsx"],
+  ["packages/ui/test/views/portfolio-view/index.test.tsx", "packages/entrypoints/ui/test/views/portfolio-view/index.test.tsx"],
+  ["packages/ui/test/views/roadmap-document-view/index.test.tsx", "packages/entrypoints/ui/test/views/roadmap-document-view/index.test.tsx"],
+  ["packages/ui/test/views/timeline-view/index.test.tsx", "packages/entrypoints/ui/test/views/timeline-view/index.test.tsx"],
+  ["packages/ui/test/views/workspace-view/index.test.tsx", "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx"],
+  ["packages/ui/tsconfig.json", "packages/entrypoints/ui/tsconfig.json"],
+  ["packages/ui/tsconfig.node.json", "packages/entrypoints/ui/tsconfig.node.json"],
+  ["packages/ui/vite.config.ts", "packages/entrypoints/ui/vite.config.ts"],
+]);
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const packageFiles = present.filter((relativePath) => relativePath.startsWith("packages/"));
+
+  // --- G1' law (a): nothing may live under an old prefix ---------------------
+  //
+  // The eleven prefixes are derived from the map's own left column rather than
+  // written out again, so the law cannot drift from the record it enforces. It
+  // is deliberately stronger than "the moved files moved": it refuses a *new*
+  // file created at an old location, which is the way a half-completed
+  // relocation actually comes back.
+  const oldPrefixes = [
+    ...new Set(G1_MOVE_MAP.map(([oldPath]) => oldPath.split("/").slice(0, 2).join("/") + "/")),
+  ].sort();
+  let shapeViolations = 0;
+  for (const relativePath of packageFiles) {
+    const stale = oldPrefixes.find((prefix) => relativePath.startsWith(prefix));
+    if (stale !== undefined) {
+      shapeViolations += 1;
+      fail(
+        relativePath +
+          " is under the retired prefix " +
+          stale +
+          "; G1' moved that tree into its stratum and nothing may be created there again",
+      );
+    }
+  }
+  requireScope("no tracked path under a pre-G1' package prefix", packageFiles.length);
+
+  // --- G1' law (b): every package sits exactly two levels down ---------------
+  //
+  // The roadmap's topology says "folder name = package name; at most two
+  // levels", and this is that sentence made mechanical. A path under
+  // `packages/` must resolve to a stratum the table names and a package that
+  // stratum owns; anything else — a package left at one level, a stratum
+  // directory with loose files in it, a name no stratum claims — is refused by
+  // name. `packageLocation` returning `null` is the whole test, which is why
+  // the resolver refuses to guess.
+  for (const relativePath of packageFiles) {
+    if (packageLocation(relativePath, PACKAGE_STRATA) !== null) continue;
+    shapeViolations += 1;
+    const top = topSegmentOf(relativePath);
+    fail(
+      relativePath +
+        (top === null || !Object.prototype.hasOwnProperty.call(PACKAGE_STRATA, top)
+          ? " does not sit under a named stratum; a package lives at packages/<stratum>/<name>/"
+          : " names the stratum " +
+            top +
+            " but no package it owns; a package lives at packages/<stratum>/<name>/"),
+    );
+  }
+  requireScope("every package sits at packages/<stratum>/<name>/", packageFiles.length);
+
+  if (shapeViolations === 0) {
+    notes.push(
+      G1_MOVE_MAP.length +
+        " G1' move-map pairs recorded across " +
+        oldPrefixes.length +
+        " retired prefixes; " +
+        packageFiles.length +
+        " tracked package file(s) all resolve two levels down",
+    );
+  }
 }
 
 // --- the path-shaped register checks itself (P8-T G0, L3) -------------------
@@ -4460,7 +4938,7 @@ const RUNTIME_TEST_ONLY_IMPORTS = new Set([
  * relax the ban repository-wide, the allowance is scoped to a single file, and
  * the two checks below make that file prove it binds loopback.
  */
-const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint/index.ts";
+const HTTP2_ALLOWED_FILE = "packages/domains/runtime/src/drivers/restate-endpoint/index.ts";
 
 /**
  * The only two production files that may start a subprocess, by exact path and
@@ -4477,9 +4955,9 @@ const HTTP2_ALLOWED_FILE = "packages/runtime/src/drivers/restate-endpoint/index.
  * to stop something.
  */
 const SPAWN_ALLOWED_FILES = new Map([
-  ["packages/runtime/src/restate/server-handle/index.ts", "the pinned Restate server"],
-  ["packages/daemon/src/identity-probe/index.ts", "reading process identity via /bin/ps"],
-  ["packages/adapters/src/process/spawn/index.ts", "the single provider spawn authority"],
+  ["packages/domains/runtime/src/restate/server-handle/index.ts", "the pinned Restate server"],
+  ["packages/entrypoints/daemon/src/identity-probe/index.ts", "reading process identity via /bin/ps"],
+  ["packages/edges/adapters/src/process/spawn/index.ts", "the single provider spawn authority"],
 ]);
 
 // Anything that could listen, connect or fan out. None of these belongs in a
@@ -4500,11 +4978,11 @@ if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const runtimeSources = present.filter(
     (relativePath) =>
-      (inAnyArea(relativePath, "runtime", ["src", "test"])) &&
+      (inAnyArea(relativePath, "runtime", ["src", "test"], PACKAGE_STRATA)) &&
     relativePath.endsWith(".ts"),
   );
   if (runtimeSources.length === 0) {
-    fail("packages/runtime/src has no tracked sources; the import purity check is inert");
+    fail("packages/domains/runtime/src has no tracked sources; the import purity check is inert");
   }
   {
     requireScope("the durability plane's import purity", runtimeSources.length);
@@ -4593,7 +5071,7 @@ const LAUNCHCTL_EXEMPT = new Set([
   // Prose only. The comment used to say "no code is exempt" while a test file
   // sat on this list, which is the kind of exemption that quietly becomes the
   // rule. Code constructs the token from pieces instead of being excused.
-  "packages/daemon/launchd/README.md",
+  "packages/entrypoints/daemon/launchd/README.md",
   "docs/architecture/0007-launchd-template-and-p2-closure.md",
   "docs/architecture/0008-packaged-entry-and-launchd-lifecycle.md",
 ]);
@@ -4606,7 +5084,7 @@ const LAUNCHCTL_EXEMPT = new Set([
  * disable — stay forbidden everywhere, including here. The four permitted verbs
  * are the ones a disposable lifecycle needs and no more.
  */
-const LAUNCH_DRILL_FILE = "packages/daemon/test/launchd/lifecycle/index.test.ts";
+const LAUNCH_DRILL_FILE = "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts";
 const LAUNCH_PERMITTED_VERBS = ["bootstrap", "kickstart", "print", "bootout"];
 const LAUNCH_FORBIDDEN_VERBS = ["load", "unload", "enable", "disable"];
 const DRILL_LABEL_PREFIX = "com.rottay.acp-drill-";
@@ -4709,7 +5187,7 @@ function stripComments(source) {
 // lifts that so the daemon can start the pinned server without a second
 // spawner, and pays for it here: the promotion is only safe while the public
 // surface stays narrow, so each narrowing is asserted rather than described.
-const SERVER_HANDLE_FILE = "packages/runtime/src/restate/server-handle/index.ts";
+const SERVER_HANDLE_FILE = "packages/domains/runtime/src/restate/server-handle/index.ts";
 const serverHandleCode = stripComments(readIfPresent(SERVER_HANDLE_FILE) ?? "");
 if (serverHandleCode === "") {
   fail(SERVER_HANDLE_FILE + " is missing");
@@ -4739,19 +5217,19 @@ if (serverHandleCode === "") {
 }
 
 // The package entry point exports only the safe pair.
-const runtimeIndex = stripComments(readIfPresent("packages/runtime/src/index.ts") ?? "");
+const runtimeIndex = stripComments(readIfPresent("packages/domains/runtime/src/index.ts") ?? "");
 if (runtimeIndex !== "") {
   if (/export\s*\{[^}]*\bstartServer\b/.test(runtimeIndex)) {
-    fail("packages/runtime/src/index.ts exports startServer; only startVerifiedServer may leave");
+    fail("packages/domains/runtime/src/index.ts exports startServer; only startVerifiedServer may leave");
   }
   if (/export\s+type\s*\{[^}]*\bServerHandle\b(?!\s*as)/.test(runtimeIndex.replace(/SafeServerHandle/g, "Safe"))) {
-    fail("packages/runtime/src/index.ts exports the internal ServerHandle type");
+    fail("packages/domains/runtime/src/index.ts exports the internal ServerHandle type");
   }
   notes.push("the runtime entry point exports only the narrowed server lifecycle");
 }
 
 // The identity probe: an absolute binary, fixed argv, no shell, bounded.
-const PROBE_FILE = "packages/daemon/src/identity-probe/index.ts";
+const PROBE_FILE = "packages/entrypoints/daemon/src/identity-probe/index.ts";
 const probeCode = stripComments(readIfPresent(PROBE_FILE) ?? "");
 if (probeCode === "") {
   fail(PROBE_FILE + " is missing");
@@ -4763,7 +5241,7 @@ if (probeCode === "") {
     fail(PROBE_FILE + " must not use exec(), which runs a shell");
   }
   if (/shell\s*:/.test(probeCode)) fail(PROBE_FILE + " must not pass a shell option");
-  if (!/"\/bin\/ps"/.test(probeCode + (readIfPresent("packages/daemon/src/constants/index.ts") ?? ""))) {
+  if (!/"\/bin\/ps"/.test(probeCode + (readIfPresent("packages/entrypoints/daemon/src/constants/index.ts") ?? ""))) {
     fail(PROBE_FILE + " must invoke an absolute /bin/ps so PATH cannot choose the program");
   }
   if (!/LC_ALL/.test(probeCode)) fail(PROBE_FILE + " must pin LC_ALL=C for a stable date format");
@@ -4778,13 +5256,13 @@ if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const daemonSources = present.filter(
     (relativePath) =>
-      (inAnyArea(relativePath, "daemon", ["src", "test"])) &&
+      (inAnyArea(relativePath, "daemon", ["src", "test"], PACKAGE_STRATA)) &&
     relativePath.endsWith(".ts"),
   );
 
-  const manifest = readIfPresent("packages/daemon/package.json");
+  const manifest = readIfPresent("packages/entrypoints/daemon/package.json");
   if (manifest === null) {
-    fail("packages/daemon/package.json is missing");
+    fail("packages/entrypoints/daemon/package.json is missing");
   } else {
     const parsed = JSON.parse(manifest);
     // P2F replaces the blanket ban with an exact one. The ban was a
@@ -4795,7 +5273,7 @@ if (tracked.status === 0) {
     const bin = parsed.bin;
     const EXPECTED_BIN = { "acp-daemon": "./dist/bin/acp-daemon/index.js" };
     if (bin === undefined) {
-      fail("packages/daemon must declare its one packaged entry");
+      fail("packages/entrypoints/daemon must declare its one packaged entry");
     } else if (
       typeof bin !== "object" ||
       bin === null ||
@@ -4803,22 +5281,22 @@ if (tracked.status === 0) {
       bin["acp-daemon"] !== EXPECTED_BIN["acp-daemon"]
     ) {
       fail(
-        "packages/daemon may declare exactly one bin, acp-daemon -> " +
+        "packages/entrypoints/daemon may declare exactly one bin, acp-daemon -> " +
           EXPECTED_BIN["acp-daemon"],
       );
     }
     // The entry must exist as tracked source, carry the portable shebang, and
     // be made executable by the build. A bin pointing at nothing is a claim.
-    const entrySource = readIfPresent("packages/daemon/src/bin/acp-daemon/index.ts");
+    const entrySource = readIfPresent("packages/entrypoints/daemon/src/bin/acp-daemon/index.ts");
     if (entrySource === null) {
-      fail("packages/daemon/src/bin/acp-daemon/index.ts is missing");
+      fail("packages/entrypoints/daemon/src/bin/acp-daemon/index.ts is missing");
     } else if (entrySource.split("\n")[0] !== "#!/usr/bin/env node") {
       fail("the packaged entry must keep the portable shebang in tracked source");
     }
     const buildScript = String(parsed.scripts?.build ?? "");
     if (!buildScript.includes("chmod") || !buildScript.includes("process.execPath")) {
       fail(
-        "packages/daemon build must materialize the interpreter and set the executable bit; " +
+        "packages/entrypoints/daemon build must materialize the interpreter and set the executable bit; " +
           "a launchd gui job runs with PATH=/usr/bin:/bin:/usr/sbin:/sbin",
       );
     }
@@ -4827,14 +5305,14 @@ if (tracked.status === 0) {
     const devDeps = Object.keys(parsed.devDependencies ?? {}).sort();
     const expected = ["@acp/contracts", "@acp/ledger", "@acp/runtime"];
     if (deps.join(",") !== expected.join(",")) {
-      fail("packages/daemon dependencies must be exactly " + expected.join(", "));
+      fail("packages/entrypoints/daemon dependencies must be exactly " + expected.join(", "));
     }
     if (devDeps.join(",") !== "vitest") {
-      fail("packages/daemon devDependencies must be exactly vitest");
+      fail("packages/entrypoints/daemon devDependencies must be exactly vitest");
     }
     for (const forbidden of ["better-sqlite3", "@restatedev/restate-sdk"]) {
       if (deps.includes(forbidden)) {
-        fail("packages/daemon must not depend on " + forbidden + " directly");
+        fail("packages/entrypoints/daemon must not depend on " + forbidden + " directly");
       }
     }
     // Corrected in Stage B. This note still said "declares no bin" after P2F
@@ -4885,10 +5363,10 @@ if (tracked.status === 0) {
   // The status document is an observation. The moment a decision reads it, it
   // becomes a second authority that can disagree with the ledger.
   for (const decisionPath of [
-    "packages/daemon/src/lifecycle/index.ts",
-    "packages/daemon/src/singleton/index.ts",
-    "packages/daemon/src/mode-sqlite/index.ts",
-    "packages/daemon/src/mode-restate/index.ts",
+    "packages/entrypoints/daemon/src/lifecycle/index.ts",
+    "packages/entrypoints/daemon/src/singleton/index.ts",
+    "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+    "packages/entrypoints/daemon/src/mode-restate/index.ts",
   ]) {
     const content = readIfPresent(decisionPath);
     if (content !== null && /from\s+["']\.\.\/status\/index\.js["']/.test(content)) {
@@ -4897,9 +5375,9 @@ if (tracked.status === 0) {
   }
 
   // The child entry runs only when executed, never on import.
-  const childCode = readIfPresent("packages/daemon/src/daemon-child/index.ts");
+  const childCode = readIfPresent("packages/entrypoints/daemon/src/daemon-child/index.ts");
   if (childCode !== null && !/process\.argv\[1\]/.test(childCode)) {
-    fail("packages/daemon/src/daemon-child/index.ts must guard its entry point on process.argv[1]");
+    fail("packages/entrypoints/daemon/src/daemon-child/index.ts must guard its entry point on process.argv[1]");
   }
 
   // The public surface is closed, and stays closed.
@@ -4966,12 +5444,12 @@ if (tracked.status === 0) {
     ...LAUNCHD_PUBLIC_EXPORTS,
   ]);
 
-  const indexCode = readIfPresent("packages/daemon/src/index.ts");
+  const indexCode = readIfPresent("packages/entrypoints/daemon/src/index.ts");
   if (indexCode === null) {
-    fail("packages/daemon/src/index.ts is missing");
+    fail("packages/entrypoints/daemon/src/index.ts is missing");
   } else {
     if (/export\s*\*\s*from/.test(indexCode)) {
-      fail("packages/daemon/src/index.ts uses `export *`, which cannot stay closed");
+      fail("packages/entrypoints/daemon/src/index.ts uses `export *`, which cannot stay closed");
     }
     const exported = new Set();
     // Named re-export and export blocks.
@@ -4990,7 +5468,7 @@ if (tracked.status === 0) {
 
     for (const name of exported) {
       if (!DAEMON_PUBLIC_EXPORTS.has(name)) {
-        fail("packages/daemon exports " + name + ", which is outside its closed public surface");
+        fail("packages/entrypoints/daemon exports " + name + ", which is outside its closed public surface");
       }
     }
 
@@ -5001,7 +5479,7 @@ if (tracked.status === 0) {
     const launchdExported = LAUNCHD_PUBLIC_EXPORTS.filter((name) => exported.has(name));
     if (launchdExported.length !== LAUNCHD_PUBLIC_EXPORTS.length) {
       const missing = LAUNCHD_PUBLIC_EXPORTS.filter((name) => !exported.has(name));
-      fail("packages/daemon no longer exports pinned launchd name(s): " + missing.join(", "));
+      fail("packages/entrypoints/daemon no longer exports pinned launchd name(s): " + missing.join(", "));
     }
     const LAUNCHD_WITHDRAWN = [
       "PlistValue",
@@ -5017,7 +5495,7 @@ if (tracked.status === 0) {
     for (const name of LAUNCHD_WITHDRAWN) {
       if (exported.has(name)) {
         fail(
-          "packages/daemon re-exports " +
+          "packages/entrypoints/daemon re-exports " +
             name +
             ", which C3 withdrew from the public surface; tests import it by relative path",
         );
@@ -5036,7 +5514,7 @@ if (tracked.status === 0) {
 
 // --- 18. P2E: the template is inert, and adoption is impossible from here ---
 
-const TEMPLATE_PATH = "packages/daemon/launchd/com.rottay.agent-control-plane.plist.template";
+const TEMPLATE_PATH = "packages/entrypoints/daemon/launchd/com.rottay.agent-control-plane.plist.template";
 const templateSource = readIfPresent(TEMPLATE_PATH);
 if (templateSource === null) {
   fail("the launchd template is missing: " + TEMPLATE_PATH);
@@ -5079,7 +5557,7 @@ if (tracked.status === 0) {
   // production module: a lint is not a reason to add a third spawner.
   let launchdFiles = 0;
   for (const relativePath of present) {
-    if (!inArea(relativePath, "daemon", "src/launchd")) continue;
+    if (!inArea(relativePath, "daemon", "src/launchd", PACKAGE_STRATA)) continue;
     launchdFiles += 1;
     if (relativePath.endsWith(".test.ts")) continue;
     const content = readIfPresent(relativePath);
@@ -5098,7 +5576,7 @@ if (tracked.status === 0) {
   // single permitted line, plus a check that the file has acquired no Node
   // import at all, so the exemption cannot become cover for a module that grew
   // filesystem or process access.
-  const DENYLIST_FILE = "packages/daemon/src/launchd/validate/index.ts";
+  const DENYLIST_FILE = "packages/entrypoints/daemon/src/launchd/validate/index.ts";
   const AGENT_DIR_TOKEN = ["Launch", "Agents"].join("");
   for (const relativePath of present) {
     if (relativePath.endsWith(".md")) continue;
@@ -5133,7 +5611,7 @@ if (tracked.status === 0) {
   // take instructions from something no reviewer sees.
   let binFiles = 0;
   for (const relativePath of present) {
-    if (!inArea(relativePath, "daemon", "src/bin")) continue;
+    if (!inArea(relativePath, "daemon", "src/bin", PACKAGE_STRATA)) continue;
     binFiles += 1;
     if (relativePath.endsWith(".test.ts")) continue;
     const content = readIfPresent(relativePath);
@@ -5190,13 +5668,13 @@ const OBSERVATION_FORBIDDEN_CALLS = [
 // fail-closed in every direction: one file, one open, read-only flags present,
 // no write-capable flag anywhere, and every other observation source still
 // refused for naming `openSync` at all.
-const OBSERVATION_OPEN_SITE = "packages/observation/src/collect/artifact/index.ts";
+const OBSERVATION_OPEN_SITE = "packages/domains/observation/src/collect/artifact/index.ts";
 
 // P3C's sole writer. Every other observation production module — the
 // collectors above all — stays a reader, and none of them may name a database
 // driver or raw SQL: the one permitted path to storage is the public ledger
 // API, in exactly one file.
-const OBSERVATION_LEDGER_SITE = "packages/observation/src/shadow-ledger/index.ts";
+const OBSERVATION_LEDGER_SITE = "packages/domains/observation/src/shadow-ledger/index.ts";
 const OBSERVATION_FORBIDDEN_DATA_ACCESS = [
   "better-sqlite3",
   "node:sqlite",
@@ -5226,26 +5704,26 @@ function openSyncCalls(code) {
   );
 }
 
-const observationManifest = readIfPresent("packages/observation/package.json");
+const observationManifest = readIfPresent("packages/domains/observation/package.json");
 if (observationManifest === null) {
-  fail("packages/observation/package.json is missing");
+  fail("packages/domains/observation/package.json is missing");
 } else {
   const parsed = JSON.parse(observationManifest);
   if (parsed.bin !== undefined) {
-    fail("packages/observation declares a bin; observation exposes no executable");
+    fail("packages/domains/observation declares a bin; observation exposes no executable");
   }
   const deps = Object.keys(parsed.dependencies ?? {}).sort();
   const devDeps = Object.keys(parsed.devDependencies ?? {}).sort();
   const expected = ["@acp/contracts", "@acp/ledger"];
   if (deps.join(",") !== expected.join(",")) {
-    fail("packages/observation dependencies must be exactly " + expected.join(", "));
+    fail("packages/domains/observation dependencies must be exactly " + expected.join(", "));
   }
   if (devDeps.join(",") !== "vitest") {
-    fail("packages/observation devDependencies must be exactly vitest");
+    fail("packages/domains/observation devDependencies must be exactly vitest");
   }
   for (const forbidden of ["better-sqlite3", "@restatedev/restate-sdk", "@scarf/scarf"]) {
     if (deps.includes(forbidden)) {
-      fail("packages/observation must not depend on " + forbidden + " directly");
+      fail("packages/domains/observation must not depend on " + forbidden + " directly");
     }
   }
   notes.push("the observation manifest declares no bin and an exact dependency surface");
@@ -5262,7 +5740,7 @@ if (tracked.status === 0) {
   // `isTest` guard, exactly as before.
   const sources = present.filter(
     (relativePath) =>
-      (inAnyArea(relativePath, "observation", ["src", "test"])) &&
+      (inAnyArea(relativePath, "observation", ["src", "test"], PACKAGE_STRATA)) &&
       relativePath.endsWith(".ts"),
   );
 
@@ -5446,12 +5924,12 @@ const OBSERVATION_PUBLIC_EXPORTS = [
   "toLangfuseTrace",
 ];
 
-const observationIndex = readIfPresent("packages/observation/src/index.ts");
+const observationIndex = readIfPresent("packages/domains/observation/src/index.ts");
 if (observationIndex === null) {
-  fail("packages/observation/src/index.ts is missing");
+  fail("packages/domains/observation/src/index.ts is missing");
 } else {
   if (/export\s*\*\s*from/.test(observationIndex)) {
-    fail("packages/observation/src/index.ts uses `export *`, which cannot stay closed");
+    fail("packages/domains/observation/src/index.ts uses `export *`, which cannot stay closed");
   }
   const exported = new Set();
   for (const block of observationIndex.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
@@ -5462,12 +5940,12 @@ if (observationIndex === null) {
   }
   for (const name of exported) {
     if (!OBSERVATION_PUBLIC_EXPORTS.includes(name)) {
-      fail("packages/observation exports " + name + ", which is outside its closed surface");
+      fail("packages/domains/observation exports " + name + ", which is outside its closed surface");
     }
   }
   for (const name of OBSERVATION_PUBLIC_EXPORTS) {
     if (!exported.has(name)) {
-      fail("packages/observation no longer exports the pinned name " + name);
+      fail("packages/domains/observation no longer exports the pinned name " + name);
     }
   }
   notes.push(exported.size + " observation exports, pinned by equality");
@@ -5522,13 +6000,13 @@ const ACCOUNTS_FORBIDDEN_TOKENS = [
   ".append(",
 ];
 
-const accountsManifest = readIfPresent("packages/accounts/package.json");
+const accountsManifest = readIfPresent("packages/domains/accounts/package.json");
 if (accountsManifest === null) {
-  fail("packages/accounts/package.json is missing");
+  fail("packages/domains/accounts/package.json is missing");
 } else {
   const parsed = JSON.parse(accountsManifest);
   if (parsed.bin !== undefined) {
-    fail("packages/accounts declares a bin; the accounts domain exposes no executable");
+    fail("packages/domains/accounts declares a bin; the accounts domain exposes no executable");
   }
   notes.push("the accounts manifest declares no bin");
 }
@@ -5541,14 +6019,14 @@ if (tracked.status === 0) {
   // moment it exists.
   const declared = new Set(present);
   for (const relativePath of WRITE_SET) {
-    if (inAnyArea(relativePath, "accounts", ["src", "test"]) && relativePath.endsWith(".ts")) {
+    if (inAnyArea(relativePath, "accounts", ["src", "test"], PACKAGE_STRATA) && relativePath.endsWith(".ts")) {
       declared.add(relativePath);
     }
   }
   const sources = [...declared]
     .filter(
       (relativePath) =>
-        inAnyArea(relativePath, "accounts", ["src", "test"]) && relativePath.endsWith(".ts"),
+        inAnyArea(relativePath, "accounts", ["src", "test"], PACKAGE_STRATA) && relativePath.endsWith(".ts"),
     )
     .filter((relativePath) => readIfPresent(relativePath) !== null)
     .sort();
@@ -5617,7 +6095,7 @@ const POLICY_VERSION_DIGESTS = {
   "2026-08-30.1": "6fee0b392f19e44ebcd01b29d83d23ee09941e839d1f13c9243a141613d83922",
 };
 
-const policyDocumentPath = "packages/accounts/policy/capability-policy.json";
+const policyDocumentPath = "packages/domains/accounts/policy/capability-policy.json";
 const policyDocument = readIfPresent(policyDocumentPath);
 if (policyDocument !== null) {
   let policy = null;
@@ -5742,7 +6220,7 @@ const TOPOLOGY_TEST_MARKER = /\.(test|spec)\.[cm]?[jt]sx?$/;
  * Check one file's path against the topology.
  *
  * `segments` is the path below the tree root, so `["quota", "index.ts"]` for
- * `packages/accounts/src/quota/index.ts`. The rules are the same either side of
+ * `packages/domains/accounts/src/quota/index.ts`. The rules are the same either side of
  * the mirror; only the permitted basenames differ, which is what makes the two
  * trees genuinely mirror images rather than two conventions that happen to
  * rhyme.
@@ -5807,8 +6285,8 @@ if (tracked.status === 0) {
 
   let checkedFiles = 0;
   for (const pkg of TOPOLOGY_ACTIVE_TREES) {
-    const srcRoot = "packages/" + pkg + "/src/";
-    const testRoot = "packages/" + pkg + "/test/";
+    const srcRoot = packagePrefix(pkg, PACKAGE_STRATA) + "src/";
+    const testRoot = packagePrefix(pkg, PACKAGE_STRATA) + "test/";
     for (const relativePath of [...candidates].sort()) {
       if (!/\.[cm]?[jt]sx?$/.test(relativePath)) continue;
       if (readIfPresent(relativePath) === null) continue;
@@ -5880,13 +6358,13 @@ if (tracked.status === 0) {
 // source scan for it, so the exemption is a statement of fact rather than a
 // waiver. A package that *does* have a scan may never be added to it.
 const TEST_TREE_SCANNED_PREFIXES = [
-  "packages/observation/test/",
-  "packages/adapters/test/",
-  "packages/daemon/test/",
-  "packages/runtime/test/",
-  "packages/ui/test/",
-  "packages/server/test/",
-  "packages/accounts/test/",
+  "packages/domains/observation/test/",
+  "packages/edges/adapters/test/",
+  "packages/entrypoints/daemon/test/",
+  "packages/domains/runtime/test/",
+  "packages/entrypoints/ui/test/",
+  "packages/entrypoints/server/test/",
+  "packages/domains/accounts/test/",
 ];
 
 /**
@@ -5907,10 +6385,11 @@ if (tracked.status === 0) {
   let covered = 0;
   const uncovered = [];
   for (const relativePath of [...candidates].sort()) {
-    const match = /^packages\/([^/]+)\/test\//.exec(relativePath);
-    if (match === null) continue;
+    const location = packageLocation(relativePath, PACKAGE_STRATA);
+    if (location === null) continue;
+    if (!relativePath.startsWith(packagePrefix(location.name, PACKAGE_STRATA) + "test/")) continue;
     if (readIfPresent(relativePath) === null) continue;
-    const pkg = match[1] ?? "";
+    const pkg = location.name;
     const scanned = TEST_TREE_SCANNED_PREFIXES.some((prefix) => relativePath.startsWith(prefix));
     if (scanned || TEST_TREE_NO_PACKAGE_SCAN.includes(pkg)) {
       covered += 1;
@@ -6199,12 +6678,12 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "routeWithPolicy",
 ];
 
-const accountsIndex = readIfPresent("packages/accounts/src/index.ts");
+const accountsIndex = readIfPresent("packages/domains/accounts/src/index.ts");
 if (accountsIndex === null) {
-  fail("packages/accounts/src/index.ts is missing");
+  fail("packages/domains/accounts/src/index.ts is missing");
 } else {
   if (/export\s*\*\s*from/.test(accountsIndex)) {
-    fail("packages/accounts/src/index.ts uses `export *`, which cannot stay closed");
+    fail("packages/domains/accounts/src/index.ts uses `export *`, which cannot stay closed");
   }
   const exported = new Set();
   for (const block of accountsIndex.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
@@ -6215,24 +6694,24 @@ if (accountsIndex === null) {
   }
   for (const name of exported) {
     if (!ACCOUNTS_PUBLIC_EXPORTS.includes(name)) {
-      fail("packages/accounts exports " + name + ", which is outside its closed surface");
+      fail("packages/domains/accounts exports " + name + ", which is outside its closed surface");
     }
   }
   for (const name of ACCOUNTS_PUBLIC_EXPORTS) {
     if (!exported.has(name)) {
-      fail("packages/accounts no longer exports the pinned name " + name);
+      fail("packages/domains/accounts no longer exports the pinned name " + name);
     }
   }
   notes.push(exported.size + " accounts exports, pinned by equality");
   }
 
   // The same law for `@acp/runtime` (L6), in the same shape as its five siblings.
-  const runtimeBarrel = readIfPresent("packages/runtime/src/index.ts");
+  const runtimeBarrel = readIfPresent("packages/domains/runtime/src/index.ts");
   if (runtimeBarrel === null) {
-    fail("packages/runtime/src/index.ts is missing");
+    fail("packages/domains/runtime/src/index.ts is missing");
   } else {
     if (/export\s*\*\s*from/.test(runtimeBarrel)) {
-      fail("packages/runtime/src/index.ts uses `export *`, which cannot stay closed");
+      fail("packages/domains/runtime/src/index.ts uses `export *`, which cannot stay closed");
     }
     const runtimeExported = new Set();
     for (const block of runtimeBarrel.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
@@ -6243,12 +6722,12 @@ if (accountsIndex === null) {
     }
     for (const name of runtimeExported) {
       if (!RUNTIME_PUBLIC_EXPORTS.includes(name)) {
-        fail("packages/runtime exports " + name + ", which is outside its closed surface");
+        fail("packages/domains/runtime exports " + name + ", which is outside its closed surface");
       }
     }
     for (const name of RUNTIME_PUBLIC_EXPORTS) {
       if (!runtimeExported.has(name)) {
-        fail("packages/runtime no longer exports the pinned name " + name);
+        fail("packages/domains/runtime no longer exports the pinned name " + name);
       }
     }
     notes.push(runtimeExported.size + " runtime exports, pinned by equality");
@@ -6260,8 +6739,8 @@ if (accountsIndex === null) {
 const vitestConfig = readIfPresent("vitest.config.ts");
 if (vitestConfig !== null) {
   const aliasTargets = [
-    ["@acp/cli/observation-rows", "packages/cli/src/observation/index.ts"],
-    ["@acp/ui/row-model", "packages/ui/src/api/client/index.ts"],
+    ["@acp/cli/observation-rows", "packages/entrypoints/cli/src/observation/index.ts"],
+    ["@acp/ui/row-model", "packages/entrypoints/ui/src/api/client/index.ts"],
   ];
   for (const [specifier, target] of aliasTargets) {
     if (!vitestConfig.includes(target)) {
@@ -6273,7 +6752,7 @@ if (vitestConfig !== null) {
     for (const relativePath of present) {
       if (relativePath === "vitest.config.ts") continue;
       if (relativePath === "scripts/check-architecture.mjs") continue;
-      if (relativePath === "packages/server/test/parity/index.test.ts") continue;
+      if (relativePath === "packages/entrypoints/server/test/parity/index.test.ts") continue;
       // The TypeScript counterpart of the same two aliases. `tsc` and
       // type-aware eslint never read `vitest.config.ts`, so without this the
       // parity test resolves at run time and fails both other gates. A
@@ -6281,11 +6760,11 @@ if (vitestConfig !== null) {
       // so the law this check protects — that no shipped module resolves these
       // specifiers — is untouched. The declaration is pinned by equality
       // immediately below rather than merely excused here.
-      if (relativePath === "packages/server/tsconfig.json") continue;
+      if (relativePath === "packages/entrypoints/server/tsconfig.json") continue;
       // The test tree's own tsconfig carries the same two aliases,
       // depth-corrected, for the same reason and under the same rationale —
       // adjudication A (C10). A tsconfig `paths` declaration is not an import.
-      if (relativePath === "packages/server/test/tsconfig.json") continue;
+      if (relativePath === "packages/entrypoints/server/test/tsconfig.json") continue;
       const content = readIfPresent(relativePath);
       if (content === null) continue;
       for (const [specifier] of aliasTargets) {
@@ -6317,26 +6796,32 @@ const SERVER_TS_ALIASES = {
   "@acp/cli/observation-rows": "../cli/dist/observation/index.d.ts",
   "@acp/ui/row-model": "../ui/dist/app/api/client/index.d.ts",
 };
-// P8-8A adds `../observation`: the initiative plane folds token rollups, and
-// `tsc --build` resolves a workspace package through project references rather
-// than through the manifest, so the edge has to be declared here as well as
-// there. Sorted, because the pin is an equality and an unsorted list would
-// make a reordering look like a change.
+// P8-8A adds `../../domains/observation`: the initiative plane folds token
+// rollups, and `tsc --build` resolves a workspace package through project
+// references rather than through the manifest, so the edge has to be declared
+// here as well as there. Sorted, because the pin is an equality and an unsorted
+// list would make a reordering look like a change.
+//
+// G1' recomputed all six from the server's new location. Two of them did not
+// move: `cli` and `ui` are entrypoints, as the server is, so a same-stratum
+// reference is still one `../` away. That four changed and two did not is the
+// shape a stratified topology produces, and pinning them by equality is what
+// makes the difference visible rather than assumed.
 const SERVER_TS_REFERENCES = [
-  "../accounts",
-  "../api-contracts",
+  "../../domains/accounts",
+  "../../domains/observation",
+  "../../kernel/api-contracts",
+  "../../persistence/ledger",
   "../cli",
-  "../ledger",
-  "../observation",
   "../ui",
 ];
-const serverTsconfigRaw = readIfPresent("packages/server/tsconfig.json");
+const serverTsconfigRaw = readIfPresent("packages/entrypoints/server/tsconfig.json");
 if (serverTsconfigRaw !== null) {
   let parsed = null;
   try {
     parsed = JSON.parse(serverTsconfigRaw);
   } catch {
-    fail("packages/server/tsconfig.json is not parseable JSON");
+    fail("packages/entrypoints/server/tsconfig.json is not parseable JSON");
   }
   if (parsed !== null) {
     const declared = parsed.compilerOptions?.paths ?? {};
@@ -6344,7 +6829,7 @@ if (serverTsconfigRaw !== null) {
     const actualAliases = Object.keys(declared).sort().join(", ");
     if (actualAliases !== expectedAliases) {
       fail(
-        "packages/server/tsconfig.json paths are not exactly [" +
+        "packages/entrypoints/server/tsconfig.json paths are not exactly [" +
           expectedAliases +
           "]: found [" +
           actualAliases +
@@ -6355,7 +6840,7 @@ if (serverTsconfigRaw !== null) {
       const mapped = Array.isArray(declared[specifier]) ? declared[specifier] : [];
       if (mapped.length !== 1 || mapped[0] !== target) {
         fail(
-          "packages/server/tsconfig.json maps " +
+          "packages/entrypoints/server/tsconfig.json maps " +
             specifier +
             " to " +
             JSON.stringify(mapped) +
@@ -6365,7 +6850,7 @@ if (serverTsconfigRaw !== null) {
         );
       } else if (!target.endsWith(".d.ts")) {
         fail(
-          "packages/server/tsconfig.json aliases " + specifier + " to a source, not a declaration",
+          "packages/entrypoints/server/tsconfig.json aliases " + specifier + " to a source, not a declaration",
         );
       }
     }
@@ -6376,7 +6861,7 @@ if (serverTsconfigRaw !== null) {
       .join(", ");
     if (actualReferences !== SERVER_TS_REFERENCES.join(", ")) {
       fail(
-        "packages/server/tsconfig.json references are not exactly [" +
+        "packages/entrypoints/server/tsconfig.json references are not exactly [" +
           SERVER_TS_REFERENCES.join(", ") +
           "]: found [" +
           actualReferences +
@@ -6411,8 +6896,8 @@ const ADAPTERS_FORBIDDEN_BUILTINS = [
 ];
 
 /** Exactly one file spawns, and exactly one file calls it. */
-const ADAPTERS_SPAWN_SITE = "packages/adapters/src/process/spawn/index.ts";
-const ADAPTERS_SPAWN_CALLER = "packages/adapters/src/session/index.ts";
+const ADAPTERS_SPAWN_SITE = "packages/edges/adapters/src/process/spawn/index.ts";
+const ADAPTERS_SPAWN_CALLER = "packages/edges/adapters/src/session/index.ts";
 
 /**
  * The closed public surface, pinned by equality in both directions.
@@ -6532,7 +7017,7 @@ if (tracked.status === 0) {
   const declared = new Set(present);
   for (const relativePath of WRITE_SET) {
     if (
-      (inAnyArea(relativePath, "adapters", ["src", "test"])) &&
+      (inAnyArea(relativePath, "adapters", ["src", "test"], PACKAGE_STRATA)) &&
       relativePath.endsWith(".ts")
     ) {
       declared.add(relativePath);
@@ -6541,7 +7026,7 @@ if (tracked.status === 0) {
   const sources = [...declared]
     .filter(
       (relativePath) =>
-        inAnyArea(relativePath, "adapters", ["src", "test"]),
+        inAnyArea(relativePath, "adapters", ["src", "test"], PACKAGE_STRATA),
     )
     .filter((relativePath) => relativePath.endsWith(".ts"))
     .sort();
@@ -6599,7 +7084,7 @@ if (tracked.status === 0) {
     // makes a provider a participant in the boundary it is deliberately kept
     // outside of, and it is how three providers would end up with three
     // opinions about stopping a process.
-    if (inArea(relativePath, "adapters", "src/providers")) {
+    if (inArea(relativePath, "adapters", "src/providers", PACKAGE_STRATA)) {
       providerFiles += 1;
       if (/from\s*["'][^"']*session\.js["']/.test(code)) {
         fail(relativePath + " imports the session controller; providers stay pure");
@@ -6624,7 +7109,7 @@ if (tracked.status === 0) {
           fail(relativePath + " omits " + required + "; spawn options are explicit, never default");
         }
       }
-    } else if (code.includes("process.env") && relativePath !== "packages/adapters/src/config-root/index.ts") {
+    } else if (code.includes("process.env") && relativePath !== "packages/edges/adapters/src/config-root/index.ts") {
       fail(relativePath + " reads process.env; only config-root/index.ts builds an environment");
     }
   }
@@ -6638,13 +7123,13 @@ if (tracked.status === 0) {
   }
 }
 
-const adaptersIndex = readIfPresent("packages/adapters/src/index.ts");
+const adaptersIndex = readIfPresent("packages/edges/adapters/src/index.ts");
 if (adaptersIndex !== null) {
   if (/export\s*\*\s*from/.test(adaptersIndex)) {
-    fail("packages/adapters/src/index.ts uses `export *`, which cannot stay closed");
+    fail("packages/edges/adapters/src/index.ts uses `export *`, which cannot stay closed");
   }
   if (stripComments(adaptersIndex).includes("testing/fake-provider")) {
-    fail("packages/adapters/src/index.ts exports the fake provider; it is not public surface");
+    fail("packages/edges/adapters/src/index.ts exports the fake provider; it is not public surface");
   }
   const exported = new Set();
   for (const block of adaptersIndex.matchAll(/export\s*(?:type\s*)?\{([^}]*)\}/g)) {
@@ -6655,12 +7140,12 @@ if (adaptersIndex !== null) {
   }
   for (const name of exported) {
     if (!ADAPTERS_PUBLIC_EXPORTS.includes(name)) {
-      fail("packages/adapters exports " + name + ", which is outside its closed surface");
+      fail("packages/edges/adapters exports " + name + ", which is outside its closed surface");
     }
   }
   for (const name of ADAPTERS_PUBLIC_EXPORTS) {
     if (!exported.has(name)) {
-      fail("packages/adapters no longer exports the pinned name " + name);
+      fail("packages/edges/adapters no longer exports the pinned name " + name);
     }
   }
   notes.push(exported.size + " adapter exports, pinned by equality");
@@ -6712,13 +7197,13 @@ const LOCAL_CLIENT_SHAPE = {
  */
 const OWNED_CLIENT_MODULES = [
   {
-    path: "packages/adapters/src/providers/api-key/index.ts",
+    path: "packages/edges/adapters/src/providers/api-key/index.ts",
     shape: API_CLIENT_SHAPE,
     forbidden: ["ai", "@ai-sdk/", "@vercel/"],
     note: "the API client interface is credential-free by shape, pinned member by member",
   },
   {
-    path: "packages/adapters/src/providers/local/index.ts",
+    path: "packages/edges/adapters/src/providers/local/index.ts",
     shape: LOCAL_CLIENT_SHAPE,
     forbidden: [
       "ai",
@@ -6788,12 +7273,12 @@ for (const owned of OWNED_CLIENT_MODULES) {
   notes.push(owned.note);
 }
 
-const adaptersConfigRoot = readIfPresent("packages/adapters/src/config-root/index.ts");
+const adaptersConfigRoot = readIfPresent("packages/edges/adapters/src/config-root/index.ts");
 if (adaptersConfigRoot !== null) {
   for (const [provider, keys] of Object.entries(ADAPTERS_ENV_ALLOWLIST)) {
     for (const key of keys) {
       if (!adaptersConfigRoot.includes(key)) {
-        fail("packages/adapters/src/config-root/index.ts no longer names " + key + " for " + provider);
+        fail("packages/edges/adapters/src/config-root/index.ts no longer names " + key + " for " + provider);
       }
     }
   }
@@ -6809,17 +7294,17 @@ if (adaptersConfigRoot !== null) {
     ...[...(providerBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]),
   ];
   if (declaredKeys.length === 0) {
-    fail("packages/adapters/src/config-root/index.ts declares no environment allowlist");
+    fail("packages/edges/adapters/src/config-root/index.ts declares no environment allowlist");
   }
   for (const key of declaredKeys) {
     if (key !== undefined && !permitted.has(key)) {
-      fail("packages/adapters/src/config-root/index.ts names " + key + ", outside the env allowlist");
+      fail("packages/edges/adapters/src/config-root/index.ts names " + key + ", outside the env allowlist");
     }
   }
   notes.push("the adapter environment allowlist is exactly four variables per provider");
 }
 
-// The server may not reach @acp/contracts. `packages/server/src/mappers/index.ts`
+// The server may not reach @acp/contracts. `packages/entrypoints/server/src/mappers/index.ts`
 // records that exclusion as a design decision, and the parity test honours it
 // by asking @acp/api-contracts for the privacy verdict through its named
 // helper instead. Enforced in all three forms the reach could take: a manifest
@@ -6834,13 +7319,13 @@ if (adaptersConfigRoot !== null) {
 // dependency-injected identifier all reach the same package while sliding past
 // it. Naming the package anywhere in live code is the thing being forbidden,
 // so that is what is matched.
-const serverManifestRaw = readIfPresent("packages/server/package.json");
+const serverManifestRaw = readIfPresent("packages/entrypoints/server/package.json");
 if (serverManifestRaw !== null) {
   let manifest = null;
   try {
     manifest = JSON.parse(serverManifestRaw);
   } catch {
-    fail("packages/server/package.json is not parseable JSON");
+    fail("packages/entrypoints/server/package.json is not parseable JSON");
   }
   if (manifest !== null) {
     const declaredDependencies = {
@@ -6849,23 +7334,23 @@ if (serverManifestRaw !== null) {
       ...(manifest.peerDependencies ?? {}),
     };
     if (Object.hasOwn(declaredDependencies, "@acp/contracts")) {
-      fail("packages/server/package.json depends on @acp/contracts; that reach is excluded");
+      fail("packages/entrypoints/server/package.json depends on @acp/contracts; that reach is excluded");
     }
   }
 }
 if (serverTsconfigRaw !== null && serverTsconfigRaw.includes('"@acp/contracts"')) {
-  fail("packages/server/tsconfig.json maps @acp/contracts; that reach is excluded");
+  fail("packages/entrypoints/server/tsconfig.json maps @acp/contracts; that reach is excluded");
 }
 const serverSources = new Set(
   (tracked.status === 0 ? tracked.stdout.split("\n").map((line) => line.trim()) : []).filter(
     (relativePath) =>
-      (inAnyArea(relativePath, "server", ["src", "test"])) &&
+      (inAnyArea(relativePath, "server", ["src", "test"], PACKAGE_STRATA)) &&
       relativePath.endsWith(".ts"),
   ),
 );
 for (const relativePath of WRITE_SET) {
   if (
-    (inAnyArea(relativePath, "server", ["src", "test"])) &&
+    (inAnyArea(relativePath, "server", ["src", "test"], PACKAGE_STRATA)) &&
     relativePath.endsWith(".ts")
   ) {
     serverSources.add(relativePath);
@@ -6903,8 +7388,8 @@ const P2C_NAME_EXEMPT = new Set([
   "scripts/acquire-restate-server.mjs",
   "docs/architecture/0004-durability-and-supervisor.md",
   "docs/architecture/0005-restate-driver-and-adoption.md",
-  "packages/runtime/README.md",
-  "packages/runtime/src/constants/index.ts",
+  "packages/domains/runtime/README.md",
+  "packages/domains/runtime/src/constants/index.ts",
   "pnpm-workspace.yaml",
 ]);
 if (tracked.status === 0) {
