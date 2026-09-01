@@ -45,7 +45,20 @@ import { accessSync, constants, readdirSync, readFileSync, statSync } from "node
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+import { fenceRoot, inAnyArea, inArea, inPackage, packageOf, packagePrefix } from "./architecture/roots.mjs";
+
+/**
+ * The tree this run inspects (P8-T G0, L7).
+ *
+ * The default is exactly the expression this replaced — the directory above
+ * this script — so an ordinary run is byte-identical to the hardcoded constant
+ * it succeeded, which is L10's obligation. The seam exists so the fence's own
+ * probes can point a subprocess at a synthetic tree and watch a law fire; it is
+ * never set in ordinary use, and `fenceRoot` treats an empty value as unset
+ * rather than as a request to inspect the filesystem root.
+ */
+const DEFAULT_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO_ROOT = fenceRoot(process.env, DEFAULT_REPO_ROOT);
 
 /**
  * Phase write-sets.
@@ -1271,7 +1284,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **378 packet entries across 149 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **382 packet entries across 152 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1279,13 +1292,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
- * 2 (P8-10b) + 2 (P8-10c) + 2 (P8-T-roadmap) = 378 entries, with 229
- * duplicate entries.
+ * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) = 382 entries,
+ * with 230 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 37 duplicates = 37   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 38 duplicates = 38   (`scripts/check-architecture.mjs`, every packet)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the routes source, the
  *                                   build-server drill suite, and the lockfile)
  *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
@@ -1300,7 +1313,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *  12 paths ×  2 duplicates = 24
  *  35 paths ×  1 duplicate  = 35
  *
- * 37 + 28 + 30 + 25 + 20 + 30 + 24 + 35 = 229.
+ * 38 + 28 + 30 + 25 + 20 + 30 + 24 + 35 = 230.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1377,6 +1390,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * (one duplicate) and so sat in the ×1 row; a third occurrence moves it to
  * the ×2 row, which is why that row reads 14 → 15 paths (28 → 30) while the
  * ×1 row loses the path it left: 35 → 34 (35 → 34).
+ *
+ * P8-T-G0 opens the structural tranche and is the first packet in a while to
+ * add more than one path: the resolver, its probes and `vitest.config.ts` —
+ * three new distinct paths, so distinct moves 149 → 152 while entries move
+ * 378 → 382 and only this file's own row changes, 37 → 38. `vitest.config.ts`
+ * had no in-phase owner before now, which is why a file that has existed since
+ * P1B counts as novel here: the convention scopes the arithmetic to the phase.
  *
  * P8-10c closes the phase's functional work and moves the table the same way
  * its predecessor did: one new path (the certification matrix) and one entry
@@ -2521,6 +2541,23 @@ const P810_C_WRITE_SET = [
 ];
 
 /**
+ * P8-T G0: the fence becomes portable, and moves nothing.
+ *
+ * The blocking first packet of the structural tranche. It adds the one resolver
+ * every package-path question now goes through, gives the fence an injectable
+ * root so its own laws can be probed against synthetic trees, makes every
+ * path-scoped law fail closed on an empty scope, and pins the one public-export
+ * surface that had no pin. It moves no package and touches nothing under
+ * `packages/` — that is G1', and this packet exists so G1' can be trusted.
+ */
+const P8T_G0_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "vitest.config.ts",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2814,6 +2851,7 @@ const WRITE_SET = [
   ...P810_A_WRITE_SET,
   ...P810_B_WRITE_SET,
   ...P810_C_WRITE_SET,
+  ...P8T_G0_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3353,6 +3391,78 @@ function fail(message) {
 
 function git(args) {
   return spawnSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" });
+}
+
+/**
+ * Every path-shaped surface in this file, with the law it scopes (P8-T G0, L3).
+ *
+ * A law that selects files by path is only as good as its selection. If the
+ * prefix stops matching — because a package moved, or was renamed, or the law
+ * was copied and the name not updated — the loop body simply never runs and the
+ * law passes while inspecting nothing. That failure is silent by construction,
+ * which is why it needs a register rather than vigilance.
+ *
+ * Each entry names a law and the scope it claims. `requireScope` below is what
+ * enforces the claim at runtime, and the count law after this list is what
+ * stops a new path-shaped surface from being added without an entry: the number
+ * of registered laws and the number of `requireScope` call sites in this file
+ * must agree, so adding one without the other fails the fence.
+ */
+const PATH_SCOPED_LAWS = [
+  { law: "the browser package links no ledger and no database driver", scope: "packages/ui/**" },
+  { law: "the live-DOM evidence tools stay test-scope", scope: "packages/ui/src/**" },
+  { law: "the durability plane's import purity", scope: "packages/runtime/{src,test}/**" },
+  { law: "a supervised process imports only what it is allowed", scope: "packages/daemon/{src,test}/**" },
+  { law: "no module spawns for plutil", scope: "packages/daemon/src/launchd/**" },
+  { law: "the packaged entry reads no environment", scope: "packages/daemon/src/bin/**" },
+  { law: "observation collectors stay passive", scope: "packages/observation/{src,test}/**" },
+  { law: "the accounts domain reaches nothing", scope: "packages/accounts/{src,test}/**" },
+  { law: "adapters keep one spawn authority and no network", scope: "packages/adapters/{src,test}/**" },
+  { law: "providers stay pure", scope: "packages/adapters/src/providers/**" },
+  { law: "the server names @acp/contracts nowhere in live code", scope: "packages/server/{src,test}/**" },
+  { law: "the mirrored-topology law", scope: "TOPOLOGY_ACTIVE_TREES (activated trees)" },
+  { law: "the public/internal classification", scope: "every package present in packages/" },
+];
+
+/**
+ * Refuse a path-scoped law that selected nothing (L4).
+ *
+ * "No violations found" and "nothing was looked at" are different answers, and
+ * before this helper several laws could not tell them apart. A scope that
+ * empties out is a mis-scoped law, not a clean tree.
+ */
+function requireScope(lawName, count) {
+  if (count === 0) {
+    fail(
+      lawName +
+        " selected no files; a path-scoped law with an empty scope reports no violations and proves nothing",
+    );
+  }
+  return count;
+}
+
+/**
+ * The inventory has to stay honest, so it is checked rather than trusted (L3).
+ *
+ * Counting `requireScope` call sites in this file and comparing against the
+ * register means a new path-shaped law cannot be added without an entry: the
+ * counts diverge and the fence fails, naming both numbers. It is a coarse
+ * check on purpose — it cannot tell which law is missing — but coarse and
+ * mechanical beats precise and remembered, and the failure message points at
+ * the register that has to be edited.
+ */
+function assertPathScopedInventory(fenceSource) {
+  const callSites = [...fenceSource.matchAll(/\n\s+requireScope\(/g)].length;
+  if (callSites !== PATH_SCOPED_LAWS.length) {
+    fail(
+      "PATH_SCOPED_LAWS registers " +
+        PATH_SCOPED_LAWS.length +
+        " path-scoped law(s) but this file has " +
+        callSites +
+        " requireScope call site(s); every path-shaped surface must be registered",
+    );
+  }
+  notes.push(PATH_SCOPED_LAWS.length + " path-scoped laws registered, each fail-closed on an empty scope");
 }
 
 function readIfPresent(relativePath) {
@@ -4133,10 +4243,8 @@ const UI_FORBIDDEN_IMPORTS = [
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  const uiFiles = present.filter((relativePath) => relativePath.startsWith("packages/ui/"));
-  if (uiFiles.length === 0) {
-    fail("packages/ui has no tracked files; the browser purity check is inert");
-  }
+  const uiFiles = present.filter((relativePath) => inPackage(relativePath, "ui"));
+  requireScope("the browser package links no ledger and no database driver", uiFiles.length);
   for (const relativePath of uiFiles) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
@@ -4164,10 +4272,8 @@ if (tracked.status === 0) {
   // test-scope by convention — nothing stops a `src/` module importing one and
   // pulling a DOM implementation and an accessibility engine into the bundle.
   // The test tree is deliberately not scanned: using them there is the point.
-  const uiSourceFiles = uiFiles.filter((relativePath) => relativePath.startsWith("packages/ui/src/"));
-  if (uiSourceFiles.length === 0) {
-    fail("packages/ui/src has no tracked files; the evidence-tool scope check is inert");
-  }
+  const uiSourceFiles = uiFiles.filter((relativePath) => inArea(relativePath, "ui", "src"));
+  requireScope("the live-DOM evidence tools stay test-scope", uiSourceFiles.length);
   for (const relativePath of uiSourceFiles) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
@@ -4186,6 +4292,100 @@ if (tracked.status === 0) {
     uiSourceFiles.length + " browser package sources name neither jsdom nor axe-core",
   );
 }
+
+// --- the public/internal classification (P8-T G0, L8) -----------------------
+//
+// The tranche's target topology is five strata, and the public/internal split
+// is a *property* of that table rather than a second list beside it: public is
+// kernel + persistence + domains + edges, internal is entrypoints. Deriving it
+// means the two can never disagree, which a hand-maintained second list would
+// eventually do — and it is the same reason the resolver above exists.
+//
+// Today every package is `private: true` / `UNLICENSED`, and this law asserts
+// that uniformity plus completeness: every package that exists is classified
+// exactly once. G10 is what flips the public side; until then the law's value
+// is that no package can be added, moved between strata, or quietly relicensed
+// without this failing.
+const PACKAGE_STRATA = Object.freeze({
+  kernel: ["contracts", "api-contracts"],
+  persistence: ["ledger"],
+  domains: ["runtime", "accounts", "observation"],
+  edges: ["adapters", "durability"],
+  entrypoints: ["daemon", "server", "cli", "ui"],
+});
+
+/** Public is every stratum but the entrypoints. Derived, never restated. */
+const PUBLIC_STRATA = Object.keys(PACKAGE_STRATA).filter((stratum) => stratum !== "entrypoints");
+
+if (tracked.status === 0) {
+  const presentPackages = new Set();
+  for (const relativePath of tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+    const name = packageOf(relativePath);
+    if (name !== null) presentPackages.add(name);
+  }
+
+  // Exactly once: a package named in two strata, or in none, is a topology
+  // whose own table cannot say where it belongs.
+  const classifiedIn = new Map();
+  for (const [stratum, members] of Object.entries(PACKAGE_STRATA)) {
+    for (const name of members) {
+      const already = classifiedIn.get(name);
+      if (already !== undefined) {
+        fail("package " + name + " is classified in both " + already + " and " + stratum);
+      }
+      classifiedIn.set(name, stratum);
+    }
+  }
+  for (const name of [...presentPackages].sort()) {
+    if (!classifiedIn.has(name)) {
+      fail("package " + name + " exists but no stratum classifies it");
+    }
+  }
+
+  // Uniformity, asserted against the manifests rather than assumed.
+  let classified = 0;
+  for (const name of [...presentPackages].sort()) {
+    const manifestSource = readIfPresent(packagePrefix(name) + "package.json");
+    if (manifestSource === null) {
+      fail(packagePrefix(name) + "package.json is missing; a package must declare itself");
+      continue;
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(manifestSource);
+    } catch {
+      fail(packagePrefix(name) + "package.json is not valid JSON");
+      continue;
+    }
+    if (manifest.private !== true) {
+      fail(packagePrefix(name) + "package.json must declare private: true until G10 flips the public side");
+    }
+    if (manifest.license !== "UNLICENSED") {
+      fail(packagePrefix(name) + "package.json must declare the UNLICENSED license until G10");
+    }
+    classified += 1;
+  }
+
+  requireScope("the public/internal classification", classified);
+  const publicCount = [...presentPackages].filter((name) => PUBLIC_STRATA.includes(classifiedIn.get(name))).length;
+  notes.push(
+    classified +
+      " packages classified exactly once across " +
+      Object.keys(PACKAGE_STRATA).length +
+      " strata (" +
+      publicCount +
+      " public-side, " +
+      (classified - publicCount) +
+      " entrypoints), all private and UNLICENSED",
+  );
+}
+
+// --- the path-shaped register checks itself (P8-T G0, L3) -------------------
+//
+// Read from this file's own location rather than through REPO_ROOT: under a
+// probe the inspected tree is a synthetic one that has no copy of this script,
+// and the register is a property of the fence, not of the tree it is pointed at.
+assertPathScopedInventory(readFileSync(fileURLToPath(import.meta.url), "utf8"));
 
 // --- report ----------------------------------------------------------------
 
@@ -4300,12 +4500,14 @@ if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const runtimeSources = present.filter(
     (relativePath) =>
-      (relativePath.startsWith("packages/runtime/src/") ||
-      relativePath.startsWith("packages/runtime/test/")) &&
+      (inAnyArea(relativePath, "runtime", ["src", "test"])) &&
     relativePath.endsWith(".ts"),
   );
   if (runtimeSources.length === 0) {
     fail("packages/runtime/src has no tracked sources; the import purity check is inert");
+  }
+  {
+    requireScope("the durability plane's import purity", runtimeSources.length);
   }
 
   let productionSources = 0;
@@ -4576,8 +4778,7 @@ if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const daemonSources = present.filter(
     (relativePath) =>
-      (relativePath.startsWith("packages/daemon/src/") ||
-      relativePath.startsWith("packages/daemon/test/")) &&
+      (inAnyArea(relativePath, "daemon", ["src", "test"])) &&
     relativePath.endsWith(".ts"),
   );
 
@@ -4647,6 +4848,7 @@ if (tracked.status === 0) {
   const DAEMON_ALLOWED_BUILTINS = new Set(["node:crypto", "node:fs", "node:path", "node:url"]);
   const DAEMON_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os"]);
 
+  requireScope("a supervised process imports only what it is allowed", daemonSources.length);
   for (const relativePath of daemonSources) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
@@ -4875,8 +5077,10 @@ if (tracked.status === 0) {
   // The two-spawn-site law is unchanged by P2E. `plutil` runs in the drills,
   // where node:child_process is already a test-only import, and never in a
   // production module: a lint is not a reason to add a third spawner.
+  let launchdFiles = 0;
   for (const relativePath of present) {
-    if (!relativePath.startsWith("packages/daemon/src/launchd/")) continue;
+    if (!inArea(relativePath, "daemon", "src/launchd")) continue;
+    launchdFiles += 1;
     if (relativePath.endsWith(".test.ts")) continue;
     const content = readIfPresent(relativePath);
     if (content === null) continue;
@@ -4921,13 +5125,16 @@ if (tracked.status === 0) {
       fail(DENYLIST_FILE + " must import nothing from node:; it is a pure reader");
     }
   }
+  requireScope("no module spawns for plutil", launchdFiles);
   notes.push("no module spawns for plutil, and only the denylist names the agent directory");
 
   // The packaged entry reads a file, never the environment. launchd controls
   // the environment of a job it starts, so an entry that read from it would
   // take instructions from something no reviewer sees.
+  let binFiles = 0;
   for (const relativePath of present) {
-    if (!relativePath.startsWith("packages/daemon/src/bin/")) continue;
+    if (!inArea(relativePath, "daemon", "src/bin")) continue;
+    binFiles += 1;
     if (relativePath.endsWith(".test.ts")) continue;
     const content = readIfPresent(relativePath);
     if (content === null) continue;
@@ -4935,6 +5142,7 @@ if (tracked.status === 0) {
       fail(relativePath + " reads process.env; the packaged entry takes a config file only");
     }
   }
+  requireScope("the packaged entry reads no environment", binFiles);
   notes.push("the packaged entry takes a config file and reads no environment");
 }
 
@@ -5054,11 +5262,11 @@ if (tracked.status === 0) {
   // `isTest` guard, exactly as before.
   const sources = present.filter(
     (relativePath) =>
-      (relativePath.startsWith("packages/observation/src/") ||
-        relativePath.startsWith("packages/observation/test/")) &&
+      (inAnyArea(relativePath, "observation", ["src", "test"])) &&
       relativePath.endsWith(".ts"),
   );
 
+  requireScope("observation collectors stay passive", sources.length);
   for (const relativePath of sources) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
@@ -5333,20 +5541,19 @@ if (tracked.status === 0) {
   // moment it exists.
   const declared = new Set(present);
   for (const relativePath of WRITE_SET) {
-    if ((relativePath.startsWith("packages/accounts/src/") ||
-      relativePath.startsWith("packages/accounts/test/")) && relativePath.endsWith(".ts")) {
+    if (inAnyArea(relativePath, "accounts", ["src", "test"]) && relativePath.endsWith(".ts")) {
       declared.add(relativePath);
     }
   }
   const sources = [...declared]
     .filter(
       (relativePath) =>
-        (relativePath.startsWith("packages/accounts/src/") ||
-      relativePath.startsWith("packages/accounts/test/")) && relativePath.endsWith(".ts"),
+        inAnyArea(relativePath, "accounts", ["src", "test"]) && relativePath.endsWith(".ts"),
     )
     .filter((relativePath) => readIfPresent(relativePath) !== null)
     .sort();
 
+  requireScope("the accounts domain reaches nothing", sources.length);
   for (const relativePath of sources) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
@@ -5637,6 +5844,11 @@ if (tracked.status === 0) {
     }
   }
 
+  // P8-T G0, L4: this was the measured counterexample — with no tree activated
+  // it annotated instead of failing, so a law that inspected nothing reported
+  // success. A scaffold with an empty scope is exactly the state that must not
+  // pass silently.
+  requireScope("the mirrored-topology law", TOPOLOGY_ACTIVE_TREES.length);
   notes.push(
     TOPOLOGY_ACTIVE_TREES.length === 0
       ? "the mirrored-topology law is scaffolded with no tree activated yet; cohorts activate their own"
@@ -5723,6 +5935,189 @@ if (tracked.status === 0) {
 }
 
 // The closed export surface, pinned by equality in both directions.
+/**
+ * `@acp/runtime`'s closed export surface (P8-T G0, L6).
+ *
+ * The five sibling packages carry this pin; runtime did not, which meant the
+ * one package the durability plane hangs off could grow or lose a public name
+ * without the fence noticing.
+ *
+ * The list was derived once, at authoring time, from the barrel as it stood at
+ * the known-good commit, written out as a literal, and is asserted by equality
+ * on every run — the same shape as its siblings. That order matters: a law that
+ * re-derived the pin from the barrel it is checking could never fail, because
+ * both sides would move together. Written as a literal, "fails if it diverges"
+ * is a claim a probe can actually falsify.
+ */
+const RUNTIME_PUBLIC_EXPORTS = [
+  "ACP_UUID_NAMESPACE",
+  "AUTHORIZATION_REFUSALS",
+  "AdmissionRequest",
+  "AuthorizationEvent",
+  "AuthorizationEventType",
+  "AuthorizationGranted",
+  "AuthorizationOutcome",
+  "AuthorizationRefusal",
+  "AuthorizationRefused",
+  "AuthorizationRequest",
+  "BeatContext",
+  "BeatResult",
+  "BuildEventInput",
+  "CONFLICT_KINDS",
+  "CommitRecordOutcome",
+  "CommitRecordRequest",
+  "CommitRecorded",
+  "ConflictGraphRequest",
+  "ConflictIntersection",
+  "ConflictKind",
+  "ConflictOutcome",
+  "ConflictPair",
+  "ConflictVerdict",
+  "ConformanceOutcome",
+  "ConformanceRequest",
+  "ConformanceVerdict",
+  "CoordinateOrigin",
+  "DATA_ROOTS",
+  "DATA_ROOT_DRILLS",
+  "DATA_ROOT_LOCAL",
+  "DATA_ROOT_RESTATE",
+  "DATA_ROOT_TOOLS",
+  "DRILL_ROOT_SEGMENTS",
+  "DUPLICATE_TASK_ID",
+  "DeriveEventCoordinate",
+  "DuplicateTaskId",
+  "DurableInvocation",
+  "DurableStepContext",
+  "ENFORCEMENT_REFUSALS",
+  "EffectPort",
+  "EndpointHandle",
+  "EnforcementEvent",
+  "EnforcementEventType",
+  "EnforcementRefusal",
+  "EnforcementRefused",
+  "EventCoordinate",
+  "FaultPoint",
+  "GIT_READ_VERBS",
+  "GRAPH_REFUSALS",
+  "GitReadOutcome",
+  "GitReadPort",
+  "GitReadRequest",
+  "GitReadVerb",
+  "GraphRefusal",
+  "GraphRefused",
+  "INTENT_STEP",
+  "LIFECYCLE_PLAN",
+  "LOOPBACK_HOST",
+  "LeaseGranted",
+  "LeaseOutcome",
+  "LeaseRequest",
+  "LedgerLike",
+  "LedgerPort",
+  "LifecyclePlanError",
+  "OBSERVATION_API_PORT",
+  "OUTCOME_STEP",
+  "ObjectDependencies",
+  "OperationCoordinate",
+  "OrchestrationDriver",
+  "PLAN_TERMINAL_STATE",
+  "PlanStep",
+  "PostconditionProbe",
+  "PostconditionUnknownError",
+  "PostconditionVerdict",
+  "PrestateOutcome",
+  "PrestateRequest",
+  "PrestateVerdict",
+  "Provenanced",
+  "QuarantineOutcome",
+  "QuarantineRecord",
+  "QuarantineRequest",
+  "READ_ONLY_PLAN",
+  "RESERVED_LOOPBACK_PORTS",
+  "RESTATE_ADMIN_PORT",
+  "RESTATE_ADMIN_URL",
+  "RESTATE_INGRESS_PORT",
+  "RESTATE_INGRESS_URL",
+  "RESTATE_MODE",
+  "RESTATE_SDK_VERSION",
+  "RESTATE_SERVER_VERSION",
+  "RUNTIME_SERVICE_PORT",
+  "RUNTIME_SERVICE_URL",
+  "ReconcileInput",
+  "ReconciliationError",
+  "RecordedCheck",
+  "RecordedCommit",
+  "ReplayForbiddenSource",
+  "RestateCacheState",
+  "RestateDriver",
+  "RestateDriverOptions",
+  "RunResult",
+  "RuntimeError",
+  "RuntimeErrorCode",
+  "SafeServerHandle",
+  "ScenarioRoot",
+  "ServerExit",
+  "SqliteSupervisor",
+  "SqliteSupervisorOptions",
+  "StartEndpointOptions",
+  "StepBeat",
+  "SubmitResult",
+  "SupervisorError",
+  "SwitchExecutionInput",
+  "SwitchExecutionResult",
+  "TokenObservation",
+  "TokenObservationKind",
+  "TokenRecordResult",
+  "ToyBoundaryError",
+  "UI_PORT",
+  "WorktreeObservation",
+  "acquireLease",
+  "appendPlanStep",
+  "applyEffect",
+  "applyIntentEffect",
+  "assertClaimedState",
+  "assertInvocationContinuity",
+  "authorizeCommit",
+  "buildConflictGraph",
+  "buildEvent",
+  "checkAdmission",
+  "checkWriteSetConformance",
+  "closeIntent",
+  "createAcpTaskObject",
+  "currentState",
+  "deriveEventCoordinate",
+  "deriveInvocation",
+  "deriveOperationCoordinate",
+  "deterministicUuid",
+  "drillRoot",
+  "eventName",
+  "executeSwitchPlan",
+  "nextStep",
+  "observationFailure",
+  "operationDigest",
+  "operationForStep",
+  "operationName",
+  "planFor",
+  "planStep",
+  "probeEffect",
+  "quarantineWorktree",
+  "readCacheThroughHandler",
+  "reconcile",
+  "recordCommit",
+  "recordTokenObservation",
+  "registerDeployment",
+  "removeScenarioRoot",
+  "renewLease",
+  "resolveScenarioRoot",
+  "revokeLease",
+  "scenarioLedgerPath",
+  "serverAvailability",
+  "startEndpoint",
+  "startVerifiedServer",
+  "submitAdvance",
+  "validatePlan",
+  "verifyPrestate",
+];
+
 const ACCOUNTS_PUBLIC_EXPORTS = [
   // P5A
   "AccountsRefusal",
@@ -5829,7 +6224,35 @@ if (accountsIndex === null) {
     }
   }
   notes.push(exported.size + " accounts exports, pinned by equality");
-}
+  }
+
+  // The same law for `@acp/runtime` (L6), in the same shape as its five siblings.
+  const runtimeBarrel = readIfPresent("packages/runtime/src/index.ts");
+  if (runtimeBarrel === null) {
+    fail("packages/runtime/src/index.ts is missing");
+  } else {
+    if (/export\s*\*\s*from/.test(runtimeBarrel)) {
+      fail("packages/runtime/src/index.ts uses `export *`, which cannot stay closed");
+    }
+    const runtimeExported = new Set();
+    for (const block of runtimeBarrel.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+      for (const piece of (block[1] ?? "").split(",")) {
+        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
+        if (name !== undefined && name !== "") runtimeExported.add(name);
+      }
+    }
+    for (const name of runtimeExported) {
+      if (!RUNTIME_PUBLIC_EXPORTS.includes(name)) {
+        fail("packages/runtime exports " + name + ", which is outside its closed surface");
+      }
+    }
+    for (const name of RUNTIME_PUBLIC_EXPORTS) {
+      if (!runtimeExported.has(name)) {
+        fail("packages/runtime no longer exports the pinned name " + name);
+      }
+    }
+    notes.push(runtimeExported.size + " runtime exports, pinned by equality");
+  }
 
 // The P3D deep aliases: exactly two, pointing at exactly these two modules, and
 // importable only by the parity test. Aliasing rather than widening either
@@ -6109,8 +6532,7 @@ if (tracked.status === 0) {
   const declared = new Set(present);
   for (const relativePath of WRITE_SET) {
     if (
-      (relativePath.startsWith("packages/adapters/src/") ||
-        relativePath.startsWith("packages/adapters/test/")) &&
+      (inAnyArea(relativePath, "adapters", ["src", "test"])) &&
       relativePath.endsWith(".ts")
     ) {
       declared.add(relativePath);
@@ -6119,13 +6541,13 @@ if (tracked.status === 0) {
   const sources = [...declared]
     .filter(
       (relativePath) =>
-        relativePath.startsWith("packages/adapters/src/") ||
-        relativePath.startsWith("packages/adapters/test/"),
+        inAnyArea(relativePath, "adapters", ["src", "test"]),
     )
     .filter((relativePath) => relativePath.endsWith(".ts"))
     .sort();
 
   let checked = 0;
+  let providerFiles = 0;
   for (const relativePath of sources) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
@@ -6177,7 +6599,8 @@ if (tracked.status === 0) {
     // makes a provider a participant in the boundary it is deliberately kept
     // outside of, and it is how three providers would end up with three
     // opinions about stopping a process.
-    if (relativePath.startsWith("packages/adapters/src/providers/")) {
+    if (inArea(relativePath, "adapters", "src/providers")) {
+      providerFiles += 1;
       if (/from\s*["'][^"']*session\.js["']/.test(code)) {
         fail(relativePath + " imports the session controller; providers stay pure");
       }
@@ -6206,7 +6629,9 @@ if (tracked.status === 0) {
     }
   }
 
-  if (checked > 0) {
+  requireScope("adapters keep one spawn authority and no network", checked);
+  requireScope("providers stay pure", providerFiles);
+  {
     notes.push(
       checked + " adapter sources: one spawn authority, one caller, no ledger and no network",
     );
@@ -6434,20 +6859,19 @@ if (serverTsconfigRaw !== null && serverTsconfigRaw.includes('"@acp/contracts"')
 const serverSources = new Set(
   (tracked.status === 0 ? tracked.stdout.split("\n").map((line) => line.trim()) : []).filter(
     (relativePath) =>
-      (relativePath.startsWith("packages/server/src/") ||
-        relativePath.startsWith("packages/server/test/")) &&
+      (inAnyArea(relativePath, "server", ["src", "test"])) &&
       relativePath.endsWith(".ts"),
   ),
 );
 for (const relativePath of WRITE_SET) {
   if (
-    (relativePath.startsWith("packages/server/src/") ||
-      relativePath.startsWith("packages/server/test/")) &&
+    (inAnyArea(relativePath, "server", ["src", "test"])) &&
     relativePath.endsWith(".ts")
   ) {
     serverSources.add(relativePath);
   }
 }
+  requireScope("the server names @acp/contracts nowhere in live code", serverSources.size);
 let serverSourcesChecked = 0;
 for (const relativePath of [...serverSources].sort()) {
   const content = readIfPresent(relativePath);

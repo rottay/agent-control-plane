@@ -153,6 +153,26 @@ export default defineConfig({
     projects: [
       {
         test: {
+          // The fence's own probes (P8-T G0). They exercise the pure resolver by
+          // direct import and run the fence itself as a subprocess against
+          // synthetic trees in temporary directories — never against this
+          // repository. No port is bound and no child outlives its test, so this
+          // project deliberately stays out of the serialized pools the runtime
+          // and daemon projects need.
+          name: 'fence',
+          root: './scripts/architecture',
+          include: ['*.test.mjs'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+          // Spawns git and a full fence run per probe.
+          testTimeout: 120_000,
+          hookTimeout: 120_000,
+        },
+      },
+      {
+        test: {
           // P5N cohort C1: the contracts tree is normalized, so its tests live
           // in the mirrored `test/` tree. The `src/**` glob stays until every
           // cohort has landed — a project that stopped looking at `src/` would
