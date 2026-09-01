@@ -75,3 +75,17 @@ catalog:
   "@radix-ui/react-dialog": 1.1.23
   # P8-8E: the task graph's canvas (C6).
   "@xyflow/react": 12.11.5
+  # P8-9-2: the live-DOM evidence battery's two test-scope tools, pinned
+  # exactly like every entry above. Both are devDependencies of @acp/ui only
+  # and reach no shipped bundle: jsdom is the DOM the docblock-scoped suites
+  # run in, axe-core the accessibility engine they assert with.
+  #
+  # jsdom is pinned at 29.1.1, not the newer 30.x, and the reason is this
+  # repository's own Node pin rather than caution: `.nvmrc` says 22.17.0 and
+  # the root manifest declares `>=22.17.0 <23`, while jsdom 30 requires
+  # `^22.22.2` on the 22 line. Taking 30 would raise the floor this repository
+  # states it runs on, which is a deliberate decision and not a side effect of
+  # installing a test tool. 29.1.1 asks for `^22.13.0` and is the newest
+  # release the declared floor satisfies.
+  jsdom: 29.1.1
+  axe-core: 4.13.0

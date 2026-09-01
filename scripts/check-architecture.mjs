@@ -1271,35 +1271,36 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **340 packet entries across 139 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **346 packet entries across 141 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
  * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
- * 2 (P8-T-roadmap) = 340 entries, with 201 duplicate entries.
+ * 6 (P8-9-2) + 2 (P8-T-roadmap) = 346 entries, with 205 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 30 duplicates = 30   (`scripts/check-architecture.mjs`, every packet)
- *   3 paths ×  7 duplicates = 21   (`docs/ROADMAP.md`, the routes source and the
- *                                   build-server drill suite the causal packet
- *                                   seamed)
- *   6 paths ×  6 duplicates = 36   (the api-contracts surface, its CLI mirror
- *                                   suite and the lockfile the write packets
- *                                   keep returning to)
+ *   1 path  × 31 duplicates = 31   (`scripts/check-architecture.mjs`, every packet)
+ *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the routes source, the
+ *                                   build-server drill suite, and the lockfile,
+ *                                   which this packet moved up a band)
+ *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
+ *                                   mirror suite)
  *   5 paths ×  5 duplicates = 25   (the api-contracts route and parity surface
  *                                   with its parity suite, and the UI's api
  *                                   client and app root)
- *   2 paths ×  4 duplicates = 8    (the initiatives suite and the UI styles
- *                                   sheet)
- *   7 paths ×  3 duplicates = 21
+ *   4 paths ×  4 duplicates = 16   (the initiatives suite, the UI styles sheet,
+ *                                   the UI manifest and the workspace file)
+ *   5 paths ×  3 duplicates = 15   (the contracts schemas, the server manifest,
+ *                                   the app shell, and the hash route with its
+ *                                   suite)
  *  15 paths ×  2 duplicates = 30
  *  30 paths ×  1 duplicate  = 30
  *
- * 30 + 21 + 36 + 25 + 8 + 21 + 30 + 30 = 201.
+ * 31 + 28 + 30 + 25 + 16 + 15 + 30 + 30 = 205.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1340,6 +1341,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * so enters the ×1 row, which moves 29 → 30 paths. The drill file's only other
  * in-phase owner is `P8W_WRITE_SET`; its earlier occurrences belong to P2C and
  * P7P and are counted in those phases by the standing convention.
+ *
+ * P8-9-2 is the first packet since P8-8G-ui to add distinct paths: **two**, the
+ * live-DOM harness and its own drill, so distinct moves 139 → 141 while the
+ * entries move 340 → 346. Its other four entries are already owned, and three
+ * of them move a band — the lockfile joins the ×7 row, and the UI manifest and
+ * the workspace file join the ×4 row — which is what a packet that adds
+ * dependencies looks like in this table.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -2268,6 +2276,28 @@ const P89_1_WRITE_SET = [
 ];
 
 /**
+ * P8-9-2: the live-DOM evidence harness and its two test-scope tools.
+ *
+ * The foundation of P8-9's battery. Twenty-one UI suites render to a string
+ * today, which proves what the markup says and nothing about focus, keyboard,
+ * live regions or the accessibility tree. This packet adds the harness that
+ * can assert those — jsdom and axe-core as devDependencies of `@acp/ui` only,
+ * opt-in per file by docblock so every existing static suite runs unchanged —
+ * and lands it with its own falsifying drill, because a harness that has never
+ * reported a violation is not yet evidence of anything.
+ *
+ * Zero `src/` paths: nothing here reaches a shipped bundle.
+ */
+const P89_2_WRITE_SET = [
+  "packages/ui/package.json",
+  "pnpm-workspace.yaml",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+  "packages/ui/test/live-dom/index.ts",
+  "packages/ui/test/live-dom/index.test.tsx",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2554,6 +2584,7 @@ const WRITE_SET = [
   ...P88G_RECORD_WRITE_SET,
   ...P88G_CAUSAL_WRITE_SET,
   ...P89_1_WRITE_SET,
+  ...P89_2_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3737,10 +3768,17 @@ const P1B_DEPENDENCY_LAW = [
       "react",
       "react-dom",
     ],
+    // P8-9-2 adds the live-DOM evidence tools. They are named here, in
+    // `devDependencies`, and the entry above is an exact set — so declaring
+    // either one as a runtime dependency instead would fail this law rather
+    // than silently ship a DOM implementation and an accessibility engine to
+    // the browser. That placement assertion is the point of listing them.
     devDependencies: [
       "@types/react",
       "@types/react-dom",
       "@vitejs/plugin-react",
+      "axe-core",
+      "jsdom",
       "vite",
       "vitest",
     ],
@@ -3877,6 +3915,37 @@ if (tracked.status === 0) {
   }
   notes.push(
     uiFiles.length + " browser package files name no ledger and no database driver",
+  );
+
+  // P8-9-2: the evidence tools stay in the test tree.
+  //
+  // `jsdom` and `axe-core` are devDependencies, which the dependency law above
+  // already asserts by placement. This is the second half of that claim: the
+  // manifest says they are test-scope, and this says the shipped source never
+  // imports them anyway. Both are needed, because a devDependency is only
+  // test-scope by convention — nothing stops a `src/` module importing one and
+  // pulling a DOM implementation and an accessibility engine into the bundle.
+  // The test tree is deliberately not scanned: using them there is the point.
+  const uiSourceFiles = uiFiles.filter((relativePath) => relativePath.startsWith("packages/ui/src/"));
+  if (uiSourceFiles.length === 0) {
+    fail("packages/ui/src has no tracked files; the evidence-tool scope check is inert");
+  }
+  for (const relativePath of uiSourceFiles) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    for (const name of ["jsdom", "axe-core"]) {
+      if (content.includes(name)) {
+        fail(
+          relativePath +
+            " names " +
+            name +
+            "; the live-DOM evidence tools are test-scope and may not reach shipped source",
+        );
+      }
+    }
+  }
+  notes.push(
+    uiSourceFiles.length + " browser package sources name neither jsdom nor axe-core",
   );
 }
 
