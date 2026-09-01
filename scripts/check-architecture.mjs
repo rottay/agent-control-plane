@@ -1271,20 +1271,20 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **367 packet entries across 141 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **374 packet entries across 147 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
  * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
- * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 2 (P8-T-roadmap) =
- * 367 entries, with 226 duplicate entries.
+ * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
+ * 2 (P8-T-roadmap) = 374 entries, with 227 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 34 duplicates = 34   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 35 duplicates = 35   (`scripts/check-architecture.mjs`, every packet)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the routes source, the
  *                                   build-server drill suite, and the lockfile)
  *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
@@ -1299,7 +1299,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *  12 paths ×  2 duplicates = 24
  *  35 paths ×  1 duplicate  = 35
  *
- * 34 + 28 + 30 + 25 + 20 + 30 + 24 + 35 = 226.
+ * 35 + 28 + 30 + 25 + 20 + 30 + 24 + 35 = 227.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1376,6 +1376,15 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * (one duplicate) and so sat in the ×1 row; a third occurrence moves it to
  * the ×2 row, which is why that row reads 14 → 15 paths (28 → 30) while the
  * ×1 row loses the path it left: 35 → 34 (35 → 34).
+ *
+ * P8-10a is the phase's first packet since P8-8G-ui to move the distinct count
+ * meaningfully, and the only one to move it by six: the five operational pages
+ * are the first files under `docs/operations/`, and `README.md` — owned by
+ * eight arrays from earlier phases and by none in this one — takes its first
+ * in-phase entry here. Seven entries, six of them new paths, so exactly one
+ * duplicate is added and only one row above changes: this file's own, 34 → 35.
+ * That the six new paths appear in no other P8 array is why the ×1 row holds at
+ * thirty-five rather than growing.
  *
  * P8-9-4 adds **no** path either: all five of its entries are already owned —
  * the two dialog sources and their two suites by the UI packets that wrote
@@ -2435,6 +2444,30 @@ const P89_4_WRITE_SET = [
 ];
 
 /**
+ * P8-10a: the operational documentation.
+ *
+ * The roadmap's criterion for this work is not "documentation exists" but
+ * "reproducible by a fresh session", so these five pages are written to be run
+ * literally by someone who has never seen the repository: concrete scratch
+ * paths that are the verifier's own commands, with a standing note telling a
+ * real operator to substitute theirs. Every command, flag, error string and
+ * port on those pages was read out of the source before it was written down,
+ * because a runbook that is confidently wrong is worse than no runbook.
+ *
+ * The five pages are the first files under `docs/operations/`, and `README.md`
+ * gains its first in-phase entry to link them.
+ */
+const P810_A_WRITE_SET = [
+  "docs/operations/runbook.md",
+  "docs/operations/troubleshooting.md",
+  "docs/operations/backup-restore.md",
+  "docs/operations/account-switch.md",
+  "docs/operations/update-rollback.md",
+  "README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2725,6 +2758,7 @@ const WRITE_SET = [
   ...P89_3_WRITE_SET,
   ...P89_1B_WRITE_SET,
   ...P89_4_WRITE_SET,
+  ...P810_A_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

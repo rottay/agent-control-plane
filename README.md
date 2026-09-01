@@ -198,6 +198,20 @@ See `packages/ledger/README.md` for the API and
 install-time build allow-list. `pnpm check:architecture` asserts that it stays
 the only one.
 
+## Operating this plane
+
+Five operational pages, written to be run by someone who has not seen this
+repository before. Their examples use concrete scratch paths so they can be
+followed literally; each page says where a real operator substitutes their own.
+
+| page | answers |
+| --- | --- |
+| [Runbook](docs/operations/runbook.md) | how to build, start and stop the surfaces, and what fails closed until you wire it |
+| [Troubleshooting](docs/operations/troubleshooting.md) | the failure classes this system actually produces, by the names it uses for them |
+| [Backup and restore](docs/operations/backup-restore.md) | why WAL makes "copy the file" the wrong instinct, and how to prove a restore |
+| [Switching accounts](docs/operations/account-switch.md) | which file governs, when the ledger takes over, and why a later file edit does not win |
+| [Update and rollback](docs/operations/update-rollback.md) | changing pins deliberately, and rolling back without destroying anything |
+
 ## Repository layout
 
 ```
