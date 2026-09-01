@@ -1,9 +1,22 @@
-import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION, type AccountDto, type AccountsResponse } from "@acp/api-contracts";
+import {
+  API_CONTRACT_VERSION,
+  LEDGER_CONTRACT_VERSION,
+  type AccountActionDtoRecord,
+  type AccountDto,
+  type AccountsResponse,
+} from "@acp/api-contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { type Resource } from "../../../src/hooks/use-async-resource/index.js";
-import { AccountsSection, AccountsView } from "../../../src/views/accounts-view/index.js";
+import {
+  AccountActionGrantedReceipt,
+  AccountActionRefusalOutcome,
+  accountActionRefusalName,
+  AccountsSection,
+  AccountsView,
+  type AccountActionSubmitState,
+} from "../../../src/views/accounts-view/index.js";
 
 function account(overrides: Partial<AccountDto> = {}): AccountDto {
   return {
@@ -188,6 +201,179 @@ describe("AccountsView", () => {
   it("renders a heading and an announced loading state on the very first render", () => {
     const html = renderToStaticMarkup(<AccountsView />);
     expect(html).toContain("Accounts");
+    expect(html).toContain('role="status"');
+  });
+
+  it("defaults to unarmed when no bearerArmed prop is supplied — the pre-P8-8G call shape still works", () => {
+    const html = renderToStaticMarkup(<AccountsView />);
+    expect(html).not.toContain("Drain");
+  });
+});
+
+describe("AccountsSection — the state column renders the authority overlay (P8-8G packet 3, blueprint v2 §3)", () => {
+  it("shows the effective state, not the owner-file state, when they disagree", () => {
+    const html = renderToStaticMarkup(
+      <AccountsSection
+        resource={successResource(
+          readyResponse([
+            account({
+              state: "AVAILABLE",
+              effectiveState: "DRAINING",
+              stateSource: "OPERATOR_ACTION",
+              lastAction: { action: "DRAIN", at: "2026-08-31T10:00:00.000Z", by: "claude/opus/implementer/01" },
+            }),
+          ]),
+        )}
+        lastFetchedAt={new Date()}
+        onRefresh={noop}
+      />,
+    );
+    expect(html).toContain("Draining");
+    expect(html).toContain("operator-set");
+  });
+
+  it("marks OPERATOR_ACTION rows with the last action's word and instant in the title", () => {
+    const html = renderToStaticMarkup(
+      <AccountsSection
+        resource={successResource(
+          readyResponse([
+            account({
+              effectiveState: "AVAILABLE",
+              stateSource: "OPERATOR_ACTION",
+              lastAction: { action: "ACCOUNT_READY", at: "2026-08-31T10:00:00.000Z", by: "claude/opus/implementer/01" },
+            }),
+          ]),
+        )}
+        lastFetchedAt={new Date()}
+        onRefresh={noop}
+      />,
+    );
+    expect(html).toMatch(/title="Account ready at[^"]*"/);
+  });
+
+  it("carries no operator-set mark and no title when the owner file still governs", () => {
+    const html = renderToStaticMarkup(
+      <AccountsSection resource={successResource(readyResponse([account()]))} lastFetchedAt={new Date()} onRefresh={noop} />,
+    );
+    expect(html).not.toContain("operator-set");
+  });
+
+  it("keeps the owner-file baseline reachable in a disclosure, not collapsed away", () => {
+    const html = renderToStaticMarkup(
+      <AccountsSection
+        resource={successResource(
+          readyResponse([
+            account({
+              state: "AUTH_REQUIRED",
+              effectiveState: "DRAINING",
+              stateSource: "OPERATOR_ACTION",
+              lastAction: { action: "DRAIN", at: "2026-08-31T10:00:00.000Z", by: "claude/opus/implementer/01" },
+            }),
+          ]),
+        )}
+        lastFetchedAt={new Date()}
+        onRefresh={noop}
+      />,
+    );
+    expect(html).toContain("Baseline");
+    expect(html).toContain("Auth required");
+  });
+});
+
+describe("AccountsSection — the actions column, gated on bearerArmed (P8-8G packet 3, blueprint v2 §3)", () => {
+  it("unarmed: reads as a posture, not a failure — no action buttons, no dialog", () => {
+    const html = renderToStaticMarkup(
+      <AccountsSection resource={successResource(readyResponse([account()]))} lastFetchedAt={new Date()} onRefresh={noop} />,
+    );
+    expect(html).toContain("Paste an operator token above to act.");
+    expect(html).not.toContain(">Drain<");
+    expect(html).not.toContain(">Override state<");
+  });
+
+  it("armed: offers all four actions, and no dialog content while every confirm starts closed", () => {
+    const html = renderToStaticMarkup(
+      <AccountsSection
+        resource={successResource(readyResponse([account()]))}
+        lastFetchedAt={new Date()}
+        onRefresh={noop}
+        bearerArmed={true}
+      />,
+    );
+    expect(html).toContain(">Drain<");
+    expect(html).toContain(">Mark ready<");
+    expect(html).toContain(">Flag reauth<");
+    expect(html).toContain(">Override state<");
+    // Closed-content mounting is forbidden everywhere in this cohort (C5):
+    // every confirm starts closed, so none of its form fields are present.
+    expect(html).not.toContain('id="account-action-actor"');
+    expect(html).not.toContain(">Confirm<");
+    expect(html).not.toContain("Paste an operator token");
+  });
+});
+
+describe("accountActionRefusalName — the seam's own refusal word, read out of the message (N2)", () => {
+  it("finds each of the four named refusals", () => {
+    for (const name of ["ACCOUNTS_UNAVAILABLE", "UNKNOWN_ACCOUNT", "ALREADY_IN_STATE", "WRITE_CONFLICT"]) {
+      expect(accountActionRefusalName("the account action was refused: " + name)).toBe(name);
+    }
+  });
+
+  it("returns null for a message naming no known refusal", () => {
+    expect(accountActionRefusalName("something else entirely")).toBeNull();
+  });
+});
+
+describe("AccountActionRefusalOutcome — every refusal is a named state (blueprint v2 §5)", () => {
+  it("renders nothing for idle or submitting", () => {
+    const idle: AccountActionSubmitState = { phase: "idle" };
+    const submitting: AccountActionSubmitState = { phase: "submitting" };
+    expect(renderToStaticMarkup(<AccountActionRefusalOutcome submit={idle} />)).toBe("");
+    expect(renderToStaticMarkup(<AccountActionRefusalOutcome submit={submitting} />)).toBe("");
+  });
+
+  it("names a no-op refusal by the seam's own word — never a silent success", () => {
+    const submit: AccountActionSubmitState = {
+      phase: "refused-decision",
+      name: "ALREADY_IN_STATE",
+      message: "the account action was refused: ALREADY_IN_STATE",
+    };
+    const html = renderToStaticMarkup(<AccountActionRefusalOutcome submit={submit} />);
+    expect(html).toContain("Refused: ALREADY_IN_STATE.");
+  });
+
+  it("names the two bearer states apart — a caller problem and an operator problem (v2 §5)", () => {
+    const unauthorized: AccountActionSubmitState = { phase: "refused-unauthorized", message: "the presented token was not accepted" };
+    const unarmed: AccountActionSubmitState = { phase: "refused-unarmed", message: "no write token is configured" };
+    const unauthorizedHtml = renderToStaticMarkup(<AccountActionRefusalOutcome submit={unauthorized} />);
+    const unarmedHtml = renderToStaticMarkup(<AccountActionRefusalOutcome submit={unarmed} />);
+    expect(unauthorizedHtml).toContain("The presented token was not accepted.");
+    expect(unarmedHtml).toContain("This server holds no write token to check against.");
+    expect(unauthorizedHtml).not.toBe(unarmedHtml);
+  });
+
+  it("marks INTERNAL as its own distinct retryable state", () => {
+    const submit: AccountActionSubmitState = { phase: "refused-internal", message: "an unexpected server error occurred" };
+    const html = renderToStaticMarkup(<AccountActionRefusalOutcome submit={submit} />);
+    expect(html).toContain("This is retryable.");
+  });
+});
+
+describe("AccountActionGrantedReceipt — carries the sequence (v2, N2)", () => {
+  it("shows the action, the resulting state and the sequence", () => {
+    const record: AccountActionDtoRecord = {
+      sequence: 9,
+      eventId: "11111111-1111-4111-8111-111111111111",
+      accountId: "claude-primary",
+      version: 3,
+      action: "DRAIN",
+      resultingState: "DRAINING",
+      actor: "claude/opus/implementer/01",
+      note: null,
+      recordedAt: "2026-08-31T10:00:00.000Z",
+    };
+    const html = renderToStaticMarkup(<AccountActionGrantedReceipt record={record} onClose={noop} />);
+    expect(html).toContain("Recorded: Drain → Draining.");
+    expect(html).toContain("Sequence 9.");
     expect(html).toContain('role="status"');
   });
 });

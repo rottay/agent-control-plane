@@ -1,12 +1,20 @@
-import { type AccountDto, type AccountsResponse } from "@acp/api-contracts";
-import { type JSX } from "react";
+import {
+  AccountActionDto,
+  AccountStatusDto,
+  type AccountActionDtoRecord,
+  type AccountDto,
+  type AccountsResponse,
+} from "@acp/api-contracts";
+import * as Dialog from "@radix-ui/react-dialog";
+import { useState, type JSX } from "react";
 
-import { fetchAccounts } from "../../api/client/index.js";
+import { fetchAccounts, postAccountAction } from "../../api/client/index.js";
 import { AsyncSection } from "../../components/async-section/index.js";
 import { BarBreakdown } from "../../components/bar-breakdown/index.js";
+import { classifyBearerErrorCode } from "../../components/bearer-field/index.js";
 import { type Column, DataTable } from "../../components/data-table/index.js";
 import { StatusBadge } from "../../components/status-badge/index.js";
-import { formatCount, formatRelativeTime, formatTimestamp, humanizeConstant } from "../../format/index.js";
+import { classNames, formatCount, formatRelativeTime, formatTimestamp, humanizeConstant } from "../../format/index.js";
 import { type Tone } from "../../format/status-tone/index.js";
 import { type Resource, useAsyncResource } from "../../hooks/use-async-resource/index.js";
 
@@ -25,17 +33,27 @@ import { type Resource, useAsyncResource } from "../../hooks/use-async-resource/
  * `AsyncSection`'s own loading/error machinery is still what this view uses
  * for genuine transport and contract failures; branching on `data.status`
  * happens only once past that, inside the success render.
+ *
+ * **P8-8G packet 3** adds the write half: per-row action controls, gated on
+ * `bearerArmed` — a prop from the app root, not a context, because this view
+ * is one of the two places `App`'s switch calls directly and can just hand
+ * it down (blueprint v2 §3).
  */
 
-export function AccountsView(): JSX.Element {
+export interface AccountsViewProps {
+  readonly bearerArmed?: boolean;
+}
+
+export function AccountsView({ bearerArmed = false }: AccountsViewProps = {}): JSX.Element {
   const { resource, lastFetchedAt, refresh } = useAsyncResource(fetchAccounts, []);
-  return <AccountsSection resource={resource} lastFetchedAt={lastFetchedAt} onRefresh={refresh} />;
+  return <AccountsSection resource={resource} lastFetchedAt={lastFetchedAt} onRefresh={refresh} bearerArmed={bearerArmed} />;
 }
 
 export interface AccountsSectionProps {
   readonly resource: Resource<AccountsResponse>;
   readonly lastFetchedAt: Date | null;
   readonly onRefresh: () => void;
+  readonly bearerArmed?: boolean;
 }
 
 /**
@@ -44,7 +62,7 @@ export interface AccountsSectionProps {
  * with a constructed `Resource` fixture, since `useAsyncResource`'s effect
  * never runs under `renderToStaticMarkup` (C5).
  */
-export function AccountsSection({ resource, lastFetchedAt, onRefresh }: AccountsSectionProps): JSX.Element {
+export function AccountsSection({ resource, lastFetchedAt, onRefresh, bearerArmed = false }: AccountsSectionProps): JSX.Element {
   return (
     <section aria-labelledby="accounts-heading">
       <h1 id="accounts-heading">Accounts</h1>
@@ -74,7 +92,12 @@ export function AccountsSection({ resource, lastFetchedAt, onRefresh }: Accounts
                 </time>
                 .
               </p>
-              <DataTable caption="Accounts" columns={ACCOUNT_COLUMNS} rows={data.items} rowKey={(account) => account.accountId} />
+              <DataTable
+                caption="Accounts"
+                columns={accountColumns(bearerArmed, onRefresh)}
+                rows={data.items}
+                rowKey={(account) => account.accountId}
+              />
             </>
           );
         }}
@@ -174,100 +197,489 @@ function ModelsCell({ models }: { readonly models: readonly string[] }): JSX.Ele
   );
 }
 
-const ACCOUNT_COLUMNS: Column<AccountDto>[] = [
-  {
-    key: "accountId",
-    header: "Alias",
-    priority: "essential",
-    render: (account) => account.accountId,
-  },
-  {
-    key: "provider",
-    header: "Provider",
-    priority: "essential",
-    render: (account) => account.provider,
-  },
-  {
-    key: "models",
-    header: "Models",
-    priority: "essential",
-    render: (account) => <ModelsCell models={account.models} />,
-  },
-  {
-    key: "plan",
-    header: "Plan",
-    priority: "secondary",
-    render: (account) => account.plan ?? "—",
-  },
-  {
-    key: "state",
-    header: "State",
-    priority: "essential",
-    render: (account) => <StatusBadge label={humanizeConstant(account.state)} tone={accountStateTone(account.state)} />,
-  },
-  {
-    key: "quotaRemaining",
-    header: "Quota remaining",
-    priority: "essential",
-    render: (account) =>
-      account.quota.remainingRatio === null ? (
-        <span title="The owner record does not publish a remaining-quota estimate for this account.">—</span>
-      ) : (
-        <BarBreakdown
-          caption={account.accountId + " quota remaining"}
-          total={1}
-          items={[{ label: "Remaining", count: account.quota.remainingRatio }]}
+/**
+ * The state column (P8-8G packet 3, blueprint v2 §3): renders
+ * `effectiveState` — what actually governs — rather than the owner file's
+ * raw `state`. A row whose effective state came from a recorded action
+ * (`stateSource === "OPERATOR_ACTION"`) is marked "operator-set", with the
+ * last action's own word and instant carried in the title rather than
+ * invented prose; the raw owner-file baseline stays reachable in a
+ * `<details>` disclosure, the same keyboard- and screen-reader-reachable
+ * idiom `ModelsCell` already uses, so the two facts (baseline vs. what
+ * governs) are never collapsed into one number a reader has to take on
+ * faith.
+ */
+function AccountStateCell({ account }: { readonly account: AccountDto }): JSX.Element {
+  const operatorSet = account.stateSource === "OPERATOR_ACTION";
+  const sourceTitle =
+    operatorSet && account.lastAction !== null
+      ? humanizeConstant(account.lastAction.action) + " at " + formatTimestamp(account.lastAction.at)
+      : undefined;
+  return (
+    <div className="account-state-cell">
+      <StatusBadge label={humanizeConstant(account.effectiveState)} tone={accountStateTone(account.effectiveState)} />
+      {operatorSet ? (
+        <span className="account-state-cell__source" title={sourceTitle}>
+          operator-set
+        </span>
+      ) : null}
+      <details className="account-state-cell__baseline">
+        <summary>Baseline</summary>
+        <p>{humanizeConstant(account.state)}</p>
+      </details>
+    </div>
+  );
+}
+
+const ACTION_LABEL: Readonly<Record<AccountActionDto, string>> = {
+  DRAIN: "Drain",
+  ACCOUNT_READY: "Mark ready",
+  REAUTH_REQUIRED: "Flag reauth",
+  OWNER_OVERRIDE: "Override state",
+};
+
+const ACTION_CONSEQUENCE: Readonly<Record<AccountActionDto, string>> = {
+  DRAIN: "Marks this account DRAINING. New work stops choosing it once requests already in flight finish.",
+  ACCOUNT_READY: "Marks this account AVAILABLE again.",
+  REAUTH_REQUIRED: "Marks this account AUTH_REQUIRED, flagging it for the operator's attention before it is used again.",
+  OWNER_OVERRIDE: "Sets this account's effective state directly to the state you choose below, overriding the automatic rules.",
+};
+
+export type AccountActionSubmitState =
+  | { readonly phase: "idle" }
+  | { readonly phase: "submitting" }
+  | { readonly phase: "granted"; readonly record: AccountActionDtoRecord }
+  | { readonly phase: "refused-schema"; readonly field: string; readonly message: string }
+  | { readonly phase: "refused-decision"; readonly name: string | null; readonly message: string }
+  | { readonly phase: "refused-unauthorized"; readonly message: string }
+  | { readonly phase: "refused-unarmed"; readonly message: string }
+  | { readonly phase: "refused-internal"; readonly message: string }
+  | { readonly phase: "refused-other"; readonly message: string };
+
+const ACCOUNT_ACTION_REFUSAL_NAMES = ["ACCOUNTS_UNAVAILABLE", "UNKNOWN_ACCOUNT", "ALREADY_IN_STATE", "WRITE_CONFLICT"] as const;
+
+/** The refusal's own vocabulary name, read out of the message that carries it (N2), matching `decisionRefusalName`'s idiom. */
+export function accountActionRefusalName(message: string): string | null {
+  return ACCOUNT_ACTION_REFUSAL_NAMES.find((name) => message.includes(name)) ?? null;
+}
+
+/**
+ * The refusal-state table for one account action confirm, the exact sibling
+ * of `RefusalOutcome` in `edit-roadmap-dialog` (blueprint v2 §3, C4):
+ * `WRITE_REFUSED` carries the seam's own refusal word, the bearer's two
+ * first-class states stay apart, and every other classified failure lands
+ * in the generic retryable state. Exported for the same reason its sibling
+ * is: a fixture `AccountActionSubmitState` is the only way this table's
+ * static half is reachable in a DOM-less test.
+ */
+export function AccountActionRefusalOutcome({ submit }: { readonly submit: AccountActionSubmitState }): JSX.Element | null {
+  if (submit.phase === "refused-decision") {
+    return (
+      <div className="dialog__outcome dialog__outcome--refused">
+        <p className="dialog__outcome-title">Refused: {submit.name ?? "unknown"}.</p>
+        <p>{submit.message}</p>
+      </div>
+    );
+  }
+  if (submit.phase === "refused-unauthorized") {
+    return (
+      <div className="dialog__outcome dialog__outcome--refused">
+        <p className="dialog__outcome-title">The presented token was not accepted.</p>
+        <p>{submit.message}</p>
+      </div>
+    );
+  }
+  if (submit.phase === "refused-unarmed") {
+    return (
+      <div className="dialog__outcome dialog__outcome--refused">
+        <p className="dialog__outcome-title">This server holds no write token to check against.</p>
+        <p>{submit.message}</p>
+      </div>
+    );
+  }
+  if (submit.phase === "refused-internal") {
+    return (
+      <div className="dialog__outcome dialog__outcome--refused">
+        <p className="dialog__outcome-title">Something went wrong. This is retryable.</p>
+        <p>{submit.message}</p>
+      </div>
+    );
+  }
+  if (submit.phase === "refused-other") {
+    return (
+      <div className="dialog__outcome dialog__outcome--refused">
+        <p className="dialog__outcome-title">The request did not go through.</p>
+        <p>{submit.message}</p>
+      </div>
+    );
+  }
+  return null;
+}
+
+/**
+ * The granted receipt, carrying the sequence (v2, N2) — the same
+ * granted-edit idiom `GrantedReceipt` uses in `edit-roadmap-dialog`.
+ */
+export function AccountActionGrantedReceipt({
+  record,
+  onClose,
+}: {
+  readonly record: AccountActionDtoRecord;
+  readonly onClose: () => void;
+}): JSX.Element {
+  return (
+    <div role="status" aria-live="polite" className="dialog__outcome dialog__outcome--granted">
+      <p className="dialog__outcome-title">
+        Recorded: {humanizeConstant(record.action)} → {humanizeConstant(record.resultingState)}.
+      </p>
+      <p>Sequence {record.sequence}.</p>
+      <button type="button" className="button" onClick={onClose}>
+        Close
+      </button>
+    </div>
+  );
+}
+
+interface AccountActionDialogBodyProps {
+  readonly account: AccountDto;
+  readonly action: AccountActionDto;
+  readonly onGranted: () => void;
+  readonly onClose: () => void;
+}
+
+function AccountActionDialogBody({ account, action, onGranted, onClose }: AccountActionDialogBodyProps): JSX.Element {
+  const [actor, setActor] = useState("");
+  const [note, setNote] = useState("");
+  const [setState, setSetState] = useState<AccountStatusDto>("AVAILABLE");
+  const [submit, setSubmit] = useState<AccountActionSubmitState>({ phase: "idle" });
+
+  async function handleSubmit(): Promise<void> {
+    setSubmit({ phase: "submitting" });
+    const result = await postAccountAction(account.accountId, {
+      action,
+      setState: action === "OWNER_OVERRIDE" ? setState : null,
+      note: note.trim() === "" ? null : note,
+      actor,
+    });
+
+    if (result.kind === "ok") {
+      setSubmit({ phase: "granted", record: result.data.action });
+      onGranted();
+      return;
+    }
+    if (result.kind === "api-error") {
+      if (result.code === "BAD_REQUEST") {
+        setSubmit({ phase: "refused-schema", field: result.detail ?? "(root)", message: result.message });
+        return;
+      }
+      if (result.code === "WRITE_REFUSED") {
+        setSubmit({ phase: "refused-decision", name: accountActionRefusalName(result.message), message: result.message });
+        return;
+      }
+      const bearerErrorKind = classifyBearerErrorCode(result.code);
+      if (bearerErrorKind === "unauthorized") {
+        setSubmit({ phase: "refused-unauthorized", message: result.message });
+        return;
+      }
+      if (bearerErrorKind === "unconfigured") {
+        setSubmit({ phase: "refused-unarmed", message: result.message });
+        return;
+      }
+      if (result.code === "INTERNAL") {
+        setSubmit({ phase: "refused-internal", message: result.message });
+        return;
+      }
+      setSubmit({ phase: "refused-other", message: result.message });
+      return;
+    }
+    if (result.kind === "network-error") {
+      setSubmit({ phase: "refused-other", message: result.detail });
+      return;
+    }
+    setSubmit({ phase: "refused-other", message: "The response did not match the API contract this build expects." });
+  }
+
+  if (submit.phase === "granted") {
+    return <AccountActionGrantedReceipt record={submit.record} onClose={onClose} />;
+  }
+
+  const fieldError = submit.phase === "refused-schema" ? submit : null;
+  const disabled = submit.phase === "submitting" || actor.trim() === "";
+
+  return (
+    <form
+      className="dialog__form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void handleSubmit();
+      }}
+    >
+      <div className="field">
+        <label htmlFor="account-action-actor">Recorded by</label>
+        <input
+          id="account-action-actor"
+          type="text"
+          value={actor}
+          onChange={(event) => {
+            setActor(event.target.value);
+          }}
+          placeholder="provider/model/role/instance"
+          aria-describedby="account-action-actor-hint"
         />
-      ),
-  },
-  {
-    key: "confidence",
-    header: "Confidence",
-    priority: "secondary",
-    render: (account) => <StatusBadge label={humanizeConstant(account.quota.confidence)} tone={confidenceTone(account.quota.confidence)} />,
-  },
-  {
-    key: "reset",
-    header: "Reset",
-    priority: "secondary",
-    render: (account) =>
-      account.reset.nextResetAt === null ? (
-        "—"
-      ) : (
-        <time dateTime={account.reset.nextResetAt} title={formatTimestamp(account.reset.nextResetAt)}>
-          {formatRelativeTime(account.reset.nextResetAt, new Date())}
-        </time>
-      ),
-  },
-  {
-    key: "resetSource",
-    header: "Reset source",
-    priority: "tertiary",
-    render: (account) => humanizeConstant(account.reset.source),
-  },
-  {
-    key: "resetConfidence",
-    header: "Reset confidence",
-    priority: "tertiary",
-    render: (account) => <StatusBadge label={humanizeConstant(account.reset.confidence)} tone={confidenceTone(account.reset.confidence)} />,
-  },
-  {
-    key: "lastProbeAt",
-    header: "Last probe",
-    priority: "tertiary",
-    render: (account) =>
-      account.lastProbeAt === null ? (
-        "—"
-      ) : (
-        <time dateTime={account.lastProbeAt} title={formatTimestamp(account.lastProbeAt)}>
-          {formatRelativeTime(account.lastProbeAt, new Date())}
-        </time>
-      ),
-  },
-  {
-    key: "lastError",
-    header: "Last error",
-    priority: "tertiary",
-    render: (account) => account.lastError ?? "—",
-  },
-];
+        <p id="account-action-actor-hint" className="field-hint">
+          Your own worker identity, in the landed format.
+        </p>
+      </div>
+
+      {action === "OWNER_OVERRIDE" ? (
+        <>
+          <div className="field">
+            <label htmlFor="account-action-set-state">Set state</label>
+            <select
+              id="account-action-set-state"
+              value={setState}
+              onChange={(event) => {
+                setSetState(event.target.value as AccountStatusDto);
+              }}
+            >
+              {AccountStatusDto.options.map((state) => (
+                <option key={state} value={state}>
+                  {humanizeConstant(state)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="account-action-note">Note</label>
+            <textarea
+              id="account-action-note"
+              className={classNames("dialog__textarea", fieldError?.field === "note" ? "has-error" : undefined)}
+              value={note}
+              onChange={(event) => {
+                setNote(event.target.value);
+              }}
+              rows={3}
+              aria-describedby={fieldError?.field === "note" ? "account-action-note-error" : undefined}
+              aria-invalid={fieldError?.field === "note" ? true : undefined}
+            />
+            {fieldError?.field === "note" ? (
+              <p id="account-action-note-error" className="field-error">
+                {fieldError.message}
+              </p>
+            ) : null}
+          </div>
+        </>
+      ) : null}
+
+      <div role="status" aria-live="polite" className="dialog__outcome-region">
+        <AccountActionRefusalOutcome submit={submit} />
+      </div>
+
+      <div className="dialog__actions">
+        <button type="button" className="button button--quiet" onClick={onClose}>
+          Cancel
+        </button>
+        <button type="submit" className="button" disabled={disabled}>
+          {submit.phase === "submitting" ? "Recording…" : "Confirm"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+interface AccountActionDialogProps {
+  readonly account: AccountDto;
+  readonly action: AccountActionDto | null;
+  readonly onClose: () => void;
+  readonly onGranted: () => void;
+}
+
+/**
+ * One account action's deliberate confirm — the edit dialog's idiom
+ * (`@radix-ui/react-dialog`, already a dependency; no `Portal`, no
+ * `forceMount`, the closed-content law held everywhere in this cohort).
+ * Fully controlled by `action`; `key={action}` on the body so switching
+ * directly from one action to another (without closing first) starts a
+ * fresh draft rather than carrying the previous action's fields over.
+ */
+function AccountActionDialog({ account, action, onClose, onGranted }: AccountActionDialogProps): JSX.Element {
+  return (
+    <Dialog.Root
+      open={action !== null}
+      onOpenChange={(open) => {
+        if (!open) {
+          onClose();
+        }
+      }}
+    >
+      <Dialog.Overlay className="dialog__overlay" />
+      <Dialog.Content className="dialog__content" aria-describedby="account-action-description">
+        <Dialog.Title className="dialog__title">
+          {action !== null ? ACTION_LABEL[action] : ""} — {account.accountId}
+        </Dialog.Title>
+        <Dialog.Description id="account-action-description" className="dialog__description">
+          {action !== null ? ACTION_CONSEQUENCE[action] : ""}
+        </Dialog.Description>
+        {action !== null ? (
+          <AccountActionDialogBody key={action} account={account} action={action} onGranted={onGranted} onClose={onClose} />
+        ) : null}
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+/**
+ * The per-row action controls (P8-8G packet 3, blueprint v2 §3). Unarmed is
+ * a posture, not a failure (N1): with no operator token held, this cell
+ * explains that plainly rather than rendering disabled buttons a reader
+ * would have to guess the reason for.
+ */
+function AccountActionsCell({
+  account,
+  bearerArmed,
+  onGranted,
+}: {
+  readonly account: AccountDto;
+  readonly bearerArmed: boolean;
+  readonly onGranted: () => void;
+}): JSX.Element {
+  const [openAction, setOpenAction] = useState<AccountActionDto | null>(null);
+
+  if (!bearerArmed) {
+    return <p className="account-actions-cell account-actions-cell--unarmed">Paste an operator token above to act.</p>;
+  }
+
+  return (
+    <div className="account-actions-cell">
+      {AccountActionDto.options.map((action) => (
+        <button
+          key={action}
+          type="button"
+          className="button button--quiet"
+          onClick={() => {
+            setOpenAction(action);
+          }}
+        >
+          {ACTION_LABEL[action]}
+        </button>
+      ))}
+      <AccountActionDialog
+        account={account}
+        action={openAction}
+        onClose={() => {
+          setOpenAction(null);
+        }}
+        onGranted={() => {
+          setOpenAction(null);
+          onGranted();
+        }}
+      />
+    </div>
+  );
+}
+
+function accountColumns(bearerArmed: boolean, onGranted: () => void): Column<AccountDto>[] {
+  return [
+    {
+      key: "accountId",
+      header: "Alias",
+      priority: "essential",
+      render: (account) => account.accountId,
+    },
+    {
+      key: "provider",
+      header: "Provider",
+      priority: "essential",
+      render: (account) => account.provider,
+    },
+    {
+      key: "models",
+      header: "Models",
+      priority: "essential",
+      render: (account) => <ModelsCell models={account.models} />,
+    },
+    {
+      key: "plan",
+      header: "Plan",
+      priority: "secondary",
+      render: (account) => account.plan ?? "—",
+    },
+    {
+      key: "state",
+      header: "State",
+      priority: "essential",
+      render: (account) => <AccountStateCell account={account} />,
+    },
+    {
+      key: "actions",
+      header: "Actions",
+      priority: "essential",
+      render: (account) => <AccountActionsCell account={account} bearerArmed={bearerArmed} onGranted={onGranted} />,
+    },
+    {
+      key: "quotaRemaining",
+      header: "Quota remaining",
+      priority: "essential",
+      render: (account) =>
+        account.quota.remainingRatio === null ? (
+          <span title="The owner record does not publish a remaining-quota estimate for this account.">—</span>
+        ) : (
+          <BarBreakdown
+            caption={account.accountId + " quota remaining"}
+            total={1}
+            items={[{ label: "Remaining", count: account.quota.remainingRatio }]}
+          />
+        ),
+    },
+    {
+      key: "confidence",
+      header: "Confidence",
+      priority: "secondary",
+      render: (account) => <StatusBadge label={humanizeConstant(account.quota.confidence)} tone={confidenceTone(account.quota.confidence)} />,
+    },
+    {
+      key: "reset",
+      header: "Reset",
+      priority: "secondary",
+      render: (account) =>
+        account.reset.nextResetAt === null ? (
+          "—"
+        ) : (
+          <time dateTime={account.reset.nextResetAt} title={formatTimestamp(account.reset.nextResetAt)}>
+            {formatRelativeTime(account.reset.nextResetAt, new Date())}
+          </time>
+        ),
+    },
+    {
+      key: "resetSource",
+      header: "Reset source",
+      priority: "tertiary",
+      render: (account) => humanizeConstant(account.reset.source),
+    },
+    {
+      key: "resetConfidence",
+      header: "Reset confidence",
+      priority: "tertiary",
+      render: (account) => <StatusBadge label={humanizeConstant(account.reset.confidence)} tone={confidenceTone(account.reset.confidence)} />,
+    },
+    {
+      key: "lastProbeAt",
+      header: "Last probe",
+      priority: "tertiary",
+      render: (account) =>
+        account.lastProbeAt === null ? (
+          "—"
+        ) : (
+          <time dateTime={account.lastProbeAt} title={formatTimestamp(account.lastProbeAt)}>
+            {formatRelativeTime(account.lastProbeAt, new Date())}
+          </time>
+        ),
+    },
+    {
+      key: "lastError",
+      header: "Last error",
+      priority: "tertiary",
+      render: (account) => account.lastError ?? "—",
+    },
+  ];
+}

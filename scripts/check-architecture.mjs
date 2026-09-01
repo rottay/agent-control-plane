@@ -1271,41 +1271,43 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **318 packet entries across 137 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **330 packet entries across 139 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
  * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
- * 2 (P8-T-roadmap) = 318 entries, with 181 duplicate entries.
+ * 12 (P8-8G-ui) + 2 (P8-T-roadmap) = 330 entries, with 191 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 26 duplicates = 26   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 27 duplicates = 27   (`scripts/check-architecture.mjs`, every packet)
  *   9 paths ×  6 duplicates = 54   (the contracts/api-contracts/server surface
  *                                   the write packets keep returning to)
- *   3 paths ×  5 duplicates = 15
- *   3 paths ×  4 duplicates = 12
- *   8 paths ×  3 duplicates = 24
- *  11 paths ×  2 duplicates = 22
- *  28 paths ×  1 duplicate  = 28
+ *   5 paths ×  5 duplicates = 25
+ *   2 paths ×  4 duplicates = 8
+ *   7 paths ×  3 duplicates = 21
+ *  13 paths ×  2 duplicates = 26
+ *  30 paths ×  1 duplicate  = 30
  *
- * 26 + 54 + 15 + 12 + 24 + 22 + 28 = 181.
+ * 27 + 54 + 25 + 8 + 21 + 26 + 30 = 191.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Five packets add entries without adding paths:
  * P8-8D-pre's 22nd, the whole of P8-8D-c2, the whole of P8-T-roadmap, the
  * debrief-ruling record, and the P8-8F record. P8-T2 added three paths;
  * P8-8E-pre three; P8-8E six; P8-8E2 two; P8-8F-srv five; P8-8F-ui seven;
- * P8-8G-a two; and P8-8G-b adds **six** — the migrations and types modules
- * the account stream needed, the actions seam and the operator entry, and
- * their two mirrored suites. The two paths the DT granted after the packet's
- * STOP (the api-contracts barrel and the accounts-view suite) are entries
- * without distinct paths: both are already owned by earlier P8 packets, which
- * is why the distinct count holds at 137 while the entries move 316 → 318. This
- * file's appearances in earlier phases are counted in those phases, since the
- * standing convention scopes the arithmetic to the phase.
+ * P8-8G-a two; P8-8G-b six; and P8-8G-ui adds **two** — the bearer field's
+ * component and its mirrored suite are the only genuinely new paths this
+ * packet touches. The other ten of its twelve entries revisit files five
+ * earlier UI packets (P8-8B, P8-8C, P8-8D, P8-8E, P8-8F-ui) and P8-8G-b
+ * itself already own — the api client, the app root, the styles sheet, the
+ * accounts view and its suite, the edit dialog and its suite, and the
+ * fence — which is why the distinct count moves only 137 → 139 while the
+ * entries move 318 → 330. This file's appearances in earlier phases are
+ * counted in those phases, since the standing convention scopes the
+ * arithmetic to the phase.
  */
 const P8D_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mjs"];
 
@@ -2139,6 +2141,40 @@ const P88G_B_WRITE_SET = [
 ];
 
 /**
+ * P8-8G packet 3 (isolated worktree, Sonnet implementer; Opus integrates):
+ * the UI half of the write surface — the session-only bearer field, the
+ * account action controls and their deliberate confirms, and the two write
+ * surfaces sending the header (blueprint v2 §3).
+ *
+ * The bearer is held in module scope inside `api/client`, not React context:
+ * `App` owns the one `useState` that changes it and is this packet's only
+ * caller of the setter, but the roadmap edit dialog is reached through
+ * `views/roadmap-document-view` — outside this packet's write-set — so it
+ * cannot receive the value as a new prop. Reading the module-level getter at
+ * render time is what lets a file several layers below the root see the
+ * current token without that file, or the ones between it and the root,
+ * needing to change.
+ *
+ * `packages/api-contracts/src/index.ts` is not listed again here: packet 2
+ * already added every DTO and route name this packet's UI reads, and
+ * nothing here grows that barrel further.
+ */
+const P88G_UI_WRITE_SET = [
+  "packages/ui/src/api/client/index.ts",
+  "packages/ui/src/app/index.tsx",
+  "packages/ui/src/components/bearer-field/index.tsx",
+  "packages/ui/src/views/accounts-view/index.tsx",
+  "packages/ui/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/ui/src/styles/components.css",
+  "packages/ui/test/api/client/index.test.ts",
+  "packages/ui/test/app/index.test.tsx",
+  "packages/ui/test/components/bearer-field/index.test.tsx",
+  "packages/ui/test/views/accounts-view/index.test.tsx",
+  "packages/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2421,6 +2457,7 @@ const WRITE_SET = [
   ...P88F_RECORD_WRITE_SET,
   ...P88G_A_WRITE_SET,
   ...P88G_B_WRITE_SET,
+  ...P88G_UI_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

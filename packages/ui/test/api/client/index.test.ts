@@ -1,7 +1,17 @@
 import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "@acp/api-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchAccounts, fetchEvents, fetchOverview, fetchTaskDetail, fetchTasks, fetchWorkerDetail } from "../../../src/api/client/index.js";
+import {
+  fetchAccounts,
+  fetchEvents,
+  fetchOverview,
+  fetchTaskDetail,
+  fetchTasks,
+  fetchWorkerDetail,
+  getSessionBearerToken,
+  postAccountAction,
+  setSessionBearerToken,
+} from "../../../src/api/client/index.js";
 
 const SHA = "a".repeat(64);
 
@@ -38,6 +48,9 @@ function validApiError(code = "LEDGER_UNAVAILABLE"): Record<string, unknown> {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // P8-8G packet 3: this module's bearer state is held at module scope, so a
+  // test that arms it must not leak an armed token into every test after it.
+  setSessionBearerToken(null);
 });
 
 describe("fetchOverview", () => {
@@ -225,5 +238,136 @@ describe("query construction", () => {
       expect(target.startsWith("//")).toBe(false);
       expect(target).not.toMatch(/^[a-z][a-z0-9+.-]*:/i);
     }
+  });
+});
+
+function validAccountActionWriteResponse(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    action: {
+      sequence: 4,
+      eventId: "11111111-1111-4111-8111-111111111111",
+      accountId: "claude-primary",
+      version: 2,
+      action: "DRAIN",
+      resultingState: "DRAINING",
+      actor: "claude/opus/implementer/01",
+      note: null,
+      recordedAt: "2026-08-31T12:00:00.000Z",
+    },
+    ...overrides,
+  };
+}
+
+describe("postAccountAction (P8-8G packet 3)", () => {
+  it("posts to the account's actions path and returns ok for a contract-conformant receipt", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, validAccountActionWriteResponse()));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await postAccountAction("claude-primary", {
+      action: "DRAIN",
+      setState: null,
+      note: null,
+      actor: "claude/opus/implementer/01",
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") {
+      expect(result.data.action.resultingState).toBe("DRAINING");
+      expect(result.data.action.sequence).toBe(4);
+    }
+    const calledPath = String((fetchSpy.mock.calls[0] as unknown[])[0]);
+    expect(calledPath).toBe("/api/v1/accounts/claude-primary/actions");
+  });
+
+  it("rejects a malformed account id without calling fetch", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const result = await postAccountAction("", { action: "DRAIN", setState: null, note: null, actor: "a/b/c/01" });
+    expect(result.kind).toBe("contract-mismatch");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("maps a WRITE_REFUSED response to api-error, carrying the seam's own refusal word", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(409, {
+          apiContractVersion: API_CONTRACT_VERSION,
+          error: { code: "WRITE_REFUSED", message: "the account action was refused: ALREADY_IN_STATE", detail: null },
+        }),
+      ),
+    );
+    const result = await postAccountAction("claude-primary", {
+      action: "ACCOUNT_READY",
+      setState: null,
+      note: null,
+      actor: "claude/opus/implementer/01",
+    });
+    expect(result.kind).toBe("api-error");
+    if (result.kind === "api-error") {
+      expect(result.code).toBe("WRITE_REFUSED");
+      expect(result.message).toContain("ALREADY_IN_STATE");
+    }
+  });
+});
+
+describe("the session bearer — held in module memory only (P8-8G packet 3, blueprint v2 §3)", () => {
+  it("sends no Authorization header on a write when unarmed", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, validAccountActionWriteResponse()));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await postAccountAction("claude-primary", { action: "DRAIN", setState: null, note: null, actor: "a/b/c/01" });
+
+    const init = (fetchSpy.mock.calls[0] as unknown[])[1] as { headers: Record<string, string> };
+    expect(init.headers["authorization"]).toBeUndefined();
+  });
+
+  it("sends Authorization: Bearer <token> on a write once armed", async () => {
+    setSessionBearerToken("operator-secret");
+    expect(getSessionBearerToken()).toBe("operator-secret");
+
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, validAccountActionWriteResponse()));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await postAccountAction("claude-primary", { action: "DRAIN", setState: null, note: null, actor: "a/b/c/01" });
+
+    const init = (fetchSpy.mock.calls[0] as unknown[])[1] as { headers: Record<string, string> };
+    expect(init.headers["authorization"]).toBe("Bearer operator-secret");
+  });
+
+  it("never attaches Authorization to a read", async () => {
+    setSessionBearerToken("operator-secret");
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        status: "READY",
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        items: [],
+        count: 0,
+        estimatedAt: "2026-08-31T12:00:00.000Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await fetchAccounts();
+
+    const init = (fetchSpy.mock.calls[0] as unknown[])[1] as { headers: Record<string, string> };
+    expect(init.headers["authorization"]).toBeUndefined();
+  });
+
+  it("clearing the token removes the header from the next write", async () => {
+    setSessionBearerToken("operator-secret");
+    setSessionBearerToken(null);
+    expect(getSessionBearerToken()).toBeNull();
+
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, validAccountActionWriteResponse()));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await postAccountAction("claude-primary", { action: "DRAIN", setState: null, note: null, actor: "a/b/c/01" });
+
+    const init = (fetchSpy.mock.calls[0] as unknown[])[1] as { headers: Record<string, string> };
+    expect(init.headers["authorization"]).toBeUndefined();
   });
 });

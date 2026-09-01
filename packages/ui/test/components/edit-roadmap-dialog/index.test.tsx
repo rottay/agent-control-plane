@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { setSessionBearerToken } from "../../../src/api/client/index.js";
 import {
   decisionRefusalName,
   EditRoadmapDialog,
@@ -15,6 +16,12 @@ const DIGEST_A = "a".repeat(64);
 const noop = (): void => {
   // open-change/granted/reload are not exercised in a static render
 };
+
+afterEach(() => {
+  // P8-8G packet 3: the bearer is module-scoped state in api/client; a test
+  // that arms it must not leak an armed token into every test after it.
+  setSessionBearerToken(null);
+});
 
 describe("EditRoadmapDialog — closed-content mounting is forbidden (C5)", () => {
   it("contributes no dialog content while closed", () => {
@@ -74,6 +81,31 @@ describe("EditRoadmapDialog — the open form (blueprint v2 §3-§4)", () => {
     expect(html).toContain('type="submit"');
     expect(html).toContain("disabled=\"\"");
     expect(html).toContain("Record version");
+  });
+
+  it("unarmed reads as a posture, not a failure — the submit button explains rather than fails mid-flight (v2 §3, N1)", () => {
+    expect(html).toContain("Unarmed — paste an operator token above to record this version.");
+  });
+});
+
+describe("EditRoadmapDialog — armed (P8-8G packet 3, blueprint v2 §3)", () => {
+  it("carries no unarmed note once a token is held, though the submit stays disabled until content and recordedBy are filled too", () => {
+    setSessionBearerToken("operator-secret");
+    const html = renderToStaticMarkup(
+      <EditRoadmapDialog
+        open={true}
+        onOpenChange={noop}
+        initiativeId={INITIATIVE_ID}
+        kind="EDIT"
+        prefillVersion={null}
+        expectedHeadDigest={null}
+        restoresVersionId={null}
+        restoresVersionLabel={null}
+        onGranted={noop}
+      />,
+    );
+    expect(html).not.toContain("Unarmed — paste an operator token");
+    expect(html).toContain("disabled=\"\"");
   });
 });
 
@@ -147,6 +179,16 @@ describe("RefusalOutcome — the refusal-state table's non-schema halves (C4)", 
     const html = renderToStaticMarkup(<RefusalOutcome submit={submit} onReloadAndReapply={noop} />);
     expect(html).toContain("Refused: HEAD_MISMATCH.");
     expect(html).toContain("Reload the head and reapply");
+  });
+
+  it("names the presented-token-refused state apart from the operator-unconfigured state (P8-8G packet 3, blueprint v2 §5)", () => {
+    const unauthorized: SubmitState = { phase: "refused-unauthorized", message: "the presented token was not accepted" };
+    const unarmed: SubmitState = { phase: "refused-unarmed", message: "this server was started without a write token" };
+    const unauthorizedHtml = renderToStaticMarkup(<RefusalOutcome submit={unauthorized} onReloadAndReapply={noop} />);
+    const unarmedHtml = renderToStaticMarkup(<RefusalOutcome submit={unarmed} onReloadAndReapply={noop} />);
+    expect(unauthorizedHtml).toContain("The presented token was not accepted.");
+    expect(unarmedHtml).toContain("This server holds no write token to check against.");
+    expect(unauthorizedHtml).not.toBe(unarmedHtml);
   });
 
   it("marks INTERNAL as its own distinct retryable state (N1)", () => {

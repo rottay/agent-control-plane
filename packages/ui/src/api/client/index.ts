@@ -1,6 +1,7 @@
 import {
   API_ROUTES,
   ApiError,
+  AccountActionWriteResponse,
   AccountsResponse,
   EventPageResponse,
   InitiativeAgentsResponse,
@@ -17,6 +18,7 @@ import {
   TaskPageResponse,
   WorkerDetailResponse,
   WorkerPageResponse,
+  accountActionsPath,
   initiativeAgentsPath,
   initiativeEventsPath,
   initiativePath,
@@ -24,6 +26,8 @@ import {
   initiativeRoadmapPath,
   taskPath,
   workerPath,
+  type AccountActionDto,
+  type AccountStatusDto,
   type ApiErrorCode,
 } from "@acp/api-contracts";
 
@@ -54,6 +58,36 @@ export type ApiResult<T> =
   | { kind: "api-error"; status: number; code: ApiErrorCode; message: string; detail: string | null }
   | { kind: "contract-mismatch"; status: number | null; detail: string }
   | { kind: "network-error"; detail: string };
+
+/**
+ * The write surface's credential (P8-8G packet 3).
+ *
+ * Held in module scope, in memory only — never `localStorage`, never
+ * `sessionStorage`, never a query parameter. That makes it session-only for
+ * free: a reload re-evaluates this module and the variable starts back at
+ * `null`, with nothing anywhere to read it back from. `App` (the app root)
+ * owns the only `useState` that changes it; this module is the one place the
+ * write calls below read it from, so a component several layers removed from
+ * the root (the roadmap edit dialog, reached through an unrelated view) never
+ * needs the value threaded through its own props to send the header.
+ */
+let sessionBearerToken: string | null = null;
+
+export function setSessionBearerToken(token: string | null): void {
+  sessionBearerToken = token;
+}
+
+export function getSessionBearerToken(): string | null {
+  return sessionBearerToken;
+}
+
+function writeHeaders(): HeadersInit {
+  const headers: Record<string, string> = { accept: "application/json", "content-type": "application/json" };
+  if (sessionBearerToken !== null) {
+    headers["authorization"] = "Bearer " + sessionBearerToken;
+  }
+  return headers;
+}
 
 function describeIssues(issues: readonly { message: string; path: readonly PropertyKey[] }[]): string {
   const first = issues.slice(0, 3).map((issue) => {
@@ -131,7 +165,8 @@ async function fetchAndParse<T>(
 }
 
 /**
- * The one write this client makes. (P8-8D.)
+ * Every write this client makes goes through here. (P8-8D; P8-8G packet 3
+ * adds the second door.)
  *
  * The request body is not validated here before it travels: the server's own
  * schema is the one authority on what it accepts, and a client-side copy of
@@ -139,6 +174,12 @@ async function fetchAndParse<T>(
  * malformed body comes back as the same classified `api-error` a caller of
  * this module already knows how to read — the schema door and the decision
  * door are both just shapes of the response, not a second code path here.
+ *
+ * `writeHeaders` attaches `Authorization: Bearer <token>` when a token is
+ * armed, and nothing when it is not — the request goes out either way, since
+ * unarmed is this door's own first-class state (`WRITE_BEARER_UNCONFIGURED`
+ * or `AUTH_REQUIRED`), never something this client pre-empts by refusing to
+ * ask.
  */
 async function postAndParse<T>(
   path: string,
@@ -150,7 +191,7 @@ async function postAndParse<T>(
   try {
     response = await fetch(path, {
       method: "POST",
-      headers: { accept: "application/json", "content-type": "application/json" },
+      headers: writeHeaders(),
       body: JSON.stringify(body),
       signal: signal ?? null,
     });
@@ -471,6 +512,40 @@ export function fetchInitiativeAgents(
  */
 export function fetchAccounts(signal?: AbortSignal): Promise<ApiResult<AccountsResponse>> {
   return fetchAndParse(API_ROUTES.accounts, AccountsResponse, signal);
+}
+
+export interface AccountActionInput {
+  readonly action: AccountActionDto;
+  /** Required for `OWNER_OVERRIDE`, refused for every other action — the schema's own rule. */
+  readonly setState: AccountStatusDto | null;
+  readonly note: string | null;
+  readonly actor: string;
+}
+
+/**
+ * Record one operator action against an account (P8-8G packet 3).
+ *
+ * The second write this client makes, alongside `writeRoadmapVersion` — both
+ * travel through `postAndParse`, so both carry the bearer header the same
+ * way and land in the same closed set of classified outcomes a caller
+ * already knows how to read.
+ */
+export function postAccountAction(
+  accountId: string,
+  input: AccountActionInput,
+  signal?: AbortSignal,
+): Promise<ApiResult<AccountActionWriteResponse>> {
+  let path: string;
+  try {
+    path = accountActionsPath(accountId);
+  } catch {
+    return Promise.resolve({
+      kind: "contract-mismatch",
+      status: null,
+      detail: "\"" + accountId + "\" is not a well formed account id",
+    });
+  }
+  return postAndParse(path, input, AccountActionWriteResponse, signal);
 }
 
 // ---------------------------------------------------------------------------

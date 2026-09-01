@@ -2,7 +2,8 @@ import { type RoadmapVersionDto } from "@acp/api-contracts";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useEffect, useRef, useState, type JSX } from "react";
 
-import { fetchInitiativeRoadmap, fetchRoadmapContent, writeRoadmapVersion } from "../../api/client/index.js";
+import { fetchInitiativeRoadmap, fetchRoadmapContent, getSessionBearerToken, writeRoadmapVersion } from "../../api/client/index.js";
+import { classifyBearerErrorCode } from "../bearer-field/index.js";
 import { classNames, truncateMiddle } from "../../format/index.js";
 import { useAsyncResource } from "../../hooks/use-async-resource/index.js";
 
@@ -56,6 +57,12 @@ export type SubmitState =
   | { readonly phase: "granted"; readonly version: RoadmapVersionDto; readonly sequence: number }
   | { readonly phase: "refused-schema"; readonly field: string; readonly message: string }
   | { readonly phase: "refused-decision"; readonly name: string | null; readonly message: string }
+  // P8-8G packet 3: the bearer's two first-class non-success states, kept
+  // apart exactly as the server keeps their codes apart (blueprint v2 §5) —
+  // one is a caller problem (the presented token was wrong), the other an
+  // operator problem (this server holds no token at all).
+  | { readonly phase: "refused-unauthorized"; readonly message: string }
+  | { readonly phase: "refused-unarmed"; readonly message: string }
   | { readonly phase: "refused-internal"; readonly message: string }
   | { readonly phase: "refused-other"; readonly message: string };
 
@@ -131,6 +138,22 @@ export function RefusalOutcome({
             Reload the head and reapply
           </button>
         ) : null}
+      </div>
+    );
+  }
+  if (submit.phase === "refused-unauthorized") {
+    return (
+      <div className="dialog__outcome dialog__outcome--refused">
+        <p className="dialog__outcome-title">The presented token was not accepted.</p>
+        <p>{submit.message}</p>
+      </div>
+    );
+  }
+  if (submit.phase === "refused-unarmed") {
+    return (
+      <div className="dialog__outcome dialog__outcome--refused">
+        <p className="dialog__outcome-title">This server holds no write token to check against.</p>
+        <p>{submit.message}</p>
       </div>
     );
   }
@@ -265,6 +288,15 @@ function EditRoadmapDialogBody({
         setSubmit({ phase: "refused-decision", name: decisionRefusalName(result.message), message: result.message });
         return;
       }
+      const bearerErrorKind = classifyBearerErrorCode(result.code);
+      if (bearerErrorKind === "unauthorized") {
+        setSubmit({ phase: "refused-unauthorized", message: result.message });
+        return;
+      }
+      if (bearerErrorKind === "unconfigured") {
+        setSubmit({ phase: "refused-unarmed", message: result.message });
+        return;
+      }
       if (result.code === "INTERNAL") {
         setSubmit({ phase: "refused-internal", message: result.message });
         return;
@@ -299,7 +331,14 @@ function EditRoadmapDialogBody({
   }
 
   const fieldError = submit.phase === "refused-schema" ? submit : null;
-  const disabled = submit.phase === "submitting" || draft.trim() === "" || recordedBy.trim() === "";
+  // P8-8G packet 3: unarmed is a posture the submit button explains, never a
+  // surprise 401 mid-flight (blueprint v2 §3). Read fresh at render rather
+  // than threaded through a prop: the bearer field mounts at the app root,
+  // above every view including this dialog's own workspace, and this dialog
+  // is reached through a view outside this packet's write-set, so there is
+  // no path to thread the value down through.
+  const armed = getSessionBearerToken() !== null;
+  const disabled = submit.phase === "submitting" || draft.trim() === "" || recordedBy.trim() === "" || !armed;
 
   return (
     <form
@@ -359,6 +398,10 @@ function EditRoadmapDialogBody({
           }}
         />
       </div>
+
+      {!armed && submit.phase === "idle" ? (
+        <p className="dialog__claim">Unarmed — paste an operator token above to record this version.</p>
+      ) : null}
 
       <div className="dialog__actions">
         <button type="button" className="button button--quiet" onClick={onClose}>

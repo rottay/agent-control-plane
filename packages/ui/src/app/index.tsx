@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type JSX, useState } from "react";
 
+import { setSessionBearerToken } from "../api/client/index.js";
 import { AppShell } from "../components/app-shell/index.js";
+import { BearerField } from "../components/bearer-field/index.js";
 import { useHashRoute } from "../routing/use-hash-route/index.js";
 import { AccountsView } from "../views/accounts-view/index.js";
 import { AgentsView } from "../views/agents-view/index.js";
@@ -58,12 +60,41 @@ export function createObservationQueryClient(): QueryClient {
   });
 }
 
+/**
+ * A pasted token, made honest (P8-8G packet 3).
+ *
+ * Trims the paste and treats an all-whitespace result as no token at all —
+ * the same rule the server's own token-file loader holds
+ * (`packages/server/src/bearer/index.ts`, `text.trim()`), so a copy that
+ * carries a trailing newline arms the same way on both ends. Exported and
+ * pure so this one honesty rule has a direct test, separate from the field's
+ * own DOM-less render and from `App`'s tree, which this repository does not
+ * render under test at all (see `test/app/index.test.tsx`).
+ */
+export function normalizeBearerInput(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
 export function App(): JSX.Element {
   const { route, navigate } = useHashRoute();
   const [queryClient] = useState(createObservationQueryClient);
+  const [bearerToken, setBearerToken] = useState<string | null>(null);
+
+  function handleBearerArm(token: string): void {
+    const normalized = normalizeBearerInput(token);
+    setBearerToken(normalized);
+    setSessionBearerToken(normalized);
+  }
+
+  function handleBearerClear(): void {
+    setBearerToken(null);
+    setSessionBearerToken(null);
+  }
 
   return (
     <QueryClientProvider client={queryClient}>
+      <BearerField armed={bearerToken !== null} onArm={handleBearerArm} onClear={handleBearerClear} />
       <AppShell route={route}>
         {(() => {
           switch (route.view) {
@@ -90,7 +121,7 @@ export function App(): JSX.Element {
             case "agents":
               return <AgentsView route={route} />;
             case "accounts":
-              return <AccountsView />;
+              return <AccountsView bearerArmed={bearerToken !== null} />;
             case "logs":
               return <LogsView route={route} navigate={navigate} />;
             case "roadmap-document":

@@ -976,12 +976,81 @@ input[type="text"] {
   font-size: var(--text-xs);
 }
 
-/* Accounts (P8-8F, blueprint §3a) */
+/* The bearer field (P8-8G packet 3, blueprint v2 §3): the session-only
+   operator token, mounted at the app root above every view. Unarmed is a
+   posture, not a failure (N1) — the layout stays quiet and inline rather
+   than reaching for warning color. */
+
+.bearer-field {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+.bearer-field__input {
+  min-width: 16rem;
+}
+
+.bearer-field__actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.bearer-field__posture {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  flex-basis: 100%;
+}
+
+/* Accounts (P8-8F, blueprint §3a; the state and actions cells P8-8G
+   packet 3, blueprint v2 §3) */
 
 .accounts-estimated-at {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
   margin: 0 0 var(--space-3);
+}
+
+.account-state-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.account-state-cell__source {
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+.account-state-cell__baseline summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  color: var(--color-text-faint);
+}
+
+.account-state-cell__baseline p {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.account-actions-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  max-width: 14rem;
+}
+
+.account-actions-cell--unarmed {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  max-width: 12rem;
 }
 
 /* The models disclosure (v2, N1): a native <details>, keyboard-reachable

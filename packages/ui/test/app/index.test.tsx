@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 
-import { createObservationQueryClient } from "../../src/app/index.js";
+import { createObservationQueryClient, normalizeBearerInput } from "../../src/app/index.js";
 import { queryKeys } from "../../src/api/client/index.js";
 
 /**
@@ -65,6 +65,21 @@ describe("the query key vocabulary", () => {
   });
 });
 
+describe("normalizeBearerInput — a pasted token, made honest (P8-8G packet 3)", () => {
+  it("passes a plain token through unchanged", () => {
+    expect(normalizeBearerInput("operator-secret")).toBe("operator-secret");
+  });
+
+  it("trims surrounding whitespace, the same rule the server's own token-file loader holds", () => {
+    expect(normalizeBearerInput("  operator-secret\n")).toBe("operator-secret");
+  });
+
+  it("treats an all-whitespace paste as no token at all, never an empty-string armed state", () => {
+    expect(normalizeBearerInput("   ")).toBeNull();
+    expect(normalizeBearerInput("")).toBeNull();
+  });
+});
+
 /**
  * The `App` tree itself is deliberately not rendered here.
  *
@@ -74,4 +89,11 @@ describe("the query key vocabulary", () => {
  * global to make a render succeed would be testing the stub. What the wiring
  * actually needed to preserve — the shell's landmarks, unchanged by the
  * rebuild — is held by the app-shell suite against the real component.
+ *
+ * The same constraint covers the bearer field P8-8G packet 3 mounts at this
+ * root: `normalizeBearerInput` above is the one pure rule that wiring adds,
+ * and it is tested directly; the field's own render and the two write
+ * surfaces that read the armed state each have their own DOM-less suite
+ * (`test/components/bearer-field`, `test/views/accounts-view`,
+ * `test/components/edit-roadmap-dialog`).
  */
