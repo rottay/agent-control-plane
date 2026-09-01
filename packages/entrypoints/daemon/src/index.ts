@@ -20,8 +20,9 @@
 
 import type { Ledger } from "@acp/ledger";
 import { openLedger } from "@acp/ledger";
+import { deriveInvocation } from "@acp/durability";
 import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
-import { deriveInvocation, resolveScenarioRoot, scenarioLedgerPath } from "@acp/runtime";
+import { resolveScenarioRoot, scenarioLedgerPath } from "@acp/runtime";
 
 import { DRAIN_DEADLINE_MS } from "./constants/index.js";
 import type { DaemonErrorCode } from "./errors/index.js";

@@ -2,6 +2,14 @@
 
 The durability and supervisor plane of the Agent Control Plane.
 
+**P8-T G5 split the Restate edge out.** The lifecycle engine, the
+`OrchestrationDriver` port, the coordinates, the beats and the `SQLITE_SUPERVISOR`
+driver stay here; the Restate driver, its endpoint, child, submission path and
+pinned server moved to `@acp/durability` under `packages/edges/durability`. This
+package no longer depends on `@restatedev/restate-sdk` at all. Where the text
+below describes what the Restate driver does, it is describing the edge that now
+implements this package's port — the design did not change, its address did.
+
 ## Scope
 
 **P2D built one shared lifecycle engine and both of its drivers, and P6
@@ -71,12 +79,15 @@ itself. The architecture fence asserts both.
 This is **no product adoption**. Nothing here is connected to, observed from or
 used by any real operation.
 
-## One core, two drivers
+## One core, two drivers — now in two packages
 
 `src/core/lifecycle/index.ts` holds one step table and one plan per commit
-policy. The supervisor and the Restate driver both walk a plan from it, and
-neither encodes a transition of its own: two copies of a state machine drift,
-and the drift is only ever discovered when the two disagree about a recovery.
+policy. The supervisor here and the Restate driver in `@acp/durability` both
+walk a plan from it, and neither encodes a transition of its own: two copies of
+a state machine drift, and the drift is only ever discovered when the two
+disagree about a recovery. The split made that sharing structural rather than
+conventional — the edge imports the plan across a package boundary, so it cannot
+quietly grow one of its own.
 
 That is also why the second plan is **derived rather than written twice**.
 `READ_ONLY_PLAN` is the writer plan's own frozen steps 0-7 plus one closing step

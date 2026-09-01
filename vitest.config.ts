@@ -58,14 +58,15 @@ import { defineConfig } from 'vitest/config';
  *
  * `fileParallelism: false` is not enough here, and the distinction matters.
  * That option serialises the files *within* one project; it says nothing about
- * two projects, which Vitest is free to run at the same time. The runtime
+ * two projects, which Vitest is free to run at the same time. The durability
  * drills start a real Restate server on 8080/9070 and the daemon drills start
  * another one, so concurrent projects would collide on bind — and the failure
  * would surface as an unrelated timeout in whichever suite happened to lose,
  * which is the kind of flake that gets re-run rather than diagnosed.
  *
  * `sequence.groupOrder` is the project-level control: projects sharing a number
- * run together, and lower numbers run first. The two port-binding projects get
+ * run together, and lower numbers run first. The three port-binding projects —
+ * runtime, daemon and, since G5 moved the Restate drills out, durability — get
  * distinct numbers, so they are serialised with respect to each other while
  * every hermetic project still runs concurrently in group 0.
  *
@@ -116,11 +117,20 @@ const workspaceSourceAliases = [
 const runtimeSource = fileURLToPath(
   new URL('./packages/domains/runtime/src/index.ts', import.meta.url),
 );
+const durabilitySource = fileURLToPath(
+  new URL('./packages/edges/durability/src/index.ts', import.meta.url),
+);
 
-/** The daemon additionally resolves the runtime to source, for the same reason. */
-const daemonSourceAliases = [
+/** The Restate edge resolves the runtime domain to source, for the same reason. */
+const durabilitySourceAliases = [
   ...workspaceSourceAliases,
   { find: /^@acp\/runtime$/, replacement: runtimeSource },
+];
+
+/** The daemon resolves the runtime and the edge above it to source as well. */
+const daemonSourceAliases = [
+  ...durabilitySourceAliases,
+  { find: /^@acp\/durability$/, replacement: durabilitySource },
 ];
 
 /**
@@ -348,13 +358,36 @@ export default defineConfig({
           // Shared adversarial root: see the note above. Only this project.
           fileParallelism: false,
           poolOptions: { forks: { singleFork: true } },
-          // Binds the pinned ports; must not overlap the daemon project.
+          // Shares the drill root with the durability project, so it still takes
+          // a number of its own even though the Restate server moved out with G5.
           sequence: { groupOrder: 1 },
           // Real child processes, real SIGKILL, real ledger reopens.
           testTimeout: 120_000,
           hookTimeout: 120_000,
         },
         resolve: { alias: workspaceSourceAliases },
+      },
+      {
+        test: {
+          name: 'durability',
+          root: './packages/edges/durability',
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+          // The Restate drills moved here with the edge: same shared adversarial
+          // root, same real server on the pinned ports.
+          fileParallelism: false,
+          poolOptions: { forks: { singleFork: true } },
+          // The third port-binding project, and so the third distinct number.
+          // It must overlap neither the runtime project nor the daemon one.
+          sequence: { groupOrder: 3 },
+          // Real child processes, real SIGKILL, real ledger reopens.
+          testTimeout: 120_000,
+          hookTimeout: 120_000,
+        },
+        resolve: { alias: durabilitySourceAliases },
       },
       {
         test: {

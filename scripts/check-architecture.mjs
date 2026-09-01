@@ -405,6 +405,18 @@ const RETIRED_PATHS = [
   "packages/adapters/src/providers/claude.test.ts",
   "packages/adapters/src/providers/kimi.ts",
   "packages/adapters/src/providers/kimi.test.ts",
+  // P8-T G5: the Restate edge's pre-split locations inside the runtime domain.
+  // The split is only worth anything if it stays split — a driver, an endpoint
+  // or a submission path reappearing under `domains/runtime` would put the SDK
+  // back in the domain's import surface, and the by-specifier gate below would
+  // catch the import while these entries catch the file.
+  "packages/domains/runtime/src/drivers/restate-driver/index.ts",
+  "packages/domains/runtime/src/drivers/restate-endpoint/index.ts",
+  "packages/domains/runtime/src/drivers/restate-child/index.ts",
+  "packages/domains/runtime/src/restate/submit/index.ts",
+  "packages/domains/runtime/src/restate/server-handle/index.ts",
+  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/domains/runtime/test/drivers/drills/index.test.ts",
 ];
 
 /**
@@ -554,13 +566,13 @@ const P2C_WRITE_SET = [
   "docs/architecture/0005-restate-driver-and-adoption.md",
   "packages/domains/runtime/src/core/step-executor/index.ts",
   "packages/domains/runtime/test/core/step-executor/index.test.ts",
-  "packages/domains/runtime/src/drivers/restate-driver/index.ts",
-  "packages/domains/runtime/src/drivers/restate-endpoint/index.ts",
-  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
-  "packages/domains/runtime/test/drivers/drills/index.test.ts",
-  "packages/domains/runtime/src/drivers/restate-child/index.ts",
-  "packages/domains/runtime/src/restate/server-handle/index.ts",
-  "packages/domains/runtime/src/restate/submit/index.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/src/drivers/restate-endpoint/index.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/src/server-handle/index.ts",
+  "packages/edges/durability/src/submit/index.ts",
   "scripts/acquire-restate-server.mjs",
   "scripts/restate-server.pin.json",
 ];
@@ -601,7 +613,7 @@ const P2D_WRITE_SET = [
   "packages/entrypoints/daemon/test/drills/index.test.ts",
   "packages/entrypoints/daemon/test/index.test.ts",
   "docs/architecture/0006-daemon-process-lifecycle.md",
-  "packages/domains/runtime/src/restate/server-handle/index.ts",
+  "packages/edges/durability/src/server-handle/index.ts",
   "packages/domains/runtime/src/index.ts",
   "packages/domains/runtime/README.md",
   "packages/domains/runtime/package.json",
@@ -1034,14 +1046,14 @@ const P7P_WRITE_SET = [
   "packages/domains/runtime/src/core/step-executor/index.ts",
   "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
   "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
-  "packages/domains/runtime/src/drivers/restate-driver/index.ts",
-  "packages/domains/runtime/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
   "packages/domains/runtime/src/index.ts",
   "packages/domains/runtime/test/core/lifecycle/index.test.ts",
   "packages/domains/runtime/test/core/step-executor/index.test.ts",
   "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
-  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
-  "packages/domains/runtime/test/drivers/drills/index.test.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
   "packages/domains/runtime/README.md",
   "docs/ROADMAP.md",
   "scripts/check-architecture.mjs",
@@ -1315,7 +1327,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **395 packet entries across 154 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **417 packet entries across 164 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1324,13 +1336,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
- * 13 (P8-T-G1') = 395 entries, with 241 duplicate entries.
+ * 13 (P8-T-G1') + 22 (P8-T-G5) = 417 entries, with 253 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 39 duplicates = 39   (`scripts/check-architecture.mjs`, every packet)
- *   1 path  ×  8 duplicates =  8   (the lockfile)
+ *   1 path  × 40 duplicates = 40   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  ×  9 duplicates =  9   (the lockfile)
  *   3 paths ×  7 duplicates = 21   (`docs/ROADMAP.md`, the routes source and
  *                                   the build-server drill suite)
  *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
@@ -1341,10 +1353,10 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *   4 paths ×  4 duplicates = 16   (the initiatives suite, the UI manifest, the
  *                                   UI styles sheet and the accounts-view suite)
  *  10 paths ×  3 duplicates = 30
- *  12 paths ×  2 duplicates = 24
- *  43 paths ×  1 duplicate  = 43
+ *  15 paths ×  2 duplicates = 30
+ *  47 paths ×  1 duplicate  = 47
  *
- * 39 + 8 + 21 + 30 + 30 + 16 + 30 + 24 + 43 = 241.
+ * 40 + 9 + 21 + 30 + 30 + 16 + 30 + 30 + 47 = 253.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1493,6 +1505,32 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * inside it is the same convention `vitest.config.ts` met in P8-T-G0, not an
  * exception made for this packet.
  *
+ * P8-T-G5 splits the Restate edge out of the runtime domain and adds **ten**
+ * distinct paths — the most any packet in this phase has added since P8-10a,
+ * and for the same reason: it creates files rather than revisiting them. Five
+ * are the new package (`packages/edges/durability`'s manifest, both tsconfigs,
+ * its barrel and its contracts); five more are files older than the phase that
+ * no P8 array had yet named — `daemon/package.json`, `daemon/tsconfig.json`,
+ * `daemon/test/tsconfig.json`, `daemon/README.md` and
+ * `runtime/src/contracts/index.ts`. So distinct moves 154 → 164 while entries
+ * move 395 → 417: twenty-two entries, ten of them new paths, twelve duplicates,
+ * 241 → 253.
+ *
+ * The seven moved files are **not** among those twenty-two, and that is the
+ * arithmetic worth stating plainly: their declarations were rewritten in place,
+ * inside the arrays of the packets that created them, so expressed in the new
+ * coordinates the pre-image is still 395 entries across 154 distinct paths. A
+ * relocation that moved the fold would have meant two declared paths collapsing
+ * into one.
+ *
+ * The twelve duplicates land as twelve band steps. Two are the standing rows:
+ * this file's own, 39 → 40, and the lockfile's, 8 → 9. Three paths leave the ×1
+ * row for the ×2 row — `README.md`, `vitest.config.ts` and the daemon's own
+ * drill suite — and seven enter ×1 fresh: the runtime manifest, barrel and
+ * README, the daemon's entry point, its Restate mode and its fallback suite,
+ * and `tsconfig.base.json`. That is why the ×1 row reads 43 → 47 rather than
+ * 43 → 50: three of its members left as seven arrived.
+ *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
  * arithmetic to the phase.
@@ -1536,8 +1574,8 @@ const P8W_WRITE_SET = [
   "packages/domains/runtime/src/core/step-executor/index.ts",
   "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
   "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
-  "packages/domains/runtime/src/drivers/restate-driver/index.ts",
-  "packages/domains/runtime/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
   "packages/domains/runtime/src/usage/index.ts",
   "packages/domains/runtime/src/switch-executor/index.ts",
   "packages/domains/runtime/src/index.ts",
@@ -1553,8 +1591,8 @@ const P8W_WRITE_SET = [
   "packages/domains/runtime/test/core/events/index.test.ts",
   "packages/domains/runtime/test/core/step-executor/index.test.ts",
   "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
-  "packages/domains/runtime/test/drivers/drills/index.test.ts",
-  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
   "packages/domains/runtime/test/pilots/index.test.ts",
   "packages/domains/runtime/test/pilots/recovery/index.test.ts",
   "packages/domains/runtime/test/pilots/writer/index.test.ts",
@@ -2097,7 +2135,7 @@ const P88E2_WRITE_SET = [
   "packages/domains/runtime/test/usage/index.test.ts",
   "packages/domains/runtime/test/switch-executor/index.test.ts",
   "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
-  "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
   "packages/domains/runtime/test/pilots/recovery/helpers/index.ts",
   "packages/domains/runtime/test/pilots/writer/helpers/index.ts",
   "docs/ROADMAP.md",
@@ -2415,7 +2453,7 @@ const P88G_CAUSAL_WRITE_SET = [
  * impossible by construction. Test-side only: no `src/` path moves.
  */
 const P89_1_WRITE_SET = [
-  "packages/domains/runtime/test/drivers/drills/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2647,6 +2685,54 @@ const P8T_G1_WRITE_SET = [
   "docs/operations/backup-restore.md",
   "docs/operations/runbook.md",
   "docs/operations/update-rollback.md",
+];
+
+/**
+ * P8-T G5: the runtime/durability split.
+ *
+ * The tranche's one high-risk packet, and the only one that creates a package.
+ * Seven files move out of `domains/runtime` into the new `edges/durability`,
+ * taking the Restate driver, its endpoint, its spawned child, the submission
+ * path, the pinned server's lifecycle and the two suites that drill them. What
+ * stays is the domain: one lifecycle engine, the `OrchestrationDriver` port,
+ * and the SQLite supervisor that keeps the port from becoming an orphan
+ * interface.
+ *
+ * The moved paths are not listed here. They are declared where they were always
+ * declared — in the arrays of the packets that wrote them, rewritten from the
+ * old location to the new one — because a relocation moves a declaration with
+ * its file. Their pre-split locations are in `RETIRED_PATHS` instead, so the
+ * split cannot silently un-happen.
+ *
+ * Ten of these twenty-two are novel in the phase: the five files the new
+ * package is made of, and five more whose owners are all pre-P8
+ * (`daemon/package.json`, `daemon/tsconfig.json`, `daemon/test/tsconfig.json`,
+ * `daemon/README.md`, `runtime/src/contracts/index.ts`). `README.md` is
+ * in-phase owned by P8-10a and rides as a duplicate.
+ */
+const P8T_G5_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "pnpm-lock.yaml",
+  "README.md",
+  "packages/edges/durability/package.json",
+  "packages/edges/durability/tsconfig.json",
+  "packages/edges/durability/test/tsconfig.json",
+  "packages/edges/durability/src/index.ts",
+  "packages/edges/durability/src/contracts/index.ts",
+  "packages/entrypoints/daemon/package.json",
+  "packages/entrypoints/daemon/tsconfig.json",
+  "packages/entrypoints/daemon/test/tsconfig.json",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/README.md",
+  "packages/domains/runtime/package.json",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/src/contracts/index.ts",
+  "packages/domains/runtime/README.md",
 ];
 
 /**
@@ -2945,6 +3031,7 @@ const WRITE_SET = [
   ...P810_C_WRITE_SET,
   ...P8T_G0_WRITE_SET,
   ...P8T_G1_WRITE_SET,
+  ...P8T_G5_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3504,7 +3591,9 @@ function git(args) {
 const PATH_SCOPED_LAWS = [
   { law: "the browser package links no ledger and no database driver", scope: "packages/entrypoints/ui/**" },
   { law: "the live-DOM evidence tools stay test-scope", scope: "packages/entrypoints/ui/src/**" },
-  { law: "the durability plane's import purity", scope: "packages/domains/runtime/{src,test}/**" },
+  { law: "the runtime domain's import purity", scope: "packages/domains/runtime/{src,test}/**" },
+  { law: "the Restate edge's import purity", scope: "packages/edges/durability/{src,test}/**" },
+  { law: "the Restate SDK is named by import in one package only", scope: "every tracked .ts/.tsx/.mjs/.js" },
   { law: "a supervised process imports only what it is allowed", scope: "packages/entrypoints/daemon/{src,test}/**" },
   { law: "no module spawns for plutil", scope: "packages/entrypoints/daemon/src/launchd/**" },
   { law: "the packaged entry reads no environment", scope: "packages/entrypoints/daemon/src/bin/**" },
@@ -4233,10 +4322,26 @@ const P1B_DEPENDENCY_LAW = [
     // module produced. The direction is the one this file already states --
     // runtime consumes accounts, never the reverse -- and the accounts entry
     // below still forbids `@acp/runtime` by name, so the cycle stays refused.
-    dependencies: ["@acp/accounts", "@acp/contracts", "@acp/ledger", "@restatedev/restate-sdk"],
+    // P8-T G5 removes `@restatedev/restate-sdk`: the Restate edge left, and the
+    // manifest edge left with it. A dependency kept "just in case" is a
+    // dependency the import scan would then have to tolerate.
+    dependencies: ["@acp/accounts", "@acp/contracts", "@acp/ledger"],
     devDependencies: ["vitest"],
     // The server package pulls @scarf/scarf, whose postinstall is a network
     // beacon. The 1.7.7 server is an external pinned binary, never a dependency.
+    forbidden: ["@restatedev/restate-server", "@scarf/scarf", "@restatedev/restate"],
+  },
+  {
+    manifest: "packages/edges/durability/package.json",
+    // P8-T G5: the package the SDK moved into. `@acp/runtime` is the edge
+    // reaching down to the domain whose port it implements — the one direction
+    // this table allows between them, and the runtime entry above carries no
+    // `@acp/durability` to close the loop from the other side.
+    dependencies: ["@acp/contracts", "@acp/ledger", "@acp/runtime", "@restatedev/restate-sdk"],
+    devDependencies: ["vitest"],
+    // Inherited verbatim from the runtime entry, because the reason is
+    // inherited verbatim: the 1.7.7 server is an acquired, digest-pinned binary,
+    // and the npm package that would install it drags a postinstall beacon.
     forbidden: ["@restatedev/restate-server", "@scarf/scarf", "@restatedev/restate"],
   },
   {
@@ -4920,7 +5025,11 @@ const RUNTIME_ALLOWED_PACKAGES = new Set([
   "@acp/accounts",
   "@acp/contracts",
   "@acp/ledger",
-  "@restatedev/restate-sdk",
+  // P8-T G5 removed `@restatedev/restate-sdk`. It is not an omission to be
+  // restored later: the domain declares the port and the edge implements it, so
+  // a runtime source naming the SDK again would mean the split had come undone.
+  // The repository-wide by-specifier gate below says the same thing from the
+  // other side, and either one failing is the signal.
 ]);
 const RUNTIME_ALLOWED_BUILTINS = new Set(["node:crypto", "node:fs", "node:path", "node:url"]);
 const RUNTIME_TEST_ONLY_IMPORTS = new Set([
@@ -4938,7 +5047,7 @@ const RUNTIME_TEST_ONLY_IMPORTS = new Set([
  * relax the ban repository-wide, the allowance is scoped to a single file, and
  * the two checks below make that file prove it binds loopback.
  */
-const HTTP2_ALLOWED_FILE = "packages/domains/runtime/src/drivers/restate-endpoint/index.ts";
+const HTTP2_ALLOWED_FILE = "packages/edges/durability/src/drivers/restate-endpoint/index.ts";
 
 /**
  * The only two production files that may start a subprocess, by exact path and
@@ -4955,7 +5064,7 @@ const HTTP2_ALLOWED_FILE = "packages/domains/runtime/src/drivers/restate-endpoin
  * to stop something.
  */
 const SPAWN_ALLOWED_FILES = new Map([
-  ["packages/domains/runtime/src/restate/server-handle/index.ts", "the pinned Restate server"],
+  ["packages/edges/durability/src/server-handle/index.ts", "the pinned Restate server"],
   ["packages/entrypoints/daemon/src/identity-probe/index.ts", "reading process identity via /bin/ps"],
   ["packages/edges/adapters/src/process/spawn/index.ts", "the single provider spawn authority"],
 ]);
@@ -4985,7 +5094,7 @@ if (tracked.status === 0) {
     fail("packages/domains/runtime/src has no tracked sources; the import purity check is inert");
   }
   {
-    requireScope("the durability plane's import purity", runtimeSources.length);
+    requireScope("the runtime domain's import purity", runtimeSources.length);
   }
 
   let productionSources = 0;
@@ -5017,8 +5126,9 @@ if (tracked.status === 0) {
           relativePath +
             " imports " +
             name +
-            "; the durability plane may import only its own modules, the workspace" +
-            " contracts and ledger, the Restate SDK, and a named set of node builtins",
+            "; the runtime domain may import only its own modules, the workspace" +
+            " accounts, contracts and ledger, and a named set of node builtins —" +
+            " the Restate SDK belongs to @acp/durability since G5",
         );
       }
       if (RUNTIME_FORBIDDEN_BUILTINS.includes(name)) {
@@ -5026,7 +5136,7 @@ if (tracked.status === 0) {
           relativePath +
             " imports " +
             name +
-            "; the durability plane opens no socket and speaks to no network",
+            "; the runtime domain opens no socket and speaks to no network",
         );
       }
       if (name === "node:http2" && !http2Here) {
@@ -5057,9 +5167,192 @@ if (tracked.status === 0) {
 
   notes.push(
     runtimeSources.length +
-      " runtime sources import only what the durability plane is allowed (" +
+      " runtime sources import only what the runtime domain is allowed (" +
       productionSources +
-      " production, no network, no process spawn outside drills)",
+      " production, SDK-free since G5, no network, no process spawn)",
+  );
+}
+
+// --- the Restate edge's import purity (P8-T G5) -----------------------------
+//
+// The same shape as the law above, one stratum out. `edges → domains` is legal,
+// so this package may name `@acp/runtime`; nothing here may reach sideways into
+// another edge or upward into an entrypoint, and the lists are the cheapest
+// honest proof of it.
+//
+// The one thing this law grants that the domain's does not is the SDK. That is
+// the entire content of G5: exactly one package may name
+// `@restatedev/restate-sdk`, and it is this one. The repository-wide gate that
+// follows asserts the other half — that no *other* package names it — so the
+// two together say "here and nowhere else" rather than merely "allowed here".
+const DURABILITY_ALLOWED_PACKAGES = new Set([
+  "@acp/contracts",
+  "@acp/ledger",
+  "@acp/runtime",
+  "@restatedev/restate-sdk",
+]);
+// `node:child_process` is listed because the pinned server's lifecycle spawns
+// it; the file-scoped spawn law below is what keeps that from meaning "anywhere
+// in the package". `node:http2` is deliberately absent: it is granted to the
+// endpoint file by name through HTTP2_ALLOWED_FILE and to nothing else.
+const DURABILITY_ALLOWED_BUILTINS = new Set([
+  "node:child_process",
+  "node:crypto",
+  "node:fs",
+  "node:path",
+  "node:url",
+]);
+const DURABILITY_TEST_ONLY_IMPORTS = new Set(["vitest", "node:os", "node:timers/promises"]);
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const durabilitySources = present.filter(
+    (relativePath) =>
+      inAnyArea(relativePath, "durability", ["src", "test"], PACKAGE_STRATA) &&
+      relativePath.endsWith(".ts"),
+  );
+  requireScope("the Restate edge's import purity", durabilitySources.length);
+
+  let durabilityProduction = 0;
+  const durabilitySpecifier = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
+  for (const relativePath of durabilitySources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const isTest = relativePath.endsWith(".test.ts");
+    if (!isTest) durabilityProduction += 1;
+
+    durabilitySpecifier.lastIndex = 0;
+    let match = durabilitySpecifier.exec(content);
+    while (match !== null) {
+      const name = match[1] ?? "";
+      const relative = name.startsWith("./") || name.startsWith("../");
+      const http2Here = name === "node:http2" && relativePath === HTTP2_ALLOWED_FILE;
+      const allowed =
+        relative ||
+        DURABILITY_ALLOWED_PACKAGES.has(name) ||
+        DURABILITY_ALLOWED_BUILTINS.has(name) ||
+        http2Here ||
+        (isTest && DURABILITY_TEST_ONLY_IMPORTS.has(name));
+
+      if (!allowed) {
+        fail(
+          relativePath +
+            " imports " +
+            name +
+            "; the Restate edge may import only its own modules, the runtime" +
+            " domain, the workspace contracts and ledger, the Restate SDK, and a" +
+            " named set of node builtins",
+        );
+      }
+      if (RUNTIME_FORBIDDEN_BUILTINS.includes(name)) {
+        fail(
+          relativePath +
+            " imports " +
+            name +
+            "; the Restate edge speaks HTTP/2 from one file and opens no other socket",
+        );
+      }
+      if (name === "node:http2" && !http2Here) {
+        fail(
+          relativePath +
+            " imports node:http2; only " +
+            HTTP2_ALLOWED_FILE +
+            " may open a listener, and the fence says so by name",
+        );
+      }
+      match = durabilitySpecifier.exec(content);
+    }
+  }
+
+  // The spawn authority is file-scoped here exactly as it is in the domain: the
+  // builtin being importable is not the same as every module being allowed to
+  // start a process.
+  for (const relativePath of durabilitySources) {
+    if (relativePath.endsWith(".test.ts")) continue;
+    if (SPAWN_ALLOWED_FILES.has(relativePath)) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    if (/from\s+["']node:child_process["']/.test(content)) {
+      fail(relativePath + " spawns a process; only the allow-listed sites may do that");
+    }
+  }
+
+  notes.push(
+    durabilitySources.length +
+      " Restate edge sources import only what the edge is allowed (" +
+      durabilityProduction +
+      " production, one listener file, one spawn site)",
+  );
+}
+
+// --- the SDK lives in exactly one package, by import specifier (P8-T G5) -----
+//
+// The roadmap's gate for this packet, and it is written by **parsing import and
+// export statements**, never by scanning for a substring. That distinction is
+// the whole reason the gate is trustworthy rather than superstitious:
+//
+//   • `restate/submit` carries a comment naming `@restatedev/restate-sdk-clients`
+//     — a different package it deliberately does not use;
+//   • `domains/runtime/src/contracts` carries a comment naming
+//     `@restatedev/restate-sdk` to explain why it no longer imports it.
+//
+// A substring gate would fire on both and have to be weakened with exceptions
+// until it meant nothing. A specifier gate reads what the module system reads,
+// so prose about a package and a dependency on it stay different facts. The
+// probes below are the standing proof that the distinction holds.
+const SDK_SPECIFIER = "@restatedev/restate-sdk";
+const SDK_HOME_PREFIX = "packages/edges/durability/";
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const scanned = present.filter((relativePath) => /\.[cm]?[jt]sx?$/.test(relativePath));
+  const importing = [];
+  const decoys = [];
+  const statement = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
+  for (const relativePath of scanned) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+
+    let importsSdk = false;
+    statement.lastIndex = 0;
+    let match = statement.exec(content);
+    while (match !== null) {
+      if (match[1] === SDK_SPECIFIER) importsSdk = true;
+      match = statement.exec(content);
+    }
+    if (importsSdk) importing.push(relativePath);
+    // A file that *names* the SDK without importing it is the case the gate has
+    // to get right, so it is counted rather than ignored: a run in which the
+    // decoy set is empty has stopped testing the distinction.
+    else if (content.includes(SDK_SPECIFIER)) decoys.push(relativePath);
+  }
+
+  requireScope("the Restate SDK is named by import in one package only", scanned.length);
+  for (const relativePath of importing) {
+    if (relativePath.startsWith(SDK_HOME_PREFIX)) continue;
+    fail(
+      relativePath +
+        " imports " +
+        SDK_SPECIFIER +
+        "; since G5 only " +
+        SDK_HOME_PREFIX +
+        " may, and this is an import specifier, not a mention",
+    );
+  }
+  if (importing.length === 0) {
+    fail(
+      "no file imports " +
+        SDK_SPECIFIER +
+        "; the gate would pass vacuously, which is not the same as the edge being clean",
+    );
+  }
+  notes.push(
+    importing.length +
+      " file(s) import the Restate SDK, all under " +
+      SDK_HOME_PREFIX +
+      "; " +
+      decoys.length +
+      " file(s) name it in prose without importing it and are correctly ignored",
   );
 }
 
@@ -5187,7 +5480,7 @@ function stripComments(source) {
 // lifts that so the daemon can start the pinned server without a second
 // spawner, and pays for it here: the promotion is only safe while the public
 // surface stays narrow, so each narrowing is asserted rather than described.
-const SERVER_HANDLE_FILE = "packages/domains/runtime/src/restate/server-handle/index.ts";
+const SERVER_HANDLE_FILE = "packages/edges/durability/src/server-handle/index.ts";
 const serverHandleCode = stripComments(readIfPresent(SERVER_HANDLE_FILE) ?? "");
 if (serverHandleCode === "") {
   fail(SERVER_HANDLE_FILE + " is missing");
@@ -5303,7 +5596,11 @@ if (tracked.status === 0) {
     // Fable B2: the dependency surface is exact in both directions.
     const deps = Object.keys(parsed.dependencies ?? {}).sort();
     const devDeps = Object.keys(parsed.devDependencies ?? {}).sort();
-    const expected = ["@acp/contracts", "@acp/ledger", "@acp/runtime"];
+    // P8-T G5: `@acp/durability` joins, and `@acp/runtime` stays. The daemon is
+    // the one consumer that needs both — `mode-restate` drives the edge while
+    // `mode-sqlite`, the toy helpers and the pinned constants stay in the
+    // domain — so this is a widening by one, not a substitution.
+    const expected = ["@acp/contracts", "@acp/durability", "@acp/ledger", "@acp/runtime"];
     if (deps.join(",") !== expected.join(",")) {
       fail("packages/entrypoints/daemon dependencies must be exactly " + expected.join(", "));
     }
@@ -5322,7 +5619,7 @@ if (tracked.status === 0) {
     notes.push("the daemon manifest declares the one exact bin and an exact dependency surface");
   }
 
-  const DAEMON_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/ledger", "@acp/runtime"]);
+  const DAEMON_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/durability", "@acp/ledger", "@acp/runtime"]);
   const DAEMON_ALLOWED_BUILTINS = new Set(["node:crypto", "node:fs", "node:path", "node:url"]);
   const DAEMON_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os"]);
 
@@ -5336,6 +5633,12 @@ if (tracked.status === 0) {
     // and undo every narrowing the promotion above depends on.
     if (/@acp\/runtime\/(src|dist)/.test(content)) {
       fail(relativePath + " deep-imports @acp/runtime; only its public entry point is allowed");
+    }
+    // The same narrowing for the package G5 split out. A daemon that could
+    // reach past `@acp/durability`'s barrel would undo the closed surface the
+    // split just pinned, which is the whole reason the barrel is pinned.
+    if (/@acp\/durability\/(src|dist)/.test(content)) {
+      fail(relativePath + " deep-imports @acp/durability; only its public entry point is allowed");
     }
 
     const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
@@ -6184,6 +6487,10 @@ const TOPOLOGY_ACTIVE_TREES = [
   "ui",
   "server",
   "accounts",
+  // P8-T G5: the new package's tree is folder/index by construction — it was
+  // built from modules that already satisfied this law inside runtime — so it
+  // activates in the same commit that creates it, as every cohort has.
+  "durability",
 ];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
@@ -6365,6 +6672,10 @@ const TEST_TREE_SCANNED_PREFIXES = [
   "packages/entrypoints/ui/test/",
   "packages/entrypoints/server/test/",
   "packages/domains/accounts/test/",
+  // P8-T G5: the two drilled suites moved here with the edge, so the scan that
+  // read them has to follow. Leaving this out is the exact failure this list
+  // exists to catch — the allowlists would simply stop applying, silently.
+  "packages/edges/durability/test/",
 ];
 
 /**
@@ -6466,10 +6777,8 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "DeriveEventCoordinate",
   "DuplicateTaskId",
   "DurableInvocation",
-  "DurableStepContext",
   "ENFORCEMENT_REFUSALS",
   "EffectPort",
-  "EndpointHandle",
   "EnforcementEvent",
   "EnforcementEventType",
   "EnforcementRefusal",
@@ -6490,12 +6799,10 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "LeaseGranted",
   "LeaseOutcome",
   "LeaseRequest",
-  "LedgerLike",
   "LedgerPort",
   "LifecyclePlanError",
   "OBSERVATION_API_PORT",
   "OUTCOME_STEP",
-  "ObjectDependencies",
   "OperationCoordinate",
   "OrchestrationDriver",
   "PLAN_TERMINAL_STATE",
@@ -6514,32 +6821,28 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "RESERVED_LOOPBACK_PORTS",
   "RESTATE_ADMIN_PORT",
   "RESTATE_ADMIN_URL",
+  "RESTATE_HANDLER_ADVANCE",
+  "RESTATE_HANDLER_READ_CACHE",
   "RESTATE_INGRESS_PORT",
   "RESTATE_INGRESS_URL",
-  "RESTATE_MODE",
+  "RESTATE_OBJECT_NAME",
   "RESTATE_SDK_VERSION",
+  "RESTATE_SERVER_SHA256_PIN_PATH",
   "RESTATE_SERVER_VERSION",
+  "RESTATE_STATE_KEY_CACHE",
   "RUNTIME_SERVICE_PORT",
   "RUNTIME_SERVICE_URL",
-  "ReconcileInput",
   "ReconciliationError",
   "RecordedCheck",
   "RecordedCommit",
   "ReplayForbiddenSource",
-  "RestateCacheState",
-  "RestateDriver",
-  "RestateDriverOptions",
   "RunResult",
   "RuntimeError",
   "RuntimeErrorCode",
-  "SafeServerHandle",
   "ScenarioRoot",
-  "ServerExit",
   "SqliteSupervisor",
   "SqliteSupervisorOptions",
-  "StartEndpointOptions",
   "StepBeat",
-  "SubmitResult",
   "SupervisorError",
   "SwitchExecutionInput",
   "SwitchExecutionResult",
@@ -6561,10 +6864,8 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "checkAdmission",
   "checkWriteSetConformance",
   "closeIntent",
-  "createAcpTaskObject",
   "currentState",
   "deriveEventCoordinate",
-  "deriveInvocation",
   "deriveOperationCoordinate",
   "deterministicUuid",
   "drillRoot",
@@ -6579,22 +6880,50 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "planStep",
   "probeEffect",
   "quarantineWorktree",
-  "readCacheThroughHandler",
-  "reconcile",
   "recordCommit",
   "recordTokenObservation",
-  "registerDeployment",
   "removeScenarioRoot",
   "renewLease",
   "resolveScenarioRoot",
   "revokeLease",
   "scenarioLedgerPath",
+  "validatePlan",
+  "verifyPrestate",
+];
+
+/**
+ * `@acp/durability`'s closed export surface (P8-T G5).
+ *
+ * Exactly the twenty-two names the runtime barrel gave up — no more, and that
+ * is the assertion. A split is only reversible-by-inspection if the two halves
+ * add up: runtime went 166 → 149 (it dropped 22 and gained the 5 constants the
+ * moved modules import), and this list is the 22. Pinned by equality in both
+ * directions like its siblings, so a name appearing here that was never in the
+ * runtime barrel is a widening, not a move.
+ */
+const DURABILITY_PUBLIC_EXPORTS = [
+  "DurableStepContext",
+  "EndpointHandle",
+  "LedgerLike",
+  "ObjectDependencies",
+  "RESTATE_MODE",
+  "ReconcileInput",
+  "RestateCacheState",
+  "RestateDriver",
+  "RestateDriverOptions",
+  "SafeServerHandle",
+  "ServerExit",
+  "StartEndpointOptions",
+  "SubmitResult",
+  "createAcpTaskObject",
+  "deriveInvocation",
+  "readCacheThroughHandler",
+  "reconcile",
+  "registerDeployment",
   "serverAvailability",
   "startEndpoint",
   "startVerifiedServer",
   "submitAdvance",
-  "validatePlan",
-  "verifyPrestate",
 ];
 
 const ACCOUNTS_PUBLIC_EXPORTS = [
@@ -6731,6 +7060,34 @@ if (accountsIndex === null) {
       }
     }
     notes.push(runtimeExported.size + " runtime exports, pinned by equality");
+  }
+
+  // The same law again for `@acp/durability`, the package G5 created.
+  const durabilityBarrel = readIfPresent("packages/edges/durability/src/index.ts");
+  if (durabilityBarrel === null) {
+    fail("packages/edges/durability/src/index.ts is missing");
+  } else {
+    if (/export\s*\*\s*from/.test(durabilityBarrel)) {
+      fail("packages/edges/durability/src/index.ts uses `export *`, which cannot stay closed");
+    }
+    const durabilityExported = new Set();
+    for (const block of durabilityBarrel.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+      for (const piece of (block[1] ?? "").split(",")) {
+        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
+        if (name !== undefined && name !== "") durabilityExported.add(name);
+      }
+    }
+    for (const name of durabilityExported) {
+      if (!DURABILITY_PUBLIC_EXPORTS.includes(name)) {
+        fail("packages/edges/durability exports " + name + ", which is outside its closed surface");
+      }
+    }
+    for (const name of DURABILITY_PUBLIC_EXPORTS) {
+      if (!durabilityExported.has(name)) {
+        fail("packages/edges/durability no longer exports the pinned name " + name);
+      }
+    }
+    notes.push(durabilityExported.size + " durability exports, pinned by equality");
   }
 
 // The P3D deep aliases: exactly two, pointing at exactly these two modules, and

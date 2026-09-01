@@ -37,6 +37,8 @@
     { "path": "./packages/domains/observation/test" },
     { "path": "./packages/edges/adapters" },
     { "path": "./packages/edges/adapters/test" },
+    { "path": "./packages/edges/durability" },
+    { "path": "./packages/edges/durability/test" },
     { "path": "./packages/domains/accounts" },
     { "path": "./packages/domains/accounts/test" },
     { "path": "./packages/kernel/api-contracts" },

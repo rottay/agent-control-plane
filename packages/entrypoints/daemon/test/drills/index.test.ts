@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { startVerifiedServer } from "@acp/durability";
 import { openLedger } from "@acp/ledger";
 import {
   RESERVED_LOOPBACK_PORTS,
@@ -14,7 +15,6 @@ import {
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
-  startVerifiedServer,
 } from "@acp/runtime";
 
 import { ModeError, SingletonError } from "../../src/errors/index.js";

@@ -10,30 +10,32 @@ import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
-import { LOOPBACK_HOST, RESTATE_ADMIN_PORT, RESTATE_INGRESS_PORT, RUNTIME_SERVICE_PORT } from "../../../src/constants/index.js";
-import type { DurableInvocation } from "../../../src/contracts/index.js";
-import { LIFECYCLE_PLAN } from "../../../src/core/lifecycle/index.js";
-import type { BeatContext } from "../../../src/core/step-executor/index.js";
 import {
+  LIFECYCLE_PLAN,
+  LOOPBACK_HOST,
+  RESTATE_ADMIN_PORT,
+  RESTATE_INGRESS_PORT,
+  RUNTIME_SERVICE_PORT,
+  SqliteSupervisor,
   applyEffect,
   probeEffect,
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
-} from "../../../src/toy/repository/index.js";
-import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
-import { serverAvailability, startServer } from "../../../src/restate/server-handle/index.js";
-import { platformKey, readTrackedPin, receiptMatchesPin } from "../../../src/restate/server-handle/index.js";
-import type { ServerExit, ServerHandle } from "../../../src/restate/server-handle/index.js";
+} from "@acp/runtime";
+import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
+
+import { serverAvailability, startServer } from "../../../src/server-handle/index.js";
+import { platformKey, readTrackedPin, receiptMatchesPin } from "../../../src/server-handle/index.js";
+import type { ServerExit, ServerHandle } from "../../../src/server-handle/index.js";
 import {
   deriveInvocation,
   readCacheThroughHandler,
   registerDeployment,
   submitAdvance,
-} from "../../../src/restate/submit/index.js";
+} from "../../../src/submit/index.js";
 import { reconcile } from "../../../src/drivers/restate-driver/index.js";
 import { releasePath } from "../../../src/drivers/restate-child/index.js";
-import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -166,7 +168,7 @@ function ensureChildBuilt(): void {
     { encoding: "utf8", cwd: REPO_ROOT },
   );
   if (result.status !== 0 || !existsSync(CHILD_ENTRY)) {
-    throw new Error("could not build the runtime package for the drills: " + result.stdout + result.stderr);
+    throw new Error("could not build the durability package for the drills: " + result.stdout + result.stderr);
   }
 }
 
@@ -565,7 +567,7 @@ describe("the acquisition boundary", () => {
     // hard-coded index, and every fault and pause drill would quietly become a
     // no-op while still reporting green.
     const childSource = readFileSync(
-      join(REPO_ROOT, "packages", "domains", "runtime", "src", "drivers", "restate-child", "index.ts"),
+      join(REPO_ROOT, "packages", "edges", "durability", "src", "drivers", "restate-child", "index.ts"),
       "utf8",
     );
     expect(childSource).toContain('"AFTER_INTENT_" + String(INTENT_STEP.index)');

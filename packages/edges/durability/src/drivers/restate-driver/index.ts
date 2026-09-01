@@ -16,25 +16,22 @@ import {
   RESTATE_HANDLER_READ_CACHE,
   RESTATE_OBJECT_NAME,
   RESTATE_STATE_KEY_CACHE,
-} from "../../constants/index.js";
-import type {
-  DurableInvocation,
-  LedgerLike,
-  OrchestrationDriver,
-  RestateCacheState,
-  RestateDriverOptions,
-} from "../../contracts/index.js";
-import { deterministicUuid } from "../../core/coordinates/index.js";
-import { planFor } from "../../core/lifecycle/index.js";
-import {
+  SupervisorError,
   appendPlanStep,
   applyIntentEffect,
   assertClaimedState,
   assertInvocationContinuity,
   closeIntent,
-} from "../../core/step-executor/index.js";
-import type { BeatContext } from "../../core/step-executor/index.js";
-import { SupervisorError } from "../../errors/index.js";
+  deterministicUuid,
+  planFor,
+} from "@acp/runtime";
+import type { BeatContext, DurableInvocation, OrchestrationDriver } from "@acp/runtime";
+
+import type {
+  LedgerLike,
+  RestateCacheState,
+  RestateDriverOptions,
+} from "../../contracts/index.js";
 
 /**
  * The Restate driver: a derived orchestrator over the same ledger.

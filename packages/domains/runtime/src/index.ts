@@ -119,10 +119,15 @@ export {
   RESERVED_LOOPBACK_PORTS,
   RESTATE_ADMIN_PORT,
   RESTATE_ADMIN_URL,
+  RESTATE_HANDLER_ADVANCE,
+  RESTATE_HANDLER_READ_CACHE,
   RESTATE_INGRESS_PORT,
   RESTATE_INGRESS_URL,
+  RESTATE_OBJECT_NAME,
   RESTATE_SDK_VERSION,
+  RESTATE_SERVER_SHA256_PIN_PATH,
   RESTATE_SERVER_VERSION,
+  RESTATE_STATE_KEY_CACHE,
   RUNTIME_SERVICE_PORT,
   RUNTIME_SERVICE_URL,
   UI_PORT,
@@ -132,7 +137,6 @@ export type {
   CoordinateOrigin,
   DeriveEventCoordinate,
   DurableInvocation,
-  DurableStepContext,
   EventCoordinate,
   OperationCoordinate,
   OrchestrationDriver,
@@ -216,31 +220,6 @@ export type {
   LedgerPort,
 } from "./core/step-executor/index.js";
 
-export { RESTATE_MODE, RestateDriver, createAcpTaskObject, reconcile } from "./drivers/restate-driver/index.js";
-export type { ObjectDependencies, ReconcileInput } from "./drivers/restate-driver/index.js";
-
-export { startEndpoint } from "./drivers/restate-endpoint/index.js";
-export type { EndpointHandle, StartEndpointOptions } from "./drivers/restate-endpoint/index.js";
-
-export {
-  deriveInvocation,
-  readCacheThroughHandler,
-  registerDeployment,
-  submitAdvance,
-} from "./restate/submit/index.js";
-export type { SubmitResult } from "./restate/submit/index.js";
-
-/**
- * The narrowed server lifecycle.
- *
- * Only the safe pair is exported. `startServer` and `ServerHandle` stay
- * package-internal because they carry the raw child and the absolute data root,
- * which the drills need and no consumer should have.
- */
-export { startVerifiedServer, serverAvailability } from "./restate/server-handle/index.js";
-export type { SafeServerHandle, ServerExit } from "./restate/server-handle/index.js";
-
-export type { RestateCacheState, RestateDriverOptions, LedgerLike } from "./contracts/index.js";
 
 export { recordTokenObservation } from "./usage/index.js";
 export type {

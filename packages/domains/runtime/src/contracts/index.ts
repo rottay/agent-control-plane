@@ -5,7 +5,6 @@ import type {
   ReconciliationReport,
   TaskState,
 } from "@acp/contracts";
-import type { Context } from "@restatedev/restate-sdk";
 
 /**
  * Package-internal contracts for the durability plane.
@@ -16,6 +15,14 @@ import type { Context } from "@restatedev/restate-sdk";
  * surface before a single driver exists.
  *
  * Nothing here executes. There is no driver in P2A.
+ *
+ * P8-T G5 moved the four Restate-shaped members out to
+ * `@acp/durability`'s own contracts: `DurableStepContext`,
+ * `RestateCacheState`, `RestateDriverOptions` and `LedgerLike`. What stays is
+ * what every driver must satisfy regardless of engine — the port, the
+ * invocation, the coordinates, the beats and the probes. That is the whole
+ * point of the split: this file no longer imports `@restatedev/restate-sdk`,
+ * so the domain is SDK-free and the fence can say so by import specifier.
  */
 
 // ---------------------------------------------------------------------------
@@ -113,14 +120,6 @@ export type DeriveEventCoordinate = (
   operationIndex: number,
 ) => EventCoordinate;
 
-/**
- * The Restate context narrowed to what the durability plane is allowed to use.
- *
- * A driver that only ever holds this type cannot reach the rest of the SDK
- * surface by accident. Widening it is a deliberate edit to this line.
- */
-export type DurableStepContext = Pick<Context, "run" | "rand" | "date">;
-
 // ---------------------------------------------------------------------------
 // Recovery law
 // ---------------------------------------------------------------------------
@@ -197,51 +196,4 @@ export interface OrchestrationDriver {
     invocation: DurableInvocation,
     from: TaskState,
   ): Promise<ControlPlaneEvent | null>;
-}
-
-// ---------------------------------------------------------------------------
-// Restate driver
-// ---------------------------------------------------------------------------
-
-/**
- * The Virtual Object's entire durable state.
- *
- * A CACHE, never a fact. Both fields are copies of something the ledger already
- * knows, and deleting all of it loses nothing: the data-root-deletion drill
- * exists to prove exactly that. Nothing may be added here without an ADR,
- * because a field that is NOT derivable from the ledger would make Restate a
- * second authority, whatever the documents say.
- */
-export interface RestateCacheState {
-  readonly lastAppliedSequence: number;
-  readonly lastAppliedEventSha256: string;
-}
-
-/** Everything the Restate driver needs to reach a ledger and a server. */
-export interface RestateDriverOptions {
-  readonly ledger: LedgerLike;
-  readonly invocation: DurableInvocation;
-  readonly emittedBy: string;
-  /** Loopback ingress base, e.g. `http://127.0.0.1:8080`. */
-  readonly ingressUrl: string;
-  /** Loopback admin base, e.g. `http://127.0.0.1:9070`. */
-  readonly adminUrl: string;
-  /** Reads the object's cache through a shared handler, never admin state. */
-  readonly readCache?: (() => Promise<RestateCacheState | null>) | undefined;
-}
-
-/**
- * The ledger surface the driver reads.
- *
- * Structurally satisfied by `Ledger`; declared here so this file stays free of
- * a value import and the driver cannot reach a mutator it was never given.
- */
-export interface LedgerLike {
-  status(): {
-    readonly headSequence: number;
-    readonly headEventSha256: string;
-    readonly eventCount: number;
-  };
-  verifyIntegrity(): { readonly ok: boolean; readonly problems: readonly unknown[] };
-  getEventBySequence(sequence: number): { readonly eventSha256: string } | null;
 }

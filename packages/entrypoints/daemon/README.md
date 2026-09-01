@@ -28,8 +28,10 @@ that nothing here anticipates.
 
 ## The daemon adds no authority
 
-`packages/persistence/ledger` remains the only one. The daemon opens it and `@acp/runtime`
-drives it; the edge from this package to the ledger is deliberate and the graph
+`packages/persistence/ledger` remains the only one. The daemon opens it, and
+`@acp/runtime` drives it in `SQLITE_SUPERVISOR` mode while `@acp/durability`
+drives it in `RESTATE` mode — since P8-T G5 those are two packages, and this one
+depends on both. The edge from here to the ledger is deliberate and the graph
 stays acyclic.
 
 The lock file and the status document are **observations**. Nothing in the

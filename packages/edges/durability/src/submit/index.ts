@@ -2,9 +2,11 @@ import {
   RESTATE_HANDLER_ADVANCE,
   RESTATE_HANDLER_READ_CACHE,
   RESTATE_OBJECT_NAME,
-} from "../../constants/index.js";
-import type { DurableInvocation, RestateCacheState } from "../../contracts/index.js";
-import { deterministicUuid } from "../../core/coordinates/index.js";
+  deterministicUuid,
+} from "@acp/runtime";
+import type { DurableInvocation } from "@acp/runtime";
+
+import type { RestateCacheState } from "../contracts/index.js";
 
 /**
  * Deterministic submission and registration, over global `fetch`.

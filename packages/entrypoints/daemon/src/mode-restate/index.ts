@@ -1,18 +1,9 @@
 import type { CommitPolicy } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
-import type {
-  BeatContext,
-  DurableInvocation,
-  EndpointHandle,
-  SafeServerHandle,
-  ScenarioRoot,
-} from "@acp/runtime";
+import type { EndpointHandle, SafeServerHandle } from "@acp/durability";
+import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
 import {
-  RUNTIME_SERVICE_PORT,
-  RUNTIME_SERVICE_URL,
-  applyEffect,
   createAcpTaskObject,
-  probeEffect,
   readCacheThroughHandler,
   reconcile,
   registerDeployment,
@@ -20,6 +11,12 @@ import {
   startEndpoint,
   startVerifiedServer,
   submitAdvance,
+} from "@acp/durability";
+import {
+  RUNTIME_SERVICE_PORT,
+  RUNTIME_SERVICE_URL,
+  applyEffect,
+  probeEffect,
 } from "@acp/runtime";
 
 import {

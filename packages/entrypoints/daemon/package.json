@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@acp/contracts": "workspace:*",
+    "@acp/durability": "workspace:*",
     "@acp/ledger": "workspace:*",
     "@acp/runtime": "workspace:*"
   },

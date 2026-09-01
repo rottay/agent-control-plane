@@ -12,8 +12,8 @@ import {
   RESTATE_INGRESS_PORT,
   RESTATE_SERVER_SHA256_PIN_PATH,
   RESTATE_SERVER_VERSION,
-} from "../../constants/index.js";
-import type { ScenarioRoot } from "../../toy/repository/index.js";
+} from "@acp/runtime";
+import type { ScenarioRoot } from "@acp/runtime";
 
 /**
  * Locate, start and stop the external pinned Restate server.
@@ -37,7 +37,7 @@ import type { ScenarioRoot } from "../../toy/repository/index.js";
  */
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
-const REPO_ROOT = resolve(HERE, "..", "..", "..", "..", "..", "..");
+const REPO_ROOT = resolve(HERE, "..", "..", "..", "..", "..");
 
 export function serverInstallDir(): string {
   return join(REPO_ROOT, ".acp-local", "tools", "restate-server-" + RESTATE_SERVER_VERSION);

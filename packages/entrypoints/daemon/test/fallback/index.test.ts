@@ -35,7 +35,7 @@ import { portIsFree } from "../../src/lifecycle/index.js";
  * evidence it composes with rather than re-runs:
  *
  * - **D4, the fail-closed refusal.**
- *   `packages/domains/runtime/test/drivers/drills/index.test.ts`,
+ *   `packages/edges/durability/test/drivers/drills/index.test.ts`,
  *   `"D4 server unavailable fails closed and never fails over on its own"` —
  *   proves the Restate driver never quietly falls back to SQLite on its own.
  *   This gate proves the complementary fact: SQLite mode does not need it to.
@@ -44,7 +44,7 @@ import { portIsFree } from "../../src/lifecycle/index.js";
  *   `describe("kill and restart, 3/3", ...)` — proves the SQLite supervisor's
  *   own durability under a real SIGKILL, at the driver level.
  * - **Byte-equivalence.**
- *   `packages/domains/runtime/test/drivers/drills/index.test.ts`,
+ *   `packages/edges/durability/test/drivers/drills/index.test.ts`,
  *   `"produces a byte-identical head from two independent ledgers"` — proves
  *   the two drivers reach the same ledger state from the same invocation.
  *

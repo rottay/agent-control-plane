@@ -5,29 +5,34 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { RESTATE_STATE_KEY_CACHE } from "../../../src/constants/index.js";
-import type { DurableInvocation, LedgerLike, RestateCacheState } from "../../../src/contracts/index.js";
 import {
   LIFECYCLE_PLAN,
   OUTCOME_STEP,
   READ_ONLY_PLAN,
-} from "../../../src/core/lifecycle/index.js";
-import { deriveEventCoordinate } from "../../../src/core/coordinates/index.js";
-import { appendPlanStep } from "../../../src/core/step-executor/index.js";
-import type { BeatContext } from "../../../src/core/step-executor/index.js";
-import { SupervisorError } from "../../../src/errors/index.js";
-import {
+  RESTATE_STATE_KEY_CACHE,
+  SupervisorError,
+  appendPlanStep,
   applyEffect,
+  deriveEventCoordinate,
+  deterministicUuid,
   probeEffect,
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
-} from "../../../src/toy/repository/index.js";
-import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
+} from "@acp/runtime";
+import type {
+  BeatContext,
+  DurableInvocation,
+  LedgerPort,
+  OrchestrationDriver,
+  ScenarioRoot,
+} from "@acp/runtime";
+import type { Context } from "@restatedev/restate-sdk";
+
+import type { DurableStepContext, LedgerLike, RestateCacheState } from "../../../src/contracts/index.js";
 import { RESTATE_MODE, RestateDriver, advanceHandler, reconcile } from "../../../src/drivers/restate-driver/index.js";
 import type { AdvanceContext } from "../../../src/drivers/restate-driver/index.js";
-import { parseCacheReply } from "../../../src/restate/submit/index.js";
-import { deterministicUuid } from "../../../src/core/coordinates/index.js";
+import { parseCacheReply } from "../../../src/submit/index.js";
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -575,3 +580,144 @@ function outcomeKey(invocation: DurableInvocation): string {
   return deriveEventCoordinate(invocation, OUTCOME_STEP.transitionId, OUTCOME_STEP.index)
     .idempotencyKey;
 }
+
+
+// ---------------------------------------------------------------------------
+// Port conformance (P8-T G5)
+// ---------------------------------------------------------------------------
+
+/**
+ * The conformance class the split exists to make possible.
+ *
+ * `OrchestrationDriver` is declared in `@acp/runtime` and implemented here, so
+ * until G5 there was no package boundary for a conformance test to sit on: a
+ * test living beside the interface it checks proves only that TypeScript
+ * agrees with itself. This describe runs inside `edges/durability`, imports the
+ * port across the package boundary, and asserts that the edge satisfies it.
+ *
+ * The predicate is written against the port as *data* rather than as a set of
+ * remembered assertions, so the same function judges the real driver and a
+ * deliberately broken stub. That symmetry is the point: a conformance check
+ * only means something if a non-conforming value fails it, so the negative
+ * control below is as load-bearing as the positive one.
+ */
+const PORT_METHODS = ["status", "reconcile", "advance"] as const;
+
+/** Every way a candidate fails `OrchestrationDriver`, named. Empty is conformance. */
+function portViolations(candidate: object): readonly string[] {
+  const problems: string[] = [];
+  const record = candidate as Record<string, unknown>;
+  const mode = record["mode"];
+  if (typeof mode !== "string" || mode.length === 0) {
+    problems.push("mode must be a non-empty DriverMode");
+  }
+  for (const method of PORT_METHODS) {
+    if (typeof record[method] !== "function") {
+      problems.push(method + "() must be a method");
+    }
+  }
+  const advance = record["advance"];
+  if (typeof advance === "function" && advance.length !== 2) {
+    problems.push("advance() must take (invocation, from)");
+  }
+  return problems;
+}
+
+/** A ledger that answers the port's reads and owns nothing. */
+const STUB_LEDGER: LedgerLike = {
+  status: () => ({ headSequence: 0, headEventSha256: "0".repeat(64), eventCount: 0 }),
+  verifyIntegrity: () => ({ ok: true, problems: [] }),
+  getEventBySequence: () => null,
+};
+
+describe("the Restate edge satisfies the orchestration port (G5)", () => {
+  /** A driver built from stubs only — no ledger file, no server, no network. */
+  function conformingDriver(): RestateDriver {
+    const invocation = invocationFor("5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a01");
+    const beat = (candidate: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
+      ledger: {
+        append: () => {
+          throw new SupervisorError("the conformance fixture never appends");
+        },
+        getTask: () => null,
+        getEventBySequence: () => null,
+        getEventByIdempotencyKey: () => null,
+      } satisfies LedgerPort,
+      effects: { apply: () => undefined, probe: () => "DONE" },
+      invocation: candidate,
+      emittedBy: EMITTED_BY,
+    });
+    return new RestateDriver(
+      {
+        ledger: STUB_LEDGER,
+        invocation,
+        emittedBy: EMITTED_BY,
+        ingressUrl: "http://127.0.0.1:8080",
+        adminUrl: "http://127.0.0.1:9070",
+      },
+      beat,
+      "NO_COMMIT",
+      TEST_INITIATIVE_ID,
+    );
+  }
+
+  it("implements every member the port declares", () => {
+    const driver = conformingDriver();
+    // The type-level half: this assignment is the compiler asserting the class
+    // against the interface across a package boundary.
+    const port: OrchestrationDriver = driver;
+    // The value-level half: the members actually exist on the instance, which a
+    // structural type check alone does not establish for a class with private
+    // fields and prototype methods.
+    expect(portViolations(port)).toEqual([]);
+    expect(port.mode).toBe(RESTATE_MODE);
+    expect(port.mode).toBe("RESTATE");
+  });
+
+  it("rejects a stub that does not satisfy the port (the failing fixture)", () => {
+    // The negative control. Without it, `portViolations` returning `[]` would be
+    // consistent with a predicate that can never fail — which is the defect this
+    // whole class of test is supposed to rule out.
+    const missingAdvance = {
+      mode: "RESTATE",
+      status: () => Promise.resolve(null),
+      reconcile: () => Promise.resolve(null),
+    };
+    expect(portViolations(missingAdvance)).toEqual(["advance() must be a method"]);
+
+    const wrongArity = {
+      mode: "RESTATE",
+      status: () => Promise.resolve(null),
+      reconcile: () => Promise.resolve(null),
+      advance: (invocation: unknown) => Promise.resolve(invocation),
+    };
+    expect(portViolations(wrongArity)).toEqual(["advance() must take (invocation, from)"]);
+
+    const noMode = {
+      status: () => Promise.resolve(null),
+      reconcile: () => Promise.resolve(null),
+      advance: (invocation: unknown, from: unknown) => Promise.resolve([invocation, from]),
+    };
+    expect(portViolations(noMode)).toEqual(["mode must be a non-empty DriverMode"]);
+  });
+
+  it("narrows the SDK context to exactly three members (DurableStepContext)", () => {
+    // `DurableStepContext` is the repository's only type-level coupling to the
+    // SDK outside the drivers, and it moved here with them. Its whole value is
+    // that it is *narrower* than `Context`, so both directions are asserted at
+    // compile time — a widening would break this file, not some later drill.
+    const narrow = (context: Context): DurableStepContext => context;
+    expect(typeof narrow).toBe("function");
+
+    const seen: DurableStepContext = {
+      run: undefined as unknown as DurableStepContext["run"],
+      rand: undefined as unknown as DurableStepContext["rand"],
+      date: undefined as unknown as DurableStepContext["date"],
+    };
+    expect(Object.keys(seen).sort()).toEqual(["date", "rand", "run"]);
+
+    // @ts-expect-error `get` is SDK surface the narrowing deliberately withholds.
+    const withheld: unknown = seen.get;
+    expect(withheld).toBeUndefined();
+  });
+});

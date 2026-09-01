@@ -124,9 +124,6 @@ importers:
       '@acp/ledger':
         specifier: workspace:*
         version: link:../../persistence/ledger
-      '@restatedev/restate-sdk':
-        specifier: 'catalog:'
-        version: 1.16.9
     devDependencies:
       vitest:
         specifier: 3.2.4
@@ -137,6 +134,25 @@ importers:
       '@acp/contracts':
         specifier: workspace:*
         version: link:../../kernel/contracts
+    devDependencies:
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
+
+  packages/edges/durability:
+    dependencies:
+      '@acp/contracts':
+        specifier: workspace:*
+        version: link:../../kernel/contracts
+      '@acp/ledger':
+        specifier: workspace:*
+        version: link:../../persistence/ledger
+      '@acp/runtime':
+        specifier: workspace:*
+        version: link:../../domains/runtime
+      '@restatedev/restate-sdk':
+        specifier: 'catalog:'
+        version: 1.16.9
     devDependencies:
       vitest:
         specifier: 3.2.4
@@ -160,6 +176,9 @@ importers:
       '@acp/contracts':
         specifier: workspace:*
         version: link:../../kernel/contracts
+      '@acp/durability':
+        specifier: workspace:*
+        version: link:../../edges/durability
       '@acp/ledger':
         specifier: workspace:*
         version: link:../../persistence/ledger

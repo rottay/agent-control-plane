@@ -221,7 +221,7 @@ docs/ROADMAP.md                    canonical authority (byte-exact copy)
 docs/architecture/                 architecture decision records
 packages/kernel/contracts/         frozen runtime contracts
 packages/persistence/ledger/       append-only event ledger and read models
-packages/domains/runtime/          durability plane: one lifecycle, two drivers
+packages/domains/runtime/          durability domain: one lifecycle, the port, one driver
 packages/entrypoints/daemon/       supervised process and inert launchd template
 ```
 
