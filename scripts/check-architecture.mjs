@@ -1271,27 +1271,32 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **330 packet entries across 139 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **340 packet entries across 139 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
  * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
- * 12 (P8-8G-ui) + 2 (P8-T-roadmap) = 330 entries, with 191 duplicate entries.
+ * 12 (P8-8G-ui) + 4 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-T-roadmap) =
+ * 340 entries, with 201 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 27 duplicates = 27   (`scripts/check-architecture.mjs`, every packet)
- *   9 paths ×  6 duplicates = 54   (the contracts/api-contracts/server surface
- *                                   the write packets keep returning to)
+ *   1 path  × 29 duplicates = 29   (`scripts/check-architecture.mjs`, every packet)
+ *   3 paths ×  7 duplicates = 21   (`docs/ROADMAP.md`, the routes source and the
+ *                                   build-server drill suite the causal packet
+ *                                   seamed)
+ *   6 paths ×  6 duplicates = 36   (the api-contracts surface, its CLI mirror
+ *                                   suite and the lockfile the write packets
+ *                                   keep returning to)
  *   5 paths ×  5 duplicates = 25
  *   2 paths ×  4 duplicates = 8
- *   7 paths ×  3 duplicates = 21
- *  13 paths ×  2 duplicates = 26
- *  30 paths ×  1 duplicate  = 30
+ *   8 paths ×  3 duplicates = 24
+ *  15 paths ×  2 duplicates = 30
+ *  28 paths ×  1 duplicate  = 28
  *
- * 27 + 54 + 25 + 8 + 21 + 26 + 30 = 191.
+ * 29 + 21 + 36 + 25 + 8 + 24 + 30 + 28 = 201.
  *
  * P8-5 and P8-6 share no path with any earlier P8 packet but the fence
  * itself; P8-7 likewise. Five packets add entries without adding paths:
@@ -1305,7 +1310,26 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * itself already own — the api client, the app root, the styles sheet, the
  * accounts view and its suite, the edit dialog and its suite, and the
  * fence — which is why the distinct count moves only 137 → 139 while the
- * entries move 318 → 330. This file's appearances in earlier phases are
+ * entries move 318 → 330.
+ *
+ * P8-8G-record adds **no** path: all four of its entries are already owned, so
+ * distinct holds at 139 while the entries move 330 → 334. Its first two entries
+ * moved the roadmap out of the six-duplicate group into a row of its own at
+ * seven and the fence's own row from 27 to 28. Its other two arrived after the
+ * DT granted them: two server suites whose fixtures pinned an absolute
+ * `nextResetAt` that expired mid-cohort, both already owned by packet 2, so the
+ * accounts suite steps from one duplicate to two (the ×2 row, 13 → 14 paths)
+ * and the account-actions suite enters the ×1 row as another leaves it, which
+ * is why that row still reads 30. Four entries, four group steps, zero new
+ * paths.
+ *
+ * P8-8G-causal adds **no** path either: all six of its entries are already
+ * owned — the two server sources by the packets that wrote them, the three
+ * suites by packet 2 and this packet's own predecessors, and the fence by
+ * every packet — so distinct holds at 139 a third time while the entries move
+ * 334 → 340. That a six-path packet introduces nothing new is the expected
+ * shape for a fix that reaches an existing seam rather than adding a surface.
+ * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
  * arithmetic to the phase.
  */
@@ -2175,6 +2199,50 @@ const P88G_UI_WRITE_SET = [
 ];
 
 /**
+ * P8-8G-record: the cohort's own record enters the roadmap.
+ *
+ * A records-only packet, the same two paths as the earlier docs packets:
+ * the roadmap gains the `#### P8-8G` block at its declared home and the C2
+ * language amendment ("the write surface", not "the single write door" — a
+ * singular guarded surface may hold more than one route, and after this
+ * cohort it holds two); this file's roadmap digest moves with it. Two
+ * entries, zero new paths — the status line does not move.
+ */
+const P88G_RECORD_WRITE_SET = [
+  "docs/ROADMAP.md",
+  "scripts/check-architecture.mjs",
+  // Granted after the STOP: two server fixtures pinned an absolute
+  // `nextResetAt` that expired mid-cohort. The accounts suite failed
+  // permanently once real UTC passed it; the account-actions suite stayed
+  // green while silently resolving its reset to `UNKNOWN`. Both now derive the
+  // instant from the run's own clock, so neither can expire again.
+  "packages/server/test/accounts/index.test.ts",
+  "packages/server/test/account-actions/index.test.ts",
+];
+
+/**
+ * P8-8G-causal: the injected-instant seam.
+ *
+ * The cause behind the closing packet's red gate, fixed at its root rather
+ * than at its symptom. `BuildServerOptions` gains an optional `now` supplier
+ * defaulting to the real clock, the accounts route reads it instead of calling
+ * `new Date()` inline, and the two server suites pin an instant through it —
+ * so their fixture keeps the literal reset it always declared and stops
+ * measuring the calendar. The seam is deliberately absent from the operator's
+ * start surface: every other build option is operator configuration, and a
+ * production clock freezable from the command line is a footgun with no
+ * operator use, which the drill asserts rather than assumes.
+ */
+const P88G_CAUSAL_WRITE_SET = [
+  "packages/server/src/build-server/index.ts",
+  "packages/server/src/routes/index.ts",
+  "packages/server/test/accounts/index.test.ts",
+  "packages/server/test/account-actions/index.test.ts",
+  "packages/server/test/build-server/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2458,6 +2526,8 @@ const WRITE_SET = [
   ...P88G_A_WRITE_SET,
   ...P88G_B_WRITE_SET,
   ...P88G_UI_WRITE_SET,
+  ...P88G_RECORD_WRITE_SET,
+  ...P88G_CAUSAL_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -2588,7 +2658,7 @@ function assertAdrNumbering() {
 }
 
 const ROADMAP_SHA256 =
-  "0c26111823da84b28a202bd7772ff688ac2facbab910ce20fd7bdad7f364cefe";
+  "7ee1f2e35a1c7e1b089cfd614109203c400abb0150126a2d8fba51b7d99c6682";
 
 /**
  * The Estado line P7 closure is allowed to have produced.

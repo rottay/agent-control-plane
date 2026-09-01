@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -9,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import {
   API_CONTRACT_VERSION,
   API_ROUTE_PATTERNS,
+  AccountsResponse,
   ApiError,
   EventPageResponse,
   HealthResponse,
@@ -25,6 +35,7 @@ import {
 import { openLedger, type Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { parseArgv } from "../../src/bin/index.js";
 import { buildServer } from "../../src/build-server/index.js";
 import { startServer } from "../../src/start/index.js";
 
@@ -969,5 +980,131 @@ describe("no mutation", () => {
     expect(afterStatus.eventCount).toBe(beforeStatus.eventCount);
     expect(afterStatus.headSequence).toBe(beforeStatus.headSequence);
     expect(afterStatus.headEventSha256).toBe(beforeStatus.headEventSha256);
+  });
+});
+
+describe("the accounts clock seam", () => {
+  // A READY accounts response is all this drill needs, and the emptiest owner
+  // document that produces one keeps the drill about the instant rather than
+  // about a fixture.
+  function ownerFile(): { readonly ledger: string; readonly accounts: string } {
+    // Canonical, deliberately: on macOS `mkdtemp` hands back `/var/folders/…`
+    // while the real path is `/private/var/folders/…`, and the owner-file
+    // loader refuses a non-canonical path — correctly, since a symlinked owner
+    // file could point somewhere none of its checks ever looked.
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "acp-seam-")));
+    temporaryDirectories.push(directory);
+    const ledgerDirectory = join(directory, "ledger");
+    mkdirSync(ledgerDirectory, { recursive: true });
+    const ledger = join(ledgerDirectory, "acp.sqlite3");
+    openLedger(ledger).close();
+    const accounts = join(directory, "accounts.local.json");
+    const record = {
+      contractVersion: LEDGER_CONTRACT_VERSION,
+      accountId: "acct-seam",
+      provider: "anthropic",
+      alias: "seam",
+      authMode: "PREAUTHENTICATED_PROFILE",
+      authProfileRef: "profile://acp-seam",
+      credentialRef: null,
+      plan: "max",
+      enabledModels: ["opus"],
+      knownLimits: { weekly: 1_000_000 },
+      // Far enough ahead that this drill never depends on the calendar. What
+      // it asserts is which instant the handler used, not how that instant
+      // compares to a reset.
+      resetSchedule: { kind: "DECLARED", nextResetAt: "2099-01-01T00:00:00.000Z", timezone: "UTC", confidence: "HIGH" },
+      quotaEstimate: {
+        remainingRatio: 0.5,
+        estimatedTokensRemaining: 500_000,
+        estimatedAt: "2026-08-31T12:00:00.000Z",
+        confidence: "MEDIUM",
+      },
+      lastHealthProbe: null,
+      lastClassifiedError: null,
+      status: "AVAILABLE",
+      isolatedConfigRoot: "/tmp/acp-seam",
+      contextSwitchCost: { estimatedTokens: 1000, estimatedSeconds: 10 },
+    };
+    writeFileSync(
+      accounts,
+      JSON.stringify({ contractVersion: LEDGER_CONTRACT_VERSION, accounts: [record] }),
+      "utf8",
+    );
+    chmodSync(accounts, 0o600);
+    return { ledger, accounts };
+  }
+
+  async function estimatedAt(now?: () => string): Promise<string> {
+    const { ledger, accounts } = ownerFile();
+    const app = buildServer({ ledgerPath: ledger, accountsFilePath: accounts, now });
+    const response = await app.inject({ method: "GET", url: "/api/v1/accounts" });
+    const body = AccountsResponse.parse(response.json());
+    await app.close();
+    if (body.status !== "READY") {
+      throw new Error("expected READY, got " + body.status + " " + body.reason + " " + (body.detail ?? ""));
+    }
+    return body.estimatedAt;
+  }
+
+  it("defaults to the real clock when no instant is injected", async () => {
+    // The default has to stay the wall clock, or production would silently
+    // freeze: this is the one place in the repository that still asserts
+    // against it, deliberately, because it is the behaviour under test.
+    const before = new Date().toISOString();
+    const observed = await estimatedAt();
+    const after = new Date().toISOString();
+
+    expect(observed >= before).toBe(true);
+    expect(observed <= after).toBe(true);
+  });
+
+  it("uses an injected instant verbatim", async () => {
+    // Not "close to", not "parsed and re-serialized" — the same string back.
+    const pinned = "2019-04-02T11:22:33.444Z";
+    expect(await estimatedAt(() => pinned)).toBe(pinned);
+  });
+
+  it("asks the supplier once per request, so two requests can differ", async () => {
+    // A supplier read at registration would freeze every later request to the
+    // first answer, which is exactly the bug the seam is supposed to make
+    // impossible rather than merely unlikely.
+    const instants = ["2019-04-02T11:22:33.444Z", "2020-05-03T00:00:00.000Z"];
+    let call = 0;
+    const { ledger, accounts } = ownerFile();
+    const app = buildServer({
+      ledgerPath: ledger,
+      accountsFilePath: accounts,
+      now: () => instants[call++] ?? "2021-01-01T00:00:00.000Z",
+    });
+    const seen: string[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      const body = AccountsResponse.parse((await app.inject({ method: "GET", url: "/api/v1/accounts" })).json());
+      if (body.status !== "READY") throw new Error("expected READY");
+      seen.push(body.estimatedAt);
+    }
+    await app.close();
+
+    expect(seen).toEqual(instants);
+  });
+
+  it("keeps the seam off the operator's start surface", () => {
+    // C2. Every other build option is operator configuration with an
+    // operator's reason to exist; a production clock that can be frozen from
+    // the command line is a footgun with no such reason. The bin must not
+    // learn this flag by accident, so the refusal is asserted rather than
+    // assumed.
+    for (const flag of ["--now", "--clock", "--instant", "--time"]) {
+      const outcome = parseArgv(["--ledger", "/tmp/acp/ledger.sqlite3", flag, "2020-01-01T00:00:00.000Z"]);
+      expect({ flag, ok: outcome.ok }).toEqual({ flag, ok: false });
+      if (outcome.ok) throw new Error("expected a refusal");
+      expect(outcome.reason).toBe("UNKNOWN_FLAG");
+    }
+
+    const accepted = parseArgv(["--ledger", "/tmp/acp/ledger.sqlite3"]);
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) throw new Error("expected a parse");
+    // No clock-shaped key reaches the options the bin hands to buildServer.
+    expect(Object.keys(accepted.options).some((key) => /now|clock|instant|time/i.test(key))).toBe(false);
   });
 });

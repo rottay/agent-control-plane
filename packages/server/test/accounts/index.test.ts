@@ -28,6 +28,19 @@ import { buildServer } from "../../src/build-server/index.js";
 const roots: string[] = [];
 const AT = "2026-08-31T12:00:00.000Z";
 
+/**
+ * The instant this suite pins through the server's seam (P8-8G causal).
+ *
+ * The fixture's declared reset stays the literal `2026-09-01T00:00:00.000Z`
+ * it always was. What changed is that "now" is no longer whatever the wall
+ * clock happens to say when the suite runs: it is this value, injected, and
+ * it sits before that reset for good. The previous arrangement made the
+ * assertion a deadline — it expired at 2026-09-01T00:00:00Z and turned a
+ * `DECLARED` reset into `RESET_ALREADY_PASSED` — and a fixture that expires is
+ * a fixture that was measuring the calendar rather than the code.
+ */
+const PINNED_NOW = "2026-08-31T12:00:00.000Z";
+
 function temporaryRoot(): string {
   // Canonical, deliberately. On macOS `mkdtemp` hands back `/var/folders/…`
   // while the real path is `/private/var/folders/…`, and the loader refuses a
@@ -115,7 +128,7 @@ afterEach(() => {
 });
 
 async function get(root: string, accountsFilePath?: string): Promise<AccountsResponse> {
-  const app = buildServer({ ledgerPath: ledgerPath(root), accountsFilePath });
+  const app = buildServer({ ledgerPath: ledgerPath(root), accountsFilePath, now: () => PINNED_NOW });
   const response = await app.inject({ method: "GET", url: "/api/v1/accounts" });
   expect(response.statusCode).toBe(200);
   const body = AccountsResponse.parse(response.json());
@@ -164,15 +177,14 @@ describe("GET /api/v1/accounts — READY", () => {
   it("pins estimatedAt to the request's own instant", async () => {
     const root = temporaryRoot();
     const path = writeOwnerFile(root, ownerDocument([account()]));
-    const before = new Date().toISOString();
     const body = await get(root, path);
-    const after = new Date().toISOString();
     if (body.status !== "READY") throw new Error("expected READY");
 
-    // Between the two reads taken around the request: the handler injected one
-    // instant rather than the read model reaching for a clock of its own.
-    expect(body.estimatedAt >= before).toBe(true);
-    expect(body.estimatedAt <= after).toBe(true);
+    // Exactly the injected instant, not merely one bracketed by two wall-clock
+    // reads taken around the request. The old bracketing could only show the
+    // answer fell inside a window; pinning shows the handler took the instant
+    // it was given and the read model never reached for a clock of its own.
+    expect(body.estimatedAt).toBe(PINNED_NOW);
   });
 });
 
@@ -262,7 +274,7 @@ describe("the owner file's contents never leave", () => {
 describe("the accounts route is a read", () => {
   it("answers GET and refuses every other verb with 405", async () => {
     const root = temporaryRoot();
-    const app = buildServer({ ledgerPath: ledgerPath(root) });
+    const app = buildServer({ ledgerPath: ledgerPath(root), now: () => PINNED_NOW });
     for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
       const response = await app.inject({ method, url: "/api/v1/accounts" });
       expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
@@ -273,7 +285,7 @@ describe("the accounts route is a read", () => {
 
   it("refuses a query string, like every other read", async () => {
     const root = temporaryRoot();
-    const app = buildServer({ ledgerPath: ledgerPath(root) });
+    const app = buildServer({ ledgerPath: ledgerPath(root), now: () => PINNED_NOW });
     const response = await app.inject({ method: "GET", url: "/api/v1/accounts?limit=5" });
     expect(response.statusCode).toBe(400);
     await app.close();

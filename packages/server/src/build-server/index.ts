@@ -40,6 +40,29 @@ export interface BuildServerOptions {
    * authorized", and every write answers 403. An unconfigured door is shut.
    */
   readonly writeBearerPath?: string | undefined;
+  /**
+   * The instant supplier the accounts read uses, when a caller wants to pin it
+   * (P8-8G causal).
+   *
+   * Optional, defaulting to the real clock, so omitting it reproduces the
+   * previous behaviour exactly — production passes nothing and reads
+   * `new Date().toISOString()` as before.
+   *
+   * It exists because the accounts read compares the owner file's declared
+   * reset against "now", and a suite that cannot hold "now" still has to
+   * assert on the comparison's result. Before this seam the only way to do
+   * that was a fixture instant far enough in the future to outlive the run —
+   * which is a deadline, not a fixture, and it expired mid-cohort and turned a
+   * `DECLARED` reset into `RESET_ALREADY_PASSED`. A pinned instant has no
+   * expiry date.
+   *
+   * Deliberately **not** on the operator's start surface. Every other option
+   * here (`accountsFilePath`, `writeBearerPath`) is operator configuration
+   * with an operator's reason to exist; a production clock that can be frozen
+   * from the command line is a footgun with no such reason. The bin exposes no
+   * flag for it, and a drill asserts that it does not.
+   */
+  readonly now?: (() => string) | undefined;
   readonly logger?: boolean | undefined;
 }
 
@@ -103,6 +126,6 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     sendApiError(reply, classified.code, classified.message, classified.detail);
   });
 
-  registerRoutes(app, source, options.accountsFilePath, options.writeBearerPath);
+  registerRoutes(app, source, options.accountsFilePath, options.writeBearerPath, options.now);
   return app;
 }

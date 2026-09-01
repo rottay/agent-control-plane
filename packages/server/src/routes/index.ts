@@ -263,7 +263,11 @@ export function registerRoutes(
   source: LedgerSource,
   accountsFilePath?: string,
   writeBearerPath?: string,
+  now?: () => string,
 ): void {
+  // The instant seam. Absent means the real clock, which is what production
+  // passes and what every route below used directly until this packet.
+  const instant = now ?? (() => new Date().toISOString());
   // Loaded once, at registration. A token re-read per request would let a
   // file edited mid-flight change the answer between two writes of the same
   // batch; loading here means the process authorizes against the credential
@@ -571,8 +575,13 @@ export function registerRoutes(
   // the write surface stays at exactly one route.
   //
   // The instant is taken once, here, and injected: the read model never reads a
-  // clock, so this handler is the single place where "now" enters, and two
-  // requests at the same instant over the same file produce identical bytes.
+  // clock, so this handler is the single place where "now" enters for the
+  // accounts read, and two requests at the same instant over the same file
+  // produce identical bytes. Since P8-8G's causal packet the instant comes
+  // from the registration seam rather than from `new Date()` inline — the
+  // default *is* the real clock, so production behaviour is unchanged, but a
+  // caller that needs "now" to hold still can now pin it instead of pinning a
+  // fixture far enough ahead to outlive the run.
   registerGet(app, API_ROUTES.accounts, (request) => {
     assertEmptyQuery(queryOf(request));
     // The action history is handed in, so the read model folds the authority
@@ -580,7 +589,7 @@ export function registerRoutes(
     // implementation of the law, so the two cannot disagree about which
     // source governs.
     const { ledger: openLedgerForActions } = requireOpen(source);
-    const outcome = readAccounts(accountsFilePath, new Date().toISOString(), (accountId) =>
+    const outcome = readAccounts(accountsFilePath, instant(), (accountId) =>
       openLedgerForActions.listAccountActions(accountId),
     );
 

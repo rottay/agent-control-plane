@@ -31,6 +31,17 @@ const AUTH = { authorization: "Bearer " + TOKEN };
 const ACTOR = "kimi/k3/coordinator/01";
 const ACCOUNT = "acct-primary";
 
+/**
+ * The instant this suite pins through the server's seam (P8-8G causal).
+ *
+ * Same pin as the accounts suite, for a quieter reason: nothing here asserted
+ * on the reset, so when the fixture's `2026-09-01T00:00:00.000Z` fell into the
+ * past this suite stayed green while every response it read resolved that
+ * reset to `UNKNOWN`. Green, and no longer saying what the fixture said. A
+ * pinned instant keeps the declaration meaning what it claims.
+ */
+const PINNED_NOW = "2026-08-31T12:00:00.000Z";
+
 function root(): string {
   const created = realpathSync(mkdtempSync(join(tmpdir(), "acp-actions-")));
   roots.push(created);
@@ -108,6 +119,7 @@ function harness(accounts: readonly unknown[] = [account()]): Harness {
       ledgerPath: ledgerPath(dir),
       accountsFilePath: accountsPath,
       writeBearerPath: tokenFile(dir),
+      now: () => PINNED_NOW,
     }),
   };
 }
@@ -237,6 +249,7 @@ describe("the fold: which source governs", () => {
       ledgerPath: join(dir, "ledger", "acp.sqlite3"),
       accountsFilePath: join(dir, "accounts.local.json"),
       writeBearerPath: join(dir, "write.token"),
+      now: () => PINNED_NOW,
     });
     const body = AccountsResponse.parse(
       (await restarted.inject({ method: "GET", url: "/api/v1/accounts" })).json(),
@@ -321,6 +334,7 @@ describe("the refusals, each by name", () => {
     const app = buildServer({
       ledgerPath: ledgerPath(dir),
       writeBearerPath: tokenFile(dir),
+      now: () => PINNED_NOW,
     });
     const response = await act(app, drain);
     expect(response.statusCode).toBe(409);
@@ -380,6 +394,7 @@ describe("the second door inherits the bearer by where it is registered", () => 
     const unarmed = buildServer({
       ledgerPath: ledgerPath(dir),
       accountsFilePath: ownerFile(dir, [account()]),
+      now: () => PINNED_NOW,
     });
     const unconfigured = await unarmed.inject({ method: "POST", url: actionsUrl(), payload: drain });
     expect(unconfigured.statusCode).toBe(403);
