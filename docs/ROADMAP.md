@@ -549,6 +549,55 @@ adjudicado una vez (C1–C5 de Fable incorporados, N1–N2 adoptados). La
 evidencia renderizada crece la lista de P8-9 por nombre: el bridge del
 navegador sigue sin conectar (resultado standing de la fase).
 
+#### P8-8G — la superficie de escritura armada y las acciones de cuenta (2026-08-31)
+
+La superficie de escritura queda armada de punta a punta. El bearer local
+guarda la superficie entera: token en archivo fuera del repo
+(`writeBearerPath`, fail-closed — sin configurar responde 403
+`WRITE_BEARER_UNCONFIGURED`; ausente o wrong responden el mismo 401
+`AUTH_REQUIRED`, indistinguibles por diseño), guardia dentro del registrar
+de escritura (heredada por dónde se registra la ruta, no por memoria de
+nadie), comparación hash-then-`timingSafeEqual` sobre digests, y el token
+en ninguna superficie serializada (drill plantado). El ceiling de 1 MiB
+tiene declaración única en `@acp/contracts` con la ley de unidad
+UTF-8-bytes vía `TextEncoder` (nunca `Buffer` en api-contracts), ambos
+límites movidos (request y documento), prueba de igualdad del server con
+`Buffer.byteLength`, y el transporte derivando `bodyLimit` de la única
+autoridad más el allowance nombrado. La carrera deja de ser un 500: catch
+estrecho de exactamente `LEDGER_IDEMPOTENCY_CONFLICT` /
+`LEDGER_EVENT_ID_CONFLICT` → 409 `WRITE_REFUSED` (`WRITE_CONFLICT`), y
+cualquier otro error sigue clasificando 500 (drill discriminante).
+
+Las acciones de cuenta nacen como stream append-only propio (migración 5,
+`account_events` STRICT con sus triggers deny que el inventario de esquema
+exigió por enumeración): drain/ready/reauth/owner-override con refusals
+nombrados (`UNKNOWN_ACCOUNT`, `ALREADY_IN_STATE` — el no-op se rehúsa, no
+se concede en silencio —, `ACCOUNTS_UNAVAILABLE`, `WRITE_CONFLICT`), la
+nota bajo las guardias de contenido universales, y la ley de autoridad del
+estado en una sola función (`foldEffectiveState`) compartida por read y
+write: el owner file gobierna sólo hasta la primera acción registrada; de
+ahí en adelante el ledger manda, la más nueva gana, y una edición
+posterior del archivo no pisa una acción grabada (drill explícito). La
+corrección es siempre un acto explícito con receipt. Segunda write door
+`POST /api/v1/accounts/:accountId/actions` (`API_WRITE_ROUTES` crece
+visiblemente a dos) y entry del operador `acp-server` con argv parseado a
+mano, exits clasificados al idioma del daemon y cero dependencias nuevas.
+Contrato 2.2.0 / API 0.8.0. La UI lo vuelve operable: bearer session-only
+en la raíz (nunca persistido, URL ni localStorage; unarmed es postura, no
+falla), controles por fila con confirmación deliberada (owner-override con
+selector de estado y nota), el receipt anunciado con su sequence en live
+region, y la columna de estado renderizando `effectiveState` con la marca
+"operator-set". Blueprint v2 adjudicado una vez (C1–C6 de Fable
+incorporados, N1–N2 adoptados); dos STOPs de Opus adjudicados por path
+exacto; un incidente de proceso huérfano del drill D2 terminado acotado
+por el DT y asentado con causa (el teardown del drill debe matar lo que
+spawnea — queda para la batería P8-9).
+
+**Enmienda de lenguaje (exigencia C2):** donde el roadmap decía "una única
+write door", la ley correcta es **"the write surface"**: una superficie de
+escritura singular guardada por un único registrar armado, que puede
+albergar más de una ruta. Queda enmendado por este record.
+
 #### Addendum vinculante del owner (2026-08-30): ejecución y UI agnósticas de transporte
 
 El owner ruling `.acp-local/p8-transport-agnostic-owner-ruling.md`
@@ -725,7 +774,7 @@ declaración y una compuerta de duplicación; un predicado de cuatro líneas
 que dos contextos comparten por casualidad, no. El corpus ADR gana
 `index.md` + plantilla (status + supersedes/superseded-by) bajo la docs
 gate. La threat model nombra la frontera loopback como titular y la
-única write door gana un bearer local antes de cualquier release
+write surface gana un bearer local antes de cualquier release
 (funcional, en P8-8G, antes de P8-E). Nada publica ni se des-privatiza hasta que
 LICENSE + SECURITY.md + CONTRIBUTING.md aterricen juntos en G10. G0 lleva
 un fixture falliente por familia de leyes del fence. La falsa-roja
