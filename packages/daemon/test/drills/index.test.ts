@@ -65,9 +65,101 @@ beforeAll(() => {
   }
 }, 120_000);
 
-afterEach(() => {
+/**
+ * Register a pid the moment this file learns it (P8-9-1b, L1).
+ *
+ * Deduplicated, because the announcement republishes the child's own pid that
+ * the spawn already registered, and a doubled entry would make the leak
+ * receipt's count say something untrue about how many processes existed.
+ */
+function trackPid(pid: number | null | undefined): void {
+  if (typeof pid === "number" && pid > 0 && !spawned.includes(pid)) spawned.push(pid);
+}
+
+/**
+ * Register everything a readiness announcement names, at the instant it is
+ * parsed — before any caller can assert on it.
+ *
+ * The two call sites this replaces pushed `serverPid` *after* their assertions
+ * about the announcement. The server that pid names already exists by then:
+ * SERVER_UP happened before the daemon printed the line. So a failing phase
+ * assertion left a live `restate-server` that the registry had never heard of,
+ * and the passive leak check could not see it — `spawned.filter(isAlive)`
+ * cannot report a pid nobody recorded. Registering here closes the window as a
+ * class rather than at two remembered call sites.
+ */
+function trackAnnounced(announced: ReadyLine): void {
+  trackPid(announced.pid);
+  trackPid(announced.serverPid);
+}
+
+/** Pids the L4 probe deliberately abandons; see the probe for why. */
+const deliberatelyLeaked = new Set<number>();
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+/**
+ * Kill what the tests left running, gracefully first (L2).
+ *
+ * SIGTERM before SIGKILL, and it matters here more than it usually does: a
+ * registered pid may be a *daemon*, and a daemon that receives SIGTERM runs
+ * the supervised shutdown that reaps its own `restate-server` — the very
+ * behaviour these drills exist to prove. SIGKILLing it outright would bypass
+ * that shutdown and strand the server, minting the orphan this packet exists
+ * to close, and it would be worst exactly when the file never learned the
+ * server's pid (a failure before the announcement). A bare listener and a
+ * server both die on SIGTERM just as well, so nothing is lost by asking
+ * politely; the escalation to SIGKILL covers a process that hangs.
+ *
+ * Runs before the roots are removed, because a daemon unwinding gracefully
+ * still owns its root while it does so.
+ */
+async function sweepSpawned(): Promise<number[]> {
+  const signalled: number[] = [];
+  const survivors = spawned.filter(isAlive);
+  for (const pid of survivors) {
+    try {
+      process.kill(pid, "SIGTERM");
+      signalled.push(pid);
+    } catch {
+      // exited between the liveness probe and the signal
+    }
+  }
+  // Bounded wait, then escalate only for what is still holding on.
+  for (let attempt = 0; attempt < 20 && signalled.some(isAlive); attempt += 1) {
+    await sleep(100);
+  }
+  for (const pid of signalled.filter(isAlive)) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // gone during the wait
+    }
+  }
+  return signalled;
+}
+
+afterEach(async () => {
+  // Processes first, roots second — see `sweepSpawned`.
+  const signalled = await sweepSpawned();
   for (const name of scenarios.splice(0)) removeScenarioRoot(name);
   rmSync(daemonRootPath(), { recursive: true, force: true });
+
+  // L3(a): on a green run the sweep has nothing to do, and saying so per test
+  // is what makes a leak attributable — this throws inside the failing drill's
+  // own teardown, naming it, instead of surfacing as an anonymous total at the
+  // end of the file. If the daemon ever stops reaping its own server, this
+  // notices rather than masking it.
+  //
+  // The named exemption lives here, beside the law it bends: the L4 probe
+  // below deliberately abandons one cheap listener to prove this sweep
+  // actually kills things, and registers that pid in `deliberatelyLeaked`. It
+  // is the only exemption, and it sits next to the assertion so the two cannot
+  // drift apart.
+  const unexpected = signalled.filter((pid) => !deliberatelyLeaked.has(pid));
+  expect(unexpected).toEqual([]);
 });
 
 afterAll(() => {
@@ -75,13 +167,23 @@ afterAll(() => {
   // a check that runs while later drills still have children would report a
   // number that is true and meaningless.
   const alive = spawned.filter(isAlive);
+  // L3(b), the detection backstop: `spawned` can only speak for pids this file
+  // learned, and the residual risk is precisely the one it never did — a server
+  // started by a daemon that died before announcing. Asking the machine which
+  // processes are running the pinned binary covers that blind spot from the
+  // other side. Detection, not a pattern kill: a non-empty answer fails and
+  // names the pids, and terminating a process this file does not own is the
+  // DT's call under the standing incident protocol, not a test's.
+  const strayServers = restateServerPids();
   const receipt = {
     drill: "D-LEAK-FINAL",
     processesChecked: spawned.length,
     stillAlive: alive.length,
+    strayServersByBinary: strayServers.length,
   };
   process.stdout.write("RECEIPT " + JSON.stringify(receipt) + "\n");
   expect(alive).toEqual([]);
+  expect(strayServers).toEqual([]);
 });
 
 function isAlive(pid: number): boolean {
@@ -138,7 +240,7 @@ function startChild(config: string): { child: ChildProcess; ready: Promise<Ready
     stdio: ["ignore", "pipe", "pipe"],
     cwd: PACKAGE_ROOT,
   });
-  if (child.pid !== undefined) spawned.push(child.pid);
+  trackPid(child.pid);
 
   const lines: string[] = [];
   const ready = new Promise<ReadyLine>((resolvePromise, rejectPromise) => {
@@ -151,7 +253,13 @@ function startChild(config: string): { child: ChildProcess; ready: Promise<Ready
         const line = buffer.slice(0, index).trim();
         buffer = buffer.slice(index + 1);
         if (line !== "") lines.push(line);
-        if (line.includes('"ready"')) resolvePromise(JSON.parse(line) as ReadyLine);
+        if (line.includes('"ready"')) {
+          const announced = JSON.parse(line) as ReadyLine;
+          // Registered before the promise resolves, so no caller can assert
+          // between learning a pid and recording it.
+          trackAnnounced(announced);
+          resolvePromise(announced);
+        }
         index = buffer.indexOf("\n");
       }
     });
@@ -418,7 +526,6 @@ describe("the Restate mode", () => {
     expect(order.indexOf("SERVER_UP")).toBeLessThan(order.indexOf("ENDPOINT_UP"));
     expect(order.indexOf("RECONCILED")).toBeLessThan(order.indexOf("READY"));
     expect(announced.serverPid).not.toBeNull();
-    if (announced.serverPid !== null) spawned.push(announced.serverPid);
 
     child.kill("SIGTERM");
     expect((await closed(child)).code).toBe(0);
@@ -434,7 +541,6 @@ describe("the Restate mode", () => {
     const announced = await ready;
     expect(announced.serverPid).not.toBeNull();
     const serverPid = announced.serverPid ?? -1;
-    spawned.push(serverPid);
 
     // Kill exactly the server, by the pid the daemon published. Nothing broad,
     // nothing pattern-matched across the machine.
@@ -484,7 +590,7 @@ describe("the Restate mode", () => {
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
-    if (holder.pid !== undefined) spawned.push(holder.pid);
+    trackPid(holder.pid);
     await new Promise<void>((resolvePromise) => {
       holder.stdout.on("data", (chunk: Buffer) => {
         if (chunk.toString("utf8").includes("bound")) resolvePromise();
@@ -549,4 +655,51 @@ describe("a server that never reaches readiness", () => {
       await expect(portIsFree(port)).resolves.toBe(true);
     }
   }, 180_000);
+});
+
+
+/**
+ * The teardown's own drill (P8-9-1b, L4).
+ *
+ * Every drill above stops what it starts, so on a green run the sweep has
+ * nothing to do and its kill path never executes. That is exactly how a
+ * teardown rots: it looks correct for as long as nothing needs it. This spawns
+ * a cheap listener through the same registration helper the real drills use,
+ * abandons it deliberately — the shape of a drill that threw before its
+ * cleanup — and the next test checks the pid.
+ *
+ * Scope, so nobody reads more into it: this covers a failure *inside* the run,
+ * where hooks still execute. It does not cover the death of the runner itself;
+ * in a hard kill of the vitest process no hook runs at all, and that path
+ * belongs to the roadmap's pool/provenance law, not here.
+ */
+describe("the teardown sweeps what no drill stopped", () => {
+  let sweptPid: number | null = null;
+
+  it("leaves a registered process alive when nothing stops it", async () => {
+    const abandoned = spawn(process.execPath, ["-e", "console.log('up'); setInterval(() => {}, 1000);"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    // The same helper every real spawn registers through: if registration were
+    // broken, it would be broken here too.
+    trackPid(abandoned.pid);
+    sweptPid = abandoned.pid ?? null;
+    if (sweptPid === null) throw new Error("expected the abandoned process to have a pid");
+    // Declared to the afterEach's assertion, which is the only exemption from
+    // "the sweep had nothing to do" in this file.
+    deliberatelyLeaked.add(sweptPid);
+
+    await new Promise<void>((resolvePromise) => {
+      abandoned.stdout.on("data", (chunk: Buffer) => {
+        if (chunk.toString("utf8").includes("up")) resolvePromise();
+      });
+    });
+    expect(isAlive(sweptPid)).toBe(true);
+    // Deliberately not stopped.
+  }, 30_000);
+
+  it("has killed it by the next test, with no drill having stopped it", () => {
+    if (sweptPid === null) throw new Error("the probe above did not record a pid");
+    expect(String(sweptPid) + ":" + String(isAlive(sweptPid))).toBe(String(sweptPid) + ":false");
+  });
 });
