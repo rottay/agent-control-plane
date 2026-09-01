@@ -1327,7 +1327,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **417 packet entries across 164 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **433 packet entries across 178 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1336,12 +1336,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
- * 13 (P8-T-G1') + 22 (P8-T-G5) = 417 entries, with 253 duplicate entries.
+ * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) = 433 entries, with 255
+ * duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 40 duplicates = 40   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 41 duplicates = 41   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  ×  9 duplicates =  9   (the lockfile)
  *   3 paths ×  7 duplicates = 21   (`docs/ROADMAP.md`, the routes source and
  *                                   the build-server drill suite)
@@ -1350,13 +1351,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *   6 paths ×  5 duplicates = 30   (the api-contracts route and parity surface
  *                                   with its parity suite, the UI's api client
  *                                   and app root, and the workspace file)
- *   4 paths ×  4 duplicates = 16   (the initiatives suite, the UI manifest, the
- *                                   UI styles sheet and the accounts-view suite)
- *  10 paths ×  3 duplicates = 30
+ *   5 paths ×  4 duplicates = 20   (the contracts schema barrel, the initiatives
+ *                                   suite, the UI manifest, the UI styles sheet
+ *                                   and the accounts-view suite)
+ *   9 paths ×  3 duplicates = 27
  *  15 paths ×  2 duplicates = 30
  *  47 paths ×  1 duplicate  = 47
  *
- * 40 + 9 + 21 + 30 + 30 + 16 + 30 + 30 + 47 = 253.
+ * 41 + 9 + 21 + 30 + 30 + 20 + 27 + 30 + 47 = 255.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1530,6 +1532,24 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * README, the daemon's entry point, its Restate mode and its fallback suite,
  * and `tsconfig.base.json`. That is why the ×1 row reads 43 → 47 rather than
  * 43 → 50: three of its members left as seven arrived.
+ *
+ * P8-T-G6 adds **fourteen** distinct paths and only two duplicates, which is
+ * the cleanest shape in the phase and follows directly from what the packet is:
+ * a subdivision creates files and revisits almost nothing. The fourteen are the
+ * capability modules the schemas file's own section bands became. The two
+ * duplicates are this file's row, 40 → 41, and the schemas barrel's, which steps
+ * from the ×3 row to the ×4 row — which is why ×4 reads five paths and ×3 nine,
+ * one arithmetic fact and not two.
+ *
+ * Distinct moves 164 → 178 and entries 417 → 433, so duplicates move only
+ * 253 → 255. That a sixteen-entry packet adds two duplicates is the signature of
+ * work that adds surface rather than reaching back into it, and it is the same
+ * signature P8-10a had for the operations pages.
+ *
+ * Nothing else moves, because nothing else was touched: `src/index.ts`, the
+ * package's public entry point, is byte-identical to its pre-packet bytes and is
+ * deliberately absent from the array. An in-place subdivision that had to edit
+ * the public barrel would not have been in place.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -2736,6 +2756,43 @@ const P8T_G5_WRITE_SET = [
 ];
 
 /**
+ * P8-T G6: contracts subdivided in place, the barrel byte-stable.
+ *
+ * The 1,888-line schemas file already carried fourteen named section bands, so
+ * the subdivision follows the file's own declared capabilities and invents
+ * nothing: each band becomes a folder/index module, and `schemas/index.ts`
+ * becomes a pure re-export barrel.
+ *
+ * The public barrel `src/index.ts` is **not** in this list, and that is the
+ * packet's whole claim: a subdivision that had to touch the package's public
+ * entry point would not have been in-place. It is byte-identical to base HEAD,
+ * and the export pin below is what makes "byte-stable" checkable rather than
+ * asserted.
+ *
+ * Fourteen of these sixteen are novel in the phase — they are new files. The
+ * other two, the schemas barrel and this fence, are P8-owned already and ride
+ * as duplicates.
+ */
+const P8T_G6_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/credential-guards/index.ts",
+  "packages/kernel/contracts/src/schemas/worker-identity/index.ts",
+  "packages/kernel/contracts/src/schemas/lifecycle/index.ts",
+  "packages/kernel/contracts/src/schemas/shared-references/index.ts",
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/kernel/contracts/src/schemas/worker-slot/index.ts",
+  "packages/kernel/contracts/src/schemas/checkpoint/index.ts",
+  "packages/kernel/contracts/src/schemas/control-plane-event/index.ts",
+  "packages/kernel/contracts/src/schemas/commit-authorization/index.ts",
+  "packages/kernel/contracts/src/schemas/account-record/index.ts",
+  "packages/kernel/contracts/src/schemas/durability-plane/index.ts",
+  "packages/kernel/contracts/src/schemas/initiatives/index.ts",
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3032,6 +3089,7 @@ const WRITE_SET = [
   ...P8T_G0_WRITE_SET,
   ...P8T_G1_WRITE_SET,
   ...P8T_G5_WRITE_SET,
+  ...P8T_G6_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3594,6 +3652,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the runtime domain's import purity", scope: "packages/domains/runtime/{src,test}/**" },
   { law: "the Restate edge's import purity", scope: "packages/edges/durability/{src,test}/**" },
   { law: "the Restate SDK is named by import in one package only", scope: "every tracked .ts/.tsx/.mjs/.js" },
+  { law: "the contracts schema barrel holds only re-exports", scope: "packages/kernel/contracts/src/schemas/index.ts" },
   { law: "a supervised process imports only what it is allowed", scope: "packages/entrypoints/daemon/{src,test}/**" },
   { law: "no module spawns for plutil", scope: "packages/entrypoints/daemon/src/launchd/**" },
   { law: "the packaged entry reads no environment", scope: "packages/entrypoints/daemon/src/bin/**" },
@@ -7088,6 +7147,161 @@ if (accountsIndex === null) {
       }
     }
     notes.push(durabilityExported.size + " durability exports, pinned by equality");
+  }
+
+  // --- the contracts schema surface, pinned across the G6 subdivision --------
+  //
+  // G6 split `schemas/index.ts` into fourteen capability modules and left the
+  // barrel behind as pure re-exports. The whole claim of an *in-place*
+  // subdivision is that the package's surface did not move, and a claim that
+  // nothing can falsify is not a claim: this is the pre-split exported-name set,
+  // written out as a literal and asserted by equality in both directions.
+  //
+  // 82 names. The pre-split file carried 126 exported *declaration lines*, which
+  // is the same surface counted differently — 44 of the names are the zod
+  // `const X` / `type X` pair declared on two lines, and 82 + 44 = 126. The set
+  // is what governs; the line count is an artifact of the idiom.
+  const CONTRACTS_SCHEMA_EXPORTS = [
+  "ACCOUNT_ACTIONS",
+  "ACCOUNT_ACTION_NOTE_MAX",
+  "ACCOUNT_ACTION_STATE",
+  "AccountAction",
+  "AccountActionEvent",
+  "AccountActionRecord",
+  "AccountRecord",
+  "AccountStatus",
+  "ArtifactRef",
+  "AuthMode",
+  "CHECKPOINT_MAX_BYTES",
+  "CLI_SUBSCRIPTION_PROVIDERS",
+  "CONTRACT_VERSION",
+  "CONTROL_PLANE_EVENT_TYPES",
+  "Checkpoint",
+  "CommitAuthorizationReceipt",
+  "CommitPolicy",
+  "ConfidenceLevel",
+  "ControlPlaneEvent",
+  "ControlPlaneEventType",
+  "DRIVER_HEALTH_STATES",
+  "DRIVER_MODES",
+  "DriverHealth",
+  "DriverMode",
+  "DriverStatus",
+  "EVENT_PAYLOAD_MAX_BYTES",
+  "EXCEPTIONAL_STATES",
+  "EXECUTION_REFUSALS",
+  "ExceptionalState",
+  "ExecutionEvent",
+  "ExecutionRefusal",
+  "ExecutionRefused",
+  "ExecutionRequest",
+  "ExecutionSession",
+  "GuardViolation",
+  "HealthProbe",
+  "INITIATIVE_EVENT_TYPES",
+  "INITIATIVE_STATUSES",
+  "IdempotencyCoordinates",
+  "Initiative",
+  "InitiativeEvent",
+  "InitiativeEventType",
+  "InitiativeIdempotencyCoordinates",
+  "InitiativeStatus",
+  "LIFECYCLE_STATES",
+  "Lease",
+  "LifecycleState",
+  "LocalAuthReference",
+  "ModelExecutionPort",
+  "PathDigest",
+  "RECONCILIATION_VERDICTS",
+  "RESUMABLE_VERDICTS",
+  "ROADMAP_CONTENT_MAX_BYTES",
+  "ROADMAP_VERSION_KINDS",
+  "ReconciliationDiscrepancy",
+  "ReconciliationReport",
+  "ReconciliationVerdict",
+  "ResolvedRoute",
+  "RoadmapVersion",
+  "RoadmapVersionKind",
+  "TERMINAL_STATES",
+  "TRANSPORT_KINDS",
+  "TaskClassification",
+  "TaskEnvelope",
+  "TaskState",
+  "TransportKind",
+  "WORKER_IDENTITY_PATTERN",
+  "WORKER_ROLES",
+  "WorkerIdentity",
+  "WorkerIdentityString",
+  "WorkerRole",
+  "WorkerSlot",
+  "buildIdempotencyKey",
+  "buildInitiativeIdempotencyKey",
+  "findCredentialViolations",
+  "findTranscriptViolations",
+  "formatWorkerIdentity",
+  "isExceptionalState",
+  "isLifecycleState",
+  "parseWorkerIdentity",
+  "serializedByteLength",
+  "utf8ByteLength",
+  ];
+
+  const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
+  if (schemasBarrel === null) {
+    fail("packages/kernel/contracts/src/schemas/index.ts is missing");
+  } else {
+    const reExport = /export\s+(type\s+)?\{([^}]*)\}\s+from\s+["'][^"']+["'];/g;
+    const exported = new Set();
+    const typeExported = new Set();
+    for (const block of schemasBarrel.matchAll(reExport)) {
+      for (const piece of (block[2] ?? "").split(",")) {
+        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
+        if (name === undefined || name === "") continue;
+        exported.add(name);
+        if (block[1] !== undefined) typeExported.add(name);
+      }
+    }
+    for (const name of exported) {
+      if (!CONTRACTS_SCHEMA_EXPORTS.includes(name)) {
+        fail("the contracts schema barrel exports " + name + ", which the G6 pin does not name");
+      }
+    }
+    for (const name of CONTRACTS_SCHEMA_EXPORTS) {
+      if (!exported.has(name)) {
+        fail("the contracts schema barrel no longer exports the pinned name " + name);
+      }
+    }
+
+    // (C1, adjudicated) Name-set equality alone cannot see a re-export replaced
+    // by a local definition: the name would still be exported, from a second
+    // authority. The purity law is what keeps single-authority durable rather
+    // than true-on-one-run — the barrel may hold export-from statements and
+    // comments, and nothing else.
+    const withoutComments = schemasBarrel
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    const residue = withoutComments
+      .replace(reExport, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    let definitions = 0;
+    for (const line of residue) {
+      definitions += 1;
+      fail(
+        "the contracts schema barrel is not a pure barrel; it holds: " +
+          (line.length > 72 ? line.slice(0, 72) + "…" : line),
+      );
+    }
+    requireScope("the contracts schema barrel holds only re-exports", exported.size);
+    if (definitions === 0) {
+      notes.push(
+        exported.size +
+          " contracts schema exports across 14 capability modules, pinned by equality (" +
+          typeExported.size +
+          " type-only); the barrel defines nothing",
+      );
+    }
   }
 
 // The P3D deep aliases: exactly two, pointing at exactly these two modules, and
