@@ -36,6 +36,12 @@ import { useAsyncResource } from "../../hooks/use-async-resource/index.js";
  * and `onOpenChange` model any number, so the workspace owns the open state
  * and every trigger is a plain button that sets it.
  *
+ * That choice has one consequence this component has to answer for, and does
+ * (P8-9-4): Radix restores focus on close to its `Trigger`, and a dialog with
+ * no trigger restored nothing, dropping keyboard focus at the document body.
+ * The content below captures whichever control opened it and focuses that
+ * again on close.
+ *
  * **The body is a separate component, mounted only while open.** Its content
  * fetch (the pre-fill) and its draft state both live there, so opening the
  * dialog is what starts the fetch and closing it is what discards the draft
@@ -197,13 +203,56 @@ export function EditRoadmapDialog({
   onGranted,
 }: EditRoadmapDialogProps): JSX.Element {
   const title = kind === "ROLLBACK" ? "Restore " + (restoresVersionLabel ?? "a version") : "Edit the roadmap";
+  // The control that opened this dialog, captured on open and focused again on
+  // close. See the handlers below for why the capture lives there.
+  const openerRef = useRef<HTMLElement | null>(null);
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       {open ? (
         <Dialog.Portal>
           <Dialog.Overlay className="dialog__overlay" />
-          <Dialog.Content className="dialog__content" aria-describedby="edit-roadmap-description">
+          <Dialog.Content
+            className="dialog__content"
+            aria-describedby="edit-roadmap-description"
+            // Focus restore (P8-9-4). Radix's modal content composes a
+            // default `onCloseAutoFocus` that always `preventDefault()`s the
+            // focus-scope restore and focuses `context.triggerRef.current?.`
+            // instead — and this dialog is fully controlled with no
+            // `Dialog.Trigger`, so that optional chain is a no-op and nothing
+            // was focused on close: keyboard focus fell to the document body,
+            // in a real browser exactly as in the tests below.
+            //
+            // The opener is captured here, in `onOpenAutoFocus`, because it is
+            // the one self-contained place whose ordering is guaranteed: the
+            // focus scope reads `document.activeElement` before dispatching
+            // this event and before focusing the first field, so inside this
+            // handler the active element is still whatever opened the dialog.
+            // A parent `useEffect` would be too late — a child's passive
+            // effects run first, so it would capture the dialog's own first
+            // field and reproduce the defect with extra steps — and a
+            // `useLayoutEffect` would run on every static render of the
+            // workspace, where these components render closed, exposing the
+            // SSR warning class this project's zero-stderr law forbids.
+            //
+            // `onOpenAutoFocus` fires on every open, so the capture refreshes
+            // itself and no staleness guard is needed here: do not add one.
+            // Nothing is prevented in this handler — Radix still moves focus
+            // into the dialog, which is the behaviour we want.
+            //
+            // If the captured element has left the document by the time the
+            // dialog closes, `focus()` is a no-op and focus stays where Radix
+            // left it. That is named rather than papered over with a synthetic
+            // fallback: inventing a destination would be guessing on the
+            // operator's behalf.
+            onOpenAutoFocus={() => {
+              openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            }}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              openerRef.current?.focus();
+            }}
+          >
             <Dialog.Title className="dialog__title">{title}</Dialog.Title>
             <Dialog.Description id="edit-roadmap-description" className="dialog__description">
               {kind === "ROLLBACK"

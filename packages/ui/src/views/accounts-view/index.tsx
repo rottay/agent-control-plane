@@ -6,7 +6,7 @@ import {
   type AccountsResponse,
 } from "@acp/api-contracts";
 import * as Dialog from "@radix-ui/react-dialog";
-import { useState, type JSX } from "react";
+import { useRef, useState, type JSX } from "react";
 
 import { fetchAccounts, postAccountAction } from "../../api/client/index.js";
 import { AsyncSection } from "../../components/async-section/index.js";
@@ -503,6 +503,10 @@ interface AccountActionDialogProps {
  * fresh draft rather than carrying the previous action's fields over.
  */
 function AccountActionDialog({ account, action, onClose, onGranted }: AccountActionDialogProps): JSX.Element {
+  // The row button that opened this dialog, captured on open and focused again
+  // on close. See the handlers below for why the capture lives there.
+  const openerRef = useRef<HTMLElement | null>(null);
+
   return (
     <Dialog.Root
       open={action !== null}
@@ -513,7 +517,39 @@ function AccountActionDialog({ account, action, onClose, onGranted }: AccountAct
       }}
     >
       <Dialog.Overlay className="dialog__overlay" />
-      <Dialog.Content className="dialog__content" aria-describedby="account-action-description">
+      <Dialog.Content
+        className="dialog__content"
+        aria-describedby="account-action-description"
+        // Focus restore (P8-9-4). Same defect and same seam as the roadmap
+        // edit dialog: Radix's modal content composes a default
+        // `onCloseAutoFocus` that `preventDefault()`s the focus-scope restore
+        // and focuses `context.triggerRef.current?.`, and this dialog is fully
+        // controlled with no `Dialog.Trigger`, so nothing was focused on close
+        // and keyboard focus fell to the document body.
+        //
+        // Captured in `onOpenAutoFocus` because that is the one self-contained
+        // place whose ordering holds: the focus scope reads
+        // `document.activeElement` before dispatching this event and before
+        // focusing the first control, so here it is still the row button that
+        // opened the dialog. That matters more here than anywhere — every row
+        // has its own action buttons, so there is no single opener a ref
+        // threaded from the view could name. A parent `useEffect` captures too
+        // late (the child's passive effects run first) and a `useLayoutEffect`
+        // runs on the workspace's static renders, where this component renders
+        // closed.
+        //
+        // The capture refreshes on every open, so no staleness guard is needed:
+        // do not add one. If the captured button has left the document by close
+        // time — a row that vanished from the refreshed table — `focus()` is a
+        // no-op and focus stays where Radix left it, named rather than faked.
+        onOpenAutoFocus={() => {
+          openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          openerRef.current?.focus();
+        }}
+      >
         <Dialog.Title className="dialog__title">
           {action !== null ? ACTION_LABEL[action] : ""} — {account.accountId}
         </Dialog.Title>

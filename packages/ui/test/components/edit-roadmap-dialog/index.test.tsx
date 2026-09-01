@@ -205,6 +205,18 @@ describe("EditRoadmapDialog — the open form (blueprint v2 §3-§4)", () => {
   });
 });
 
+/**
+ * The focus restore is dispatched from a `setTimeout(0)` inside the focus
+ * scope's cleanup, so a microtask flush is not enough to observe it — `settle`
+ * alone would read `activeElement` before the restore had run and report the
+ * defect this packet fixed.
+ */
+async function settleRestore(): Promise<void> {
+  await settle();
+  await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 0));
+  await settle();
+}
+
 describe("EditRoadmapDialog — keyboard (P8-9-3, N3)", () => {
   it("Escape closes the dialog", async () => {
     // A stateful wrapper, not a plain variable reassigned by `onOpenChange`:
@@ -257,14 +269,22 @@ describe("EditRoadmapDialog — keyboard (P8-9-3, N3)", () => {
   // FocusScope restore and focuses `context.triggerRef.current?.` instead.
   // This dialog is fully controlled and has no `Dialog.Trigger`, so that
   // optional chain is a no-op and nothing is focused on close — in a real
-  // browser exactly as here. Closing therefore strands keyboard focus at the
-  // document body, in production, and the same mechanism applies to every
-  // fully-controlled triggerless Radix dialog in this UI, the accounts action
-  // dialog included. That is a product defect, not a harness limitation, and
-  // it is registered for its own adjudicated fix (P8-9-4) rather than being
-  // fixed here: the natural remedy is an `onCloseAutoFocus` that restores to
-  // the opener control, which needs an opener ref the workspace owns, and
-  // that is a `src/` design decision this packet has no authority over.
+  // browser exactly as here — closing stranded keyboard focus at the document
+  // body, in production, for every fully-controlled triggerless Radix dialog
+  // in this UI.
+  //
+  // **Fixed in P8-9-4**, and the tests below assert it. Both dialogs now
+  // declare their own `onCloseAutoFocus` that prevents Radix's default and
+  // focuses an opener captured in `onOpenAutoFocus` — the one self-contained
+  // place whose ordering holds, since the focus scope reads
+  // `document.activeElement` there before moving focus into the dialog. The
+  // capture was chosen over an opener ref threaded from the workspace because
+  // the real topology is multi-opener: this dialog opens from the head
+  // version's Edit and from every history row's Restore, and the accounts
+  // dialog from each row's buttons. The restore is asynchronous by
+  // construction — the focus scope dispatches it from a `setTimeout(0)` in its
+  // cleanup — so every assertion below flushes a macrotask after closing
+  // before it reads `activeElement`.
   it("contains the Tab cycle at both edges: Tab on the last tabbable wraps to the first, and Shift+Tab on the first wraps to the last", async () => {
     renderIntoDocument(
       <EditRoadmapDialog
@@ -310,6 +330,142 @@ describe("EditRoadmapDialog — keyboard (P8-9-3, N3)", () => {
     pressKey(first, "Tab", { shiftKey: true });
     await settle();
     expect(document.activeElement).toBe(last);
+  });
+
+  // F4(a): the multi-opener case, which is the whole reason the opener is
+  // captured rather than threaded down as a prop. One dialog instance is
+  // opened from two different controls; focus has to come back to the one
+  // that actually opened it, not to a single "the" opener the workspace
+  // happened to name.
+  it("returns focus to the history row's Restore button that opened it, not to the head Edit", async () => {
+    function MultiOpenerHost(): JSX.Element {
+      const [open, setOpen] = useState(false);
+      return (
+        <div>
+          <button
+            type="button"
+            id="edit-head"
+            onClick={() => {
+              setOpen(true);
+            }}
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            id="restore-row"
+            onClick={() => {
+              setOpen(true);
+            }}
+          >
+            Restore this version
+          </button>
+          <EditRoadmapDialog
+            open={open}
+            onOpenChange={setOpen}
+            initiativeId={INITIATIVE_ID}
+            kind="ROLLBACK"
+            prefillVersion={null}
+            expectedHeadDigest={null}
+            restoresVersionId={null}
+            restoresVersionLabel="v3"
+            onGranted={noop}
+          />
+        </div>
+      );
+    }
+    const mounted = renderIntoDocument(<MultiOpenerHost />);
+    const restoreRow = mounted.container.querySelector<HTMLButtonElement>("#restore-row");
+    const editHead = mounted.container.querySelector<HTMLButtonElement>("#edit-head");
+    if (restoreRow === null || editHead === null) throw new Error("expected both openers");
+
+    // Opened from the row, with focus on the row — the way a keyboard operator
+    // reaches it.
+    restoreRow.focus();
+    expect(document.activeElement).toBe(restoreRow);
+    await clickAndSettle(restoreRow);
+
+    const dialogEl = document.body.querySelector('[role="dialog"]');
+    if (dialogEl === null) throw new Error("expected the portaled dialog content");
+    // Radix moved focus into the dialog, so the restore has something to undo.
+    expect(dialogEl.contains(document.activeElement)).toBe(true);
+
+    pressKey(dialogEl, "Escape");
+    await settleRestore();
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(restoreRow);
+    expect(document.activeElement).not.toBe(editHead);
+  });
+
+  // F4(c): F3's no-op as a test rather than only a comment. If the captured
+  // opener is gone by close time — a row that vanished from a refreshed
+  // list — the restore does nothing and focus stays where Radix left it. The
+  // point is that this is a documented outcome, not a crash.
+  it("does not throw when the captured opener has left the document, and invents no destination", async () => {
+    function VanishingOpenerHost(): JSX.Element {
+      const [open, setOpen] = useState(false);
+      const [openerPresent, setOpenerPresent] = useState(true);
+      return (
+        <div>
+          {openerPresent ? (
+            <button
+              type="button"
+              id="vanishing"
+              onClick={() => {
+                setOpen(true);
+              }}
+            >
+              Open
+            </button>
+          ) : null}
+          <button
+            type="button"
+            id="remove-opener"
+            onClick={() => {
+              setOpenerPresent(false);
+            }}
+          >
+            Remove the opener
+          </button>
+          <EditRoadmapDialog
+            open={open}
+            onOpenChange={setOpen}
+            initiativeId={INITIATIVE_ID}
+            kind="EDIT"
+            prefillVersion={null}
+            expectedHeadDigest={null}
+            restoresVersionId={null}
+            restoresVersionLabel={null}
+            onGranted={noop}
+          />
+        </div>
+      );
+    }
+    const mounted = renderIntoDocument(<VanishingOpenerHost />);
+    const vanishing = mounted.container.querySelector<HTMLButtonElement>("#vanishing");
+    const remove = mounted.container.querySelector<HTMLButtonElement>("#remove-opener");
+    if (vanishing === null || remove === null) throw new Error("expected both buttons");
+
+    vanishing.focus();
+    await clickAndSettle(vanishing);
+    const dialogEl = document.body.querySelector('[role="dialog"]');
+    if (dialogEl === null) throw new Error("expected the portaled dialog content");
+
+    // The opener is unmounted while the dialog is open.
+    await clickAndSettle(remove);
+    expect(vanishing.isConnected).toBe(false);
+
+    pressKey(dialogEl, "Escape");
+    await settleRestore();
+
+    // Closed, and no throw reached the test — `focus()` on a detached element
+    // is a no-op, which is exactly the documented outcome.
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    // Focus is wherever Radix left it, and specifically not on the element
+    // that no longer exists. Nothing synthetic was invented for it.
+    expect(document.activeElement).not.toBe(vanishing);
+    expect(document.activeElement).not.toBeNull();
   });
 });
 

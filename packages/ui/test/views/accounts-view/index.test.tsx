@@ -512,6 +512,16 @@ describe("live-DOM battery: the account action end-to-end (blueprint v2 item 3)"
     return { container: mounted.container, fake };
   }
 
+  /**
+   * The focus restore is dispatched from a `setTimeout(0)` inside the focus
+   * scope's cleanup, so a microtask flush reads `activeElement` too early.
+   */
+  async function settleRestore(): Promise<void> {
+    await settle();
+    await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 0));
+    await settle();
+  }
+
   function drainButton(container: HTMLElement): HTMLButtonElement {
     const found = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Drain");
     if (found === undefined) throw new Error("expected a Drain button");
@@ -543,7 +553,13 @@ describe("live-DOM battery: the account action end-to-end (blueprint v2 item 3)"
 
     expect(container.textContent).not.toContain("operator-set");
 
-    click(drainButton(container));
+    // F4(b) setup: the row's own Drain button is focused before it is used,
+    // the way a keyboard operator reaches it — that is what the dialog
+    // captures on open, and what the close has to give back.
+    const opener = drainButton(container);
+    opener.focus();
+    expect(document.activeElement).toBe(opener);
+    click(opener);
     const actorInput = container.querySelector<HTMLInputElement>("#account-action-actor");
     if (actorInput === null) throw new Error("expected the actor input");
     typeInto(actorInput, "kimi/k3/coordinator/01");
@@ -601,11 +617,22 @@ describe("live-DOM battery: the account action end-to-end (blueprint v2 item 3)"
     const closeButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Close");
     if (closeButton === undefined) throw new Error("expected the receipt's Close button");
     click(closeButton);
+    await settleRestore();
 
     expect(container.querySelector('.dialog__outcome--granted[role="status"]')).toBeNull();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     // The refreshed, operator-set row survives the dialog closing.
     expect(container.textContent).toContain("operator-set");
+
+    // F4(b), P8-9-4: the restore composes with the refresh. The row re-rendered
+    // between opening and closing — that is the whole point of the grant — and
+    // the operator still lands back on the control they left from, rather than
+    // at the top of the document. This is the case worth asserting precisely
+    // because the refresh happens in between: if the refreshed row replaced its
+    // buttons with new elements, the captured one would be detached and this
+    // would fall to F3's no-op instead.
+    expect(document.activeElement).toBe(opener);
+    expect(opener.isConnected).toBe(true);
   });
 
   it.each([

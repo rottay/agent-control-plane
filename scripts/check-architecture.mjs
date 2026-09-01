@@ -1271,20 +1271,20 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **362 packet entries across 141 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **367 packet entries across 141 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
  * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
- * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 2 (P8-T-roadmap) = 362 entries,
- * with 221 duplicate entries.
+ * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 2 (P8-T-roadmap) =
+ * 367 entries, with 226 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 33 duplicates = 33   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 34 duplicates = 34   (`scripts/check-architecture.mjs`, every packet)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the routes source, the
  *                                   build-server drill suite, and the lockfile)
  *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
@@ -1292,18 +1292,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *   5 paths ×  5 duplicates = 25   (the api-contracts route and parity surface
  *                                   with its parity suite, and the UI's api
  *                                   client and app root)
- *   4 paths ×  4 duplicates = 16   (the initiatives suite, the UI styles sheet,
- *                                   the UI manifest and the workspace file)
- *   8 paths ×  3 duplicates = 24   (the contracts schemas, the server manifest,
- *                                   the app shell and the hash route with its
- *                                   suite, plus three suites this packet moved
- *                                   up a band: `test/views/index.test.tsx`, the
- *                                   accounts-view suite and the workspace-view
- *                                   suite)
- *  15 paths ×  2 duplicates = 30
+ *   5 paths ×  4 duplicates = 20   (the initiatives suite, the UI manifest, the
+ *                                   UI styles sheet, the accounts-view suite
+ *                                   and the workspace file)
+ *  10 paths ×  3 duplicates = 30
+ *  12 paths ×  2 duplicates = 24
  *  35 paths ×  1 duplicate  = 35
  *
- * 33 + 28 + 30 + 25 + 16 + 24 + 30 + 35 = 221.
+ * 34 + 28 + 30 + 25 + 20 + 30 + 24 + 35 = 226.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1380,6 +1376,16 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * (one duplicate) and so sat in the ×1 row; a third occurrence moves it to
  * the ×2 row, which is why that row reads 14 → 15 paths (28 → 30) while the
  * ×1 row loses the path it left: 35 → 34 (35 → 34).
+ *
+ * P8-9-4 adds **no** path either: all five of its entries are already owned —
+ * the two dialog sources and their two suites by the UI packets that wrote
+ * them, and this file by every packet — so distinct holds at 141 while the
+ * entries move 362 → 367. Its five entries land as five band moves, which is
+ * why three rows above changed shape rather than one: the accounts-view suite
+ * reaches the ×4 row, the ×3 row grows to ten paths and the ×2 row shrinks to
+ * twelve. The ×3 row's earlier parenthetical named eight paths and is dropped
+ * rather than extended: ten is more than a phrase can name honestly, and the
+ * standing note below says why a row without one is a choice.
  *
  * P8-9-1b adds **no** path: both of its entries are already owned, so distinct
  * holds at 141 while the entries move 360 → 362. Its two group steps are this
@@ -2406,6 +2412,29 @@ const P89_1B_WRITE_SET = [
 ];
 
 /**
+ * P8-9-4: focus comes back to whatever opened the dialog.
+ *
+ * The product defect P8-9-3's terminal audit found by probing the installed
+ * Radix dist: modal content composes a default `onCloseAutoFocus` that always
+ * prevents the focus-scope restore and focuses its `Trigger` instead, and both
+ * of these dialogs are fully controlled with no trigger — so closing focused
+ * nothing and dropped keyboard focus at the document body, in a real browser
+ * exactly as under jsdom. Each dialog now captures its opener in
+ * `onOpenAutoFocus`, the one self-contained place whose ordering is guaranteed,
+ * and restores to it on close. Capture rather than a threaded ref because the
+ * topology is genuinely multi-opener: the roadmap dialog opens from the head
+ * version's Edit and from every history row's Restore, the accounts dialog from
+ * each row's own buttons.
+ */
+const P89_4_WRITE_SET = [
+  "packages/ui/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/ui/src/views/accounts-view/index.tsx",
+  "packages/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/ui/test/views/accounts-view/index.test.tsx",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2695,6 +2724,7 @@ const WRITE_SET = [
   ...P89_2_WRITE_SET,
   ...P89_3_WRITE_SET,
   ...P89_1B_WRITE_SET,
+  ...P89_4_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
