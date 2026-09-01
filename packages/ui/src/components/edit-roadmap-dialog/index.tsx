@@ -11,14 +11,23 @@ import { useAsyncResource } from "../../hooks/use-async-resource/index.js";
  * The roadmap edit dialog, on `@radix-ui/react-dialog` (blueprint v2 §3,
  * C6). The plane's second interactive region and its only write surface.
  *
- * **No `Portal`, no `forceMount` (C5).** Matching the switcher's own
- * correction: `Dialog.Portal` calls `ReactDOM.createPortal`, which needs a
- * real DOM container this package's DOM-less tests do not have — omitting it
- * keeps the content in normal document flow, which Radix supports. No
- * `forceMount` means the closed dialog contributes no menu content and no
- * accessibility-isolation cascade, the exact lesson the switcher's
- * correction wrote into law: closed-content mounting is forbidden by name,
- * everywhere in this cohort.
+ * **`Dialog.Portal`, adopted (P8-9-3, D7/C4).** The earlier absence was
+ * never a claim that a portal was wrong — `ReactDOMServer` does not render
+ * portals at all, and this package's only DOM was a string, so a portaled
+ * dialog would have been invisible to every assertion this file had.
+ * Live-DOM evidence (P8-9-2) removed that constraint, and the DT's own
+ * register carried the adoption forward for exactly this cohort to close.
+ * The pre-adoption shape was swept for aria-hidden correctness first (its
+ * own test, `test/components/edit-roadmap-dialog/index.test.tsx`) and the
+ * result — siblings already read `aria-hidden="true"` while the dialog is
+ * open, because Radix's isolation walks up to `document.body` and hides
+ * siblings there regardless of where the dialog's own content physically
+ * mounts — is unchanged after adoption, re-swept by the same function. No
+ * `forceMount`, still: the closed dialog contributes no content and no
+ * accessibility-isolation cascade, the lesson the switcher's own correction
+ * wrote into law, and closed-content mounting stays forbidden by name
+ * everywhere in this cohort — Portal changes *where* the open dialog's
+ * content lives, never *whether* the closed dialog exists at all.
  *
  * **Fully controlled, no `Dialog.Trigger`.** The workspace opens this one
  * dialog instance from several places — the head version's "Edit" button and
@@ -191,28 +200,30 @@ export function EditRoadmapDialog({
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Overlay className="dialog__overlay" />
-      <Dialog.Content className="dialog__content" aria-describedby="edit-roadmap-description">
-        <Dialog.Title className="dialog__title">{title}</Dialog.Title>
-        <Dialog.Description id="edit-roadmap-description" className="dialog__description">
-          {kind === "ROLLBACK"
-            ? "Records a new version carrying " + (restoresVersionLabel ?? "the restored version") + "'s content."
-            : "Records a new version of this initiative's roadmap document."}
-        </Dialog.Description>
-        {open ? (
-          <EditRoadmapDialogBody
-            initiativeId={initiativeId}
-            kind={kind}
-            prefillVersion={prefillVersion}
-            expectedHeadDigest={expectedHeadDigest}
-            restoresVersionId={restoresVersionId}
-            onGranted={onGranted}
-            onClose={() => {
-              onOpenChange(false);
-            }}
-          />
-        ) : null}
-      </Dialog.Content>
+      {open ? (
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog__overlay" />
+          <Dialog.Content className="dialog__content" aria-describedby="edit-roadmap-description">
+            <Dialog.Title className="dialog__title">{title}</Dialog.Title>
+            <Dialog.Description id="edit-roadmap-description" className="dialog__description">
+              {kind === "ROLLBACK"
+                ? "Records a new version carrying " + (restoresVersionLabel ?? "the restored version") + "'s content."
+                : "Records a new version of this initiative's roadmap document."}
+            </Dialog.Description>
+            <EditRoadmapDialogBody
+              initiativeId={initiativeId}
+              kind={kind}
+              prefillVersion={prefillVersion}
+              expectedHeadDigest={expectedHeadDigest}
+              restoresVersionId={restoresVersionId}
+              onGranted={onGranted}
+              onClose={() => {
+                onOpenChange(false);
+              }}
+            />
+          </Dialog.Content>
+        </Dialog.Portal>
+      ) : null}
     </Dialog.Root>
   );
 }

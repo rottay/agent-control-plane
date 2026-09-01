@@ -4,13 +4,15 @@ import {
   type InitiativeTimelineResponse,
   type ScopedTimelineEntry,
 } from "@acp/api-contracts";
+// @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Resource } from "../../../src/hooks/use-async-resource/index.js";
 import { type Route } from "../../../src/routing/hash-route/index.js";
 import { type NavigateFn } from "../../../src/routing/use-hash-route/index.js";
 import { filterTimeline, TimelineSection, TimelineView } from "../../../src/views/timeline-view/index.js";
+import { auditAndReport, cleanupMountedRoots, clickAndSettle, renderIntoDocument, selectValue, typeInto } from "../../live-dom/index.js";
 
 const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const TASK_A = "9f2e4567-e89b-12d3-a456-426614174111";
@@ -247,5 +249,93 @@ describe("TimelineView", () => {
   it("falls back to the not-found view when the route carries no initiative id (C3)", () => {
     const html = renderToStaticMarkup(<TimelineView route={route({ initiativeId: null })} navigate={noopNavigate} />);
     expect(html).toContain("Not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-DOM battery (P8-9-3, blueprint v2 item 8, C3 restored)
+// ---------------------------------------------------------------------------
+
+afterEach(() => {
+  cleanupMountedRoots();
+});
+
+describe("live-DOM battery: filtered timeline with legible tags (blueprint v2 item 8, C3 restored)", () => {
+  it("passes the pinned axe ruleset — mixed streams, filtered, and empty", async () => {
+    const fixtures: { label: string; resource: Resource<InitiativeTimelineResponse> }[] = [
+      { label: "mixed-streams", resource: successResource(timelineResponse([taskRow(), initiativeRow()])) },
+      { label: "empty", resource: successResource(timelineResponse([])) },
+    ];
+    for (const { label, resource } of fixtures) {
+      const mounted = renderIntoDocument(
+        <TimelineSection route={route()} navigate={noopNavigate} initiativeId={INITIATIVE_ID} resource={resource} lastFetchedAt={new Date()} onRefresh={noopRefresh} />,
+      );
+      const audit = await auditAndReport("timeline-view/" + label, mounted.container);
+      expect(audit.violationIds).toEqual([]);
+      mounted.unmount();
+    }
+  });
+
+  it("stream tags stay legible in the live DOM — full text, not truncated by the render", () => {
+    const mounted = renderIntoDocument(
+      <TimelineSection
+        route={route()}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        resource={successResource(timelineResponse([taskRow(), initiativeRow()]))}
+        lastFetchedAt={new Date()}
+        onRefresh={noopRefresh}
+      />,
+    );
+    expect(mounted.container.innerHTML).toContain(">Task<");
+    expect(mounted.container.innerHTML).toContain(">Initiative<");
+    // Not an abbreviation or an ellipsis standing in for the word.
+    expect(mounted.container.textContent).not.toContain("Tas…");
+    expect(mounted.container.textContent).not.toContain("Init…");
+  });
+
+  it("applying the stream filter reduces the rendered list live, with a round-trip through the URL", async () => {
+    const navigateSpy = vi.fn();
+    const mounted = renderIntoDocument(
+      <TimelineSection
+        route={route()}
+        navigate={navigateSpy}
+        initiativeId={INITIATIVE_ID}
+        resource={successResource(timelineResponse([taskRow(), initiativeRow()]))}
+        lastFetchedAt={new Date()}
+        onRefresh={noopRefresh}
+      />,
+    );
+
+    const streamSelect = mounted.container.querySelector<HTMLSelectElement>("#timeline-stream");
+    const applyButton = mounted.container.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (streamSelect === null || applyButton === null) throw new Error("expected the stream select and the Apply button");
+    selectValue(streamSelect, "INITIATIVE");
+    await clickAndSettle(applyButton);
+
+    expect(navigateSpy).toHaveBeenCalledTimes(1);
+    expect(navigateSpy.mock.calls[0]?.[0]).toContain("stream=INITIATIVE");
+  });
+
+  it("the taskId filter is a real text field, filled by keystroke, round-tripping through the URL", async () => {
+    const navigateSpy = vi.fn();
+    const mounted = renderIntoDocument(
+      <TimelineSection
+        route={route()}
+        navigate={navigateSpy}
+        initiativeId={INITIATIVE_ID}
+        resource={successResource(timelineResponse([taskRow(), initiativeRow()]))}
+        lastFetchedAt={new Date()}
+        onRefresh={noopRefresh}
+      />,
+    );
+    const taskIdInput = mounted.container.querySelector<HTMLInputElement>("#timeline-taskId");
+    const applyButton = mounted.container.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (taskIdInput === null || applyButton === null) throw new Error("expected the task id field and the Apply button");
+    typeInto(taskIdInput, TASK_A);
+    await clickAndSettle(applyButton);
+
+    expect(navigateSpy).toHaveBeenCalledTimes(1);
+    expect(navigateSpy.mock.calls[0]?.[0]).toContain("taskId=" + TASK_A);
   });
 });

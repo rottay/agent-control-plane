@@ -4,12 +4,36 @@ import {
   type InitiativeTimelineResponse,
   type ScopedTimelineEntry,
 } from "@acp/api-contracts";
+// @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type Resource } from "../../../src/hooks/use-async-resource/index.js";
 import { type Route } from "../../../src/routing/hash-route/index.js";
 import { deriveGraph, GraphSection, GraphView, layoutGraph, type GraphEdge, type GraphNode } from "../../../src/views/graph-view/index.js";
+import { auditAndReport, cleanupMountedRoots, renderIntoDocument, settle } from "../../live-dom/index.js";
+
+/**
+ * `@xyflow/react` observes its container's size to lay out the canvas, and
+ * jsdom implements no `ResizeObserver` at all — not a partial or a stubbed
+ * one, the constructor is simply absent. A no-op stub is the standard,
+ * minimal way to let a `ResizeObserver`-using component mount under jsdom;
+ * it does not fake anything about *this* component's own behaviour, since
+ * the canvas is `aria-hidden` and never the thing being measured for
+ * evidence — the accessible causal-links list beside it is.
+ */
+class StubResizeObserver {
+  observe(): void {
+    // no-op: this battery does not assert on layout that depends on a real
+    // resize signal
+  }
+  unobserve(): void {
+    // no-op, same reason as `observe`
+  }
+  disconnect(): void {
+    // no-op, same reason as `observe`
+  }
+}
 
 const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const TASK_A = "9f2e4567-e89b-12d3-a456-426614174111";
@@ -340,5 +364,66 @@ describe("GraphView", () => {
   it("falls back to the not-found view when the route carries no initiative id (C3)", () => {
     const html = renderToStaticMarkup(<GraphView route={route({ initiativeId: null })} />);
     expect(html).toContain("Not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-DOM battery (P8-9-3, blueprint v2 item 7, C3 restored)
+// ---------------------------------------------------------------------------
+
+beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
+});
+
+afterEach(() => {
+  cleanupMountedRoots();
+  vi.unstubAllGlobals();
+});
+
+describe("live-DOM battery: the graph in empty/single/multi (blueprint v2 item 7, C3 restored)", () => {
+  it("empty: passes the pinned axe ruleset and names the explicit empty state, live", async () => {
+    const mounted = renderIntoDocument(
+      <GraphSection route={route()} initiativeId={INITIATIVE_ID} resource={successResource(timelineResponse([]))} lastFetchedAt={new Date()} onRefresh={noop} />,
+    );
+    expect(mounted.container.textContent).toContain("No tasks have been recorded on this initiative's timeline yet.");
+    const audit = await auditAndReport("graph-view/empty", mounted.container);
+    expect(audit.violationIds).toEqual([]);
+  });
+
+  it("single: passes the pinned axe ruleset, mounts the aria-hidden canvas without throwing, and names one task", async () => {
+    const mounted = renderIntoDocument(
+      <GraphSection
+        route={route()}
+        initiativeId={INITIATIVE_ID}
+        resource={successResource(timelineResponse([taskRow({ taskId: TASK_A, eventId: EVENT_1 })]))}
+        lastFetchedAt={new Date()}
+        onRefresh={noop}
+      />,
+    );
+    await settle();
+    expect(mounted.container.textContent).toContain(TASK_A.slice(0, 6));
+    // The canvas mounted, live, aria-hidden — the accessible source of truth
+    // is the list beside it, exactly as the source's own comment states.
+    const canvas = mounted.container.querySelector(".graph-canvas");
+    expect(canvas).not.toBeNull();
+    expect(canvas?.getAttribute("aria-hidden")).toBe("true");
+    const audit = await auditAndReport("graph-view/single-node", mounted.container);
+    expect(audit.violationIds).toEqual([]);
+  });
+
+  it("multi: passes the pinned axe ruleset with an edge between two tasks, live", async () => {
+    const items = [
+      taskRow({ taskId: TASK_A, eventId: EVENT_1, causationId: null }),
+      taskRow({ taskId: TASK_B, eventId: EVENT_2, causationId: EVENT_1 }),
+    ];
+    const mounted = renderIntoDocument(
+      <GraphSection route={route()} initiativeId={INITIATIVE_ID} resource={successResource(timelineResponse(items))} lastFetchedAt={new Date()} onRefresh={noop} />,
+    );
+    await settle();
+    expect(mounted.container.textContent).toContain(TASK_A.slice(0, 6));
+    expect(mounted.container.textContent).toContain(TASK_B.slice(0, 6));
+    expect(mounted.container.textContent).not.toContain("No causal link is recorded");
+    const audit = await auditAndReport("graph-view/multi-node-with-edge", mounted.container);
+    expect(audit.violationIds).toEqual([]);
   });
 });

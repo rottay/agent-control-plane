@@ -563,16 +563,22 @@ function AccountActionsCell({
           {ACTION_LABEL[action]}
         </button>
       ))}
+      {/*
+        onGranted is passed straight through — it must not also close the
+        dialog. A grant lands `AccountActionDialogBody` in its "granted"
+        phase, and closing here would unmount that phase in the same batch,
+        before AccountActionGrantedReceipt (and its sequence, in the live
+        region) ever paints. Closing stays a later, explicit act: the
+        receipt's own Close button, or Escape/overlay, both routed through
+        `onClose` below.
+      */}
       <AccountActionDialog
         account={account}
         action={openAction}
         onClose={() => {
           setOpenAction(null);
         }}
-        onGranted={() => {
-          setOpenAction(null);
-          onGranted();
-        }}
+        onGranted={onGranted}
       />
     </div>
   );

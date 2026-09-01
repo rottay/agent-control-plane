@@ -189,6 +189,20 @@ export async function auditAccessibility(container: HTMLElement): Promise<AxeAud
 }
 
 /**
+ * Run the pinned ruleset and write the result as a `RECEIPT`-style line
+ * (P8-9-3) — the landed idiom for evidence a memo quotes verbatim (see the
+ * runtime drills' own `RECEIPT` lines), rather than `console.log`. The
+ * battery's own report names its axe evidence per surface; this is where
+ * that evidence is produced, once, rather than reconstructed from a passing
+ * assertion that merely didn't throw.
+ */
+export async function auditAndReport(surface: string, container: HTMLElement): Promise<AxeAudit> {
+  const audit = await auditAccessibility(container);
+  process.stdout.write("AXE-EVIDENCE " + JSON.stringify({ surface, violationIds: audit.violationIds }) + "\n");
+  return audit;
+}
+
+/**
  * Dispatch a real `KeyboardEvent`.
  *
  * `bubbles` matters: every keyboard behaviour worth asserting — a dialog's
@@ -226,4 +240,133 @@ export function selectorJoin(container: HTMLElement, selector: string): readonly
 /** Assert a selector the stylesheet depends on still matches something. */
 export function countSelectorJoin(container: HTMLElement, selector: string): number {
   return selectorJoin(container, selector).length;
+}
+
+/**
+ * Set a form control's value the way a real keystroke or selection would,
+ * not the way a plain property assignment would (P8-9-3).
+ *
+ * React tracks `value` through a property descriptor it installs over the
+ * native one, specifically so it can tell a programmatic assignment apart
+ * from user input. Setting `element.value = x` directly writes through
+ * React's own descriptor and never reaches the native setter underneath, so
+ * React's controlled-input machinery never sees the change and no `onChange`
+ * fires. Calling the *native* setter first, then dispatching the event, is
+ * what actually reaches a React listener — this is the same trick the wider
+ * React testing ecosystem uses for exactly this reason.
+ */
+function setNativeValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string): void {
+  const prototype =
+    element instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : element instanceof HTMLSelectElement
+        ? HTMLSelectElement.prototype
+        : HTMLInputElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+  if (descriptor?.set === undefined) throw new Error("expected a native value setter");
+  const setNativeValueOnElement: (next: string) => void = descriptor.set.bind(element);
+  setNativeValueOnElement(value);
+}
+
+/** Type into a text input or textarea, the way a keystroke would. */
+export function typeInto(element: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  act(() => {
+    setNativeValue(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+/** Choose an option in a `<select>`, the way a real selection would. */
+export function selectValue(element: HTMLSelectElement, value: string): void {
+  act(() => {
+    setNativeValue(element, value);
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+/** Click, synchronously flushed. For a handler with no async work to await. */
+export function click(element: Element): void {
+  act(() => {
+    (element as HTMLElement).click();
+  });
+}
+
+/**
+ * Click and await everything the handler schedules — a fetch, its `.json()`,
+ * the state update that follows. `act`'s async form drains microtask work
+ * scheduled during the callback, which is what a fetch-driven handler needs;
+ * no `setTimeout` wait is needed because nothing in this harness's write
+ * paths uses a real timer.
+ */
+export async function clickAndSettle(element: Element): Promise<void> {
+  await act(async () => {
+    (element as HTMLElement).click();
+    // `act`'s microtask-draining behaviour is keyed to the callback being
+    // async, not to it containing an `await` of its own — the click's own
+    // handler is what schedules the work this function exists to drain.
+    await Promise.resolve();
+  });
+}
+
+/**
+ * Drain whatever a mount's own effect already scheduled — most often the
+ * fetch a view's read hook fires on its first render.
+ *
+ * An empty `act(async () => {})` still awaits every microtask React's own
+ * scheduler queued during the surrounding render, which is exactly the fetch
+ * → `.json()` → `setState` chain a view's data-loading effect starts.
+ * Reached for after `renderIntoDocument` when the battery needs the mounted
+ * view past its initial loading state, the same way `clickAndSettle` reaches
+ * for it after a click — no `setTimeout` wait, because nothing in this
+ * battery's read or write paths uses a real timer.
+ */
+export async function settle(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+export interface FakeFetchCall {
+  readonly url: string;
+  readonly method: string;
+  readonly body: unknown;
+}
+
+export interface FakeFetch {
+  /** Install this as `globalThis.fetch` via `vi.stubGlobal("fetch", fake.fetch)`. */
+  readonly fetch: typeof globalThis.fetch;
+  /** Every call this fake has answered, in order — the counting the reconnect/idempotence proof needs. */
+  readonly calls: readonly FakeFetchCall[];
+}
+
+/**
+ * A `fetch` stand-in that records every call and answers from one responder
+ * (P8-9-3, D5).
+ *
+ * `calls` is what makes a mount/remount/click count provable: the
+ * reconnect law says a render must trigger no mutation and a confirmed click
+ * must trigger exactly one, and both claims are `calls.filter(...).length`
+ * away rather than inferred from a passing assertion that merely didn't
+ * throw.
+ */
+export function fakeFetch(responder: (call: FakeFetchCall) => { status: number; body: unknown }): FakeFetch {
+  const calls: FakeFetchCall[] = [];
+  const impl = ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const method = (init?.method ?? "GET").toUpperCase();
+    let body: unknown = null;
+    if (typeof init?.body === "string") {
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        body = init.body;
+      }
+    }
+    const call: FakeFetchCall = { url, method, body };
+    calls.push(call);
+    const { status, body: responseBody } = responder(call);
+    return Promise.resolve(new Response(JSON.stringify(responseBody), { status, headers: { "content-type": "application/json" } }));
+  }) as typeof globalThis.fetch;
+
+  return { fetch: impl, calls };
 }

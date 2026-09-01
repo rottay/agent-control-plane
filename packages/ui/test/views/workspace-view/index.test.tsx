@@ -9,6 +9,11 @@ import {
   type InitiativeTaskDto,
   type RoadmapVersionDto,
 } from "@acp/api-contracts";
+// @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { type JSX } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +21,7 @@ import { fetchInitiativeDetail, fetchInitiativeRoadmap } from "../../../src/api/
 import { type Resource } from "../../../src/hooks/use-async-resource/index.js";
 import { type Route } from "../../../src/routing/hash-route/index.js";
 import { WorkspaceSection, WorkspaceSubnav, WorkspaceView } from "../../../src/views/workspace-view/index.js";
+import { auditAndReport, cleanupMountedRoots, renderIntoDocument } from "../../live-dom/index.js";
 
 const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const DIGEST_A = "a".repeat(64);
@@ -119,7 +125,11 @@ const noop = (): void => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  cleanupMountedRoots();
 });
+
+const HERE = resolve(fileURLToPath(import.meta.url), "..");
+const COMPONENTS_CSS = readFileSync(resolve(HERE, "..", "..", "..", "src", "styles", "components.css"), "utf8");
 
 describe("WorkspaceSection — the fixture renders (blueprint v2 §2)", () => {
   const html = renderToStaticMarkup(
@@ -454,5 +464,66 @@ describe("fetchInitiativeDetail / fetchInitiativeRoadmap — the redaction drill
     if (result.kind === "contract-mismatch") {
       expect(result.detail).not.toContain("sk-ant-api03-BBBBBBBBBBBBBBBBBBBB");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-DOM battery (P8-9-3, blueprint v2 item 6)
+// ---------------------------------------------------------------------------
+
+function sectionFixture(overrides: Partial<InitiativeDetail> = {}): JSX.Element {
+  return (
+    <WorkspaceSection
+      route={route()}
+      initiativeId={INITIATIVE_ID}
+      detailResource={successResource(detailResponse(overrides))}
+      detailLastFetchedAt={new Date()}
+      onRefreshDetail={noop}
+      roadmapResource={successResource(roadmapResponse([roadmapVersion()]))}
+      roadmapLastFetchedAt={new Date()}
+      onRefreshRoadmap={noop}
+    />
+  );
+}
+
+describe("live-DOM battery: the workspace quota row, both degradation paths (blueprint v2 item 6)", () => {
+  it("passes the pinned axe ruleset — the plain row and both degraded paths", async () => {
+    const fixtures: { label: string; overrides: Partial<InitiativeDetail> }[] = [
+      { label: "plain", overrides: {} },
+      { label: "confidence-LOW", overrides: { quota: quotaConfidence({ confidence: "LOW", unscopedTokensUsed: 4_200 }) } },
+      { label: "skippedMalformed>0", overrides: { initiative: initiativeSummary({ rollup: { tokensUsed: 500, tokensReserved: 0, skippedMalformed: 2 } }) } },
+    ];
+    for (const { label, overrides } of fixtures) {
+      const mounted = renderIntoDocument(sectionFixture(overrides));
+      const audit = await auditAndReport("workspace-view/" + label, mounted.container);
+      expect(audit.violationIds).toEqual([]);
+      mounted.unmount();
+    }
+  });
+
+  it("confidence LOW renders the degraded unscoped-tokens field live, with its explaining title", () => {
+    const mounted = renderIntoDocument(sectionFixture({ quota: quotaConfidence({ confidence: "LOW", unscopedTokensUsed: 4_200 }) }));
+    const degraded = Array.from(mounted.container.querySelectorAll("[title]")).find((element) =>
+      element.getAttribute("title")?.toLowerCase().includes("confidence"),
+    );
+    expect(degraded).toBeDefined();
+    expect(mounted.container.textContent).toContain("Low");
+  });
+
+  it("a nonzero skippedMalformed count marks the tokens field degraded live, even at HIGH confidence", () => {
+    const mounted = renderIntoDocument(
+      sectionFixture({ initiative: initiativeSummary({ rollup: { tokensUsed: 500, tokensReserved: 0, skippedMalformed: 3 } }) }),
+    );
+    expect(mounted.container.textContent).not.toContain("500 used");
+    const degraded = Array.from(mounted.container.querySelectorAll("[title]")).find(
+      (element) => element.getAttribute("title")?.includes("3") ?? false,
+    );
+    expect(degraded).toBeDefined();
+  });
+
+  it("pins the two-column workspace body's fold-to-one-column breakpoint, by equality (D6)", () => {
+    expect(COMPONENTS_CSS).toContain(
+      "@media (max-width: 56rem) {\n  .workspace__body {\n    grid-template-columns: 1fr;\n  }\n}",
+    );
   });
 });

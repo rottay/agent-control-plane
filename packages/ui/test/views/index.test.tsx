@@ -17,11 +17,16 @@ import { WorkspaceView } from "../../src/views/workspace-view/index.js";
 
 /**
  * These views load their data through an effect, and effects do not run
- * under `renderToStaticMarkup` (there is no jsdom in this dependency graph —
- * see vitest.config.ts). Every render below therefore observes the view in
- * its initial loading state. That is still worth asserting: the heading, the
- * announced loading status, and every filter/jump form's label wiring are
- * all present on the very first render, before any network response exists.
+ * under `renderToStaticMarkup` regardless of environment — it renders to a
+ * string with no commit phase, so there is nothing for an effect to fire
+ * into. This file itself carries no `// @vitest-environment jsdom` docblock,
+ * so it still runs on the `ui` project's default `environment: "node"` (jsdom
+ * has been a devDependency since P8-9-2, and the live-DOM battery uses it
+ * per-file by that same docblock — see `test/live-dom/index.ts`). Every
+ * render below therefore observes the view in its initial loading state.
+ * That is still worth asserting: the heading, the announced loading status,
+ * and every filter/jump form's label wiring are all present on the very
+ * first render, before any network response exists.
  */
 
 function route(overrides: Partial<Route>): Route {

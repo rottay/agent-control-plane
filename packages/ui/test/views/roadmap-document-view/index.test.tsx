@@ -5,13 +5,15 @@ import {
   type RoadmapContentResponse,
   type RoadmapVersionDto,
 } from "@acp/api-contracts";
+// @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Resource } from "../../../src/hooks/use-async-resource/index.js";
 import { type Route } from "../../../src/routing/hash-route/index.js";
 import { type NavigateFn } from "../../../src/routing/use-hash-route/index.js";
 import { RoadmapDocumentSection, RoadmapDocumentView } from "../../../src/views/roadmap-document-view/index.js";
+import { auditAndReport, cleanupMountedRoots, renderIntoDocument, selectValue } from "../../live-dom/index.js";
 
 const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const DIGEST_A = "a".repeat(64);
@@ -283,5 +285,150 @@ describe("RoadmapDocumentView", () => {
   it("falls back to the not-found view when the route carries no initiative id (C3)", () => {
     const html = renderToStaticMarkup(<RoadmapDocumentView route={route({ initiativeId: null })} navigate={noopNavigate} />);
     expect(html).toContain("Not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-DOM battery (P8-9-3, blueprint v2 item 5)
+// ---------------------------------------------------------------------------
+
+afterEach(() => {
+  cleanupMountedRoots();
+});
+
+describe("live-DOM battery: the document view — version select, deep link, unknown-version (blueprint v2 item 5)", () => {
+  it("passes the pinned axe ruleset — the head version and the unknown-version state", async () => {
+    const headMount = renderIntoDocument(
+      <RoadmapDocumentSection
+        route={route()}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        historyResource={successResource(historyResponse([versionItem()]))}
+        historyLastFetchedAt={new Date()}
+        onRefreshHistory={noopRefresh}
+        resolvedVersion={1}
+        contentResource={successResource(contentResponse())}
+        onRefreshContent={noopRefresh}
+      />,
+    );
+    const headAudit = await auditAndReport("roadmap-document-view/head-version", headMount.container);
+    expect(headAudit.violationIds).toEqual([]);
+    headMount.unmount();
+
+    const unknownMount = renderIntoDocument(
+      <RoadmapDocumentSection
+        route={route({ query: { version: "99" } })}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        historyResource={successResource(historyResponse([versionItem()]))}
+        historyLastFetchedAt={new Date()}
+        onRefreshHistory={noopRefresh}
+        resolvedVersion={99}
+        contentResource={{
+          status: "error",
+          data: null,
+          error: { kind: "api-error", message: "no roadmap version with that number was found", detail: null, status: 404 },
+        }}
+        onRefreshContent={noopRefresh}
+      />,
+    );
+    const unknownAudit = await auditAndReport("roadmap-document-view/unknown-version", unknownMount.container);
+    expect(unknownAudit.violationIds).toEqual([]);
+  });
+
+  it("the unknown-version state is distinguished from the initiative-level 404 (C3/C5) — different named states, not the same not-found view", () => {
+    const unknownVersion = renderIntoDocument(
+      <RoadmapDocumentSection
+        route={route({ query: { version: "99" } })}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        historyResource={successResource(historyResponse([versionItem()]))}
+        historyLastFetchedAt={new Date()}
+        onRefreshHistory={noopRefresh}
+        resolvedVersion={99}
+        contentResource={{
+          status: "error",
+          data: null,
+          error: { kind: "api-error", message: "no roadmap version with that number was found", detail: null, status: 404 },
+        }}
+        onRefreshContent={noopRefresh}
+      />,
+    );
+    expect(unknownVersion.container.textContent).toContain("Version 99 was not found for this initiative.");
+    expect(unknownVersion.container.textContent).not.toContain("Not found");
+    unknownVersion.unmount();
+
+    const unknownInitiative = renderIntoDocument(
+      <RoadmapDocumentSection
+        route={route()}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        historyResource={{
+          status: "error",
+          data: null,
+          error: { kind: "api-error", message: "no initiative with that id was found", detail: null, status: 404 },
+        }}
+        historyLastFetchedAt={null}
+        onRefreshHistory={noopRefresh}
+        resolvedVersion={null}
+        contentResource={loadingResource}
+        onRefreshContent={noopRefresh}
+      />,
+    );
+    expect(unknownInitiative.container.textContent).toContain("Not found");
+  });
+
+  it("the version select is operable by keyboard (N3): a real selection navigates to the picked version's deep link", () => {
+    const navigateSpy = vi.fn();
+    const mounted = renderIntoDocument(
+      <RoadmapDocumentSection
+        route={route()}
+        navigate={navigateSpy}
+        initiativeId={INITIATIVE_ID}
+        historyResource={successResource(
+          historyResponse([
+            versionItem({ roadmapVersionId: "v2", version: 2, head: true }),
+            versionItem({ roadmapVersionId: "v1", version: 1, head: false }),
+          ]),
+        )}
+        historyLastFetchedAt={new Date()}
+        onRefreshHistory={noopRefresh}
+        resolvedVersion={2}
+        contentResource={successResource(contentResponse({ version: 2 }))}
+        onRefreshContent={noopRefresh}
+      />,
+    );
+
+    const select = mounted.container.querySelector<HTMLSelectElement>("#roadmap-document-version");
+    if (select === null) throw new Error("expected the version select");
+    selectValue(select, "1");
+
+    expect(navigateSpy).toHaveBeenCalledTimes(1);
+    const hash = navigateSpy.mock.calls[0]?.[0] as string;
+    expect(hash).toContain("version=1");
+  });
+
+  it("a deep-linked ?version= renders live in the DOM, not only in a static string", () => {
+    const mounted = renderIntoDocument(
+      <RoadmapDocumentSection
+        route={route({ query: { version: "1" } })}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        historyResource={successResource(
+          historyResponse([
+            versionItem({ roadmapVersionId: "v2", version: 2, head: true }),
+            versionItem({ roadmapVersionId: "v1", version: 1, head: false, kind: "ROLLBACK" }),
+          ]),
+        )}
+        historyLastFetchedAt={new Date()}
+        onRefreshHistory={noopRefresh}
+        resolvedVersion={1}
+        contentResource={successResource(contentResponse({ version: 1, kind: "ROLLBACK" }))}
+        onRefreshContent={noopRefresh}
+      />,
+    );
+    const select = mounted.container.querySelector<HTMLSelectElement>("#roadmap-document-version");
+    expect(select?.value).toBe("1");
+    expect(mounted.container.textContent).toContain("Rollback");
   });
 });

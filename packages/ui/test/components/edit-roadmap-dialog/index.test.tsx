@@ -1,5 +1,8 @@
+// @vitest-environment jsdom
+import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "@acp/api-contracts";
+import { useState, type JSX } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { setSessionBearerToken } from "../../../src/api/client/index.js";
 import {
@@ -9,6 +12,7 @@ import {
   RefusalOutcome,
   type SubmitState,
 } from "../../../src/components/edit-roadmap-dialog/index.js";
+import { auditAndReport, cleanupMountedRoots, clickAndSettle, pressKey, renderIntoDocument, settle, typeInto } from "../../live-dom/index.js";
 
 const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const DIGEST_A = "a".repeat(64);
@@ -21,31 +25,32 @@ afterEach(() => {
   // P8-8G packet 3: the bearer is module-scoped state in api/client; a test
   // that arms it must not leak an armed token into every test after it.
   setSessionBearerToken(null);
+  cleanupMountedRoots();
 });
 
-describe("EditRoadmapDialog — closed-content mounting is forbidden (C5)", () => {
-  it("contributes no dialog content while closed", () => {
-    const html = renderToStaticMarkup(
-      <EditRoadmapDialog
-        open={false}
-        onOpenChange={noop}
-        initiativeId={INITIATIVE_ID}
-        kind="EDIT"
-        prefillVersion={1}
-        expectedHeadDigest={DIGEST_A}
-        restoresVersionId={null}
-        restoresVersionLabel={null}
-        onGranted={noop}
-      />,
-    );
-    expect(html).not.toContain("<textarea");
-    expect(html).not.toContain("Recorded by");
-    expect(html).not.toContain('role="status"');
-  });
-});
+/**
+ * The D7/C4 aria-hidden sweep (P8-9-3): does everything outside the open
+ * dialog read as hidden to assistive tech, and does the closed dialog
+ * contribute nothing at all?
+ *
+ * Run once against the pre-`Dialog.Portal` shape (recorded in the packet's
+ * own report, per the blueprint's instruction) and again after adoption —
+ * both runs are this one function, so a regression the Portal migration
+ * might introduce shows as a diff between two calls of the same check,
+ * not as two differently-shaped assertions that could quietly drift apart.
+ */
+function ariaHiddenSweep(): {
+  readonly siblingHiddenWhileOpen: string | null;
+  readonly dialogRoleWhileOpen: string | null;
+  readonly bodyHasDialogContentWhileClosed: boolean;
+} {
+  const sibling = document.createElement("button");
+  sibling.type = "button";
+  sibling.id = "sweep-sibling";
+  sibling.textContent = "sibling control";
+  document.body.appendChild(sibling);
 
-describe("EditRoadmapDialog — the open form (blueprint v2 §3-§4)", () => {
-  const html = renderToStaticMarkup(
+  const mounted = renderIntoDocument(
     <EditRoadmapDialog
       open={true}
       onOpenChange={noop}
@@ -59,39 +64,84 @@ describe("EditRoadmapDialog — the open form (blueprint v2 §3-§4)", () => {
     />,
   );
 
-  it("names the dialog with Title and Description", () => {
-    expect(html).toContain("Edit the roadmap");
-    expect(html).toContain("Records a new version of this initiative&#x27;s roadmap document.");
-    expect(html).toContain('id="edit-roadmap-description"');
-  });
+  const siblingHiddenWhileOpen = sibling.getAttribute("aria-hidden");
+  const dialogRoleWhileOpen = document.body.querySelector('[role="dialog"]')?.getAttribute("role") ?? null;
 
-  it("carries the content textarea and the recordedBy field, each labeled", () => {
-    expect(html).toContain('for="edit-roadmap-content"');
-    expect(html).toContain('id="edit-roadmap-content"');
-    expect(html).toContain('for="edit-roadmap-recorded-by"');
-    expect(html).toContain('id="edit-roadmap-recorded-by"');
-    expect(html).toContain('placeholder="provider/model/role/instance"');
-  });
+  mounted.unmount();
+  sibling.remove();
 
-  it("shows the first-version claim when there is no head to claim against", () => {
-    expect(html).toContain("none (first version)");
-  });
+  const closedMount = renderIntoDocument(
+    <EditRoadmapDialog
+      open={false}
+      onOpenChange={noop}
+      initiativeId={INITIATIVE_ID}
+      kind="EDIT"
+      prefillVersion={1}
+      expectedHeadDigest={DIGEST_A}
+      restoresVersionId={null}
+      restoresVersionLabel={null}
+      onGranted={noop}
+    />,
+  );
+  const bodyHasDialogContentWhileClosed = document.body.querySelector('[role="dialog"]') !== null;
+  closedMount.unmount();
 
-  it("carries an explicit submit, disabled until content and recordedBy are both filled", () => {
-    expect(html).toContain('type="submit"');
-    expect(html).toContain("disabled=\"\"");
-    expect(html).toContain("Record version");
-  });
+  return { siblingHiddenWhileOpen, dialogRoleWhileOpen, bodyHasDialogContentWhileClosed };
+}
 
-  it("unarmed reads as a posture, not a failure — the submit button explains rather than fails mid-flight (v2 §3, N1)", () => {
-    expect(html).toContain("Unarmed — paste an operator token above to record this version.");
+describe("EditRoadmapDialog — closed-content mounting is forbidden (C5)", () => {
+  // Migrated to live-DOM (P8-9-3, D7): `ReactDOMServer` never renders a
+  // portal at all, open or closed, so a static render of this dialog would
+  // "prove" the closed state contributes nothing for a reason that has
+  // nothing to do with the dialog being closed. Querying `document.body` —
+  // where `Dialog.Portal` actually mounts — is what makes this claim about
+  // the closed state specifically, not about the renderer.
+  it("contributes no dialog content while closed", () => {
+    renderIntoDocument(
+      <EditRoadmapDialog
+        open={false}
+        onOpenChange={noop}
+        initiativeId={INITIATIVE_ID}
+        kind="EDIT"
+        prefillVersion={1}
+        expectedHeadDigest={DIGEST_A}
+        restoresVersionId={null}
+        restoresVersionLabel={null}
+        onGranted={noop}
+      />,
+    );
+    expect(document.body.querySelector("textarea")).toBeNull();
+    expect(document.body.textContent).not.toContain("Recorded by");
+    expect(document.body.querySelector('[role="status"]')).toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 });
 
-describe("EditRoadmapDialog — armed (P8-8G packet 3, blueprint v2 §3)", () => {
-  it("carries no unarmed note once a token is held, though the submit stays disabled until content and recordedBy are filled too", () => {
-    setSessionBearerToken("operator-secret");
-    const html = renderToStaticMarkup(
+describe("EditRoadmapDialog — the aria-hidden sweep (P8-9-3, D7/C4)", () => {
+  // Run against the pre-`Dialog.Portal` shape and recorded in the packet's
+  // own report (blueprint v2 item 10): sibling hidden "true", dialog role
+  // present while open, zero dialog content in the body while closed. This
+  // same test, run again after Portal adoption below, is the re-sweep — one
+  // function, two calls across one edit, so a regression reads as a diff
+  // rather than as two assertions that could quietly drift apart.
+  it("everything outside the open dialog reads hidden; the closed dialog contributes nothing", () => {
+    const sweep = ariaHiddenSweep();
+    // The landed idiom for evidence a memo quotes (`process.stdout.write`,
+    // not `console.log` — see e.g. the runtime drills' own `RECEIPT` lines).
+    process.stdout.write("P8-9-3 aria-hidden sweep: " + JSON.stringify(sweep) + "\n");
+    expect(sweep.siblingHiddenWhileOpen).toBe("true");
+    expect(sweep.dialogRoleWhileOpen).toBe("dialog");
+    expect(sweep.bodyHasDialogContentWhileClosed).toBe(false);
+  });
+});
+
+describe("EditRoadmapDialog — the open form (blueprint v2 §3-§4)", () => {
+  // Migrated to live-DOM (P8-9-3, D7): every assertion below is the same
+  // claim the static render made, moved rather than dropped, plus one this
+  // renderer can now make that a string never could — the pinned axe
+  // ruleset.
+  async function openMount(): Promise<HTMLElement> {
+    renderIntoDocument(
       <EditRoadmapDialog
         open={true}
         onOpenChange={noop}
@@ -104,14 +154,263 @@ describe("EditRoadmapDialog — armed (P8-8G packet 3, blueprint v2 §3)", () =>
         onGranted={noop}
       />,
     );
-    expect(html).not.toContain("Unarmed — paste an operator token");
-    expect(html).toContain("disabled=\"\"");
+    // The body's own prefill resource resolves through a microtask even
+    // with nothing to pre-fill (`prefillVersion === null` still runs
+    // through `useAsyncResource`'s async effect) — settling here is what a
+    // zero-stderr suite needs, not an optional tidy-up.
+    await settle();
+    const content = document.body.querySelector('[role="dialog"]');
+    if (content === null) throw new Error("expected the portaled dialog content");
+    return content as HTMLElement;
+  }
+
+  it("names the dialog with Title and Description", async () => {
+    const content = await openMount();
+    expect(content.textContent).toContain("Edit the roadmap");
+    expect(content.textContent).toContain("Records a new version of this initiative's roadmap document.");
+    expect(document.body.querySelector("#edit-roadmap-description")).not.toBeNull();
+  });
+
+  it("carries the content textarea and the recordedBy field, each labeled", async () => {
+    const content = await openMount();
+    expect(content.querySelector('label[for="edit-roadmap-content"]')).not.toBeNull();
+    expect(content.querySelector("#edit-roadmap-content")).not.toBeNull();
+    expect(content.querySelector('label[for="edit-roadmap-recorded-by"]')).not.toBeNull();
+    expect(content.querySelector("#edit-roadmap-recorded-by")).not.toBeNull();
+    expect(content.querySelector('[placeholder="provider/model/role/instance"]')).not.toBeNull();
+  });
+
+  it("shows the first-version claim when there is no head to claim against", async () => {
+    const content = await openMount();
+    expect(content.textContent).toContain("none (first version)");
+  });
+
+  it("carries an explicit submit, disabled until content and recordedBy are both filled", async () => {
+    const content = await openMount();
+    const submitButton = content.querySelector('button[type="submit"]');
+    expect(submitButton).not.toBeNull();
+    expect((submitButton as HTMLButtonElement).disabled).toBe(true);
+    expect(submitButton?.textContent).toBe("Record version");
+  });
+
+  it("unarmed reads as a posture, not a failure — the submit button explains rather than fails mid-flight (v2 §3, N1)", async () => {
+    const content = await openMount();
+    expect(content.textContent).toContain("Unarmed — paste an operator token above to record this version.");
+  });
+
+  it("passes the pinned axe ruleset while open", async () => {
+    const content = await openMount();
+    const audit = await auditAndReport("edit-roadmap-dialog/open-form", content);
+    expect(audit.violationIds).toEqual([]);
+  });
+});
+
+describe("EditRoadmapDialog — keyboard (P8-9-3, N3)", () => {
+  it("Escape closes the dialog", async () => {
+    // A stateful wrapper, not a plain variable reassigned by `onOpenChange`:
+    // this dialog is fully controlled, so closing it is only observable if
+    // the prop that says so actually changes on a real re-render.
+    function ControlledHost(): JSX.Element {
+      const [open, setOpen] = useState(true);
+      return (
+        <EditRoadmapDialog
+          open={open}
+          onOpenChange={setOpen}
+          initiativeId={INITIATIVE_ID}
+          kind="EDIT"
+          prefillVersion={null}
+          expectedHeadDigest={null}
+          restoresVersionId={null}
+          restoresVersionLabel={null}
+          onGranted={noop}
+        />
+      );
+    }
+    renderIntoDocument(<ControlledHost />);
+    await settle();
+    const dialogEl = document.body.querySelector('[role="dialog"]');
+    if (dialogEl === null) throw new Error("expected the portaled dialog content");
+
+    pressKey(dialogEl, "Escape");
+    await settle();
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  // Tab-cycle containment IS assertable here, and the next test asserts it.
+  //
+  // What jsdom genuinely cannot do is the *mid-cycle* advance: pressing Tab
+  // in the middle of a form moves focus in a browser and moves nothing here,
+  // because that step is native browser behaviour with no JavaScript to
+  // intercept. The edges are different in kind. Radix's FocusScope receives
+  // `loop: true` from Dialog and implements the wrap itself, in its own
+  // `onKeyDown` on the content: Tab on the last tabbable calls
+  // `preventDefault()` and focuses the first, Shift+Tab on the first focuses
+  // the last, and its candidate walk is a layout-free TreeWalker over
+  // `disabled`/`hidden`/`tabIndex`. That is ordinary JavaScript, so it runs
+  // under this harness exactly as it does in a browser — and containment at
+  // the edges is precisely the behaviour the blueprint names.
+  //
+  // Focus-restore-on-close is a separate matter, and the honest reason it is
+  // not asserted is not a jsdom gap at all. Radix's modal content composes a
+  // default `onCloseAutoFocus` that always `preventDefault()`s the
+  // FocusScope restore and focuses `context.triggerRef.current?.` instead.
+  // This dialog is fully controlled and has no `Dialog.Trigger`, so that
+  // optional chain is a no-op and nothing is focused on close — in a real
+  // browser exactly as here. Closing therefore strands keyboard focus at the
+  // document body, in production, and the same mechanism applies to every
+  // fully-controlled triggerless Radix dialog in this UI, the accounts action
+  // dialog included. That is a product defect, not a harness limitation, and
+  // it is registered for its own adjudicated fix (P8-9-4) rather than being
+  // fixed here: the natural remedy is an `onCloseAutoFocus` that restores to
+  // the opener control, which needs an opener ref the workspace owns, and
+  // that is a `src/` design decision this packet has no authority over.
+  it("contains the Tab cycle at both edges: Tab on the last tabbable wraps to the first, and Shift+Tab on the first wraps to the last", async () => {
+    renderIntoDocument(
+      <EditRoadmapDialog
+        open={true}
+        onOpenChange={noop}
+        initiativeId={INITIATIVE_ID}
+        kind="EDIT"
+        prefillVersion={null}
+        expectedHeadDigest={null}
+        restoresVersionId={null}
+        restoresVersionLabel={null}
+        onGranted={noop}
+      />,
+    );
+    await settle();
+    const dialogEl = document.body.querySelector('[role="dialog"]');
+    if (dialogEl === null) throw new Error("expected the portaled dialog content");
+
+    // Computed, not hard-coded: the submit is disabled until the form is
+    // complete, so which element is last depends on state, and a hard-coded
+    // pair would silently stop testing the edges the moment that changed.
+    const tabbables = Array.from(
+      dialogEl.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    // Two distinct elements at minimum, or "wraps to the first" would be
+    // satisfied by focus simply staying put.
+    expect(tabbables.length).toBeGreaterThan(1);
+    const first = tabbables[0];
+    const last = tabbables[tabbables.length - 1];
+    if (first === undefined || last === undefined) throw new Error("expected two tabbables");
+    expect(first).not.toBe(last);
+
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    pressKey(last, "Tab");
+    await settle();
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    expect(document.activeElement).toBe(first);
+    pressKey(first, "Tab", { shiftKey: true });
+    await settle();
+    expect(document.activeElement).toBe(last);
+  });
+});
+
+describe("EditRoadmapDialog — armed (P8-8G packet 3, blueprint v2 §3)", () => {
+  it("carries no unarmed note once a token is held, though the submit stays disabled until content and recordedBy are filled too", async () => {
+    setSessionBearerToken("operator-secret");
+    renderIntoDocument(
+      <EditRoadmapDialog
+        open={true}
+        onOpenChange={noop}
+        initiativeId={INITIATIVE_ID}
+        kind="EDIT"
+        prefillVersion={null}
+        expectedHeadDigest={null}
+        restoresVersionId={null}
+        restoresVersionLabel={null}
+        onGranted={noop}
+      />,
+    );
+    await settle();
+    const content = document.body.querySelector('[role="dialog"]');
+    if (content === null) throw new Error("expected the portaled dialog content");
+    expect(content.textContent).not.toContain("Unarmed — paste an operator token");
+    const submitButton = content.querySelector('button[type="submit"]');
+    expect((submitButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("a filled, armed form submits: exactly one POST, and the granted receipt shows the sequence (N2)", async () => {
+    setSessionBearerToken("operator-secret");
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          apiContractVersion: API_CONTRACT_VERSION,
+          ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+          version: {
+            roadmapVersionId: "9f2e4567-e89b-12d3-a456-426614174333",
+            initiativeId: INITIATIVE_ID,
+            version: 4,
+            contentDigest: DIGEST_A,
+            parentVersionId: null,
+            kind: "EDIT",
+            restoresVersionId: null,
+            recordedBy: "kimi/k3/coordinator/01",
+            recordedAt: "2026-09-01T00:00:00.000Z",
+            sequence: 12,
+            head: true,
+          },
+          sequence: 12,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderIntoDocument(
+      <EditRoadmapDialog
+        open={true}
+        onOpenChange={noop}
+        initiativeId={INITIATIVE_ID}
+        kind="EDIT"
+        prefillVersion={null}
+        expectedHeadDigest={null}
+        restoresVersionId={null}
+        restoresVersionLabel={null}
+        onGranted={noop}
+      />,
+    );
+    await settle();
+    const content = document.body.querySelector('[role="dialog"]');
+    if (content === null) throw new Error("expected the portaled dialog content");
+
+    const textarea = content.querySelector<HTMLTextAreaElement>("#edit-roadmap-content");
+    const recordedBy = content.querySelector<HTMLInputElement>("#edit-roadmap-recorded-by");
+    if (textarea === null || recordedBy === null) throw new Error("expected both fields");
+    typeInto(textarea, "## Roadmap\n\nfirst content");
+    typeInto(recordedBy, "kimi/k3/coordinator/01");
+
+    const submitButton = content.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (submitButton === null) throw new Error("expected the submit button");
+    expect(submitButton.disabled).toBe(false);
+    await clickAndSettle(submitButton);
+
+    const postCalls = fetchSpy.mock.calls.filter((call) => (call[1] as RequestInit | undefined)?.method === "POST");
+    expect(postCalls).toHaveLength(1);
+
+    const region = document.body.querySelector('.dialog__outcome--granted[role="status"]');
+    expect(region?.textContent).toContain("Recorded as v4.");
+    expect(region?.textContent).toContain("sequence 12");
+    vi.unstubAllGlobals();
   });
 });
 
 describe("EditRoadmapDialog — the rollback variant", () => {
-  it("names the dialog after the restored version and claims the current head", () => {
-    const html = renderToStaticMarkup(
+  it("names the dialog after the restored version and claims the current head", async () => {
+    // A real prefill target (`prefillVersion={2}`): stub `fetch` to a
+    // classified contract-mismatch rather than let a real network call
+    // happen under jsdom. The title/description/claim below are drawn from
+    // props, not from the pre-fill response, so they render correctly
+    // regardless of how the pre-fill resolves.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 404, headers: { "content-type": "application/json" } })));
+    renderIntoDocument(
       <EditRoadmapDialog
         open={true}
         onOpenChange={noop}
@@ -124,10 +423,13 @@ describe("EditRoadmapDialog — the rollback variant", () => {
         onGranted={noop}
       />,
     );
-    expect(html).toContain("Restore v2");
-    expect(html).toContain("Records a new version carrying v2&#x27;s content.");
-    expect(html).toContain("aaaaaaaa"); // the truncated claimed digest
-    expect(html).not.toContain("none (first version)");
+    await settle();
+    const content = document.body.querySelector('[role="dialog"]');
+    if (content === null) throw new Error("expected the portaled dialog content");
+    expect(content.textContent).toContain("Restore v2");
+    expect(content.textContent).toContain("Records a new version carrying v2's content.");
+    expect(content.textContent).toContain("aaaaaaaa"); // the truncated claimed digest
+    expect(content.textContent).not.toContain("none (first version)");
   });
 });
 

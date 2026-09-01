@@ -4,12 +4,14 @@ import {
   type InitiativeAgentsResponse,
   type ScopedAgentSummary,
 } from "@acp/api-contracts";
+// @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { type Resource } from "../../../src/hooks/use-async-resource/index.js";
 import { type Route } from "../../../src/routing/hash-route/index.js";
 import { AgentsSection, AgentsView } from "../../../src/views/agents-view/index.js";
+import { auditAndReport, cleanupMountedRoots, renderIntoDocument } from "../../live-dom/index.js";
 
 const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const TASK_A = "9f2e4567-e89b-12d3-a456-426614174111";
@@ -161,5 +163,70 @@ describe("AgentsView", () => {
   it("falls back to the not-found view when the route carries no initiative id (C3)", () => {
     const html = renderToStaticMarkup(<AgentsView route={route({ initiativeId: null })} />);
     expect(html).toContain("Not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-DOM battery (P8-9-3, blueprint v2 item 9, C3 restored)
+// ---------------------------------------------------------------------------
+
+afterEach(() => {
+  cleanupMountedRoots();
+});
+
+describe("live-DOM battery: active agents, current action, empty/degraded (blueprint v2 item 9, C3 restored)", () => {
+  it("passes the pinned axe ruleset — active agents, empty, and a stale-degraded fetch", async () => {
+    const fixtures: { label: string; resource: Resource<InitiativeAgentsResponse> }[] = [
+      { label: "active-agents", resource: successResource(agentsResponse([agentSummary(), agentSummary({ identity: "claude/sonnet/verifier-01" })])) },
+      { label: "empty", resource: successResource(agentsResponse([])) },
+      {
+        label: "stale-degraded",
+        resource: {
+          status: "stale",
+          data: agentsResponse([agentSummary()]),
+          error: { kind: "network-error", message: "The request could not reach the server.", detail: null, status: null },
+        },
+      },
+    ];
+    for (const { label, resource } of fixtures) {
+      const mounted = renderIntoDocument(<AgentsSection route={route()} initiativeId={INITIATIVE_ID} resource={resource} lastFetchedAt={new Date()} onRefresh={noop} />);
+      const audit = await auditAndReport("agents-view/" + label, mounted.container);
+      expect(audit.violationIds).toEqual([]);
+      mounted.unmount();
+    }
+  });
+
+  it("an active agent renders its identity, role and current action live", () => {
+    const mounted = renderIntoDocument(
+      <AgentsSection route={route()} initiativeId={INITIATIVE_ID} resource={successResource(agentsResponse([agentSummary()]))} lastFetchedAt={new Date()} onRefresh={noop} />,
+    );
+    expect(mounted.container.textContent).toContain(IDENTITY);
+    expect(mounted.container.textContent).toContain("Implementer");
+    expect(mounted.container.textContent).toContain(TASK_A.slice(0, 6));
+    expect(mounted.container.textContent).toContain("Task state changed");
+  });
+
+  it("degraded (stale): last-known agents stay visible rather than vanishing behind a refresh hiccup", () => {
+    const mounted = renderIntoDocument(
+      <AgentsSection
+        route={route()}
+        initiativeId={INITIATIVE_ID}
+        resource={{
+          status: "stale",
+          data: agentsResponse([agentSummary()]),
+          error: { kind: "network-error", message: "The request could not reach the server.", detail: null, status: null },
+        }}
+        lastFetchedAt={new Date()}
+        onRefresh={noop}
+      />,
+    );
+    expect(mounted.container.textContent).toContain(IDENTITY);
+  });
+
+  it("the empty state renders live, naming that no worker has acted", () => {
+    const mounted = renderIntoDocument(
+      <AgentsSection route={route()} initiativeId={INITIATIVE_ID} resource={successResource(agentsResponse([]))} lastFetchedAt={new Date()} onRefresh={noop} />,
+    );
+    expect(mounted.container.textContent).toContain("No worker has acted on this initiative yet.");
   });
 });

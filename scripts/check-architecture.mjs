@@ -1271,22 +1271,22 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **346 packet entries across 141 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **360 packet entries across 141 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
  * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
- * 6 (P8-9-2) + 2 (P8-T-roadmap) = 346 entries, with 205 duplicate entries.
+ * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-T-roadmap) = 360 entries, with 219
+ * duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 31 duplicates = 31   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 32 duplicates = 32   (`scripts/check-architecture.mjs`, every packet)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the routes source, the
- *                                   build-server drill suite, and the lockfile,
- *                                   which this packet moved up a band)
+ *                                   build-server drill suite, and the lockfile)
  *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
  *                                   mirror suite)
  *   5 paths ×  5 duplicates = 25   (the api-contracts route and parity surface
@@ -1294,13 +1294,16 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   client and app root)
  *   4 paths ×  4 duplicates = 16   (the initiatives suite, the UI styles sheet,
  *                                   the UI manifest and the workspace file)
- *   5 paths ×  3 duplicates = 15   (the contracts schemas, the server manifest,
- *                                   the app shell, and the hash route with its
+ *   8 paths ×  3 duplicates = 24   (the contracts schemas, the server manifest,
+ *                                   the app shell and the hash route with its
+ *                                   suite, plus three suites this packet moved
+ *                                   up a band: `test/views/index.test.tsx`, the
+ *                                   accounts-view suite and the workspace-view
  *                                   suite)
  *  15 paths ×  2 duplicates = 30
- *  30 paths ×  1 duplicate  = 30
+ *  34 paths ×  1 duplicate  = 34
  *
- * 31 + 28 + 30 + 25 + 16 + 15 + 30 + 30 = 205.
+ * 32 + 28 + 30 + 25 + 16 + 24 + 30 + 34 = 219.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1348,6 +1351,35 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * of them move a band — the lockfile joins the ×7 row, and the UI manifest and
  * the workspace file join the ×4 row — which is what a packet that adds
  * dependencies looks like in this table.
+ *
+ * P8-9-3 adds **no** path: all thirteen of its entries are already owned — the
+ * DT's own prediction, confirmed by computation rather than trusted — so
+ * distinct holds at 141 while the entries move 346 → 359. Its thirteen group
+ * steps sort into three kinds. Ten of its entries revisit `test/live-dom/index.ts`
+ * (P8-9-2) and the edit-roadmap-dialog source and suite (P8-8D, P8-8G-ui): the
+ * dialog's two paths each gain a third owner and step from the ×1 row to the
+ * ×2 row. Three revisit `test/views/index.test.tsx`, the accounts-view suite
+ * and the workspace-view suite, each already carrying three owners; a fourth
+ * owner steps each from the ×2 row to the ×3 row, which is why that row's
+ * path count rises by three net of the two the dialog's paths left behind
+ * (15 → 14 is one arithmetic fact, not two). The remaining seven entries
+ * (the bearer-field, logs-view, roadmap-document-view, graph-view,
+ * timeline-view and agents-view suites, plus `test/live-dom/index.ts` itself)
+ * had exactly one earlier owner each and now have two, entering the ×1 row
+ * fresh — which is why it reads 30 → 35, not 30 → 37: two of that row's
+ * would-be entrants are the dialog's paths, already accounted for above as
+ * leaving the ×1 row rather than joining it twice. The fence's own row moves
+ * 31 → 32 duplicates, one more appearance, as every packet's does.
+ *
+ * P8-9-3 was widened by one path after its own report, adjudicated by the DT
+ * (`p8-9-3-kimi-widening-adjudication.md`) against the packet's own
+ * STOP-adjacent finding: `packages/ui/src/views/accounts-view/index.tsx`,
+ * already owned by P8-8F-ui and P8-8G-ui, gains a third owner here rather
+ * than opening a new distinct path — so distinct still holds at 141 while
+ * entries move 359 → 360. Its one group step: the path had two occurrences
+ * (one duplicate) and so sat in the ×1 row; a third occurrence moves it to
+ * the ×2 row, which is why that row reads 14 → 15 paths (28 → 30) while the
+ * ×1 row loses the path it left: 35 → 34 (35 → 34).
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -2298,6 +2330,56 @@ const P89_2_WRITE_SET = [
 ];
 
 /**
+ * P8-9-3: the named live-DOM/axe battery (blueprint v2's own register),
+ * closing the foundation P8-9-2 laid.
+ *
+ * Nine surfaces gain a live-DOM description alongside their untouched
+ * `renderToStaticMarkup` suites — axe over every named state, the
+ * selector-join proof where a surface carries `data-priority` hooks, and
+ * the reconnect/idempotence proof (D5) on the accounts action and the
+ * roadmap-write dialog, the plane's only two write paths. `edit-roadmap-dialog`
+ * is the one `src/` path in this packet (D7/C4, pre-declared): `Dialog.Portal`
+ * adopted now that live-DOM evidence exists to see through it, swept for
+ * aria-hidden correctness before and after the adoption (both runs recorded
+ * in the packet's own report), with its static content assertions migrated
+ * to live-DOM rather than dropped — `ReactDOMServer` renders no portal at
+ * all, open or closed. `test/views/index.test.tsx` carries a small, unrelated
+ * fix: a comment that had read "there is no jsdom in this dependency graph"
+ * since before this cohort, false from the moment P8-9-2 landed jsdom as a
+ * devDependency — found by the standing pre-dispatch grep for falsified
+ * pinned surfaces (P8-8D-pre register finding iii), corrected to state which
+ * environment this specific file runs under and why.
+ *
+ * Widened by exactly one path, adjudicated by the DT
+ * (`p8-9-3-kimi-widening-adjudication.md`) against the packet's own
+ * STOP-adjacent finding: `packages/ui/src/views/accounts-view/index.tsx`.
+ * The account action's granted receipt (its sequence, in the live region)
+ * was unmounting before it ever painted — `AccountActionsCell`'s `onGranted`
+ * closed the dialog in the same batch `AccountActionDialogBody` set
+ * `{ phase: "granted" }`. The fix is one seam: `onGranted` no longer closes:
+ * the row refresh it was already carrying is untouched, closing becomes a
+ * later, explicit act (the receipt's own "Close" button, or Escape/overlay,
+ * both already routed through the dialog's own `onClose`), and the refusal
+ * matrix is untouched since it never drove `openAction` in the first place.
+ */
+const P89_3_WRITE_SET = [
+  "packages/ui/test/live-dom/index.ts",
+  "packages/ui/test/views/index.test.tsx",
+  "packages/ui/test/views/accounts-view/index.test.tsx",
+  "packages/ui/test/components/bearer-field/index.test.tsx",
+  "packages/ui/test/views/logs-view/index.test.tsx",
+  "packages/ui/test/views/roadmap-document-view/index.test.tsx",
+  "packages/ui/test/views/workspace-view/index.test.tsx",
+  "packages/ui/test/views/graph-view/index.test.tsx",
+  "packages/ui/test/views/timeline-view/index.test.tsx",
+  "packages/ui/test/views/agents-view/index.test.tsx",
+  "packages/ui/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/ui/src/views/accounts-view/index.tsx",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2585,6 +2667,7 @@ const WRITE_SET = [
   ...P88G_CAUSAL_WRITE_SET,
   ...P89_1_WRITE_SET,
   ...P89_2_WRITE_SET,
+  ...P89_3_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

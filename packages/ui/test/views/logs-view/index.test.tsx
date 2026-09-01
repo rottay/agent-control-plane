@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import {
   API_CONTRACT_VERSION,
   LEDGER_CONTRACT_VERSION,
@@ -5,12 +6,13 @@ import {
   type ScopedTimelineEntry,
 } from "@acp/api-contracts";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type Resource } from "../../../src/hooks/use-async-resource/index.js";
 import { type Route } from "../../../src/routing/hash-route/index.js";
 import { type NavigateFn } from "../../../src/routing/use-hash-route/index.js";
 import { filterLogs, LogsSection, LogsView } from "../../../src/views/logs-view/index.js";
+import { auditAndReport, cleanupMountedRoots, clickAndSettle, countSelectorJoin, renderIntoDocument, selectValue, typeInto } from "../../live-dom/index.js";
 
 const INITIATIVE_ID = "123e4567-e89b-12d3-a456-426614174000";
 const TASK_A = "9f2e4567-e89b-12d3-a456-426614174111";
@@ -286,5 +288,108 @@ describe("LogsView", () => {
   it("falls back to the not-found view when the route carries no initiative id (C3)", () => {
     const html = renderToStaticMarkup(<LogsView route={route({ initiativeId: null })} navigate={noopNavigate} />);
     expect(html).toContain("Not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-DOM battery (P8-9-3, blueprint v2 item 4)
+// ---------------------------------------------------------------------------
+
+afterEach(() => {
+  cleanupMountedRoots();
+});
+
+describe("live-DOM battery: filtered logs and the truncation notice (blueprint v2 item 4)", () => {
+  it("passes the pinned axe ruleset — populated, empty, and truncated", async () => {
+    const fixtures: { label: string; resource: Resource<InitiativeTimelineResponse> }[] = [
+      { label: "populated", resource: successResource(timelineResponse([taskRow(), initiativeRow()])) },
+      { label: "empty", resource: successResource(timelineResponse([])) },
+      { label: "truncated", resource: successResource(timelineResponse([taskRow()], true)) },
+    ];
+    for (const { label, resource } of fixtures) {
+      const mounted = renderIntoDocument(
+        <LogsSection route={route()} navigate={noopNavigate} initiativeId={INITIATIVE_ID} resource={resource} lastFetchedAt={new Date()} onRefresh={noopRefresh} />,
+      );
+      const audit = await auditAndReport("logs-view/" + label, mounted.container);
+      expect(audit.violationIds).toEqual([]);
+      mounted.unmount();
+    }
+  });
+
+  it("selector-join: the rendered log table carries the data-priority hooks its breakpoint rules select (C1)", () => {
+    const mounted = renderIntoDocument(
+      <LogsSection
+        route={route()}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        resource={successResource(timelineResponse([taskRow()]))}
+        lastFetchedAt={new Date()}
+        onRefresh={noopRefresh}
+      />,
+    );
+    expect(countSelectorJoin(mounted.container, '.data-table [data-priority="tertiary"]')).toBeGreaterThan(0);
+    expect(countSelectorJoin(mounted.container, '.data-table [data-priority="secondary"]')).toBeGreaterThan(0);
+  });
+
+  it("the truncation notice is present precisely when the fetch ceiling truncated the response, and passes as its own live region", () => {
+    const truncated = renderIntoDocument(
+      <LogsSection
+        route={route()}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        resource={successResource(timelineResponse([taskRow()], true))}
+        lastFetchedAt={new Date()}
+        onRefresh={noopRefresh}
+      />,
+    );
+    expect(truncated.container.textContent).toContain("truncated at the fetch ceiling");
+    truncated.unmount();
+
+    const untruncated = renderIntoDocument(
+      <LogsSection
+        route={route()}
+        navigate={noopNavigate}
+        initiativeId={INITIATIVE_ID}
+        resource={successResource(timelineResponse([taskRow()], false))}
+        lastFetchedAt={new Date()}
+        onRefresh={noopRefresh}
+      />,
+    );
+    expect(untruncated.container.textContent).not.toContain("truncated at the fetch ceiling");
+  });
+
+  it("filters are pure in memory with a round-trip through the URL: applying a filter navigates to the hash carrying it", async () => {
+    const navigateSpy = vi.fn();
+    const mounted = renderIntoDocument(
+      <LogsSection
+        route={route()}
+        navigate={navigateSpy}
+        initiativeId={INITIATIVE_ID}
+        resource={successResource(timelineResponse([taskRow(), initiativeRow()]))}
+        lastFetchedAt={new Date()}
+        onRefresh={noopRefresh}
+      />,
+    );
+
+    const streamSelect = mounted.container.querySelector<HTMLSelectElement>("#logs-stream");
+    const idMatchInput = mounted.container.querySelector<HTMLInputElement>("#logs-idMatch");
+    const applyButton = mounted.container.querySelector<HTMLButtonElement>('button[type="submit"]');
+    if (streamSelect === null || idMatchInput === null || applyButton === null) {
+      throw new Error("expected the stream select, the id-match field and the Apply button");
+    }
+    selectValue(streamSelect, "TASK");
+    typeInto(idMatchInput, "aaaaaaaa");
+    await clickAndSettle(applyButton);
+
+    expect(navigateSpy).toHaveBeenCalledTimes(1);
+    const hash = navigateSpy.mock.calls[0]?.[0] as string;
+    expect(hash).toContain("stream=TASK");
+    expect(hash).toContain("idMatch=aaaaaaaa");
+
+    // Pure in memory: the fixed `resource` prop is untouched by filtering —
+    // nothing here re-fetched to answer the filtered view. `filterLogs`'s own
+    // suite (above) already proves what the pure function does with a query;
+    // this proves the view calls it rather than re-deriving its own copy.
+    expect(mounted.container.textContent).not.toContain("No log lines match this filter.");
   });
 });
