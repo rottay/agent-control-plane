@@ -24,7 +24,7 @@ import {
 import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
 import { serverAvailability, startServer } from "../../../src/restate/server-handle/index.js";
 import { platformKey, readTrackedPin, receiptMatchesPin } from "../../../src/restate/server-handle/index.js";
-import type { ServerHandle } from "../../../src/restate/server-handle/index.js";
+import type { ServerExit, ServerHandle } from "../../../src/restate/server-handle/index.js";
 import {
   deriveInvocation,
   readCacheThroughHandler,
@@ -90,6 +90,52 @@ function scenario(name: string): ScenarioRoot {
 function track(ledger: Ledger): Ledger {
   ledgers.push(ledger);
   return ledger;
+}
+
+/**
+ * Register a spawned server for teardown, in the same act that records its pid
+ * (P8-9-1).
+ *
+ * Wrap the spawn — `trackServer(await startServer(root))` — so registration
+ * happens the instant the handle exists, before any `await` or assertion that
+ * could throw between the two. The previous shape registered the pid at the
+ * call site and pushed the handle separately, which meant a drill could hold a
+ * live server that the teardown had never heard of: exactly the orphaned
+ * `restate-server` the P8-8G incident recorded, left behind when a handshake
+ * assertion failed before the explicit stop.
+ *
+ * Both registries are fed here and only here, so the leak assertion covers
+ * precisely what the teardown covers — one act of registration, one
+ * provenance, and forgetting is impossible by construction rather than by
+ * memory.
+ */
+function trackServer(server: ServerHandle): ServerHandle {
+  servers.push(server);
+  if (server.pid > 0) spawnedPids.push(server.pid);
+  return server;
+}
+
+/** Handles already stopped, so the sweep never signals a corpse twice. */
+const stoppedServers = new WeakSet<ServerHandle>();
+
+/**
+ * Stop a server once. A second stop is a no-op that returns `null`.
+ *
+ * A drill that kills its own server mid-test and a teardown that sweeps every
+ * registered handle must compose without erroring and without a visible
+ * double-kill, since every server now stays registered for the whole test. The
+ * mark is set only after a stop resolves, so a stop that throws leaves the
+ * handle registered and the sweep still responsible for it.
+ */
+async function stopServer(
+  server: ServerHandle,
+  signal?: NodeJS.Signals,
+  deadlineMs?: number,
+): Promise<ServerExit | null> {
+  if (stoppedServers.has(server)) return null;
+  const exit = await server.stop(signal, deadlineMs);
+  stoppedServers.add(server);
+  return exit;
 }
 
 function markers(root: string): number {
@@ -220,7 +266,7 @@ afterEach(async () => {
   // children. Closing ours first waits on sessions the server still holds.
   for (const server of servers.splice(0)) {
     try {
-      await server.stop();
+      await stopServer(server);
     } catch {
       // already gone
     }
@@ -609,9 +655,7 @@ describe("restate drills", () => {
       const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
       const ledger = track(openLedger(scenarioLedgerPath(root)));
 
-      const server = await startServer(root);
-      servers.push(server);
-      if (server.pid > 0) spawnedPids.push(server.pid);
+      const server = trackServer(await startServer(root));
 
       const faulty = await startChild(id, invocation, fault);
       await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
@@ -678,8 +722,7 @@ describe("restate drills", () => {
     const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "b".repeat(64));
     const ledger = track(openLedger(scenarioLedgerPath(root)));
 
-    const first = await startServer(root);
-    if (first.pid > 0) spawnedPids.push(first.pid);
+    const first = trackServer(await startServer(root));
 
     // The child pauses at the intent beat and says so. Killing the server
     // before a plan is in flight would prove only that a restart works, not
@@ -699,7 +742,11 @@ describe("restate drills", () => {
     expect(ledger.getTask(taskId)?.currentState).not.toBe("CHECKPOINTED");
 
     // Now, with the plan genuinely open, SIGKILL the server itself.
-    const killed = await first.stop("SIGKILL");
+    const killed = await stopServer(first, "SIGKILL");
+    // The drill's own stop must be the first one: a null here would mean the
+    // handle had already been stopped, and the kill this drill is about never
+    // happened.
+    if (killed === null) throw new Error("D2's SIGKILL was not the first stop of this handle");
     expect(killed.signal).toBe("SIGKILL");
 
     // Release the paused child and retire it; its invocation died with the
@@ -708,9 +755,7 @@ describe("restate drills", () => {
     await inFlight;
     await stopChild(paused);
 
-    const second = await startServer(root);
-    servers.push(second);
-    if (second.pid > 0) spawnedPids.push(second.pid);
+    const second = trackServer(await startServer(root));
     await startChild(id, invocation, null);
     await registerDeployment(second.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
     await submitAdvance(second.ingressUrl, invocation, 120_000).catch(() => null);
@@ -762,8 +807,7 @@ describe("restate drills", () => {
     const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "c".repeat(64));
     const ledger = track(openLedger(scenarioLedgerPath(root)));
 
-    const first = await startServer(root);
-    if (first.pid > 0) spawnedPids.push(first.pid);
+    const first = trackServer(await startServer(root));
     const child = await startChild(id, invocation, null);
     await registerDeployment(first.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
     await submitAdvance(first.ingressUrl, invocation, 120_000);
@@ -771,14 +815,12 @@ describe("restate drills", () => {
     const before = ledger.status();
 
     // Stop everything, then delete ALL of Restate's durable state.
-    await first.stop();
+    await stopServer(first);
     await stopChild(child);
     rmSync(first.dataRoot, { recursive: true, force: true });
     expect(existsSync(first.dataRoot)).toBe(false);
 
-    const second = await startServer(root);
-    servers.push(second);
-    if (second.pid > 0) spawnedPids.push(second.pid);
+    const second = trackServer(await startServer(root));
     await startChild(id, invocation, null);
     await registerDeployment(second.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
 
@@ -936,9 +978,7 @@ describe("driver equivalence", () => {
     const idB = "equiv-restate";
     const rootB = scenario(idB);
     const ledgerB = track(openLedger(scenarioLedgerPath(rootB)));
-    const server = await startServer(rootB);
-    servers.push(server);
-    if (server.pid > 0) spawnedPids.push(server.pid);
+    const server = trackServer(await startServer(rootB));
     await startChild(idB, invocation, null);
     await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
     await submitAdvance(server.ingressUrl, invocation, 120_000);
@@ -979,5 +1019,54 @@ describe("driver equivalence", () => {
         }) +
         "\n",
     );
+  });
+});
+
+/**
+ * The teardown's own drill (P8-9-1).
+ *
+ * Every drill above stops its servers explicitly, so on a green run the sweep
+ * has nothing left to do and the registration discipline is never exercised.
+ * The orphan the P8-8G incident recorded appeared on a *red* run: an assertion
+ * threw between a spawn and its explicit stop, and a `restate-server` nobody
+ * had registered outlived the file. These two tests walk that path deliberately
+ * — the first spawns through the same helper the real drills use and simply
+ * never stops it, the second checks the pid afterwards — so the claim "a
+ * mid-test failure leaks nothing" is proved by the teardown actually running,
+ * not by reading the hook.
+ *
+ * Scope, stated so nobody reads more into it: this covers a failure *inside*
+ * the run, where hooks still execute. It does not cover the death of the
+ * runner itself — in a hard kill of the vitest process no hook runs at all,
+ * and that path belongs to the pool/provenance law in the roadmap, not here.
+ */
+describe("the teardown sweeps what no drill stopped", () => {
+  let sweptPid: number | null = null;
+
+  function alive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("leaves a spawned server registered and running when nothing stops it", async () => {
+    const root = scenario("p89-1-teardown-probe");
+    // The same helper every real drill spawns through: if registration only
+    // worked at the call sites above, it would have to fail here too.
+    const server = trackServer(await startServer(root));
+    sweptPid = server.pid;
+
+    expect(server.pid).toBeGreaterThan(0);
+    expect(alive(server.pid)).toBe(true);
+    // Deliberately no stop. This is the shape of a drill whose assertion threw
+    // before its explicit stop could run.
+  });
+
+  it("has killed that server by the next test, without anyone stopping it", () => {
+    if (sweptPid === null) throw new Error("the probe above did not record a pid");
+    expect(String(sweptPid) + ":" + String(alive(sweptPid))).toBe(String(sweptPid) + ":false");
   });
 });

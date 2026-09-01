@@ -1271,19 +1271,19 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **338 packet entries across 139 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **340 packet entries across 139 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
  * 17 (P8-8E) + 15 (P8-8E2) + 19 (P8-8F-srv) + 2 (P8-debrief-ruling) +
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
- * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-T-roadmap) =
- * 338 entries, with 199 duplicate entries.
+ * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
+ * 2 (P8-T-roadmap) = 340 entries, with 201 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 29 duplicates = 29   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 30 duplicates = 30   (`scripts/check-architecture.mjs`, every packet)
  *   3 paths ×  7 duplicates = 21   (`docs/ROADMAP.md`, the routes source and the
  *                                   build-server drill suite the causal packet
  *                                   seamed)
@@ -1297,9 +1297,9 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   sheet)
  *   7 paths ×  3 duplicates = 21
  *  15 paths ×  2 duplicates = 30
- *  29 paths ×  1 duplicate  = 29
+ *  30 paths ×  1 duplicate  = 30
  *
- * 29 + 21 + 36 + 25 + 8 + 21 + 30 + 29 = 199.
+ * 30 + 21 + 36 + 25 + 8 + 21 + 30 + 30 = 201.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1332,6 +1332,15 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * every packet — so distinct holds at 139 a third time while the entries move
  * 332 → 338. That a six-path packet introduces nothing new is the expected
  * shape for a fix that reaches an existing seam rather than adding a surface.
+ *
+ * P8-9-1 opens P8-9 and adds **no** path either, so distinct holds at 139 for a
+ * fourth packet running while the entries move 338 → 340. Its two group steps:
+ * this file's own row moves 29 → 30 duplicates (31 appearances, one per
+ * packet), and the runtime drill file gains its second in-phase appearance and
+ * so enters the ×1 row, which moves 29 → 30 paths. The drill file's only other
+ * in-phase owner is `P8W_WRITE_SET`; its earlier occurrences belong to P2C and
+ * P7P and are counted in those phases by the standing convention.
+ *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
  * arithmetic to the phase.
@@ -2242,6 +2251,23 @@ const P88G_CAUSAL_WRITE_SET = [
 ];
 
 /**
+ * P8-9-1: the drill teardown kills what it spawns.
+ *
+ * The first packet of P8-9, and the fix for a named incident rather than a
+ * hypothetical: a `restate-server` outlived the runtime lane and falsified it,
+ * because two drills recorded a spawned server's pid at the call site but never
+ * registered the handle the teardown sweeps. Any failure between the spawn and
+ * the explicit stop left a live server nothing was responsible for. Registration
+ * now happens in one act, inside a helper wrapping the spawn, so both the leak
+ * assertion and the teardown are fed by the same provenance and forgetting is
+ * impossible by construction. Test-side only: no `src/` path moves.
+ */
+const P89_1_WRITE_SET = [
+  "packages/runtime/test/drivers/drills/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2527,6 +2553,7 @@ const WRITE_SET = [
   ...P88G_UI_WRITE_SET,
   ...P88G_RECORD_WRITE_SET,
   ...P88G_CAUSAL_WRITE_SET,
+  ...P89_1_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
