@@ -1271,7 +1271,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **376 packet entries across 148 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **378 packet entries across 149 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1279,12 +1279,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 19 (P8-8F-ui) + 2 (P8-8F-record) + 21 (P8-8G-a) + 27 (P8-8G-b) +
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
- * 2 (P8-10b) + 2 (P8-T-roadmap) = 376 entries, with 228 duplicate entries.
+ * 2 (P8-10b) + 2 (P8-10c) + 2 (P8-T-roadmap) = 378 entries, with 229
+ * duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 36 duplicates = 36   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 37 duplicates = 37   (`scripts/check-architecture.mjs`, every packet)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the routes source, the
  *                                   build-server drill suite, and the lockfile)
  *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
@@ -1299,7 +1300,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *  12 paths ×  2 duplicates = 24
  *  35 paths ×  1 duplicate  = 35
  *
- * 36 + 28 + 30 + 25 + 20 + 30 + 24 + 35 = 228.
+ * 37 + 28 + 30 + 25 + 20 + 30 + 24 + 35 = 229.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1376,6 +1377,12 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * (one duplicate) and so sat in the ×1 row; a third occurrence moves it to
  * the ×2 row, which is why that row reads 14 → 15 paths (28 → 30) while the
  * ×1 row loses the path it left: 35 → 34 (35 → 34).
+ *
+ * P8-10c closes the phase's functional work and moves the table the same way
+ * its predecessor did: one new path (the certification matrix) and one entry
+ * for this file, so distinct goes 148 → 149, entries 376 → 378, and only this
+ * file's own row changes, 36 → 37. Both P8-10 documentation packets landing as
+ * a single band move each is the shape to expect from work that writes no code.
  *
  * P8-10b adds **one** path, the certification metrics memo, and one entry for
  * this file: distinct moves 147 → 148 and entries 374 → 376, so exactly one
@@ -2493,6 +2500,27 @@ const P810_B_WRITE_SET = [
 ];
 
 /**
+ * P8-10c: the certification matrix, and P8's functional close.
+ *
+ * Every criterion in the acceptance list — the twelve original bullets and the
+ * six the owner's addendum added — quoted verbatim rather than paraphrased, and
+ * mapped to the evidence that answers it or marked OWED with the reason. The
+ * compound bullets are split by word, because "unit tests" and "sighted QA" are
+ * different claims with different evidence and one row would have let the weaker
+ * one ride on the stronger.
+ *
+ * The matrix joins `PRODUCT_AUTHORITY_EXEMPT` in this same packet rather than
+ * as a later repair: quoting the criterion that forbids product participation
+ * requires naming the product, and a certification document that could not
+ * quote its own binding text would be summarising where it is supposed to be
+ * citing.
+ */
+const P810_C_WRITE_SET = [
+  "docs/certification/p8-matrix.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2785,6 +2813,7 @@ const WRITE_SET = [
   ...P89_4_WRITE_SET,
   ...P810_A_WRITE_SET,
   ...P810_B_WRITE_SET,
+  ...P810_C_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3776,6 +3805,15 @@ const PRODUCT_AUTHORITY_EXEMPT = new Set([
   "docs/ROADMAP.md",
   "docs/architecture/0001-control-plane-authority.md",
   "docs/architecture/0002-sqlite-event-ledger.md",
+  // P8-10c: the certification matrix maps every acceptance criterion to its
+  // evidence by quoting the roadmap's binding text verbatim — including the
+  // criterion that forbids product participation, which names the product to
+  // forbid it. A document that may not quote the prohibition it is certifying
+  // compliance with could not do its job, and paraphrasing the binding text
+  // would defeat the point of a matrix whose whole discipline is full quotation
+  // rather than summary. This exemption exists for exactly that class, and it
+  // is narrow: this one path, not the directory.
+  "docs/certification/p8-matrix.md",
   "scripts/check-architecture.mjs",
 ]);
 
