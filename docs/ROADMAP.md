@@ -1,6 +1,6 @@
 # Rottay Agent Control Plane — roadmap canónico
 
-Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / P7I_COMPLETE / NEXT_P8 / NO_PRODUCT_CUTOVER`
+Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / P7I_COMPLETE / P8_COMPLETE / NO_PRODUCT_CUTOVER`
 
 Fecha: 2026-08-27
 
@@ -690,16 +690,16 @@ permanece imposible hasta que esta compuerta y todos los criterios de
 P8 pasen.
 
 **Topología objetivo (cinco estratos, fence-verificables):** `kernel/`
-(contracts, api-contracts); `persistence/` (ledger); `domains/`
-(runtime, accounts, observation); `edges/` (adapters, durability);
-`entrypoints/` (daemon, server, cli, ui). Nombre de carpeta = nombre de
-paquete; máximo dos niveles. Reglas de capa: kernel sin imports internos
-salvo `api-contracts → contracts`; persistence → kernel; domains →
+(contracts, protocol); `persistence/` (ledger); `domains/`
+(runtime, accounts, observation); `edges/` (providers, durability);
+`entrypoints/` (daemon, gateway, cli, console). Nombre de carpeta =
+nombre de paquete; máximo dos niveles. Reglas de capa: kernel sin imports
+internos salvo `protocol → contracts`; persistence → kernel; domains →
 persistence+kernel con `runtime → accounts` como única arista
 dominio-dominio; edges → domains+persistence+kernel, con
 `durability → runtime` implementando el port y `edges →
 runtime/scenarios` declarado; entrypoints → cualquier estrato inferior;
-nada importa un entrypoint desde `src/`; ui → kernel/api-contracts
+nada importa un entrypoint desde `src/`; console → kernel/protocol
 solamente. Nombres npm `@acp/*` invariantes salvo la única excepción
 registrada `@acp/durability`.
 
@@ -757,9 +757,9 @@ scenarios y el movimiento de las constantes de topología al kernel).
 **Delta de elevación OSS (2026-08-31, adjudicada una vez):** ADR de
 topología renumerado a **0014** (0013 quedó ocupado por la primera write
 route) + regla del fence de numeración ADR única y contigua. Cada paquete
-se clasifica **público** (contracts, api-contracts, ledger, runtime,
-accounts, observation, adapters, durability) o **interno** (daemon,
-server, cli, ui) en la ley de estratos, y el fence lo aserta contra cada
+se clasifica **público** (contracts, protocol, ledger, runtime, accounts,
+observation, providers, durability) o **interno** (daemon, gateway, cli,
+console) en la ley de estratos, y el fence lo aserta contra cada
 manifest. La extensibilidad queda así: la unión de transports cerrada;
 `ProviderId` extensible por descriptor validado con registro estático en
 el composition root; los providers first-party se distribuyen con el
@@ -789,6 +789,17 @@ bytes, cerrando el hallazgo de registro de P8-8D-pre — y los cuatro
 objetivos de property de R2 aterrizan en G9: el round-trip de la gramática
 de rutas, canonical-json, la derivación de digest/path del artifact store y
 los invariantes de `decideRoadmapVersion`.
+
+**Restatement de nomenclatura (P8-E, el acto que G7 difirió):** la tabla
+de topología y la clasificación público/interno de esta tranche se leen
+arriba con los nombres aterrizados. La auditoría de 2026-08-31 las
+escribió como `api-contracts`, `adapters`, `server` y `ui`; G7
+(`446673f`) renombró esos cuatro paquetes — y sus especificadores
+`@acp/*` — a `protocol`, `providers`, `gateway` y `console`, y difirió a
+P8-E el restatement de esta sección; P8-E lo ejecuta aquí, con ADR 0015
+enmendando la nomenclatura de ADR 0014 sin tocar ese registro. La
+narrativa de los G-packets queda como se escribió: describe lo que cada
+packet aterrizó con los nombres que tenían entonces.
 
 #### Ruling del owner (2026-08-31): debrief final acotado y P9 sin prioridad actual
 

@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **509 packet entries across 215 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **513 packet entries across 216 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1347,16 +1347,16 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
- * 22 (P8-T-G10) = 509 entries, with 294 duplicate entries.
+ * 22 (P8-T-G10) + 4 (P8-E) = 513 entries, with 297 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 47 duplicates = 47   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 48 duplicates = 48   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
- *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the gateway's routes
- *                                   source and build-server suite, and the CLI
- *                                   suite)
+ *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
+ *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
+ *                                   build-server suite, and the CLI suite)
  *   5 paths ×  6 duplicates = 30   (the protocol surface and the workspace file)
  *   6 paths ×  5 duplicates = 30   (the contracts schema barrel, the protocol
  *                                   route and parity surface with its parity
@@ -1367,9 +1367,9 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   suite and the root README)
  *  11 paths ×  3 duplicates = 33
  *  24 paths ×  2 duplicates = 48
- *  48 paths ×  1 duplicate  = 48
+ *  49 paths ×  1 duplicate  = 49
  *
- * 47 + 10 + 28 + 30 + 30 + 20 + 33 + 48 + 48 = 294.
+ * 48 + 10 + 8 + 21 + 30 + 30 + 20 + 33 + 48 + 49 = 297.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1665,6 +1665,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * ×1 therefore reads forty-eight rather than forty-four: five arrivals, minus
  * the runtime manifest's departure into ×2, is a net of four.
+ *
+ * P8-E, the closure packet, adds **four entries, one of them novel** — the
+ * fifteenth ADR. Entries move 509 → 513, distinct 215 → 216, duplicates
+ * 294 → 297. Three band steps, one per duplicate, and the novel path causes
+ * none of them: this file's own row, ×47 → ×48; the roadmap, ×7 → ×8, which
+ * leaves the ×7 row at three paths and opens a ×8 row of its own; and the ADR
+ * index, entering ×1 for the first time — its only prior owner was P8-T2, so
+ * it carried no duplicate and sat in no row. ×1 therefore reads forty-nine.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3142,6 +3150,43 @@ const P8T_G10_WRITE_SET = [
 ];
 
 /**
+ * P8-E: the phase-closure packet — the certification computation, and the
+ * roadmap and ADR restatement it was owed.
+ *
+ * Four paths, one of them novel. The fence gains the one certification input
+ * it never had and the receipt that aggregates all five (§23 below): every
+ * literal package path in a live law position must RESOLVE in the current
+ * tree, with the epoch-frozen records named as the only non-resolving homes,
+ * and `STRUCTURAL_TOPOLOGY_CERTIFIED` printed as the output's last line only
+ * when the five live computations hold — folded from them, never typed as a
+ * sixth literal beside them.
+ *
+ * The roadmap's Estado line takes `P8_COMPLETE` and drops `NEXT_P8` with no
+ * successor marker (the reasoning lives beside `ROADMAP_STATUS_LITERAL`), and
+ * the topology section's pre-G7 names restate to the landed ones — the act G7
+ * deferred to this packet by name. The re-pin of `ROADMAP_SHA256` that
+ * follows is the first since kickoff, and exactly the one the roadmap
+ * authority itself named as expected.
+ *
+ * The ADR completion is Scenario B in the corpus's practiced shape (preaudit
+ * C2, adjudicated): a new record 0015 carries `Amends: ADR 0014`, the tables
+ * restated with the landed names, and the amendment convention itself. 0014
+ * stays byte-untouched, which is why it is NOT in this array, and `index.md`
+ * gains the row and the "amended by 0015" status. Nothing under
+ * `docs/certification/` moves: the matrix is a dated record the debrief reads
+ * as such.
+ *
+ * Three of the four paths are P8-owned already and ride as duplicates; the
+ * fifteenth ADR is the one novel path.
+ */
+const P8E_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "docs/ROADMAP.md",
+  "docs/architecture/index.md",
+  "docs/architecture/0015-topology-nomenclature-restatement.md",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3445,6 +3490,7 @@ const WRITE_SET = [
   ...P8T_G9_WRITE_SET,
   ...P8T_G9B_WRITE_SET,
   ...P8T_G10_WRITE_SET,
+  ...P8E_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3575,7 +3621,7 @@ function assertAdrNumbering() {
 }
 
 const ROADMAP_SHA256 =
-  "7ee1f2e35a1c7e1b089cfd614109203c400abb0150126a2d8fba51b7d99c6682";
+  "ccbab993b06a1ae3f0776e23b1a658bdf8c46f9585eb0bd387e2d7daf35e343a";
 
 /**
  * The Estado line P7 closure is allowed to have produced.
@@ -3617,12 +3663,39 @@ const ROADMAP_SHA256 =
  * omission. The contracts and the mappings are proven; nothing is running on
  * them. P8 opens as *next*, not as started.
  *
- * NO_PRODUCT_CUTOVER stays in the same line and must stay there. Nothing P7 or
- * P7I built is in service, and adoption happens once, after P8 certification
- * and under a separate P9 authorisation.
+ * P8 closes on the same kind of evidence and on one thing more: a
+ * computation. The functional packets (P8-1 through P8-10c) and the
+ * structural tranche (P8-T, G0 through G10) each closed on committed commits
+ * behind independent receipts, and `STRUCTURAL_TOPOLOGY_CERTIFIED` — the
+ * receipt §23 folds from the five live inputs ADR 0014 names — is the phase
+ * gate the roadmap made a computation rather than a declaration
+ * ("`P8_COMPLETE` igual", in its own words). The literal below claims
+ * P8_COMPLETE, and the same run that enforces it prints the certification as
+ * its last line or fails: the claim and its evidence cannot be separated.
+ *
+ * What P8 completion does NOT mean: nothing is adopted, nothing publishes,
+ * and P9 has not been asked for. The four quantitative acceptance criteria
+ * have their machinery landed and digest-pinned but no production
+ * measurement, because production does not exist; that decision — accept as
+ * scoped, re-scope, or hold — is the owner's, taken at the bounded debrief on
+ * the committed state, and it is not a claim this line makes.
+ *
+ * **Why the marker ends with P8 (P8-E, C4).** Every closure before this one
+ * appended the closed phase and advanced the NEXT marker, because the next
+ * phase was queued. This one appends P8_COMPLETE and advances nothing: the
+ * owner's ruling of 2026-08-31 defers P9 with no priority and no ETA, and V2
+ * is a separate roadmap rather than a phase of this one. A `NEXT_P9` that
+ * nothing has authorized would be this fence pinning a false statement,
+ * which is worse than a convention with one recorded break. The marker
+ * returns when the owner queues a phase, and not before.
+ *
+ * NO_PRODUCT_CUTOVER stays in the same line and must stay there. It is the
+ * one invariant closure does not touch: nothing P7, P7I or P8 built is in
+ * service, and adoption happens once, after this certification and under a
+ * separate P9 authorisation the owner has not given.
  */
 const ROADMAP_STATUS_LITERAL =
-  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / P7I_COMPLETE / NEXT_P8 / NO_PRODUCT_CUTOVER`";
+  "Estado: `P0_COMPLETE / P1_COMPLETE / P2_COMPLETE / P3_COMPLETE / P4_COMPLETE / P5_COMPLETE / P6_COMPLETE / P7_COMPLETE / P7I_COMPLETE / P8_COMPLETE / NO_PRODUCT_CUTOVER`";
 
 /** Structural statements the roadmap must still make after any re-pin. */
 const ROADMAP_LITERALS = [
@@ -4008,6 +4081,28 @@ function git(args) {
 }
 
 /**
+ * The five certification inputs, recorded by the laws that compute them (P8-E).
+ *
+ * ADR 0014 §Consequences defines `STRUCTURAL_TOPOLOGY_CERTIFIED` as a
+ * computation over five inputs: the layer table green, zero stale paths, the
+ * move-map fully applied, no literal package path in any law, and every
+ * path-scoped law reporting a non-empty scope. Each is a law this file runs —
+ * four of them since G0 and G1', the fifth since P8-E — and each law writes
+ * its result here, in the values it computed, at the point it computed them.
+ * The receipt at the end of this file (§23) is folded from these entries and
+ * from nothing else: a `null` is an input that did not hold, the receipt is
+ * withheld, and the fence fails rather than printing a sixth literal beside
+ * five computations.
+ */
+const certification = {
+  layerTable: null,
+  retiredPaths: null,
+  moveMap: null,
+  literalPaths: null,
+  pathScopedLaws: null,
+};
+
+/**
  * Every path-shaped surface in this file, with the law it scopes (P8-T G0, L3).
  *
  * A law that selects files by path is only as good as its selection. If the
@@ -4057,8 +4152,10 @@ const PATH_SCOPED_LAWS = [
  * before this helper several laws could not tell them apart. A scope that
  * empties out is a mis-scoped law, not a clean tree.
  */
+let emptyScopes = 0;
 function requireScope(lawName, count) {
   if (count === 0) {
+    emptyScopes += 1;
     fail(
       lawName +
         " selected no files; a path-scoped law with an empty scope reports no violations and proves nothing",
@@ -4087,6 +4184,12 @@ function assertPathScopedInventory(fenceSource) {
         callSites +
         " requireScope call site(s); every path-shaped surface must be registered",
     );
+  } else if (PATH_SCOPED_LAWS.length > 0) {
+    // Certification input 5, the first half: the register and the call sites
+    // agree, and the register is not empty. The second half — no registered
+    // law selected nothing — is `emptyScopes`, read at receipt time, after
+    // every call site has run.
+    certification.pathScopedLaws = { registered: PATH_SCOPED_LAWS.length };
   }
   notes.push(PATH_SCOPED_LAWS.length + " path-scoped laws registered, each fail-closed on an empty scope");
 }
@@ -4165,6 +4268,11 @@ for (const relativePath of RETIRED_PATHS) {
 }
 if (allRetiredAbsent) {
   notes.push("retired path absent: " + RETIRED_PATHS.join(", "));
+  // Certification input 2: zero stale paths, on a scope that is not empty. A
+  // retired list with nothing in it would make "all absent" vacuously true.
+  if (RETIRED_PATHS.length > 0) {
+    certification.retiredPaths = { retired: RETIRED_PATHS.length };
+  }
 }
 
 // --- 2. write-set conformance ---------------------------------------------
@@ -5006,6 +5114,7 @@ if (tracked.status === 0) {
 const PUBLIC_STRATA = Object.keys(PACKAGE_STRATA).filter((stratum) => stratum !== "entrypoints");
 
 if (tracked.status === 0) {
+  const failuresBeforeClassification = failures.length;
   const presentPackages = new Set();
   for (const relativePath of tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
     const name = packageOf(relativePath, PACKAGE_STRATA);
@@ -5099,6 +5208,29 @@ if (tracked.status === 0) {
       (classified - publicCount) +
       " entrypoints): the public side MIT and unprivate since G10, the entrypoints private and UNLICENSED, the root private and MIT",
   );
+
+  // Certification input 1: the layer table green. The strata table and the
+  // tree agree in both directions — every present package classified exactly
+  // once, every declared member present — every manifest asserted, and this
+  // law recorded no failure. The values are the ones the note above printed,
+  // not a restatement of them: a table that names a package the tree lacks,
+  // or a tree with a package the table lacks, withholds the certification by
+  // equality against the table rather than against a typed count.
+  const declaredMembers = Object.values(PACKAGE_STRATA).flat();
+  if (
+    failures.length === failuresBeforeClassification &&
+    classified > 0 &&
+    classified === presentPackages.size &&
+    declaredMembers.length === presentPackages.size &&
+    declaredMembers.every((name) => presentPackages.has(name))
+  ) {
+    certification.layerTable = {
+      packages: classified,
+      strata: Object.keys(PACKAGE_STRATA).length,
+      publicSide: publicCount,
+      entrypoints: classified - publicCount,
+    };
+  }
 }
 
 // --- the G1' move map, and the two laws it makes checkable ------------------
@@ -5484,6 +5616,18 @@ if (tracked.status === 0) {
         packageFiles.length +
         " tracked package file(s) all resolve two levels down",
     );
+    // Certification input 3: the move-map fully applied — nothing under any
+    // retired prefix, every package file two levels down — on a scope that is
+    // not empty and a record that is not empty. `requireScope` above already
+    // failed an empty scope; the guard here keeps the receipt honest about it
+    // rather than trusting that the failure was recorded elsewhere.
+    if (packageFiles.length > 0 && G1_MOVE_MAP.length > 0) {
+      certification.moveMap = {
+        pairs: G1_MOVE_MAP.length,
+        retiredPrefixes: oldPrefixes.length,
+        packageFiles: packageFiles.length,
+      };
+    }
   }
 }
 
@@ -9542,6 +9686,279 @@ if (apiReference === null) {
   }
 }
 
+// --- 23. STRUCTURAL_TOPOLOGY_CERTIFIED: the fifth input, and the receipt (P8-E)
+//
+// ADR 0014 §Consequences names five inputs. Four were laws before this packet
+// and print their own `✓` lines above; the fifth — "no literal package path in
+// any law" — had no machinery at all, so the certification was four computed
+// facts and one asserted by discipline. This section is that machinery, in the
+// form the P8-E preaudit corrected (C1): **resolution, not absence.**
+//
+// Absence as first briefed fails on this very file. The live laws name paths
+// by literal in twenty-plus places — `HTTP2_ALLOWED_FILE`, `SDK_HOME_PREFIX`,
+// `TEST_TREE_SCANNED_PREFIXES`, the `readIfPresent` calls that pin a manifest
+// or a barrel, the G10 surface extractors — and a carve-out wide enough to
+// admit them would admit anything. The honest reading of the ADR's sentence is
+// the one a rename actually tests: a literal aimed at a path that no longer
+// exists is a law scoped to nothing, and "scoped to nothing" is the failure
+// this tranche exists to make impossible (G0, L4). So the law is: **every
+// literal `packages/...` path in a live law position must RESOLVE in the
+// current tree** — the file exists, or the directory does, or for a glob the
+// longest literal prefix before its first metacharacter does. A future rename
+// then fails every law literal aimed at the old name on the first run, and a
+// valid current literal passes.
+//
+// **The epoch homes, named exactly — the only positions where a non-resolving
+// literal is lawful.** Each is a record, not a rule applied to the tree:
+//
+//   • `RETIRED_PATHS` — paths that must NOT exist. A resolving entry there is
+//     the retired-path law's own failure, so resolution is the wrong question.
+//   • `G1_MOVE_MAP`, both columns — G1's frozen record (G1' C3.2). Its old
+//     sides never resolve by construction, and its new sides are what G1'
+//     produced, not what G7 renamed afterwards: the table is rollback
+//     authority, and rewriting it would forge the record it exists to keep.
+//   • every `*_WRITE_SET` array — the phase records, frozen at the G0 epoch,
+//     admitting declared-future paths by design (§1) and filtered through
+//     `RETIRED` rather than rewritten.
+//   • comment lines — prose, including the frozen packet comments that quote
+//     paths as history.
+//
+// Everything else in this file is a live law position. Two things the scan
+// deliberately does not count as a path literal: a failure-message string that
+// begins with a path and continues in prose (the literal a law actually reads
+// is the one it hands to `readIfPresent` or compares with `===`, and that one
+// is scanned), and anything built by concatenation or template (there is no
+// literal to resolve). A literal is a path only when it is a whole string with
+// no whitespace in it.
+//
+// **The scan cannot pass by seeing nothing.** Its coverage is pinned against
+// values this file already holds in memory: every prefix in
+// `TEST_TREE_SCANNED_PREFIXES`, every `PATH_SCOPED_LAWS` scope that is itself
+// a path literal by the definition above (a scope that continues in prose is
+// a description, not a path), and the single-file pins named by constant. An
+// extractor that
+// stopped matching would miss those, and the miss fails here by name — the
+// same pin-against-derivation shape the register uses for its call sites.
+//
+// The comment classification relies on a property this file has kept since P0:
+// block comments are written one line per `*`, and line comments start their
+// line. A trailing `//` on a code line is cut before the line is scanned,
+// quote-aware, so a comment after code is still prose.
+//
+// **The receipt.** One line, `STRUCTURAL_TOPOLOGY_CERTIFIED`, printed as the
+// output's last line and only on a passing run, folded from the five entries
+// the laws wrote into `certification` — never typed beside them. Every number
+// in it is the number the law computed: a synthetic tree with thirteen
+// packages prints thirteen, and a tree whose table names a package it lacks
+// prints nothing and fails. A `null` entry is an input that did not hold; the
+// receipt is withheld and the withholding is itself a failure, so a regression
+// in any input fails the certification rather than passing silently — which
+// is the whole difference between a computation and a declaration.
+
+const FENCE_SOURCE_PATH = fileURLToPath(import.meta.url);
+
+/** The epoch-frozen records, by name — the exemption list above, as a test. */
+const EPOCH_HOME_NAMES = /^(?:RETIRED_PATHS|G1_MOVE_MAP|[A-Z0-9_]+_WRITE_SET)$/;
+
+/** A whole-string package path, with or without glob metacharacters. */
+const PACKAGE_PATH_LITERAL = /^packages\/[^\s"'`]+$/;
+
+/** Cut a trailing line comment from a code line, honouring string quotes. */
+function codeBeforeLineComment(line) {
+  let quote = null;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quote !== null) {
+      if (char === "\\") index += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") quote = char;
+    else if (char === "/" && line[index + 1] === "/") return line.slice(0, index);
+  }
+  return line;
+}
+
+/** Does a literal path resolve in the tree: the file, the directory, or a glob's literal prefix? */
+function literalPathResolves(path) {
+  const cut = path.search(/[*?{[]/);
+  const prefix = cut === -1 ? path : path.slice(0, cut);
+  try {
+    statSync(join(REPO_ROOT, prefix));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+{
+  const lines = readFileSync(FENCE_SOURCE_PATH, "utf8").split("\n");
+
+  // The epoch homes by span: a top-level array whose name the exemption lists,
+  // from its declaration to the closing bracket that ends the statement.
+  const homeSpans = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const opened = /^const ([A-Z0-9_]+) = (?:Object\.freeze\()?\[/.exec(lines[index]);
+    if (opened === null || !EPOCH_HOME_NAMES.test(opened[1])) continue;
+    let end = index;
+    while (end < lines.length && !/\]\)?;\s*$/.test(lines[end])) end += 1;
+    homeSpans.push({ name: opened[1], start: index, end });
+  }
+  const inHome = (index) => homeSpans.some((span) => index >= span.start && index <= span.end);
+
+  const resolution = new Map();
+  const resolves = (path) => {
+    if (!resolution.has(path)) resolution.set(path, literalPathResolves(path));
+    return resolution.get(path) === true;
+  };
+
+  const live = [];
+  let recordLiterals = 0;
+  let recordUnresolved = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index];
+    if (/^\s*(?:\/\/|\/\*|\*)/.test(raw)) continue;
+    const home = inHome(index);
+    const code = home ? raw : codeBeforeLineComment(raw);
+    for (const match of code.matchAll(/(["'])((?:\\.|(?!\1)[^\\\n])*)\1/g)) {
+      const value = match[2];
+      if (!PACKAGE_PATH_LITERAL.test(value)) continue;
+      if (home) {
+        recordLiterals += 1;
+        if (!resolves(value)) recordUnresolved += 1;
+        continue;
+      }
+      live.push({ line: index + 1, value });
+    }
+  }
+
+  // Coverage, pinned against the live arrays and constants this file holds in
+  // memory: an extractor that reads nothing cannot pass by reading nothing.
+  const liveValues = new Set(live.map((entry) => entry.value));
+  const mustHaveSeen = [
+    HTTP2_ALLOWED_FILE,
+    SDK_HOME_PREFIX,
+    LAUNCH_DRILL_FILE,
+    SERVER_HANDLE_FILE,
+    PROBE_FILE,
+    TEMPLATE_PATH,
+    ...TEST_TREE_SCANNED_PREFIXES,
+    ...PATH_SCOPED_LAWS.map((entry) => entry.scope).filter((scope) => PACKAGE_PATH_LITERAL.test(scope)),
+  ];
+  let unseen = 0;
+  for (const value of mustHaveSeen) {
+    if (liveValues.has(value)) continue;
+    unseen += 1;
+    fail(
+      "the literal-path scan did not see " +
+        value +
+        ", which a live law holds by name; the extractor is no longer reading this file",
+    );
+  }
+  if (live.length === 0) {
+    fail("the literal-path scan selected no live literal; a scan with an empty scope proves nothing");
+  }
+  if (homeSpans.length === 0) {
+    fail("the literal-path scan found no epoch home; the exemption it names has nothing to apply to");
+  }
+
+  let unresolved = 0;
+  for (const { line, value } of live) {
+    if (resolves(value)) continue;
+    unresolved += 1;
+    fail(
+      "scripts/check-architecture.mjs:" +
+        line +
+        " names " +
+        value +
+        " in a live law position and it does not resolve in the tree; a law aimed at a path that no longer exists is a law scoped to nothing — rewrite the literal, or if the path is history move it into an epoch home",
+    );
+  }
+
+  // Certification input 4: every live literal resolves, on a scan that saw
+  // what it had to see. Counted, never typed.
+  if (live.length > 0 && homeSpans.length > 0 && unseen === 0 && unresolved === 0) {
+    certification.literalPaths = {
+      live: live.length,
+      distinct: liveValues.size,
+      record: recordLiterals,
+      recordUnresolved,
+      homes: homeSpans.length,
+    };
+    notes.push(
+      live.length +
+        " literal package paths in live law positions (" +
+        liveValues.size +
+        " distinct) all resolve in the tree; " +
+        recordLiterals +
+        " more sit in the " +
+        homeSpans.length +
+        " epoch-frozen records, " +
+        recordUnresolved +
+        " of them unresolved by design",
+    );
+  }
+}
+
+// --- the receipt, folded from the five entries ------------------------------
+//
+// Each row names the input in ADR 0014's words, reads the entry its law wrote,
+// and renders the values that law computed. Input 5 has two halves: the
+// register agreeing with its call sites (written by the inventory law) and no
+// call site having selected nothing (`emptyScopes`, complete only now, after
+// every path-scoped law has run).
+const CERTIFICATION_INPUTS = [
+  [
+    "the layer table green",
+    certification.layerTable,
+    (value) =>
+      value.packages +
+      " packages across " +
+      value.strata +
+      " strata (" +
+      value.publicSide +
+      " public-side, " +
+      value.entrypoints +
+      " entrypoints)",
+  ],
+  ["zero stale paths", certification.retiredPaths, (value) => value.retired + " retired paths absent"],
+  [
+    "the move-map fully applied",
+    certification.moveMap,
+    (value) =>
+      value.pairs +
+      " move-map pairs applied across " +
+      value.retiredPrefixes +
+      " retired prefixes, " +
+      value.packageFiles +
+      " package files two levels down",
+  ],
+  [
+    "no unresolved literal package path in any law",
+    certification.literalPaths,
+    (value) => value.live + " live law literals resolving, " + value.record + " record literals exempt by name",
+  ],
+  [
+    "every path-scoped law reporting a non-empty scope",
+    emptyScopes === 0 ? certification.pathScopedLaws : null,
+    (value) => value.registered + " path-scoped laws fail-closed on an empty scope",
+  ],
+];
+
+const withheld = CERTIFICATION_INPUTS.filter(([, value]) => value === null).map(([name]) => name);
+let certificationReceipt = null;
+if (withheld.length > 0) {
+  fail(
+    "STRUCTURAL_TOPOLOGY_CERTIFIED withheld; the input(s) that did not hold: " +
+      withheld.join("; ") +
+      ". P8_COMPLETE on the Estado line rests on all five",
+  );
+} else {
+  certificationReceipt =
+    "STRUCTURAL_TOPOLOGY_CERTIFIED: " +
+    CERTIFICATION_INPUTS.map(([, value, render]) => render(value)).join("; ");
+}
+
 for (const note of notes) {
   console.log("  ✓ " + note);
 }
@@ -9557,3 +9974,12 @@ if (failures.length > 0) {
 }
 
 console.log("  ✓ architecture fence passed");
+
+// The receipt is the last line, and only on a passing run. An aggregate over
+// five inputs means nothing on a run that failed elsewhere, and a reader who
+// tails the output should find the certification exactly where the fence
+// stopped. A withheld receipt never reaches this line: §23 recorded it as a
+// failure, and the fence exited above.
+if (certificationReceipt !== null) {
+  console.log("  ✓ " + certificationReceipt);
+}
