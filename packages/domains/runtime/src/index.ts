@@ -187,7 +187,6 @@ export {
 export type { PlanStep } from "./core/lifecycle/index.js";
 
 export {
-  DRILL_ROOT_SEGMENTS,
   applyEffect,
   drillRoot,
   probeEffect,

@@ -36,8 +36,6 @@ export {
   OBSERVATION_ROOT_SEGMENTS,
   admitArtifact,
   checkArtifactName,
-  observationRootPath,
-  redactObservationPath,
   resolveObservationRoot,
 } from "./roots/index.js";
 
@@ -111,5 +109,4 @@ export {
   SHADOW_LEDGER_DIRECTORY,
   ShadowLedgerError,
   buildShadowLedger,
-  shadowLedgerDirectory,
 } from "./shadow-ledger/index.js";

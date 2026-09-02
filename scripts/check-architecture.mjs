@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **474 packet entries across 194 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **477 packet entries across 194 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1346,12 +1346,12 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
- * 3 (P8-T-G8) = 474 entries, with 280 duplicate entries.
+ * 3 (P8-T-G8) + 3 (P8-T-G8-diet) = 477 entries, with 283 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 43 duplicates = 43   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 44 duplicates = 44   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the gateway's routes
  *                                   source and build-server suite, and the CLI
@@ -1365,10 +1365,10 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   the console styles sheet and the
  *                                   accounts-view suite)
  *  12 paths ×  3 duplicates = 36
- *  20 paths ×  2 duplicates = 40
- *  47 paths ×  1 duplicate  = 47
+ *  22 paths ×  2 duplicates = 44
+ *  45 paths ×  1 duplicate  = 45
  *
- * 43 + 10 + 28 + 30 + 30 + 16 + 36 + 40 + 47 = 280.
+ * 44 + 10 + 28 + 30 + 30 + 16 + 36 + 44 + 45 = 283.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1599,6 +1599,18 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * That the largest law in the fence — C5's correspondence over twelve trees —
  * costs the fold three duplicates is the honest measure of the convention: the
  * arithmetic counts paths touched, not work done.
+ *
+ * P8-T-G8-diet matches G8's shape exactly: no distinct path, three duplicates,
+ * entries 474 → 477 and duplicates 280 → 283. Three band steps, one per declared
+ * path: this file's own row, 43 → 44; and the runtime and observation barrels
+ * each stepping from the ×1 row to the ×2 row. Those two moving together is why
+ * ×1 reads forty-five rather than forty-seven and ×2 reads twenty-two rather
+ * than twenty — two departures and two arrivals, the same two paths on both
+ * sides of the ledger.
+ *
+ * Four export names left their barrels and the fold did not notice, which is the
+ * arithmetic being honest about what it measures: it counts paths declared, not
+ * surface removed. §21c is where the removal itself is recorded.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -2934,6 +2946,29 @@ const P8T_G8_WRITE_SET = [
 ];
 
 /**
+ * P8-T G8-diet: the barrel diet, run and recorded.
+ *
+ * G8 measured 367 zero-importer pinned names and deferred the cutting so the
+ * diff would be reviewable. This is that diff, and it is four lines: one in the
+ * runtime barrel, three in observation's. Every other measured name is kept, by
+ * class, under the rule §21c states — and §21c is where the outcome, its two
+ * degeneracy disclosures and the certification gate's unblocking are recorded.
+ *
+ * The smallness is the finding, not a failure to look: the pins were built as
+ * deliberate closed vocabularies rather than as accumulated leakage, so a gate
+ * that admits almost nothing is the gate agreeing with the design. It is also
+ * why §21c says plainly what this outcome cannot be read to mean.
+ *
+ * All three paths are P8-owned, so the packet adds three duplicates and no
+ * novel path.
+ */
+const P8T_G8D_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/observation/src/index.ts",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3233,6 +3268,7 @@ const WRITE_SET = [
   ...P8T_G6_WRITE_SET,
   ...P8T_G7_WRITE_SET,
   ...P8T_G8_WRITE_SET,
+  ...P8T_G8D_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -6506,8 +6542,6 @@ const OBSERVATION_PUBLIC_EXPORTS = [
   "OBSERVATION_ROOT_SEGMENTS",
   "admitArtifact",
   "checkArtifactName",
-  "observationRootPath",
-  "redactObservationPath",
   "resolveObservationRoot",
   // P3C: the baseline and the disposable shadow ledger.
   "AcceptanceBaseline",
@@ -6535,7 +6569,6 @@ const OBSERVATION_PUBLIC_EXPORTS = [
   "SHADOW_LEDGER_DIRECTORY",
   "ShadowLedgerError",
   "buildShadowLedger",
-  "shadowLedgerDirectory",
   // P7I-3: the token rollups. A pure fold over the task stream, with its own
   // bounded value shapes -- no accounts edge, and no ledger import outside the
   // one site that is allowed one.
@@ -7120,16 +7153,51 @@ if (tracked.status === 0) {
 // land with G9's new test classes.** The asymmetry is written down with its
 // rider rather than carried in someone's memory.
 //
-// **G8-diet scheduling, and the ordering it creates (C3, adjudicated).** The
-// measurement found 392 zero-importer pinned export names. Dead-vs-deliberate
-// vocabulary is a per-module semantic judgement the measurement deliberately did
-// not make, and cutting 392 names inside this packet would produce a diff nobody
-// could audit — so the diet rides its own packet, **G8-diet, immediately after
-// this one**. The consequence is an ordering law and it is recorded here rather
-// than only in a brief: **`STRUCTURAL_TOPOLOGY_CERTIFIED` is not computable
-// until G8-diet lands**, because the roadmap's G8 clause (barrel diets under the
-// zero-importer gate) is one of the certification's own inputs. The deferral
-// defers the diff, never the gate.
+// **The barrel diet: run, and its outcome (G8-diet).** G8 measured 367
+// zero-importer pinned export names and deferred the cutting to its own packet
+// so the diff would be auditable. That packet has landed, and this is the living
+// record of what it did — the ordering it created is discharged here:
+// **`STRUCTURAL_TOPOLOGY_CERTIFIED` is no longer blocked on the diet.** The
+// roadmap's G8 clause (barrel diets under the zero-importer gate) is one of the
+// certification's inputs, and the gate has now been run rather than promised.
+//
+// The rule, in the form that can be tested rather than admired: **a name earns
+// its barrel place iff an independent party must agree with its value or
+// behavior** — vocabularies, document shapes, verdict-producing operations,
+// deterministic identity. Machinery whose value only means something on this
+// machine goes. Applied to all 367:
+//
+//   contracts   23  keep all — the frozen-contracts package IS its closed
+//                   vocabulary; the pin exists to hold it complete
+//   durability   7  keep all — the driver and its options/results are the port
+//                   implementation
+//   providers   82  keep all — the adapter surface is the product; the
+//                   execution wiring that consumes it lands downstream
+//   accounts    60  keep all — domain vocabulary, document shapes, operations
+//   runtime    105  keep 104, diet 1 — `DRILL_ROOT_SEGMENTS`, drill machinery
+//   observation 60  keep 57, diet 3 — `observationRootPath`,
+//                   `redactObservationPath`, `shadowLedgerDirectory`: path
+//                   computation, not vocabulary
+//   daemon      30  keep all — see the second disclosure below
+//
+// Four names dieted, 363 kept by class. **Two things this outcome does NOT mean,
+// stated so the certification cannot launder them (C1):**
+//
+//   (a) **daemon's keep-all is closure-guarding, not consumption evidence.** The
+//       layer law says nothing imports an entrypoint, so an entrypoint's
+//       zero-importer status is permanent by construction. The gate is
+//       structurally degenerate there: it can never admit a daemon name, so its
+//       silence about them is not a finding.
+//   (b) **the outcome is small for two structural reasons**, not because the
+//       surfaces were audited and found lean: the pre-release reading law counts
+//       only in-repo consumers, and the wiring that will consume the provider
+//       and adapter surfaces lands downstream. "The diet ran" is not "the
+//       surface was audited for consumption" — that audit is not yet possible.
+//
+// The diet removes the barrel entry only. Every dieted declaration still exists
+// and is still exported by its own module; module-level export is not surface,
+// and each of the four modules' own doc comments already disclaimed the
+// consumption its barrel entry was advertising.
 //
 // Golden fixtures: measured absent. Zero JSON/log/golden blobs under every
 // tracked `test/` tree, and no blob duplicated except the boilerplate
@@ -7315,7 +7383,6 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "DATA_ROOT_LOCAL",
   "DATA_ROOT_RESTATE",
   "DATA_ROOT_TOOLS",
-  "DRILL_ROOT_SEGMENTS",
   "DUPLICATE_TASK_ID",
   "DeriveEventCoordinate",
   "DuplicateTaskId",
