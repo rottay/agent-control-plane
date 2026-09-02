@@ -126,3 +126,13 @@ export {
   loadPolicyRegistry,
   routeWithPolicy,
 } from "./policy/index.js";
+
+// V2-B1a: the resolution entry point. `resolveRoute` composes the policy's
+// choice onto the seam type the adapters execute — provider from the chosen
+// registry entry, account from the ranking, transport from the request, model
+// and policy version from the choice, and the instant from the caller, never
+// from a clock. What it returns is `ResolvedRoute`, owned by `@acp/contracts`:
+// a consumer imports the function from here and the type from the kernel. The
+// type is deliberately not re-exported from this barrel, and the fence's pin
+// refuses a barrel that carries the name.
+export { resolveRoute } from "./resolution/index.js";

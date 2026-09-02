@@ -1336,7 +1336,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **515 packet entries across 216 distinct paths**: 2 (P8-D) +
+ * P8, with the V2 packets that continue its coordinates, is therefore **520
+ * packet entries across 218 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1347,13 +1348,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
- * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) = 515 entries, with 299 duplicate
- * entries.
+ * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) = 520 entries, with 302
+ * duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 49 duplicates = 49   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 50 duplicates = 50   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
  *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
@@ -1367,10 +1368,10 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   the console styles sheet and the
  *                                   accounts-view suite)
  *  11 paths ×  3 duplicates = 33
- *  24 paths ×  2 duplicates = 48
+ *  25 paths ×  2 duplicates = 50
  *  49 paths ×  1 duplicate  = 49
  *
- * 49 + 10 + 8 + 21 + 30 + 35 + 16 + 33 + 48 + 49 = 299.
+ * 50 + 10 + 8 + 21 + 30 + 35 + 16 + 33 + 50 + 49 = 302.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1682,6 +1683,18 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * row, ×48 → ×49, as every packet moves it; and the root README, ×4 → ×5 —
  * the single move behind BOTH of those rows changing: ×5 reads seven because
  * it arrived, ×4 reads four because it left.
+ *
+ * V2-B1a, the first V2 packet and the first stone of the B1 split, adds
+ * **five entries, two of them novel** — the resolution module and its
+ * mirrored suite. It continues the P8 coordinates rather than opening a count
+ * of its own: every path it revisits is P8-owned, so the fold has nowhere
+ * else to put it. Entries move 515 → 520, distinct 216 → 218, duplicates
+ * 299 → 302. Three band steps, one per duplicate, and the two novel paths
+ * cause none of them: this file's own row, ×49 → ×50; the accounts barrel,
+ * ×1 → ×2 (owners before: P8-5 and G7; now plus V2-B1a), so ×2 reads
+ * twenty-five; and the policy module, entering ×1 for the first time — its
+ * only prior owner was P8-5, so it carried no duplicate and sat in no row.
+ * ×1 therefore holds at forty-nine: one arrival, one departure.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3215,6 +3228,46 @@ const P8E_WRITE_SET = [
 const P8E2_WRITE_SET = ["README.md", "scripts/check-architecture.mjs"];
 
 /**
+ * V2-B1a: routing+policy assembly — the resolved route becomes a public,
+ * pinned entry point of `@acp/accounts`.
+ *
+ * The first V2 packet, and the first of the three B1 splits the B0
+ * measurement ruled: B1a is accounts-only, single-stratum, no cross-package
+ * wiring; B1b is the execution-port substitution across providers, runtime,
+ * durability and the daemon; B1c is the ledger/read-model carriage of the
+ * recorded route and the redaction proof over it, and depends on both. B1a
+ * wires nothing across a package boundary. `routeWithPolicy` already
+ * composes `rankAccounts` beneath; this packet composes that choice onto the
+ * seam type the adapters execute — provider from the chosen registry entry,
+ * account from the head of the ranking, transport from the request, model
+ * and policy version from the choice, and the instant from the caller.
+ *
+ * The preaudit's three corrections are the design at the bytes. C1: the seam
+ * type is `ResolvedRoute`, owned by `@acp/contracts`; accounts imports it
+ * and never re-exports or redeclares it, so the barrel gains the function
+ * name and not the type's, and the pin refuses a barrel that carries it. C2:
+ * `resolvedAt` is caller-supplied, never a clock read — the coordinates law,
+ * since the route lands in a ledger event. C3: the suite parses the output
+ * through contracts' own schema, negative refinement included, and the pin
+ * delta is exactly the one name.
+ *
+ * Five paths. Two are novel — the resolution module and its mirrored suite.
+ * Three are P8-owned and ride as duplicates: this file, the accounts barrel,
+ * and the policy module, the last declared as a ceiling in case export
+ * visibility required it (it did not; the file is byte-untouched). The
+ * capability policy document is read by the suite and never written; its
+ * digest pin below is the gate, and the accounts README is not registered in
+ * `README_SURFACE_CLAIMS`, so the barrel's growth leaves no law red.
+ */
+const V2B1A_WRITE_SET = [
+  "packages/domains/accounts/src/resolution/index.ts",
+  "packages/domains/accounts/test/resolution/index.test.ts",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/src/policy/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3520,6 +3573,7 @@ const WRITE_SET = [
   ...P8T_G10_WRITE_SET,
   ...P8E_WRITE_SET,
   ...P8E2_WRITE_SET,
+  ...V2B1A_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -8288,6 +8342,10 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "buildPolicyRegistry",
   "loadPolicyRegistry",
   "routeWithPolicy",
+  // V2-B1a: the resolution entry point. The function only — `ResolvedRoute`
+  // stays owned by `@acp/contracts` and is imported there, never re-exported
+  // from this barrel (C1); a barrel that carried the name fails this pin.
+  "resolveRoute",
 ];
 
 const accountsIndex = readIfPresent("packages/domains/accounts/src/index.ts");
