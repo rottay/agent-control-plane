@@ -3,11 +3,7 @@
   "compilerOptions": {
     "rootDir": "./src",
     "outDir": "./dist",
-    "tsBuildInfoFile": "./dist/.tsbuildinfo",
-    "paths": {
-      "@acp/cli/observation-rows": ["../cli/dist/observation/index.d.ts"],
-      "@acp/console/row-model": ["../console/dist/app/api/client/index.d.ts"]
-    }
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
   "references": [

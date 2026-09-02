@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **471 packet entries across 194 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **474 packet entries across 194 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1345,13 +1345,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
- * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) = 471 entries,
- * with 277 duplicate entries.
+ * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
+ * 3 (P8-T-G8) = 474 entries, with 280 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 42 duplicates = 42   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 43 duplicates = 43   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the gateway's routes
  *                                   source and build-server suite, and the CLI
@@ -1365,10 +1365,10 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   the console styles sheet and the
  *                                   accounts-view suite)
  *  12 paths ×  3 duplicates = 36
- *  19 paths ×  2 duplicates = 38
+ *  20 paths ×  2 duplicates = 40
  *  47 paths ×  1 duplicate  = 47
  *
- * 42 + 10 + 28 + 30 + 30 + 16 + 36 + 38 + 47 = 277.
+ * 43 + 10 + 28 + 30 + 30 + 16 + 36 + 40 + 47 = 280.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1582,6 +1582,23 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * grow together (15 → 19 and 9 → 12) because the dedup reached files that
  * already had one or two in-phase owners rather than opening new paths — which
  * is exactly what unifying a duplicated declaration looks like in this table.
+ *
+ * P8-T-G8 adds **no** distinct path and exactly three duplicates, which is the
+ * smallest a packet in this phase has moved the table and is what a hygiene
+ * packet should look like: it declares three paths, every one of which an
+ * earlier P8 packet already owns, and writes bytes to only two of them — the
+ * gateway's test tsconfig already carried the aliases this packet confines
+ * there, so confining them subtracted from one file rather than adding to two.
+ * Entries move 471 → 474, distinct holds at 194, duplicates 277 → 280. Three
+ * band steps: this file's own row, 42 → 43; the production gateway tsconfig
+ * stepping from the ×1 row to the ×2 row, which is why that row reads twenty
+ * paths rather than nineteen; and the test tsconfig entering the ×1 row, which
+ * nevertheless holds at forty-seven because the production tsconfig's
+ * departure from it exactly offsets the arrival.
+ *
+ * That the largest law in the fence — C5's correspondence over twelve trees —
+ * costs the fold three duplicates is the honest measure of the convention: the
+ * arithmetic counts paths touched, not work done.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -2893,6 +2910,30 @@ const P8T_G7_WRITE_SET = [
 ];
 
 /**
+ * P8-T G8: surface hygiene and the C5 correspondence law.
+ *
+ * Three files, and the smallest diff of the tranche — which is the point. The
+ * parity aliases leave the production gateway project so nothing on the shipped
+ * build path can resolve a sibling's emitted internals; the fence gains the C5
+ * bidirectional law that makes the mirrored test trees actually checked; and two
+ * sentences that had gone false are corrected.
+ *
+ * What is deliberately NOT here: the barrel diets. The measurement found 392
+ * zero-importer pinned names, and classifying each as dead or as deliberate
+ * vocabulary is a semantic judgement per module. It rides G8-diet, immediately
+ * after this packet, and §21c records both the scheduling and the ordering it
+ * creates — `STRUCTURAL_TOPOLOGY_CERTIFIED` cannot be computed until it lands.
+ *
+ * All three paths are P8-owned already, so the packet adds three duplicates and
+ * no new distinct path.
+ */
+const P8T_G8_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "packages/entrypoints/gateway/tsconfig.json",
+  "packages/entrypoints/gateway/test/tsconfig.json",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3191,6 +3232,7 @@ const WRITE_SET = [
   ...P8T_G5_WRITE_SET,
   ...P8T_G6_WRITE_SET,
   ...P8T_G7_WRITE_SET,
+  ...P8T_G8_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3767,6 +3809,7 @@ const PATH_SCOPED_LAWS = [
   { law: "no tracked path under a pre-G1' package prefix", scope: "packages/** (the eleven retired prefixes)" },
   { law: "every package sits at packages/<stratum>/<name>/", scope: "packages/**" },
   { law: "cross-package name collisions are unified or adjudicated", scope: "packages/*/*/src/**" },
+  { law: "every test path mirrors a source or is a registered test-only domain", scope: "packages/*/*/test/** (TOPOLOGY_ACTIVE_TREES)" },
 ];
 
 /**
@@ -6972,11 +7015,13 @@ if (tracked.status === 0) {
 // its package must be named below as having no per-package scan at all. A
 // cohort that relocates tests without extending its scan fails here, by name.
 //
-// Both lists start where the repository actually is. No cohort has yet
-// extended a scan to a `test/` tree, so the scanned list is empty; `contracts`
-// is the first normalized package and the fence has never had a per-package
-// source scan for it, so the exemption is a statement of fact rather than a
-// waiver. A package that *does* have a scan may never be added to it.
+// Both lists say where the repository actually is. The scanned list has grown
+// with the cohorts that relocated their tests — eight prefixes today, one per
+// package that has a per-package source scan to extend. The four in the
+// exemption below have never had such a scan, so naming them is a statement of
+// fact rather than a waiver; C5's correspondence law now covers their trees
+// topologically, and §21c records when the exemption ends. A package that
+// *does* have a scan may never be added to the exemption.
 const TEST_TREE_SCANNED_PREFIXES = [
   "packages/domains/observation/test/",
   "packages/edges/providers/test/",
@@ -7035,6 +7080,191 @@ if (tracked.status === 0) {
         " test-tree file(s) are inside a package scan or an explicit no-scan package",
     );
   }
+}
+
+// --- 21c. the C5 test-tree correspondence law (P8-T G8) ---------------------
+//
+// Codex's binding C5 correction, implemented here and certified in the final
+// fence: a mirrored test tree is only a mirror if something checks the mirror.
+// The topology law above says where a test file may *sit*; this one says that
+// what it sits opposite actually exists.
+//
+//   test → src   every `test/<rel>/index.test.ts[x]` requires
+//                `src/<rel>/index.ts[x]`, unless `<rel>` is a declared
+//                test-only domain.
+//   helpers      a plain `index.ts[x]` under `test/<rel>/` — a fixture or a
+//                helper, not a test — carries the same requirement.
+//   src → test   **not asserted.** A test-per-source-directory rule is G9's,
+//                by C5's own adjudication, and asserting it here would fail
+//                every source module that has no suite yet.
+//
+// **C1 (adjudicated): coverage is ancestor-inclusive.** A path is covered when
+// it, or any ancestor of it, is mirrored or registered. This is not a
+// convenience: the measured pilots helpers sit at `pilots/helpers`,
+// `pilots/recovery/helpers` and `pilots/writer/helpers`, one level under the
+// domain the register names, and an exact-match rule would fail the very files
+// the register exists to accommodate. The same rule applies to test files and
+// helpers uniformly, so the law has one notion of coverage rather than two.
+//
+// A package-root `test/index.test.ts[x]` is exempt by design: a whole-package
+// assertion mirrors the package, not a source directory.
+//
+// **The G6 condition, resolved and recorded.** G6 left contracts with sixteen
+// capability modules facing one test file, inside `TEST_TREE_NO_PACKAGE_SCAN`.
+// C5 resolves the topological half: contracts' `test/schemas/` mirrors
+// `src/schemas/`, and this law proves it on every run. The scan exemption for
+// `contracts`, `ledger`, `protocol` and `cli` stands deliberately — no
+// per-package import-purity law exists for those four, so there is no scan to
+// extend, and C5 now covers their trees topologically. **C2 (adjudicated): that
+// exemption names its own ending — the per-package purity scans for the four
+// land with G9's new test classes.** The asymmetry is written down with its
+// rider rather than carried in someone's memory.
+//
+// **G8-diet scheduling, and the ordering it creates (C3, adjudicated).** The
+// measurement found 392 zero-importer pinned export names. Dead-vs-deliberate
+// vocabulary is a per-module semantic judgement the measurement deliberately did
+// not make, and cutting 392 names inside this packet would produce a diff nobody
+// could audit — so the diet rides its own packet, **G8-diet, immediately after
+// this one**. The consequence is an ordering law and it is recorded here rather
+// than only in a brief: **`STRUCTURAL_TOPOLOGY_CERTIFIED` is not computable
+// until G8-diet lands**, because the roadmap's G8 clause (barrel diets under the
+// zero-importer gate) is one of the certification's own inputs. The deferral
+// defers the diff, never the gate.
+//
+// Golden fixtures: measured absent. Zero JSON/log/golden blobs under every
+// tracked `test/` tree, and no blob duplicated except the boilerplate
+// `test/tsconfig.json` pairs — so the roadmap's shared-fixtures clause is
+// satisfied vacuously and gets this comment rather than a law, because a guard
+// over zero instances asserts nothing and would rot unnoticed.
+const TEST_ONLY_DOMAINS = {
+  runtime: [
+    { domain: "pilots", why: "end-to-end walks over a real ledger; no single source module owns them" },
+    { domain: "pilots/recovery", why: "the kill/restart recovery walk" },
+    { domain: "pilots/writer", why: "the commit-capable writer walk" },
+  ],
+  accounts: [
+    { domain: "pilots", why: "the routing pilot over a real owner file" },
+  ],
+  daemon: [
+    { domain: "fallback", why: "the P8-6 fallback gate: SQLite operating with Restate disabled" },
+    { domain: "launchd/lifecycle", why: "load/unload of the real agent, no source module of its own" },
+    { domain: "launchd/drills", why: "template mutation drills against the rendered plist" },
+    { domain: "drills", why: "process-level kill/restart drills across both modes" },
+  ],
+  gateway: [
+    { domain: "parity", why: "the three-way row-model parity proof; it tests an agreement, not a module" },
+  ],
+  console: [
+    { domain: "live-dom", why: "the live-DOM evidence harness and its own suite" },
+    { domain: "views", why: "the cross-view static suite" },
+  ],
+  durability: [
+    { domain: "drivers/drills", why: "the Restate drills and the driver-equivalence proof" },
+  ],
+  ledger: [
+    { domain: "concurrent-writer-worker", why: "a spawned-fixture entry point, run as a child process" },
+  ],
+  providers: [
+    { domain: "testing", why: "the fake-provider harness the provider suites share" },
+  ],
+};
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+
+  /** Is `rel`, or any ancestor of it, mirrored in src or registered (C1)? */
+  const coveredBy = (pkg, name, rel) => {
+    const registered = (TEST_ONLY_DOMAINS[name] ?? []).map((entry) => entry.domain);
+    const segments = rel.split("/");
+    for (let depth = segments.length; depth > 0; depth -= 1) {
+      const ancestor = segments.slice(0, depth).join("/");
+      if (registered.includes(ancestor)) return "registered";
+      if (
+        readIfPresent(pkg + "/src/" + ancestor + "/index.ts") !== null ||
+        readIfPresent(pkg + "/src/" + ancestor + "/index.tsx") !== null
+      ) {
+        return "mirrored";
+      }
+    }
+    return null;
+  };
+
+  let checked = 0;
+  let mirrored = 0;
+  let testOnly = 0;
+  const liveDomains = new Map();
+  for (const name of TOPOLOGY_ACTIVE_TREES) {
+    const pkg = packagePrefix(name, PACKAGE_STRATA).replace(/\/$/, "");
+    for (const relativePath of present) {
+      if (!relativePath.startsWith(pkg + "/test/")) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      const rest = relativePath.slice((pkg + "/test/").length);
+      const rel = rest.replace(/\/index(\.test)?\.tsx?$/, "");
+      // The package-root whole-package assertion mirrors no source directory.
+      if (rel === rest) continue;
+      checked += 1;
+      const verdict = coveredBy(pkg, name, rel);
+      if (verdict === null) {
+        fail(
+          relativePath +
+            " has no mirrored source at " +
+            pkg +
+            "/src/" +
+            rel +
+            "/ and no ancestor of it is a registered test-only domain",
+        );
+        continue;
+      }
+      if (verdict === "mirrored") mirrored += 1;
+      else {
+        testOnly += 1;
+        const registered = (TEST_ONLY_DOMAINS[name] ?? []).map((entry) => entry.domain);
+        const segments = rel.split("/");
+        for (let depth = segments.length; depth > 0; depth -= 1) {
+          const ancestor = segments.slice(0, depth).join("/");
+          if (registered.includes(ancestor)) {
+            if (!liveDomains.has(name)) liveDomains.set(name, new Set());
+            liveDomains.get(name).add(ancestor);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // The register reconciles itself, the same discipline the duplication gate
+  // uses: an entry naming a domain no live test path resolves to is an
+  // adjudication that outlived its subject.
+  for (const [name, entries] of Object.entries(TEST_ONLY_DOMAINS)) {
+    for (const entry of entries) {
+      if (!(liveDomains.get(name) ?? new Set()).has(entry.domain)) {
+        fail(
+          "TEST_ONLY_DOMAINS registers " +
+            name +
+            "/" +
+            entry.domain +
+            ", which no live test path resolves to; a stale registration is documentation, not a law",
+        );
+      }
+      if (typeof entry.why !== "string" || entry.why.trim() === "") {
+        fail("TEST_ONLY_DOMAINS entry " + name + "/" + entry.domain + " carries no rationale");
+      }
+    }
+  }
+
+  requireScope("every test path mirrors a source or is a registered test-only domain", checked);
+  notes.push(
+    checked +
+      " test paths across " +
+      TOPOLOGY_ACTIVE_TREES.length +
+      " trees correspond to a source (" +
+      mirrored +
+      " mirrored, " +
+      testOnly +
+      " under " +
+      Object.values(TEST_ONLY_DOMAINS).reduce((total, entries) => total + entries.length, 0) +
+      " registered test-only domains)",
+  );
 }
 
 // The closed export surface, pinned by equality in both directions.
@@ -7583,17 +7813,17 @@ if (vitestConfig !== null) {
       if (relativePath === "vitest.config.ts") continue;
       if (relativePath === "scripts/check-architecture.mjs") continue;
       if (relativePath === "packages/entrypoints/gateway/test/parity/index.test.ts") continue;
-      // The TypeScript counterpart of the same two aliases. `tsc` and
-      // type-aware eslint never read `vitest.config.ts`, so without this the
-      // parity test resolves at run time and fails both other gates. A
-      // tsconfig is not a module: it declares resolution, it imports nothing,
-      // so the law this check protects — that no shipped module resolves these
-      // specifiers — is untouched. The declaration is pinned by equality
-      // immediately below rather than merely excused here.
-      if (relativePath === "packages/entrypoints/gateway/tsconfig.json") continue;
-      // The test tree's own tsconfig carries the same two aliases,
-      // depth-corrected, for the same reason and under the same rationale —
-      // adjudication A (C10). A tsconfig `paths` declaration is not an import.
+      // The TypeScript counterpart of the same two aliases, and since P8-T G8
+      // the ONLY one. `tsc` and type-aware eslint never read
+      // `vitest.config.ts`, so without a declaration the parity test resolves
+      // at run time and fails both other gates — but the declaration belongs to
+      // the project that runs the test, not to the one that ships. The
+      // production tsconfig used to carry a copy and is no longer excused here:
+      // a production project that declares a path into a sibling package's
+      // emitted internals lets a shipped module resolve them by accident rather
+      // than by refusal, and the cold build is what proves it no longer can.
+      // A tsconfig is not a module — it declares resolution and imports
+      // nothing — so this exclusion narrows the surface rather than widening it.
       if (relativePath === "packages/entrypoints/gateway/test/tsconfig.json") continue;
       const content = readIfPresent(relativePath);
       if (content === null) continue;
@@ -7612,19 +7842,25 @@ if (vitestConfig !== null) {
   notes.push("the parity deep aliases point at two modules and are used by one test");
 }
 
-// The TypeScript side of the same two aliases. `tsc` and type-aware eslint
-// never read `vitest.config.ts`, so without this declaration the parity test
-// resolves at run time and fails both other gates. Pinned by equality in both
-// directions, exactly as the Vitest law above is: exactly two specifiers,
-// exactly these targets, exactly four project references.
+// The TypeScript side of the same two aliases, pinned against the TEST project
+// (P8-T G8). `tsc` and type-aware eslint never read `vitest.config.ts`, so the
+// parity test needs a declaration or it resolves at run time and fails both
+// other gates. What G8 changed is which project declares it: the production
+// tsconfig gave its copy up, so the aliases now exist in exactly one place, and
+// nothing on the shipped build path can resolve a parity specifier at all.
+//
+// Pinned by equality in both directions, the same form as the Vitest law above:
+// exactly two specifiers, exactly these targets. The targets are depth-corrected
+// for the test directory — one level deeper than the production copy was.
 //
 // The targets are emitted declarations, never sources. A source mapping pulls
-// foreign files into this project's `rootDir` (TS6059/TS6307) and makes `tsc`
-// emit `.js`/`.d.ts` next to the CLI and UI sources — an observed failure
+// foreign files into the project's `rootDir` (TS6059/TS6307) and makes `tsc`
+// emit `.js`/`.d.ts` next to the CLI and console sources — an observed failure
 // while this was built, not a hypothetical.
+const GATEWAY_TS_ALIASES_FILE = "packages/entrypoints/gateway/test/tsconfig.json";
 const GATEWAY_TS_ALIASES = {
-  "@acp/cli/observation-rows": "../cli/dist/observation/index.d.ts",
-  "@acp/console/row-model": "../console/dist/app/api/client/index.d.ts",
+  "@acp/cli/observation-rows": "../../cli/dist/observation/index.d.ts",
+  "@acp/console/row-model": "../../console/dist/app/api/client/index.d.ts",
 };
 // P8-8A adds `../../domains/observation`: the initiative plane folds token
 // rollups, and `tsc --build` resolves a workspace package through project
@@ -7654,35 +7890,17 @@ if (serverTsconfigRaw !== null) {
     fail("packages/entrypoints/gateway/tsconfig.json is not parseable JSON");
   }
   if (parsed !== null) {
-    const declared = parsed.compilerOptions?.paths ?? {};
-    const expectedAliases = Object.keys(GATEWAY_TS_ALIASES).sort().join(", ");
-    const actualAliases = Object.keys(declared).sort().join(", ");
-    if (actualAliases !== expectedAliases) {
+    // The production project declares NO path mapping at all (P8-T G8). This is
+    // the assertion the packet exists for: an empty `paths` is what makes "no
+    // shipped module can resolve a parity specifier" a property of the build
+    // rather than a habit of the authors.
+    const productionPaths = Object.keys(parsed.compilerOptions?.paths ?? {});
+    if (productionPaths.length > 0) {
       fail(
-        "packages/entrypoints/gateway/tsconfig.json paths are not exactly [" +
-          expectedAliases +
-          "]: found [" +
-          actualAliases +
-          "]",
+        "packages/entrypoints/gateway/tsconfig.json declares paths [" +
+          productionPaths.sort().join(", ") +
+          "]; the parity aliases live in the test project alone since G8",
       );
-    }
-    for (const [specifier, target] of Object.entries(GATEWAY_TS_ALIASES)) {
-      const mapped = Array.isArray(declared[specifier]) ? declared[specifier] : [];
-      if (mapped.length !== 1 || mapped[0] !== target) {
-        fail(
-          "packages/entrypoints/gateway/tsconfig.json maps " +
-            specifier +
-            " to " +
-            JSON.stringify(mapped) +
-            " rather than to [" +
-            target +
-            "]",
-        );
-      } else if (!target.endsWith(".d.ts")) {
-        fail(
-          "packages/entrypoints/gateway/tsconfig.json aliases " + specifier + " to a source, not a declaration",
-        );
-      }
     }
     const references = Array.isArray(parsed.references) ? parsed.references : [];
     const actualReferences = references
@@ -7698,7 +7916,61 @@ if (serverTsconfigRaw !== null) {
           "]",
       );
     }
-    notes.push("the server tsconfig pins two declaration aliases and four references, by equality");
+    notes.push(
+      "the gateway production tsconfig declares no path mapping and pins " +
+        GATEWAY_TS_REFERENCES.length +
+        " references, by equality",
+    );
+  }
+}
+
+// The aliases themselves, pinned by equality against the one project that may
+// declare them. Both directions: exactly these specifiers, exactly these
+// targets, and every target an emitted declaration rather than a source.
+const gatewayTestTsconfigRaw = readIfPresent(GATEWAY_TS_ALIASES_FILE);
+if (gatewayTestTsconfigRaw === null) {
+  fail(GATEWAY_TS_ALIASES_FILE + " is missing; the parity aliases have no home");
+} else {
+  let parsedTest = null;
+  try {
+    parsedTest = JSON.parse(gatewayTestTsconfigRaw);
+  } catch {
+    fail(GATEWAY_TS_ALIASES_FILE + " is not parseable JSON");
+  }
+  if (parsedTest !== null) {
+    const declared = parsedTest.compilerOptions?.paths ?? {};
+    const expectedAliases = Object.keys(GATEWAY_TS_ALIASES).sort().join(", ");
+    const actualAliases = Object.keys(declared).sort().join(", ");
+    if (actualAliases !== expectedAliases) {
+      fail(
+        GATEWAY_TS_ALIASES_FILE +
+          " paths are not exactly [" +
+          expectedAliases +
+          "]: found [" +
+          actualAliases +
+          "]",
+      );
+    }
+    for (const [specifier, target] of Object.entries(GATEWAY_TS_ALIASES)) {
+      const mapped = Array.isArray(declared[specifier]) ? declared[specifier] : [];
+      if (mapped.length !== 1 || mapped[0] !== target) {
+        fail(
+          GATEWAY_TS_ALIASES_FILE +
+            " maps " +
+            specifier +
+            " to " +
+            JSON.stringify(mapped) +
+            " rather than to [" +
+            target +
+            "]",
+        );
+      } else if (!target.endsWith(".d.ts")) {
+        fail(GATEWAY_TS_ALIASES_FILE + " aliases " + specifier + " to a source, not a declaration");
+      }
+    }
+    notes.push(
+      "the parity aliases are declared once, in the gateway test project, pinned by equality",
+    );
   }
 }
 
@@ -7746,9 +8018,12 @@ const PROVIDERS_SPAWN_CALLER = "packages/edges/providers/src/session/index.ts";
 /**
  * The closed public surface, pinned by equality in both directions.
  *
- * `src/testing/fake-provider.ts` is deliberately absent: it is test
- * scaffolding, imported by relative path. A fake on the public surface would
- * eventually be mistaken for evidence.
+ * The fake-provider harness is deliberately absent. It lives at
+ * `test/testing/index.ts` — test scaffolding, imported by relative path from
+ * the suites that share it — and a fake on the public surface would eventually
+ * be mistaken for evidence. The guard below still refuses the old
+ * `testing/fake-provider` specifier by name, which is what the barrel would
+ * have to write to export it.
  */
 const PROVIDERS_PUBLIC_EXPORTS = [
   "AdapterErrorCode",
