@@ -5,13 +5,14 @@ across providers, accounts and quotas, while keeping repositories safe.
 
 Status: **P0, P1, P2, P3, P4, P5, P6, P7 and P7I complete. Next: P8.** Contracts,
 fences, the append-only event ledger, a read-only observation plane over it — a
-loopback HTTP server, a CLI and a local UI — a durability plane with two
-orchestration drivers under a supervised local daemon, a shadow-mode
-observation package with a measured baseline, three read-only provider adapters
-behind one process boundary, an accounts domain that estimates quota, ranks
-candidates and recommends a switch without ever acting, and a
-writer-enforcement plane that decides leases, worktree conflicts and commit
-authorization without touching a worktree. P3 closed on committed evidence: the
+loopback HTTP gateway, a CLI and a local console — a durability plane whose
+two orchestration drivers live in two packages since G5, the SQLite supervisor
+in `@acp/runtime` and the Restate driver in `@acp/durability`, under a
+supervised local daemon, a shadow-mode observation package with a measured
+baseline, three read-only provider adapters behind one process boundary, an
+accounts domain that estimates quota, ranks candidates and recommends a switch
+without ever acting, and a writer-enforcement plane that decides leases,
+worktree conflicts and commit authorization without touching a worktree. P3 closed on committed evidence: the
 ledger, the server, the CLI and the UI are proven to agree exactly across all
 nine frozen routes — the CLI building its own answer from the same ledger
 without ever seeing the server's, and the UI proven to project the server's
@@ -212,6 +213,46 @@ followed literally; each page says where a real operator substitutes their own.
 | [Switching accounts](docs/operations/account-switch.md) | which file governs, when the ledger takes over, and why a later file edit does not win |
 | [Update and rollback](docs/operations/update-rollback.md) | changing pins deliberately, and rolling back without destroying anything |
 
+## The observation surfaces
+
+Three readers see the same ledger, and they are proven to agree rather than
+assumed to: the parity suite asserts route-by-route equality across all three,
+including ordering, pagination, cursors and the absence of credential-shaped
+keys.
+
+### `@acp/gateway` — the loopback HTTP front
+
+One Fastify application serving every frozen route `@acp/protocol` declares,
+over a ledger handle it opens read-only. It binds `127.0.0.1`, and that is
+titular rather than configurable: the surface shows every task, worker and
+transition with no authentication in front of it, so a routable bind address
+would publish the whole control plane to the local network. The reasoning is
+`docs/architecture/0003-read-only-observation-plane.md` §5.
+
+Reads are free. The two write routes — recording a roadmap version, and
+recording an account action — are registered through one guarded registrar, so
+the bearer check is structural: a write route is guarded because of where it is
+registered, not because someone remembered. With no token configured, a write
+answers `403`. See [`packages/entrypoints/gateway/README.md`](packages/entrypoints/gateway/README.md).
+
+### `@acp/console` — the local operator surface
+
+A browser application whose only workspace dependency is `@acp/protocol`. It
+holds no absolute path, no event payload and no database driver, and the fence
+asserts the last of those rather than trusting it. Every view reads; exactly
+one action writes, recording a roadmap version through the gateway's guarded
+door. See [`packages/entrypoints/console/README.md`](packages/entrypoints/console/README.md).
+
+### `@acp/cli` — the terminal reader
+
+Builds its own answer from the same ledger without ever seeing the gateway's,
+which is what makes the three-way agreement evidence rather than a tautology.
+See [`packages/entrypoints/cli/README.md`](packages/entrypoints/cli/README.md).
+
+Every route the three share is enumerated in
+[`docs/api-reference.md`](docs/api-reference.md), which the fence checks
+against `API_ROUTES` in both directions.
+
 ## Repository layout
 
 ```
@@ -219,10 +260,20 @@ followed literally; each page says where a real operator substitutes their own.
 scripts/check-architecture.mjs     authority and write-set fence
 docs/ROADMAP.md                    canonical authority (byte-exact copy)
 docs/architecture/                 architecture decision records
+docs/api-reference.md              every frozen route, checked against API_ROUTES
+
 packages/kernel/contracts/         frozen runtime contracts
+packages/kernel/protocol/          the browser-safe observation contract
 packages/persistence/ledger/       append-only event ledger and read models
 packages/domains/runtime/          durability domain: one lifecycle, the port, one driver
+packages/domains/accounts/         quota estimation, ranking, switch recommendation
+packages/domains/observation/      shadow-mode collectors and the measured baseline
+packages/edges/providers/          three provider adapters behind one spawn authority
+packages/edges/durability/         the Restate edge: driver, endpoint, pinned server
 packages/entrypoints/daemon/       supervised process and inert launchd template
+packages/entrypoints/gateway/      the loopback HTTP front of the observation plane
+packages/entrypoints/console/      the local operator surface, browser-safe
+packages/entrypoints/cli/          the terminal reader over the same ledger
 ```
 
 ## Secrets

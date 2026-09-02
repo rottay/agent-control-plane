@@ -62,11 +62,25 @@ way to notice.
 Every error is typed and carries a `code`. None of them embeds event content,
 so all of them are safe to log or attach to a checkpoint.
 
-`LedgerOpenError`, `LedgerClosedError`, `LedgerReadOnlyError`,
-`LedgerMigrationError`, `LedgerValidationError`, `LedgerCanonicalizationError`,
-`LedgerIdempotencyConflictError`, `LedgerEventIdConflictError`,
-`LedgerLifecycleConflictError`, `LedgerSequenceError`, `LedgerIntegrityError`,
-`LedgerQueryError`.
+Thirteen classes are exported, and this is the complete list — the
+architecture fence asserts it against the barrel in both directions, so a
+fourteenth class cannot arrive without appearing here.
+
+| Class | Raised when |
+| --- | --- |
+| `LedgerError` | the base every other class below extends; never thrown on its own |
+| `LedgerOpenError` | the database cannot be opened, or opening it is refused |
+| `LedgerClosedError` | the handle has been released and is used again |
+| `LedgerReadOnlyError` | a write is attempted through a read-only handle |
+| `LedgerMigrationError` | the migration set does not apply, or disagrees with the recorded one |
+| `LedgerValidationError` | an event fails its contract |
+| `LedgerCanonicalizationError` | an event cannot be canonicalized deterministically |
+| `LedgerIdempotencyConflictError` | an idempotency key is reused with different content |
+| `LedgerEventIdConflictError` | an event id is reused with different content |
+| `LedgerLifecycleConflictError` | a transition the lifecycle does not allow |
+| `LedgerSequenceError` | the sequence is not contiguous, or the chain does not link |
+| `LedgerIntegrityError` | an integrity check finds the stored state inconsistent |
+| `LedgerQueryError` | a query is malformed — a bad cursor, an out-of-range limit |
 
 ## Tables
 

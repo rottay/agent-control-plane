@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **487 packet entries across 201 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **509 packet entries across 215 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1346,13 +1346,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
- * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) = 487 entries,
- * with 286 duplicate entries.
+ * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
+ * 22 (P8-T-G10) = 509 entries, with 294 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 46 duplicates = 46   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 47 duplicates = 47   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the gateway's routes
  *                                   source and build-server suite, and the CLI
@@ -1362,14 +1362,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   route and parity surface with its parity
  *                                   suite, and the console's app root and api
  *                                   client)
- *   4 paths ×  4 duplicates = 16   (the initiatives suite, the console manifest,
- *                                   the console styles sheet and the
- *                                   accounts-view suite)
- *  12 paths ×  3 duplicates = 36
- *  23 paths ×  2 duplicates = 46
- *  44 paths ×  1 duplicate  = 44
+ *   5 paths ×  4 duplicates = 20   (the initiatives suite, the console manifest,
+ *                                   the console styles sheet, the accounts-view
+ *                                   suite and the root README)
+ *  11 paths ×  3 duplicates = 33
+ *  24 paths ×  2 duplicates = 48
+ *  48 paths ×  1 duplicate  = 48
  *
- * 46 + 10 + 28 + 30 + 30 + 16 + 36 + 46 + 44 = 286.
+ * 47 + 10 + 28 + 30 + 30 + 20 + 33 + 48 + 48 = 294.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1633,6 +1633,38 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * distinct path, one duplicate**. Entries move 486 → 487, distinct holds at
  * 201, duplicates 285 → 286. One band step, this file's own row, 45 → 46 — the
  * shape of a packet that edits the instrument and nothing else.
+ *
+ * P8-T-G10 is the phase's widest packet since G7, and its shape is the
+ * opposite of G9b's: **22 entries, 14 of them novel**. Entries move 487 → 509,
+ * distinct 201 → 215, duplicates 286 → 294. A documentation tranche creates
+ * files rather than revisiting them, which is why fourteen of twenty-two paths
+ * had no P8 owner at all.
+ *
+ * The fourteen are the eight new documents — `LICENSE`, `SECURITY.md`,
+ * `CONTRIBUTING.md`, `docs/api-reference.md` and the four missing package
+ * READMEs — plus six edited paths whose every owner predates the phase: the
+ * **root manifest**, which no P8 packet had ever touched until the licence
+ * flip needed it; the providers README; and the contracts, protocol,
+ * observation and providers manifests, which reached P8 only now, through the
+ * public-side flip.
+ *
+ * Eight band steps, one per duplicate — and the fourteen novel paths cause
+ * none of them. A path this packet introduces has exactly one owner, so it
+ * carries no duplicate and enters no row at all; every row movement below is a
+ * path that already had an owner gaining this packet as another.
+ *
+ *   • this file's own row, ×46 → ×47, as every packet moves it;
+ *   • the root README, ×3 → ×4 — which is the single move behind BOTH of those
+ *     rows changing: ×4 reads five because it arrived, ×3 reads eleven because
+ *     it left;
+ *   • the runtime manifest, ×1 → ×2, so ×2 reads twenty-four;
+ *   • and five paths entering the table for the first time in the phase — the
+ *     protocol and ledger READMEs, and the accounts, durability and ledger
+ *     manifests. Each had exactly one P8 owner before, so each carried no
+ *     duplicate and sat in no row; each now has two.
+ *
+ * ×1 therefore reads forty-eight rather than forty-four: five arrivals, minus
+ * the runtime manifest's departure into ×2, is a net of four.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3055,6 +3087,61 @@ const P8T_G9_WRITE_SET = [
 const P8T_G9B_WRITE_SET = ["scripts/check-architecture.mjs"];
 
 /**
+ * P8-T-G10: the documentation tranche, and the public side flipped.
+ *
+ * The roadmap orders three things to land together, and they do: the licence,
+ * the threat model and the contributor guide. Landing the licence alone would
+ * publish terms with no security contact and no way in; landing the flip alone
+ * would relicense eight packages above a repository that still said
+ * `UNLICENSED` at its root.
+ *
+ * The four missing package READMEs are the measured four — `contracts`,
+ * `durability`, `gateway`, `console` — of which two are public-side and two are
+ * entrypoints. The four corrected ones are the measured-stale four: the root
+ * README's "two drivers in one plane", falsified by the G5 split and
+ * self-contradicted one paragraph later by its own layout diagram; protocol's
+ * consumer table, write-route count and pre-G7 vitest project name; ledger's
+ * omitted thirteenth error class; providers' two exported transports that no
+ * sentence mentioned. `runtime`, `accounts`, `daemon` and `cli` were measured
+ * accurate and are deliberately untouched.
+ *
+ * What makes this a tranche rather than a documentation sweep is the fourth
+ * item: the docs gate. Four new laws, so the corrections cannot silently rot
+ * back. The README-against-surface law is the one that would have caught all
+ * five measured findings, which is the honest test of whether a law was worth
+ * writing — a law that would not have caught the drift it was written for is a
+ * law written for the wrong drift.
+ *
+ * Twenty-two paths: fourteen are novel in the phase, and the root manifest is
+ * one of them — it had no P8 owner at all until this packet, which is exactly
+ * how a repository ends up with a front door nobody edited.
+ */
+const P8T_G10_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "LICENSE",
+  "SECURITY.md",
+  "CONTRIBUTING.md",
+  "docs/api-reference.md",
+  "README.md",
+  "package.json",
+  "packages/kernel/contracts/README.md",
+  "packages/edges/durability/README.md",
+  "packages/entrypoints/gateway/README.md",
+  "packages/entrypoints/console/README.md",
+  "packages/kernel/protocol/README.md",
+  "packages/persistence/ledger/README.md",
+  "packages/edges/providers/README.md",
+  "packages/kernel/contracts/package.json",
+  "packages/kernel/protocol/package.json",
+  "packages/persistence/ledger/package.json",
+  "packages/domains/runtime/package.json",
+  "packages/domains/accounts/package.json",
+  "packages/domains/observation/package.json",
+  "packages/edges/providers/package.json",
+  "packages/edges/durability/package.json",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3357,6 +3444,7 @@ const WRITE_SET = [
   ...P8T_G8D_WRITE_SET,
   ...P8T_G9_WRITE_SET,
   ...P8T_G9B_WRITE_SET,
+  ...P8T_G10_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3742,9 +3830,16 @@ const AUTHORITY_LITERALS = {
     "no product adoption",
     // P8-8D-pre falsified "GET only": the plane took its first write route.
     // The literal moves to the claim that is now true and is equally
-    // load-bearing — the read plane is unchanged and the one exception is
-    // named in its own table, which is the whole design of the amendment.
-    "the one write is named",
+    // load-bearing — the read plane is unchanged and the exceptions are
+    // named in their own table, which is the whole design of the amendment.
+    //
+    // G10 moves it once more, for the same reason and by measurement rather
+    // than by review: P8-8G packet 2 made `API_WRITE_ROUTES` two entries long
+    // while the README still said "the one write", so the pinned literal was
+    // pinning a sentence that had become false. The claim that survives a
+    // second write is that EVERY write is named, which is what the separate
+    // frozen table buys and what a third one would still have to satisfy.
+    "every write is named",
   ],
   // The checkpoint's own laws, asserted rather than described. Without this
   // entry the fence knows ADR 0012 only as a write-set path, and the four
@@ -3791,6 +3886,20 @@ const AUTHORITY_LITERALS = {
  * require one to be GONE. A document could therefore satisfy every assertion it
  * carried while contradicting the code it described, and the more literals a
  * file carried, the more confident the green looked.
+ *
+ * **Three READMEs are deliberately not covered here (P8-T G10).** `ledger`,
+ * `protocol` and `cli` carry no entry, and that is a decision rather than an
+ * omission: this register is exactly the documents that carry a retired claim,
+ * and their measured-accurate content carries none. Padding it with files that
+ * have nothing pinned absent would make its size look like coverage, which is
+ * the same confusion the paragraph above describes from the other side.
+ *
+ * The G10 corrections did not change that. Protocol's "the one write is named"
+ * became false when `API_WRITE_ROUTES` grew to two, and the honest cure was to
+ * move the REQUIRED literal to the claim that survives a second write, not to
+ * open a new expired register — the api-reference bijection law now fails on
+ * the underlying drift itself, which is stronger than pinning the sentence that
+ * described it.
  */
 const EXPIRED_LITERALS = {
   "packages/domains/runtime/README.md": [
@@ -3938,6 +4047,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the ledger package imports only what it is allowed", scope: "packages/persistence/ledger/{src,test}/**" },
   { law: "the protocol package imports only what it is allowed", scope: "packages/kernel/protocol/{src,test}/**" },
   { law: "the cli package imports only what it is allowed", scope: "packages/entrypoints/cli/{src,test}/**" },
+  { law: "package READMEs match the surface they claim", scope: "README_SURFACE_CLAIMS (5 registered sections)" },
 ];
 
 /**
@@ -4414,9 +4524,11 @@ if (ledgerManifestText === null) {
           "]",
       );
     }
-    if (ledgerManifest.private !== true) {
-      fail("packages/persistence/ledger must stay private; this repository publishes nothing");
-    }
+    // `private` moved out of this law in G10. It is a per-stratum question now
+    // — the ledger is public-side and carries no `private` key at all — and the
+    // public/internal classification law is the single place that answers it
+    // for every package including this one. Asserting it here too would be a
+    // second authority that could disagree with the first.
     if (actual.join(",") === expected.join(",") && actualDev.join(",") === expectedDev.join(",")) {
       notes.push("ledger dependency surface is exactly what P1A authorized");
     }
@@ -4444,6 +4556,19 @@ const PRODUCT_AUTHORITY_EXEMPT = new Set([
   // would defeat the point of a matrix whose whole discipline is full quotation
   // rather than summary. This exemption exists for exactly that class, and it
   // is narrow: this one path, not the directory.
+  //
+  // **Settled as a dated record (P8-T G10, C4(i)).** The G10 measurement found
+  // this document citing pre-G1' paths and deliberately left its classification
+  // open, because — unlike `metrics-baseline.md`, whose own text calls itself a
+  // HEAD-pinned reproduction script — a document titled a certification
+  // "matrix" could plausibly be meant to track current state. The DT settles
+  // it: it is a dated record, anchored to the HEAD it was written against, and
+  // it is correctly left untouched by this packet.
+  //
+  // The consequence is recorded here rather than assumed: **P8-E reads the
+  // matrix AS dated and re-examines it there.** It is the transmittal source
+  // the P8-10c audit certified, so a later reader must not take its paths as a
+  // description of the present tree.
   "docs/certification/p8-matrix.md",
   "scripts/check-architecture.mjs",
 ]);
@@ -4756,9 +4881,9 @@ for (const law of P1B_DEPENDENCY_LAW) {
         "]",
     );
   }
-  if (manifest.private !== true) {
-    fail(law.manifest + " must stay private; this repository publishes nothing");
-  }
+  // As above: `private` is the classification law's question since G10, and it
+  // asks it per stratum. This table's job is the dependency surface, which is
+  // the same job whether the package publishes or not.
 
   // Name based, over the whole manifest text, so a forbidden package cannot be
   // reintroduced through peerDependencies, optionalDependencies or an override.
@@ -4842,11 +4967,36 @@ if (tracked.status === 0) {
 // means the two can never disagree, which a hand-maintained second list would
 // eventually do — and it is the same reason the resolver above exists.
 //
-// Today every package is `private: true` / `UNLICENSED`, and this law asserts
-// that uniformity plus completeness: every package that exists is classified
-// exactly once. G10 is what flips the public side; until then the law's value
-// is that no package can be added, moved between strata, or quietly relicensed
-// without this failing.
+// **G10 flipped the public side, and this law is now stratum-conditional.**
+// Through G9b every package was uniformly `private: true` / `UNLICENSED` and
+// this law asserted that uniformity. The uniformity was the placeholder, not
+// the design: the split it stood in for is the one the strata table already
+// encodes, and asserting it per stratum is what makes the classification carry
+// consequence rather than merely exist.
+//
+//   • public strata (kernel, persistence, domains, edges) — NO `private` key at
+//     all, and `license: "MIT"`. Absence rather than `private: false` is the
+//     assertion, because npm treats a missing key and `false` the same way and
+//     a repository that says `false` in one place and omits it in another has
+//     two spellings of one fact.
+//   • entrypoints — `private: true` / `UNLICENSED`, unchanged. An internal
+//     surface is not published surface: the daemon, the gateway, the CLI and
+//     the console are how this plane is operated, not what it offers.
+//
+// The **root manifest** is asserted separately, just below, because it is not a
+// strata member and this loop would never reach it. It keeps `private: true`
+// and takes `license: "MIT"`: private guards publish, license states terms, and
+// the two answer different questions. A repo-root MIT `LICENSE` above a
+// manifest declaring `UNLICENSED` is a contradiction at the front door, which
+// is the whole reason the root joined this packet's write-set.
+//
+// **The per-package LICENSE gap is recorded here rather than discovered at
+// publish time (C3).** npm packs a LICENSE from the package's own directory,
+// and these eight now declare `MIT` with no LICENSE file beside them. Nothing
+// publishes before P9, no remote exists and the pre-push hook refuses
+// unconditionally, so no file is owed today — but the flip must not be mistaken
+// for publish-readiness. Per-package LICENSE files are publish mechanics, owner
+// and P9 territory, and this comment is where that disposition lives.
 //
 // The table itself is declared at the top of this file, because G1' made it
 // something the resolver needs before any law runs: a package path cannot be
@@ -4895,13 +5045,46 @@ if (tracked.status === 0) {
       fail(packagePrefix(name, PACKAGE_STRATA) + "package.json is not valid JSON");
       continue;
     }
-    if (manifest.private !== true) {
-      fail(packagePrefix(name, PACKAGE_STRATA) + "package.json must declare private: true until G10 flips the public side");
-    }
-    if (manifest.license !== "UNLICENSED") {
-      fail(packagePrefix(name, PACKAGE_STRATA) + "package.json must declare the UNLICENSED license until G10");
+    const prefix = packagePrefix(name, PACKAGE_STRATA);
+    const isPublic = PUBLIC_STRATA.includes(classifiedIn.get(name));
+    if (isPublic) {
+      // Absence, not `private: false` — one spelling of one fact.
+      if (Object.hasOwn(manifest, "private")) {
+        fail(prefix + "package.json declares private; a public-stratum package carries no private key since G10");
+      }
+      if (manifest.license !== "MIT") {
+        fail(prefix + 'package.json must declare license "MIT"; the public side was flipped in G10');
+      }
+    } else {
+      if (manifest.private !== true) {
+        fail(prefix + "package.json must declare private: true; an entrypoint is not published surface");
+      }
+      if (manifest.license !== "UNLICENSED") {
+        fail(prefix + "package.json must declare the UNLICENSED license; an entrypoint is not published surface");
+      }
     }
     classified += 1;
+  }
+
+  // The root manifest, asserted by name because no stratum classifies it.
+  const rootManifestSource = readIfPresent("package.json");
+  if (rootManifestSource === null) {
+    fail("package.json is missing; the workspace root must declare itself");
+  } else {
+    let rootManifest = null;
+    try {
+      rootManifest = JSON.parse(rootManifestSource);
+    } catch {
+      fail("package.json is not valid JSON");
+    }
+    if (rootManifest !== null) {
+      if (rootManifest.private !== true) {
+        fail("package.json must declare private: true; the workspace root is never published");
+      }
+      if (rootManifest.license !== "MIT") {
+        fail('package.json must declare license "MIT"; the repository root carries the LICENSE it states');
+      }
+    }
   }
 
   requireScope("the public/internal classification", classified);
@@ -4914,7 +5097,7 @@ if (tracked.status === 0) {
       publicCount +
       " public-side, " +
       (classified - publicCount) +
-      " entrypoints), all private and UNLICENSED",
+      " entrypoints): the public side MIT and unprivate since G10, the entrypoints private and UNLICENSED, the root private and MIT",
   );
 }
 
@@ -8107,10 +8290,16 @@ if (accountsIndex === null) {
   if (schemasBarrel === null) {
     fail("packages/kernel/contracts/src/schemas/index.ts is missing");
   } else {
-    const reExport = /export\s+(type\s+)?\{([^}]*)\}\s+from\s+["'][^"']+["'];/g;
+    // The third group is the re-exported module, captured so the note below can
+    // COUNT the capability modules instead of restating a number. Groups 1 and 2
+    // keep their indices and the match set is unchanged, so the purity check's
+    // `replace(reExport, "")` further down is unaffected.
+    const reExport = /export\s+(type\s+)?\{([^}]*)\}\s+from\s+["']([^"']+)["'];/g;
     const exported = new Set();
     const typeExported = new Set();
+    const capabilityModules = new Set();
     for (const block of schemasBarrel.matchAll(reExport)) {
+      if (block[3] !== undefined) capabilityModules.add(block[3]);
       for (const piece of (block[2] ?? "").split(",")) {
         const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
         if (name === undefined || name === "") continue;
@@ -8152,9 +8341,19 @@ if (accountsIndex === null) {
     }
     requireScope("the contracts schema barrel holds only re-exports", exported.size);
     if (definitions === 0) {
+      // Derived, not restated (P8-T G10 correction). This note said "14
+      // capability modules" from G6, when fourteen is what G6 created; two more
+      // arrived afterwards — `exit-codes` and `usage-limits`, both hoisted here
+      // by G7 — and the sentence describing the barrel was not updated with the
+      // barrel. Exactly the drift signature the gateway-tsconfig comment carried
+      // in the same packet: the code moved and the prose explaining it did not.
+      // Counting the modules the barrel actually re-exports from is what stops a
+      // third one arriving to the same silence.
       notes.push(
         exported.size +
-          " contracts schema exports across 14 capability modules, pinned by equality (" +
+          " contracts schema exports across " +
+          capabilityModules.size +
+          " capability modules, pinned by equality (" +
           typeExported.size +
           " type-only); the barrel defines nothing",
       );
@@ -8236,11 +8435,17 @@ const GATEWAY_TS_ALIASES = {
 // here as well as there. Sorted, because the pin is an equality and an unsorted
 // list would make a reordering look like a change.
 //
-// G1' recomputed all six from the server's new location. Two of them did not
-// move: `cli` and `ui` are entrypoints, as the server is, so a same-stratum
-// reference is still one `../` away. That four changed and two did not is the
-// shape a stratified topology produces, and pinning them by equality is what
-// makes the difference visible rather than assumed.
+// G1' recomputed all six from the gateway's new location. Two of them did not
+// move: `cli` and `console` are entrypoints, as the gateway is, so a
+// same-stratum reference is still one `../` away. That four changed and two did
+// not is the shape a stratified topology produces, and pinning them by equality
+// is what makes the difference visible rather than assumed.
+//
+// G10 corrected three pre-G7 names in the sentence above — `server` twice and
+// `ui` once — which G7's rename left behind. The array they describe was
+// already current (`../console`, never `../ui`), which is the drift's whole
+// signature: the constant was updated and the prose explaining it was not, so
+// the comment described a topology the code had left two packets earlier.
 const GATEWAY_TS_REFERENCES = [
   "../../domains/accounts",
   "../../domains/observation",
@@ -8249,11 +8454,11 @@ const GATEWAY_TS_REFERENCES = [
   "../cli",
   "../console",
 ];
-const serverTsconfigRaw = readIfPresent("packages/entrypoints/gateway/tsconfig.json");
-if (serverTsconfigRaw !== null) {
+const gatewayTsconfigRaw = readIfPresent("packages/entrypoints/gateway/tsconfig.json");
+if (gatewayTsconfigRaw !== null) {
   let parsed = null;
   try {
-    parsed = JSON.parse(serverTsconfigRaw);
+    parsed = JSON.parse(gatewayTsconfigRaw);
   } catch {
     fail("packages/entrypoints/gateway/tsconfig.json is not parseable JSON");
   }
@@ -8824,7 +9029,7 @@ if (serverManifestRaw !== null) {
     }
   }
 }
-if (serverTsconfigRaw !== null && serverTsconfigRaw.includes('"@acp/contracts"')) {
+if (gatewayTsconfigRaw !== null && gatewayTsconfigRaw.includes('"@acp/contracts"')) {
   fail("packages/entrypoints/gateway/tsconfig.json maps @acp/contracts; that reach is excluded");
 }
 const serverSources = new Set(
@@ -8949,6 +9154,390 @@ if (pinSource === null) {
       if (established) {
         notes.push("the Restate server pin establishes both archive and binary digests");
       }
+    }
+  }
+}
+
+// --- 22. the live docs gate (P8-T G10) --------------------------------------
+//
+// Four laws, and one thing they have in common: each is the durable form of a
+// drift the G10 measurement found by hand. A documentation tranche that only
+// rewrote the stale sentences would be a tranche whose work expires the next
+// time an export is added — which is exactly how the five findings arose, in a
+// repository where every other surface is pinned.
+//
+// The measured findings, and which law now catches each:
+//
+//   • the root README claimed "two orchestration drivers in one plane", which
+//     G5 falsified by splitting them across two packages — and the README's own
+//     layout diagram contradicted the claim one paragraph later. Prose, so no
+//     law catches it directly; what catches its class is that the layout
+//     diagram now lists all twelve packages and the classification law fails
+//     when a package is added without a stratum.
+//   • protocol's README named `@acp/gateway`'s dependencies without accounts or
+//     observation, said "the one write" after `API_WRITE_ROUTES` grew to two,
+//     and still named the pre-G7 vitest project — the required-literal pin
+//     moved with the second of those, and the api-reference law below is what
+//     keeps the write count honest from now on.
+//   • ledger's README listed twelve error classes where the barrel exports
+//     thirteen → the README-against-surface law, completeness direction.
+//   • providers' README never mentioned two exported transports → the same law,
+//     same direction.
+//
+// **Exactly one of the four is path-scoped.** The README-against-surface law
+// selects files by path and so is registered in `PATH_SCOPED_LAWS` with one
+// `requireScope` call site; the register and the call sites both moved 24 → 25
+// in this packet. The other three assert a single named file each: a law that
+// reads one path cannot silently select nothing, which is the failure mode the
+// register exists for.
+//
+// **One owed item closes without a law, because measurement closed it.**
+// `docs/operations/update-rollback.md` cites a commit by hash and prints two
+// example commands over it. Both were run at G10 against the live repository:
+// the object resolves, `git show <hash>:docs/ROADMAP.md` returns the roadmap as
+// it stood, and the diff over `packages/entrypoints/gateway/src` returns real
+// files at the post-G7 path. The citation is accurate today, so the item closes
+// as measured-sound rather than as a fix or a deferral. Recorded here because a
+// debt that is discharged silently is indistinguishable from one that was
+// forgotten.
+
+/**
+ * Export names a barrel actually declares.
+ *
+ * Handles the inline `type` modifier (`export { a, type B }`) as well as the
+ * `export type { … }` block form, because the gateway barrel uses the first and
+ * every other barrel here uses the second. A parser that handled only the block
+ * form would read `type BuildServerOptions` as an export name and then fail to
+ * find it, which is a false failure that looks exactly like a real one.
+ *
+ * The five sibling pin laws above still carry this idiom inline. Routing them
+ * through this helper is the right cleanup and is deliberately NOT done here:
+ * this packet's write-set is a documentation tranche, and rewriting five
+ * landed export pins to prove a documentation law would put unrelated risk in
+ * the same diff. Recorded rather than left to be noticed.
+ */
+function barrelExportNames(source) {
+  const names = new Set();
+  for (const block of source.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+    for (const piece of (block[1] ?? "").split(",")) {
+      const trimmed = piece.trim().replace(/^type\s+/, "");
+      const name = trimmed.split(/\s+as\s+/).pop()?.trim();
+      if (name !== undefined && name !== "") names.add(name);
+    }
+  }
+  return names;
+}
+
+/**
+ * A README section that enumerates a package's surface, and the surface it
+ * claims.
+ *
+ * **The claimable form is a table whose first column is an inline-code name.**
+ * That is not decoration: prose is full of inline code that is not an export
+ * (`code`, `GET`, `pnpm test`), and a law that read every backticked token in a
+ * section would fail on the ledger README's own sentence about error codes. A
+ * table's first column is unambiguous, and writing the enumeration as one is a
+ * cost the four affected READMEs pay once.
+ *
+ * `complete: true` means the section claims to be the whole list, so the law
+ * runs BOTH directions — a name the surface does not carry fails, and a surface
+ * name the section omits fails. That second direction is the one that would
+ * have caught ledger's missing thirteenth error class and providers' two
+ * undocumented transports, and it is the direction a documentation gate usually
+ * lacks.
+ *
+ * `only` narrows the surface to the subset a section is about, so the Errors
+ * section is measured against the error classes rather than against every
+ * ledger export.
+ *
+ * **Out of scope by shape, and named rather than silent:** the READMEs that
+ * enumerate nothing. `packages/entrypoints/console/README.md` lists views,
+ * which are directories and not a barrel; `daemon`, `cli`, `runtime`,
+ * `accounts` and `observation` describe behaviour in prose and tables of
+ * members rather than claiming a closed export list. A law cannot check a claim
+ * a document does not make, and inventing enumerations so they could be checked
+ * would be writing documents for the fence rather than for readers.
+ */
+const README_SURFACE_CLAIMS = [
+  {
+    readme: "packages/kernel/contracts/README.md",
+    section: "## Capability modules",
+    complete: true,
+    surface: () =>
+      new Set(
+        [...(readIfPresent("packages/kernel/contracts/src/schemas/index.ts") ?? "").matchAll(
+          /from\s+"\.\/([^/"]+)\/index\.js"/g,
+        )].map((match) => match[1]),
+      ),
+  },
+  {
+    readme: "packages/edges/durability/README.md",
+    section: "## Public surface",
+    complete: true,
+    surface: () => new Set(DURABILITY_PUBLIC_EXPORTS),
+  },
+  {
+    readme: "packages/entrypoints/gateway/README.md",
+    section: "## Public surface",
+    complete: true,
+    surface: () => barrelExportNames(readIfPresent("packages/entrypoints/gateway/src/index.ts") ?? ""),
+  },
+  {
+    readme: "packages/persistence/ledger/README.md",
+    section: "### Errors",
+    complete: true,
+    only: (name) => name.endsWith("Error"),
+    surface: () => barrelExportNames(readIfPresent("packages/persistence/ledger/src/index.ts") ?? ""),
+  },
+  {
+    readme: "packages/edges/providers/README.md",
+    section: "## Three transports",
+    complete: false,
+    surface: () => new Set(PROVIDERS_PUBLIC_EXPORTS),
+  },
+];
+
+/** The section a heading opens, up to the next heading of any level. */
+function readmeSection(source, heading) {
+  const start = source.indexOf(heading);
+  if (start === -1) return null;
+  const rest = source.slice(start + heading.length);
+  const next = rest.search(/\n#{1,6} /);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+if (tracked.status === 0) {
+  let claimsChecked = 0;
+  for (const claim of README_SURFACE_CLAIMS) {
+    const source = readIfPresent(claim.readme);
+    if (source === null) {
+      fail(claim.readme + " is missing; the docs gate registers it as enumerating a surface");
+      continue;
+    }
+    const section = readmeSection(source, claim.section);
+    if (section === null) {
+      fail(claim.readme + ' no longer carries the section "' + claim.section + '", which the docs gate reads');
+      continue;
+    }
+    const claimed = [...section.matchAll(/^\| `([A-Za-z_$][\w$-]*)` \|/gm)].map((match) => match[1]);
+    if (claimed.length === 0) {
+      fail(
+        claim.readme +
+          ' section "' +
+          claim.section +
+          '" enumerates nothing; a registered surface claim is a table of names',
+      );
+      continue;
+    }
+    claimsChecked += 1;
+    const surface = claim.surface();
+    if (surface.size === 0) {
+      fail(claim.readme + ": the surface it is measured against is empty; the law would pass vacuously");
+      continue;
+    }
+    for (const name of claimed) {
+      if (!surface.has(name)) {
+        fail(claim.readme + " names " + name + ", which is not in the surface it claims to describe");
+      }
+    }
+    if (claim.complete === true) {
+      const owed = [...surface].filter((name) => (claim.only === undefined ? true : claim.only(name)));
+      for (const name of owed) {
+        if (!claimed.includes(name)) {
+          fail(claim.readme + " claims a complete list but omits " + name);
+        }
+      }
+    }
+  }
+  requireScope("package READMEs match the surface they claim", claimsChecked);
+  notes.push(
+    claimsChecked + " README surface claims checked against their pins and barrels, both directions where complete",
+  );
+}
+
+// --- the ADR template keeps the shape every record is written against -------
+//
+// The numbering and index-bijection law above already covers the corpus. What
+// it does not cover is the template itself: `_template.md` is excluded from the
+// corpus by the `NNNN-*.md` pattern, so it could be emptied or deleted and the
+// bijection would still pass over a corpus whose shape nothing defined.
+const ADR_TEMPLATE_SECTIONS = [
+  "- Status: proposed | accepted | superseded.",
+  "- Supersedes: none | ADR NNNN.",
+  "- Superseded-by: none | ADR NNNN.",
+  "## Context",
+  "## Decision",
+  "## Why <the alternative> was not chosen",
+  "## Consequences",
+  "## Not in this record",
+];
+const adrTemplate = readIfPresent("docs/architecture/_template.md");
+if (adrTemplate === null) {
+  fail("docs/architecture/_template.md is missing; the corpus has no shape to be written against");
+} else {
+  let templateSections = 0;
+  for (const section of ADR_TEMPLATE_SECTIONS) {
+    if (adrTemplate.includes(section)) {
+      templateSections += 1;
+    } else {
+      fail("docs/architecture/_template.md no longer carries the required section: " + section);
+    }
+  }
+  if (templateSections === ADR_TEMPLATE_SECTIONS.length) {
+    notes.push(
+      "the ADR template carries its " +
+        ADR_TEMPLATE_SECTIONS.length +
+        " required sections, including the status/supersedes header block",
+    );
+  }
+}
+
+// --- SECURITY.md cannot drift from the code it describes --------------------
+//
+// A threat model is the document most likely to describe a mechanism that has
+// been renamed, and the least likely to be re-read when it is. So every
+// load-bearing claim in SECURITY.md carries its own anchor — the file and the
+// literal that make the claim true — in a form this law greps:
+//
+//     > Anchor: `path` — `literal`
+//
+// The law reads the anchors out of the document rather than holding its own
+// copy of the list, which is what keeps the two from disagreeing: adding a
+// claim with an anchor extends the check automatically, and adding one without
+// an anchor is visible in review as a claim that nothing verifies.
+//
+// The floor is asserted too. A SECURITY.md whose anchors were all deleted would
+// otherwise satisfy this law perfectly, having nothing left to check.
+const SECURITY_ANCHOR = /^> Anchor: `([^`]+)` — `(.+)`$/gm;
+const SECURITY_ANCHOR_FLOOR = 12;
+const securityDoc = readIfPresent("SECURITY.md");
+if (securityDoc === null) {
+  fail("SECURITY.md is missing; the threat model is a required document since G10");
+} else {
+  const anchors = [...securityDoc.matchAll(SECURITY_ANCHOR)];
+  if (anchors.length < SECURITY_ANCHOR_FLOOR) {
+    fail(
+      "SECURITY.md carries " +
+        anchors.length +
+        " anchored claims, below the floor of " +
+        SECURITY_ANCHOR_FLOOR +
+        "; a threat model whose claims were removed would otherwise verify perfectly",
+    );
+  }
+  let anchorsHeld = 0;
+  for (const anchor of anchors) {
+    const [, anchorPath, literal] = anchor;
+    const anchored = readIfPresent(anchorPath ?? "");
+    if (anchored === null) {
+      fail("SECURITY.md anchors a claim to " + anchorPath + ", which does not exist");
+      continue;
+    }
+    if (!anchored.includes(literal ?? "")) {
+      fail(
+        "SECURITY.md claims " +
+          anchorPath +
+          " carries " +
+          JSON.stringify(literal) +
+          ", and it does not; the threat model has drifted from the code",
+      );
+      continue;
+    }
+    anchorsHeld += 1;
+  }
+  if (anchorsHeld === anchors.length) {
+    notes.push(anchorsHeld + " SECURITY.md claims each name a file and a literal, and every one of them holds");
+  }
+}
+
+// --- the API reference is a bijection with API_ROUTES -----------------------
+//
+// The same machinery shape as the ADR index bijection, for the same reason: a
+// reference document that merely exists is a document that describes the routes
+// it described when it was written. Both directions, so neither a route added
+// without documentation nor a documented route that no longer exists can pass.
+//
+// The parity suite stays the behavioral authority — it proves the gateway, the
+// CLI and the console agree route by route. This law proves only that the
+// readable artifact and the frozen table name the same set, which is the part a
+// documentation reader depends on and the part no test was asserting.
+//
+// The route table is read out of the protocol source rather than imported: this
+// fence is dependency-free and runs before any build, so the compiled package
+// may not exist when it runs.
+const apiReference = readIfPresent("docs/api-reference.md");
+const routesSource = readIfPresent("packages/kernel/protocol/src/routes/index.ts");
+if (apiReference === null) {
+  fail("docs/api-reference.md is missing; the API reference is a required document since G10");
+} else if (routesSource === null) {
+  fail("packages/kernel/protocol/src/routes/index.ts is missing; the API reference has nothing to be checked against");
+} else {
+  const tableStart = routesSource.indexOf("export const API_ROUTES = Object.freeze({");
+  const tableEnd = tableStart === -1 ? -1 : routesSource.indexOf("} as const);", tableStart);
+  if (tableStart === -1 || tableEnd === -1) {
+    fail("packages/kernel/protocol/src/routes/index.ts no longer declares API_ROUTES as a frozen object literal");
+  } else {
+    const table = new Map(
+      [...routesSource.slice(tableStart, tableEnd).matchAll(/^\s{2}([A-Za-z_$][\w$]*):\s*"([^"]+)"/gm)].map(
+        (match) => [match[1], match[2]],
+      ),
+    );
+    const documented = new Map(
+      [...apiReference.matchAll(/^\| `([A-Za-z_$][\w$]*)` \| ([^|]+) \| `([^`]+)` \|/gm)].map((match) => [
+        match[1],
+        { methods: (match[2] ?? "").trim(), path: match[3] },
+      ]),
+    );
+    if (table.size === 0) {
+      fail("API_ROUTES parsed as empty; the API reference law would pass vacuously");
+    }
+    for (const [name, pattern] of table) {
+      const row = documented.get(name);
+      if (row === undefined) {
+        fail("docs/api-reference.md does not document the route " + name + ", which API_ROUTES declares");
+        continue;
+      }
+      if (row.path !== pattern) {
+        fail(
+          "docs/api-reference.md documents " +
+            name +
+            " at " +
+            row.path +
+            "; API_ROUTES declares " +
+            pattern,
+        );
+      }
+    }
+    for (const name of documented.keys()) {
+      if (!table.has(name)) {
+        fail("docs/api-reference.md documents the route " + name + ", which API_ROUTES does not declare");
+      }
+    }
+    // The write table is the half a reader is most likely to get wrong, and the
+    // half that already went stale once: the protocol README said "the one
+    // write" for as long as there were two.
+    const writeStart = routesSource.indexOf("export const API_WRITE_ROUTES = Object.freeze([");
+    const writeEnd = writeStart === -1 ? -1 : routesSource.indexOf("] as const);", writeStart);
+    if (writeStart === -1 || writeEnd === -1) {
+      fail("packages/kernel/protocol/src/routes/index.ts no longer declares API_WRITE_ROUTES as a frozen array");
+    } else {
+      const writes = new Set(
+        [...routesSource.slice(writeStart, writeEnd).matchAll(/"([^"]+)"/g)].map((match) => match[1]),
+      );
+      for (const [name, row] of documented) {
+        const documentedAsWrite = row.methods.includes("POST");
+        if (documentedAsWrite && !writes.has(name)) {
+          fail("docs/api-reference.md documents " + name + " as accepting POST; API_WRITE_ROUTES does not name it");
+        }
+        if (!documentedAsWrite && writes.has(name)) {
+          fail("docs/api-reference.md documents " + name + " as read-only; API_WRITE_ROUTES names it a write route");
+        }
+      }
+      notes.push(
+        table.size +
+          " routes documented in docs/api-reference.md, a bijection with API_ROUTES, with " +
+          writes.size +
+          " write routes agreeing both ways",
+      );
     }
   }
 }

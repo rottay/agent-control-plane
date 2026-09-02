@@ -1,10 +1,9 @@
 {
   "name": "@acp/providers",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Read-only provider adapters for the Agent Control Plane. One process boundary, normalized events, no ledger reach and no product writes.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

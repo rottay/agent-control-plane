@@ -63,6 +63,35 @@ extract every method the protocol defines and prove the tables partition it
 with nothing left over, so a regeneration that changes the surface fails the
 suite rather than leaving a stale claim standing.
 
+## Three transports, not one
+
+A provider descriptor is the CLI leg. The execution port this package builds
+serves **three** transports, and the other two are real, exported and easy to
+miss because they have no descriptor: they take an injected client interface
+this repository owns rather than spawning a binary.
+
+| Export | Transport | What it does |
+| --- | --- | --- |
+| `CLI_TRANSPORT_KIND` | CLI | the kind literal for the spawned-binary leg |
+| `admitApiRoute` | API_KEY | admit a route onto a provider's HTTP API |
+| `apiExecutionEvents` | API_KEY | turn that stream into normalized events |
+| `LOCAL_TRANSPORT_KIND` | LOCAL_OR_SELF_HOSTED | the kind literal for the local leg |
+| `admitLocalRoute` | LOCAL_OR_SELF_HOSTED | admit a route onto an OpenAI-compatible chat surface |
+| `localExecutionEvents` | LOCAL_OR_SELF_HOSTED | turn that stream into normalized events |
+| `createExecutionPort` | all three | one factory, three legs |
+
+One factory, not three. `createExecutionPort` was renamed from
+`createCliExecutionPort` in P8-3 precisely because a factory named for one
+transport invites the second and third factory the design refuses.
+
+Both non-CLI legs bind through an interface **this repository declares**
+(`ApiStreamingClient`, `LocalChatClient`), injected by the caller, with no
+member able to carry a credential. That is what keeps law 6 true by
+construction rather than by discipline: the SDK binding stays optional, no
+client library is imported here, and nothing on the CLI path can reach an API
+key. A port constructed for CLI only refuses the other two kinds with a
+classified refusal.
+
 ## One process boundary
 
 `src/process/spawn/index.ts` is the only file that imports `node:child_process`, and

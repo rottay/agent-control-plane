@@ -1,10 +1,9 @@
 {
   "name": "@acp/accounts",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Account registry and shadow-mode routing domain for the Agent Control Plane. Owner-file admission, opaque auth references, and no credential resolution of any kind.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

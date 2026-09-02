@@ -1,10 +1,9 @@
 {
   "name": "@acp/runtime",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Durability domain for the Agent Control Plane. One shared lifecycle engine, the orchestration port, and the SQLite supervisor over the append-only event log. The Restate edge lives in @acp/durability.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

@@ -1,10 +1,9 @@
 {
   "name": "@acp/durability",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Restate edge for the Agent Control Plane. The durable-execution driver, its endpoint, child and pinned server, behind the orchestration port the runtime domain declares.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

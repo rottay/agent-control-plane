@@ -1,10 +1,9 @@
 {
   "name": "@acp/contracts",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Frozen runtime contracts for the Agent Control Plane. Provider neutral, strict, versioned.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

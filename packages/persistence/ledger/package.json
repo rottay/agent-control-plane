@@ -1,10 +1,9 @@
 {
   "name": "@acp/ledger",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Append-only SQLite event ledger for the Agent Control Plane. Hash chained, idempotent, with rebuildable read models.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

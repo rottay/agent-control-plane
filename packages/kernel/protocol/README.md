@@ -18,7 +18,7 @@ certification and a separate P9 authorisation.
 | Consumer | May depend on |
 | --- | --- |
 | `@acp/console` | `@acp/protocol` only |
-| `@acp/gateway` | `@acp/protocol` and `@acp/ledger` |
+| `@acp/gateway` | `@acp/protocol`, `@acp/ledger`, `@acp/accounts` and `@acp/observation` |
 | `@acp/cli` | `@acp/protocol` and `@acp/ledger` |
 
 The UI never links a database driver, never sees an absolute path and never
@@ -38,13 +38,20 @@ than trusting this table.
   serialized size, never its payload. Payload contents are the one part of an
   event the contract does not fix, so they are the one part a browser must not
   hold.
-- **Reads are GET; the one write is named.** Every route was a read through
+- **Reads are GET; every write is named.** Every route was a read through
   P8-8C, and `API_ALLOWED_METHODS` still says `["GET"]` because that describes
-  the read plane, which did not change. P8-8D-pre adds the plane's first write
-  — `POST /api/v1/initiatives/:initiativeId/roadmap` — and records it in a
-  separate frozen table, `API_WRITE_ROUTES`, rather than by softening the
-  first. A reader asking "what can mutate?" gets one short answer; a reader
-  asking "is this route a read?" gets the unchanged one.
+  the read plane, which did not change. The writes are recorded in a separate
+  frozen table, `API_WRITE_ROUTES`, rather than by softening the first one.
+  There are **two**, and the table grows visibly rather than a method quietly
+  appearing on a route:
+
+  | Write route | Method and path | Added by |
+  | --- | --- | --- |
+  | `initiativeRoadmap` | `POST /api/v1/initiatives/:initiativeId/roadmap` | P8-8D-pre |
+  | `accountActions` | `POST /api/v1/accounts/:accountId/actions` | P8-8G packet 2 |
+
+  A reader asking "what can mutate?" gets one short answer; a reader asking
+  "is this route a read?" gets the unchanged one.
 - **Explicit emptiness.** The overview distinguishes `EMPTY` from `UNAVAILABLE`
   and `ACTIVE` from `DEGRADED`, and states in data that routing, accounts and
   leases do not exist in this phase.
@@ -63,7 +70,7 @@ segment gets a thrown validation error rather than a request to somewhere else.
 
 ## Tests
 
-`pnpm test` runs the `api-contracts` project. The suite is adversarial by
+`pnpm test` runs the `protocol` project. The suite is adversarial by
 design: it asserts that unknown keys, credential shaped field names, transcript
 shaped field names, absolute paths, unsafe route parameters, invalid cursors and
 limits, and a mismatched contract version are all rejected, and that every
