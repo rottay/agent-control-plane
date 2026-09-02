@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **486 packet entries across 201 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **487 packet entries across 201 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1346,13 +1346,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
- * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) = 486 entries, with 285
- * duplicate entries.
+ * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) = 487 entries,
+ * with 286 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 45 duplicates = 45   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 46 duplicates = 46   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the gateway's routes
  *                                   source and build-server suite, and the CLI
@@ -1369,7 +1369,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *  23 paths ×  2 duplicates = 46
  *  44 paths ×  1 duplicate  = 44
  *
- * 45 + 10 + 28 + 30 + 30 + 16 + 36 + 46 + 44 = 285.
+ * 46 + 10 + 28 + 30 + 30 + 16 + 36 + 46 + 44 = 286.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1628,6 +1628,11 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * than twenty-two because it arrived, and ×1 reads forty-four rather than
  * forty-five because it left. The seven new paths have one owner each, so they
  * carry no duplicate and enter no row at all.
+ *
+ * P8-T-G9b is the smallest packet the phase has recorded: **one entry, no
+ * distinct path, one duplicate**. Entries move 486 → 487, distinct holds at
+ * 201, duplicates 285 → 286. One band step, this file's own row, 45 → 46 — the
+ * shape of a packet that edits the instrument and nothing else.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3030,6 +3035,26 @@ const P8T_G9_WRITE_SET = [
 ];
 
 /**
+ * P8-T-G9b: the bare side-effect import gap, closed in the instrument itself.
+ *
+ * G9 measured a gap shared by every import-purity law — the specifier
+ * extraction required a `from` clause, so `import "node:net";` fired nothing —
+ * and registered it as deferred to its own packet. The owner ordered it closed
+ * before `STRUCTURAL_TOPOLOGY_CERTIFIED` rather than after, on the ground that
+ * documenting a hole in a fence is not the same as having a fence. This is that
+ * packet.
+ *
+ * One path, because the cure is one shared extractor where eight verbatim
+ * copies and ten specialized from-anchored forms had drifted apart, and the
+ * falsification rides `ACP_FENCE_ROOT` synthetic trees and tempdirs rather than
+ * any tracked fixture. The extractor and the reasoning behind its three
+ * alternatives are documented at `IMPORT_SPECIFIER`, including the dynamic
+ * `await import(...)` boundary this packet deliberately leaves open and
+ * measures with a passing control.
+ */
+const P8T_G9B_WRITE_SET = ["scripts/check-architecture.mjs"];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3331,6 +3356,7 @@ const WRITE_SET = [
   ...P8T_G8_WRITE_SET,
   ...P8T_G8D_WRITE_SET,
   ...P8T_G9_WRITE_SET,
+  ...P8T_G9B_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -5451,6 +5477,107 @@ if (lockText === null) {
   notes.push("lockfile carries no restate server and no install-time telemetry");
 }
 
+/**
+ * The one import-specifier extractor (P8-T G9b).
+ *
+ * **The gap this closes.** Every import-purity law in this file used to carry
+ * its own copy of one regex, and every copy required a `from` clause. A bare
+ * side-effect import — `import "node:net";` — has no `from`, so it matched
+ * nothing and fired no law. The gap was shared by all seven purity laws and by
+ * the specialized forbidden-token forms, because they were copies of each
+ * other; a bare import of any forbidden specifier crossed every one of them.
+ * The copies numbered **eight**, not the six the packet brief enumerated:
+ * `grep -c` on the exact literal found the accounts law and the providers law
+ * carrying it too. All eight route through here now, so the literal that used
+ * to appear eight times appears exactly once, below.
+ *
+ * G9 registered this gap as "deferred to its own packet". This is that packet,
+ * arrived before certification by owner order rather than after it.
+ *
+ * **What it covers**, in the three alternatives below, tried in order:
+ *
+ *   1. `import`/`export … from "x"` on one line — byte-identical to the regex
+ *      the eight copies carried, so every specifier they used to find is still
+ *      found, in the same way;
+ *   2. bare `import "x"` — the side-effect form, the gap this packet closes.
+ *      Horizontal whitespace only (`[^\S\n]`): `\s+` would cross a newline and
+ *      let a bare `import` at the end of one line bind to an unrelated string
+ *      literal on the next, which is a false positive the from-form's `[^\n;]`
+ *      already refuses;
+ *   3. `import`/`export { … } from "x"` spanning lines — the brace-clause form
+ *      Prettier produces the moment a clause outgrows the print width.
+ *
+ * Alternative 3 is here because of what routing the specialized forms would
+ * otherwise cost. Those forms are text tests (`/from\s+["']node:child_process["']/`),
+ * not specifier tests, so they never needed the `import` keyword and never
+ * cared about newlines: a multi-line `import {\n  spawn,\n} from
+ * "node:child_process";` fires them today. Routing them through a single-line
+ * extractor would have closed the bare-import gap and opened a multi-line one
+ * in the same edit — the quiet weakening C1 exists to forbid. The spawn
+ * authority is one member wide today; adding a second member is all it takes
+ * for Prettier to wrap the clause, and the ban would have stopped firing with
+ * nothing failing. Measured differentially over the tracked tree at this
+ * packet's base: no specifier the old regex found is lost, and 166 additional
+ * occurrences across twelve package trees become visible — every one a real
+ * multi-line import already inside its package's allowance, which is why the
+ * closure turns nothing red.
+ *
+ * **The boundary left open, named so it is read knowingly.** Dynamic
+ * `await import("x")` is NOT covered, deliberately. The drills re-import a
+ * module after killing a process, and two provider suites load
+ * `node:string_decoder` lazily; closing this form would break live tests, so it
+ * is a semantic decision for its own packet, not a free extension. The
+ * falsification matrix carries a PASSING control for it — a synthetic tree
+ * whose file holds `await import("<forbidden>")` and passes every routed law —
+ * so the boundary cannot move in either direction without a fixture failing.
+ *
+ * **Hazards named, not fixed.** These laws match raw text: comments are not
+ * stripped before extraction (several callers pass `stripComments` output, most
+ * pass the file). A comment or string literal shaped like an import statement
+ * would be extracted as one. That predates this packet, it fails loud and
+ * closed, and the green suite is the standing evidence that no scanned file
+ * carries such a string. A multi-line import with no brace clause
+ * (`import def\n  from "x"`) is likewise outside alternative 3 and is not
+ * written in this repository.
+ *
+ * **This file is inside no scan.** Every routed law is scoped to a package
+ * tree; the fence lives in `scripts/`. That matters here rather than elsewhere
+ * because the alternatives below are import-looking text in the one file no
+ * import law reads, and stating the non-membership is cheaper than relying on
+ * it silently.
+ *
+ * **Extraction is shared; matching stays per-law.** Each caller keeps its own
+ * predicate — exact for an allowlist, `startsWith("node:")` for the denylist
+ * file, `startsWith(forbidden)` for the parametrized client ban whose prefix
+ * reach catches `@acp/x/subpath` (C1a), `endsWith`/`includes` for the provider
+ * path bans. Two things are deliberately NOT routed: the gateway's
+ * `@acp/contracts` substring law, which is stronger than any extractor can be
+ * because it catches `require(…)`, dynamic import, type-only and DI-identifier
+ * references, and would be weakened by routing (C1b); and the contracts schema
+ * barrel's re-export parser, which reads binding names out of a brace clause
+ * and asks nothing about specifiers at all.
+ */
+const IMPORT_SPECIFIER =
+  /(?:^|[\s({])(?:(?:import|export)[^\n;]*?from\s*["']([^"']+)["']|import[^\S\n]+["']([^"']+)["']|(?:import|export)[^;'"()=]*\{[^}]*\}[^;'"()=]*?from\s*["']([^"']+)["'])/g;
+
+/**
+ * Every specifier `source` imports or re-exports, in file order.
+ *
+ * `lastIndex` is reset on entry rather than trusted: the pattern is module
+ * scoped and global, and a caller that returned early from a previous scan
+ * would otherwise leave it mid-string.
+ */
+function importSpecifiers(source) {
+  const found = [];
+  IMPORT_SPECIFIER.lastIndex = 0;
+  let match = IMPORT_SPECIFIER.exec(source);
+  while (match !== null) {
+    found.push(match[1] ?? match[2] ?? match[3] ?? "");
+    match = IMPORT_SPECIFIER.exec(source);
+  }
+  return found;
+}
+
 // What the durability plane may import.
 //
 // The list is the cheapest honest proof of what this package can do at all: a
@@ -5540,16 +5667,13 @@ if (tracked.status === 0) {
   }
 
   let productionSources = 0;
-  const specifier = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
   for (const relativePath of runtimeSources) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
     const isTest = relativePath.endsWith(".test.ts");
     if (!isTest) productionSources += 1;
 
-    let match = specifier.exec(content);
-    while (match !== null) {
-      const name = match[1] ?? "";
+    for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       // File-scoped, not repository-wide: exactly one file may open a listener,
       // and exactly one module may spawn the external server.
@@ -5589,7 +5713,6 @@ if (tracked.status === 0) {
             " may open a listener, and the fence says so by name",
         );
       }
-      match = specifier.exec(content);
     }
   }
 
@@ -5602,7 +5725,7 @@ if (tracked.status === 0) {
     if (SPAWN_ALLOWED_FILES.has(relativePath)) continue;
     const content = readIfPresent(relativePath);
     if (content === null) continue;
-    if (/from\s+["']node:child_process["']/.test(content)) {
+    if (importSpecifiers(content).includes("node:child_process")) {
       fail(relativePath + " spawns a process; only the two allow-listed sites may do that");
     }
   }
@@ -5656,17 +5779,13 @@ if (tracked.status === 0) {
   requireScope("the Restate edge's import purity", durabilitySources.length);
 
   let durabilityProduction = 0;
-  const durabilitySpecifier = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
   for (const relativePath of durabilitySources) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
     const isTest = relativePath.endsWith(".test.ts");
     if (!isTest) durabilityProduction += 1;
 
-    durabilitySpecifier.lastIndex = 0;
-    let match = durabilitySpecifier.exec(content);
-    while (match !== null) {
-      const name = match[1] ?? "";
+    for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       const http2Here = name === "node:http2" && relativePath === HTTP2_ALLOWED_FILE;
       const allowed =
@@ -5702,7 +5821,6 @@ if (tracked.status === 0) {
             " may open a listener, and the fence says so by name",
         );
       }
-      match = durabilitySpecifier.exec(content);
     }
   }
 
@@ -5714,7 +5832,7 @@ if (tracked.status === 0) {
     if (SPAWN_ALLOWED_FILES.has(relativePath)) continue;
     const content = readIfPresent(relativePath);
     if (content === null) continue;
-    if (/from\s+["']node:child_process["']/.test(content)) {
+    if (importSpecifiers(content).includes("node:child_process")) {
       fail(relativePath + " spawns a process; only the allow-listed sites may do that");
     }
   }
@@ -5750,18 +5868,11 @@ if (tracked.status === 0) {
   const scanned = present.filter((relativePath) => /\.[cm]?[jt]sx?$/.test(relativePath));
   const importing = [];
   const decoys = [];
-  const statement = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
   for (const relativePath of scanned) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
 
-    let importsSdk = false;
-    statement.lastIndex = 0;
-    let match = statement.exec(content);
-    while (match !== null) {
-      if (match[1] === SDK_SPECIFIER) importsSdk = true;
-      match = statement.exec(content);
-    }
+    const importsSdk = importSpecifiers(content).includes(SDK_SPECIFIER);
     if (importsSdk) importing.push(relativePath);
     // A file that *names* the SDK without importing it is the case the gate has
     // to get right, so it is counted rather than ignored: a run in which the
@@ -6083,10 +6194,7 @@ if (tracked.status === 0) {
       fail(relativePath + " deep-imports @acp/durability; only its public entry point is allowed");
     }
 
-    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
-    let match = pattern.exec(content);
-    while (match !== null) {
-      const name = match[1] ?? "";
+    for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       const spawnHere = name === "node:child_process" && SPAWN_ALLOWED_FILES.has(relativePath);
       const allowed =
@@ -6101,7 +6209,6 @@ if (tracked.status === 0) {
       if (RUNTIME_FORBIDDEN_BUILTINS.includes(name)) {
         fail(relativePath + " imports " + name + "; the daemon opens no network surface");
       }
-      match = pattern.exec(content);
     }
   }
 
@@ -6114,7 +6221,7 @@ if (tracked.status === 0) {
     "packages/entrypoints/daemon/src/mode-restate/index.ts",
   ]) {
     const content = readIfPresent(decisionPath);
-    if (content !== null && /from\s+["']\.\.\/status\/index\.js["']/.test(content)) {
+    if (content !== null && importSpecifiers(content).includes("../status/index.js")) {
       fail(decisionPath + " imports the status observation; lifecycle decisions may not read it");
     }
   }
@@ -6307,7 +6414,7 @@ if (tracked.status === 0) {
     if (relativePath.endsWith(".test.ts")) continue;
     const content = readIfPresent(relativePath);
     if (content === null) continue;
-    if (/from\s+["']node:child_process["']/.test(content)) {
+    if (importSpecifiers(content).includes("node:child_process")) {
       fail(relativePath + " spawns a process; plutil belongs in the drills, not in production");
     }
   }
@@ -6344,7 +6451,7 @@ if (tracked.status === 0) {
     if (!new RegExp('"' + AGENT_DIR_TOKEN + '",').test(code)) {
       fail(DENYLIST_FILE + " may name the user agent directory only as a denylist literal");
     }
-    if (/from\s+["']node:/.test(code)) {
+    if (importSpecifiers(code).some((name) => name.startsWith("node:"))) {
       fail(DENYLIST_FILE + " must import nothing from node:; it is a pure reader");
     }
   }
@@ -6496,10 +6603,7 @@ if (tracked.status === 0) {
     const isTest = relativePath.endsWith(".test.ts");
     const code = stripComments(content);
 
-    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
-    let match = pattern.exec(content);
-    while (match !== null) {
-      const name = match[1] ?? "";
+    for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       const allowed =
         relative ||
@@ -6512,7 +6616,6 @@ if (tracked.status === 0) {
       if (OBSERVATION_FORBIDDEN_BUILTINS.includes(name)) {
         fail(relativePath + " imports " + name + "; observation attaches to and signals nothing");
       }
-      match = pattern.exec(content);
     }
 
     // Production modules may not even name a mutating call. The guarantee is
@@ -6563,7 +6666,7 @@ if (tracked.status === 0) {
     // Exactly one module may reach the ledger, and the collectors may not. A
     // passive collector that could open a ledger would stop being passive, and
     // a second writer would make "the sole writer" a claim rather than a fact.
-    const importsLedger = /from\s*["']@acp\/ledger["']/.test(code);
+    const importsLedger = importSpecifiers(code).includes("@acp/ledger");
     if (relativePath === OBSERVATION_LEDGER_SITE) {
       if (!importsLedger) {
         fail(relativePath + " no longer imports @acp/ledger; it is the package's only writer");
@@ -6796,10 +6899,7 @@ if (tracked.status === 0) {
     const isTest = relativePath.endsWith(".test.ts");
     const code = stripComments(content);
 
-    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
-    let match = pattern.exec(content);
-    while (match !== null) {
-      const name = match[1] ?? "";
+    for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       const allowed =
         relative ||
@@ -6812,7 +6912,6 @@ if (tracked.status === 0) {
       if (ACCOUNTS_FORBIDDEN_BUILTINS.includes(name)) {
         fail(relativePath + " imports " + name + "; the accounts domain reaches nothing");
       }
-      match = pattern.exec(content);
     }
 
     // Tests need fixtures, so they may write, chmod and read an environment.
@@ -7267,15 +7366,11 @@ function scanPackageImports(name, allowedPackages, allowedBuiltins, testOnlyImpo
       inAnyArea(relativePath, name, ["src", "test"], PACKAGE_STRATA) &&
       /\.tsx?$/.test(relativePath),
   );
-  const specifier = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
   for (const relativePath of sources) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
     const isTest = relativePath.endsWith(".test.ts") || relativePath.includes("/test/");
-    specifier.lastIndex = 0;
-    let match = specifier.exec(content);
-    while (match !== null) {
-      const specifierName = match[1] ?? "";
+    for (const specifierName of importSpecifiers(content)) {
       const relative = specifierName.startsWith("./") || specifierName.startsWith("../");
       const allowed =
         relative ||
@@ -7292,7 +7387,6 @@ function scanPackageImports(name, allowedPackages, allowedBuiltins, testOnlyImpo
             " package may import only its own modules and its measured set",
         );
       }
-      match = specifier.exec(content);
     }
   }
   return sources.length;
@@ -8433,10 +8527,7 @@ if (tracked.status === 0) {
     const isTest = relativePath.endsWith(".test.ts");
     const code = stripComments(content);
 
-    const pattern = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
-    let match = pattern.exec(content);
-    while (match !== null) {
-      const name = match[1] ?? "";
+    for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       const spawnHere = name === "node:child_process" && relativePath === PROVIDERS_SPAWN_SITE;
       const allowed =
@@ -8451,7 +8542,6 @@ if (tracked.status === 0) {
       if (PROVIDERS_FORBIDDEN_BUILTINS.includes(name)) {
         fail(relativePath + " imports " + name + "; adapters reach no network");
       }
-      match = pattern.exec(content);
     }
 
     // No adapter source may name a ledger, in any form. Adapters produce
@@ -8463,7 +8553,7 @@ if (tracked.status === 0) {
     if (isTest) continue;
 
     // Exactly one spawner, and exactly one caller of it.
-    if (/from\s*["']node:child_process["']/.test(code) && relativePath !== PROVIDERS_SPAWN_SITE) {
+    if (importSpecifiers(code).includes("node:child_process") && relativePath !== PROVIDERS_SPAWN_SITE) {
       fail(relativePath + " imports node:child_process; only " + PROVIDERS_SPAWN_SITE + " may");
     }
     // The law is about *calling* the spawner, not naming its module: the index
@@ -8479,10 +8569,10 @@ if (tracked.status === 0) {
     // opinions about stopping a process.
     if (PROVIDER_DIRECTORIES.some((dir) => inArea(relativePath, "providers", "src/" + dir, PACKAGE_STRATA))) {
       providerFiles += 1;
-      if (/from\s*["'][^"']*session\.js["']/.test(code)) {
+      if (importSpecifiers(code).some((name) => name.endsWith("session.js"))) {
         fail(relativePath + " imports the session controller; providers stay pure");
       }
-      if (/from\s*["'][^"']*\/process\//.test(code)) {
+      if (importSpecifiers(code).some((name) => name.includes("/process/"))) {
         fail(relativePath + " imports a process module; providers stay pure");
       }
     }
@@ -8659,7 +8749,10 @@ for (const owned of OWNED_CLIENT_MODULES) {
   // one, which is precisely what law 6 forbids and what P8-3b exists to do
   // deliberately.
   for (const forbidden of owned.forbidden) {
-    if (new RegExp('from "' + forbidden).test(source)) {
+    // Prefix, not equality (C1a): the form this replaced carried no closing
+    // quote, so a ban on `@acp/x` also caught `@acp/x/subpath`. Extraction is
+    // shared; this law's reach is its own and is preserved exactly.
+    if (importSpecifiers(source).some((name) => name.startsWith(forbidden))) {
       fail(owned.path + " imports " + forbidden + "; law 6 keeps the client binding optional");
     }
   }
