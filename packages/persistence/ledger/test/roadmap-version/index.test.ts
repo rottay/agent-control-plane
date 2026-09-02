@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { CONTRACT_VERSION } from "@acp/contracts";
 
+import { forAll, intBetween, makeRandom } from "../canonical-json/helpers/index.js";
+
 import {
   ROADMAP_VERSION_REFUSALS,
   decideRoadmapVersion,
@@ -302,5 +304,157 @@ describe("the decision reads nothing and mints nothing", () => {
     // Nothing it returns is minted: the version is the candidate, parsed.
     if (!first.ok) throw new Error("expected a grant");
     expect(first.version).toEqual(successor());
+  });
+});
+
+
+/**
+ * The decision's invariants, as properties (P8-T G9).
+ *
+ * The classes above pin the behavior on chosen shapes. These quantify over
+ * MULTIPLY-violating requests — the cases nobody writes by hand, and precisely
+ * where a check-order bug hides: a request that violates three preconditions at
+ * once has exactly one correct refusal, and only an oracle that models the
+ * whole cascade can say which.
+ *
+ * **The oracle models the cascade AS CODED (C2a), every stage:** schema-invalid
+ * → `head.initiativeId` mismatch → `knownVersions` initiative mismatch (all
+ * three `REQUEST_INVALID`) → monotonicity → parent → head digest →
+ * restores-unknown → rollback digest. An oracle that elided the early stages
+ * would agree with a wrong implementation on every request that violates a late
+ * rule and an early one together, which is most of them.
+ */
+describe("the roadmap-version decision is total and ordered (G9)", () => {
+  const ITERATIONS = 250;
+
+  interface Case {
+    readonly request: { candidate: unknown; head: RoadmapVersionReadModel | null; knownVersions: readonly RoadmapVersionReadModel[] };
+    readonly violations: readonly string[];
+  }
+
+  /**
+   * The expected outcome, derived from the cascade rather than from the
+   * implementation: the FIRST violated stage in the coded order wins.
+   */
+  function expected(violations: readonly string[]): { reason: string; at: string } | null {
+    const order: readonly (readonly [string, string, string])[] = [
+      ["schema", "REQUEST_INVALID", "candidate."],
+      ["headInitiative", "REQUEST_INVALID", "head.initiativeId"],
+      ["knownInitiative", "REQUEST_INVALID", "knownVersions.initiativeId"],
+      ["monotonic", "VERSION_NOT_MONOTONIC", "candidate.version"],
+      ["parent", "PARENT_MISMATCH", "candidate.parentVersionId"],
+      ["headDigest", "HEAD_MISMATCH", "candidate.expectedHeadDigest"],
+      ["restoresUnknown", "RESTORES_UNKNOWN_VERSION", "candidate.restoresVersionId"],
+      ["rollbackDigest", "ROLLBACK_DIGEST_MISMATCH", "candidate.contentDigest"],
+    ];
+    for (const [name, reason, at] of order) {
+      if (violations.includes(name)) return { reason, at };
+    }
+    return null;
+  }
+
+  /** A request carrying an arbitrary, possibly overlapping, set of violations. */
+  function generate(random: () => number): Case {
+    const violations: string[] = [];
+    const add = (name: string, chance = 0.35): boolean => {
+      if (random() < chance) {
+        violations.push(name);
+        return true;
+      }
+      return false;
+    };
+
+    const rollback = random() < 0.4;
+    const head = folded({ roadmapVersionId: V1, contentDigest: DIGEST_ONE });
+    let candidateValue = successor(
+      rollback
+        ? { kind: "ROLLBACK", restoresVersionId: V1, contentDigest: DIGEST_ONE }
+        : {},
+    );
+    let headValue: RoadmapVersionReadModel | null = head;
+    let known: RoadmapVersionReadModel[] = [head];
+
+    // The schema violation must sit on a field NO later mutation touches, or a
+    // combination silently repairs it and the case no longer means what the
+    // violation list says. (`version` was the first choice and was wrong: the
+    // monotonicity mutation overwrites it.)
+    if (add("schema")) candidateValue = { ...candidateValue, recordedBy: 42 };
+    if (add("headInitiative")) headValue = { ...head, initiativeId: OTHER_INITIATIVE };
+    if (add("knownInitiative")) known = [...known, folded({ roadmapVersionId: V3, initiativeId: OTHER_INITIATIVE })];
+    if (add("monotonic")) candidateValue = { ...candidateValue, version: intBetween(random, 3, 9) };
+    if (add("parent")) candidateValue = { ...candidateValue, parentVersionId: V3 };
+    if (add("headDigest")) candidateValue = { ...candidateValue, expectedHeadDigest: DIGEST_THREE };
+    if (rollback && add("restoresUnknown")) {
+      candidateValue = { ...candidateValue, restoresVersionId: V3 };
+    }
+    if (rollback && !violations.includes("restoresUnknown") && add("rollbackDigest")) {
+      candidateValue = { ...candidateValue, contentDigest: DIGEST_TWO };
+    }
+
+    return {
+      request: { candidate: candidateValue, head: headValue, knownVersions: known },
+      violations,
+    };
+  }
+
+  it("never throws and always returns one of the seven outcomes", () => {
+    forAll("totality", 0x9d0c_0001, ITERATIONS, generate, ({ request }) => {
+      const outcome = decideRoadmapVersion(request);
+      if (outcome.ok) {
+        expect(outcome.events).toHaveLength(1);
+        return;
+      }
+      expect(ROADMAP_VERSION_REFUSALS).toContain(outcome.reason);
+    });
+  });
+
+  it("refuses at the first violated stage of the coded cascade", () => {
+    forAll("check order", 0x9d0c_0002, ITERATIONS, generate, ({ request, violations }) => {
+      const outcome = decideRoadmapVersion(request);
+      const want = expected(violations);
+      if (want === null) {
+        expect(outcome.ok, violations.join("+") || "(no violations)").toBe(true);
+        return;
+      }
+      expect(outcome.ok, violations.join("+")).toBe(false);
+      if (outcome.ok) return;
+      expect(outcome.reason, violations.join("+")).toBe(want.reason);
+      expect(outcome.at.startsWith(want.at), outcome.at + " vs " + want.at).toBe(true);
+    });
+  });
+
+  it("grants only the exact successor, and says so in the event it produces", () => {
+    forAll("grant implies successor", 0x9d0c_0003, ITERATIONS, generate, ({ request }) => {
+      const outcome = decideRoadmapVersion(request);
+      if (!outcome.ok) return;
+      const headVersion = request.head?.version ?? 0;
+      expect(outcome.version.version).toBe(headVersion + 1);
+      expect(outcome.events[0]?.payload).toEqual(outcome.version);
+    });
+  });
+
+  it("is pure: the same request decided twice gives the same outcome", () => {
+    forAll("purity", 0x9d0c_0004, ITERATIONS, generate, ({ request }) => {
+      const before = JSON.stringify(request);
+      const first = decideRoadmapVersion(request);
+      const second = decideRoadmapVersion(request);
+      expect(first).toEqual(second);
+      // And the request itself is untouched — a decision that mutated its input
+      // would make a retry mean something different from the first attempt.
+      expect(JSON.stringify(request)).toBe(before);
+    });
+  });
+
+  it("reaches every stage of the cascade over the fixed budget", () => {
+    // Without this the class could pass while only ever exercising one branch:
+    // a generator that never produced a rollback, say, would leave two refusals
+    // unvisited and the check-order property would still report green.
+    const reached = new Set<string>();
+    for (let i = 0; i < ITERATIONS; i += 1) {
+      const outcome = decideRoadmapVersion(generate(makeRandom(0x9d0c_0002 + i)).request);
+      reached.add(outcome.ok ? "GRANT" : outcome.reason);
+    }
+    // All six refusals plus the grant.
+    expect([...reached].sort()).toEqual([...ROADMAP_VERSION_REFUSALS, "GRANT"].sort());
   });
 });

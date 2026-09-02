@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ROADMAP_CONTENT_MAX_BYTES } from "@acp/contracts";
 
+import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 import {
   ARTIFACT_MAX_BYTES,
   ARTIFACT_REFUSALS,
@@ -231,5 +232,95 @@ describe("the ceiling is re-exported, not redeclared (P8-8G R2)", () => {
     expect(over.ok).toBe(false);
     if (over.ok) throw new Error("expected a refusal");
     expect(over.reason).toBe("CONTENT_TOO_LARGE");
+  });
+});
+
+
+/**
+ * The store's laws as properties (P8-T G9).
+ *
+ * The classes above pin the store's behavior on chosen examples. These reach
+ * the dimension examples cannot: arbitrary byte strings. Content addressing is
+ * a claim about *all* content, and the interesting inputs — empty, multi-byte,
+ * lone surrogates' legal cousins, lengths that straddle a shard boundary — are
+ * exactly the ones nobody writes down by hand.
+ */
+describe("the artifact store's laws hold over arbitrary content (G9)", () => {
+  const ITERATIONS = 120;
+
+  /** Arbitrary content, biased toward the awkward cases rather than the average one. */
+  const content = (random: () => number): string => {
+    const alphabet = ["a", "Z", "0", " ", "\n", "\t", "\"", "\\", "ä", "😀", "✓", "\u0000"];
+    const kind = intBetween(random, 0, 3);
+    if (kind === 0) return "";
+    const length = kind === 1 ? intBetween(random, 1, 8) : intBetween(random, 200, 2000);
+    let out = "";
+    for (let i = 0; i < length; i += 1) out += pick(random, alphabet);
+    return out;
+  };
+
+  it("recovers the exact bytes it published, for arbitrary content", () => {
+    forAll("publish/read round trip", 0xa47_0001, ITERATIONS, content, (text) => {
+      const where = root();
+      const published = publishArtifact(where, text);
+      expect(published.ok).toBe(true);
+      if (!published.ok) return;
+      const read = readArtifact(where, published.digest);
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.content).toBe(text);
+      expect(published.byteLength).toBe(Buffer.byteLength(text, "utf8"));
+    });
+  });
+
+  it("shards every object under the first two characters of its digest", () => {
+    // The layout claim, over arbitrary content: the shard is never anything
+    // but the digest's own prefix, so a reader can find an object from its
+    // digest alone without consulting an index.
+    forAll("shard is the digest prefix", 0xa47_0002, ITERATIONS, content, (text) => {
+      const where = root();
+      const published = publishArtifact(where, text);
+      expect(published.ok).toBe(true);
+      if (!published.ok) return;
+      // The layout, as the store actually writes it: `<root>/<first two>/<full
+      // digest>` — the shard is a prefix of the name, not a truncation of it.
+      const shards = readdirSync(where);
+      expect(shards).toEqual([published.digest.slice(0, 2)]);
+      expect(readdirSync(join(where, shards[0] ?? ""))).toEqual([published.digest]);
+    });
+  });
+
+  it("is a no-op on republish and distinguishes distinct content", () => {
+    forAll("republish and distinctness", 0xa47_0003, ITERATIONS, (random) => {
+      const first = content(random);
+      let second = content(random);
+      // Constructive distinctness: never rely on the generator happening to
+      // differ, or the second half of this property samples nothing.
+      if (second === first) second = first + "\u0001";
+      return { first, second };
+    }, ({ first, second }) => {
+      const where = root();
+      const once = publishArtifact(where, first);
+      const twice = publishArtifact(where, first);
+      expect(once.ok && twice.ok).toBe(true);
+      if (!once.ok || !twice.ok) return;
+      expect(once.written).toBe(true);
+      expect(twice.written).toBe(false);
+      expect(twice.digest).toBe(once.digest);
+
+      const other = publishArtifact(where, second);
+      expect(other.ok).toBe(true);
+      if (!other.ok) return;
+      expect(other.digest).not.toBe(once.digest);
+      expect(hasArtifact(where, once.digest)).toBe(true);
+      expect(hasArtifact(where, other.digest)).toBe(true);
+    });
+  });
+
+  it("computes a digest that depends on the bytes and nothing else", () => {
+    forAll("digest is a function of content", 0xa47_0004, ITERATIONS, content, (text) => {
+      expect(artifactDigest(text)).toBe(artifactDigest(text));
+      expect(artifactDigest(text)).toMatch(/^[0-9a-f]{64}$/);
+    });
   });
 });

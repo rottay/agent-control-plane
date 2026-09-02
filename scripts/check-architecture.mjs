@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **477 packet entries across 194 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **486 packet entries across 201 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1346,12 +1346,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
- * 3 (P8-T-G8) + 3 (P8-T-G8-diet) = 477 entries, with 283 duplicate entries.
+ * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) = 486 entries, with 285
+ * duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 44 duplicates = 44   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 45 duplicates = 45   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
  *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the gateway's routes
  *                                   source and build-server suite, and the CLI
@@ -1365,10 +1366,10 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   the console styles sheet and the
  *                                   accounts-view suite)
  *  12 paths ×  3 duplicates = 36
- *  22 paths ×  2 duplicates = 44
- *  45 paths ×  1 duplicate  = 45
+ *  23 paths ×  2 duplicates = 46
+ *  44 paths ×  1 duplicate  = 44
  *
- * 44 + 10 + 28 + 30 + 30 + 16 + 36 + 44 + 45 = 283.
+ * 45 + 10 + 28 + 30 + 30 + 16 + 36 + 46 + 44 = 285.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1611,6 +1612,22 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * Four export names left their barrels and the fold did not notice, which is the
  * arithmetic being honest about what it measures: it counts paths declared, not
  * surface removed. §21c is where the removal itself is recorded.
+ *
+ * P8-T-G9 adds **seven** distinct paths and only two duplicates — the phase's
+ * cleanest ratio since G6, and for the same reason: a packet that writes new
+ * test classes creates files rather than revisiting them. Entries move
+ * 477 → 486, distinct 194 → 201, duplicates 283 → 285.
+ *
+ * The seven are the six new test files and `roadmap-version/index.test.ts`,
+ * whose only prior owner is P7I-2 — older than the phase and so novel inside
+ * it, the same convention `vitest.config.ts` met in G0.
+ *
+ * Two band steps, one per duplicate. This file's own row, 44 → 45. And the
+ * artifact-store suite, already P8-owned, stepping from ×1 to ×2 — which is the
+ * single move behind BOTH remaining row changes: ×2 reads twenty-three rather
+ * than twenty-two because it arrived, and ×1 reads forty-four rather than
+ * forty-five because it left. The seven new paths have one owner each, so they
+ * carry no duplicate and enter no row at all.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -2969,6 +2986,50 @@ const P8T_G8D_WRITE_SET = [
 ];
 
 /**
+ * P8-T G9: the four R2 property classes, the structural residual, and the last
+ * four import-purity laws.
+ *
+ * Four modules whose contracts are universally quantified get generator-based
+ * classes — the route grammar, canonical JSON, the artifact store, and the
+ * roadmap-version decision — plus targeted classes for the two genuinely
+ * untested decision modules one level down, `migrations` and `projection`.
+ *
+ * **No property library, and none is authorized.** The dependency graph is
+ * frozen by the P1B discipline, so the harness is house-built: a four-line
+ * seeded PRNG, fixed iteration counts, and per-case seeding in place of a
+ * shrinker — a failure prints one number that regenerates exactly that
+ * counterexample. The harness exists twice, in protocol's and ledger's test
+ * trees, because a shared helper would be a cross-package test import that
+ * those packages' own purity laws (§21b-bis, added in this packet) forbid. The
+ * duplication gate scans `src/**`, so nothing in the fence objects; it is named
+ * here rather than left to be discovered.
+ *
+ * **Mutation testing (C4, DT ruling).** The roadmap's sentence about deliberate
+ * mutation is a SCOPING CEILING, not a deliverable. Tooling-grade mutation
+ * testing is out of pre-release scope: the dependency graph is frozen, no
+ * mutation tool is authorized, and adding one is an owner-level dependency
+ * decision. What the three decision modules have today is the drills, the
+ * failing-fixture discipline every new class here carries, and these
+ * properties. The owner decides post-release tooling at P8-E. Recorded here so
+ * certification reads that roadmap sentence against this ruling rather than
+ * against silence.
+ *
+ * Seven of the nine paths are novel in the phase; this file and the
+ * artifact-store suite are P8-owned and ride as duplicates.
+ */
+const P8T_G9_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/routes/helpers/index.ts",
+  "packages/persistence/ledger/test/canonical-json/index.test.ts",
+  "packages/persistence/ledger/test/canonical-json/helpers/index.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/artifact-store/index.test.ts",
+  "packages/persistence/ledger/test/roadmap-version/index.test.ts",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3269,6 +3330,7 @@ const WRITE_SET = [
   ...P8T_G7_WRITE_SET,
   ...P8T_G8_WRITE_SET,
   ...P8T_G8D_WRITE_SET,
+  ...P8T_G9_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3846,6 +3908,10 @@ const PATH_SCOPED_LAWS = [
   { law: "every package sits at packages/<stratum>/<name>/", scope: "packages/**" },
   { law: "cross-package name collisions are unified or adjudicated", scope: "packages/*/*/src/**" },
   { law: "every test path mirrors a source or is a registered test-only domain", scope: "packages/*/*/test/** (TOPOLOGY_ACTIVE_TREES)" },
+  { law: "the contracts package imports only what it is allowed", scope: "packages/kernel/contracts/{src,test}/**" },
+  { law: "the ledger package imports only what it is allowed", scope: "packages/persistence/ledger/{src,test}/**" },
+  { law: "the protocol package imports only what it is allowed", scope: "packages/kernel/protocol/{src,test}/**" },
+  { law: "the cli package imports only what it is allowed", scope: "packages/entrypoints/cli/{src,test}/**" },
 ];
 
 /**
@@ -7067,6 +7133,14 @@ const TEST_TREE_SCANNED_PREFIXES = [
   // read them has to follow. Leaving this out is the exact failure this list
   // exists to catch — the allowlists would simply stop applying, silently.
   "packages/edges/durability/test/",
+  // P8-T G9 (the C2 rider): the last four join, so the scanned set is now every
+  // activated tree and the exemption below is empty. What made those four
+  // exempt was that no per-package purity law existed to extend — G9 writes the
+  // four laws, so the exemption has nothing left to stand on.
+  "packages/kernel/contracts/test/",
+  "packages/persistence/ledger/test/",
+  "packages/kernel/protocol/test/",
+  "packages/entrypoints/cli/test/",
 ];
 
 /**
@@ -7077,7 +7151,12 @@ const TEST_TREE_SCANNED_PREFIXES = [
  * visible: an entry here is a package whose sources the fence never inspected,
  * not a package whose inspection was dropped.
  */
-const TEST_TREE_NO_PACKAGE_SCAN = ["contracts", "ledger", "protocol", "cli"];
+// P8-T G9 emptied this. It held the four packages the fence had never written a
+// per-package import law for; §21c recorded that the exemption would end when
+// those laws landed, and they land in this packet. An empty list is the honest
+// state: every activated tree is now scanned, and a package added to this list
+// again would be a package whose imports nothing inspects.
+const TEST_TREE_NO_PACKAGE_SCAN = [];
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -7115,6 +7194,130 @@ if (tracked.status === 0) {
   }
 }
 
+// --- 21b-bis. the last four import-purity laws (P8-T G9, the C2 rider) ------
+//
+// `contracts`, `ledger`, `protocol` and `cli` sat in `TEST_TREE_NO_PACKAGE_SCAN`
+// from the day that list existed, for an honest reason: there was no
+// per-package import law for them to be inside of. §21c recorded that the
+// exemption would end when those laws landed. These are those laws, and the
+// exemption list is now empty.
+//
+// The sets are MEASURED, not designed — every specifier below appears in the
+// package today, and nothing appears that does not. That is what makes the law
+// a description the tree must keep matching rather than an aspiration.
+//
+// Three of the measured values deserve their own note, because a reader
+// comparing against the G9 measurement memo will find them rendered differently
+// there (all three verified at the bytes, all three pre-existing, none created
+// by this packet — see the packet report's disclosure):
+//
+//   • `zod` is a production dependency of BOTH `contracts` and `protocol`; the
+//     memo's summary code block listed only workspace packages under
+//     ALLOWED_PACKAGES and so omitted it.
+//   • `better-sqlite3` is `ledger`'s one npm runtime dependency, in `src` and
+//     `test` alike, and was omitted from the same block for the same reason.
+//   • `cli`'s `src` imports `node:fs` and `node:url` (in `src/index.ts`); the
+//     memo's table row for that cell lists three builtins where the tree has
+//     five.
+//
+// An npm package belongs in ALLOWED_PACKAGES here exactly as
+// `@restatedev/restate-sdk` does in the durability triple — the field is "what
+// this package may import", not "which workspace siblings it may import".
+const CONTRACTS_ALLOWED_PACKAGES = new Set(["zod"]);
+const CONTRACTS_ALLOWED_BUILTINS = new Set([]);
+const CONTRACTS_TEST_ONLY_IMPORTS = new Set([
+  "vitest",
+  "node:child_process",
+  "node:fs",
+  "node:path",
+  "node:url",
+]);
+
+const LEDGER_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/protocol", "better-sqlite3"]);
+const LEDGER_ALLOWED_BUILTINS = new Set(["node:crypto", "node:fs", "node:path"]);
+const LEDGER_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os", "node:url"]);
+
+const PROTOCOL_ALLOWED_PACKAGES = new Set(["@acp/contracts", "zod"]);
+const PROTOCOL_ALLOWED_BUILTINS = new Set([]);
+const PROTOCOL_TEST_ONLY_IMPORTS = new Set(["vitest", "node:fs", "node:path", "node:url"]);
+
+const CLI_ALLOWED_PACKAGES = new Set(["@acp/ledger", "@acp/protocol"]);
+const CLI_ALLOWED_BUILTINS = new Set([
+  "node:crypto",
+  "node:fs",
+  "node:path",
+  "node:url",
+  "node:util",
+]);
+const CLI_TEST_ONLY_IMPORTS = new Set(["vitest", "node:os", "node:sqlite"]);
+
+/**
+ * One package's import purity, in the shape every sibling law already takes.
+ *
+ * Returns the number of files scanned so the caller can pass it to
+ * `requireScope` — each of the four laws makes that call itself, because the
+ * register's count law counts call sites in this file's text and a loop would
+ * present four laws as one.
+ */
+function scanPackageImports(name, allowedPackages, allowedBuiltins, testOnlyImports) {
+  if (tracked.status !== 0) return 0;
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const sources = present.filter(
+    (relativePath) =>
+      inAnyArea(relativePath, name, ["src", "test"], PACKAGE_STRATA) &&
+      /\.tsx?$/.test(relativePath),
+  );
+  const specifier = /(?:^|[\s({])(?:import|export)[^\n;]*?from\s*["']([^"']+)["']/g;
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const isTest = relativePath.endsWith(".test.ts") || relativePath.includes("/test/");
+    specifier.lastIndex = 0;
+    let match = specifier.exec(content);
+    while (match !== null) {
+      const specifierName = match[1] ?? "";
+      const relative = specifierName.startsWith("./") || specifierName.startsWith("../");
+      const allowed =
+        relative ||
+        allowedPackages.has(specifierName) ||
+        allowedBuiltins.has(specifierName) ||
+        (isTest && testOnlyImports.has(specifierName));
+      if (!allowed) {
+        fail(
+          relativePath +
+            " imports " +
+            specifierName +
+            "; the " +
+            name +
+            " package may import only its own modules and its measured set",
+        );
+      }
+      match = specifier.exec(content);
+    }
+  }
+  return sources.length;
+}
+
+requireScope(
+  "the contracts package imports only what it is allowed",
+  scanPackageImports("contracts", CONTRACTS_ALLOWED_PACKAGES, CONTRACTS_ALLOWED_BUILTINS, CONTRACTS_TEST_ONLY_IMPORTS),
+);
+
+requireScope(
+  "the ledger package imports only what it is allowed",
+  scanPackageImports("ledger", LEDGER_ALLOWED_PACKAGES, LEDGER_ALLOWED_BUILTINS, LEDGER_TEST_ONLY_IMPORTS),
+);
+
+requireScope(
+  "the protocol package imports only what it is allowed",
+  scanPackageImports("protocol", PROTOCOL_ALLOWED_PACKAGES, PROTOCOL_ALLOWED_BUILTINS, PROTOCOL_TEST_ONLY_IMPORTS),
+);
+
+requireScope(
+  "the cli package imports only what it is allowed",
+  scanPackageImports("cli", CLI_ALLOWED_PACKAGES, CLI_ALLOWED_BUILTINS, CLI_TEST_ONLY_IMPORTS),
+);
+
 // --- 21c. the C5 test-tree correspondence law (P8-T G8) ---------------------
 //
 // Codex's binding C5 correction, implemented here and certified in the final
@@ -7146,12 +7349,16 @@ if (tracked.status === 0) {
 // capability modules facing one test file, inside `TEST_TREE_NO_PACKAGE_SCAN`.
 // C5 resolves the topological half: contracts' `test/schemas/` mirrors
 // `src/schemas/`, and this law proves it on every run. The scan exemption for
-// `contracts`, `ledger`, `protocol` and `cli` stands deliberately — no
-// per-package import-purity law exists for those four, so there is no scan to
-// extend, and C5 now covers their trees topologically. **C2 (adjudicated): that
-// exemption names its own ending — the per-package purity scans for the four
-// land with G9's new test classes.** The asymmetry is written down with its
-// rider rather than carried in someone's memory.
+// `contracts`, `ledger`, `protocol` and `cli` stood deliberately — no
+// per-package import-purity law existed for those four, so there was no scan to
+// extend, and C5 covered their trees topologically. **C2 (adjudicated): that
+// exemption named its own ending — the per-package purity scans for the four
+// land with G9's new test classes.**
+//
+// **The rider is discharged.** G9 wrote all four laws (§21b-bis above), moved
+// the four packages into `TEST_TREE_SCANNED_PREFIXES`, and left
+// `TEST_TREE_NO_PACKAGE_SCAN` empty. The asymmetry was written down with its
+// rider rather than carried in someone's memory, and the rider was paid.
 //
 // **The barrel diet: run, and its outcome (G8-diet).** G8 measured 367
 // zero-importer pinned export names and deferred the cutting to its own packet
