@@ -196,7 +196,6 @@ export class SqliteSupervisor implements OrchestrationDriver {
    *
    * Returns null when the step was an exact replay that appended nothing.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
   async advance(
     invocation: DurableInvocation,
     from: TaskState,
@@ -210,7 +209,8 @@ export class SqliteSupervisor implements OrchestrationDriver {
     // that selects the step is the one the ledger reports, never the argument.
     const actual = assertClaimedState(context, from);
     const step = executorNextStep(context, actual);
-    return this.#executeStep(context, step).event;
+    const outcome = await this.#executeStep(context, step);
+    return outcome.event;
   }
 
   // -------------------------------------------------------------------------
@@ -223,7 +223,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
    * Bounded by the plan's own length plus one, so a defect that failed to make
    * progress terminates with a classified error instead of spinning.
    */
-  runToCheckpoint(): RunResult {
+  async runToCheckpoint(): Promise<RunResult> {
     let appended = 0;
     let replayed = 0;
 
@@ -239,7 +239,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
       }
 
       const step = executorNextStep(context, current);
-      const outcome = this.#executeStep(context, step);
+      const outcome = await this.#executeStep(context, step);
       if (outcome.inserted) appended += 1;
       else replayed += 1;
     }
@@ -259,8 +259,9 @@ export class SqliteSupervisor implements OrchestrationDriver {
     const effects: EffectPort = {
       apply: (operation) => {
         applyEffect(scenarioRoot, operation);
+        return Promise.resolve();
       },
-      probe: (operation) => probeEffect(scenarioRoot, operation),
+      probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
     };
     return {
       ledger: this.#ledger,
@@ -278,18 +279,23 @@ export class SqliteSupervisor implements OrchestrationDriver {
    * One implementation, used by both the loop and the public one-step call.
    * Writing this twice is how the two paths came to disagree about whether an
    * outcome needs evidence.
+   *
+   * The fault seam fires at the same three instants it always did: after the
+   * intent append, after the awaited effect has settled, and after the
+   * awaited outcome has settled. The beats being asynchronous moves nothing
+   * relative to them.
    */
-  #executeStep(context: BeatContext, step: PlanStep): BeatResult {
+  async #executeStep(context: BeatContext, step: PlanStep): Promise<BeatResult> {
     if (step.beat === "INTENT") {
       const result = appendPlanStep(context, step);
       this.#fault("AFTER_INTENT");
-      applyIntentEffect(context, step);
+      await applyIntentEffect(context, step);
       this.#fault("AFTER_EFFECT");
       return result;
     }
 
     if (step.beat === "OUTCOME") {
-      const closed = closeIntent(context);
+      const closed = await closeIntent(context);
       this.#fault("AFTER_OUTCOME");
       return closed;
     }

@@ -198,8 +198,9 @@ function beatContext(
     effects: {
       apply: (operation) => {
         applyEffect(scenarioRoot, operation);
+        return Promise.resolve();
       },
-      probe: (operation) => probeEffect(scenarioRoot, operation),
+      probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
     },
     invocation,
     emittedBy,

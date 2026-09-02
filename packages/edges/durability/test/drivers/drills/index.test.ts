@@ -153,8 +153,9 @@ function beatFactory(root: ScenarioRoot, ledger: Ledger) {
     effects: {
       apply: (operation) => {
         applyEffect(root, operation);
+        return Promise.resolve();
       },
-      probe: (operation) => probeEffect(root, operation),
+      probe: (operation) => Promise.resolve(probeEffect(root, operation)),
     },
     invocation,
     emittedBy: EMITTED_BY,
@@ -967,7 +968,7 @@ describe("driver equivalence", () => {
     // Scenario A: the supervisor, on its own fresh ledger.
     const rootA = scenario("equiv-supervisor");
     const ledgerA = track(openLedger(scenarioLedgerPath(rootA)));
-    new SqliteSupervisor({
+    await new SqliteSupervisor({
       ledger: ledgerA,
       invocation,
       scenarioRoot: rootA,
@@ -999,7 +1000,7 @@ describe("driver equivalence", () => {
     const rootC = scenario("equiv-control");
     const ledgerC = track(openLedger(scenarioLedgerPath(rootC)));
     const other = deriveInvocation(taskId, 1, "2026-08-27T13:00:00.000Z", "f".repeat(64));
-    new SqliteSupervisor({
+    await new SqliteSupervisor({
       ledger: ledgerC,
       invocation: other,
       scenarioRoot: rootC,

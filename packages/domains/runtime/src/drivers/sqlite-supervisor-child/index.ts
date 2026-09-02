@@ -120,7 +120,7 @@ export function parseChildConfig(raw: unknown): ChildConfig {
 }
 
 /** Run one supervisor pass, optionally killing this process at a fault point. */
-export function runChild(config: ChildConfig): void {
+export async function runChild(config: ChildConfig): Promise<void> {
   const scenarioRoot = resolveScenarioRoot(config.scenarioId);
   const ledger = openLedger(scenarioLedgerPath(scenarioRoot));
 
@@ -141,7 +141,9 @@ export function runChild(config: ChildConfig): void {
       },
     });
 
-    const result = supervisor.runToCheckpoint();
+    // Awaited before it is written: the line the drill reads is the run's
+    // resolved result, never a promise's stringification.
+    const result = await supervisor.runToCheckpoint();
     process.stdout.write(JSON.stringify(result) + "\n");
   } finally {
     ledger.close();
@@ -158,6 +160,8 @@ if (
     process.stderr.write("acp-supervisor-child: a JSON config argument is required\n");
     process.exitCode = 2;
   } else {
-    runChild(parseChildConfig(JSON.parse(raw)));
+    // Mirrors `restate-child`: a rejected run is an unhandled rejection, which
+    // exits nonzero exactly as the synchronous throw did.
+    void runChild(parseChildConfig(JSON.parse(raw)));
   }
 }

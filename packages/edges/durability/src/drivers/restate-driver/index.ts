@@ -264,7 +264,13 @@ function fatal(error: unknown): never {
 export interface AdvanceContext {
   get(name: typeof RESTATE_STATE_KEY_CACHE): Promise<RestateCacheState | null>;
   set(name: typeof RESTATE_STATE_KEY_CACHE, value: RestateCacheState): void;
-  run<T>(name: string, action: () => T): Promise<T>;
+  /**
+   * The SDK's own shape: an action may be asynchronous, and what is journaled
+   * is its settled value. The effect and outcome beats are awaited inside
+   * their `run` (V2-B1b, stage 1); still one entry per beat, under the same
+   * names.
+   */
+  run<T>(name: string, action: () => T | Promise<T>): Promise<T>;
 }
 
 /**
@@ -321,9 +327,9 @@ export async function advanceHandler(
     dependencies.__onBeat?.("AFTER_INTENT_" + String(step.index));
 
     if (step.beat === "INTENT") {
-      await ctx.run("effect/" + step.transitionId + "/" + String(step.index), () => {
+      await ctx.run("effect/" + step.transitionId + "/" + String(step.index), async () => {
         try {
-          applyIntentEffect(context, step);
+          await applyIntentEffect(context, step);
           return { applied: true };
         } catch (error: unknown) {
           return fatal(error);
@@ -333,9 +339,9 @@ export async function advanceHandler(
 
       const outcome = plan[step.index + 1];
       if (outcome?.beat === "OUTCOME") {
-        await ctx.run("outcome/" + outcome.transitionId + "/" + String(outcome.index), () => {
+        await ctx.run("outcome/" + outcome.transitionId + "/" + String(outcome.index), async () => {
           try {
-            const result = closeIntent(context);
+            const result = await closeIntent(context);
             return {
               inserted: result.inserted,
               sequence: dependencies.ledger.status().headSequence,

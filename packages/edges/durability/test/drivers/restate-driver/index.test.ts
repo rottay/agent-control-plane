@@ -81,8 +81,9 @@ function open(name: string, taskId: string): {
     effects: {
       apply: (operation) => {
         applyEffect(root, operation);
+        return Promise.resolve();
       },
-      probe: (operation) => probeEffect(root, operation),
+      probe: (operation) => Promise.resolve(probeEffect(root, operation)),
     },
     invocation: candidate,
     emittedBy: EMITTED_BY,
@@ -643,7 +644,7 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
         getEventBySequence: () => null,
         getEventByIdempotencyKey: () => null,
       } satisfies LedgerPort,
-      effects: { apply: () => undefined, probe: () => "DONE" },
+      effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
       invocation: candidate,
       emittedBy: EMITTED_BY,
     });

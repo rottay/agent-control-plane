@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **520
+ * P8, with the V2 packets that continue its coordinates, is therefore **536
  * packet entries across 218 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
@@ -1348,13 +1348,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
- * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) = 520 entries, with 302
- * duplicate entries.
+ * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) = 536
+ * entries, with 318 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 50 duplicates = 50   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 51 duplicates = 51   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
  *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
@@ -1368,10 +1368,10 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   the console styles sheet and the
  *                                   accounts-view suite)
  *  11 paths ×  3 duplicates = 33
- *  25 paths ×  2 duplicates = 50
- *  49 paths ×  1 duplicate  = 49
+ *  33 paths ×  2 duplicates = 66
+ *  48 paths ×  1 duplicate  = 48
  *
- * 50 + 10 + 8 + 21 + 30 + 35 + 16 + 33 + 50 + 49 = 302.
+ * 51 + 10 + 8 + 21 + 30 + 35 + 16 + 33 + 66 + 48 = 318.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1695,6 +1695,20 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * twenty-five; and the policy module, entering ×1 for the first time — its
  * only prior owner was P8-5, so it carried no duplicate and sat in no row.
  * ×1 therefore holds at forty-nine: one arrival, one departure.
+ *
+ * V2-B1b-1, the mechanical first stage of the B1b split, adds **sixteen
+ * entries, none of them novel** — the shape of a packet that makes an
+ * existing chain asynchronous and opens nothing. Fourteen were briefed and
+ * two were admitted at the writer's stop, all P8-owned. Entries move
+ * 520 → 536, distinct holds at 218, duplicates 302 → 318. Sixteen band
+ * steps, one per entry: this file's own row, ×50 → ×51; eight paths
+ * ×1 → ×2, each with one prior P8 owner beside P8-W (the step executor and
+ * its suite, the supervisor suite, the switch-executor and usage suites, the
+ * restate-driver suite, the drills suite and `mode-restate`), so ×2 reads
+ * thirty-three; and seven paths entering ×1 for the first time, each owned
+ * before only by P8-W (the supervisor and its child, both pilot suites, the
+ * restate driver, the restate child and `mode-sqlite`). ×1 therefore reads
+ * forty-eight: eight departures, seven arrivals.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3268,6 +3282,62 @@ const V2B1A_WRITE_SET = [
 ];
 
 /**
+ * V2-B1b, stage 1: the beat chain goes asynchronous; the toy stays bound.
+ *
+ * The second of the three B1 splits, the execution-port substitution, lands
+ * in two stages on one brief — the p2f stage-a/stage-b precedent, with the
+ * G8-diet lesson applied forward. This is the mechanical stage. `EffectPort`
+ * returns promises, `applyIntentEffect` and `closeIntent` await it, and every
+ * caller up the chain is awaited in turn: the supervisor's step and run, the
+ * two drill children, the Restate handler's effect and outcome `ctx.run`
+ * closures, and both daemon modes. The toy effect is still the only port
+ * bound at the two production seams; the substitution is stage 2, on stage
+ * 1's commit. Zero behavior change, zero new dependencies, zero config
+ * change, zero new files, zero new tests: the suite count is unchanged and
+ * the kill/restart and fallback drills produce the same ledger content and
+ * exit codes before and after.
+ *
+ * Why the chain moves before the port does: `closeIntent`'s probe → apply →
+ * probe sequence cannot express an execution that is still in flight when
+ * `apply` returns, and no async-to-sync bridge exists in this codebase by
+ * design. `restate-child`'s `Atomics.wait` pause seam is re-justified in
+ * place under async beats without moving — the handler never awaits the
+ * hook, so blocking the thread there is still what holds the invocation
+ * open. Restate journals async actions natively, so the local
+ * `AdvanceContext.run` action type widens to the SDK's own shape and the
+ * journaling granularity stays one entry per beat, under the same names.
+ *
+ * Sixteen paths, none novel: every one is P8-owned and rides as a
+ * duplicate. Fourteen were briefed; the writer halted at the boundary when
+ * the cold typecheck named two more — the switch-executor and usage suites
+ * build `BeatContext` literals inline without naming the port — and the DT
+ * admitted exactly those two, each carrying the same one-line closure
+ * change. The two durability suites were a ceiling, not a quota, and the
+ * widened types exercised both: a sync effect closure cannot return `void`
+ * against `Promise<void>`, and the equivalence drill's two supervisor runs
+ * would otherwise float. The runtime barrel is deliberately absent: the
+ * export names do not change, so it stays byte-identical.
+ */
+const V2B1B1_WRITE_SET = [
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/test/pilots/index.test.ts",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "scripts/check-architecture.mjs",
+  "packages/domains/runtime/test/switch-executor/index.test.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3574,6 +3644,7 @@ const WRITE_SET = [
   ...P8E_WRITE_SET,
   ...P8E2_WRITE_SET,
   ...V2B1A_WRITE_SET,
+  ...V2B1B1_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

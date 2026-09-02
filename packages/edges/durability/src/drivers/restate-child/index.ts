@@ -149,10 +149,16 @@ export function releasePath(scenarioRoot: string, beat: string): string {
 /**
  * Block this process until the drill releases it, or the deadline passes.
  *
- * Synchronous on purpose: the beats run synchronously between `ctx.run` calls,
- * so an async wait would not hold the invocation open. `Atomics.wait` sleeps
- * without burning a core, and the deadline means a drill that forgets to
- * release fails rather than hangs.
+ * Synchronous on purpose, and still so now that the beats themselves are
+ * asynchronous (V2-B1b, stage 1). The handler calls `__onBeat` between its
+ * awaited `ctx.run` calls and never awaits the hook, so an async wait here
+ * would return at once and the handler would issue the next `ctx.run` while
+ * the drill still believed the plan was paused. Blocking the thread at the
+ * beat is what holds the invocation open, and the block happens outside every
+ * `ctx.run` closure -- after the previous beat has settled and before the
+ * next is journaled -- which is exactly where it happened while the beats
+ * were synchronous. `Atomics.wait` sleeps without burning a core, and the
+ * deadline means a drill that forgets to release fails rather than hangs.
  */
 function blockUntilReleased(file: string, deadlineMs: number): void {
   const started = Date.now();
@@ -173,8 +179,9 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
     effects: {
       apply: (operation) => {
         applyEffect(scenarioRoot, operation);
+        return Promise.resolve();
       },
-      probe: (operation) => probeEffect(scenarioRoot, operation),
+      probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
     },
     invocation,
     emittedBy: config.emittedBy,

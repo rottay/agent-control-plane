@@ -29,6 +29,14 @@ import { LifecyclePlanError, PostconditionUnknownError, SupervisorError } from "
  * it is idempotent, and it returns the smallest value that describes what
  * happened. Nothing here reads a clock, a random source or the environment, and
  * nothing here knows what a Restate context is.
+ *
+ * The effect-bearing beats are asynchronous (V2-B1b, stage 1). A synchronous
+ * port can only describe an effect that is finished the instant `apply`
+ * returns; a real execution is in flight for a while, and a probe taken the
+ * instant after a synchronous `apply` would read it as `NOT_DONE` and refuse
+ * where the contract promises evidence. Awaiting the port changes what the
+ * beat waits on and nothing else: the probe -> apply -> probe order and the
+ * one-probe-one-meaning verdicts are exactly as they were.
  */
 
 /** The ledger surface the beats need. Satisfied structurally by `Ledger`. */
@@ -39,10 +47,15 @@ export interface LedgerPort {
   getEventByIdempotencyKey(idempotencyKey: string): { readonly canonicalJson: string } | null;
 }
 
-/** The side-effect surface the beats need. */
+/**
+ * The side-effect surface the beats need.
+ *
+ * Both members return promises: the port may be a real execution whose
+ * completion has to be awaited, not only a marker whose presence is read.
+ */
 export interface EffectPort {
-  apply(operation: OperationCoordinate): void;
-  probe(operation: OperationCoordinate): PostconditionVerdict;
+  apply(operation: OperationCoordinate): Promise<void>;
+  probe(operation: OperationCoordinate): Promise<PostconditionVerdict>;
 }
 
 export interface BeatContext {
@@ -300,8 +313,8 @@ function assertCausalPredecessor(
 }
 
 /** Beat: perform the intent's effect. Idempotent by content. */
-export function applyIntentEffect(context: BeatContext, step: PlanStep): void {
-  context.effects.apply(operationForStep(context.invocation, step));
+export async function applyIntentEffect(context: BeatContext, step: PlanStep): Promise<void> {
+  await context.effects.apply(operationForStep(context.invocation, step));
 }
 
 /**
@@ -311,13 +324,13 @@ export function applyIntentEffect(context: BeatContext, step: PlanStep): void {
  * known to have happened, because an append is a claim and a claim written
  * early cannot be retracted by a log that only grows.
  */
-export function closeIntent(context: BeatContext): BeatResult {
+export async function closeIntent(context: BeatContext): Promise<BeatResult> {
   const operation = operationForStep(context.invocation, INTENT_STEP);
 
-  let verdict: PostconditionVerdict = context.effects.probe(operation);
+  let verdict: PostconditionVerdict = await context.effects.probe(operation);
   if (verdict === "NOT_DONE") {
-    context.effects.apply(operation);
-    verdict = context.effects.probe(operation);
+    await context.effects.apply(operation);
+    verdict = await context.effects.probe(operation);
   }
 
   if (verdict !== "DONE") {

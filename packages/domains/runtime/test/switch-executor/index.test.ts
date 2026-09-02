@@ -160,7 +160,7 @@ function addTask(ledger: Ledger, taskId: string): DurableInvocation {
   const invocation = invocationFor(taskId);
   const context: BeatContext = {
     ledger,
-    effects: { apply: () => undefined, probe: () => "DONE" },
+    effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
     invocation,
     emittedBy: EMITTED_BY,
     plan: LIFECYCLE_PLAN,
@@ -179,7 +179,7 @@ function openWithTask(id: string, taskId: string): { ledger: Ledger; invocation:
   const invocation = invocationFor(taskId);
   const context: BeatContext = {
     ledger,
-    effects: { apply: () => undefined, probe: () => "DONE" },
+    effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
     invocation,
     emittedBy: EMITTED_BY,
     plan: LIFECYCLE_PLAN,

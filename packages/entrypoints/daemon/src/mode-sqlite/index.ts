@@ -64,7 +64,7 @@ export async function runSqliteMode(input: SqliteModeInput): Promise<SqliteModeR
     );
   }
 
-  const run = supervisor.runToCheckpoint();
+  const run = await supervisor.runToCheckpoint();
   return {
     verdict: report.verdict,
     finalState: run.finalState,

@@ -289,22 +289,22 @@ function supervisorFor(
 }
 
 describe("the supervisor", () => {
-  it("drives the plan to CHECKPOINTED and appends one event per step", () => {
+  it("drives the plan to CHECKPOINTED and appends one event per step", async () => {
     const taskId: string = TASK_IDS[3];
     const { supervisor, ledger } = supervisorFor("supervisor-happy", taskId);
-    const result = supervisor.runToCheckpoint();
+    const result = await supervisor.runToCheckpoint();
     expect(result.finalState).toBe("CHECKPOINTED");
     expect(ledger.status().eventCount).toBe(LIFECYCLE_PLAN.length);
     expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
   });
 
-  it("treats a second full run as an exact replay that appends nothing", () => {
+  it("treats a second full run as an exact replay that appends nothing", async () => {
     const taskId: string = TASK_IDS[4];
     const { supervisor, ledger, invocation } = supervisorFor("supervisor-replay", taskId);
-    supervisor.runToCheckpoint();
+    await supervisor.runToCheckpoint();
     const before = ledger.status();
 
-    supervisor.runToCheckpoint();
+    await supervisor.runToCheckpoint();
     expect(ledger.status().eventCount).toBe(before.eventCount);
     expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
 
@@ -318,10 +318,10 @@ describe("the supervisor", () => {
     expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
   });
 
-  it("fails closed when a changed body reuses an idempotency key", () => {
+  it("fails closed when a changed body reuses an idempotency key", async () => {
     const taskId: string = TASK_IDS[5];
     const { supervisor, ledger, invocation } = supervisorFor("supervisor-conflict", taskId);
-    supervisor.runToCheckpoint();
+    await supervisor.runToCheckpoint();
 
     const step = LIFECYCLE_PLAN[0];
     if (step === undefined) throw new Error("no plan");
@@ -338,7 +338,7 @@ describe("the supervisor", () => {
     expect(name).toBe("LedgerIdempotencyConflictError");
   });
 
-  it("refuses to append an outcome when the postcondition is UNKNOWN", () => {
+  it("refuses to append an outcome when the postcondition is UNKNOWN", async () => {
     const taskId = TASK_IDS[0];
     const { supervisor, ledger, root, invocation } = supervisorFor("supervisor-unknown", taskId);
 
@@ -358,7 +358,7 @@ describe("the supervisor", () => {
 
     let caught: unknown = null;
     try {
-      supervisor.runToCheckpoint();
+      await supervisor.runToCheckpoint();
     } catch (error: unknown) {
       caught = error;
     }
@@ -373,7 +373,7 @@ describe("the supervisor", () => {
   it("reports a ledger-headed status and a CONSISTENT reconciliation", async () => {
     const taskId: string = TASK_IDS[1];
     const { supervisor, ledger } = supervisorFor("supervisor-status", taskId);
-    supervisor.runToCheckpoint();
+    await supervisor.runToCheckpoint();
 
     const status = await supervisor.status();
     expect(status.mode).toBe("SQLITE_SUPERVISOR");
@@ -389,7 +389,7 @@ describe("the supervisor", () => {
     expect(report.discrepancies).toEqual([]);
   });
 
-  it("surfaces a failed append instead of retrying around it", () => {
+  it("surfaces a failed append instead of retrying around it", async () => {
     const taskId: string = TASK_IDS[2];
     const root = scenario("supervisor-append-failure");
     const ledgerPath = scenarioLedgerPath(root);
@@ -419,7 +419,7 @@ describe("the supervisor", () => {
     const started = Date.now();
     let message = "";
     try {
-      supervisor.runToCheckpoint();
+      await supervisor.runToCheckpoint();
     } catch (error: unknown) {
       message = error instanceof Error ? error.message : "";
     }
@@ -504,10 +504,10 @@ describe("the supervisor", () => {
     expect(ledger.status().headEventSha256).toBe(headBefore);
   });
 
-  it("fails closed when the same coordinates carry a different submission", () => {
+  it("fails closed when the same coordinates carry a different submission", async () => {
     const taskId = "77777777-7777-4777-8777-777777777774";
     const { supervisor, ledger, root, invocation } = supervisorFor("submission-conflict", taskId);
-    supervisor.runToCheckpoint();
+    await supervisor.runToCheckpoint();
 
     const headBefore = ledger.status().headEventSha256;
     const countBefore = ledger.status().eventCount;
@@ -566,7 +566,7 @@ describe("the supervisor", () => {
   ];
 
   for (const [index, { label, mutate }] of MISMATCHES.entries()) {
-    it("refuses to resume an in-flight attempt under a changed " + label, () => {
+    it("refuses to resume an in-flight attempt under a changed " + label, async () => {
       const taskId = "99999999-9999-4999-8999-99999999999" + String(index);
       const { supervisor, ledger, root, invocation } = supervisorFor(
         "resume-mismatch-" + label.toLowerCase(),
@@ -593,7 +593,7 @@ describe("the supervisor", () => {
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
         initiativeId: TEST_INITIATIVE_ID,
       });
-      expect(() => intruder.runToCheckpoint()).toThrow(SupervisorError);
+      await expect(intruder.runToCheckpoint()).rejects.toThrow(SupervisorError);
 
       // Nothing moved: no event, no outcome, no second effect.
       expect(ledger.status().headEventSha256).toBe(headBefore);
@@ -604,7 +604,7 @@ describe("the supervisor", () => {
       expect(effectMarkerCount(root)).toBe(markersBefore);
 
       // The original submission still finishes its own work.
-      expect(supervisor.runToCheckpoint().finalState).toBe("CHECKPOINTED");
+      expect((await supervisor.runToCheckpoint()).finalState).toBe("CHECKPOINTED");
       expect(ledger.status().eventCount).toBe(LIFECYCLE_PLAN.length);
       expect(effectMarkerCount(root)).toBe(1);
       expect(ledger.verifyIntegrity().ok).toBe(true);
@@ -622,7 +622,7 @@ describe("the supervisor", () => {
    * fails, and the run is refused. The protection is a consequence of putting
    * the attribution in the event rather than beside it.
    */
-  it("refuses to resume an in-flight attempt under a different initiativeId", () => {
+  it("refuses to resume an in-flight attempt under a different initiativeId", async () => {
     const taskId = "99999999-9999-4999-8999-999999999997";
     const { supervisor, ledger, root, invocation } = supervisorFor(
       "resume-mismatch-initiative",
@@ -650,7 +650,7 @@ describe("the supervisor", () => {
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: "5b5b5b5b-5b5b-4b5b-8b5b-5b5b5b5b5b01",
     });
-    expect(() => otherInitiative.runToCheckpoint()).toThrow(SupervisorError);
+    await expect(otherInitiative.runToCheckpoint()).rejects.toThrow(SupervisorError);
 
     // Nothing moved: no event, no outcome, no second effect.
     expect(ledger.status().headEventSha256).toBe(headBefore);
@@ -660,7 +660,7 @@ describe("the supervisor", () => {
 
     // And the refusal was about the attribution, not a broken fixture: the
     // original initiative still finishes its own work.
-    expect(supervisor.runToCheckpoint().finalState).toBe("CHECKPOINTED");
+    expect((await supervisor.runToCheckpoint()).finalState).toBe("CHECKPOINTED");
     expect(ledger.status().eventCount).toBe(LIFECYCLE_PLAN.length);
     expect(effectMarkerCount(root)).toBe(1);
     expect(ledger.verifyIntegrity().ok).toBe(true);
@@ -678,10 +678,10 @@ describe("the supervisor", () => {
     expect(discovery?.event.payload["initiativeId"]).toBe(TEST_INITIATIVE_ID);
   });
 
-  it("still treats an identical resubmission as an exact replay", () => {
+  it("still treats an identical resubmission as an exact replay", async () => {
     const taskId = "99999999-9999-4999-8999-999999999998";
     const { supervisor, ledger, root, invocation } = supervisorFor("resume-identical", taskId);
-    supervisor.runToCheckpoint();
+    await supervisor.runToCheckpoint();
     const head = ledger.status().headEventSha256;
 
     const twin = new SqliteSupervisor({
@@ -692,7 +692,7 @@ describe("the supervisor", () => {
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
     });
-    expect(twin.runToCheckpoint().finalState).toBe("CHECKPOINTED");
+    expect((await twin.runToCheckpoint()).finalState).toBe("CHECKPOINTED");
     expect(ledger.status().headEventSha256).toBe(head);
     expect(effectMarkerCount(root)).toBe(1);
   });
@@ -755,16 +755,16 @@ describe("the supervisor", () => {
     expect(effectMarkerCount(root)).toBe(0);
 
     // runToCheckpoint reads the absence itself rather than being told about it.
-    expect(supervisor.runToCheckpoint().finalState).toBe("CHECKPOINTED");
+    expect((await supervisor.runToCheckpoint()).finalState).toBe("CHECKPOINTED");
   });
 });
 
 describe("the plan comes from the packet's commit policy", () => {
-  function runUnder(commitPolicy: "NO_COMMIT" | "LOCAL_COMMIT_WITH_RECEIPT", scenarioId: string, taskId: string) {
+  async function runUnder(commitPolicy: "NO_COMMIT" | "LOCAL_COMMIT_WITH_RECEIPT", scenarioId: string, taskId: string) {
     const root = scenario(scenarioId);
     const invocation = invocationFor(taskId);
     const ledger = track(openLedger(scenarioLedgerPath(root)));
-    const result = new SqliteSupervisor({
+    const result = await new SqliteSupervisor({
       ledger,
       invocation,
       scenarioRoot: root,
@@ -776,8 +776,8 @@ describe("the plan comes from the packet's commit policy", () => {
     return { result, trail, ledger, taskId };
   }
 
-  it("walks a NO_COMMIT packet to a checkpoint with no commit anywhere in it", () => {
-    const { result, trail, ledger, taskId } = runUnder(
+  it("walks a NO_COMMIT packet to a checkpoint with no commit anywhere in it", async () => {
+    const { result, trail, ledger, taskId } = await runUnder(
       "NO_COMMIT",
       "policy-read-only",
       "70707070-7070-4707-8707-707070707071",
@@ -793,8 +793,8 @@ describe("the plan comes from the packet's commit policy", () => {
     expect(trail).toHaveLength(READ_ONLY_PLAN.length);
   });
 
-  it("leaves the writer path exactly as it was", () => {
-    const { result, trail, ledger, taskId } = runUnder(
+  it("leaves the writer path exactly as it was", async () => {
+    const { result, trail, ledger, taskId } = await runUnder(
       "LOCAL_COMMIT_WITH_RECEIPT",
       "policy-writer",
       "70707070-7070-4707-8707-707070707072",

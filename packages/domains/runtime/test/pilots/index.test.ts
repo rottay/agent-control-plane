@@ -170,8 +170,9 @@ function beatContext(
     effects: {
       apply: (operation) => {
         applyEffect(scenarioRoot, operation);
+        return Promise.resolve();
       },
-      probe: (operation) => probeEffect(scenarioRoot, operation),
+      probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
     },
     invocation,
     emittedBy,
@@ -227,7 +228,7 @@ describe("the landed read-only plan", () => {
 // ---------------------------------------------------------------------------
 
 describe("the read-only packet, walked end to end", () => {
-  it("prestate, admission, lease, the lifecycle walk, and a real checkpoint", () => {
+  it("prestate, admission, lease, the lifecycle walk, and a real checkpoint", async () => {
     const taskId = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
     const root = scenario("p7a-happy");
     const ledger = track(openLedger(scenarioLedgerPath(root)));
@@ -349,7 +350,7 @@ describe("the read-only packet, walked end to end", () => {
       commitPolicy: "NO_COMMIT",
       initiativeId: PILOT_INITIATIVE_ID,
     });
-    const run = supervisor.runToCheckpoint();
+    const run = await supervisor.runToCheckpoint();
     expect(run.finalState).toBe("CHECKPOINTED");
     expect(run.finalState).toBe(PLAN_TERMINAL_STATE);
     expect(run.appended).toBe(READ_ONLY_PLAN.length - 1); // steps 1-8; step 0 was manual
@@ -426,7 +427,7 @@ describe("the read-only packet, walked end to end", () => {
 // ---------------------------------------------------------------------------
 
 describe("a planted violation revokes the lease and suspects the worktree", () => {
-  it("fires exactly once, in order, and never advances again", () => {
+  it("fires exactly once, in order, and never advances again", async () => {
     const taskId = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a02";
     const root = scenario("p7a-violation");
     const ledger = track(openLedger(scenarioLedgerPath(root)));
@@ -534,7 +535,7 @@ describe("a planted violation revokes the lease and suspects the worktree", () =
       commitPolicy: "NO_COMMIT",
       initiativeId: PILOT_INITIATIVE_ID,
     });
-    expect(() => resumed.runToCheckpoint()).toThrow(LifecyclePlanError);
+    await expect(resumed.runToCheckpoint()).rejects.toThrow(LifecyclePlanError);
 
     // N2d: restore by deleting the planted file only, then match byte for
     // byte against the pre-plant observation. No git mutation, ever.
