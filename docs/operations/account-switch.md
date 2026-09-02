@@ -40,7 +40,7 @@ Which file the plane reads is decided by the start invocation, not by a
 convention or an environment variable:
 
 ```sh
-node packages/entrypoints/server/dist/bin/index.js \
+node packages/entrypoints/gateway/dist/bin/index.js \
   --ledger /tmp/acp-ops/ledger/acp.sqlite3 \
   --accounts-file /tmp/acp-ops/accounts/accounts.local.json
 ```

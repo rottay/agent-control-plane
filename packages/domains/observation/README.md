@@ -146,7 +146,7 @@ what was deliberately left out.
 
 ## Parity
 
-The ledger-to-client parity contract lives in `@acp/api-contracts` and is
+The ledger-to-client parity contract lives in `@acp/protocol` and is
 proven in the server package: the ledger projection, the server response, the
 CLI rows and the UI rows agree exactly across all nine frozen routes. The CLI
 builds its answer independently from the same ledger; the UI is proven to

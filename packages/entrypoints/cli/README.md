@@ -80,7 +80,7 @@ byte-identical after every command has run against it.
 
 ### 3. Everything printed is contract-validated
 
-Every document is parsed by the schemas in `@acp/api-contracts` before it is
+Every document is parsed by the schemas in `@acp/protocol` before it is
 rendered, in both formats. The CLI and the future HTTP server therefore publish
 the same shapes, and the mapping code in `observation/index.ts` — which is the new code
 between two careful layers — cannot quietly emit a field the contract does not
@@ -103,7 +103,7 @@ plausible answer.
 
 Argument parsing is `node:util` `parseArgs`. The observation surface is a handful
 of read-only verbs; a parser library would be supply chain risk bought for
-nothing. The package links `@acp/api-contracts` and `@acp/ledger`, and nothing
+nothing. The package links `@acp/protocol` and `@acp/ledger`, and nothing
 else.
 
 ## Output formats

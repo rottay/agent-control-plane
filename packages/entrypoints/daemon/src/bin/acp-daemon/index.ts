@@ -26,9 +26,14 @@ import { loadDaemonConfig } from "../config-file/index.js";
  * Importing this module does nothing. It runs only when executed directly.
  */
 
-/** Classified exits, so a caller can branch without parsing prose. */
-export const EXIT_OK = 0;
-export const EXIT_USAGE = 2;
+/**
+ * Classified exits, so a caller can branch without parsing prose.
+ *
+ * `EXIT_OK`/`EXIT_USAGE` are the convention all three binaries share and are
+ * declared once in `@acp/contracts` (G7 D1); the two below are this entry's own.
+ */
+import { EXIT_OK, EXIT_USAGE } from "@acp/contracts";
+export { EXIT_OK, EXIT_USAGE };
 export const EXIT_CONFIG_PATH = 3;
 export const EXIT_CONFIG_CONTENT = 4;
 

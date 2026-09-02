@@ -201,19 +201,17 @@ export interface LedgerStatus {
   readonly projections: readonly ProjectionStatus[];
 }
 
-export type IntegrityProblemKind =
-  | "SQLITE_INTEGRITY"
-  | "FOREIGN_KEY"
-  | "MIGRATION"
-  | "SCHEMA_SHAPE"
-  | "EVENT_JSON"
-  | "EVENT_CONTRACT"
-  | "EVENT_COORDINATES"
-  | "HASH_CHAIN"
-  | "SEQUENCE"
-  | "LEDGER_META"
-  | "PROJECTION_META"
-  | "PROJECTION";
+/**
+ * The integrity vocabulary, owned by the wire contract (G7 D4).
+ *
+ * This union used to be written out here and kept manually in step with
+ * `INTEGRITY_PROBLEM_KINDS` in `@acp/protocol` — two lists, one meaning, and
+ * nothing that would notice them disagreeing. The protocol owns it because the
+ * vocabulary is what the integrity route serializes; the name is re-exported so
+ * this package's own surface does not move.
+ */
+export type { IntegrityProblemKind } from "@acp/protocol";
+import type { IntegrityProblemKind } from "@acp/protocol";
 
 export interface IntegrityProblem {
   readonly kind: IntegrityProblemKind;

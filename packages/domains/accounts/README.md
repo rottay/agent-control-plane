@@ -121,7 +121,7 @@ admission path was missing the call. The traversal fix belongs in
 `profile://`, `file://` — carried exactly as written and **never
 dereferenced**, in P5 or by this package in any phase. The material they name
 stays outside this repository. `isolatedConfigRoot` is shape-checked here and
-nowhere else: the directory itself is admitted by `@acp/adapters` at session
+nowhere else: the directory itself is admitted by `@acp/providers` at session
 start, which is the component that owns filesystem admission for a session.
 
 ## Reading, not writing

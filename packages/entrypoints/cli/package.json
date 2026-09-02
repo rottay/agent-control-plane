@@ -23,7 +23,7 @@
     "build": "tsc --build"
   },
   "dependencies": {
-    "@acp/api-contracts": "workspace:*",
+    "@acp/protocol": "workspace:*",
     "@acp/ledger": "workspace:*"
   },
   "devDependencies": {

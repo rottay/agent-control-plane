@@ -6,5 +6,5 @@
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../../kernel/contracts" }, { "path": "../../persistence/ledger" }]
+  "references": [{ "path": "../../kernel/contracts" }]
 }

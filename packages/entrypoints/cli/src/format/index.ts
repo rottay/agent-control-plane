@@ -27,7 +27,7 @@ import type {
   TimelineItem,
   WorkerDetailResponse,
   WorkerPageResponse,
-} from "@acp/api-contracts";
+} from "@acp/protocol";
 
 /** The two output formats. `human` is for a terminal, `json` is for a pipe. */
 export const OUTPUT_FORMATS = ["human", "json"] as const;
@@ -41,7 +41,7 @@ export function isOutputFormat(value: string): value is OutputFormat {
  * The JSON rendering, which is the machine contract of this CLI.
  *
  * Two decisions are deliberate. The document is the validated DTO and nothing
- * else, so a consumer parses exactly the shape `@acp/api-contracts` describes.
+ * else, so a consumer parses exactly the shape `@acp/protocol` describes.
  * And it is pretty printed with a trailing newline, so a terminal reader and a
  * `jq` pipeline see the same bytes rather than one of them seeing a variant.
  */

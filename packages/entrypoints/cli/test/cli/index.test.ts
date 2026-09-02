@@ -10,7 +10,7 @@
  * are exactly the claims that would be worthless as prose:
  *
  * 1. it reads and never writes;
- * 2. everything it prints satisfies `@acp/api-contracts`;
+ * 2. everything it prints satisfies `@acp/protocol`;
  * 3. it never prints the ledger path and never prints an event payload value;
  * 4. its failures are closed codes with deterministic messages and exit codes.
  */
@@ -33,7 +33,7 @@ import {
   TaskPageResponse,
   WorkerDetailResponse,
   WorkerPageResponse,
-} from "@acp/api-contracts";
+} from "@acp/protocol";
 import { openLedger } from "@acp/ledger";
 
 import {

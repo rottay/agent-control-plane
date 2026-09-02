@@ -76,7 +76,7 @@ export default tseslint.config(
   // still applies to these files, including no-console.
   {
     name: 'acp/ui-browser',
-    files: ['packages/entrypoints/ui/src/**/*.ts', 'packages/entrypoints/ui/src/**/*.tsx'],
+    files: ['packages/entrypoints/console/src/**/*.ts', 'packages/entrypoints/console/src/**/*.tsx'],
     languageOptions: {
       globals: {
         ...globals.browser,

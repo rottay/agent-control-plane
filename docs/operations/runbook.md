@@ -90,11 +90,11 @@ Both are TypeScript packages that must be built before their binaries exist:
 
 ```sh
 pnpm --filter @acp/cli build
-pnpm --filter @acp/server build
+pnpm --filter @acp/gateway build
 ```
 
 - `@acp/cli` produces `acp` (`packages/entrypoints/cli/dist/index.js`).
-- `@acp/server` produces `acp-server` (`packages/entrypoints/server/dist/bin/index.js`).
+- `@acp/gateway` produces `acp-server` (`packages/entrypoints/gateway/dist/bin/index.js`).
 
 ## Reading a ledger with `acp`
 
@@ -153,7 +153,7 @@ The verbs are exactly these eight — no more:
 ## Starting the server
 
 ```sh
-node packages/entrypoints/server/dist/bin/index.js --ledger /tmp/acp-ops/ledger/acp.sqlite3
+node packages/entrypoints/gateway/dist/bin/index.js --ledger /tmp/acp-ops/ledger/acp.sqlite3
 ```
 
 The flags are:
@@ -195,7 +195,7 @@ Run this verbatim to see the whole fail-closed path with no secret involved:
 
 ```sh
 mkdir -p /tmp/acp-ops/ledger
-node packages/entrypoints/server/dist/bin/index.js --ledger /tmp/acp-ops/ledger/acp.sqlite3 --port 70000
+node packages/entrypoints/gateway/dist/bin/index.js --ledger /tmp/acp-ops/ledger/acp.sqlite3 --port 70000
 echo "exit: $?"
 ```
 

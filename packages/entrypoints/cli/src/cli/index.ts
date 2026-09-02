@@ -13,7 +13,7 @@
  *    environment fallback. A tool that guesses which ledger it is reading is a
  *    tool that eventually reads the wrong one and reports confidently about it.
  * 2. Validated output. Every document printed has been parsed by the schemas in
- *    `@acp/api-contracts`. The CLI and the future HTTP server therefore emit the
+ *    `@acp/protocol`. The CLI and the future HTTP server therefore emit the
  *    same shapes, and a projection that drifted fails loudly here.
  * 3. Deterministic, leak-free errors. A failure is one closed error code and a
  *    fixed sentence. No absolute path, no SQLite message, no event payload and
@@ -35,8 +35,8 @@ import {
   WorkersQuery,
   taskPath,
   workerPath,
-} from "@acp/api-contracts";
-import type { ApiErrorCode } from "@acp/api-contracts";
+} from "@acp/protocol";
+import type { ApiErrorCode } from "@acp/protocol";
 import { LEDGER_MIGRATIONS, LedgerError, openLedger } from "@acp/ledger";
 import type { EventQuery, Ledger, TaskQuery, WorkerQuery } from "@acp/ledger";
 
@@ -77,9 +77,9 @@ import type { Clock } from "../observation/index.js";
  * into a single nonzero code is how an integrity failure gets retried as if it
  * were a typo.
  */
-export const EXIT_OK = 0;
+import { EXIT_OK, EXIT_USAGE } from "@acp/protocol";
+export { EXIT_OK, EXIT_USAGE };
 export const EXIT_INTERNAL = 1;
-export const EXIT_USAGE = 2;
 export const EXIT_NOT_FOUND = 4;
 export const EXIT_UNAVAILABLE = 5;
 export const EXIT_INTEGRITY = 6;

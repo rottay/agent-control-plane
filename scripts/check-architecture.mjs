@@ -84,11 +84,11 @@ const REPO_ROOT = fenceRoot(process.env, DEFAULT_REPO_ROOT);
  * with no files is not a violation; an unclassified package is.
  */
 const PACKAGE_STRATA = Object.freeze({
-  kernel: ["contracts", "api-contracts"],
+  kernel: ["contracts", "protocol"],
   persistence: ["ledger"],
   domains: ["runtime", "accounts", "observation"],
-  edges: ["adapters", "durability"],
-  entrypoints: ["daemon", "server", "cli", "ui"],
+  edges: ["providers", "durability"],
+  entrypoints: ["daemon", "gateway", "cli", "console"],
 });
 
 /**
@@ -154,27 +154,27 @@ const P1A_WRITE_SET = [
 const P1B_SHARED_WRITE_SET = [
   "vitest.config.ts",
   "docs/architecture/0003-read-only-observation-plane.md",
-  "packages/kernel/api-contracts/package.json",
-  "packages/kernel/api-contracts/tsconfig.json",
-  "packages/kernel/api-contracts/README.md",
-  "packages/kernel/api-contracts/src/index.ts",
-  "packages/kernel/api-contracts/src/version/index.ts",
-  "packages/kernel/api-contracts/src/routes/index.ts",
-  "packages/kernel/api-contracts/src/schemas/index.ts",
-  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/package.json",
+  "packages/kernel/protocol/tsconfig.json",
+  "packages/kernel/protocol/README.md",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
   "packages/entrypoints/cli/package.json",
   "packages/entrypoints/cli/tsconfig.json",
   "packages/entrypoints/cli/src/index.ts",
-  "packages/entrypoints/server/package.json",
-  "packages/entrypoints/server/tsconfig.json",
-  "packages/entrypoints/server/src/index.ts",
-  "packages/entrypoints/ui/package.json",
-  "packages/entrypoints/ui/tsconfig.json",
-  "packages/entrypoints/ui/tsconfig.node.json",
-  "packages/entrypoints/ui/vite.config.ts",
-  "packages/entrypoints/ui/index.html",
-  "packages/entrypoints/ui/src/index.tsx",
-  "packages/entrypoints/ui/src/app/index.tsx",
+  "packages/entrypoints/gateway/package.json",
+  "packages/entrypoints/gateway/tsconfig.json",
+  "packages/entrypoints/gateway/src/index.ts",
+  "packages/entrypoints/console/package.json",
+  "packages/entrypoints/console/tsconfig.json",
+  "packages/entrypoints/console/tsconfig.node.json",
+  "packages/entrypoints/console/vite.config.ts",
+  "packages/entrypoints/console/index.html",
+  "packages/entrypoints/console/src/index.tsx",
+  "packages/entrypoints/console/src/app/index.tsx",
 ];
 
 /**
@@ -417,6 +417,15 @@ const RETIRED_PATHS = [
   "packages/domains/runtime/src/restate/server-handle/index.ts",
   "packages/domains/runtime/test/drivers/restate-driver/index.test.ts",
   "packages/domains/runtime/test/drivers/drills/index.test.ts",
+  // P8-T G7: the four pre-rename package roots. A rename is only a rename while
+  // the old name stays gone — a file reappearing at any of these would mean two
+  // packages claiming one responsibility, which is the condition the naming
+  // ruling exists to end. The roots are named rather than every moved path: the
+  // move map is 148 entries long and the prefix is what has to stay empty.
+  "packages/kernel/api-contracts",
+  "packages/edges/adapters",
+  "packages/entrypoints/ui",
+  "packages/entrypoints/server",
 ];
 
 /**
@@ -438,7 +447,7 @@ const RETIRED_PATHS = [
  * still subject to every content check below: the envelope widens where a lane
  * may write, never what it may write.
  */
-const P1B_LANE_ENVELOPES = ["packages/entrypoints/cli/", "packages/entrypoints/server/", "packages/entrypoints/ui/"];
+const P1B_LANE_ENVELOPES = ["packages/entrypoints/cli/", "packages/entrypoints/gateway/", "packages/entrypoints/console/"];
 
 /**
  * The exact P1 lane additions, enumerated at P1 closure.
@@ -456,65 +465,65 @@ const P1_WRITE_SET = [
   "packages/entrypoints/cli/src/cli/index.ts",
   "packages/entrypoints/cli/src/format/index.ts",
   "packages/entrypoints/cli/src/observation/index.ts",
-  "packages/entrypoints/server/src/aggregates/index.ts",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
-  "packages/entrypoints/server/src/build-server/index.ts",
-  "packages/entrypoints/server/src/constants/index.ts",
-  "packages/entrypoints/server/src/database-identity/index.ts",
-  "packages/entrypoints/server/src/errors/index.ts",
-  "packages/entrypoints/server/src/ledger-source/index.ts",
-  "packages/entrypoints/server/src/mappers/index.ts",
-  "packages/entrypoints/server/src/query-schemas/index.ts",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/src/start/index.ts",
-  "packages/entrypoints/ui/test/api/client/index.test.ts",
-  "packages/entrypoints/ui/src/api/client/index.ts",
-  "packages/entrypoints/ui/src/api/query-string/index.ts",
-  "packages/entrypoints/ui/test/components/app-shell/index.test.tsx",
-  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
-  "packages/entrypoints/ui/test/components/async-section/index.test.tsx",
-  "packages/entrypoints/ui/src/components/async-section/index.tsx",
-  "packages/entrypoints/ui/test/components/bar-breakdown/index.test.tsx",
-  "packages/entrypoints/ui/src/components/bar-breakdown/index.tsx",
-  "packages/entrypoints/ui/test/components/data-table/index.test.tsx",
-  "packages/entrypoints/ui/src/components/data-table/index.tsx",
-  "packages/entrypoints/ui/test/components/filter-bar/index.test.tsx",
-  "packages/entrypoints/ui/src/components/filter-bar/index.tsx",
-  "packages/entrypoints/ui/test/components/id-value/index.test.tsx",
-  "packages/entrypoints/ui/src/components/id-value/index.tsx",
-  "packages/entrypoints/ui/test/components/pagination/index.test.tsx",
-  "packages/entrypoints/ui/src/components/pagination/index.tsx",
-  "packages/entrypoints/ui/src/components/skip-link/index.tsx",
-  "packages/entrypoints/ui/test/components/status-badge/index.test.tsx",
-  "packages/entrypoints/ui/src/components/status-badge/index.tsx",
-  "packages/entrypoints/ui/test/components/timeline-list/index.test.tsx",
-  "packages/entrypoints/ui/src/components/timeline-list/index.tsx",
-  "packages/entrypoints/ui/test/format/chain/index.test.ts",
-  "packages/entrypoints/ui/src/format/chain/index.ts",
-  "packages/entrypoints/ui/test/format/index.test.ts",
-  "packages/entrypoints/ui/src/format/index.ts",
-  "packages/entrypoints/ui/test/format/status-tone/index.test.ts",
-  "packages/entrypoints/ui/src/format/status-tone/index.ts",
-  "packages/entrypoints/ui/src/hooks/use-async-resource/index.ts",
-  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
-  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
-  "packages/entrypoints/ui/src/routing/use-hash-route/index.ts",
-  "packages/entrypoints/ui/src/styles/base.css",
-  "packages/entrypoints/ui/src/styles/components.css",
-  "packages/entrypoints/ui/src/styles/index.css",
-  "packages/entrypoints/ui/src/styles/layout.css",
-  "packages/entrypoints/ui/src/styles/tokens.css",
-  "packages/entrypoints/ui/src/views/events-view/index.tsx",
-  "packages/entrypoints/ui/src/views/integrity-view/index.tsx",
-  "packages/entrypoints/ui/test/views/not-found-view/index.test.tsx",
-  "packages/entrypoints/ui/src/views/not-found-view/index.tsx",
-  "packages/entrypoints/ui/src/views/overview-view/index.tsx",
-  "packages/entrypoints/ui/src/views/status-view/index.tsx",
-  "packages/entrypoints/ui/src/views/task-detail-view/index.tsx",
-  "packages/entrypoints/ui/src/views/tasks-list-view/index.tsx",
-  "packages/entrypoints/ui/src/views/worker-detail-view/index.tsx",
-  "packages/entrypoints/ui/src/views/workers-list-view/index.tsx",
-  "packages/entrypoints/ui/test/views/index.test.tsx",
+  "packages/entrypoints/gateway/src/aggregates/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "packages/entrypoints/gateway/src/constants/index.ts",
+  "packages/entrypoints/gateway/src/database-identity/index.ts",
+  "packages/entrypoints/gateway/src/errors/index.ts",
+  "packages/entrypoints/gateway/src/ledger-source/index.ts",
+  "packages/entrypoints/gateway/src/mappers/index.ts",
+  "packages/entrypoints/gateway/src/query-schemas/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/start/index.ts",
+  "packages/entrypoints/console/test/api/client/index.test.ts",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/console/src/api/query-string/index.ts",
+  "packages/entrypoints/console/test/components/app-shell/index.test.tsx",
+  "packages/entrypoints/console/src/components/app-shell/index.tsx",
+  "packages/entrypoints/console/test/components/async-section/index.test.tsx",
+  "packages/entrypoints/console/src/components/async-section/index.tsx",
+  "packages/entrypoints/console/test/components/bar-breakdown/index.test.tsx",
+  "packages/entrypoints/console/src/components/bar-breakdown/index.tsx",
+  "packages/entrypoints/console/test/components/data-table/index.test.tsx",
+  "packages/entrypoints/console/src/components/data-table/index.tsx",
+  "packages/entrypoints/console/test/components/filter-bar/index.test.tsx",
+  "packages/entrypoints/console/src/components/filter-bar/index.tsx",
+  "packages/entrypoints/console/test/components/id-value/index.test.tsx",
+  "packages/entrypoints/console/src/components/id-value/index.tsx",
+  "packages/entrypoints/console/test/components/pagination/index.test.tsx",
+  "packages/entrypoints/console/src/components/pagination/index.tsx",
+  "packages/entrypoints/console/src/components/skip-link/index.tsx",
+  "packages/entrypoints/console/test/components/status-badge/index.test.tsx",
+  "packages/entrypoints/console/src/components/status-badge/index.tsx",
+  "packages/entrypoints/console/test/components/timeline-list/index.test.tsx",
+  "packages/entrypoints/console/src/components/timeline-list/index.tsx",
+  "packages/entrypoints/console/test/format/chain/index.test.ts",
+  "packages/entrypoints/console/src/format/chain/index.ts",
+  "packages/entrypoints/console/test/format/index.test.ts",
+  "packages/entrypoints/console/src/format/index.ts",
+  "packages/entrypoints/console/test/format/status-tone/index.test.ts",
+  "packages/entrypoints/console/src/format/status-tone/index.ts",
+  "packages/entrypoints/console/src/hooks/use-async-resource/index.ts",
+  "packages/entrypoints/console/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/console/src/routing/hash-route/index.ts",
+  "packages/entrypoints/console/src/routing/use-hash-route/index.ts",
+  "packages/entrypoints/console/src/styles/base.css",
+  "packages/entrypoints/console/src/styles/components.css",
+  "packages/entrypoints/console/src/styles/index.css",
+  "packages/entrypoints/console/src/styles/layout.css",
+  "packages/entrypoints/console/src/styles/tokens.css",
+  "packages/entrypoints/console/src/views/events-view/index.tsx",
+  "packages/entrypoints/console/src/views/integrity-view/index.tsx",
+  "packages/entrypoints/console/test/views/not-found-view/index.test.tsx",
+  "packages/entrypoints/console/src/views/not-found-view/index.tsx",
+  "packages/entrypoints/console/src/views/overview-view/index.tsx",
+  "packages/entrypoints/console/src/views/status-view/index.tsx",
+  "packages/entrypoints/console/src/views/task-detail-view/index.tsx",
+  "packages/entrypoints/console/src/views/tasks-list-view/index.tsx",
+  "packages/entrypoints/console/src/views/worker-detail-view/index.tsx",
+  "packages/entrypoints/console/src/views/workers-list-view/index.tsx",
+  "packages/entrypoints/console/test/views/index.test.tsx",
 ];
 
 /**
@@ -676,8 +685,8 @@ const P2F_STAGE_A_WRITE_SET = [
  * more than once: `packages/domains/observation/src/index.ts` (A, C),
  * `packages/domains/observation/README.md` (A, E), `vitest.config.ts` (A, B) and
  * `scripts/check-architecture.mjs` (A, C, D, E — four touches). Check:
- * 37 − (1 + 1 + 1 + 3) = 31. `packages/entrypoints/server/src/routes/index.ts` and
- * `packages/entrypoints/server/tsconfig.json` are each new distinct paths *within P3*;
+ * 37 − (1 + 1 + 1 + 3) = 31. `packages/entrypoints/gateway/src/routes/index.ts` and
+ * `packages/entrypoints/gateway/tsconfig.json` are each new distinct paths *within P3*;
  * their P1 array membership is historical and outside the scope this count
  * describes, which is the treatment the ordering ruling set for `routes.ts`.
  * The earlier arrays stay as the historical record and the displayed count
@@ -727,22 +736,22 @@ const P3C_WRITE_SET = [
 
 /** P3D: the ledger-to-client parity contract and its three-way proof. */
 const P3D_WRITE_SET = [
-  "packages/kernel/api-contracts/src/parity/index.ts",
-  "packages/kernel/api-contracts/test/parity/index.test.ts",
-  "packages/kernel/api-contracts/src/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/src/index.ts",
   "packages/entrypoints/cli/src/observation/index.ts",
-  "packages/entrypoints/ui/src/api/client/index.ts",
-  "packages/entrypoints/server/test/parity/index.test.ts",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
   "scripts/check-architecture.mjs",
   // Sorting only, at the two aggregate emit sites. The server was emitting
   // `Map` insertion order while the CLI sorted; ordering is part of the parity
   // law, so the server converges onto the CLI's existing deterministic order.
-  "packages/entrypoints/server/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
   // The TypeScript counterpart of the P3A deep aliases. Those live in
   // `vitest.config.ts`, which `tsc` and type-aware eslint never read, so the
   // parity test resolved at run time and nowhere else. Declaration-based, so
   // no foreign source enters this project's `rootDir`.
-  "packages/entrypoints/server/tsconfig.json",
+  "packages/entrypoints/gateway/tsconfig.json",
 ];
 
 /** P3E: closure. The status line moves here and nowhere else. */
@@ -761,7 +770,7 @@ const P3E_WRITE_SET = [
  * array lengths, distinct is `new Set` over their union, within phase scope.
  * 24 + 4 + 4 + 4 + 4 = 40 entries; the repeats are
  * `scripts/check-architecture.mjs` (A, B, C, D, E), `src/index.ts`
- * (A, B, C, D) and `packages/edges/adapters/README.md` (A, E), contributing
+ * (A, B, C, D) and `packages/edges/providers/README.md` (A, E), contributing
  * 4 + 3 + 1 = 8 duplicate entries, so 40 − 8 = 32.
  *
  * One number, stated once. An earlier revision of this comment opened with 31
@@ -775,25 +784,25 @@ const P3E_WRITE_SET = [
  * co-located test paths and `session.ts`. A test file is its own path.
  */
 const P4A_WRITE_SET = [
-  "packages/edges/adapters/package.json",
-  "packages/edges/adapters/tsconfig.json",
-  "packages/edges/adapters/README.md",
-  "packages/edges/adapters/src/index.ts",
-  "packages/edges/adapters/src/errors/index.ts",
-  "packages/edges/adapters/src/contract/index.ts",
-  "packages/edges/adapters/src/events/index.ts",
-  "packages/edges/adapters/src/redact/index.ts",
-  "packages/edges/adapters/src/config-root/index.ts",
-  "packages/edges/adapters/src/session/index.ts",
-  "packages/edges/adapters/src/process/spawn/index.ts",
-  "packages/edges/adapters/src/process/handle/index.ts",
-  "packages/edges/adapters/test/testing/index.ts",
-  "packages/edges/adapters/test/contract/index.test.ts",
-  "packages/edges/adapters/test/events/index.test.ts",
-  "packages/edges/adapters/test/redact/index.test.ts",
-  "packages/edges/adapters/test/config-root/index.test.ts",
-  "packages/edges/adapters/test/session/index.test.ts",
-  "packages/edges/adapters/test/process/spawn/index.test.ts",
+  "packages/edges/providers/package.json",
+  "packages/edges/providers/tsconfig.json",
+  "packages/edges/providers/README.md",
+  "packages/edges/providers/src/index.ts",
+  "packages/edges/providers/src/errors/index.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/src/events/index.ts",
+  "packages/edges/providers/src/redact/index.ts",
+  "packages/edges/providers/src/config-root/index.ts",
+  "packages/edges/providers/src/session/index.ts",
+  "packages/edges/providers/src/process/spawn/index.ts",
+  "packages/edges/providers/src/process/handle/index.ts",
+  "packages/edges/providers/test/testing/index.ts",
+  "packages/edges/providers/test/contract/index.test.ts",
+  "packages/edges/providers/test/events/index.test.ts",
+  "packages/edges/providers/test/redact/index.test.ts",
+  "packages/edges/providers/test/config-root/index.test.ts",
+  "packages/edges/providers/test/session/index.test.ts",
+  "packages/edges/providers/test/process/spawn/index.test.ts",
   "tsconfig.base.json",
   "vitest.config.ts",
   "pnpm-lock.yaml",
@@ -803,25 +812,25 @@ const P4A_WRITE_SET = [
 
 /** P4B: the Claude headless descriptor. */
 const P4B_WRITE_SET = [
-  "packages/edges/adapters/src/providers/claude/index.ts",
-  "packages/edges/adapters/test/providers/claude/index.test.ts",
-  "packages/edges/adapters/src/index.ts",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 /** P4C: the Kimi ACP descriptor. */
 const P4C_WRITE_SET = [
-  "packages/edges/adapters/src/providers/kimi/index.ts",
-  "packages/edges/adapters/test/providers/kimi/index.test.ts",
-  "packages/edges/adapters/src/index.ts",
+  "packages/edges/providers/src/kimi/index.ts",
+  "packages/edges/providers/test/kimi/index.test.ts",
+  "packages/edges/providers/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
 /** P4D: the Codex App Server descriptor. */
 const P4D_WRITE_SET = [
-  "packages/edges/adapters/src/providers/codex/index.ts",
-  "packages/edges/adapters/test/providers/codex/index.test.ts",
-  "packages/edges/adapters/src/index.ts",
+  "packages/edges/providers/src/codex/index.ts",
+  "packages/edges/providers/test/codex/index.test.ts",
+  "packages/edges/providers/src/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -829,7 +838,7 @@ const P4D_WRITE_SET = [
 const P4E_WRITE_SET = [
   "docs/ROADMAP.md",
   "README.md",
-  "packages/edges/adapters/README.md",
+  "packages/edges/providers/README.md",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1144,9 +1153,9 @@ const P7E_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architectu
  * sees it. That is why P7I-1's first attempt stopped -- `tsc` reported zero
  * errors while 125 tests would have failed -- and why, for a contract-shape
  * change, the **full test suite** is the completeness proof and typecheck is
- * not. Two packages reach the constant through `@acp/api-contracts`'s
+ * not. Two packages reach the constant through `@acp/protocol`'s
  * `LEDGER_CONTRACT_VERSION` re-export rather than directly: `packages/entrypoints/cli` and
- * `packages/entrypoints/server` may not depend on `@acp/contracts` under the P1B
+ * `packages/entrypoints/gateway` may not depend on `@acp/contracts` under the P1B
  * dependency law, and the re-export exists for exactly this.
  *
  * P7I-1 is the contracts themselves, on top of the landed bump: `Initiative`,
@@ -1195,8 +1204,8 @@ const P7I0_WRITE_SET = [
   "packages/kernel/contracts/src/schemas/index.ts",
   "packages/persistence/ledger/test/ledger/index.test.ts",
   "packages/entrypoints/cli/test/cli/index.test.ts",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
-  "packages/entrypoints/server/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
   "packages/domains/observation/test/shadow-ledger/index.test.ts",
   "packages/domains/observation/test/collect/scenario/index.test.ts",
   "packages/domains/observation/test/collect/artifact/index.test.ts",
@@ -1316,8 +1325,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * initiative-scoped route prefix over the landed grammar, and the tone
  * mapping and card styles the blueprint names. The write-set widened by two
  * paths after the packet's own STOP (`p8-8c-kimi-widening-adjudication.md`):
- * `packages/entrypoints/ui/test/views/index.test.tsx` and
- * `packages/entrypoints/ui/test/views/not-found-view/index.test.tsx`, each carrying the
+ * `packages/entrypoints/console/test/views/index.test.tsx` and
+ * `packages/entrypoints/console/test/views/not-found-view/index.test.tsx`, each carrying the
  * one-line `initiativeId: null` fixture fix the `Route` field addition made
  * unavoidable.
  *
@@ -1327,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **433 packet entries across 178 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **471 packet entries across 194 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1336,29 +1345,30 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 12 (P8-8G-ui) + 2 (P8-8G-record) + 6 (P8-8G-causal) + 2 (P8-9-1) +
  * 6 (P8-9-2) + 14 (P8-9-3) + 2 (P8-9-1b) + 5 (P8-9-4) + 7 (P8-10a) +
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
- * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) = 433 entries, with 255
- * duplicate entries.
+ * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) = 471 entries,
+ * with 277 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 41 duplicates = 41   (`scripts/check-architecture.mjs`, every packet)
- *   1 path  ×  9 duplicates =  9   (the lockfile)
- *   3 paths ×  7 duplicates = 21   (`docs/ROADMAP.md`, the routes source and
- *                                   the build-server drill suite)
- *   5 paths ×  6 duplicates = 30   (the api-contracts surface and its CLI
- *                                   mirror suite)
- *   6 paths ×  5 duplicates = 30   (the api-contracts route and parity surface
- *                                   with its parity suite, the UI's api client
- *                                   and app root, and the workspace file)
- *   5 paths ×  4 duplicates = 20   (the contracts schema barrel, the initiatives
- *                                   suite, the UI manifest, the UI styles sheet
- *                                   and the accounts-view suite)
- *   9 paths ×  3 duplicates = 27
- *  15 paths ×  2 duplicates = 30
+ *   1 path  × 42 duplicates = 42   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 10 duplicates = 10   (the lockfile)
+ *   4 paths ×  7 duplicates = 28   (`docs/ROADMAP.md`, the gateway's routes
+ *                                   source and build-server suite, and the CLI
+ *                                   suite)
+ *   5 paths ×  6 duplicates = 30   (the protocol surface and the workspace file)
+ *   6 paths ×  5 duplicates = 30   (the contracts schema barrel, the protocol
+ *                                   route and parity surface with its parity
+ *                                   suite, and the console's app root and api
+ *                                   client)
+ *   4 paths ×  4 duplicates = 16   (the initiatives suite, the console manifest,
+ *                                   the console styles sheet and the
+ *                                   accounts-view suite)
+ *  12 paths ×  3 duplicates = 36
+ *  19 paths ×  2 duplicates = 38
  *  47 paths ×  1 duplicate  = 47
  *
- * 41 + 9 + 21 + 30 + 30 + 20 + 27 + 30 + 47 = 255.
+ * 42 + 10 + 28 + 30 + 30 + 16 + 36 + 38 + 47 = 277.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1428,7 +1438,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-9-3 was widened by one path after its own report, adjudicated by the DT
  * (`p8-9-3-kimi-widening-adjudication.md`) against the packet's own
- * STOP-adjacent finding: `packages/entrypoints/ui/src/views/accounts-view/index.tsx`,
+ * STOP-adjacent finding: `packages/entrypoints/console/src/views/accounts-view/index.tsx`,
  * already owned by P8-8F-ui and P8-8G-ui, gains a third owner here rather
  * than opening a new distinct path — so distinct still holds at 141 while
  * entries move 359 → 360. Its one group step: the path had two occurrences
@@ -1551,6 +1561,28 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * deliberately absent from the array. An in-place subdivision that had to edit
  * the public barrel would not have been in place.
  *
+ * P8-T-G7 is the phase's largest packet by entries — 38 — and adds **sixteen**
+ * distinct paths, which is the shape of a packet that renames four packages
+ * without moving their contents. The 148 renamed paths are not among the 38:
+ * their declarations were rewritten in place, from old prefix to new, so
+ * expressed in the new names the pre-image is still 433 entries across 178
+ * distinct paths. A rename that moved the fold would have meant two paths
+ * colliding, and the map was verified injective before a single file moved.
+ *
+ * Of the 38, sixteen are novel: the two new contracts capability modules
+ * (`exit-codes`, `usage-limits`) and fourteen files older than the phase that no
+ * P8 array had yet named — the six CLI files, accounts' manifest, quota module,
+ * quota suite and tsconfig, ledger's manifest and tsconfig, and the daemon and
+ * observation sources the dedup reached. The other 22 are P8-owned and ride as
+ * duplicates, so distinct moves 178 → 194 while entries move 433 → 471 and
+ * duplicates 255 → 277.
+ *
+ * Two rows move for reasons worth naming. The ×7 row gains the CLI suite, which
+ * the rename touched for the first time in this phase; and the ×2 and ×3 rows
+ * grow together (15 → 19 and 9 → 12) because the dedup reached files that
+ * already had one or two in-phase owners rather than opening new paths — which
+ * is exactly what unifying a duplicated declaration looks like in this table.
+ *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
  * arithmetic to the phase.
@@ -1642,12 +1674,12 @@ const P8W_WRITE_SET = [
  * widening.
  */
 const P82_WRITE_SET = [
-  "packages/edges/adapters/src/execution-port/index.ts",
-  "packages/edges/adapters/src/contract/index.ts",
-  "packages/edges/adapters/src/index.ts",
-  "packages/edges/adapters/test/execution-port/index.test.ts",
-  "packages/edges/adapters/test/contract/index.test.ts",
-  "packages/edges/adapters/test/testing/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/src/index.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/contract/index.test.ts",
+  "packages/edges/providers/test/testing/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1664,11 +1696,11 @@ const P82_WRITE_SET = [
  * API key, because no API key exists in the graph.
  */
 const P83_WRITE_SET = [
-  "packages/edges/adapters/src/providers/api-key/index.ts",
-  "packages/edges/adapters/src/execution-port/index.ts",
-  "packages/edges/adapters/src/index.ts",
-  "packages/edges/adapters/test/execution-port/index.test.ts",
-  "packages/edges/adapters/test/testing/index.ts",
+  "packages/edges/providers/src/api-key/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/src/index.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/testing/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1684,11 +1716,11 @@ const P83_WRITE_SET = [
  * non-CLI kinds, classified, by construction.
  */
 const P84_WRITE_SET = [
-  "packages/edges/adapters/src/providers/local/index.ts",
-  "packages/edges/adapters/src/execution-port/index.ts",
-  "packages/edges/adapters/src/index.ts",
-  "packages/edges/adapters/test/execution-port/index.test.ts",
-  "packages/edges/adapters/test/testing/index.ts",
+  "packages/edges/providers/src/local/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/src/index.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/testing/index.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1770,20 +1802,20 @@ const P87_WRITE_SET = [
  * reference is an edge that works on one machine.
  */
 const P88A_WRITE_SET = [
-  "packages/kernel/api-contracts/src/routes/index.ts",
-  "packages/kernel/api-contracts/src/schemas/index.ts",
-  "packages/kernel/api-contracts/src/parity/index.ts",
-  "packages/kernel/api-contracts/src/version/index.ts",
-  "packages/kernel/api-contracts/src/index.ts",
-  "packages/kernel/api-contracts/test/schemas/index.test.ts",
-  "packages/kernel/api-contracts/test/parity/index.test.ts",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/src/mappers/index.ts",
-  "packages/entrypoints/server/src/initiatives/index.ts",
-  "packages/entrypoints/server/package.json",
-  "packages/entrypoints/server/tsconfig.json",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
-  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/mappers/index.ts",
+  "packages/entrypoints/gateway/src/initiatives/index.ts",
+  "packages/entrypoints/gateway/package.json",
+  "packages/entrypoints/gateway/tsconfig.json",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/initiatives/index.test.ts",
   "packages/persistence/ledger/src/ledger/index.ts",
   "packages/persistence/ledger/test/ledger/index.test.ts",
   "packages/entrypoints/cli/test/cli/index.test.ts",
@@ -1812,15 +1844,15 @@ const P88A_WRITE_SET = [
  * evidence that the landed views keep working identically.
  */
 const P88B_WRITE_SET = [
-  "packages/entrypoints/ui/package.json",
+  "packages/entrypoints/console/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
-  "packages/entrypoints/ui/src/styles/tokens.css",
-  "packages/entrypoints/ui/src/styles/layout.css",
-  "packages/entrypoints/ui/src/app/index.tsx",
-  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
-  "packages/entrypoints/ui/src/api/client/index.ts",
-  "packages/entrypoints/ui/test/app/index.test.tsx",
+  "packages/entrypoints/console/src/styles/tokens.css",
+  "packages/entrypoints/console/src/styles/layout.css",
+  "packages/entrypoints/console/src/app/index.tsx",
+  "packages/entrypoints/console/src/components/app-shell/index.tsx",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/console/test/app/index.test.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -1836,41 +1868,41 @@ const P88B_WRITE_SET = [
  * Two paths were not in the original 17-item brief and were added only after
  * a Sonnet STOP and a DT widening adjudication
  * (`.acp-local/p8-8c-kimi-widening-adjudication.md`):
- * `packages/entrypoints/ui/test/views/index.test.tsx` and
- * `packages/entrypoints/ui/test/views/not-found-view/index.test.tsx`. Both are
+ * `packages/entrypoints/console/test/views/index.test.tsx` and
+ * `packages/entrypoints/console/test/views/not-found-view/index.test.tsx`. Both are
  * pre-existing test files, unrelated to initiative scoping in what they
  * assert, that construct a `Route` object literal inline; `Route` gaining the
  * required `initiativeId` field (this packet, in
- * `packages/entrypoints/ui/src/routing/hash-route/index.ts`) made both fail to typecheck
+ * `packages/entrypoints/console/src/routing/hash-route/index.ts`) made both fail to typecheck
  * until each gained the same one-line, additive `initiativeId: null` fix
- * `packages/entrypoints/ui/test/components/app-shell/index.test.tsx` (in the original
+ * `packages/entrypoints/console/test/components/app-shell/index.test.tsx` (in the original
  * 15) already needed for the identical reason.
  *
- * `packages/entrypoints/ui/src/styles/components.css` is named here and
- * `packages/entrypoints/ui/src/styles/layout.css` and `tokens.css` are not: every new
+ * `packages/entrypoints/console/src/styles/components.css` is named here and
+ * `packages/entrypoints/console/src/styles/layout.css` and `tokens.css` are not: every new
  * rule (the switcher, the portfolio grid, the card, the extended hit area,
  * the objective's line-clamp) is expressed in existing tokens, and the brand
  * block gained a wrapper div rather than a change to the header layout the
  * landed file already declares.
  */
 const P88C_WRITE_SET = [
-  "packages/entrypoints/ui/src/views/portfolio-view/index.tsx",
-  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
-  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
-  "packages/entrypoints/ui/src/routing/use-hash-route/index.ts",
-  "packages/entrypoints/ui/src/app/index.tsx",
-  "packages/entrypoints/ui/src/format/status-tone/index.ts",
-  "packages/entrypoints/ui/src/styles/components.css",
-  "packages/entrypoints/ui/src/api/client/index.ts",
-  "packages/entrypoints/ui/test/views/portfolio-view/index.test.tsx",
-  "packages/entrypoints/ui/test/components/app-shell/index.test.tsx",
-  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
-  "packages/entrypoints/ui/package.json",
+  "packages/entrypoints/console/src/views/portfolio-view/index.tsx",
+  "packages/entrypoints/console/src/components/app-shell/index.tsx",
+  "packages/entrypoints/console/src/routing/hash-route/index.ts",
+  "packages/entrypoints/console/src/routing/use-hash-route/index.ts",
+  "packages/entrypoints/console/src/app/index.tsx",
+  "packages/entrypoints/console/src/format/status-tone/index.ts",
+  "packages/entrypoints/console/src/styles/components.css",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/console/test/views/portfolio-view/index.test.tsx",
+  "packages/entrypoints/console/test/components/app-shell/index.test.tsx",
+  "packages/entrypoints/console/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/console/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
-  "packages/entrypoints/ui/test/views/index.test.tsx",
-  "packages/entrypoints/ui/test/views/not-found-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/index.test.tsx",
+  "packages/entrypoints/console/test/views/not-found-view/index.test.tsx",
 ];
 
 /**
@@ -1888,27 +1920,27 @@ const P88C_WRITE_SET = [
  * `["GET"]`, and the exception is a second frozen table. ADR 0013 records why.
  */
 const P88D_PRE_WRITE_SET = [
-  "packages/kernel/api-contracts/src/routes/index.ts",
-  "packages/kernel/api-contracts/src/schemas/index.ts",
-  "packages/kernel/api-contracts/src/parity/index.ts",
-  "packages/kernel/api-contracts/src/version/index.ts",
-  "packages/kernel/api-contracts/src/index.ts",
-  "packages/kernel/api-contracts/README.md",
-  "packages/kernel/api-contracts/test/schemas/index.test.ts",
-  "packages/kernel/api-contracts/test/parity/index.test.ts",
-  "packages/entrypoints/server/package.json",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/src/roadmap-write/index.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/package.json",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/roadmap-write/index.ts",
   // The 21st path, adjudicated: `STATUS_BY_CODE` is an exhaustive Record over
   // the closed code set, so `WRITE_REFUSED` cannot exist without its 409
   // mapping here. Proved by probe before it was asked for.
-  "packages/entrypoints/server/src/errors/index.ts",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
-  "packages/entrypoints/server/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/gateway/src/errors/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
   // The 22nd path, adjudicated: P8-8A's initiatives suite asserted that every
   // non-GET refuses on every initiative path, which this packet falsifies for
   // exactly one cell. The C4 class, missed by C4's own enumeration.
-  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/entrypoints/gateway/test/initiatives/index.test.ts",
   "packages/persistence/ledger/src/artifact-store/index.ts",
   "packages/persistence/ledger/src/index.ts",
   "packages/persistence/ledger/test/artifact-store/index.test.ts",
@@ -1933,17 +1965,17 @@ const P88D_PRE_WRITE_SET = [
  * makes the request's shape enforce the scoping.
  */
 const P88D_C2_WRITE_SET = [
-  "packages/kernel/api-contracts/src/routes/index.ts",
-  "packages/kernel/api-contracts/src/schemas/index.ts",
-  "packages/kernel/api-contracts/src/parity/index.ts",
-  "packages/kernel/api-contracts/src/version/index.ts",
-  "packages/kernel/api-contracts/src/index.ts",
-  "packages/kernel/api-contracts/test/schemas/index.test.ts",
-  "packages/kernel/api-contracts/test/parity/index.test.ts",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/src/initiatives/index.ts",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
-  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/initiatives/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/initiatives/index.test.ts",
   "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -1959,7 +1991,7 @@ const P88D_C2_WRITE_SET = [
  *
  * The 18th path, adjudicated after a Sonnet STOP
  * (`.acp-local/p8-8d-kimi-stop-adjudication.md`):
- * `packages/entrypoints/ui/test/views/portfolio-view/index.test.tsx`, whose two
+ * `packages/entrypoints/console/test/views/portfolio-view/index.test.tsx`, whose two
  * `href="#/i/<id>/tasks"` expectations are the mechanical fallout of
  * `buildInitiativeHash`'s own authorized change (bare `#/i/<id>` now lands
  * on the workspace, C3) — a pre-existing test outside the original 17,
@@ -1967,25 +1999,25 @@ const P88D_C2_WRITE_SET = [
  * P8-8D-pre and P8-8D-c2's own widenings.
  */
 const P88D_WRITE_SET = [
-  "packages/entrypoints/ui/src/views/workspace-view/index.tsx",
-  "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx",
-  "packages/entrypoints/ui/src/app/index.tsx",
-  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
-  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
-  "packages/entrypoints/ui/src/format/status-tone/index.ts",
-  "packages/entrypoints/ui/src/styles/components.css",
-  "packages/entrypoints/ui/src/api/client/index.ts",
-  "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx",
-  "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx",
-  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
-  "packages/entrypoints/ui/test/components/app-shell/index.test.tsx",
-  "packages/entrypoints/ui/test/views/index.test.tsx",
-  "packages/entrypoints/ui/package.json",
+  "packages/entrypoints/console/src/views/workspace-view/index.tsx",
+  "packages/entrypoints/console/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/entrypoints/console/src/app/index.tsx",
+  "packages/entrypoints/console/src/routing/hash-route/index.ts",
+  "packages/entrypoints/console/src/components/app-shell/index.tsx",
+  "packages/entrypoints/console/src/format/status-tone/index.ts",
+  "packages/entrypoints/console/src/styles/components.css",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/console/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/console/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/console/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/console/test/components/app-shell/index.test.tsx",
+  "packages/entrypoints/console/test/views/index.test.tsx",
+  "packages/entrypoints/console/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
   // The 18th path, adjudicated (see the doc comment above).
-  "packages/entrypoints/ui/test/views/portfolio-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/portfolio-view/index.test.tsx",
 ];
 
 /**
@@ -2062,20 +2094,20 @@ const P8T2_WRITE_SET = [
  * a required DTO field. The full suite is the probe that does not.
  */
 const P88E_PRE_WRITE_SET = [
-  "packages/kernel/api-contracts/src/routes/index.ts",
-  "packages/kernel/api-contracts/src/schemas/index.ts",
-  "packages/kernel/api-contracts/src/parity/index.ts",
-  "packages/kernel/api-contracts/src/version/index.ts",
-  "packages/kernel/api-contracts/src/index.ts",
-  "packages/kernel/api-contracts/test/schemas/index.test.ts",
-  "packages/kernel/api-contracts/test/parity/index.test.ts",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/src/initiatives/index.ts",
-  "packages/entrypoints/server/src/mappers/index.ts",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
-  "packages/entrypoints/server/test/initiatives/index.test.ts",
-  "packages/entrypoints/ui/test/components/timeline-list/index.test.tsx",
-  "packages/entrypoints/ui/test/format/chain/index.test.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/initiatives/index.ts",
+  "packages/entrypoints/gateway/src/mappers/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/initiatives/index.test.ts",
+  "packages/entrypoints/console/test/components/timeline-list/index.test.tsx",
+  "packages/entrypoints/console/test/format/chain/index.test.ts",
   "packages/entrypoints/cli/src/observation/index.ts",
   "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
@@ -2103,20 +2135,20 @@ const P88E_PRE_WRITE_SET = [
  * addition before it was.
  */
 const P88E_WRITE_SET = [
-  "packages/entrypoints/ui/src/views/graph-view/index.tsx",
-  "packages/entrypoints/ui/src/views/timeline-view/index.tsx",
-  "packages/entrypoints/ui/src/views/agents-view/index.tsx",
-  "packages/entrypoints/ui/src/app/index.tsx",
-  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
-  "packages/entrypoints/ui/src/views/workspace-view/index.tsx",
-  "packages/entrypoints/ui/src/api/client/index.ts",
-  "packages/entrypoints/ui/src/styles/components.css",
-  "packages/entrypoints/ui/test/views/graph-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/timeline-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/agents-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx",
-  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
-  "packages/entrypoints/ui/package.json",
+  "packages/entrypoints/console/src/views/graph-view/index.tsx",
+  "packages/entrypoints/console/src/views/timeline-view/index.tsx",
+  "packages/entrypoints/console/src/views/agents-view/index.tsx",
+  "packages/entrypoints/console/src/app/index.tsx",
+  "packages/entrypoints/console/src/routing/hash-route/index.ts",
+  "packages/entrypoints/console/src/views/workspace-view/index.tsx",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/console/src/styles/components.css",
+  "packages/entrypoints/console/test/views/graph-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/timeline-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/agents-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/console/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/console/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
@@ -2184,22 +2216,22 @@ const P88E2_WRITE_SET = [
  * both project references.
  */
 const P88F_SRV_WRITE_SET = [
-  "packages/kernel/api-contracts/src/routes/index.ts",
-  "packages/kernel/api-contracts/src/schemas/index.ts",
-  "packages/kernel/api-contracts/src/parity/index.ts",
-  "packages/kernel/api-contracts/src/version/index.ts",
-  "packages/kernel/api-contracts/src/index.ts",
-  "packages/kernel/api-contracts/test/schemas/index.test.ts",
-  "packages/kernel/api-contracts/test/parity/index.test.ts",
-  "packages/entrypoints/server/src/accounts/index.ts",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/src/build-server/index.ts",
-  "packages/entrypoints/server/src/start/index.ts",
-  "packages/entrypoints/server/package.json",
-  "packages/entrypoints/server/tsconfig.json",
-  "packages/entrypoints/server/test/tsconfig.json",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
-  "packages/entrypoints/server/test/accounts/index.test.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/src/accounts/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "packages/entrypoints/gateway/src/start/index.ts",
+  "packages/entrypoints/gateway/package.json",
+  "packages/entrypoints/gateway/tsconfig.json",
+  "packages/entrypoints/gateway/test/tsconfig.json",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/accounts/index.test.ts",
   "packages/entrypoints/cli/test/cli/index.test.ts",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
@@ -2235,24 +2267,24 @@ const P8_DEBRIEF_RULING_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architect
  * markdown renderer.
  */
 const P88F_UI_WRITE_SET = [
-  "packages/entrypoints/ui/src/views/accounts-view/index.tsx",
-  "packages/entrypoints/ui/src/views/logs-view/index.tsx",
-  "packages/entrypoints/ui/src/views/roadmap-document-view/index.tsx",
-  "packages/entrypoints/ui/src/app/index.tsx",
-  "packages/entrypoints/ui/src/routing/hash-route/index.ts",
-  "packages/entrypoints/ui/src/views/workspace-view/index.tsx",
-  "packages/entrypoints/ui/src/api/client/index.ts",
-  "packages/entrypoints/ui/src/components/app-shell/index.tsx",
-  "packages/entrypoints/ui/src/styles/components.css",
-  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/logs-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/roadmap-document-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/index.test.tsx",
-  "packages/entrypoints/ui/test/routing/hash-route/index.test.ts",
-  "packages/entrypoints/ui/test/app/index.test.tsx",
-  "packages/entrypoints/ui/test/components/app-shell/index.test.tsx",
-  "packages/entrypoints/ui/test/api/client/index.test.ts",
+  "packages/entrypoints/console/src/views/accounts-view/index.tsx",
+  "packages/entrypoints/console/src/views/logs-view/index.tsx",
+  "packages/entrypoints/console/src/views/roadmap-document-view/index.tsx",
+  "packages/entrypoints/console/src/app/index.tsx",
+  "packages/entrypoints/console/src/routing/hash-route/index.ts",
+  "packages/entrypoints/console/src/views/workspace-view/index.tsx",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/console/src/components/app-shell/index.tsx",
+  "packages/entrypoints/console/src/styles/components.css",
+  "packages/entrypoints/console/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/logs-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/roadmap-document-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/index.test.tsx",
+  "packages/entrypoints/console/test/routing/hash-route/index.test.ts",
+  "packages/entrypoints/console/test/app/index.test.tsx",
+  "packages/entrypoints/console/test/components/app-shell/index.test.tsx",
+  "packages/entrypoints/console/test/api/client/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2300,22 +2332,22 @@ const P88G_A_WRITE_SET = [
   "packages/kernel/contracts/src/schemas/index.ts",
   "packages/kernel/contracts/src/index.ts",
   "packages/kernel/contracts/test/schemas/index.test.ts",
-  "packages/kernel/api-contracts/src/schemas/index.ts",
-  "packages/kernel/api-contracts/src/version/index.ts",
-  "packages/kernel/api-contracts/src/index.ts",
-  "packages/kernel/api-contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
   "packages/persistence/ledger/src/artifact-store/index.ts",
   "packages/persistence/ledger/test/artifact-store/index.test.ts",
-  "packages/entrypoints/server/src/bearer/index.ts",
-  "packages/entrypoints/server/src/errors/index.ts",
-  "packages/entrypoints/server/src/roadmap-write/index.ts",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/src/build-server/index.ts",
-  "packages/entrypoints/server/src/start/index.ts",
-  "packages/entrypoints/server/test/bearer/index.test.ts",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
-  "packages/entrypoints/server/test/roadmap-write/index.test.ts",
-  "packages/entrypoints/server/test/initiatives/index.test.ts",
+  "packages/entrypoints/gateway/src/bearer/index.ts",
+  "packages/entrypoints/gateway/src/errors/index.ts",
+  "packages/entrypoints/gateway/src/roadmap-write/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "packages/entrypoints/gateway/src/start/index.ts",
+  "packages/entrypoints/gateway/test/bearer/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/gateway/test/initiatives/index.test.ts",
   "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -2361,27 +2393,27 @@ const P88G_B_WRITE_SET = [
   "packages/persistence/ledger/src/types/index.ts",
   "packages/persistence/ledger/src/index.ts",
   "packages/persistence/ledger/test/ledger/index.test.ts",
-  "packages/kernel/api-contracts/src/routes/index.ts",
-  "packages/kernel/api-contracts/src/schemas/index.ts",
-  "packages/kernel/api-contracts/src/parity/index.ts",
-  "packages/kernel/api-contracts/src/version/index.ts",
-  "packages/kernel/api-contracts/test/schemas/index.test.ts",
-  "packages/kernel/api-contracts/test/parity/index.test.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
   // Granted after the STOP: the barrel is the package's only export surface,
   // so the action schemas are unreachable without it, and the UI fixture is
   // typed against `AccountDto` and must satisfy its three new fields or `tsc`
   // refuses the whole graph.
-  "packages/kernel/api-contracts/src/index.ts",
-  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
-  "packages/entrypoints/server/src/account-actions/index.ts",
-  "packages/entrypoints/server/src/accounts/index.ts",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/src/bin/index.ts",
-  "packages/entrypoints/server/package.json",
-  "packages/entrypoints/server/test/account-actions/index.test.ts",
-  "packages/entrypoints/server/test/accounts/index.test.ts",
-  "packages/entrypoints/server/test/bin/index.test.ts",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/entrypoints/console/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/gateway/src/account-actions/index.ts",
+  "packages/entrypoints/gateway/src/accounts/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/bin/index.ts",
+  "packages/entrypoints/gateway/package.json",
+  "packages/entrypoints/gateway/test/account-actions/index.test.ts",
+  "packages/entrypoints/gateway/test/accounts/index.test.ts",
+  "packages/entrypoints/gateway/test/bin/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
   "packages/entrypoints/cli/test/cli/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
@@ -2401,22 +2433,22 @@ const P88G_B_WRITE_SET = [
  * current token without that file, or the ones between it and the root,
  * needing to change.
  *
- * `packages/kernel/api-contracts/src/index.ts` is not listed again here: packet 2
+ * `packages/kernel/protocol/src/index.ts` is not listed again here: packet 2
  * already added every DTO and route name this packet's UI reads, and
  * nothing here grows that barrel further.
  */
 const P88G_UI_WRITE_SET = [
-  "packages/entrypoints/ui/src/api/client/index.ts",
-  "packages/entrypoints/ui/src/app/index.tsx",
-  "packages/entrypoints/ui/src/components/bearer-field/index.tsx",
-  "packages/entrypoints/ui/src/views/accounts-view/index.tsx",
-  "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx",
-  "packages/entrypoints/ui/src/styles/components.css",
-  "packages/entrypoints/ui/test/api/client/index.test.ts",
-  "packages/entrypoints/ui/test/app/index.test.tsx",
-  "packages/entrypoints/ui/test/components/bearer-field/index.test.tsx",
-  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
-  "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/console/src/app/index.tsx",
+  "packages/entrypoints/console/src/components/bearer-field/index.tsx",
+  "packages/entrypoints/console/src/views/accounts-view/index.tsx",
+  "packages/entrypoints/console/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/entrypoints/console/src/styles/components.css",
+  "packages/entrypoints/console/test/api/client/index.test.ts",
+  "packages/entrypoints/console/test/app/index.test.tsx",
+  "packages/entrypoints/console/test/components/bearer-field/index.test.tsx",
+  "packages/entrypoints/console/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/console/test/components/edit-roadmap-dialog/index.test.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2452,11 +2484,11 @@ const P88G_RECORD_WRITE_SET = ["docs/ROADMAP.md", "scripts/check-architecture.mj
  * operator use, which the drill asserts rather than assumes.
  */
 const P88G_CAUSAL_WRITE_SET = [
-  "packages/entrypoints/server/src/build-server/index.ts",
-  "packages/entrypoints/server/src/routes/index.ts",
-  "packages/entrypoints/server/test/accounts/index.test.ts",
-  "packages/entrypoints/server/test/account-actions/index.test.ts",
-  "packages/entrypoints/server/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/test/accounts/index.test.ts",
+  "packages/entrypoints/gateway/test/account-actions/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2483,7 +2515,7 @@ const P89_1_WRITE_SET = [
  * The foundation of P8-9's battery. Twenty-one UI suites render to a string
  * today, which proves what the markup says and nothing about focus, keyboard,
  * live regions or the accessibility tree. This packet adds the harness that
- * can assert those — jsdom and axe-core as devDependencies of `@acp/ui` only,
+ * can assert those — jsdom and axe-core as devDependencies of `@acp/console` only,
  * opt-in per file by docblock so every existing static suite runs unchanged —
  * and lands it with its own falsifying drill, because a harness that has never
  * reported a violation is not yet evidence of anything.
@@ -2491,12 +2523,12 @@ const P89_1_WRITE_SET = [
  * Zero `src/` paths: nothing here reaches a shipped bundle.
  */
 const P89_2_WRITE_SET = [
-  "packages/entrypoints/ui/package.json",
+  "packages/entrypoints/console/package.json",
   "pnpm-workspace.yaml",
   "pnpm-lock.yaml",
   "scripts/check-architecture.mjs",
-  "packages/entrypoints/ui/test/live-dom/index.ts",
-  "packages/entrypoints/ui/test/live-dom/index.test.tsx",
+  "packages/entrypoints/console/test/live-dom/index.ts",
+  "packages/entrypoints/console/test/live-dom/index.test.tsx",
 ];
 
 /**
@@ -2522,7 +2554,7 @@ const P89_2_WRITE_SET = [
  *
  * Widened by exactly one path, adjudicated by the DT
  * (`p8-9-3-kimi-widening-adjudication.md`) against the packet's own
- * STOP-adjacent finding: `packages/entrypoints/ui/src/views/accounts-view/index.tsx`.
+ * STOP-adjacent finding: `packages/entrypoints/console/src/views/accounts-view/index.tsx`.
  * The account action's granted receipt (its sequence, in the live region)
  * was unmounting before it ever painted — `AccountActionsCell`'s `onGranted`
  * closed the dialog in the same batch `AccountActionDialogBody` set
@@ -2533,19 +2565,19 @@ const P89_2_WRITE_SET = [
  * matrix is untouched since it never drove `openAction` in the first place.
  */
 const P89_3_WRITE_SET = [
-  "packages/entrypoints/ui/test/live-dom/index.ts",
-  "packages/entrypoints/ui/test/views/index.test.tsx",
-  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
-  "packages/entrypoints/ui/test/components/bearer-field/index.test.tsx",
-  "packages/entrypoints/ui/test/views/logs-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/roadmap-document-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/workspace-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/graph-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/timeline-view/index.test.tsx",
-  "packages/entrypoints/ui/test/views/agents-view/index.test.tsx",
-  "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx",
-  "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx",
-  "packages/entrypoints/ui/src/views/accounts-view/index.tsx",
+  "packages/entrypoints/console/test/live-dom/index.ts",
+  "packages/entrypoints/console/test/views/index.test.tsx",
+  "packages/entrypoints/console/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/console/test/components/bearer-field/index.test.tsx",
+  "packages/entrypoints/console/test/views/logs-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/roadmap-document-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/graph-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/timeline-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/agents-view/index.test.tsx",
+  "packages/entrypoints/console/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/entrypoints/console/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/console/src/views/accounts-view/index.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2583,10 +2615,10 @@ const P89_1B_WRITE_SET = [
  * each row's own buttons.
  */
 const P89_4_WRITE_SET = [
-  "packages/entrypoints/ui/src/components/edit-roadmap-dialog/index.tsx",
-  "packages/entrypoints/ui/src/views/accounts-view/index.tsx",
-  "packages/entrypoints/ui/test/components/edit-roadmap-dialog/index.test.tsx",
-  "packages/entrypoints/ui/test/views/accounts-view/index.test.tsx",
+  "packages/entrypoints/console/src/components/edit-roadmap-dialog/index.tsx",
+  "packages/entrypoints/console/src/views/accounts-view/index.tsx",
+  "packages/entrypoints/console/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/console/test/views/accounts-view/index.test.tsx",
   "scripts/check-architecture.mjs",
 ];
 
@@ -2793,6 +2825,74 @@ const P8T_G6_WRITE_SET = [
 ];
 
 /**
+ * P8-T G7: naming, dedup, and the accounts→ledger demotion.
+ *
+ * Four packages take the names the owner's ruling gives them —
+ * `api-contracts→protocol`, `adapters→providers`, `ui→console`,
+ * `server→gateway` — and the adapters rename flattens its own stutter at birth
+ * (`src/providers/<p>/` inside a package now called `providers` would be the
+ * doubled segment the naming law forbids). `daemon` keeps its name: the
+ * measurement showed it supervises the process around the durability plane and
+ * does not execute plans, so `worker` would make the name lie.
+ *
+ * The 148 moved paths are not listed here. They are declared where they were
+ * always declared, rewritten from old prefix to new, because a rename moves a
+ * declaration with its file. The four old prefixes are retired below so they
+ * cannot resurrect; `G1_MOVE_MAP` stays frozen, being G1's record and not G7's.
+ *
+ * The dedup half is D1-D6: two new capability modules in `contracts` for the
+ * exit codes and the token ceiling that three packages each declared, the wire
+ * shapes the gateway and console had restated by hand replaced by the protocol's
+ * own, the ledger's hand-kept integrity union replaced by an import, and two
+ * renames that kill name collisions the topology forces to stay separate.
+ *
+ * The demotion rides here per the roadmap: `@acp/ledger` was the only
+ * dependency edge in the repository with zero production consumers, and it
+ * moves to devDependencies in the manifest, in `P1B_DEPENDENCY_LAW`, in the
+ * import law, and in the project references — together, or not at all.
+ */
+const P8T_G7_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.mjs",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "pnpm-workspace.yaml",
+  "pnpm-lock.yaml",
+  "eslint.config.mjs",
+  "README.md",
+  "docs/operations/account-switch.md",
+  "docs/operations/backup-restore.md",
+  "docs/operations/runbook.md",
+  "docs/operations/update-rollback.md",
+  "packages/domains/observation/README.md",
+  "packages/entrypoints/cli/package.json",
+  "packages/entrypoints/cli/README.md",
+  "packages/entrypoints/cli/tsconfig.json",
+  "packages/entrypoints/cli/test/tsconfig.json",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/format/index.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/domains/accounts/package.json",
+  "packages/domains/accounts/README.md",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/src/quota/index.ts",
+  "packages/domains/accounts/test/quota/index.test.ts",
+  "packages/domains/accounts/tsconfig.json",
+  "packages/persistence/ledger/package.json",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/tsconfig.json",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/entrypoints/daemon/src/bin/acp-daemon/index.ts",
+  "packages/domains/observation/src/baseline/index.ts",
+  "packages/domains/observation/src/index.ts",
+  "packages/kernel/contracts/src/schemas/exit-codes/index.ts",
+  "packages/kernel/contracts/src/schemas/usage-limits/index.ts",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -2871,7 +2971,7 @@ const P5N_C2_WRITE_SET = [
  * tree typechecks with `noEmit`, so it produces no build output to ignore.
  */
 const P5N_C3_WRITE_SET = [
-  "packages/kernel/api-contracts/test/tsconfig.json",
+  "packages/kernel/protocol/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2899,7 +2999,7 @@ const P5N_C4_WRITE_SET = [
  * As with C1-C4 the relocated source paths are not listed here — they are
  * carried by `P1_WRITE_SET` and `P3D_WRITE_SET`, rewritten 1:1 — so this array
  * declares only the test tree's own `tsconfig.json` and the config files the
- * cohort edits. This cohort additionally edits `packages/entrypoints/server/tsconfig.json`:
+ * cohort edits. This cohort additionally edits `packages/entrypoints/gateway/tsconfig.json`:
  * the DT's binding deep-alias adjudication moves the
  * `@acp/cli/observation-rows` half of the P3D alias update here rather than to
  * the server cohort, so every commit keeps the server's typecheck green. No
@@ -2908,7 +3008,7 @@ const P5N_C4_WRITE_SET = [
  */
 const P5N_C5_WRITE_SET = [
   "packages/entrypoints/cli/test/tsconfig.json",
-  "packages/entrypoints/server/tsconfig.json",
+  "packages/entrypoints/gateway/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2921,7 +3021,7 @@ const P5N_C5_WRITE_SET = [
  * the fence itself. Enumerated by the C6 brief, item 8.
  */
 const P5N_C6_WRITE_SET = [
-  "packages/edges/adapters/test/tsconfig.json",
+  "packages/edges/providers/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2965,14 +3065,14 @@ const P5N_C8_WRITE_SET = [
  * carried by P1B_SHARED_WRITE_SET, P1_WRITE_SET and P3D_WRITE_SET, rewritten
  * 1:1. This array declares the test tree's own tsconfig.json, the one admitted
  * index.html line, the config files, and — per adjudication C9-F —
- * packages/entrypoints/server/tsconfig.json, whose @acp/ui/row-model declaration alias is
- * pinned by equality against SERVER_TS_ALIASES and so must move in the same
+ * packages/entrypoints/gateway/tsconfig.json, whose @acp/console/row-model declaration alias is
+ * pinned by equality against GATEWAY_TS_ALIASES and so must move in the same
  * change as the ui path it names.
  */
 const P5N_C9_WRITE_SET = [
-  "packages/entrypoints/ui/test/tsconfig.json",
-  "packages/entrypoints/ui/index.html",
-  "packages/entrypoints/server/tsconfig.json",
+  "packages/entrypoints/console/test/tsconfig.json",
+  "packages/entrypoints/console/index.html",
+  "packages/entrypoints/gateway/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -2982,12 +3082,12 @@ const P5N_C9_WRITE_SET = [
  * P5N cohort C10: server, the tenth and last tree normalized. The relocated
  * source paths are carried by P1_WRITE_SET and P3D_WRITE_SET, rewritten 1:1.
  * This array declares only the test tree's own tsconfig.json and the config
- * files the cohort edits. packages/entrypoints/server/tsconfig.json is deliberately
+ * files the cohort edits. packages/entrypoints/gateway/tsconfig.json is deliberately
  * absent — adjudication C: its aliases and references were already correct
  * once C5 and C9-F landed, and it is not touched here.
  */
 const P5N_C10_WRITE_SET = [
-  "packages/entrypoints/server/test/tsconfig.json",
+  "packages/entrypoints/gateway/test/tsconfig.json",
   "tsconfig.base.json",
   "vitest.config.ts",
   "scripts/check-architecture.mjs",
@@ -3090,6 +3190,7 @@ const WRITE_SET = [
   ...P8T_G1_WRITE_SET,
   ...P8T_G5_WRITE_SET,
   ...P8T_G6_WRITE_SET,
+  ...P8T_G7_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3469,7 +3570,7 @@ const AUTHORITY_LITERALS = {
     "no product adoption",
     "no partial cutover",
   ],
-  "packages/kernel/api-contracts/README.md": [
+  "packages/kernel/protocol/README.md": [
     "browser-safe",
     "P1B is not P1 completion",
     "no product adoption",
@@ -3586,7 +3687,7 @@ const EXPIRED_LITERALS = {
   // opened "This is P4A" and closed by saying the three descriptors "are not
   // exported yet". All three are exported now, so both sentences are false and
   // pinned absent.
-  "packages/edges/adapters/README.md": ["This is P4A", "are not exported yet"],
+  "packages/edges/providers/README.md": ["This is P4A", "are not exported yet"],
   // The P5A-only frame the accounts README carried until the router landed.
   // Both literals are lifted byte-exactly from the pre-edit file: the scope
   // section deferred quota estimation and the router to P5B/P5C as "not
@@ -3647,8 +3748,8 @@ function git(args) {
  * must agree, so adding one without the other fails the fence.
  */
 const PATH_SCOPED_LAWS = [
-  { law: "the browser package links no ledger and no database driver", scope: "packages/entrypoints/ui/**" },
-  { law: "the live-DOM evidence tools stay test-scope", scope: "packages/entrypoints/ui/src/**" },
+  { law: "the browser package links no ledger and no database driver", scope: "packages/entrypoints/console/**" },
+  { law: "the live-DOM evidence tools stay test-scope", scope: "packages/entrypoints/console/src/**" },
   { law: "the runtime domain's import purity", scope: "packages/domains/runtime/{src,test}/**" },
   { law: "the Restate edge's import purity", scope: "packages/edges/durability/{src,test}/**" },
   { law: "the Restate SDK is named by import in one package only", scope: "every tracked .ts/.tsx/.mjs/.js" },
@@ -3658,13 +3759,14 @@ const PATH_SCOPED_LAWS = [
   { law: "the packaged entry reads no environment", scope: "packages/entrypoints/daemon/src/bin/**" },
   { law: "observation collectors stay passive", scope: "packages/domains/observation/{src,test}/**" },
   { law: "the accounts domain reaches nothing", scope: "packages/domains/accounts/{src,test}/**" },
-  { law: "adapters keep one spawn authority and no network", scope: "packages/edges/adapters/{src,test}/**" },
-  { law: "providers stay pure", scope: "packages/edges/adapters/src/providers/**" },
-  { law: "the server names @acp/contracts nowhere in live code", scope: "packages/entrypoints/server/{src,test}/**" },
+  { law: "providers keep one spawn authority and no network", scope: "packages/edges/providers/{src,test}/**" },
+  { law: "providers stay pure", scope: "packages/edges/providers/src/{api-key,claude,codex,kimi,local}/**" },
+  { law: "the gateway names @acp/contracts nowhere in live code", scope: "packages/entrypoints/gateway/{src,test}/**" },
   { law: "the mirrored-topology law", scope: "TOPOLOGY_ACTIVE_TREES (activated trees)" },
   { law: "the public/internal classification", scope: "every package present in packages/" },
   { law: "no tracked path under a pre-G1' package prefix", scope: "packages/** (the eleven retired prefixes)" },
   { law: "every package sits at packages/<stratum>/<name>/", scope: "packages/**" },
+  { law: "cross-package name collisions are unified or adjudicated", scope: "packages/*/*/src/**" },
 ];
 
 /**
@@ -4098,7 +4200,12 @@ if (rootManifest !== null && rootManifest.includes("onlyBuiltDependencies")) {
 
 // --- 10. the ledger depends on exactly what it was authorized to ----------
 
-const LEDGER_DEPENDENCIES = ["@acp/contracts", "better-sqlite3"];
+// P8-T G7 D4 adds `@acp/protocol`: the integrity vocabulary is the wire
+// contract's to own, and the ledger imports the type rather than restating the
+// union it had been keeping manually in step. A new persistence→kernel edge,
+// declared everywhere it has to be — the manifest, here, the lockfile and the
+// project reference — so the cold build sees it too.
+const LEDGER_DEPENDENCIES = ["@acp/contracts", "@acp/protocol", "better-sqlite3"];
 const LEDGER_DEV_DEPENDENCIES = ["@types/better-sqlite3", "vitest"];
 
 const ledgerManifestText = readIfPresent("packages/persistence/ledger/package.json");
@@ -4301,7 +4408,7 @@ if (tracked.status === 0) {
 // file, which is the whole point of pinning the foundation first.
 const P1B_DEPENDENCY_LAW = [
   {
-    manifest: "packages/kernel/api-contracts/package.json",
+    manifest: "packages/kernel/protocol/package.json",
     dependencies: ["@acp/contracts", "zod"],
     devDependencies: ["vitest"],
     // The observation contract is the package the browser links. It may never
@@ -4310,12 +4417,12 @@ const P1B_DEPENDENCY_LAW = [
   },
   {
     manifest: "packages/entrypoints/cli/package.json",
-    dependencies: ["@acp/api-contracts", "@acp/ledger"],
+    dependencies: ["@acp/protocol", "@acp/ledger"],
     devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
   {
-    manifest: "packages/entrypoints/server/package.json",
+    manifest: "packages/entrypoints/gateway/package.json",
     // P8-8A: `@acp/observation` joins the surface so the initiative plane can
     // fold token rollups. The direction is the lawful one — the server reads
     // the observation plane's pure folds; nothing in observation knows a
@@ -4327,12 +4434,12 @@ const P1B_DEPENDENCY_LAW = [
     // domain, and nothing in accounts names a server, transitively or
     // otherwise. Five declaration sites, all in this packet's write-set: the
     // manifest, this law, the lockfile, and both project references.
-    dependencies: ["@acp/accounts", "@acp/api-contracts", "@acp/ledger", "@acp/observation", "fastify"],
+    dependencies: ["@acp/accounts", "@acp/protocol", "@acp/ledger", "@acp/observation", "fastify"],
     devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
   {
-    manifest: "packages/entrypoints/ui/package.json",
+    manifest: "packages/entrypoints/console/package.json",
     // P8-8B adds exactly two runtime dependencies, each with a use site in
     // this packet: `@tanstack/react-query` (the cache the app root owns) and
     // `@radix-ui/react-navigation-menu` (the shell's primary navigation).
@@ -4350,7 +4457,7 @@ const P1B_DEPENDENCY_LAW = [
     // canvas (C6), mounted behind a client-only seam. `d3-*` and `zustand`
     // are transitive (its own graph), not a second manifest entry.
     dependencies: [
-      "@acp/api-contracts",
+      "@acp/protocol",
       "@radix-ui/react-dialog",
       "@radix-ui/react-dropdown-menu",
       "@radix-ui/react-navigation-menu",
@@ -4405,32 +4512,36 @@ const P1B_DEPENDENCY_LAW = [
   },
   {
     manifest: "packages/domains/accounts/package.json",
-    // The ledger is a read-only dependency: P5D reads quota observations from
-    // the event log, and the `.append(` scan below asserts that no production
-    // source in the package ever writes one. `@acp/runtime` is forbidden by
-    // name because the dependency direction runs the other way — runtime
-    // consumes accounts in P6, never the reverse — and a cycle is far easier to
-    // refuse here than to unpick later.
-    dependencies: ["@acp/contracts", "@acp/ledger"],
-    devDependencies: ["vitest"],
+    // The ledger is a **test-only** dependency since P8-T G7. It was declared a
+    // production dependency for the read-only reason the prose used to give
+    // here — P5D reads quota observations from the event log — but the reading
+    // moved to the caller long ago and the measurement found what was left:
+    // zero `@acp/ledger` specifiers under `src/`, one consumer in
+    // `test/pilots/index.test.ts`, and the only such edge in the repository.
+    // The `.append(` scan below still asserts no production source writes one.
+    // `@acp/runtime` is forbidden by name because the dependency direction runs
+    // the other way — runtime consumes accounts in P6, never the reverse — and
+    // a cycle is far easier to refuse here than to unpick later.
+    dependencies: ["@acp/contracts"],
+    devDependencies: ["@acp/ledger", "vitest"],
     forbidden: [
       "@acp/runtime",
       "@acp/daemon",
-      "@acp/adapters",
-      "@acp/api-contracts",
+      "@acp/providers",
+      "@acp/protocol",
       "@restatedev/restate-sdk",
       "better-sqlite3",
       "node:sqlite",
     ],
   },
   {
-    manifest: "packages/edges/adapters/package.json",
+    manifest: "packages/edges/providers/package.json",
     // The adapters are pure producers of normalized events. They never open,
     // append to or even name a ledger, which is what keeps the provider
     // boundary from acquiring an authority it has no business holding.
     dependencies: ["@acp/contracts"],
     devDependencies: ["vitest"],
-    forbidden: ["@acp/ledger", "better-sqlite3", "node:sqlite", "@acp/api-contracts"],
+    forbidden: ["@acp/ledger", "better-sqlite3", "node:sqlite", "@acp/protocol"],
   },
 ];
 
@@ -4493,7 +4604,7 @@ notes.push(P1B_DEPENDENCY_LAW.length + " package dependency surfaces are exact")
 // The manifest check above is necessary but not sufficient: an import can name
 // a package the manifest does not declare, and pnpm's node_modules layout would
 // still resolve it in some configurations. The source is checked directly.
-const UI_FORBIDDEN_IMPORTS = [
+const CONSOLE_FORBIDDEN_IMPORTS = [
   "@acp/ledger",
   "better-sqlite3",
   "node:sqlite",
@@ -4502,18 +4613,18 @@ const UI_FORBIDDEN_IMPORTS = [
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
-  const uiFiles = present.filter((relativePath) => inPackage(relativePath, "ui", PACKAGE_STRATA));
+  const uiFiles = present.filter((relativePath) => inPackage(relativePath, "console", PACKAGE_STRATA));
   requireScope("the browser package links no ledger and no database driver", uiFiles.length);
   for (const relativePath of uiFiles) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
-    for (const name of UI_FORBIDDEN_IMPORTS) {
+    for (const name of CONSOLE_FORBIDDEN_IMPORTS) {
       if (content.includes(name)) {
         fail(
           relativePath +
             " references " +
             name +
-            "; the browser package may depend on @acp/api-contracts only",
+            "; the browser package may depend on @acp/protocol only",
         );
       }
     }
@@ -4531,7 +4642,7 @@ if (tracked.status === 0) {
   // test-scope by convention — nothing stops a `src/` module importing one and
   // pulling a DOM implementation and an accessibility engine into the bundle.
   // The test tree is deliberately not scanned: using them there is the point.
-  const uiSourceFiles = uiFiles.filter((relativePath) => inArea(relativePath, "ui", "src", PACKAGE_STRATA));
+  const uiSourceFiles = uiFiles.filter((relativePath) => inArea(relativePath, "console", "src", PACKAGE_STRATA));
   requireScope("the live-DOM evidence tools stay test-scope", uiSourceFiles.length);
   for (const relativePath of uiSourceFiles) {
     const content = readIfPresent(relativePath);
@@ -5022,6 +5133,133 @@ if (tracked.status === 0) {
   }
 }
 
+// --- the duplication gate (P8-T G7) -----------------------------------------
+//
+// The owner's DRY ruling, made mechanical: one authority per reusable concept.
+// Two packages exporting the same name is either a concept with two homes — the
+// thing the ruling forbids — or two unrelated concepts that happen to share a
+// word. The gate cannot tell those apart, so it refuses both and makes the
+// second kind say so out loud, by name, in the register below.
+//
+// **C4 (adjudicated): the register holds exactly what the scan can see, and a
+// stale entry fails.** An adjudication that outlived its collision is
+// documentation pretending to be a law, and documentation does not fail a
+// build. Both directions are checked: a live collision with no entry fails, and
+// an entry with no live collision fails just as loudly.
+//
+// What the scan measured before G7, and what became of it:
+//   • EXIT_OK / EXIT_USAGE  (cli, daemon, gateway)      → unified, D1
+//   • TOKENS_USED_MAX       (accounts, observation, providers) → unified, D2
+//   • AccountActionRequest / AccountActionInput          → unified on the
+//     protocol's own shape, D3; the gateway's unrelated executor input renamed
+//     to `AccountActionExecution`
+//   • IntegrityProblemKind  (ledger vs protocol)         → unified, D4
+//   • TokenObservation      (accounts vs runtime)        → NOT unified: the
+//     shapes are topology-forced apart. Accounts' narrow snapshot took its own
+//     domain's word, `QuotaObservation`, D6 — the name was the hazard, not the
+//     shape.
+//
+// Measured-and-cleared classes a *name* scan cannot see, recorded so a later
+// reader does not re-litigate them: the four structurally identical error
+// classes (shared idiom, but each belongs to its bounded context and carries its
+// own code union — a base class would couple four packages for four lines);
+// `canonicalJsonStringify` vs `canonicalize` (different algorithms, resemblance
+// only in vocabulary); the two idempotency-key builders (a deliberate,
+// documented split); `SafeServerHandle`/`ServerHandle` (already one authority);
+// and the cross-package port restatements 7517/5178 (topology-forced — a vite
+// config cannot import a workspace package — and being able to prove a
+// collision is the whole point of pinning them).
+const DUPLICATION_ADJUDICATED = [
+  {
+    name: "refuse",
+    packages: [
+      "packages/domains/accounts",
+      "packages/domains/observation",
+      "packages/entrypoints/daemon",
+    ],
+    why: "three domain-specific refusal builders returning three different result types; incidental resemblance, the ruling's own exclusion case",
+  },
+  {
+    name: "Resource",
+    packages: ["packages/entrypoints/console", "packages/entrypoints/daemon"],
+    why: "unrelated concepts — a browser fetch resource and a daemon unwind handle; neither package imports the other",
+  },
+];
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const sources = present.filter((relativePath) => /\/src\/.*\.tsx?$/.test(relativePath));
+  const declaration = /^export\s+(?:declare\s+)?(?:const|let|function|interface|type|class|enum)\s+([A-Za-z0-9_$]+)/;
+  const homes = new Map();
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const pkg = relativePath.split("/").slice(0, 3).join("/");
+    for (const line of content.split("\n")) {
+      const match = declaration.exec(line);
+      if (match === null) continue;
+      const name = match[1] ?? "";
+      if (!homes.has(name)) homes.set(name, new Set());
+      homes.get(name).add(pkg);
+    }
+  }
+
+  const live = new Map();
+  for (const [name, pkgs] of homes) {
+    if (pkgs.size > 1) live.set(name, [...pkgs].sort());
+  }
+  const registered = new Map(DUPLICATION_ADJUDICATED.map((entry) => [entry.name, entry]));
+
+  for (const [name, pkgs] of [...live].sort()) {
+    const entry = registered.get(name);
+    if (entry === undefined) {
+      fail(
+        name +
+          " is exported by " +
+          pkgs.length +
+          " packages (" +
+          pkgs.join(", ") +
+          "); unify it or register it in DUPLICATION_ADJUDICATED with the reason",
+      );
+      continue;
+    }
+    const declared = [...entry.packages].sort().join(", ");
+    if (declared !== pkgs.join(", ")) {
+      fail(
+        "DUPLICATION_ADJUDICATED names " +
+          name +
+          " in [" +
+          declared +
+          "] but it is exported by [" +
+          pkgs.join(", ") +
+          "]",
+      );
+    }
+  }
+  // The other direction, which is what keeps the register from rotting.
+  for (const entry of DUPLICATION_ADJUDICATED) {
+    if (!live.has(entry.name)) {
+      fail(
+        "DUPLICATION_ADJUDICATED registers " +
+          entry.name +
+          ", which is no longer a live collision; a stale adjudication is documentation, not a law",
+      );
+    }
+  }
+
+  requireScope("cross-package name collisions are unified or adjudicated", sources.length);
+  notes.push(
+    live.size +
+      " cross-package name collision(s), all adjudicated (" +
+      DUPLICATION_ADJUDICATED.map((entry) => entry.name).join(", ") +
+      "); " +
+      homes.size +
+      " exported names scanned across " +
+      sources.length +
+      " sources",
+  );
+}
+
 // --- the path-shaped register checks itself (P8-T G0, L3) -------------------
 //
 // Read from this file's own location rather than through REPO_ROOT: under a
@@ -5125,7 +5363,7 @@ const HTTP2_ALLOWED_FILE = "packages/edges/durability/src/drivers/restate-endpoi
 const SPAWN_ALLOWED_FILES = new Map([
   ["packages/edges/durability/src/server-handle/index.ts", "the pinned Restate server"],
   ["packages/entrypoints/daemon/src/identity-probe/index.ts", "reading process identity via /bin/ps"],
-  ["packages/edges/adapters/src/process/spawn/index.ts", "the single provider spawn authority"],
+  ["packages/edges/providers/src/process/spawn/index.ts", "the single provider spawn authority"],
 ]);
 
 // Anything that could listen, connect or fan out. None of these belongs in a
@@ -6318,9 +6556,25 @@ if (observationIndex === null) {
 // The accounts package reads the one document in this system that legitimately
 // names where credentials live. Every law it claims about that is asserted here
 // rather than described in its README, because a README cannot fail a build.
-const ACCOUNTS_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/ledger"]);
+//
+// P8-T G7 demotes `@acp/ledger` to a devDependency and this is where the
+// demotion becomes real. Measured before the change: zero `"@acp/ledger"`
+// import specifiers anywhere under `src/`, and exactly one consumer in the
+// whole package — `test/pilots/index.test.ts`, which opens a real ledger for a
+// substantive pilot. It was the only dependency edge in the repository with no
+// production consumer at all. Moving it in the manifest alone would have been
+// theatre: the import scan is what makes "test-only" a thing the fence can
+// refuse, so the name moves from the allowed set to the test-only set and a
+// production source that reached for a ledger now fails by name.
+const ACCOUNTS_ALLOWED_PACKAGES = new Set(["@acp/contracts"]);
 const ACCOUNTS_ALLOWED_BUILTINS = new Set(["node:fs", "node:path"]);
-const ACCOUNTS_TEST_ONLY_IMPORTS = new Set(["vitest", "node:os", "node:crypto", "node:url"]);
+const ACCOUNTS_TEST_ONLY_IMPORTS = new Set([
+  "@acp/ledger",
+  "vitest",
+  "node:os",
+  "node:crypto",
+  "node:url",
+]);
 
 // Capability the package must not have. It reads a file and computes; it
 // cannot spawn, signal or reach out.
@@ -6537,14 +6791,14 @@ if (policyDocument !== null) {
 const TOPOLOGY_ACTIVE_TREES = [
   "contracts",
   "ledger",
-  "api-contracts",
+  "protocol",
   "observation",
   "cli",
-  "adapters",
+  "providers",
   "daemon",
   "runtime",
-  "ui",
-  "server",
+  "console",
+  "gateway",
   "accounts",
   // P8-T G5: the new package's tree is folder/index by construction — it was
   // built from modules that already satisfied this law inside runtime — so it
@@ -6725,11 +6979,11 @@ if (tracked.status === 0) {
 // waiver. A package that *does* have a scan may never be added to it.
 const TEST_TREE_SCANNED_PREFIXES = [
   "packages/domains/observation/test/",
-  "packages/edges/adapters/test/",
+  "packages/edges/providers/test/",
   "packages/entrypoints/daemon/test/",
   "packages/domains/runtime/test/",
-  "packages/entrypoints/ui/test/",
-  "packages/entrypoints/server/test/",
+  "packages/entrypoints/console/test/",
+  "packages/entrypoints/gateway/test/",
   "packages/domains/accounts/test/",
   // P8-T G5: the two drilled suites moved here with the edge, so the scan that
   // read them has to follow. Leaving this out is the exact failure this list
@@ -6745,7 +6999,7 @@ const TEST_TREE_SCANNED_PREFIXES = [
  * visible: an entry here is a package whose sources the fence never inspected,
  * not a package whose inspection was dropped.
  */
-const TEST_TREE_NO_PACKAGE_SCAN = ["contracts", "ledger", "api-contracts", "cli"];
+const TEST_TREE_NO_PACKAGE_SCAN = ["contracts", "ledger", "protocol", "cli"];
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -7005,7 +7259,7 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "QuotaRefused",
   "ResetCalendar",
   "ResetOutcome",
-  "TokenObservation",
+  "QuotaObservation",
   "CONFIDENCE_ORDER",
   "OBSERVATIONS_MAX",
   "QUOTA_REFUSALS",
@@ -7157,7 +7411,9 @@ if (accountsIndex === null) {
   // nothing can falsify is not a claim: this is the pre-split exported-name set,
   // written out as a literal and asserted by equality in both directions.
   //
-  // 82 names. The pre-split file carried 126 exported *declaration lines*, which
+  // 85 names: G6's 82 plus the three G7 D1/D2 unifications (`EXIT_OK`,
+  // `EXIT_USAGE`, `TOKENS_USED_MAX`). The G6 file carried 126 exported
+  // *declaration lines*, which
   // is the same surface counted differently — 44 of the names are the zod
   // `const X` / `type X` pair declared on two lines, and 82 + 44 = 126. The set
   // is what governs; the line count is an artifact of the idiom.
@@ -7190,6 +7446,8 @@ if (accountsIndex === null) {
   "EVENT_PAYLOAD_MAX_BYTES",
   "EXCEPTIONAL_STATES",
   "EXECUTION_REFUSALS",
+  "EXIT_OK",
+  "EXIT_USAGE",
   "ExceptionalState",
   "ExecutionEvent",
   "ExecutionRefusal",
@@ -7223,6 +7481,7 @@ if (accountsIndex === null) {
   "RoadmapVersion",
   "RoadmapVersionKind",
   "TERMINAL_STATES",
+  "TOKENS_USED_MAX",
   "TRANSPORT_KINDS",
   "TaskClassification",
   "TaskEnvelope",
@@ -7311,7 +7570,7 @@ const vitestConfig = readIfPresent("vitest.config.ts");
 if (vitestConfig !== null) {
   const aliasTargets = [
     ["@acp/cli/observation-rows", "packages/entrypoints/cli/src/observation/index.ts"],
-    ["@acp/ui/row-model", "packages/entrypoints/ui/src/api/client/index.ts"],
+    ["@acp/console/row-model", "packages/entrypoints/console/src/api/client/index.ts"],
   ];
   for (const [specifier, target] of aliasTargets) {
     if (!vitestConfig.includes(target)) {
@@ -7323,7 +7582,7 @@ if (vitestConfig !== null) {
     for (const relativePath of present) {
       if (relativePath === "vitest.config.ts") continue;
       if (relativePath === "scripts/check-architecture.mjs") continue;
-      if (relativePath === "packages/entrypoints/server/test/parity/index.test.ts") continue;
+      if (relativePath === "packages/entrypoints/gateway/test/parity/index.test.ts") continue;
       // The TypeScript counterpart of the same two aliases. `tsc` and
       // type-aware eslint never read `vitest.config.ts`, so without this the
       // parity test resolves at run time and fails both other gates. A
@@ -7331,11 +7590,11 @@ if (vitestConfig !== null) {
       // so the law this check protects — that no shipped module resolves these
       // specifiers — is untouched. The declaration is pinned by equality
       // immediately below rather than merely excused here.
-      if (relativePath === "packages/entrypoints/server/tsconfig.json") continue;
+      if (relativePath === "packages/entrypoints/gateway/tsconfig.json") continue;
       // The test tree's own tsconfig carries the same two aliases,
       // depth-corrected, for the same reason and under the same rationale —
       // adjudication A (C10). A tsconfig `paths` declaration is not an import.
-      if (relativePath === "packages/entrypoints/server/test/tsconfig.json") continue;
+      if (relativePath === "packages/entrypoints/gateway/test/tsconfig.json") continue;
       const content = readIfPresent(relativePath);
       if (content === null) continue;
       for (const [specifier] of aliasTargets) {
@@ -7363,9 +7622,9 @@ if (vitestConfig !== null) {
 // foreign files into this project's `rootDir` (TS6059/TS6307) and makes `tsc`
 // emit `.js`/`.d.ts` next to the CLI and UI sources — an observed failure
 // while this was built, not a hypothetical.
-const SERVER_TS_ALIASES = {
+const GATEWAY_TS_ALIASES = {
   "@acp/cli/observation-rows": "../cli/dist/observation/index.d.ts",
-  "@acp/ui/row-model": "../ui/dist/app/api/client/index.d.ts",
+  "@acp/console/row-model": "../console/dist/app/api/client/index.d.ts",
 };
 // P8-8A adds `../../domains/observation`: the initiative plane folds token
 // rollups, and `tsc --build` resolves a workspace package through project
@@ -7378,40 +7637,40 @@ const SERVER_TS_ALIASES = {
 // reference is still one `../` away. That four changed and two did not is the
 // shape a stratified topology produces, and pinning them by equality is what
 // makes the difference visible rather than assumed.
-const SERVER_TS_REFERENCES = [
+const GATEWAY_TS_REFERENCES = [
   "../../domains/accounts",
   "../../domains/observation",
-  "../../kernel/api-contracts",
+  "../../kernel/protocol",
   "../../persistence/ledger",
   "../cli",
-  "../ui",
+  "../console",
 ];
-const serverTsconfigRaw = readIfPresent("packages/entrypoints/server/tsconfig.json");
+const serverTsconfigRaw = readIfPresent("packages/entrypoints/gateway/tsconfig.json");
 if (serverTsconfigRaw !== null) {
   let parsed = null;
   try {
     parsed = JSON.parse(serverTsconfigRaw);
   } catch {
-    fail("packages/entrypoints/server/tsconfig.json is not parseable JSON");
+    fail("packages/entrypoints/gateway/tsconfig.json is not parseable JSON");
   }
   if (parsed !== null) {
     const declared = parsed.compilerOptions?.paths ?? {};
-    const expectedAliases = Object.keys(SERVER_TS_ALIASES).sort().join(", ");
+    const expectedAliases = Object.keys(GATEWAY_TS_ALIASES).sort().join(", ");
     const actualAliases = Object.keys(declared).sort().join(", ");
     if (actualAliases !== expectedAliases) {
       fail(
-        "packages/entrypoints/server/tsconfig.json paths are not exactly [" +
+        "packages/entrypoints/gateway/tsconfig.json paths are not exactly [" +
           expectedAliases +
           "]: found [" +
           actualAliases +
           "]",
       );
     }
-    for (const [specifier, target] of Object.entries(SERVER_TS_ALIASES)) {
+    for (const [specifier, target] of Object.entries(GATEWAY_TS_ALIASES)) {
       const mapped = Array.isArray(declared[specifier]) ? declared[specifier] : [];
       if (mapped.length !== 1 || mapped[0] !== target) {
         fail(
-          "packages/entrypoints/server/tsconfig.json maps " +
+          "packages/entrypoints/gateway/tsconfig.json maps " +
             specifier +
             " to " +
             JSON.stringify(mapped) +
@@ -7421,7 +7680,7 @@ if (serverTsconfigRaw !== null) {
         );
       } else if (!target.endsWith(".d.ts")) {
         fail(
-          "packages/entrypoints/server/tsconfig.json aliases " + specifier + " to a source, not a declaration",
+          "packages/entrypoints/gateway/tsconfig.json aliases " + specifier + " to a source, not a declaration",
         );
       }
     }
@@ -7430,10 +7689,10 @@ if (serverTsconfigRaw !== null) {
       .map((entry) => (entry === null || entry === undefined ? "" : entry.path))
       .sort()
       .join(", ");
-    if (actualReferences !== SERVER_TS_REFERENCES.join(", ")) {
+    if (actualReferences !== GATEWAY_TS_REFERENCES.join(", ")) {
       fail(
-        "packages/entrypoints/server/tsconfig.json references are not exactly [" +
-          SERVER_TS_REFERENCES.join(", ") +
+        "packages/entrypoints/gateway/tsconfig.json references are not exactly [" +
+          GATEWAY_TS_REFERENCES.join(", ") +
           "]: found [" +
           actualReferences +
           "]",
@@ -7448,14 +7707,28 @@ if (serverTsconfigRaw !== null) {
 // ---------------------------------------------------------------------------
 
 /** What an adapter source may import. Nothing here can reach a ledger. */
-const ADAPTERS_ALLOWED_PACKAGES = new Set(["@acp/contracts"]);
-const ADAPTERS_ALLOWED_BUILTINS = new Set([
+/**
+ * The five provider directories, named once (P8-T G7, C5).
+ *
+ * G7 renamed the package `adapters` → `providers` and flattened the stutter at
+ * birth: what was `src/providers/<p>/` inside a package called `adapters` is
+ * now `src/<p>/` inside a package called `providers`, because
+ * `providers/src/providers/` is exactly the doubled segment the naming law
+ * forbids. The purity law below used to select by that nested segment; with the
+ * segment gone it selects by these five names instead, so a sixth provider must
+ * be named here to be governed — which is the point, and is why the law's own
+ * count is asserted rather than trusted.
+ */
+const PROVIDER_DIRECTORIES = ["api-key", "claude", "codex", "kimi", "local"];
+
+const PROVIDERS_ALLOWED_PACKAGES = new Set(["@acp/contracts"]);
+const PROVIDERS_ALLOWED_BUILTINS = new Set([
   "node:fs",
   "node:path",
   "node:string_decoder",
 ]);
-const ADAPTERS_TEST_ONLY_IMPORTS = new Set(["vitest", "node:crypto", "node:os", "node:url"]);
-const ADAPTERS_FORBIDDEN_BUILTINS = [
+const PROVIDERS_TEST_ONLY_IMPORTS = new Set(["vitest", "node:crypto", "node:os", "node:url"]);
+const PROVIDERS_FORBIDDEN_BUILTINS = [
   "node:net",
   "node:http",
   "node:https",
@@ -7467,8 +7740,8 @@ const ADAPTERS_FORBIDDEN_BUILTINS = [
 ];
 
 /** Exactly one file spawns, and exactly one file calls it. */
-const ADAPTERS_SPAWN_SITE = "packages/edges/adapters/src/process/spawn/index.ts";
-const ADAPTERS_SPAWN_CALLER = "packages/edges/adapters/src/session/index.ts";
+const PROVIDERS_SPAWN_SITE = "packages/edges/providers/src/process/spawn/index.ts";
+const PROVIDERS_SPAWN_CALLER = "packages/edges/providers/src/session/index.ts";
 
 /**
  * The closed public surface, pinned by equality in both directions.
@@ -7477,7 +7750,7 @@ const ADAPTERS_SPAWN_CALLER = "packages/edges/adapters/src/session/index.ts";
  * scaffolding, imported by relative path. A fake on the public surface would
  * eventually be mistaken for evidence.
  */
-const ADAPTERS_PUBLIC_EXPORTS = [
+const PROVIDERS_PUBLIC_EXPORTS = [
   "AdapterErrorCode",
   "ADAPTER_ERROR_CODES",
   "AdapterError",
@@ -7577,7 +7850,7 @@ const ADAPTERS_PUBLIC_EXPORTS = [
 ];
 
 /** The environment allowlist, pinned so a fourth variable cannot appear. */
-const ADAPTERS_ENV_ALLOWLIST = {
+const PROVIDERS_ENV_ALLOWLIST = {
   claude: ["CLAUDE_CONFIG_DIR", "HOME", "LC_ALL", "PATH"],
   kimi: ["HOME", "KIMI_CODE_HOME", "LC_ALL", "PATH"],
   codex: ["CODEX_HOME", "HOME", "LC_ALL", "PATH"],
@@ -7588,7 +7861,7 @@ if (tracked.status === 0) {
   const declared = new Set(present);
   for (const relativePath of WRITE_SET) {
     if (
-      (inAnyArea(relativePath, "adapters", ["src", "test"], PACKAGE_STRATA)) &&
+      (inAnyArea(relativePath, "providers", ["src", "test"], PACKAGE_STRATA)) &&
       relativePath.endsWith(".ts")
     ) {
       declared.add(relativePath);
@@ -7597,7 +7870,7 @@ if (tracked.status === 0) {
   const sources = [...declared]
     .filter(
       (relativePath) =>
-        inAnyArea(relativePath, "adapters", ["src", "test"], PACKAGE_STRATA),
+        inAnyArea(relativePath, "providers", ["src", "test"], PACKAGE_STRATA),
     )
     .filter((relativePath) => relativePath.endsWith(".ts"))
     .sort();
@@ -7616,17 +7889,17 @@ if (tracked.status === 0) {
     while (match !== null) {
       const name = match[1] ?? "";
       const relative = name.startsWith("./") || name.startsWith("../");
-      const spawnHere = name === "node:child_process" && relativePath === ADAPTERS_SPAWN_SITE;
+      const spawnHere = name === "node:child_process" && relativePath === PROVIDERS_SPAWN_SITE;
       const allowed =
         relative ||
-        ADAPTERS_ALLOWED_PACKAGES.has(name) ||
-        ADAPTERS_ALLOWED_BUILTINS.has(name) ||
+        PROVIDERS_ALLOWED_PACKAGES.has(name) ||
+        PROVIDERS_ALLOWED_BUILTINS.has(name) ||
         spawnHere ||
-        (isTest && ADAPTERS_TEST_ONLY_IMPORTS.has(name));
+        (isTest && PROVIDERS_TEST_ONLY_IMPORTS.has(name));
       if (!allowed) {
         fail(relativePath + " imports " + name + ", which adapters may not use");
       }
-      if (ADAPTERS_FORBIDDEN_BUILTINS.includes(name)) {
+      if (PROVIDERS_FORBIDDEN_BUILTINS.includes(name)) {
         fail(relativePath + " imports " + name + "; adapters reach no network");
       }
       match = pattern.exec(content);
@@ -7641,13 +7914,13 @@ if (tracked.status === 0) {
     if (isTest) continue;
 
     // Exactly one spawner, and exactly one caller of it.
-    if (/from\s*["']node:child_process["']/.test(code) && relativePath !== ADAPTERS_SPAWN_SITE) {
-      fail(relativePath + " imports node:child_process; only " + ADAPTERS_SPAWN_SITE + " may");
+    if (/from\s*["']node:child_process["']/.test(code) && relativePath !== PROVIDERS_SPAWN_SITE) {
+      fail(relativePath + " imports node:child_process; only " + PROVIDERS_SPAWN_SITE + " may");
     }
     // The law is about *calling* the spawner, not naming its module: the index
     // re-exports `admitBinary` from it, which grants no ability to spawn.
-    if (code.includes("spawnAdmitted(") && relativePath !== ADAPTERS_SPAWN_CALLER && relativePath !== ADAPTERS_SPAWN_SITE) {
-      fail(relativePath + " calls the spawner; only " + ADAPTERS_SPAWN_CALLER + " may");
+    if (code.includes("spawnAdmitted(") && relativePath !== PROVIDERS_SPAWN_CALLER && relativePath !== PROVIDERS_SPAWN_SITE) {
+      fail(relativePath + " calls the spawner; only " + PROVIDERS_SPAWN_CALLER + " may");
     }
 
     // Provider modules are pure descriptors and parsers. Reaching into the
@@ -7655,7 +7928,7 @@ if (tracked.status === 0) {
     // makes a provider a participant in the boundary it is deliberately kept
     // outside of, and it is how three providers would end up with three
     // opinions about stopping a process.
-    if (inArea(relativePath, "adapters", "src/providers", PACKAGE_STRATA)) {
+    if (PROVIDER_DIRECTORIES.some((dir) => inArea(relativePath, "providers", "src/" + dir, PACKAGE_STRATA))) {
       providerFiles += 1;
       if (/from\s*["'][^"']*session\.js["']/.test(code)) {
         fail(relativePath + " imports the session controller; providers stay pure");
@@ -7665,7 +7938,7 @@ if (tracked.status === 0) {
       }
     }
 
-    if (relativePath === ADAPTERS_SPAWN_SITE) {
+    if (relativePath === PROVIDERS_SPAWN_SITE) {
       // `shell:` would hand argv to a shell; `...process.env` would inherit an
       // ambient environment the allowlist was built to replace; `maxBuffer` is
       // an exec-only option `spawn` ignores, so requiring it would enforce a
@@ -7680,12 +7953,12 @@ if (tracked.status === 0) {
           fail(relativePath + " omits " + required + "; spawn options are explicit, never default");
         }
       }
-    } else if (code.includes("process.env") && relativePath !== "packages/edges/adapters/src/config-root/index.ts") {
+    } else if (code.includes("process.env") && relativePath !== "packages/edges/providers/src/config-root/index.ts") {
       fail(relativePath + " reads process.env; only config-root/index.ts builds an environment");
     }
   }
 
-  requireScope("adapters keep one spawn authority and no network", checked);
+  requireScope("providers keep one spawn authority and no network", checked);
   requireScope("providers stay pure", providerFiles);
   {
     notes.push(
@@ -7694,13 +7967,13 @@ if (tracked.status === 0) {
   }
 }
 
-const adaptersIndex = readIfPresent("packages/edges/adapters/src/index.ts");
+const adaptersIndex = readIfPresent("packages/edges/providers/src/index.ts");
 if (adaptersIndex !== null) {
   if (/export\s*\*\s*from/.test(adaptersIndex)) {
-    fail("packages/edges/adapters/src/index.ts uses `export *`, which cannot stay closed");
+    fail("packages/edges/providers/src/index.ts uses `export *`, which cannot stay closed");
   }
   if (stripComments(adaptersIndex).includes("testing/fake-provider")) {
-    fail("packages/edges/adapters/src/index.ts exports the fake provider; it is not public surface");
+    fail("packages/edges/providers/src/index.ts exports the fake provider; it is not public surface");
   }
   const exported = new Set();
   for (const block of adaptersIndex.matchAll(/export\s*(?:type\s*)?\{([^}]*)\}/g)) {
@@ -7710,13 +7983,13 @@ if (adaptersIndex !== null) {
     }
   }
   for (const name of exported) {
-    if (!ADAPTERS_PUBLIC_EXPORTS.includes(name)) {
-      fail("packages/edges/adapters exports " + name + ", which is outside its closed surface");
+    if (!PROVIDERS_PUBLIC_EXPORTS.includes(name)) {
+      fail("packages/edges/providers exports " + name + ", which is outside its closed surface");
     }
   }
-  for (const name of ADAPTERS_PUBLIC_EXPORTS) {
+  for (const name of PROVIDERS_PUBLIC_EXPORTS) {
     if (!exported.has(name)) {
-      fail("packages/edges/adapters no longer exports the pinned name " + name);
+      fail("packages/edges/providers no longer exports the pinned name " + name);
     }
   }
   notes.push(exported.size + " adapter exports, pinned by equality");
@@ -7768,13 +8041,13 @@ const LOCAL_CLIENT_SHAPE = {
  */
 const OWNED_CLIENT_MODULES = [
   {
-    path: "packages/edges/adapters/src/providers/api-key/index.ts",
+    path: "packages/edges/providers/src/api-key/index.ts",
     shape: API_CLIENT_SHAPE,
     forbidden: ["ai", "@ai-sdk/", "@vercel/"],
     note: "the API client interface is credential-free by shape, pinned member by member",
   },
   {
-    path: "packages/edges/adapters/src/providers/local/index.ts",
+    path: "packages/edges/providers/src/local/index.ts",
     shape: LOCAL_CLIENT_SHAPE,
     forbidden: [
       "ai",
@@ -7844,12 +8117,12 @@ for (const owned of OWNED_CLIENT_MODULES) {
   notes.push(owned.note);
 }
 
-const adaptersConfigRoot = readIfPresent("packages/edges/adapters/src/config-root/index.ts");
+const adaptersConfigRoot = readIfPresent("packages/edges/providers/src/config-root/index.ts");
 if (adaptersConfigRoot !== null) {
-  for (const [provider, keys] of Object.entries(ADAPTERS_ENV_ALLOWLIST)) {
+  for (const [provider, keys] of Object.entries(PROVIDERS_ENV_ALLOWLIST)) {
     for (const key of keys) {
       if (!adaptersConfigRoot.includes(key)) {
-        fail("packages/edges/adapters/src/config-root/index.ts no longer names " + key + " for " + provider);
+        fail("packages/edges/providers/src/config-root/index.ts no longer names " + key + " for " + provider);
       }
     }
   }
@@ -7857,7 +8130,7 @@ if (adaptersConfigRoot !== null) {
   // every uppercase literal in the file: a refusal code is not an environment
   // variable, and a scan that cannot tell them apart is a scan that fails on
   // its own vocabulary.
-  const permitted = new Set(Object.values(ADAPTERS_ENV_ALLOWLIST).flat());
+  const permitted = new Set(Object.values(PROVIDERS_ENV_ALLOWLIST).flat());
   const baseBlock = adaptersConfigRoot.match(/BASE_ENV_KEYS[^=]*=\s*Object\.freeze\(\[([^\]]*)\]/);
   const providerBlock = adaptersConfigRoot.match(/PROVIDER_CONFIG_ENV[^=]*=\s*Object\.freeze\(\{([^}]*)\}/);
   const declaredKeys = [
@@ -7865,19 +8138,19 @@ if (adaptersConfigRoot !== null) {
     ...[...(providerBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]),
   ];
   if (declaredKeys.length === 0) {
-    fail("packages/edges/adapters/src/config-root/index.ts declares no environment allowlist");
+    fail("packages/edges/providers/src/config-root/index.ts declares no environment allowlist");
   }
   for (const key of declaredKeys) {
     if (key !== undefined && !permitted.has(key)) {
-      fail("packages/edges/adapters/src/config-root/index.ts names " + key + ", outside the env allowlist");
+      fail("packages/edges/providers/src/config-root/index.ts names " + key + ", outside the env allowlist");
     }
   }
   notes.push("the adapter environment allowlist is exactly four variables per provider");
 }
 
-// The server may not reach @acp/contracts. `packages/entrypoints/server/src/mappers/index.ts`
+// The server may not reach @acp/contracts. `packages/entrypoints/gateway/src/mappers/index.ts`
 // records that exclusion as a design decision, and the parity test honours it
-// by asking @acp/api-contracts for the privacy verdict through its named
+// by asking @acp/protocol for the privacy verdict through its named
 // helper instead. Enforced in all three forms the reach could take: a manifest
 // dependency, a tsconfig path, or an import in any server source. Prose may
 // name it — comments are stripped before matching — because the point is
@@ -7890,13 +8163,13 @@ if (adaptersConfigRoot !== null) {
 // dependency-injected identifier all reach the same package while sliding past
 // it. Naming the package anywhere in live code is the thing being forbidden,
 // so that is what is matched.
-const serverManifestRaw = readIfPresent("packages/entrypoints/server/package.json");
+const serverManifestRaw = readIfPresent("packages/entrypoints/gateway/package.json");
 if (serverManifestRaw !== null) {
   let manifest = null;
   try {
     manifest = JSON.parse(serverManifestRaw);
   } catch {
-    fail("packages/entrypoints/server/package.json is not parseable JSON");
+    fail("packages/entrypoints/gateway/package.json is not parseable JSON");
   }
   if (manifest !== null) {
     const declaredDependencies = {
@@ -7905,29 +8178,29 @@ if (serverManifestRaw !== null) {
       ...(manifest.peerDependencies ?? {}),
     };
     if (Object.hasOwn(declaredDependencies, "@acp/contracts")) {
-      fail("packages/entrypoints/server/package.json depends on @acp/contracts; that reach is excluded");
+      fail("packages/entrypoints/gateway/package.json depends on @acp/contracts; that reach is excluded");
     }
   }
 }
 if (serverTsconfigRaw !== null && serverTsconfigRaw.includes('"@acp/contracts"')) {
-  fail("packages/entrypoints/server/tsconfig.json maps @acp/contracts; that reach is excluded");
+  fail("packages/entrypoints/gateway/tsconfig.json maps @acp/contracts; that reach is excluded");
 }
 const serverSources = new Set(
   (tracked.status === 0 ? tracked.stdout.split("\n").map((line) => line.trim()) : []).filter(
     (relativePath) =>
-      (inAnyArea(relativePath, "server", ["src", "test"], PACKAGE_STRATA)) &&
+      (inAnyArea(relativePath, "gateway", ["src", "test"], PACKAGE_STRATA)) &&
       relativePath.endsWith(".ts"),
   ),
 );
 for (const relativePath of WRITE_SET) {
   if (
-    (inAnyArea(relativePath, "server", ["src", "test"], PACKAGE_STRATA)) &&
+    (inAnyArea(relativePath, "gateway", ["src", "test"], PACKAGE_STRATA)) &&
     relativePath.endsWith(".ts")
   ) {
     serverSources.add(relativePath);
   }
 }
-  requireScope("the server names @acp/contracts nowhere in live code", serverSources.size);
+  requireScope("the gateway names @acp/contracts nowhere in live code", serverSources.size);
 let serverSourcesChecked = 0;
 for (const relativePath of [...serverSources].sort()) {
   const content = readIfPresent(relativePath);
@@ -7937,7 +8210,7 @@ for (const relativePath of [...serverSources].sort()) {
     fail(
       relativePath +
         " names @acp/contracts in live code; that reach is excluded — use the" +
-        " @acp/api-contracts privacy helper instead",
+        " @acp/protocol privacy helper instead",
     );
   }
 }

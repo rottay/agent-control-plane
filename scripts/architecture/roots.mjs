@@ -42,9 +42,9 @@ export function stratumOf(name, strata) {
 /**
  * The prefix of one package's tree, with its trailing separator.
  *
- * The separator is not decoration: without it `packages/entrypoints/ui` also
- * matches `packages/entrypoints/ui-extras`, which is exactly the class of quiet
- * mis-scoping this module exists to end.
+ * The separator is not decoration: without it `packages/entrypoints/console`
+ * also matches `packages/entrypoints/console-extras`, which is exactly the
+ * class of quiet mis-scoping this module exists to end.
  *
  * An unclassified name throws rather than returning a prefix built from
  * `undefined`. A fence that cannot resolve a path must say so loudly; a prefix

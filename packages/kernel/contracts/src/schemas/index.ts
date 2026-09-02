@@ -24,6 +24,13 @@ export {
   utf8ByteLength,
 } from "./primitives/index.js";
 export {
+  EXIT_OK,
+  EXIT_USAGE,
+} from "./exit-codes/index.js";
+export {
+  TOKENS_USED_MAX,
+} from "./usage-limits/index.js";
+export {
   findCredentialViolations,
   findTranscriptViolations,
   serializedByteLength,

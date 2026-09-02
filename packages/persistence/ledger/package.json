@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@acp/contracts": "workspace:*",
+    "@acp/protocol": "workspace:*",
     "better-sqlite3": "catalog:"
   },
   "devDependencies": {

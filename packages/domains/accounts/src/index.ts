@@ -46,7 +46,7 @@ export type {
   QuotaRefused,
   ResetCalendar,
   ResetOutcome,
-  TokenObservation,
+  QuotaObservation,
 } from "./quota/index.js";
 export {
   CONFIDENCE_ORDER,

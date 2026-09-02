@@ -15,7 +15,7 @@ import {
   resetCalendar,
   weakerConfidence,
 } from "../../src/quota/index.js";
-import type { QuotaOutcome, QuotaRefused, ResetOutcome, TokenObservation } from "../../src/quota/index.js";
+import type { QuotaOutcome, QuotaRefused, ResetOutcome, QuotaObservation } from "../../src/quota/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 
@@ -70,7 +70,7 @@ function record(overrides: Overrides = {}): AccountRecord {
   return parsed.data;
 }
 
-function observed(tokensUsed: number, observedAt = NOW): TokenObservation {
+function observed(tokensUsed: number, observedAt = NOW): QuotaObservation {
   return { tokensUsed, observedAt };
 }
 
@@ -82,7 +82,7 @@ function refusal(outcome: QuotaOutcome | ResetOutcome): QuotaRefused {
 
 function estimate(
   overrides: Overrides = {},
-  observations: readonly TokenObservation[] = [observed(250)],
+  observations: readonly QuotaObservation[] = [observed(250)],
   limitKey = "weekly",
   now = NOW,
 ): QuotaOutcome {

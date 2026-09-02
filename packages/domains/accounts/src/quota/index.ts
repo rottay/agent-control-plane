@@ -108,13 +108,15 @@ export function weakerConfidence(left: ConfidenceLevel, right: ConfidenceLevel):
 /**
  * The frozen budget ceiling, as this repository has used it since P3.
  *
- * Declared locally rather than imported: `@acp/adapters` and
- * `@acp/observation` each declare their own for the same reason, and the
- * contract itself writes `.max(10_000_000)` inline in two places. Neither of
- * those packages is a permitted dependency here, and reaching for one to share
- * a number would buy a coupling that costs more than the constant.
+ * Imported, not declared (G7 D2). It used to be declared here, with a comment
+ * explaining that `@acp/providers` and `@acp/observation` each declared their
+ * own because neither is a permitted dependency of this package. That was an
+ * accurate description of the topology and a standing invitation to drift: the
+ * shared home is `@acp/contracts`, which sits below all three, so no
+ * domains→domains edge is needed to share one number.
  */
-export const TOKENS_USED_MAX = 10_000_000;
+import { TOKENS_USED_MAX } from "@acp/contracts";
+export { TOKENS_USED_MAX };
 
 /**
  * The most observations one estimate may be built from.
@@ -129,13 +131,19 @@ export const TOKENS_USED_MAX = 10_000_000;
 export const OBSERVATIONS_MAX = 100_000;
 
 /**
- * One ledger-recorded usage observation, handed over as a value.
+ * One ledger-recorded quota observation, handed over as a value.
+ *
+ * Named `QuotaObservation` since G7 D6. It was `TokenObservation`, which is also
+ * the name of `@acp/runtime`'s full-width observation — two different shapes,
+ * one word, in two packages that never import each other. The shapes are
+ * topology-forced apart and stay apart; the name was the only hazard, and this
+ * domain's own vocabulary is "quota observations".
  *
  * This module never reads the ledger. P5D's caller does, and passes what it
  * read; the estimator's job is arithmetic over evidence, not the acquisition of
  * evidence. That split is what lets every test here be a pure function call.
  */
-export interface TokenObservation {
+export interface QuotaObservation {
   readonly tokensUsed: number;
   /** An offset-bearing ISO instant, as the frozen contract writes them. */
   readonly observedAt: string;
@@ -158,7 +166,7 @@ export type ResetOutcome =
 export interface QuotaEstimateInput {
   readonly record: AccountRecord;
   /** Already scoped by the caller. See `estimateQuota` on what that means. */
-  readonly observations: readonly TokenObservation[];
+  readonly observations: readonly QuotaObservation[];
   /** Which entry of `knownLimits` this estimate is measured against. */
   readonly limitKey: string;
   /** The current instant, injected. This module never reads a clock. */

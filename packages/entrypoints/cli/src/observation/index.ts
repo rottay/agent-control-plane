@@ -2,7 +2,7 @@
  * The observation layer: ledger read models in, validated DTOs out.
  *
  * Everything the CLI prints is produced here and passed through the schemas of
- * `@acp/api-contracts` before it reaches a formatter. That is not belt and
+ * `@acp/protocol` before it reaches a formatter. That is not belt and
  * braces. The mapping code in this file is the new code between two things that
  * are already careful, and a boundary that only trusts the layer below it is not
  * a boundary. If a projection grows a field, a digest stops being a digest or a
@@ -39,9 +39,9 @@ import {
   TimelineItem,
   WorkerDetailResponse,
   WorkerPageResponse,
-} from "@acp/api-contracts";
-import { canonicalRows } from "@acp/api-contracts";
-import type { ApiRouteName, OverviewState } from "@acp/api-contracts";
+} from "@acp/protocol";
+import { canonicalRows } from "@acp/protocol";
+import type { ApiRouteName, OverviewState } from "@acp/protocol";
 import type {
   EventQuery,
   IntegrityReport,
@@ -84,7 +84,7 @@ export type Clock = () => string;
 /**
  * The CLI's adapter into the shared canonical row model (P3D).
  *
- * Thin on purpose. The row model is defined once, in `@acp/api-contracts`, and
+ * Thin on purpose. The row model is defined once, in `@acp/protocol`, and
  * each client contributes only the step from its own output shape into it —
  * three definitions kept in step would be three chances to drift, which is the
  * thing parity exists to catch.

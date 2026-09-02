@@ -76,7 +76,7 @@ catalog:
   # P8-8E: the task graph's canvas (C6).
   "@xyflow/react": 12.11.5
   # P8-9-2: the live-DOM evidence battery's two test-scope tools, pinned
-  # exactly like every entry above. Both are devDependencies of @acp/ui only
+  # exactly like every entry above. Both are devDependencies of @acp/console only
   # and reach no shipped bundle: jsdom is the DOM the docblock-scoped suites
   # run in, axe-core the accessibility engine they assert with.
   #

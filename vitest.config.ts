@@ -104,7 +104,7 @@ const ledgerSource = fileURLToPath(
   new URL('./packages/persistence/ledger/src/index.ts', import.meta.url),
 );
 const apiContractsSource = fileURLToPath(
-  new URL('./packages/kernel/api-contracts/src/index.ts', import.meta.url),
+  new URL('./packages/kernel/protocol/src/index.ts', import.meta.url),
 );
 
 /** The contract packages, resolved to source for every downstream project. */
@@ -144,18 +144,18 @@ const daemonSourceAliases = [
  * byte-untouched.
  *
  * The architecture fence asserts these two targets and that the specifiers are
- * imported only by `packages/entrypoints/server/test/parity/index.test.ts`.
+ * imported only by `packages/entrypoints/gateway/test/parity/index.test.ts`.
  */
 const cliRowModelSource = fileURLToPath(
   new URL('./packages/entrypoints/cli/src/observation/index.ts', import.meta.url),
 );
 const uiRowModelSource = fileURLToPath(
-  new URL('./packages/entrypoints/ui/src/api/client/index.ts', import.meta.url),
+  new URL('./packages/entrypoints/console/src/api/client/index.ts', import.meta.url),
 );
 const parityAliases = [
   ...workspaceSourceAliases,
   { find: /^@acp\/cli\/observation-rows$/, replacement: cliRowModelSource },
-  { find: /^@acp\/ui\/row-model$/, replacement: uiRowModelSource },
+  { find: /^@acp\/console\/row-model$/, replacement: uiRowModelSource },
 ];
 
 export default defineConfig({
@@ -221,8 +221,8 @@ export default defineConfig({
           // P5N cohort C3: the api-contracts tree is normalized, so its tests
           // live in the mirrored `test/` tree. The `src/**` glob stays until
           // every cohort has landed.
-          name: 'api-contracts',
-          root: './packages/kernel/api-contracts',
+          name: 'protocol',
+          root: './packages/kernel/protocol',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -266,8 +266,8 @@ export default defineConfig({
           // leak assertion is therefore per-file: each test file sweeps the
           // PIDs it created, rather than one global sweep that could not tell
           // another file's live child from a leak.
-          name: 'adapters',
-          root: './packages/edges/adapters',
+          name: 'providers',
+          root: './packages/edges/providers',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -301,8 +301,8 @@ export default defineConfig({
       },
       {
         test: {
-          name: 'server',
-          root: './packages/entrypoints/server',
+          name: 'gateway',
+          root: './packages/entrypoints/gateway',
           include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
@@ -331,8 +331,8 @@ export default defineConfig({
       },
       {
         test: {
-          name: 'ui',
-          root: './packages/entrypoints/ui',
+          name: 'console',
+          root: './packages/entrypoints/console',
           include: [
             'src/**/*.test.ts',
             'src/**/*.test.tsx',

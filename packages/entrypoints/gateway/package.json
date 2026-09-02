@@ -1,0 +1,35 @@
+{
+  "name": "@acp/gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Observation server for the Agent Control Plane. Serves every frozen GET route over Fastify, loopback only, plus one named write route for roadmap versions.",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "acp-server": "./dist/bin/index.js"
+  },
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@acp/accounts": "workspace:*",
+    "@acp/protocol": "workspace:*",
+    "@acp/ledger": "workspace:*",
+    "@acp/observation": "workspace:*",
+    "fastify": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
+  }
+}

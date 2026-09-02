@@ -23,8 +23,14 @@ import type { ControlPlaneEvent } from "@acp/contracts";
  *    press an unrelated event type into service.
  */
 
-/** Ceiling for `payload.tokensUsed`, matching the budget convention. */
-export const TOKENS_USED_MAX = 10_000_000;
+/**
+ * Ceiling for `payload.tokensUsed`, matching the budget convention.
+ *
+ * One authority since G7 D2: `@acp/contracts` owns the number, this module
+ * re-exports it so the package's own surface is byte-stable for consumers.
+ */
+import { TOKENS_USED_MAX } from "@acp/contracts";
+export { TOKENS_USED_MAX };
 
 /** The bound on a classification reason, so one event cannot dominate a key set. */
 export const REASON_MAX_LENGTH = 80;

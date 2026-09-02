@@ -22,7 +22,7 @@ baseline is recomputed over a disposable shadow ledger and proven
 byte-identical after a rebuild.
 
 P4 closed on committed evidence and on an explicit account of what that
-evidence does *not* cover. `@acp/adapters` holds one spawn authority, one
+evidence does *not* cover. `@acp/providers` holds one spawn authority, one
 session controller and three provider descriptors — Claude headless
 `stream-json`, Kimi ACP over stable v1 NDJSON, and the Codex App Server — each
 a pure module that builds argv and turns bytes into normalized events, and none

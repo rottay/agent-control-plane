@@ -103,7 +103,7 @@ whose recorded history is intact.
 ### Proof step 2 — a surface starts cleanly against it
 
 ```sh
-node packages/entrypoints/server/dist/bin/index.js --ledger /tmp/acp-ops/restored/acp.sqlite3
+node packages/entrypoints/gateway/dist/bin/index.js --ledger /tmp/acp-ops/restored/acp.sqlite3
 ```
 
 A clean start against the restored ledger is the second half of the proof: the

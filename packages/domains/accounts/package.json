@@ -20,10 +20,10 @@
     "build": "tsc --build"
   },
   "dependencies": {
-    "@acp/contracts": "workspace:*",
-    "@acp/ledger": "workspace:*"
+    "@acp/contracts": "workspace:*"
   },
   "devDependencies": {
+    "@acp/ledger": "workspace:*",
     "vitest": "3.2.4"
   }
 }

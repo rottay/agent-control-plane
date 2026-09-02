@@ -92,10 +92,10 @@ importers:
       '@acp/contracts':
         specifier: workspace:*
         version: link:../../kernel/contracts
+    devDependencies:
       '@acp/ledger':
         specifier: workspace:*
         version: link:../../persistence/ledger
-    devDependencies:
       vitest:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
@@ -129,16 +129,6 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
 
-  packages/edges/adapters:
-    dependencies:
-      '@acp/contracts':
-        specifier: workspace:*
-        version: link:../../kernel/contracts
-    devDependencies:
-      vitest:
-        specifier: 3.2.4
-        version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
-
   packages/edges/durability:
     dependencies:
       '@acp/contracts':
@@ -158,65 +148,34 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
 
-  packages/entrypoints/cli:
-    dependencies:
-      '@acp/api-contracts':
-        specifier: workspace:*
-        version: link:../../kernel/api-contracts
-      '@acp/ledger':
-        specifier: workspace:*
-        version: link:../../persistence/ledger
-    devDependencies:
-      vitest:
-        specifier: 3.2.4
-        version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
-
-  packages/entrypoints/daemon:
+  packages/edges/providers:
     dependencies:
       '@acp/contracts':
         specifier: workspace:*
         version: link:../../kernel/contracts
-      '@acp/durability':
-        specifier: workspace:*
-        version: link:../../edges/durability
-      '@acp/ledger':
-        specifier: workspace:*
-        version: link:../../persistence/ledger
-      '@acp/runtime':
-        specifier: workspace:*
-        version: link:../../domains/runtime
     devDependencies:
       vitest:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
 
-  packages/entrypoints/server:
+  packages/entrypoints/cli:
     dependencies:
-      '@acp/accounts':
-        specifier: workspace:*
-        version: link:../../domains/accounts
-      '@acp/api-contracts':
-        specifier: workspace:*
-        version: link:../../kernel/api-contracts
       '@acp/ledger':
         specifier: workspace:*
         version: link:../../persistence/ledger
-      '@acp/observation':
+      '@acp/protocol':
         specifier: workspace:*
-        version: link:../../domains/observation
-      fastify:
-        specifier: 'catalog:'
-        version: 5.12.1
+        version: link:../../kernel/protocol
     devDependencies:
       vitest:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
 
-  packages/entrypoints/ui:
+  packages/entrypoints/console:
     dependencies:
-      '@acp/api-contracts':
+      '@acp/protocol':
         specifier: workspace:*
-        version: link:../../kernel/api-contracts
+        version: link:../../kernel/protocol
       '@radix-ui/react-dialog':
         specifier: 'catalog:'
         version: 1.1.23(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -261,14 +220,42 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
 
-  packages/kernel/api-contracts:
+  packages/entrypoints/daemon:
     dependencies:
       '@acp/contracts':
         specifier: workspace:*
-        version: link:../contracts
-      zod:
+        version: link:../../kernel/contracts
+      '@acp/durability':
+        specifier: workspace:*
+        version: link:../../edges/durability
+      '@acp/ledger':
+        specifier: workspace:*
+        version: link:../../persistence/ledger
+      '@acp/runtime':
+        specifier: workspace:*
+        version: link:../../domains/runtime
+    devDependencies:
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
+
+  packages/entrypoints/gateway:
+    dependencies:
+      '@acp/accounts':
+        specifier: workspace:*
+        version: link:../../domains/accounts
+      '@acp/ledger':
+        specifier: workspace:*
+        version: link:../../persistence/ledger
+      '@acp/observation':
+        specifier: workspace:*
+        version: link:../../domains/observation
+      '@acp/protocol':
+        specifier: workspace:*
+        version: link:../../kernel/protocol
+      fastify:
         specifier: 'catalog:'
-        version: 4.1.13
+        version: 5.12.1
     devDependencies:
       vitest:
         specifier: 3.2.4
@@ -284,11 +271,27 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
 
+  packages/kernel/protocol:
+    dependencies:
+      '@acp/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      zod:
+        specifier: 'catalog:'
+        version: 4.1.13
+    devDependencies:
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
+
   packages/persistence/ledger:
     dependencies:
       '@acp/contracts':
         specifier: workspace:*
         version: link:../../kernel/contracts
+      '@acp/protocol':
+        specifier: workspace:*
+        version: link:../../kernel/protocol
       better-sqlite3:
         specifier: 'catalog:'
         version: 13.0.3
