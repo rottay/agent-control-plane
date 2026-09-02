@@ -3,7 +3,7 @@
 A local, provider-neutral control plane that coordinates multiple coding agents
 across providers, accounts and quotas, while keeping repositories safe.
 
-Status: **P0, P1, P2, P3, P4, P5, P6, P7 and P7I complete. Next: P8.** Contracts,
+Status: **P0, P1, P2, P3, P4, P5, P6, P7, P7I and P8 complete.** Contracts,
 fences, the append-only event ledger, a read-only observation plane over it — a
 loopback HTTP gateway, a CLI and a local console — a durability plane whose
 two orchestration drivers live in two packages since G5, the SQLite supervisor

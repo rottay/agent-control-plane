@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8 is therefore **513 packet entries across 216 distinct paths**: 2 (P8-D) +
+ * P8 is therefore **515 packet entries across 216 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1347,29 +1347,30 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
- * 22 (P8-T-G10) + 4 (P8-E) = 513 entries, with 297 duplicate entries.
+ * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) = 515 entries, with 299 duplicate
+ * entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 48 duplicates = 48   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 49 duplicates = 49   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 10 duplicates = 10   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
  *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
  *                                   build-server suite, and the CLI suite)
  *   5 paths ×  6 duplicates = 30   (the protocol surface and the workspace file)
- *   6 paths ×  5 duplicates = 30   (the contracts schema barrel, the protocol
+ *   7 paths ×  5 duplicates = 35   (the contracts schema barrel, the protocol
  *                                   route and parity surface with its parity
- *                                   suite, and the console's app root and api
- *                                   client)
- *   5 paths ×  4 duplicates = 20   (the initiatives suite, the console manifest,
- *                                   the console styles sheet, the accounts-view
- *                                   suite and the root README)
+ *                                   suite, the console's app root and api
+ *                                   client, and the root README)
+ *   4 paths ×  4 duplicates = 16   (the initiatives suite, the console manifest,
+ *                                   the console styles sheet and the
+ *                                   accounts-view suite)
  *  11 paths ×  3 duplicates = 33
  *  24 paths ×  2 duplicates = 48
  *  49 paths ×  1 duplicate  = 49
  *
- * 48 + 10 + 8 + 21 + 30 + 30 + 20 + 33 + 48 + 49 = 297.
+ * 49 + 10 + 8 + 21 + 30 + 35 + 16 + 33 + 48 + 49 = 299.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1673,6 +1674,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * leaves the ×7 row at three paths and opens a ×8 row of its own; and the ADR
  * index, entering ×1 for the first time — its only prior owner was P8-T2, so
  * it carried no duplicate and sat in no row. ×1 therefore reads forty-nine.
+ *
+ * P8-E2, the README status retirement, adds **two entries, no distinct path,
+ * two duplicates** — the shape of a docs packet that revisits two files the
+ * phase already owns. Entries move 513 → 515, distinct holds at 216,
+ * duplicates 297 → 299. Two band steps, one per duplicate: this file's own
+ * row, ×48 → ×49, as every packet moves it; and the root README, ×4 → ×5 —
+ * the single move behind BOTH of those rows changing: ×5 reads seven because
+ * it arrived, ×4 reads four because it left.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3187,6 +3196,25 @@ const P8E_WRITE_SET = [
 ];
 
 /**
+ * P8-E2: the README status sentence retires — the every-prior-closure
+ * convention, once more.
+ *
+ * Every closure before P8-E retired the previous README status sentence into
+ * `EXPIRED_LITERALS` in the same packet that rewrote it. P8-E could not: the
+ * README was gate-6 frozen while the certification computed, so the sentence
+ * outlived the Estado line it mirrors by one packet. This one closes that
+ * ordering constraint before the debrief reads the documents for accuracy.
+ *
+ * Two paths, both P8-owned already, so both ride as duplicates and the
+ * distinct count does not move. The README's line 6 takes the closed phases
+ * and no successor marker, mirroring the roadmap's Estado line exactly; the
+ * fence pins the retired sentence absent and — the mechanical form of P8-E's
+ * C4 — refuses a `NEXT_P9` in the roadmap until the owner queues a phase.
+ * No package is touched, and no test changes.
+ */
+const P8E2_WRITE_SET = ["README.md", "scripts/check-architecture.mjs"];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3491,6 +3519,7 @@ const WRITE_SET = [
   ...P8T_G9B_WRITE_SET,
   ...P8T_G10_WRITE_SET,
   ...P8E_WRITE_SET,
+  ...P8E2_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -3742,6 +3771,14 @@ const FORBIDDEN_ROADMAP_LITERALS = [
   "P1_DONE",
   "PRODUCT_CUTOVER_AUTHORIZED",
   "CUTOVER_AUTHORIZED",
+  // P8-E2, the mechanical form of P8-E's C4. The P8 closure advanced no
+  // marker: the owner's ruling of 2026-08-31 defers P9 with no priority and
+  // no ETA, and V2 is a separate roadmap rather than a phase of this one. A
+  // `NEXT_P9` in the roadmap today would be a statement nothing has
+  // authorized, so the fence refuses it the way it refuses a cutover claim.
+  // The marker returns when the owner queues a phase, and this entry leaves
+  // the list in the same change that lets it back in — and not before.
+  "NEXT_P9",
 ];
 
 /**
@@ -4020,6 +4057,14 @@ const EXPIRED_LITERALS = {
     // it was. Pinned absent rather than merely rewritten, because a sentence
     // that is only deleted can come back.
     "P0, P1, P2, P3, P4, P5, P6 and P7 complete. Next: P7I.",
+    // Retired by the P8-E closure, the same way every status sentence before
+    // it was — one packet late, because the README was gate-6 frozen while
+    // the certification computed. Its successor drops the "Next:" marker
+    // altogether: P9 is owner-deferred and V2 is a separate roadmap, so there
+    // is no queued phase for a marker to name (the reasoning lives beside
+    // `ROADMAP_STATUS_LITERAL`). Pinned absent rather than merely rewritten,
+    // because a sentence that is only deleted can come back.
+    "P0, P1, P2, P3, P4, P5, P6, P7 and P7I complete. Next: P8.",
     // Falsified by the same commit that retires the status text above: P4
     // shipped three provider adapters. Pinned here rather than merely deleted,
     // because a sentence that is only removed can come back, and coming back
