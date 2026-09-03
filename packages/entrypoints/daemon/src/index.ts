@@ -34,7 +34,13 @@ import {
   kimiAdapter,
 } from "@acp/providers";
 import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
-import { createExecutionEffects, resolveScenarioRoot, scenarioLedgerPath } from "@acp/runtime";
+import {
+  createExecutionEffects,
+  recordTokenObservation,
+  resolveScenarioRoot,
+  scenarioLedgerPath,
+  usageTransitionId,
+} from "@acp/runtime";
 
 import { DRAIN_DEADLINE_MS } from "./constants/index.js";
 import type { DaemonExecutionConfig } from "./daemon-child/index.js";
@@ -329,6 +335,28 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         reattach: null,
       },
       scenarioRoot,
+      // V2-B7T. The port has always reported what it spent and the walk has
+      // always thrown the trail away. This closure is where spend becomes a
+      // ledger fact: one `TOKEN_USAGE_RECORDED` per trail `usage` entry, under
+      // a name derived from the operation and the step so a resumed attempt
+      // replays rather than double-counts.
+      //
+      // A closure and not a new dependency: `openedLedger`, `invocation`,
+      // `route` and `options.emittedBy` are all already in scope here, so
+      // `execution-effects` still imports no ledger and the runtime still owes
+      // nothing new to anyone. Attribution is the elected account's, read from
+      // the same `route` the port executes — the value the config door already
+      // admitted, never a second reading of it.
+      recordUsage: (sample) => {
+        recordTokenObservation(openedLedger, {
+          invocation,
+          kind: "USAGE",
+          accountId: route.accountId,
+          tokens: sample.tokensUsed,
+          transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+          emittedBy: options.emittedBy,
+        });
+      },
     });
 
     if (options.mode === "SQLITE_SUPERVISOR") {

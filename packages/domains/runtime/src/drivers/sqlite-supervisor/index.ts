@@ -29,6 +29,7 @@ import {
 } from "../../core/step-executor/index.js";
 import type { BeatContext, BeatResult, EffectPort } from "../../core/step-executor/index.js";
 import { SupervisorError } from "../../errors/index.js";
+import { settleFailure } from "../../failure/index.js";
 
 /**
  * The SQLite supervisor: a single process walking the shared plan.
@@ -329,6 +330,17 @@ export class SqliteSupervisor implements OrchestrationDriver {
       else replayed += 1;
     }
 
+    // V2-B7T. The bound is exhausted, so this walk will not converge. Settle
+    // first, then throw the same error: a task that stops here used to leave an
+    // open task with no terminal event, which told a reader nothing at all and
+    // told it indistinguishably from a task that was merely slow.
+    //
+    // The settlement reads, probes and appends; it performs no effect and
+    // repairs nothing. It can conclude `POSTCONDITION_UNKNOWN` and append
+    // nothing at all, which is the correct outcome when an effect may have
+    // happened unrecorded — and the throw below is unchanged in either case, so
+    // the daemon's unwind and its classified exit are exactly what they were.
+    await settleFailure(context, "BOUND_EXHAUSTED");
     throw new SupervisorError("the plan did not reach a terminal state within its bound");
   }
 

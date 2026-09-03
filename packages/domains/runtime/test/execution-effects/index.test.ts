@@ -23,6 +23,7 @@ import { appendPlanStep, closeIntent } from "../../src/core/step-executor/index.
 import type { BeatContext } from "../../src/core/step-executor/index.js";
 import { PostconditionUnknownError } from "../../src/errors/index.js";
 import { ExecutionEffectError, createExecutionEffects } from "../../src/execution-effects/index.js";
+import type { UsageSample, UsageSink } from "../../src/execution-effects/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -156,7 +157,7 @@ function markerFiles(root: ScenarioRoot): string[] {
   return existsSync(home) ? readdirSync(home).sort() : [];
 }
 
-function effectsFor(name: string, taskId: string, script: FakeScript = {}) {
+function effectsFor(name: string, taskId: string, script: FakeScript = {}, recordUsage?: UsageSink) {
   const root = scenario(name);
   const invocation = invocationFor(taskId);
   const calls = { starts: 0 };
@@ -165,6 +166,7 @@ function effectsFor(name: string, taskId: string, script: FakeScript = {}) {
     route: ROUTE,
     request: requestFor(invocation),
     scenarioRoot: root,
+    ...(recordUsage === undefined ? {} : { recordUsage }),
   });
   const operation = operationForStep(invocation, INTENT_STEP);
   return { root, invocation, calls, effects, operation };
@@ -344,7 +346,10 @@ describe("the module keeps its own laws", () => {
     }
   });
 
-  it("is exported from the barrel as exactly three names", () => {
+  it("is exported from the barrel as exactly five names", () => {
+    // Three until V2-B7T; the usage sink added exactly two, both types. Pinned
+    // by equality in both directions, so a name that arrives in the barrel
+    // without arriving here fails, and so does the reverse.
     const barrel = codeOf(BARREL);
     expect(barrel).toContain("ExecutionEffectError");
     expect(barrel).toContain("createExecutionEffects");
@@ -352,6 +357,141 @@ describe("the module keeps its own laws", () => {
     const exported = [...barrel.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}\s*from\s*"\.\/execution-effects\/index\.js"/g)]
       .flatMap((match) => (match[1] ?? "").split(",").map((piece) => piece.trim()).filter((piece) => piece !== ""))
       .sort();
-    expect(exported).toEqual(["ExecutionEffectError", "ExecutionEffectsInput", "createExecutionEffects"]);
+    expect(exported).toEqual([
+      "ExecutionEffectError",
+      "ExecutionEffectsInput",
+      "UsageSample",
+      "UsageSink",
+      "createExecutionEffects",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B7T: the usage sink, and the ordering that makes it crash-safe
+// ---------------------------------------------------------------------------
+
+/**
+ * The sink runs between the execution and the marker, and that is the whole
+ * crash-safety argument rather than a preference.
+ *
+ * `closeIntent` probes first and, on `DONE`, appends the outcome **without**
+ * re-entering `apply`. So a resumed walk that finds a verified marker never
+ * calls `apply` again — and a sink placed after the marker write would be
+ * permanently unreachable on exactly the window it exists to cover. Placed
+ * before it, and called synchronously, a throwing sink leaves no marker, the
+ * probe answers `NOT_DONE`, and the effect re-executes.
+ *
+ * The invariant: a verified evidence marker implies a recorded usage event.
+ */
+const B7T_TASKS = [
+  "b7700000-0000-4000-8000-000000000001",
+  "b7700000-0000-4000-8000-000000000002",
+  "b7700000-0000-4000-8000-000000000003",
+  "b7700000-0000-4000-8000-000000000004",
+  "b7700000-0000-4000-8000-000000000005",
+] as const;
+
+const MULTI_USAGE_TRAIL: readonly ExecutionEvent[] = [
+  { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
+  { kind: "usage", stepIndex: 1, tokensUsed: 11 },
+  { kind: "usage", stepIndex: 2, tokensUsed: 22 },
+  { kind: "state", toState: "TURN_COMPLETED" },
+  { kind: "completed", stepIndex: 2 },
+];
+
+describe("the usage sink (V2-B7T)", () => {
+  it("is called once per trail usage entry, carrying the step's own index (D-B7T-1)", async () => {
+    const seen: UsageSample[] = [];
+    const staged = effectsFor("b7t-sink-per-entry", B7T_TASKS[0], { events: MULTI_USAGE_TRAIL }, (sample) => {
+      seen.push(sample);
+    });
+
+    await staged.effects.apply(staged.operation);
+
+    // One per `usage` entry — not summed, not collapsed.
+    expect(seen).toHaveLength(2);
+    expect(seen.map((sample) => sample.stepIndex)).toEqual([1, 2]);
+    expect(seen.map((sample) => sample.tokensUsed)).toEqual([11, 22]);
+    // Every sample carries the operation's own plan index, so the identity the
+    // recorder derives is unique within the attempt without a counter.
+    expect(new Set(seen.map((sample) => sample.operationIndex))).toEqual(new Set([staged.operation.operationIndex]));
+    // Non-usage entries are not offered to the sink.
+    expect(seen).toHaveLength(MULTI_USAGE_TRAIL.filter((event) => event.kind === "usage").length);
+  });
+
+  it("runs before the marker is written", async () => {
+    // Observed rather than read off the source: at the instant the sink runs,
+    // the evidence home must still be empty.
+    const order: string[] = [];
+    const staged = effectsFor("b7t-sink-order", B7T_TASKS[1], {}, () => {
+      order.push("sink:" + String(markerFiles(staged.root).length));
+    });
+
+    await staged.effects.apply(staged.operation);
+
+    expect(order).toEqual(["sink:0"]);
+    expect(markerFiles(staged.root)).toHaveLength(1);
+  });
+
+  it("N3: a throwing sink fails the apply closed, and no marker is written", async () => {
+    const staged = effectsFor("b7t-sink-throws", B7T_TASKS[2], {}, () => {
+      throw new Error("the recorder refused");
+    });
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toThrow(/the recorder refused/);
+
+    // No marker, so nothing claims the effect happened...
+    expect(markerFiles(staged.root)).toHaveLength(0);
+    // ...and the probe agrees.
+    await expect(staged.effects.probe(staged.operation)).resolves.toBe("NOT_DONE");
+  });
+
+  it("re-executes after a failed sink, and records once when the sink recovers", async () => {
+    // The K1 window in miniature: the first apply left no marker, so the walk
+    // performs the effect again — and the ledger ends up with one observation
+    // for the operation, not two.
+    let failNext = true;
+    const seen: UsageSample[] = [];
+    const staged = effectsFor("b7t-sink-recovers", B7T_TASKS[3], {}, (sample) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("transient");
+      }
+      seen.push(sample);
+    });
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toThrow(/transient/);
+    expect(markerFiles(staged.root)).toHaveLength(0);
+    expect(seen).toHaveLength(0);
+
+    await staged.effects.apply(staged.operation);
+    expect(staged.calls.starts).toBe(2);
+    expect(seen).toHaveLength(1);
+    expect(markerFiles(staged.root)).toHaveLength(1);
+
+    // A third apply finds the verified marker and does nothing at all.
+    await staged.effects.apply(staged.operation);
+    expect(staged.calls.starts).toBe(2);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("stays optional, so the drill children keep building this port unchanged", async () => {
+    const staged = effectsFor("b7t-sink-absent", B7T_TASKS[4]);
+    await expect(staged.effects.apply(staged.operation)).resolves.toBeUndefined();
+    expect(markerFiles(staged.root)).toHaveLength(1);
+    await expect(staged.effects.probe(staged.operation)).resolves.toBe("DONE");
+  });
+
+  it("still opens no ledger and appends nothing", () => {
+    // The precise claim, and not a wider one: this module has imported
+    // `canonicalJsonStringify` from `@acp/ledger` since B1b, to digest its own
+    // marker. What it must never gain is ledger ACCESS — it records spend by
+    // calling an injected function, and the append happens in the daemon.
+    const code = codeOf(MODULE);
+    expect(code).toContain("canonicalJsonStringify");
+    for (const forbidden of ["openLedger", "recordTokenObservation", "LedgerPort", ".append("]) {
+      expect({ forbidden, present: code.includes(forbidden) }).toEqual({ forbidden, present: false });
+    }
   });
 });

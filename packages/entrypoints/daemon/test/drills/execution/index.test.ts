@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { DEFAULT_ROUTING_CONFIG, EVIDENCE_ABSENT, loadPolicyRegistry, resolveRoute } from "@acp/accounts";
 import type { CandidateEvidence, PolicyRegistry, PolicyRouteRequest, QuotaEstimate, QuotaOutcome, RoutingRequest } from "@acp/accounts";
-import { AccountRecord, CONTRACT_VERSION, ExecutionEvent } from "@acp/contracts";
+import { AccountRecord, CONTRACT_VERSION, ExecutionEvent, TERMINAL_STATES } from "@acp/contracts";
 import type { ExecutionRequest, ModelExecutionPort, ResolvedRoute } from "@acp/contracts";
 import { deriveInvocation } from "@acp/durability";
 import { openLedger } from "@acp/ledger";
@@ -17,14 +17,18 @@ import {
   INTENT_STEP,
   LIFECYCLE_PLAN,
   SqliteSupervisor,
+  USAGE_TOKENS_MAX,
   buildEvent,
   createExecutionEffects,
   operationForStep,
+  recordTokenObservation,
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
+  settleFailure,
+  usageTransitionId,
 } from "@acp/runtime";
-import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import type { DurableInvocation, ScenarioRoot, UsageSample } from "@acp/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { canonicalSubmission, canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
@@ -1014,4 +1018,551 @@ describe("a restart over the real adapter performs no second execution", () => {
     expect(second.markerJson).toBe(first.markerJson);
     expect(second.probe).toBe("DONE");
   }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-B7T: spend reaches the ledger
+// ---------------------------------------------------------------------------
+
+/**
+ * The port has always reported what it spent; the walk has always thrown the
+ * trail away. These drills run the assembled path with the daemon's own sink
+ * wired in — the same closure `startDaemon` builds — and assert what the ledger
+ * holds afterwards.
+ *
+ * **Two limits, stated where they are incurred rather than in prose elsewhere.**
+ *
+ * 1. The rollup fold is not executed here. `@acp/observation` is in neither the
+ *    daemon's nor the runtime's import allowlist, so no test inside this
+ *    packet's write-set can call `computeTokenRollups`, and making it callable
+ *    would be a dependency edge this packet forbids. P6 is therefore discharged
+ *    as the fold's own admission predicate applied to every appended event —
+ *    with the two ceilings pinned equal by the fence law L-B7T-4, which is the
+ *    only place that can read both files.
+ * 2. The kill windows below are proved at the level a `SIGKILL` is observable —
+ *    durable state: the marker on disk and the rows in the ledger. A literal
+ *    SIGKILL through the drill child would need
+ *    `runtime/src/drivers/sqlite-supervisor-child` to carry the sink, and
+ *    keeping that file out is exactly what makes the sink optional. Named in
+ *    the report as an offered path rather than taken unilaterally.
+ */
+
+const B7T_TOKENS_A = 4_321;
+const B7T_TOKENS_B = 765;
+
+/** A Claude turn that reports its spend twice, so "one event per entry" is visible. */
+const B7T_TWO_USAGE_LINES: readonly string[] = [
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: B7T_TOKENS_A } } }),
+  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: B7T_TOKENS_B } } }),
+  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+];
+
+/**
+ * Spend above the rollup ceiling, on the transport that can actually report it.
+ *
+ * Measured while writing this: the **CLI** adapter cannot produce such an entry
+ * at all. `isReportableTokenCount` bounds `output_tokens` at the contract's
+ * `TOKENS_USED_MAX` (10,000,000) and returns null above it, so an over-ceiling
+ * CLI turn yields no usage signal and the walk simply succeeds having recorded
+ * nothing — which would have made a scripted CLI turn a vacuous proof rather
+ * than a refusal.
+ *
+ * The API leg is different and is the honest home: its chunks are normalized
+ * straight through `ExecutionEvent.safeParse`, whose own bound is 100,000,000.
+ * So an API transport genuinely can report spend the rollup would drop, and
+ * this is the transport on which the recorder's refusal has to hold.
+ */
+const B7T_OVER_CEILING_CHUNKS: readonly ApiStreamChunk[] = [
+  { kind: "started", resolvedModel: RESOLVED_MODEL, protocolVersion: "api/streaming-1" },
+  { kind: "usage", stepIndex: 1, tokensUsed: USAGE_TOKENS_MAX + 1 },
+  { kind: "state", toState: TERMINAL_STATE },
+];
+
+/** The same leg, inside the ceiling, so the refusal below is about the number. */
+const B7T_UNDER_CEILING_CHUNKS: readonly ApiStreamChunk[] = [
+  { kind: "started", resolvedModel: RESOLVED_MODEL, protocolVersion: "api/streaming-1" },
+  { kind: "usage", stepIndex: 1, tokensUsed: USAGE_TOKENS_MAX },
+  { kind: "state", toState: TERMINAL_STATE },
+];
+
+function apiRoute(): ResolvedRoute {
+  return { ...resolvedCliRoute(), transportKind: "API_KEY" };
+}
+
+interface RecordedWalk {
+  readonly ledger: Ledger;
+  readonly root: ScenarioRoot;
+  readonly inv: DurableInvocation;
+  readonly trail: readonly ExecutionEvent[];
+  readonly state: string | null;
+  readonly usageEvents: readonly ControlPlaneEventRecord[];
+  readonly markers: readonly string[];
+  readonly operationId: string;
+}
+
+type ControlPlaneEventRecord = ReturnType<Ledger["listEvents"]>["events"][number];
+
+/**
+ * The assembled path with the daemon's sink.
+ *
+ * The closure is byte-for-byte the shape `startDaemon` builds: the same
+ * `recordTokenObservation`, the same `usageTransitionId`, the account read from
+ * the same `route` the port executes. `sinkOverride` exists only so the K1
+ * window can be entered without a second harness.
+ */
+async function walkRecording(
+  name: string,
+  lines: readonly string[],
+  options: {
+    readonly sinkOverride?: (sample: UsageSample) => void;
+    readonly port?: ModelExecutionPort;
+    readonly route?: ResolvedRoute;
+  } = {},
+): Promise<RecordedWalk> {
+  const route = options.route ?? resolvedCliRoute();
+  const root = scenario(name);
+  const ledger = openLedger(scenarioLedgerPath(root));
+  ledgers.push(ledger);
+  const inv = invocation();
+  replayLedger = ledger;
+  replayInvocation = inv;
+  const trail: ExecutionEvent[] = [];
+
+  const effects = createExecutionEffects({
+    port: recording(
+      options.port ?? createExecutionPort({ bindings: new Map([[ACCOUNT, cliBinding(lines)]]) }),
+      trail,
+    ),
+    route,
+    request: executionRequest(),
+    scenarioRoot: root,
+    recordUsage:
+      options.sinkOverride ??
+      ((sample) => {
+        recordTokenObservation(ledger, {
+          invocation: inv,
+          kind: "USAGE",
+          accountId: route.accountId,
+          tokens: sample.tokensUsed,
+          transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+          emittedBy: EMITTED_BY,
+        });
+      }),
+  });
+
+  const supervisor = new SqliteSupervisor({
+    ledger,
+    invocation: inv,
+    effects,
+    emittedBy: EMITTED_BY,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    initiativeId: INITIATIVE_ID,
+    route,
+  });
+
+  let state: string | null = null;
+  try {
+    state = (await supervisor.runToCheckpoint()).finalState;
+  } catch {
+    state = null;
+  }
+
+  const home = join(root, "executions");
+  const operation = operationForStep(inv, INTENT_STEP);
+  return {
+    ledger,
+    root,
+    inv,
+    trail,
+    state,
+    usageEvents: ledger
+      .listEvents({ limit: 200 })
+      .events.filter((entry) => entry.event.type === "TOKEN_USAGE_RECORDED"),
+    markers: existsSync(home) ? readdirSync(home).sort() : [],
+    operationId: operation.operationId,
+  };
+}
+
+/**
+ * The ledger and invocation the P8 replay drill records through.
+ *
+ * Set by `walkRecording` so the sink can reach them; a sink is called from
+ * inside `apply`, which is inside the supervisor, so there is no other seam.
+ */
+let replayLedger: Ledger | null = null;
+let replayInvocation: DurableInvocation = { taskId: TASK, attempt: 1, invocationId: TASK, submittedAt: NOW, submissionDigest: "0".repeat(64) };
+
+function trailUsageTotal(trail: readonly ExecutionEvent[]): number {
+  return (normalized(trail) as { usageTotal: number }).usageTotal;
+}
+
+describe("V2-B7T: the walk records what it spends", () => {
+  it("P4/P5: one event per trail usage entry, summing to the port's own total", async () => {
+    const walked = await walkRecording("b7t-usage-sum", B7T_TWO_USAGE_LINES);
+    expect(walked.state).toBe("CHECKPOINTED");
+
+    const entries = walked.trail.filter((event) => event.kind === "usage");
+    expect(entries.length).toBe(2);
+
+    // P5 — one appended event per trail entry. Not summed, not collapsed.
+    expect(walked.usageEvents).toHaveLength(entries.length);
+
+    // P4 — the sum equals the port's own measurement, compared against the
+    // trail this very walk produced rather than against a constant.
+    const recorded = walked.usageEvents.reduce(
+      (sum, entry) => sum + Number(entry.event.payload["tokens"]),
+      0,
+    );
+    expect(recorded).toBe(trailUsageTotal(walked.trail));
+    expect(recorded).toBe(B7T_TOKENS_A + B7T_TOKENS_B);
+
+    // Each carries its own step-derived identity, unique within the attempt.
+    const ids = walked.usageEvents.map((entry) => entry.event.transitionId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.every((id) => id.startsWith("usage."))).toBe(true);
+    expect(ids).toEqual(
+      entries.map((event) =>
+        usageTransitionId(operationForStep(walked.inv, INTENT_STEP).operationIndex, event.stepIndex),
+      ),
+    );
+  });
+
+  it("P6: every appended event satisfies the rollup fold's own admission predicate", async () => {
+    // The fold cannot be executed from here (see this section's docblock), so
+    // what is asserted is the property that decides its outcome: the fold skips
+    // an event whose `accountId` is not a bounded string or whose `tokens` is
+    // not an integer within its ceiling, and counts it in `skippedMalformed`.
+    // Every event this walk appended passes that test, so the fold would move
+    // by exactly the recorded sum and skip nothing.
+    const walked = await walkRecording("b7t-usage-foldable", B7T_TWO_USAGE_LINES);
+    expect(walked.usageEvents.length).toBeGreaterThan(0);
+
+    for (const entry of walked.usageEvents) {
+      const accountId = entry.event.payload["accountId"];
+      const tokens = entry.event.payload["tokens"];
+      expect(typeof accountId).toBe("string");
+      expect(String(accountId).length).toBeGreaterThan(0);
+      expect(String(accountId).length).toBeLessThanOrEqual(80);
+      expect(Number.isInteger(tokens)).toBe(true);
+      expect(Number(tokens)).toBeGreaterThanOrEqual(0);
+      expect(Number(tokens)).toBeLessThanOrEqual(USAGE_TOKENS_MAX);
+      // Exactly the pair the fold reads, and nothing else.
+      expect(Object.keys(entry.event.payload).sort()).toEqual(["accountId", "tokens"]);
+    }
+  });
+
+  it("P7: attribution is the elected account, and the task's own initiative", async () => {
+    const walked = await walkRecording("b7t-usage-attribution", B7T_TWO_USAGE_LINES);
+    const route = resolvedCliRoute();
+
+    for (const entry of walked.usageEvents) {
+      expect(entry.event.payload["accountId"]).toBe(route.accountId);
+      expect(entry.event.taskId).toBe(walked.inv.taskId);
+      expect(entry.event.attempt).toBe(walked.inv.attempt);
+      // The correlation is the walk's own invocation, so the spend rides the
+      // attempt rather than starting one.
+      expect(entry.event.correlationId).toBe(walked.inv.invocationId);
+    }
+
+    // The fold buckets by the initiative the DISCOVERY event carries; this walk
+    // declared one, so the spend is scoped rather than unscoped.
+    const discovery = walked.ledger
+      .listEvents({ limit: 200 })
+      .events.find((entry) => entry.event.type === "TASK_DISCOVERED");
+    expect(discovery?.event.payload["initiativeId"]).toBe(INITIATIVE_ID);
+  });
+
+  it("P8: recording the same observation twice appends once", async () => {
+    // The replay has to be taken at the state the recorder reads, because the
+    // recorder reads `fromState`/`toState` from the ledger at record time. That
+    // is what a resume actually re-does: the same observation, at the same
+    // point in the walk. Recorded twice from inside the sink, the second append
+    // rebuilds identical bytes under an identical key and inserts nothing.
+    const results: boolean[] = [];
+    const walked = await walkRecording("b7t-usage-replay", B7T_TWO_USAGE_LINES, {
+      sinkOverride: (sample) => {
+        const route = resolvedCliRoute();
+        const observation = {
+          invocation: replayInvocation,
+          kind: "USAGE" as const,
+          accountId: route.accountId,
+          tokens: sample.tokensUsed,
+          transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+          emittedBy: EMITTED_BY,
+        };
+        results.push(recordTokenObservation(replayLedger!, observation).inserted);
+        results.push(recordTokenObservation(replayLedger!, observation).inserted);
+      },
+    });
+
+    // First of each pair inserted, second of each pair an exact replay.
+    expect(results).toEqual([true, false, true, false]);
+    expect(walked.usageEvents).toHaveLength(2);
+    expect(walked.state).toBe("CHECKPOINTED");
+  });
+
+  it("P8: a completed attempt resumes without appending a second usage event", async () => {
+    // The other half, on the real resume path: with the marker verified,
+    // `closeIntent` probes DONE and never re-enters `apply`, so nothing is
+    // offered to the sink a second time.
+    const walked = await walkRecording("b7t-usage-resume", B7T_TWO_USAGE_LINES);
+    const before = walked.ledger.status();
+    expect(walked.usageEvents).toHaveLength(2);
+
+    const route = resolvedCliRoute();
+    const resumed = await new SqliteSupervisor({
+      ledger: walked.ledger,
+      invocation: walked.inv,
+      effects: createExecutionEffects({
+        port: createExecutionPort({ bindings: new Map([[ACCOUNT, cliBinding(B7T_TWO_USAGE_LINES)]]) }),
+        route,
+        request: executionRequest(),
+        scenarioRoot: walked.root,
+        recordUsage: () => {
+          throw new Error("a completed attempt must not record again");
+        },
+      }),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: INITIATIVE_ID,
+      route,
+    }).runToCheckpoint();
+
+    expect(resumed.finalState).toBe("CHECKPOINTED");
+    const after = walked.ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+  });
+
+  it("N4: no credential, no path, no provider output in any appended payload", async () => {
+    const walked = await walkRecording("b7t-usage-privacy", B7T_TWO_USAGE_LINES);
+    const serialized = walked.ledger
+      .listEvents({ limit: 200 })
+      .events.map((entry) => entry.canonicalJson)
+      .join("\n");
+    expect(serialized.length).toBeGreaterThan(0);
+
+    for (const forbidden of [
+      SECRET,
+      "credentialRef",
+      "authProfileRef",
+      "profile://",
+      "Bearer ",
+      "/Users/",
+      "/private/",
+      RESOLVED_MODEL,
+      "output_tokens",
+    ]) {
+      expect({ forbidden, present: serialized.includes(forbidden) }).toEqual({ forbidden, present: false });
+    }
+
+    // The plural key is load bearing: the contract's credential guard denies a
+    // singular `token`, so the payload is asserted to be exactly the pair.
+    for (const entry of walked.usageEvents) {
+      expect(Object.keys(entry.event.payload).sort()).toEqual(["accountId", "tokens"]);
+    }
+  });
+
+  it("N6: an over-ceiling observation is refused, and nothing is appended", async () => {
+    // D-B7T-2, end to end on the transport that can report it. The recorder
+    // refuses, the sink throws, the apply fails closed, and the walk does not
+    // reach its terminal.
+    const walked = await walkRecording("b7t-over-ceiling", [], {
+      port: apiPort(B7T_OVER_CEILING_CHUNKS),
+      route: apiRoute(),
+    });
+
+    expect(walked.state).toBeNull();
+    // Nothing recorded: not the over-ceiling row, not a truncated one.
+    expect(walked.usageEvents).toHaveLength(0);
+    expect(
+      walked.ledger.listEvents({ limit: 200 }).events.map((entry) => entry.event.type),
+    ).not.toContain("TOKEN_USAGE_RECORDED");
+    // And the apply failed closed, so no marker claims the effect happened.
+    expect(walked.markers).toHaveLength(0);
+    expect(TERMINAL_STATES).not.toContain(walked.ledger.getTask(walked.inv.taskId)?.currentState);
+  });
+
+  it("N6: the same walk at exactly the ceiling is recorded, so the refusal is about the number", async () => {
+    const walked = await walkRecording("b7t-at-ceiling", [], {
+      port: apiPort(B7T_UNDER_CEILING_CHUNKS),
+      route: apiRoute(),
+    });
+
+    expect(walked.state).toBe("CHECKPOINTED");
+    expect(walked.usageEvents).toHaveLength(1);
+    expect(Number(walked.usageEvents[0]?.event.payload["tokens"])).toBe(USAGE_TOKENS_MAX);
+  });
+
+  it("K1: the pre-marker window costs a re-execution and records once", async () => {
+    // The window C2 names, at the level a SIGKILL is observable: the sink threw
+    // between the execution and the marker write, so nothing durable claims the
+    // effect happened. The resumed walk re-executes and records exactly once.
+    let failFirst = true;
+    const recorded: number[] = [];
+    const walked = await walkRecording("b7t-k1", CLAUDE_LINES, {
+      sinkOverride: (sample) => {
+        if (failFirst) {
+          failFirst = false;
+          throw new Error("crash between the execution and the marker");
+        }
+        recorded.push(sample.tokensUsed);
+      },
+    });
+
+    // The first apply left nothing behind.
+    expect(walked.state).toBeNull();
+    expect(walked.markers).toHaveLength(0);
+
+    // Resume over the same ledger and the same scenario root.
+    const route = resolvedCliRoute();
+    const resumedEffects = createExecutionEffects({
+      port: createExecutionPort({ bindings: new Map([[ACCOUNT, cliBinding(CLAUDE_LINES)]]) }),
+      route,
+      request: executionRequest(),
+      scenarioRoot: walked.root,
+      recordUsage: (sample) => {
+        recorded.push(sample.tokensUsed);
+        recordTokenObservation(walked.ledger, {
+          invocation: walked.inv,
+          kind: "USAGE",
+          accountId: route.accountId,
+          tokens: sample.tokensUsed,
+          transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+          emittedBy: EMITTED_BY,
+        });
+      },
+    });
+    const resumed = await new SqliteSupervisor({
+      ledger: walked.ledger,
+      invocation: walked.inv,
+      effects: resumedEffects,
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: INITIATIVE_ID,
+      route,
+    }).runToCheckpoint();
+
+    expect(resumed.finalState).toBe("CHECKPOINTED");
+    // Exactly one usage event for the operation — not two. The spend of the
+    // abandoned execution is not in the ledger, which is the honest
+    // under-report the ordering buys; it is never double counted.
+    const usage = walked.ledger
+      .listEvents({ limit: 200 })
+      .events.filter((entry) => entry.event.type === "TOKEN_USAGE_RECORDED");
+    expect(usage).toHaveLength(1);
+    expect(Number(usage[0]?.event.payload["tokens"])).toBe(TOKENS);
+  });
+
+  it("K2: a verified marker implies a recorded usage event", async () => {
+    const walked = await walkRecording("b7t-k2", B7T_TWO_USAGE_LINES);
+    expect(walked.state).toBe("CHECKPOINTED");
+    expect(walked.markers).toHaveLength(1);
+
+    // The invariant, asserted directly: for every verified marker in the
+    // scenario root, a matching usage event exists in the ledger.
+    for (const marker of walked.markers) {
+      const operationId = marker.replace(/\.json$/, "");
+      expect(operationId).toBe(walked.operationId);
+      expect(walked.usageEvents.length).toBeGreaterThan(0);
+    }
+
+    // And the resume path takes the branch this ordering exists for: with the
+    // marker verified, `closeIntent` probes DONE and never re-enters `apply`,
+    // so a second walk starts no execution and appends no second usage event.
+    const route = resolvedCliRoute();
+    const calls = { starts: 0 };
+    const counting: ModelExecutionPort = {
+      start: (r, q) => {
+        calls.starts += 1;
+        return createExecutionPort({ bindings: new Map([[ACCOUNT, cliBinding(B7T_TWO_USAGE_LINES)]]) }).start(r, q);
+      },
+      interrupt: () => Promise.resolve(),
+      healthProbe: () =>
+        Promise.resolve({ status: "UNKNOWN" as const, checkedAt: RESOLVED_AT, latencyMs: null, classifiedError: null }),
+    };
+    const again = createExecutionEffects({
+      port: counting,
+      route,
+      request: executionRequest(),
+      scenarioRoot: walked.root,
+      recordUsage: () => {
+        throw new Error("the resume must not re-enter apply");
+      },
+    });
+    await expect(again.probe(operationForStep(walked.inv, INTENT_STEP))).resolves.toBe("DONE");
+    await again.apply(operationForStep(walked.inv, INTENT_STEP));
+    expect(calls.starts).toBe(0);
+    expect(walked.usageEvents).toHaveLength(2);
+  });
+
+  it("K3: an unsettled walk is not falsely terminal, and settles exactly once", async () => {
+    // The settlement's crash window: before the append there is no terminal, and
+    // after it there is exactly one. Because the settlement is a single atomic
+    // append under a derived key, those are the only two durable states a crash
+    // can leave, and a re-run reaches the second from the first.
+    const walked = await walkRecording("b7t-k3", [], {
+      port: apiPort(B7T_OVER_CEILING_CHUNKS),
+      route: apiRoute(),
+    });
+    expect(walked.state).toBeNull();
+
+    const task = walked.ledger.getTask(walked.inv.taskId);
+    expect(task).not.toBeNull();
+    expect(TERMINAL_STATES).not.toContain(task?.currentState);
+    expect(
+      walked.ledger.listEvents({ limit: 200 }).events.map((entry) => entry.event.type),
+    ).not.toContain("TASK_FAILED");
+
+    const context = {
+      ledger: walked.ledger,
+      effects: {
+        apply: () => Promise.resolve(),
+        probe: () => Promise.resolve("NOT_DONE" as const),
+      },
+      invocation: walked.inv,
+      emittedBy: EMITTED_BY,
+      plan: LIFECYCLE_PLAN,
+      initiativeId: INITIATIVE_ID,
+      route: apiRoute(),
+    };
+
+    const first = await settleFailure(context, "BOUND_EXHAUSTED");
+    expect(first.verdict).toBe("FAILED");
+    const countAfter = walked.ledger.status().eventCount;
+    expect(walked.ledger.getTask(walked.inv.taskId)?.currentState).toBe("FAILED");
+
+    const second = await settleFailure(context, "BOUND_EXHAUSTED");
+    expect(second.verdict).toBe("TASK_TERMINAL");
+    expect(second.failed).toBeNull();
+    expect(walked.ledger.status().eventCount).toBe(countAfter);
+  });
+
+  it("K4: the ledger stays intact and the projection rebuilds identically", async () => {
+    const walked = await walkRecording("b7t-k4", B7T_TWO_USAGE_LINES);
+    expect(walked.state).toBe("CHECKPOINTED");
+
+    expect(walked.ledger.verifyIntegrity().ok).toBe(true);
+    const before = walked.ledger.status();
+    const rebuild = walked.ledger.rebuildReadModel();
+    expect(rebuild.replayedEvents).toBe(before.eventCount);
+    const after = walked.ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+    expect(walked.ledger.verifyIntegrity().ok).toBe(true);
+    expect(
+      walked.ledger.verifyIntegrity().problems.filter((problem) => problem.kind === "PROJECTION"),
+    ).toEqual([]);
+  });
+
+  it("P9: a walk with no sink appends no usage event, so the toy lanes are untouched", async () => {
+    // The EQUIVALENCE drill's two lanes both run the toy effect and pass no
+    // sink, so no usage event can enter either ledger and its `eventCount` /
+    // `headEventSha256` equality is unmoved. Asserted here from the other side:
+    // the sink is what adds the events, and without one nothing is added.
+    const withoutSink = await walk("b7t-no-sink", cliPort(), resolvedCliRoute());
+    expect(withoutSink.types).not.toContain("TOKEN_USAGE_RECORDED");
+    expect(withoutSink.state).toBe("CHECKPOINTED");
+  });
 });

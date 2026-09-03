@@ -4206,6 +4206,63 @@ const V2B7S_WRITE_SET = [
 ];
 
 /**
+ * V2-B7T: failures settle and spend is recorded.
+ *
+ * Two holes in the production walk, closed with **no new vocabulary**: `FAILED`
+ * was already an exceptional terminal and `TASK_FAILED` already an event type,
+ * so the settlement is a lateral move exactly as `TASK_CANCELLED` was; and the
+ * usage sink is an injected closure rather than a third verb on `EffectPort`,
+ * which is what keeps ten inline `effects: {` literals — one of them production
+ * source in the durability edge — from moving.
+ *
+ * **Fifteen paths, and the last two arrived by adjudication rather than by the
+ * brief.** The packet was authorized at thirteen and stopped there: recording
+ * spend necessarily changes the production daemon's event trail, and two landed
+ * daemon suites pin that trail by equality —
+ * `test/fallback/index.test.ts` compared it to `LIFECYCLE_PLAN`'s own event
+ * types, and `test/drills/index.test.ts` compared the ledger's event count to
+ * the plan's length. Neither could stay true once the plane records what it
+ * spends, and the writer stopped on the write-set law rather than improvising
+ * them. The DT amended the cap to exactly fifteen.
+ *
+ * Both were updated **causally**, not by moving an integer: each now asserts the
+ * plan's own events in the plan's own order, plus a usage event whose payload,
+ * attribution and position in the trail are checked. `test/fallback` keeps every
+ * unrelated B2-4a assertion — the route projection, the evidence directory, the
+ * unbound Restate ports — untouched.
+ *
+ * **The Restate lane is deliberately absent.** The bounded
+ * convergence guard this packet settles exists only in the SQLite supervisor;
+ * the Restate handler walks a fixed traversal with no such guard, and its
+ * failure mode is a step throwing through `fatal(error)` inside a journaled
+ * `ctx.run` block — a different failure in kind whose settlement is a
+ * journal-ordering design with its own drill. That is deferred to B7-R by name
+ * in ADR 0004, and no file under `packages/edges/durability/**` is in this list.
+ *
+ * `packages/domains/runtime/src/drivers/sqlite-supervisor-child` and its
+ * Restate sibling are absent too, and that is what the sink's optionality buys.
+ * Optionality is made safe by L-B7T-2 below, which asserts the production
+ * daemon passes a sink — not by hope.
+ */
+const V2B7T_WRITE_SET = [
+  "packages/domains/runtime/src/failure/index.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/domains/runtime/src/usage/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0004-durability-and-supervisor.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4583,6 +4640,7 @@ const WRITE_SET = [
   ...V2B3A_WRITE_SET,
   ...V2B3B_WRITE_SET,
   ...V2B7S_WRITE_SET,
+  ...V2B7T_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5335,6 +5393,26 @@ const PATH_SCOPED_LAWS = [
   // side of this edit lands — which is exactly what it did while this row was
   // missing.
   { law: "the elector is not the walk", scope: "packages/entrypoints/daemon/src/**" },
+  // V2-B7T. Four new path-shaped surfaces, so four new rows: the register and
+  // the `requireScope` call sites both move 39 → 43, and
+  // `assertPathScopedInventory` fails and prints both numbers if only one side
+  // of this edit lands.
+  {
+    law: "a bounded failure settles before it throws",
+    scope: "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  },
+  {
+    law: "the production walk records what it spends",
+    scope: "packages/entrypoints/daemon/src/index.ts",
+  },
+  {
+    law: "the usage sink runs before the marker",
+    scope: "packages/domains/runtime/src/execution-effects/index.ts",
+  },
+  {
+    law: "the two token ceilings agree",
+    scope: "runtime/src/usage/index.ts and observation/src/rollups/index.ts",
+  },
   { law: "no module spawns for plutil", scope: "packages/entrypoints/daemon/src/launchd/**" },
   { law: "the packaged entry reads no environment", scope: "packages/entrypoints/daemon/src/bin/**" },
   { law: "observation collectors stay passive", scope: "packages/domains/observation/{src,test}/**" },
@@ -8925,6 +9003,140 @@ if (tracked.status === 0) {
       ELECTOR_SYMBOLS.join(", ") +
       "; the elector is not the walk",
   );
+
+  // --- L-B7T-1: a bounded failure settles before it throws (V2-B7T) --------
+  //
+  // The supervisor's bound-exhaustion guard used to throw and append nothing,
+  // leaving an open task with no terminal event. It settles now — and the call
+  // site is held here rather than only by a test, because the guard is
+  // unreachable through the public API against a consistent ledger: both plans
+  // converge in exactly `plan.length + 1` iterations, the only non-advancing
+  // step is the OUTCOME beat, and `closeIntent` throws rather than looping. A
+  // law is the right instrument for a path a test could only reach through a
+  // ledger that contradicts itself.
+  //
+  // Ordering matters and is checked: the settlement must precede the throw, or
+  // the throw would leave before anything was recorded.
+  const BOUND_HOME = "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts";
+  {
+    const source = stripComments(readIfPresent(BOUND_HOME) ?? "");
+    requireScope("a bounded failure settles before it throws", source.length === 0 ? 0 : 1);
+    const throwAt = source.indexOf("did not reach a terminal state within its bound");
+    const settleAt = source.indexOf("settleFailure(");
+    if (throwAt === -1) {
+      fail(BOUND_HOME + " no longer declares the bound-exhaustion refusal this law is scoped to");
+    } else if (settleAt === -1) {
+      fail(
+        BOUND_HOME +
+          " throws on bound exhaustion without settling first; a walk that stops here must append" +
+          " a terminal event before it throws, or the ledger keeps an open task with no receipt",
+      );
+    } else if (settleAt > throwAt) {
+      fail(BOUND_HOME + " settles after it throws, which is to say it does not settle");
+    } else {
+      notes.push("the bounded failure path settles before it throws, in " + BOUND_HOME);
+    }
+  }
+
+  // --- L-B7T-2: the production walk records what it spends (V2-B7T) --------
+  //
+  // The usage sink is optional on `ExecutionEffectsInput`, and that optionality
+  // is what keeps the two drill children out of this packet's write-set. This
+  // law is what stops the optionality becoming the structurally-live-
+  // behaviourally-empty defect the whole B7 wave exists to fix: the one
+  // production construction site must pass a sink, and it must reach the
+  // recorder.
+  const SPEND_HOME = "packages/entrypoints/daemon/src/index.ts";
+  {
+    const source = stripComments(readIfPresent(SPEND_HOME) ?? "");
+    requireScope("the production walk records what it spends", source.length === 0 ? 0 : 1);
+    const constructionAt = source.indexOf("createExecutionEffects({");
+    const sinkAt = source.indexOf("recordUsage:");
+    if (constructionAt === -1) {
+      fail(SPEND_HOME + " no longer constructs the execution effects this law is scoped to");
+    } else if (sinkAt === -1 || sinkAt < constructionAt) {
+      fail(
+        SPEND_HOME +
+          " builds the execution effects without a usage sink; the port reports what it spent and" +
+          " the ledger would keep no record of it",
+      );
+    } else if (!source.includes("recordTokenObservation(")) {
+      fail(SPEND_HOME + " passes a usage sink that does not reach the recorder");
+    } else {
+      notes.push("the production walk passes a usage sink that reaches the recorder, in " + SPEND_HOME);
+    }
+  }
+
+  // --- L-B7T-3: the usage sink runs before the marker (V2-B7T) -------------
+  //
+  // The crash-safety argument, made mechanical instead of remembered.
+  // `closeIntent` probes first and, on `DONE`, appends the outcome without
+  // re-entering `apply` — so a sink after the marker write would be permanently
+  // unreachable on the resume path, and that execution's spend would be lost
+  // rather than merely re-recorded. Before the marker, and synchronous, a
+  // throwing sink leaves no marker and the effect re-executes.
+  const SINK_HOME = "packages/domains/runtime/src/execution-effects/index.ts";
+  {
+    const source = stripComments(readIfPresent(SINK_HOME) ?? "");
+    requireScope("the usage sink runs before the marker", source.length === 0 ? 0 : 1);
+    // Both anchored on the CALL, not the declaration: `writeMarker(target:` is
+    // the function's own signature and appears earlier in the file than the
+    // `apply` body this law is about.
+    const sinkAt = source.indexOf("recordUsage({");
+    const markerAt = source.indexOf("writeMarker(target, {");
+    if (sinkAt === -1) {
+      fail(SINK_HOME + " no longer calls the usage sink inside apply");
+    } else if (markerAt === -1) {
+      fail(SINK_HOME + " no longer writes the evidence marker this law orders the sink against");
+    } else if (sinkAt > markerAt) {
+      fail(
+        SINK_HOME +
+          " writes the evidence marker before recording usage; a resumed walk finds the marker" +
+          " verified and never re-enters apply, so the observation would be lost rather than replayed",
+      );
+    } else {
+      notes.push("the usage sink runs before the evidence marker, in " + SINK_HOME);
+    }
+  }
+
+  // --- L-B7T-4: the two token ceilings agree (V2-B7T) ----------------------
+  //
+  // `runtime/src/usage` refuses an observation above its ceiling rather than
+  // appending a row the rollup fold would silently drop and count as malformed.
+  // That refusal is only correct while the two numbers are the same one, and
+  // the runtime may not import `@acp/observation` — it is in neither the
+  // allowlist nor the test-only set. The fence is the only place that can read
+  // both files, so the equality is asserted here or nowhere.
+  const USAGE_HOME = "packages/domains/runtime/src/usage/index.ts";
+  const ROLLUP_HOME = "packages/domains/observation/src/rollups/index.ts";
+  {
+    const usageSource = stripComments(readIfPresent(USAGE_HOME) ?? "");
+    const rollupSource = stripComments(readIfPresent(ROLLUP_HOME) ?? "");
+    requireScope(
+      "the two token ceilings agree",
+      usageSource.length === 0 || rollupSource.length === 0 ? 0 : 2,
+    );
+    const usageCeiling = /export const USAGE_TOKENS_MAX = ([0-9_]+);/.exec(usageSource);
+    const rollupCeiling = /export const ROLLUP_TOKENS_MAX = ([0-9_]+);/.exec(rollupSource);
+    if (usageCeiling === null) {
+      fail(USAGE_HOME + " no longer declares USAGE_TOKENS_MAX, so the recorder's ceiling cannot be compared");
+    } else if (rollupCeiling === null) {
+      fail(ROLLUP_HOME + " no longer declares ROLLUP_TOKENS_MAX, so the fold's ceiling cannot be compared");
+    } else if ((usageCeiling[1] ?? "") !== (rollupCeiling[1] ?? "")) {
+      fail(
+        "the recorder's ceiling (" +
+          usageCeiling[1] +
+          ") and the rollup fold's ceiling (" +
+          rollupCeiling[1] +
+          ") disagree; the recorder would either refuse spend the fold would have kept, or append" +
+          " spend the fold will silently drop",
+      );
+    } else {
+      notes.push(
+        "the recorder and the rollup fold hold the same token ceiling (" + usageCeiling[1] + ")",
+      );
+    }
+  }
 }
 
 // --- 18. P2E: the template is inert, and adoption is impossible from here ---
@@ -10391,6 +10603,25 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "canonicalSubmission",
   "canonicalSubmissionDigest",
   "composeSubmission",
+  // V2-B7T: terminal settlement and recorded spend. Fourteen names, each with a
+  // use site in this packet: the settlement and its two closed vocabularies,
+  // the recorder's own ceiling and the identity the sink's samples are recorded
+  // under, and the sink's two types. Pinned in both directions, so a name in
+  // the barrel and not here — or the reverse — fails.
+  "FAILURE_REASONS",
+  "FAILURE_TRANSITION_ID",
+  "FAILURE_VERDICTS",
+  "FailureEffect",
+  "FailurePrecheck",
+  "FailureReason",
+  "FailureSettlement",
+  "FailureVerdict",
+  "USAGE_TOKENS_MAX",
+  "UsageSample",
+  "UsageSink",
+  "failurePrecheck",
+  "settleFailure",
+  "usageTransitionId",
 ];
 
 /**

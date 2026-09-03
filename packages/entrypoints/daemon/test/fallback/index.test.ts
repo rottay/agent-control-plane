@@ -264,8 +264,39 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
       // daemon's LOCAL_COMMIT_WITH_RECEIPT plan produces, in the order the
       // plan defines them. "Reached CHECKPOINTED" means this trail, not a
       // task row that merely says so.
+      //
+      // V2-B7T: the plan's own trail is now interleaved with what the walk
+      // SPENT. The daemon passes a usage sink to `createExecutionEffects`, so
+      // every `{kind:"usage"}` entry the port reports becomes one
+      // `TOKEN_USAGE_RECORDED` event — appended from inside the INTENT beat's
+      // effect, which is why it lands after `RUN_STARTED` and before the
+      // outcome that closes that intent. The plan is unchanged; what changed is
+      // that the log now records the cost of walking it.
+      //
+      // Asserted causally rather than as a new integer: the plan's own events
+      // must still appear in the plan's own order, and the extra events must
+      // all be usage events sitting in that window.
       const trail = ledger.listEvents({ limit: 20 }).events.map((record) => record.event.type);
-      expect(trail).toEqual(LIFECYCLE_PLAN.map((step) => step.eventType));
+      const planTypes = LIFECYCLE_PLAN.map((step) => step.eventType);
+      expect(trail.filter((type) => type !== "TOKEN_USAGE_RECORDED")).toEqual(planTypes);
+      expect(trail.filter((type) => type === "TOKEN_USAGE_RECORDED").length).toBeGreaterThan(0);
+
+      const usageAt = trail.indexOf("TOKEN_USAGE_RECORDED");
+      expect(usageAt).toBeGreaterThan(trail.indexOf("RUN_STARTED"));
+      expect(usageAt).toBeLessThan(trail.indexOf("ATOMIC_STEP_COMPLETED"));
+
+      // And what it recorded is safe to have recorded: exactly the pair the
+      // rollup fold reads, attributed to the route's own account, with no
+      // provider output and no path anywhere near it.
+      const spend = ledger
+        .listEvents({ limit: 20 })
+        .events.filter((record) => record.event.type === "TOKEN_USAGE_RECORDED");
+      for (const record of spend) {
+        expect(Object.keys(record.event.payload).sort()).toEqual(["accountId", "tokens"]);
+        expect(record.event.payload["accountId"]).toBe(executionConfig().route.accountId);
+        expect(Number.isInteger(record.event.payload["tokens"])).toBe(true);
+        expect(record.event.transitionId.startsWith("usage.")).toBe(true);
+      }
 
       // V2-B2-2: the gate is re-proved over the ASSEMBLED path, not inherited
       // from the toy era. This daemon built a real `ModelExecutionPort` from

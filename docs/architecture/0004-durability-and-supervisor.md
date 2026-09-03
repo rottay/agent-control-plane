@@ -204,6 +204,120 @@ Declaring the difference is the point. Emulating Restate's serialization on
 SQLite would be simulated parity; claiming it without emulating it would be
 worse. The capability declaration carries the asymmetry so a caller can read it.
 
+## Terminal settlement and recorded spend (V2-B7T)
+
+Two holes in the production walk, closed here rather than in a record of their
+own: both are this document's subject — "fail closed", the postcondition law,
+and what the log is entitled to say when a walk stops.
+
+**A bounded failure now settles before it throws.**
+`SqliteSupervisor.runToCheckpoint` exhausted its bound, threw, and appended
+nothing, so a walk that could not converge left an open task with no terminal
+event — indistinguishable in the log from a task that was merely slow. It now
+calls `settleFailure` and then throws the same `SupervisorError`, so the
+daemon's unwind and its classified exit are unchanged.
+
+Nothing new was introduced to do it. `FAILED` was already an
+`ExceptionalState` and already in `TERMINAL_STATES`; `TASK_FAILED` was already
+in `CONTROL_PLANE_EVENT_TYPES` and already mapped to the `lifecycle` stream
+channel. The settlement is a lateral move to an existing terminal, built to the
+shape `settleCancellation` already established: read the ledger, probe, re-read
+the state immediately before the append, and build a `ControlPlaneEvent` from
+`deriveEventCoordinate` under one fixed transition id. It performs no effect and
+repairs nothing — a settlement that completed the work the failure abandoned
+would be deciding the walk should have succeeded.
+
+**`UNKNOWN` settles nothing, and that is §3 of this record applied.** If the
+intent is open and the probe cannot say whether the effect happened, the
+settlement appends nothing and says so. A terminal claim while an effect may
+have happened unrecorded is the one claim this document exists to prevent, and
+this plane has already shipped that defect once.
+
+**Spend now reaches the ledger.** The execution port has always reported what
+it spent and the walk has always drained the trail and discarded it. Every
+`{kind:"usage", stepIndex, tokensUsed}` entry becomes one
+`TOKEN_USAGE_RECORDED` event through the landed `recordTokenObservation` — one
+event per entry, never a sum, under a transition id derived from the operation's
+plan index and the entry's own step index. A resumed attempt rebuilds exactly
+that name, so the second append is an exact replay rather than a second row, and
+nothing anywhere has to remember that it already recorded this.
+
+**The sink runs before the evidence marker, and the ordering is the whole of the
+crash-safety argument.** `closeIntent` probes first and, on `DONE`, appends the
+outcome **without re-entering `apply`**. A sink placed after the marker write
+would therefore be permanently unreachable on exactly the window it exists to
+cover. Placed before it, and called synchronously, a throwing sink leaves no
+marker at all, the probe answers `NOT_DONE`, and the effect re-executes. The
+invariant this buys is that **a verified evidence marker implies a recorded
+usage event**.
+
+The cost, stated no louder than it is: a crash between the execution and the
+marker costs a re-execution whose spend is recorded once, so the ledger may
+**under-report** real provider spend after a crash. It never over-reports, and
+it never records spend for work that did not happen. Closing that gap needs the
+usage total durable in the marker plus a recovery read, which is its own packet.
+
+**An observation above the rollup's ceiling is refused, not appended.** The
+observation plane's fold drops any event whose `payload.tokens` exceeds its own
+bound and counts it in `skippedMalformed` — silently, and correctly, because a
+read model may not refuse. Appending such a row would put a number in the ledger
+that every reader ignores. The recorder therefore refuses at the door, with the
+same thrown `SupervisorError` its two existing guards raise. The runtime may not
+import `@acp/observation`, so the two ceilings are declared separately and
+pinned equal by a fence law, which is the only place that can read both files.
+
+### What this packet proves, and what it owes certification
+
+Two claims a reader could reasonably expect from the wording above are **not**
+made here, and both are owed to the backend-certification tranche rather than
+quietly assumed.
+
+**The observation rollup was not executed against this evidence.**
+`@acp/observation` is in neither the runtime's nor the daemon's import
+allowlist, so no test inside this packet's write-set can call
+`computeTokenRollups`. What is proved instead is the property that decides the
+fold's outcome: every appended `TOKEN_USAGE_RECORDED` event satisfies the fold's
+own admission predicate — a bounded string `accountId`, an integer `tokens`
+within the ceiling, and exactly that pair as the payload — so the fold would
+move by exactly the recorded sum and count nothing as `skippedMalformed`. The
+two ceilings are held equal by a fence law, which is the only place that can
+read both files.
+
+*Owed:* an integration proof that folds a real post-walk ledger through
+`computeTokenRollups` and asserts the per-task and per-initiative movement
+directly. It belongs where the package boundary permits it — the observation
+package's own tree or a certification harness — not here.
+
+**No literal `SIGKILL` was driven through the usage path.** The kill windows are
+proved at the level a crash is observable — durable state: the evidence marker
+on disk and the rows in the ledger. The pre-marker window is entered through a
+throwing sink, which leaves byte-identical durable state to a process killed at
+that instant (no marker, ledger unmoved); the post-marker window is proved by
+the resume taking the `probe → DONE` branch without re-entering `apply`.
+
+*Owed:* the same two windows driven with a real child process and a real
+`SIGKILL`, which requires `runtime/src/drivers/sqlite-supervisor-child` to carry
+the usage sink. Keeping that file out of this packet is exactly what makes the
+sink optional and the two drill children untouched, so the stronger drill is a
+deliberate follow-up rather than an omission.
+
+Neither gap blocks the production wiring this section lands. Both are named so
+the certification tranche inherits work rather than a claim.
+
+### What this section does not settle: the Restate lane
+
+**`TASK_FAILED` settlement here is SQLite-only, and the divergence is recorded
+rather than left to be discovered.** The bounded-convergence guard exists only
+in the SQLite supervisor. The Restate handler walks a fixed traversal with no
+guard that can fail to converge, and its failure mode is different in kind: a
+step throwing through `fatal(error)` into a `TerminalError` inside a journaled
+`ctx.run` block. Settling inside a journaled run block is a journal-ordering
+design with its own drill, and folding it in here would have doubled the packet.
+
+**It is owed to B7-R.** Until it lands, a Restate-driven walk that fails
+fatally still leaves an open task with no terminal event, exactly as both lanes
+did before this packet. No file under `packages/edges/durability/**` changed.
+
 ## What this does not decide
 
 - the state machine's transition table, which is P2B;

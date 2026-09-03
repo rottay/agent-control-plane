@@ -1140,12 +1140,27 @@ export type StreamChannel = z.infer<typeof StreamChannel>;
  * here instead of silently streaming as some default channel — which is how a
  * reader ends up believing a channel is quiet when it is merely unmapped.
  *
- * Three of the five channels are **structurally live and behaviourally empty**
- * in any current walk: nothing outside a test emits `LEASE_ACQUIRED`,
- * `COMMIT_AUTHORIZED`, `TOKEN_USAGE_RECORDED` or the account-switch pair yet.
- * The map is over the vocabulary, not over what happens to be emitted, so it
- * carries them anyway — and ADR 0017 says so in those words rather than
- * presenting five channels of observed traffic.
+ * **What is behaviourally empty, re-measured (V2-B7T).** The sentence that used
+ * to sit here said three of the five channels were structurally live and
+ * behaviourally empty. That was already wrong when it was written: cross-
+ * referencing the eleven event types the `LIFECYCLE_PLAN` produces against this
+ * table shows `lifecycle`, `execution`, `steps` and `state` each already
+ * carried at least one produced type, so exactly **one** channel — `progress` —
+ * was empty, not three. B7T gave `progress` its first producer, so **no channel
+ * is behaviourally empty now**.
+ *
+ * The accurate claim is about individual event types rather than channels.
+ * These nine still have no producer outside a library or a test:
+ * `LEASE_ACQUIRED`, `LEASE_REVOKED`, `WRITE_SET_VIOLATION_DETECTED`,
+ * `COMMIT_AUTHORIZED`, `ACCOUNT_SWITCH_STARTED`, `ACCOUNT_SWITCH_COMPLETED`,
+ * `AUTH_REQUIRED_RAISED`, `QUOTA_WARNING` and `TOKEN_RESERVATION_RECORDED`.
+ * Each is owed to a named packet, and none is emitted to make a channel look
+ * busy. The map is over the vocabulary, not over what happens to be emitted, so
+ * it carries every type either way.
+ *
+ * ADR 0017 makes the older claim and is deliberately left alone: it is a dated
+ * record and its claim was true of what it recorded. This comment describes
+ * current state, which is why it is the one that had to move.
  */
 export const STREAM_CHANNEL_BY_EVENT_TYPE: Readonly<
   Record<ControlPlaneEventType, StreamChannel>

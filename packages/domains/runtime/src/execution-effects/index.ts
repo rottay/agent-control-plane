@@ -74,7 +74,47 @@ export interface ExecutionEffectsInput {
    * directory could name a real repository.
    */
   readonly scenarioRoot: ScenarioRoot;
+  /**
+   * Where the port's own usage entries go (V2-B7T).
+   *
+   * Injected as a function, so this module still imports no ledger and still
+   * writes nothing but its own markers. The daemon closes over the ledger, the
+   * invocation, the elected route's account and the emitter — all already in
+   * scope at the one production construction site — and hands the closure in.
+   *
+   * **Optional, and the optionality is deliberate.** The two drill children
+   * build this port without a sink and must keep compiling untouched; widening
+   * `EffectPort` instead would have moved ten inline `effects: {` literals, one
+   * of them production source. Optionality is made safe by a fence law
+   * (L-B7T-2) that asserts the production daemon passes one — not by hope.
+   */
+  readonly recordUsage?: UsageSink | undefined;
 }
+
+/**
+ * One `usage` entry from the port's trail, as the sink receives it.
+ *
+ * `operationIndex` is the operation's own plan index and `stepIndex` is the
+ * trail entry's; together they name this observation durably, without a clock
+ * and without a counter. The tokens are the port's number, carried verbatim —
+ * this module measures nothing and has no opinion about whether the count is
+ * right.
+ */
+export interface UsageSample {
+  readonly operationIndex: number;
+  readonly stepIndex: number;
+  readonly tokensUsed: number;
+}
+
+/**
+ * The sink the walk hands its spend to.
+ *
+ * Synchronous by design. It is called between the execution and the marker
+ * write, and it must be able to fail the apply closed — an asynchronous sink
+ * whose rejection the caller could forget to await would be a sink that
+ * silently dropped spend.
+ */
+export type UsageSink = (sample: UsageSample) => void;
 
 /**
  * The execution could not be carried to completion.
@@ -307,6 +347,36 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
       }
 
       const trail = await execute(input);
+
+      // V2-B7T. The sink runs BEFORE the marker, and the ordering is the whole
+      // of the crash-safety argument rather than a preference.
+      //
+      // `closeIntent` probes first and, on `DONE`, appends the outcome without
+      // re-entering `apply`. So a resumed walk that finds a verified marker
+      // never calls this function again — and a sink placed after the marker
+      // write would therefore be permanently unreachable on exactly the window
+      // it exists to cover. Placed before it, and called synchronously, a
+      // throwing sink leaves no marker at all, the probe answers `NOT_DONE`,
+      // and the effect re-executes.
+      //
+      // The invariant this buys, stated no louder than it is: a verified
+      // evidence marker implies a recorded usage event. The cost is that a
+      // crash between the execution and the marker loses that execution's
+      // spend, so the ledger may UNDER-report real provider spend after a
+      // crash. It never over-reports, and it never records spend for work that
+      // did not happen.
+      const recordUsage = input.recordUsage;
+      if (recordUsage !== undefined) {
+        for (const event of trail) {
+          if (event.kind !== "usage") continue;
+          recordUsage({
+            operationIndex: operation.operationIndex,
+            stepIndex: event.stepIndex,
+            tokensUsed: event.tokensUsed,
+          });
+        }
+      }
+
       writeMarker(target, {
         operationId: operation.operationId,
         operationDigest: operationDigest(operation),

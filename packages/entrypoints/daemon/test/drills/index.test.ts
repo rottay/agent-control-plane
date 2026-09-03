@@ -909,12 +909,32 @@ describe("the Restate mode", () => {
     const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)));
     try {
       // The walk is over before the daemon says it is supervising. Both halves
-      // matter: the terminal state says the work finished, and the event count
-      // says it finished exactly once — an attach that duplicated the
-      // invocation would show a second plan's worth of events here.
+      // matter: the terminal state says the work finished, and the count says
+      // it finished exactly once — an attach that duplicated the invocation
+      // would show a second plan's worth of events here.
+      //
+      // V2-B7T: the ledger now also carries what the walk SPENT, one
+      // `TOKEN_USAGE_RECORDED` per usage entry the port reported. So the
+      // once-only claim is made against the plan's own events rather than
+      // against a total that spend also moves — which is the stronger form of
+      // the same assertion: a duplicated invocation would double the PLAN
+      // events, and that is exactly what is counted here.
       expect(ledger.getTask(plan.taskId)?.currentState).toBe("CHECKPOINTED");
-      expect(ledger.status().eventCount).toBe(planFor("LOCAL_COMMIT_WITH_RECEIPT").length);
-      const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+      const recorded = ledger.listEvents({ limit: 200 }).events;
+      const planEvents = recorded.filter((r) => r.event.type !== "TOKEN_USAGE_RECORDED");
+      const spend = recorded.filter((r) => r.event.type === "TOKEN_USAGE_RECORDED");
+      expect(planEvents.length).toBe(planFor("LOCAL_COMMIT_WITH_RECEIPT").length);
+
+      // The spend is recorded once per entry too, under a derived name — an
+      // attach that re-ran the effect would replay the same key rather than
+      // append a second row, and either failure would show up as a duplicate
+      // key in the check below.
+      for (const record of spend) {
+        expect(Object.keys(record.event.payload).sort()).toEqual(["accountId", "tokens"]);
+        expect(record.event.transitionId.startsWith("usage.")).toBe(true);
+      }
+
+      const keys = recorded.map((r) => r.event.idempotencyKey);
       expect(keys.length - new Set(keys).size).toBe(0);
       expect(ledger.verifyIntegrity().problems).toEqual([]);
     } finally {

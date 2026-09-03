@@ -283,3 +283,12 @@ export type {
   SubmissionOutcome,
   SubmissionRefused,
 } from "./submission/index.js";
+
+// V2-B7T: failures settle and spend is recorded. Two holes in the production
+// walk, closed with no new vocabulary: `FAILED` was already an exceptional
+// terminal and `TASK_FAILED` already an event type, and the usage sink is an
+// injected closure rather than a third verb on `EffectPort`.
+export { FAILURE_REASONS, FAILURE_TRANSITION_ID, FAILURE_VERDICTS, failurePrecheck, settleFailure } from "./failure/index.js";
+export type { FailureEffect, FailureReason, FailureSettlement, FailurePrecheck, FailureVerdict } from "./failure/index.js";
+export { USAGE_TOKENS_MAX, usageTransitionId } from "./usage/index.js";
+export type { UsageSample, UsageSink } from "./execution-effects/index.js";

@@ -30,6 +30,45 @@ import { SupervisorError } from "../errors/index.js";
  * error one layer from the cause; this module refuses at the door and says why.
  */
 
+/**
+ * Ceiling for a single observation's `tokens` (V2-B7T, D-B7T-2).
+ *
+ * Declared here rather than imported, in the same idiom
+ * `observation/src/rollups` uses for its own bound and for the same stated
+ * reason: this module's bounds are its own, and a change to one measure must
+ * not silently move another. `@acp/observation` is not in the runtime's import
+ * allowlist, so it could not be imported even if that were the preference — and
+ * the fence, which is the only place that can read both files, pins the two
+ * literals equal.
+ *
+ * **Why refuse rather than append.** The rollup fold drops any event whose
+ * `payload.tokens` exceeds its own ceiling and counts it in `skippedMalformed`
+ * — silently, and correctly, because a read model may not refuse. So an
+ * observation above the ceiling would be durably appended and then quietly
+ * absent from every rollup: the quiet-wrong-number failure this plane exists to
+ * avoid. Refusing at the recorder puts the error at the cause, where a caller
+ * can see it, and appends nothing.
+ */
+export const USAGE_TOKENS_MAX = 10_000_000;
+
+/**
+ * The durable name one execution-trail usage entry is recorded under.
+ *
+ * Derived from the operation's own plan index and the trail entry's own step
+ * index, so it is unique within the attempt, stable across replay, and carries
+ * no clock and no counter. A resumed attempt that re-executes rebuilds exactly
+ * this name, which is why the second append is an exact replay rather than a
+ * second row — the ledger recognises the key, and nothing anywhere has to
+ * remember that it already recorded this.
+ *
+ * Both components are non-negative integers, so the result always satisfies the
+ * contract's transition-id grammar (`/^[A-Za-z0-9][A-Za-z0-9._:-]*$/`, at most
+ * 120 characters) with room to spare.
+ */
+export function usageTransitionId(operationIndex: number, stepIndex: number): string {
+  return "usage." + String(operationIndex) + "." + String(stepIndex);
+}
+
 /** Which of the two usage facts an observation carries. */
 export type TokenObservationKind = "USAGE" | "RESERVATION";
 
@@ -88,6 +127,17 @@ export function recordTokenObservation(
   if (!Number.isInteger(tokens) || tokens < 0) {
     throw new SupervisorError(
       "refusing to record a token observation that is not a non-negative integer count",
+    );
+  }
+  // D-B7T-2. Above the rollup's ceiling the fold would drop this row and count
+  // it as malformed, so appending it would put a number in the ledger that
+  // every reader silently ignores. Raised the same way as the guard above it:
+  // one failure shape in this module, not two.
+  if (tokens > USAGE_TOKENS_MAX) {
+    throw new SupervisorError(
+      "refusing to record a token observation above the rollup ceiling; the" +
+        " fold would drop it as malformed and the spend would be durably" +
+        " recorded and permanently invisible",
     );
   }
   if (accountId.length === 0) {

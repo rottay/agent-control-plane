@@ -1283,3 +1283,79 @@ describe("SQLite does not serialize per task, and says so", () => {
     expect(ledgerA.verifyIntegrity().ok).toBe(true);
   }, 120_000);
 });
+
+// ---------------------------------------------------------------------------
+// V2-B7T: settlement fires on the failure path and on no other
+// ---------------------------------------------------------------------------
+
+/**
+ * The settlement's call site, from the supervisor's side.
+ *
+ * What is asserted here is the half that is reachable. The bound guard itself
+ * — `guard <= plan.length + 1` — cannot be reached through the public API
+ * against a consistent ledger: both plans converge in exactly `plan.length + 1`
+ * iterations, leaving one spare, the only non-advancing step is the OUTCOME
+ * beat (which advances as soon as its event exists), and `closeIntent` throws
+ * rather than looping when a probe will not settle. Measured, not assumed. So
+ * the guard is defensive, and the drills below prove what a real walk can
+ * actually produce: that settlement does **not** fire when the walk converges,
+ * and does **not** fire when the walk throws for a different reason.
+ *
+ * That the exhaustion path calls `settleFailure` at all is held by the fence
+ * law L-B7T-1, with a failing fixture. A law is the right instrument precisely
+ * because the path is unreachable by construction — a test could only reach it
+ * through a ledger that contradicts itself.
+ */
+describe("terminal settlement (V2-B7T)", () => {
+  it("appends no TASK_FAILED when the walk reaches its terminal", async () => {
+    const root = scenario("b7t-converges");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const inv = invocationFor(TASK_IDS[0]);
+
+    const run = await new SqliteSupervisor({
+      ledger,
+      invocation: inv,
+      effects: toyEffects(root),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "NO_COMMIT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: TEST_ROUTE,
+    }).runToCheckpoint();
+
+    expect(run.finalState).toBe("CHECKPOINTED");
+    const types = ledger.listEvents({ taskId: TASK_IDS[0], limit: 200 }).events.map((e) => e.event.type);
+    expect(types).not.toContain("TASK_FAILED");
+    expect(ledger.getTask(TASK_IDS[0])?.currentState).toBe("CHECKPOINTED");
+  });
+
+  it("appends no TASK_FAILED when the postcondition cannot be established (N2)", async () => {
+    // `closeIntent` throws `PostconditionUnknownError` before the bound is ever
+    // approached. Nothing settles, and the intent is left open for an operator
+    // — the one claim ADR 0004 §3 exists to prevent is not made.
+    const root = scenario("b7t-unknown-postcondition");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const inv = invocationFor(TASK_IDS[1]);
+
+    const stubborn: EffectPort = {
+      apply: () => Promise.resolve(),
+      probe: () => Promise.resolve("UNKNOWN"),
+    };
+
+    await expect(
+      new SqliteSupervisor({
+        ledger,
+        invocation: inv,
+        effects: stubborn,
+        emittedBy: EMITTED_BY,
+        commitPolicy: "NO_COMMIT",
+        initiativeId: TEST_INITIATIVE_ID,
+        route: TEST_ROUTE,
+      }).runToCheckpoint(),
+    ).rejects.toThrow(PostconditionUnknownError);
+
+    const types = ledger.listEvents({ taskId: TASK_IDS[1], limit: 200 }).events.map((e) => e.event.type);
+    expect(types).not.toContain("TASK_FAILED");
+    expect(types).toContain("RUN_STARTED");
+    expect(ledger.getTask(TASK_IDS[1])?.currentState).toBe("RUNNING");
+  });
+});
