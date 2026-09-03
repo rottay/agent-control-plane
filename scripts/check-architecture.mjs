@@ -4548,7 +4548,6 @@ const AUTHORITY_LITERALS = {
     "canonical",
     "no product cutover authority",
     "git config core.hooksPath .githooks",
-    "P1A is not P1 completion",
   ],
   "AGENTS.md": [
     "<provider>/<model>/<role>/<instance>",
@@ -4756,6 +4755,13 @@ const AUTHORITY_LITERALS = {
  * described it.
  */
 const EXPIRED_LITERALS = {
+  "README.md": [
+    // Retired by the publication ruling of 2026-09-03. The public README may
+    // carry no internal phase name, and P1 is complete besides, so the
+    // disclaimer is both jargon and stale. Pinned absent rather than merely
+    // deleted, because a sentence that is only deleted can come back.
+    "P1A is not P1 completion",
+  ],
   // Retired by the publication ruling of 2026-09-03. Each of these was true
   // while the hook was unconditional and no remote existed, and each is false
   // now that the hook denies by default and one canonical remote is
