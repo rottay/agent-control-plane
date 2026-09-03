@@ -13,10 +13,14 @@
  * 5. No transcript continuity. Continuity is carried by digests, receipts and
  *    the next safe action, never by replaying a provider conversation.
  *
- * Subdivided by P8-T G6 into fourteen capability modules, one per the section
- * bands this file already carried. Nothing is defined here any more: this is a
- * re-export barrel and the fence refuses a definition in it. The exported name
- * set is pinned, so the subdivision could not move the package's surface.
+ * Subdivided by P8-T G6 into one capability module per the section bands this
+ * file already carried, and widened since: G7 hoisted two more in. The count
+ * is deliberately not written here — the fence derives it from the modules
+ * this barrel actually re-exports from, and a number restated in prose is a
+ * number that goes stale the next time one is added. Nothing is defined here
+ * any more: this is a re-export barrel and the fence refuses a definition in
+ * it. The exported name set is pinned, so the subdivision could not move the
+ * package's surface.
  */
 
 export {

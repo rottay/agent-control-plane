@@ -23,7 +23,7 @@
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -336,5 +336,161 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     // Whatever it reported, it reported about the synthetic tree: the real
     // repository's own paths cannot appear in a run rooted somewhere else.
     expect(output).not.toContain(join(REAL_REPO, "packages", "domains", "runtime"));
+  });
+});
+describe("the expired-literal table catches the fragments V2-B6-fence armed", () => {
+  // Both probes drive the real fence as a subprocess against a synthetic tree,
+  // so what is proved is that THIS table entry fires — not that some
+  // neighbouring law happens to be red at the same time. The restore half is
+  // the drill recorded in the packet report: with the entry removed, the same
+  // tree passes, which is the pre-fix state.
+
+  it("refuses a README that brings back the pre-G5 two-drivers sentence", () => {
+    const root = syntheticTree();
+    // The pre-G10 bytes, across the wrap they had in the file. `flatten`
+    // lowercases and collapses whitespace, so the line break is immaterial and
+    // the literal matches the sentence as it was actually written.
+    write(
+      root,
+      "README.md",
+      "# probe\n\nloopback HTTP server, a CLI and a local UI — a durability plane with two\n" +
+        "orchestration drivers under a supervised local daemon, a shadow-mode\n",
+    );
+    commitAll(root);
+
+    const { status, output } = runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("still says");
+    expect(output).toContain("a durability plane with two orchestration drivers under a supervised local daemon");
+  });
+
+  it("does not fire on the successor sentence, which still names two drivers", () => {
+    // The discriminator, and the reason the literal is long. The live README
+    // says "two orchestration drivers" too; a shorter pin would have made this
+    // tree red and the law useless.
+    const root = syntheticTree();
+    write(
+      root,
+      "README.md",
+      "# probe\n\na durability plane whose two orchestration drivers live in two packages\n" +
+        "since G5, the SQLite supervisor in `@acp/runtime` and the Restate driver\n" +
+        "in `@acp/durability`\n",
+    );
+    commitAll(root);
+
+    const { output } = runFenceAgainst(root);
+    expect(output).not.toContain("a durability plane with two orchestration drivers under a supervised local daemon");
+  });
+
+  it("refuses a contracts barrel that still counts its capability modules in prose", () => {
+    const root = syntheticTree();
+    write(root, "README.md", "# probe\n");
+    write(
+      root,
+      "packages/kernel/contracts/src/schemas/index.ts",
+      "/**\n * Subdivided by P8-T G6 into fourteen capability modules, one per the section\n" +
+        " * bands this file already carried.\n */\nexport {};\n",
+    );
+    commitAll(root);
+
+    const { status, output } = runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("still says");
+    expect(output).toContain("fourteen capability modules");
+  });
+});
+
+describe("the five barrel pin laws parse through one helper (V2-B6-fence)", () => {
+  const FENCE_SOURCE = readFileSync(join(REAL_REPO, "scripts", "check-architecture.mjs"), "utf8");
+
+  /**
+   * The idiom the five laws carried inline until V2-B6-fence, verbatim.
+   *
+   * Kept here as a fixture rather than described in prose: the claim is that
+   * it is WRONG in a specific way, and a claim about parsing is only checkable
+   * against the parser.
+   */
+  function inlineIdiom(source) {
+    const names = new Set();
+    for (const block of source.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+      for (const piece of (block[1] ?? "").split(",")) {
+        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
+        if (name !== undefined && name !== "") names.add(name);
+      }
+    }
+    return names;
+  }
+
+  /** `barrelExportNames`, verbatim from the fence, kept in step by the assertion below. */
+  function helper(source) {
+    const names = new Set();
+    for (const block of source.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
+      for (const piece of (block[1] ?? "").split(",")) {
+        const trimmed = piece.trim().replace(/^type\s+/, "");
+        const name = trimmed.split(/\s+as\s+/).pop()?.trim();
+        if (name !== undefined && name !== "") names.add(name);
+      }
+    }
+    return names;
+  }
+
+  const BARREL = 'export { a, type B } from "./x.js";\n';
+
+  it("shows the old idiom producing a name no barrel declares", () => {
+    // Two failures out of one correct line: the law would report `type B` as an
+    // export outside the closed surface, and then `B` as a pinned name the
+    // barrel no longer exports. A false failure that looks exactly like a real
+    // one -- which is the whole reason the helper exists.
+    expect([...inlineIdiom(BARREL)].sort()).toEqual(["a", "type B"]);
+    expect(inlineIdiom(BARREL).has("B")).toBe(false);
+  });
+
+  it("shows the helper producing the names the barrel actually exports", () => {
+    expect([...helper(BARREL)].sort()).toEqual(["B", "a"]);
+  });
+
+  it("keeps the fixture honest against the fence's own helper", () => {
+    // The fixture above only means something if it behaves like the function
+    // the fence actually calls. So the fence's own declaration is lifted out
+    // of its source and evaluated here, and the two are compared on their
+    // ANSWERS rather than on their bytes -- byte equality would fail on
+    // indentation, which is not what either of them means, and would pass on a
+    // rewrite that changed the text without changing the parse.
+    const declared = FENCE_SOURCE.match(/function barrelExportNames\(source\) \{([\s\S]*?)\n\}/);
+    expect(declared).not.toBeNull();
+    const real = new Function("source", declared[1]);
+
+    for (const sample of [
+      BARREL,
+      'export { a } from "./x.js";\n',
+      'export type { C, D } from "./y.js";\n',
+      'export { e as f, type G as H } from "./z.js";\n',
+      'export { i, type J, k } from "./w.js";\n',
+      "",
+    ]) {
+      expect({ sample, names: [...real(sample)].sort() }).toEqual({
+        sample,
+        names: [...helper(sample)].sort(),
+      });
+    }
+
+    // And the property the whole cleanup is for, asserted against the real one.
+    expect(real(BARREL).has("B")).toBe(true);
+    expect(real(BARREL).has("type B")).toBe(false);
+  });
+
+  it("routes exactly the five equality-pinned barrels through it, and no others", () => {
+    // The wiring half. Reverting any one of the five to the inline idiom makes
+    // this fail, which is what stops the cleanup from silently coming undone.
+    const routed = [...FENCE_SOURCE.matchAll(/=\s*barrelExportNames\((\w+)\)/g)].map((m) => m[1]);
+    expect(routed.sort()).toEqual(
+      ["accountsIndex", "adaptersIndex", "durabilityBarrel", "observationIndex", "runtimeBarrel"].sort(),
+    );
+
+    // And the two block-idiom sites that remain are the two the map excluded:
+    // the daemon law, which also parses direct declarations, and the helper's
+    // own body. Neither is one of the five.
+    const inlineSites = [...FENCE_SOURCE.matchAll(/matchAll\(\/export\\s/g)].length;
+    expect(inlineSites).toBe(2);
   });
 });

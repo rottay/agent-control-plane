@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **600
+ * P8, with the V2 packets that continue its coordinates, is therefore **603
  * packet entries across 222 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
@@ -1349,33 +1349,34 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
- * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) = 600 entries, with 378
- * duplicate entries.
+ * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) + 3 (V2-B6-fence) = 603
+ * entries, with 381 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 54 duplicates = 54   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 55 duplicates = 55   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
  *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
  *                                   build-server suite, and the CLI suite)
- *   5 paths ×  6 duplicates = 30   (the protocol surface and the workspace file)
- *   8 paths ×  5 duplicates = 40   (the contracts schema barrel, the protocol
- *                                   route and parity surface with its parity
- *                                   suite, the console's app root and api
- *                                   client, the root README, and — since
- *                                   V2-B1c-2 — the daemon drills suite)
+ *   6 paths ×  6 duplicates = 36   (the protocol surface, the workspace file,
+ *                                   and — since V2-B6-fence — the contracts
+ *                                   schema barrel)
+ *   7 paths ×  5 duplicates = 35   (the protocol route and parity surface with
+ *                                   its parity suite, the console's app root
+ *                                   and api client, the root README, and the
+ *                                   daemon drills suite)
  *   8 paths ×  4 duplicates = 32   (the initiatives suite, the console manifest,
  *                                   the console styles sheet, the accounts-view
  *                                   suite, the supervisor and durability drills
  *                                   suites, `mode-restate`, and the daemon
  *                                   entry point)
  *  24 paths ×  3 duplicates = 72
- *  34 paths ×  2 duplicates = 68
- *  42 paths ×  1 duplicate  = 42
+ *  35 paths ×  2 duplicates = 70
+ *  41 paths ×  1 duplicate  = 41
  *
- * 54 + 11 + 8 + 21 + 30 + 40 + 32 + 72 + 68 + 42 = 378.
+ * 55 + 11 + 8 + 21 + 36 + 35 + 32 + 72 + 70 + 41 = 381.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1758,6 +1759,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * launchd-lifecycle suites), so ×3 reads thirty-four and ×2 reads forty-two.
  * ×1 is untouched at ninety-five, which is what "no novel path" looks like
  * from the other end.
+ *
+ * V2-B6-fence adds **three entries and no novel path**, which is what a debt
+ * packet looks like: it closes claims this file and the contracts barrel were
+ * making, and opens nothing. Entries move 600 → 603, distinct holds at 222,
+ * duplicates 378 → 381. Three band steps, one per entry: this file's own row,
+ * ×55 → ×56; the contracts schema barrel ×6 → ×7, which is why ×6 reads six
+ * and ×5 reads seven; and the fence's own probe file ×2 → ×3, so ×3 reads
+ * thirty-five and ×2 reads forty-one. ×1 is untouched at forty-one.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3585,6 +3594,53 @@ const V2B1C2_WRITE_SET = [
 ];
 
 /**
+ * V2-B6-fence: three inherited P8 debts, consolidated because they share one
+ * instrument.
+ *
+ * Not a feature packet. Each item is a place where this file said something
+ * that had stopped being true, and each is closed with the mechanism the
+ * repository already uses for exactly that.
+ *
+ * **The five equality barrel pins call `barrelExportNames`.** They carried the
+ * block idiom inline, and the helper's own doc-comment had recorded the debt
+ * and deferred it as unrelated risk in a documentation tranche. Routed in
+ * place: no new module, no new import seam, and the computed export sets are
+ * unchanged (64 / 72 / 151 / 22 / 85, byte-identical notes). The daemon law
+ * and the contracts schema law keep the idiom and are named as excluded — the
+ * first also parses direct declarations, the second's regex carries the module
+ * specifier its count depends on.
+ *
+ * **The pre-G5 two-drivers sentence is pinned absent.** Never armed before:
+ * G10 rewrote the README sentence and said "Prose, so no law catches it
+ * directly", which is the one closure in this table's history that corrected a
+ * sentence without retiring the falsified bytes beside it. What is pinned is
+ * the pre-G10 bytes, not either of the fence's own glosses of them, neither of
+ * which appears in any revision of that file — a gloss would arm a law that
+ * can never fire. It is also long enough to exclude the successor sentence,
+ * which still contains "two orchestration drivers".
+ *
+ * **The stale capability-module count leaves the contracts barrel.** The
+ * header said fourteen from G6; G7 hoisted in two more and the fence's derived
+ * note has contradicted it on every run since. The successor names no integer,
+ * because "sixteen" would reintroduce the identical debt on the seventeenth
+ * module, and the phrase is pinned absent so it cannot come back.
+ *
+ * The P4 referent is corrected in the same array: it said "the status text
+ * above" and had come to name a commit five closures later than the one that
+ * actually falsified it. It is anchored to `be02816` and to the retired
+ * sentence's own bytes, so no future insertion can move it. That correction is
+ * prose and carries no causal negative; the packet report says so plainly
+ * rather than dressing it as a tested change.
+ *
+ * Three paths, none novel. B6-3 (runner-death) is deliberately not here.
+ */
+const V2B6FENCE_WRITE_SET = [
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "packages/kernel/contracts/src/schemas/index.ts",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3895,6 +3951,7 @@ const WRITE_SET = [
   ...V2B1B2_WRITE_SET,
   ...V2B1C1_WRITE_SET,
   ...V2B1C2_WRITE_SET,
+  ...V2B6FENCE_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -4415,6 +4472,17 @@ const EXPIRED_LITERALS = {
     "P6C adds commit authorization and quarantine",
   ],
   "packages/domains/runtime/src/index.ts": ["This is P2B", "This is P2D"],
+  // Retired by V2-B6-fence. G6 subdivided this barrel into fourteen modules
+  // and the header said so; G7 hoisted in `exit-codes` and `usage-limits` and
+  // the sentence describing the barrel was not updated with the barrel, so the
+  // fence's own derived note has contradicted the file's header on every run
+  // since. G10 adjudicated exactly this drift for the NOTE and left the source
+  // header alone; this closes the other half.
+  //
+  // The successor names no integer at all rather than saying "sixteen", which
+  // would reintroduce the identical debt on the seventeenth module. The live
+  // count stays where it can be computed: the fence prints it.
+  "packages/kernel/contracts/src/schemas/index.ts": ["fourteen capability modules"],
   "packages/domains/runtime/package.json": ["the SQLite supervisor driver over the append-only ledger"],
   "README.md": [
     "There is no orchestrator",
@@ -4440,11 +4508,38 @@ const EXPIRED_LITERALS = {
     // `ROADMAP_STATUS_LITERAL`). Pinned absent rather than merely rewritten,
     // because a sentence that is only deleted can come back.
     "P0, P1, P2, P3, P4, P5, P6, P7 and P7I complete. Next: P8.",
-    // Falsified by the same commit that retires the status text above: P4
-    // shipped three provider adapters. Pinned here rather than merely deleted,
-    // because a sentence that is only removed can come back, and coming back
-    // is the exact drift this table exists to catch.
+    // Falsified by `be02816`, the commit that retired
+    // "P0, P1, P2 and P3 complete. Next: P4." above: P4 shipped three provider
+    // adapters. Pinned here rather than merely deleted, because a sentence that
+    // is only removed can come back, and coming back is the exact drift this
+    // table exists to catch.
+    //
+    // The referent is named by commit and by the retired sentence's own bytes
+    // rather than by position (V2-B6-fence). It read "the status text above"
+    // from `be02816` until then, which was accurate the day it was written and
+    // silently false afterwards: five status sentences have been retired into
+    // this array since, so "above" had come to name `e437d5a`'s P8-E2 entry and
+    // attribute the P4 falsification to it. A positional anchor re-rots at
+    // every closure, and V2-E will retire another one; a content anchor cannot.
     "There is no provider adapter yet",
+    // Retired by G5 and rewritten by G10, but never pinned until
+    // V2-B6-fence — the one closure in this table's history that corrected a
+    // sentence without retiring the falsified bytes beside it, and said so
+    // ("Prose, so no law catches it directly").
+    //
+    // G5 split the two orchestration drivers across `@acp/runtime` and
+    // `@acp/durability`, which falsified the claim that they sat in one plane
+    // under one daemon. The live successor says where they actually live.
+    //
+    // These are the pre-G10 bytes (`git show daac0ba^:README.md`, lines 8-9,
+    // across the wrap), NOT either of the fence's own narrative glosses of
+    // them: neither "two drivers in one plane" nor "two orchestration drivers
+    // in one plane" appears in any revision of this file, so pinning a gloss
+    // would arm a law that can never fire. It also cannot be shortened to
+    // "two orchestration drivers", which the successor sentence still
+    // contains; the margin is four words wide and the literal has to be long
+    // enough to exclude it.
+    "a durability plane with two orchestration drivers under a supervised local daemon",
   ],
   "packages/entrypoints/daemon/README.md": ["This is P2D", "The launchd template is P2E"],
   // The P3A-only frame the observation README carried until P3 closed. Both
@@ -7806,13 +7901,7 @@ if (observationIndex === null) {
   if (/export\s*\*\s*from/.test(observationIndex)) {
     fail("packages/domains/observation/src/index.ts uses `export *`, which cannot stay closed");
   }
-  const exported = new Set();
-  for (const block of observationIndex.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
-    for (const piece of (block[1] ?? "").split(",")) {
-      const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
-      if (name !== undefined && name !== "") exported.add(name);
-    }
-  }
+  const exported = barrelExportNames(observationIndex);
   for (const name of exported) {
     if (!OBSERVATION_PUBLIC_EXPORTS.includes(name)) {
       fail("packages/domains/observation exports " + name + ", which is outside its closed surface");
@@ -8963,13 +9052,7 @@ if (accountsIndex === null) {
   if (/export\s*\*\s*from/.test(accountsIndex)) {
     fail("packages/domains/accounts/src/index.ts uses `export *`, which cannot stay closed");
   }
-  const exported = new Set();
-  for (const block of accountsIndex.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
-    for (const piece of (block[1] ?? "").split(",")) {
-      const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
-      if (name !== undefined && name !== "") exported.add(name);
-    }
-  }
+  const exported = barrelExportNames(accountsIndex);
   for (const name of exported) {
     if (!ACCOUNTS_PUBLIC_EXPORTS.includes(name)) {
       fail("packages/domains/accounts exports " + name + ", which is outside its closed surface");
@@ -8991,13 +9074,7 @@ if (accountsIndex === null) {
     if (/export\s*\*\s*from/.test(runtimeBarrel)) {
       fail("packages/domains/runtime/src/index.ts uses `export *`, which cannot stay closed");
     }
-    const runtimeExported = new Set();
-    for (const block of runtimeBarrel.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
-      for (const piece of (block[1] ?? "").split(",")) {
-        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
-        if (name !== undefined && name !== "") runtimeExported.add(name);
-      }
-    }
+    const runtimeExported = barrelExportNames(runtimeBarrel);
     for (const name of runtimeExported) {
       if (!RUNTIME_PUBLIC_EXPORTS.includes(name)) {
         fail("packages/domains/runtime exports " + name + ", which is outside its closed surface");
@@ -9019,13 +9096,7 @@ if (accountsIndex === null) {
     if (/export\s*\*\s*from/.test(durabilityBarrel)) {
       fail("packages/edges/durability/src/index.ts uses `export *`, which cannot stay closed");
     }
-    const durabilityExported = new Set();
-    for (const block of durabilityBarrel.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g)) {
-      for (const piece of (block[1] ?? "").split(",")) {
-        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
-        if (name !== undefined && name !== "") durabilityExported.add(name);
-      }
-    }
+    const durabilityExported = barrelExportNames(durabilityBarrel);
     for (const name of durabilityExported) {
       if (!DURABILITY_PUBLIC_EXPORTS.includes(name)) {
         fail("packages/edges/durability exports " + name + ", which is outside its closed surface");
@@ -9674,13 +9745,7 @@ if (adaptersIndex !== null) {
   if (stripComments(adaptersIndex).includes("testing/fake-provider")) {
     fail("packages/edges/providers/src/index.ts exports the fake provider; it is not public surface");
   }
-  const exported = new Set();
-  for (const block of adaptersIndex.matchAll(/export\s*(?:type\s*)?\{([^}]*)\}/g)) {
-    for (const raw of (block[1] ?? "").split(",")) {
-      const name = raw.trim().split(/\s+as\s+/).pop()?.trim();
-      if (name !== undefined && name !== "") exported.add(name);
-    }
-  }
+  const exported = barrelExportNames(adaptersIndex);
   for (const name of exported) {
     if (!PROVIDERS_PUBLIC_EXPORTS.includes(name)) {
       fail("packages/edges/providers exports " + name + ", which is outside its closed surface");
@@ -10065,11 +10130,22 @@ if (pinSource === null) {
  * form would read `type BuildServerOptions` as an export name and then fail to
  * find it, which is a false failure that looks exactly like a real one.
  *
- * The five sibling pin laws above still carry this idiom inline. Routing them
- * through this helper is the right cleanup and is deliberately NOT done here:
- * this packet's write-set is a documentation tranche, and rewriting five
- * landed export pins to prove a documentation law would put unrelated risk in
- * the same diff. Recorded rather than left to be noticed.
+ * The five sibling pin laws above — observation, accounts, runtime,
+ * durability and providers — now call this function (V2-B6-fence). They
+ * carried the block idiom inline until then, which left each of them one
+ * `export { a, type B }` away from a false failure: the inline form kept the
+ * `type ` modifier, so a barrel adopting that idiom would have been reported
+ * both as exporting an unpinned `type Foo` and as no longer exporting `Foo` —
+ * two failures from one correct line. Routing was deferred once as unrelated
+ * risk in a documentation tranche; it is done now, in a packet whose subject
+ * is exactly this.
+ *
+ * Two block-idiom sites remain, and neither is a candidate. The daemon's law
+ * additionally parses direct declarations and would need
+ * `new Set([...barrelExportNames(code), ...declared])`; the contracts schema
+ * law parses with a from-anchored regex whose third group is the module
+ * specifier its note counts, so routing it through this helper would destroy
+ * the capability-module count.
  */
 function barrelExportNames(source) {
   const names = new Set();
