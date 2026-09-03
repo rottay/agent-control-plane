@@ -2,7 +2,7 @@ import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
 import type { ControlPlaneEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
-import { nextTaskProjection } from "../../src/projection/index.js";
+import { nextExecutionRouteProjection, nextTaskProjection } from "../../src/projection/index.js";
 import type { TaskReadModel } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 
@@ -154,5 +154,119 @@ describe("the task projection fold carries what it must and never goes backwards
       });
       expect(row).toEqual(foldAll(events));
     });
+  });
+});
+
+
+/**
+ * The recorded-route fold (V2-B1c).
+ *
+ * The asymmetry this exercises is the one a later reader gets wrong. A route
+ * that does not satisfy the contract must project NO ROW while the event it
+ * rode on still stands: an append-only log does not get to disown an event it
+ * accepted, and replay has to remain total. So every negative below asserts
+ * two things at once — no row, and the task fold still advancing over exactly
+ * the same event.
+ */
+describe("the recorded route fold", () => {
+  const ROUTE = {
+    provider: "claude",
+    model: "opus",
+    accountId: "acct-fold",
+    transportKind: "CLI_SUBSCRIPTION",
+    capabilityPolicyVersion: "policy-fold-1",
+    resolvedAt: "2026-08-27T12:00:00.000Z",
+  };
+
+  /** One RUN_STARTED whose payload is whatever the case is about. */
+  function runStarted(payload: Record<string, unknown>, attempt = 1): ControlPlaneEvent {
+    const transitionId = "run.started";
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "0000ffff-0000-4000-8000-00000000000" + String(attempt),
+      taskId: TASK_ID,
+      attempt,
+      transitionId,
+      idempotencyKey: buildIdempotencyKey({ taskId: TASK_ID, attempt, transitionId }),
+      type: "RUN_STARTED",
+      fromState: "RESERVED",
+      toState: "RUNNING",
+      emittedBy: EMITTED_BY,
+      occurredAt: "2026-08-27T12:00:05.000Z",
+      recordedAt: "2026-08-27T12:00:06.000Z",
+      correlationId: null,
+      causationId: null,
+      payload,
+    };
+  }
+
+  it("projects the route a RUN_STARTED carries, keyed by the event's own coordinates", () => {
+    const row = nextExecutionRouteProjection(runStarted({ route: ROUTE }), 7);
+    expect(row).toEqual({
+      taskId: TASK_ID,
+      attempt: 1,
+      ...ROUTE,
+      recordedAt: "2026-08-27T12:00:06.000Z",
+      sequence: 7,
+    });
+  });
+
+  it("takes identity from the event and never from the payload", () => {
+    // A payload claiming another task's coordinates cannot move the row: the
+    // key is the event's. This is the structural half of the binding.
+    const row = nextExecutionRouteProjection(
+      runStarted({ route: { ...ROUTE }, taskId: "not-this-task", attempt: 99 }),
+      3,
+    );
+    expect({ taskId: row?.taskId, attempt: row?.attempt }).toEqual({ taskId: TASK_ID, attempt: 1 });
+  });
+
+  it("keeps each attempt's route rather than overwriting the earlier one", () => {
+    // The reason the row is keyed by (taskId, attempt). A retry that resolved
+    // a different account must not erase what the first attempt ran on.
+    const first = nextExecutionRouteProjection(runStarted({ route: ROUTE }, 1), 4);
+    const retry = nextExecutionRouteProjection(
+      runStarted({ route: { ...ROUTE, accountId: "acct-after-quota" } }, 2),
+      9,
+    );
+    expect({ a: first?.accountId, b: retry?.accountId }).toEqual({
+      a: "acct-fold",
+      b: "acct-after-quota",
+    });
+    expect({ a: first?.attempt, b: retry?.attempt }).toEqual({ a: 1, b: 2 });
+  });
+
+  it("projects no row for an event that is not a RUN_STARTED", () => {
+    const other = { ...runStarted({ route: ROUTE }), type: "TASK_READY" as const };
+    expect(nextExecutionRouteProjection(other, 2)).toBeNull();
+  });
+
+  it("projects no row, without disowning the event, for every malformed route", () => {
+    const malformed: readonly [string, Record<string, unknown>][] = [
+      ["absent", {}],
+      ["null", { route: null }],
+      ["a string", { route: "claude/opus" }],
+      ["missing the policy version", { route: { ...ROUTE, capabilityPolicyVersion: undefined } }],
+      ["an unknown transport", { route: { ...ROUTE, transportKind: "CARRIER_PIGEON" } }],
+      ["a CLI route naming a non-CLI provider", { route: { ...ROUTE, provider: "acme" } }],
+      ["an instant with no offset", { route: { ...ROUTE, resolvedAt: "2026-08-27T12:00:00" } }],
+      ["a key the contract does not admit", { route: { ...ROUTE, extra: "no" } }],
+    ];
+    for (const [label, payload] of malformed) {
+      const event = runStarted(payload);
+      expect({ label, row: nextExecutionRouteProjection(event, 5) }).toEqual({ label, row: null });
+      // The event still stands, and the task fold still advances over it.
+      const task = nextTaskProjection(null, event, 5);
+      expect({ label, count: task.eventCount, state: task.currentState }).toEqual({
+        label,
+        count: 1,
+        state: "RUNNING",
+      });
+    }
+  });
+
+  it("is a pure fold: the same event yields an identical row every time", () => {
+    const event = runStarted({ route: ROUTE });
+    expect(nextExecutionRouteProjection(event, 11)).toEqual(nextExecutionRouteProjection(event, 11));
   });
 });

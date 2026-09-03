@@ -268,7 +268,8 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    expect(status.migrations.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5]);
+    // Six since V2-B1c added the per-attempt route projection.
+    expect(status.migrations.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
     expect(status.initiativeEventCount).toBe(0);
@@ -1347,8 +1348,10 @@ describe("projection metadata verification", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
+    // Five projections since V2-B1c: the two task-stream folds, the route
+    // fold, and the two initiative-stream folds.
     expect(ledger.status().projections.map((projection) => projection.appliedThroughSequence)).toEqual(
-      [0, 0, 0, 0],
+      [0, 0, 0, 0, 0],
     );
   });
 
@@ -2112,5 +2115,253 @@ describe("the account-action stream (P8-8G packet 2)", () => {
     // The integrity check knows the triggers exist; this proves they bite.
     expect(ledger.verifyIntegrity().ok).toBe(true);
     ledger.close();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The recorded execution route (V2-B1c)
+// ---------------------------------------------------------------------------
+
+describe("the recorded execution route", () => {
+  const ROUTE = {
+    provider: "claude",
+    model: "opus",
+    accountId: "acct-ledger-fixture",
+    transportKind: "CLI_SUBSCRIPTION",
+    capabilityPolicyVersion: "policy-ledger-1",
+    resolvedAt: "2026-08-27T12:00:00.000Z",
+  };
+
+  /**
+   * One `RUN_STARTED` for a task, as a same-state passthrough.
+   *
+   * The first event of a task declares `fromState: null`; every later one
+   * declares the state the ledger already holds, which is what the lifecycle
+   * guard requires. A retry therefore threads from `DISCOVERED` rather than
+   * claiming to open the task a second time.
+   */
+  function appendRunStarted(
+    ledger: Ledger,
+    taskId: string,
+    payload: Record<string, unknown>,
+    attempt = 1,
+  ): void {
+    ledger.append(
+      makeEvent({
+        taskId,
+        attempt,
+        transitionId: "run.started",
+        type: "RUN_STARTED",
+        fromState: attempt === 1 ? null : "DISCOVERED",
+        toState: "DISCOVERED",
+        payload,
+      }),
+    );
+  }
+
+  it("persists and reads back the route an event recorded, per attempt", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    appendRunStarted(ledger, taskId, { route: ROUTE }, 1);
+    appendRunStarted(ledger, taskId, { route: { ...ROUTE, accountId: "acct-second" } }, 2);
+
+    expect(ledger.getExecutionRoute(taskId, 1)).toMatchObject({ ...ROUTE, taskId, attempt: 1 });
+    expect(ledger.getExecutionRoute(taskId, 2)).toMatchObject({
+      ...ROUTE,
+      accountId: "acct-second",
+      taskId,
+      attempt: 2,
+    });
+    // The first attempt's route survived the second, which is the whole reason
+    // the row is keyed by the pair.
+    expect(ledger.listExecutionRoutes(taskId).map((row) => row.attempt)).toEqual([1, 2]);
+    expect(ledger.getExecutionRoute(taskId, 3)).toBeNull();
+  });
+
+  it("refuses a positive-integer attempt it cannot mean", () => {
+    const ledger = open(temporaryDatabase());
+    expect(() => ledger.getExecutionRoute(randomUUID(), 0)).toThrow(LedgerQueryError);
+  });
+
+  it("refuses at append when a route field is named like a credential", () => {
+    // The `tokens`-plural lesson, made into a test. A field name is a
+    // correctness question here: the contract's guards suffix-match their
+    // stems, so a route that carried `accountToken` would be refused rather
+    // than written, and the refusal has to happen at the append, not later.
+    const ledger = open(temporaryDatabase());
+    for (const denied of ["accountToken", "routeCredential", "apiKey", "sessionCookie"]) {
+      expect(() =>
+        {
+          appendRunStarted(ledger, randomUUID(), { route: { ...ROUTE, [denied]: "x" } });
+        },
+      ).toThrow(LedgerValidationError);
+    }
+  });
+
+  it("refuses at append when a route value looks like live credential material", () => {
+    const ledger = open(temporaryDatabase());
+    expect(() =>
+      {
+        appendRunStarted(ledger, randomUUID(), {
+          route: { ...ROUTE, accountId: "sk-not-an-account-id-0123456789" },
+        });
+      },
+    ).toThrow(LedgerValidationError);
+  });
+
+  it("keeps a malformed route out of the read model while the event still stands", () => {
+    // The append succeeds — the payload is a lawful bounded record — and the
+    // projection refuses the route. Both halves are asserted, because the
+    // failure mode this guards against is a projection that disowns history.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    appendRunStarted(ledger, taskId, { route: { ...ROUTE, transportKind: "CARRIER_PIGEON" } });
+
+    expect(ledger.getExecutionRoute(taskId, 1)).toBeNull();
+    expect(ledger.listEvents({ taskId }).events).toHaveLength(1);
+    expect(ledger.getTask(taskId)?.eventCount).toBe(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("stays inside the event payload budget with room to spare", () => {
+    // The route is small, and saying how small keeps a later widening honest.
+    const payload = {
+      submissionDigest: "a".repeat(64),
+      beat: "INTENT",
+      operationId: "op-" + "b".repeat(60),
+      operationIndex: 4,
+      route: ROUTE,
+    };
+    const size = Buffer.byteLength(JSON.stringify(payload), "utf8");
+    expect(size).toBeLessThan(1_024);
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    expect(() => {
+      appendRunStarted(ledger, taskId, payload);
+    }).not.toThrow();
+    expect(ledger.getExecutionRoute(taskId, 1)).not.toBeNull();
+  });
+
+  it("rebuilds the route rows byte-identically and reports no projection problem", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    appendRunStarted(ledger, taskId, { route: ROUTE }, 1);
+    appendRunStarted(ledger, taskId, { route: { ...ROUTE, model: "sonnet" } }, 2);
+
+    const before = ledger.listExecutionRoutes(taskId);
+    const rebuild = ledger.rebuildReadModel();
+    const after = ledger.listExecutionRoutes(taskId);
+
+    expect(rebuild.executionRouteRows).toBe(2);
+    expect(canonicalJsonStringify(after)).toBe(canonicalJsonStringify(before));
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("notices a route row a replay does not account for", () => {
+    // The integrity arm is not decorative: a row nothing produced, and a row
+    // that disagrees with a replay, are both reported.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    appendRunStarted(ledger, taskId, { route: ROUTE });
+    ledger.close();
+
+    const raw = new Database(path);
+    raw
+      .prepare(
+        "INSERT INTO execution_route_read_model (task_id, attempt, provider, model, account_id, " +
+          "transport_kind, capability_policy_version, resolved_at, recorded_at, sequence) " +
+          "VALUES (?, 9, 'claude', 'opus', 'acct-ghost', 'CLI_SUBSCRIPTION', 'v', ?, ?, 1)",
+      )
+      .run(taskId, ROUTE.resolvedAt, ROUTE.resolvedAt);
+    raw.close();
+
+    const reopened = open(path);
+    const report = reopened.verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(
+      report.problems.some(
+        (problem) =>
+          problem.kind === "PROJECTION" &&
+          problem.detail.includes("execution_route_read_model holds the route for"),
+      ),
+    ).toBe(true);
+
+    // And a rebuild repairs it, because the log is the authority.
+    reopened.rebuildReadModel();
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    expect(reopened.getExecutionRoute(taskId, 9)).toBeNull();
+  });
+
+  it("migrates a ledger that already holds events without breaking its own integrity", () => {
+    // Backward safety on the path that actually happens in the field: a ledger
+    // written before V2-B1c, holding events, opened by a build that knows
+    // migration 6 — and NOT rebuilt afterwards, because nothing asks an
+    // operator to rebuild after an upgrade.
+    //
+    // The route projection over those events is legitimately empty: the fold
+    // is total and no pre-V2-B1c event carries a route. So the projection is
+    // level with the head the moment the table exists, and its metadata has to
+    // say so. Seeding it at sequence zero instead would leave every migrated
+    // ledger reporting itself corrupt — a projection frozen behind the head is
+    // exactly what `verifyIntegrity` is built to notice.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    const taskId = randomUUID();
+    seedTask(seeded, taskId, "kimi/k3/coordinator/01");
+    const headBefore = seeded.status().headSequence;
+    expect(headBefore).toBeGreaterThan(0);
+    seeded.close();
+
+    // Rewind to the pre-V2-B1c shape: no route table, no meta row, no
+    // migration 6. This is what such a ledger looks like on disk.
+    const raw = new Database(path);
+    raw.exec("DROP TABLE execution_route_read_model");
+    raw.prepare("DELETE FROM projection_meta WHERE name = ?").run("execution_route_read_model");
+    raw.prepare("DELETE FROM schema_migrations WHERE version = ?").run(6);
+    expect(
+      (raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as { version: number }[])
+        .map((row) => row.version),
+    ).toEqual([1, 2, 3, 4, 5]);
+    raw.close();
+
+    // The upgrade: migration 6 applies on open, and nothing else is done.
+    const migrated = open(path);
+    expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
+
+    const report = migrated.verifyIntegrity();
+    expect(report.problems.filter((problem) => problem.kind === "PROJECTION_META")).toEqual([]);
+    expect(report.ok).toBe(true);
+
+    // The new projection is level with the head it was seeded from, and holds
+    // no rows, which is the truthful pair.
+    const meta = migrated.status().projections.find((p) => p.name === "execution_route_read_model");
+    expect(meta?.appliedThroughSequence).toBe(headBefore);
+    expect(migrated.listExecutionRoutes(taskId)).toEqual([]);
+
+    // And an append after the upgrade still lands, projects and verifies.
+    appendRunStarted(migrated, randomUUID(), { route: ROUTE });
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("replays a ledger that predates the route to zero route rows, not to an error", () => {
+    // The sibling of the test above, and deliberately a different path: that
+    // one migrates and does NOT rebuild, which is what an upgrade actually
+    // looks like; this one rebuilds, which is what an operator does after a
+    // repair. Both must end with an empty route projection and a sound
+    // ledger, and they reach it through different code -- the migration's own
+    // seed there, `rebuildReadModel`'s projection-meta write here. Keeping
+    // both is what made the seeding defect visible: this test passed against
+    // a mechanism the other one falsified.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedTask(ledger, taskId, "kimi/k3/coordinator/01");
+    // Not one of the events carries a route, exactly like every event written
+    // before this packet existed.
+    const rebuild = ledger.rebuildReadModel();
+    expect(rebuild.executionRouteRows).toBe(0);
+    expect(ledger.listExecutionRoutes(taskId)).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 });

@@ -7,6 +7,7 @@ import type {
   InitiativeStatus,
   RoadmapVersionKind,
   TaskState,
+  TransportKind,
   WorkerRole,
 } from "@acp/contracts";
 
@@ -160,6 +161,39 @@ export interface WorkerPage {
   readonly hasMore: boolean;
 }
 
+/**
+ * Derived per-attempt execution route (V2-B1c).
+ *
+ * The route the run was admitted on, as the `RUN_STARTED` event recorded it:
+ * provider, model, account, transport and the capability-policy version that
+ * chose them. Holds no fact that is not in the ledger — every field is read
+ * off the event that carried it, and `recordedAt` is that event's own instant
+ * rather than a clock read here.
+ *
+ * Keyed by `(taskId, attempt)` and never by `taskId` alone. A retry may resolve
+ * a different account after a quota exhaustion, or a different model after the
+ * policy is re-cut, and `task_read_model.latestAttempt` moves forward when it
+ * does. A per-task row would overwrite the earlier attempt's route and destroy
+ * exactly the after-the-fact explainability `capabilityPolicyVersion` exists to
+ * provide: which policy chose which account for the work that actually ran.
+ */
+export interface ExecutionRouteReadModel {
+  readonly taskId: string;
+  readonly attempt: number;
+  readonly provider: string;
+  /** The routing alias the run was scheduled against, not a provider's resolution. */
+  readonly model: string;
+  readonly accountId: string;
+  readonly transportKind: TransportKind;
+  /** The immutable generation of the capability registry that chose the route. */
+  readonly capabilityPolicyVersion: string;
+  readonly resolvedAt: string;
+  /** The recording event's own instant. Never a clock read in this package. */
+  readonly recordedAt: string;
+  /** The task-stream position the route was recorded at. */
+  readonly sequence: number;
+}
+
 export interface AppliedMigration {
   readonly version: number;
   readonly name: string;
@@ -233,6 +267,8 @@ export interface RebuildResult {
   readonly throughSequence: number;
   readonly taskRows: number;
   readonly workerRows: number;
+  /** Rows in the per-attempt execution-route projection after the replay. */
+  readonly executionRouteRows: number;
   /** The sibling stream is rebuilt in the same transaction, and counted here. */
   readonly replayedInitiativeEvents: number;
   readonly initiativeThroughSequence: number;

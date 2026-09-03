@@ -1,4 +1,4 @@
-import type { CommitPolicy } from "@acp/contracts";
+import type { CommitPolicy, ResolvedRoute } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import type { EndpointHandle, SafeServerHandle } from "@acp/durability";
 import type { BeatContext, DurableInvocation, EffectPort, ScenarioRoot } from "@acp/runtime";
@@ -50,6 +50,8 @@ export interface RestateModeInput {
   readonly initiativeId: string;
   /** The side effect the beats perform, passed through: see `SqliteModeInput.effects`. */
   readonly effects: EffectPort;
+  /** The route the walk was admitted on, passed through: see `SqliteModeInput.route`. */
+  readonly route: ResolvedRoute;
   readonly stack: UnwindStack;
   /**
    * Announce a phase at the instant it is reached.
@@ -88,17 +90,23 @@ export interface RestateModeHandles {
  * toy marker effect itself, which made the toy the only effect a production
  * Restate walk could ever have; now the daemon hands in the execution-backed
  * port over the owned boundary and this function binds nothing of its own.
+ *
+ * The route travels the same way and for the same reason (V2-B1c): it is the
+ * caller's admitted value, bound once beside the port it was built from, so
+ * the route the object records is the route the effect executes.
  */
 export function beatFor(
   ledger: Ledger,
   emittedBy: string,
   effects: EffectPort,
+  route: ResolvedRoute,
 ): (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId"> {
   return (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
     ledger,
     effects,
     invocation,
     emittedBy,
+    route,
   });
 }
 
@@ -128,7 +136,7 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
   const endpoint = await startEndpoint({
     services: [
       createAcpTaskObject({
-        beat: beatFor(input.ledger, input.emittedBy, input.effects),
+        beat: beatFor(input.ledger, input.emittedBy, input.effects, input.route),
         commitPolicy: input.commitPolicy,
         initiativeId: input.initiativeId,
         ledger: input.ledger,

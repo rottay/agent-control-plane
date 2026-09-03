@@ -1,3 +1,4 @@
+import type { ResolvedRoute } from "@acp/contracts";
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -27,6 +28,23 @@ import { recoverStaleLock } from "../../src/singleton/index.js";
 import { readStatusFrom } from "../../src/status/index.js";
 import { createPsInspector } from "../../src/identity-probe/index.js";
 import { startDaemon } from "../../src/index.js";
+
+
+/**
+ * One admitted route for every fixture in this file (V2-B1c).
+ *
+ * A route is required, never defaulted, so every construction site states one.
+ * It satisfies the contract's own refinement: a CLI_SUBSCRIPTION route names a
+ * provider the kernel lists as one.
+ */
+const TEST_ROUTE: ResolvedRoute = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: "2026-08-27T12:00:00.000Z",
+};
 
 /**
  * Real processes, real signals.
@@ -284,6 +302,7 @@ function configFor(
       submittedAt: "2026-08-27T18:46:07.000Z",
       submissionDigest: DIGEST,
       initiativeId: DRILL_INITIATIVE_ID,
+      route: TEST_ROUTE,
       holdOpen: true,
       checkPorts: false,
       execution: executionConfig(),
@@ -540,6 +559,7 @@ describe("Restate requested but not verified", () => {
           emittedBy: EMITTED_BY,
           commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
           initiativeId: DRILL_INITIATIVE_ID,
+          route: TEST_ROUTE,
           // Refused before any beat could run, so a stub is the honest port.
           effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE" as const) },
           stack,

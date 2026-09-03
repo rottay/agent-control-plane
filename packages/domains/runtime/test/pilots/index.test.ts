@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
 import { WorkerIdentityString } from "@acp/contracts";
+import type { ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
@@ -55,6 +56,23 @@ import {
   writeToyContent,
 } from "./helpers/index.js";
 import type { SpawnGit, SpawnResult } from "./helpers/index.js";
+
+
+/**
+ * One admitted route for every fixture in this file (V2-B1c).
+ *
+ * A route is required, never defaulted, so every construction site states one.
+ * It satisfies the contract's own refinement: a CLI_SUBSCRIPTION route names a
+ * provider the kernel lists as one.
+ */
+const TEST_ROUTE: ResolvedRoute = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: "2026-08-27T12:00:00.000Z",
+};
 
 /**
  * The initiative every pilot packet is scoped to.
@@ -178,6 +196,7 @@ function beatContext(
     emittedBy,
     plan,
     initiativeId: PILOT_INITIATIVE_ID,
+    route: TEST_ROUTE,
     };
 }
 
@@ -360,6 +379,7 @@ describe("the read-only packet, walked end to end", () => {
       emittedBy: PILOT_WRITER,
       commitPolicy: "NO_COMMIT",
       initiativeId: PILOT_INITIATIVE_ID,
+      route: TEST_ROUTE,
     });
     const run = await supervisor.runToCheckpoint();
     expect(run.finalState).toBe("CHECKPOINTED");
@@ -545,6 +565,7 @@ describe("a planted violation revokes the lease and suspects the worktree", () =
       emittedBy: PILOT_WRITER,
       commitPolicy: "NO_COMMIT",
       initiativeId: PILOT_INITIATIVE_ID,
+      route: TEST_ROUTE,
     });
     await expect(resumed.runToCheckpoint()).rejects.toThrow(LifecyclePlanError);
 

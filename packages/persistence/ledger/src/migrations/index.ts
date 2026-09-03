@@ -300,6 +300,54 @@ BEGIN
 END;
 `,
   },
+  {
+    version: 6,
+    name: "execution_route_read_model",
+    sql: `
+CREATE TABLE execution_route_read_model (
+  task_id                   TEXT    NOT NULL,
+  attempt                   INTEGER NOT NULL,
+  provider                  TEXT    NOT NULL,
+  model                     TEXT    NOT NULL,
+  account_id                TEXT    NOT NULL,
+  transport_kind            TEXT    NOT NULL,
+  capability_policy_version TEXT    NOT NULL,
+  resolved_at               TEXT    NOT NULL,
+  recorded_at               TEXT    NOT NULL,
+  sequence                  INTEGER NOT NULL,
+  PRIMARY KEY (task_id, attempt)
+) STRICT;
+
+CREATE INDEX execution_route_read_model_by_policy_version
+  ON execution_route_read_model (capability_policy_version, task_id, attempt);
+
+CREATE INDEX execution_route_read_model_by_account
+  ON execution_route_read_model (account_id, task_id, attempt);
+
+-- Seeded from the ledger's CURRENT head, not from zero.
+--
+-- Every migration before this one created its projection alongside the stream
+-- it folds, so a fresh row at sequence zero was level with a stream that was
+-- also at zero. This projection is different: it arrives over a task stream
+-- that may already hold thousands of events. The fold over all of them is
+-- legitimately empty -- no event written before V2-B1c carries a route -- so
+-- the projection IS current the moment the table exists, and its metadata must
+-- say so. A row frozen at zero behind a non-zero head is precisely what
+-- verifyIntegrity reports as corruption, which would make every ledger in the
+-- field fail its own integrity check immediately after a routine upgrade.
+--
+-- On a fresh ledger the three subqueries read 0, 0 and the genesis digest, so
+-- this is identical to a literal zero seed there.
+INSERT INTO projection_meta
+  (name, applied_through_sequence, event_count, source_head_sha256, updated_at)
+SELECT
+  'execution_route_read_model',
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  '1970-01-01T00:00:00.000Z';
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -315,12 +363,17 @@ export const DERIVED_TABLES: readonly string[] = [
   "worker_task_read_model",
   "task_read_model",
   "worker_read_model",
+  "execution_route_read_model",
   "initiative_read_model",
   "roadmap_version_read_model",
 ];
 
 /** Projection names tracked in projection_meta, for the task stream. */
-export const PROJECTION_NAMES: readonly string[] = ["task_read_model", "worker_read_model"];
+export const PROJECTION_NAMES: readonly string[] = [
+  "task_read_model",
+  "worker_read_model",
+  "execution_route_read_model",
+];
 
 /**
  * Projection names tracked in projection_meta, for the initiative stream.
@@ -394,6 +447,12 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "account_events_by_account" },
   { type: "trigger", name: "account_events_deny_update" },
   { type: "trigger", name: "account_events_deny_delete" },
+  // V2-B1c. A derived table, so it carries no append-only trigger: the
+  // authority is `control_plane_events`, and this is a fold over it that
+  // `rebuildReadModel` is allowed to drop and rewrite.
+  { type: "table", name: "execution_route_read_model" },
+  { type: "index", name: "execution_route_read_model_by_policy_version" },
+  { type: "index", name: "execution_route_read_model_by_account" },
 ];
 
 export interface MigrationConformance {

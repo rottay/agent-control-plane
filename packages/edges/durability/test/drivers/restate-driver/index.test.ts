@@ -1,4 +1,5 @@
 import { CONTRACT_VERSION, ReconciliationReport, findCredentialViolations } from "@acp/contracts";
+import type { ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { existsSync } from "node:fs";
@@ -33,6 +34,23 @@ import type { DurableStepContext, LedgerLike, RestateCacheState } from "../../..
 import { RESTATE_MODE, RestateDriver, advanceHandler, reconcile } from "../../../src/drivers/restate-driver/index.js";
 import type { AdvanceContext } from "../../../src/drivers/restate-driver/index.js";
 import { parseCacheReply } from "../../../src/submit/index.js";
+
+
+/**
+ * One admitted route for every fixture in this file (V2-B1c).
+ *
+ * A route is required, never defaulted, so every construction site states one.
+ * It satisfies the contract's own refinement: a CLI_SUBSCRIPTION route names a
+ * provider the kernel lists as one.
+ */
+const TEST_ROUTE: ResolvedRoute = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: "2026-08-27T12:00:00.000Z",
+};
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -88,6 +106,7 @@ function open(name: string, taskId: string): {
     invocation: candidate,
     emittedBy: EMITTED_BY,
     plan: LIFECYCLE_PLAN,
+    route: TEST_ROUTE,
     initiativeId: TEST_INITIATIVE_ID,
   });
   return { ledger, root, invocation, beat };
@@ -647,6 +666,7 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
       effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
       invocation: candidate,
       emittedBy: EMITTED_BY,
+      route: TEST_ROUTE,
     });
     return new RestateDriver(
       {

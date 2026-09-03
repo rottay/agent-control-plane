@@ -1336,8 +1336,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **563
- * packet entries across 221 distinct paths**: 2 (P8-D) +
+ * P8, with the V2 packets that continue its coordinates, is therefore **592
+ * packet entries across 222 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1349,12 +1349,12 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
- * 27 (V2-B1b-2) = 563 entries, with 342 duplicate entries.
+ * 27 (V2-B1b-2) + 29 (V2-B1c-1) = 592 entries, with 370 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 52 duplicates = 52   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 53 duplicates = 53   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
  *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
@@ -1364,14 +1364,16 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *                                   route and parity surface with its parity
  *                                   suite, the console's app root and api
  *                                   client, and the root README)
- *   4 paths ×  4 duplicates = 16   (the initiatives suite, the console manifest,
- *                                   the console styles sheet and the
- *                                   accounts-view suite)
- *  16 paths ×  3 duplicates = 48
- *  36 paths ×  2 duplicates = 72
- *  49 paths ×  1 duplicate  = 49
+ *   8 paths ×  4 duplicates = 32   (the initiatives suite, the console manifest,
+ *                                   the console styles sheet, the accounts-view
+ *                                   suite, and — since V2-B1c-1 — the supervisor
+ *                                   and drills suites, `mode-restate` and the
+ *                                   daemon drills suite)
+ *  24 paths ×  3 duplicates = 72
+ *  31 paths ×  2 duplicates = 62
+ *  46 paths ×  1 duplicate  = 46
  *
- * 52 + 11 + 8 + 21 + 30 + 35 + 16 + 48 + 72 + 49 = 342.
+ * 53 + 11 + 8 + 21 + 30 + 35 + 32 + 72 + 62 + 46 = 370.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1725,6 +1727,23 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * lifecycle and bin suites, the resolution module and both accounts suites),
  * so ×1 reads forty-nine (48 + 9 − 8). Three declared ceilings this stage did
  * not exercise are not carried, as the array's own comment records.
+ *
+ * V2-B1c-1, the recording stage of B1c, adds **twenty-nine entries, exactly
+ * one of them novel** — `packages/persistence/ledger/src/projection/index.ts`,
+ * which until now was owned only by P7I-2 and so had never entered this
+ * phase's table at all. Entries move 563 → 592, distinct 221 → 222,
+ * duplicates 342 → 370. Twenty-eight band steps, one per duplicate, and the
+ * novel path causes none of them: this file's own row, ×53 → ×54; four paths
+ * ×5 → ×6 (the supervisor suite, the durability drills suite, `mode-restate`
+ * and the daemon drills suite), so ×5 reads eight; seven paths ×4 → ×5, so ×4
+ * reads twenty-four; twelve paths ×3 → ×4, so ×3 reads thirty-one; and four
+ * paths ×2 → ×3, so ×2 reads forty-six. ×1 therefore reads ninety-five:
+ * four departures and one arrival against ninety-eight.
+ *
+ * The novel path is worth its sentence. The projection module has been the
+ * ledger's fold since P7I-2 and no P8 packet ever needed to open it; B1c is
+ * the first change that adds a read model rather than a field, which is
+ * exactly the kind of change that reaches it.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3428,6 +3447,88 @@ const V2B1B2_WRITE_SET = [
 ];
 
 /**
+ * V2-B1c, stage 1: the admitted route reaches the ledger, per attempt.
+ *
+ * The recording half of B1c. The route the daemon already admitted through
+ * `ResolvedRoute` at its config door travels the beat chain as a required,
+ * never-defaulted field -- `BuildEventInput`, `BeatContext`,
+ * `SqliteSupervisorOptions`, both modes and `beatFor` -- and is written into
+ * the INTENT beat's payload alone, under a key declared identically at the
+ * producer and at the consumer and pinned by the law below. The event builder
+ * parses it through the contract before writing, because `ControlPlaneEvent`
+ * validates a payload as a bounded record and does not reach inside it: a CLI
+ * route naming a non-CLI provider passed the event contract until this packet
+ * admitted the route explicitly. The ledger gains migration 6, a derived
+ * `execution_route_read_model` keyed by `(task_id, attempt)` -- never by task
+ * alone, because a retry may resolve a different account and a per-task row
+ * would erase what the earlier attempt ran on -- with its projection arm, its
+ * rebuild arm, its integrity arm in both directions, and two read queries.
+ * A malformed route projects no row while the event still stands, which is the
+ * `nextRoadmapVersionProjection` allocation exactly.
+ *
+ * The migration seeds the new projection from the ledger's CURRENT head rather
+ * than from zero, and that is load-bearing rather than tidy. Every earlier
+ * migration created its projection beside the stream it folds, so a zero seed
+ * was level with a zero stream; this one arrives over a task stream that may
+ * already hold events. The fold over all of them is legitimately empty, so the
+ * projection is current the moment the table exists — and a row frozen at zero
+ * behind a non-zero head is exactly what `verifyIntegrity` reports as
+ * corruption. Seeded at zero, every ledger in the field would have failed its
+ * own integrity check immediately after a routine upgrade.
+ *
+ * The two drill children declare their own toy route beside the toy effect
+ * they bind, rather than accepting one from a config: a toy-bound walk has no
+ * admitted production route, and the equivalence drill imports the restate
+ * child's own declaration rather than restating the literal.
+ *
+ * The landed C4 head-digest equality is amended here rather than in a later
+ * packet, and amended by strengthening: its premise -- "the effect's content
+ * never enters the log" -- is one this packet deliberately falsifies, so the
+ * assertion becomes equal counts, equal event-type sequence and equal
+ * canonical bodies modulo the recorded route, plus an asserted head-digest
+ * INEQUALITY so the comparison cannot silently go vacuous.
+ *
+ * Twenty-nine paths, none of them novel: every one is P8-owned or V2-owned
+ * already. What is deliberately NOT here is the second half of B1c: binding
+ * the admitted route into the submission digest so a resume that precedes the
+ * INTENT append cannot adopt a changed route silently. Step 0 carries no
+ * route, so nothing refuses that case today; it is a hole that predates this
+ * packet and that this packet does not widen, and it closes in the stage that
+ * owns the daemon door.
+ */
+const V2B1C1_WRITE_SET = [
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/test/switch-executor/index.test.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/domains/runtime/test/pilots/index.test.ts",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3736,6 +3837,7 @@ const WRITE_SET = [
   ...V2B1A_WRITE_SET,
   ...V2B1B1_WRITE_SET,
   ...V2B1B2_WRITE_SET,
+  ...V2B1C1_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -4384,6 +4486,11 @@ const PATH_SCOPED_LAWS = [
   { law: "the runtime domain's import purity", scope: "packages/domains/runtime/{src,test}/**" },
   { law: "the toy effect binds no production seam (route a: deep specifiers into toy/repository)", scope: "packages/*/*/src/**" },
   { law: "the toy effect binds no production seam (route b: the toy names from @acp/runtime)", scope: "packages/*/*/src/**" },
+  { law: "the recorded route travels under one pinned key", scope: "packages/*/*/src/**" },
+  {
+    law: "the ledger and the event builder never reach for the router",
+    scope: "packages/persistence/ledger/src/** and packages/domains/runtime/src/core/**",
+  },
   { law: "the Restate edge's import purity", scope: "packages/edges/durability/{src,test}/**" },
   { law: "the Restate SDK is named by import in one package only", scope: "every tracked .ts/.tsx/.mjs/.js" },
   { law: "the contracts schema barrel holds only re-exports", scope: "packages/kernel/contracts/src/schemas/index.ts" },
@@ -6382,6 +6489,114 @@ if (tracked.status === 0) {
         " file(s), route b in " +
         named.size +
         " file(s), both pinned by equality",
+    );
+  }
+
+  // V2-B1c stage 1: the admitted route reaches the ledger, unmodified, through
+  // exactly one writer and one reader, and neither end learns to route.
+  //
+  // The recorded route's SHAPE is contracts-owned (`ResolvedRoute`), but its
+  // payload KEY is a literal in two packages, exactly as `initiativeId` has
+  // always been. Two homes for one key is the drift this law exists to refuse:
+  // the declarations are pinned by equality in both directions AND their
+  // literals are compared, so the key cannot be changed on one side alone, and
+  // stripping the write or the read is a named failure rather than a silent
+  // one. The `@acp/accounts` arm is the other half: the version travels on the
+  // route from its one producer, and a ledger or an event builder that could
+  // reach the router could answer the same question twice.
+  {
+    const srcSources = present.filter((relativePath) => /\/src\/.*\.tsx?$/.test(relativePath));
+    const ROUTE_KEY_DECLARERS = new Set([
+      "packages/domains/runtime/src/core/events/index.ts",
+      "packages/persistence/ledger/src/projection/index.ts",
+    ]);
+    const ROUTE_KEY_WRITER = "packages/domains/runtime/src/core/events/index.ts";
+    const ROUTE_KEY_READER = "packages/persistence/ledger/src/projection/index.ts";
+    const declared = new Map();
+    for (const relativePath of srcSources) {
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      const match = stripComments(content).match(/const RECORDED_ROUTE_KEY = "([^"]*)"/);
+      if (match !== null) declared.set(relativePath, match[1]);
+    }
+
+    requireScope("the recorded route travels under one pinned key", srcSources.length);
+    if (ROUTE_KEY_DECLARERS.size === 0) {
+      fail("the recorded-route law's expected declarer set is empty; a vacuous pass proves nothing");
+    }
+    for (const relativePath of declared.keys()) {
+      if (!ROUTE_KEY_DECLARERS.has(relativePath)) {
+        fail(relativePath + " declares RECORDED_ROUTE_KEY; only the producer and the projection may");
+      }
+    }
+    for (const relativePath of ROUTE_KEY_DECLARERS) {
+      if (!declared.has(relativePath)) {
+        fail(relativePath + " no longer declares RECORDED_ROUTE_KEY though the law expects it; re-pin the set");
+      }
+    }
+    const literals = new Set(declared.values());
+    if (declared.size > 0 && literals.size !== 1) {
+      fail(
+        "the recorded route's payload key differs between its declarers (" +
+          [...declared.entries()].map(([file, key]) => file + '="' + key + '"').join(", ") +
+          "); one key, or the ledger reads a field the producer never wrote",
+      );
+    }
+
+    // The write, the read and the producer's own admission, each named. Strip
+    // any one of them and this law fires with the file that lost it.
+    const writer = stripComments(readIfPresent(ROUTE_KEY_WRITER) ?? "");
+    if (!writer.includes("[RECORDED_ROUTE_KEY]:")) {
+      fail(ROUTE_KEY_WRITER + " no longer writes the recorded route into an event payload");
+    }
+    if (!/ResolvedRoute\.parse\(/.test(writer)) {
+      fail(
+        ROUTE_KEY_WRITER +
+          " no longer admits the route through the contract before writing it; the event contract" +
+          " validates a payload as a bounded record and does not apply the route's own refinement",
+      );
+    }
+    const reader = stripComments(readIfPresent(ROUTE_KEY_READER) ?? "");
+    if (!reader.includes("payload[RECORDED_ROUTE_KEY]")) {
+      fail(ROUTE_KEY_READER + " no longer reads the recorded route out of an event payload");
+    }
+    if (!/ResolvedRoute\.safeParse\(/.test(reader)) {
+      fail(
+        ROUTE_KEY_READER +
+          " no longer parses the recorded route through the contract; a malformed route must project" +
+          " no row rather than a partial one",
+      );
+    }
+
+    // Neither end recomputes the route. The manifest law already refuses the
+    // dependency edge for the ledger; this refuses the import, and extends the
+    // same refusal to the event builder, which holds no routing authority.
+    const NO_ROUTER = srcSources.filter(
+      (relativePath) =>
+        relativePath.startsWith("packages/persistence/ledger/") ||
+        relativePath.startsWith("packages/domains/runtime/src/core/"),
+    );
+    requireScope("the ledger and the event builder never reach for the router", NO_ROUTER.length);
+    for (const relativePath of NO_ROUTER) {
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      if (importSpecifiers(stripComments(content)).some((name) => name.startsWith("@acp/accounts"))) {
+        fail(
+          relativePath +
+            " imports @acp/accounts; the recorded route is the one the caller already admitted," +
+            " never one resolved again here",
+        );
+      }
+    }
+
+    notes.push(
+      "the recorded route travels under one pinned key (\"" +
+        [...literals][0] +
+        "\") declared in " +
+        declared.size +
+        " file(s), written once, parsed at both ends, and neither end imports the router across " +
+        NO_ROUTER.length +
+        " file(s)",
     );
   }
 

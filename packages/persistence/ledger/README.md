@@ -40,6 +40,7 @@ ledger.close();
 | `listEvents(query?)` | Sequence-ordered page. Filters: task, type, emitter, destination state. |
 | `getTask(taskId)` / `listTasks(query?)` | Derived task read model, ordered by task id. |
 | `getWorker(identity)` / `listWorkers(query?)` | Derived worker read model, ordered by identity. |
+| `getExecutionRoute(taskId, attempt)` / `listExecutionRoutes(taskId)` | The route an attempt was admitted on, keyed by the pair. Null, or empty, when nothing recorded one. |
 | `appendInitiativeEvent(event)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
@@ -93,6 +94,7 @@ fourteenth class cannot arrive without appearing here.
 | `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable) |
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
 | `worker_task_read_model` | derived | emitter to task associations |
+| `execution_route_read_model` | derived | the route each `(task, attempt)` was admitted on: provider, model, account, transport and the capability-policy version that chose them |
 | `initiative_read_model` | derived | current status, counts, first and last position |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `projection_meta` | derived | applied-through sequence, source head digest |

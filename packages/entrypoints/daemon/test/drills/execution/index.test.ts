@@ -9,7 +9,7 @@ import { AccountRecord, CONTRACT_VERSION, ExecutionEvent } from "@acp/contracts"
 import type { ExecutionRequest, ModelExecutionPort, ResolvedRoute } from "@acp/contracts";
 import { deriveInvocation } from "@acp/durability";
 import { openLedger } from "@acp/ledger";
-import type { Ledger } from "@acp/ledger";
+import type { ExecutionRouteReadModel, Ledger } from "@acp/ledger";
 import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort } from "@acp/providers";
 import type { ApiStreamChunk, ApiStreamingClient, CliBinding, ProviderAdapter, SessionDescriptor, SessionRequest } from "@acp/providers";
 import {
@@ -37,8 +37,14 @@ import { afterEach, describe, expect, it } from "vitest";
  * route over a structural `ApiStreamingClient` fake. Both legs drive the same
  * `createExecutionEffects` and the same supervisor walk over fresh, identical
  * ledger and scenario fixtures, and what is asserted is the CONTRACT: equal
- * normalized trails, equivalent ledgers, verifying evidence, no secret in
- * either, and the same refusals on both legs.
+ * normalized trails, ledgers equal modulo the recorded route, verifying
+ * evidence, no secret in either, and the same refusals on both legs.
+ *
+ * V2-B1c adds the second half of the story: the route each leg was admitted on
+ * reaches the append-only ledger through this same production path and is
+ * projected per attempt. The version it carries is the shipped policy
+ * document's own, which is what makes "immutable policy version" a fact here
+ * rather than a field name.
  *
  * Nothing about any provider's capability is claimed. The CLI child is a fake
  * subject behind a real adapter; the API client is a fake. Every capability
@@ -312,6 +318,14 @@ interface Walk {
   readonly evidence: readonly string[];
   readonly markerJson: string;
   readonly probe: string;
+  /** Every event's canonical body with the recorded route removed (V2-B1c, R1). */
+  readonly bodiesWithoutRoute: readonly string[];
+  /** The route the ledger recorded for this attempt, read back through the projection. */
+  readonly recordedRoute: ExecutionRouteReadModel | null;
+  /** The route as it sits in the INTENT event's own payload. */
+  readonly intentPayloadRoute: unknown;
+  /** How many events in the walk carry a route at all. Exactly one, by law. */
+  readonly eventsCarryingRoute: number;
 }
 
 async function walk(name: string, port: ModelExecutionPort, route: ResolvedRoute): Promise<Walk> {
@@ -333,6 +347,10 @@ async function walk(name: string, port: ModelExecutionPort, route: ResolvedRoute
     emittedBy: EMITTED_BY,
     commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
     initiativeId: INITIATIVE_ID,
+    // The SAME binding the effect port above was built from (V2-B1c). One
+    // value, two readers: what the walk records cannot be a different route
+    // from the one the execution ran.
+    route,
   });
   const run = await supervisor.runToCheckpoint();
   const status = ledger.status();
@@ -340,15 +358,29 @@ async function walk(name: string, port: ModelExecutionPort, route: ResolvedRoute
   const home = join(root, "executions");
   const evidence = existsSync(home) ? readdirSync(home).sort() : [];
   const markerPath = join(home, operation.operationId + ".json");
+  const events = ledger.listEvents({ limit: 200 }).events;
+  const intent = events.find((entry) => entry.event.type === "RUN_STARTED");
   return {
     trail,
     state: run.finalState,
     eventCount: status.eventCount,
     headEventSha256: status.headEventSha256,
-    types: ledger.listEvents({ limit: 200 }).events.map((entry) => entry.event.type),
+    types: events.map((entry) => entry.event.type),
     evidence,
     markerJson: existsSync(markerPath) ? readFileSync(markerPath, "utf8") : "",
     probe: await effects.probe(operation),
+    // The canonical body with the recorded route lifted out. Two legs on two
+    // transports agree on everything else, so this is what "the same walk"
+    // means once the route is in the log (V2-B1c, R1).
+    bodiesWithoutRoute: events.map((entry) => {
+      const body: unknown = JSON.parse(entry.canonicalJson);
+      const payload = (body as { payload?: Record<string, unknown> }).payload;
+      if (payload !== undefined) delete payload["route"];
+      return JSON.stringify(body);
+    }),
+    recordedRoute: ledger.getExecutionRoute(inv.taskId, inv.attempt),
+    intentPayloadRoute: intent?.event.payload["route"] ?? null,
+    eventsCarryingRoute: events.filter((entry) => entry.event.payload["route"] !== undefined).length,
   };
 }
 
@@ -429,12 +461,41 @@ describe("one scenario through both legs of the assembled path", () => {
     expect(apiStarted.route).toEqual({ ...route, transportKind: "API_KEY" });
 
     // The same walk reached the same terminal state with equivalent ledger
-    // content: the same invocation over two fresh ledgers yields the same
-    // bytes at the head, because the effect's content never enters the log.
+    // content.
+    //
+    // This assertion was head-digest equality until V2-B1c, on the premise
+    // that "the effect's content never enters the log". B1c falsifies that
+    // premise deliberately: the admitted route now rides the INTENT event, and
+    // these two legs run routes that differ in exactly `transportKind`, so
+    // their canonical bytes diverge at that one event and the head digests
+    // must differ. The equality is therefore restated one level down rather
+    // than dropped -- equal counts, equal event-type sequence, and equal
+    // canonical bodies MODULO the recorded route -- and the divergence itself
+    // is asserted rather than tolerated, in both directions:
+    // the heads differ, and the routes differ in exactly the one field.
     expect({ cli: cli.state, api: api.state }).toEqual({ cli: "CHECKPOINTED", api: "CHECKPOINTED" });
     expect(cli.types).toEqual(LIFECYCLE_PLAN.map((step) => step.eventType));
     expect(api.types).toEqual(cli.types);
-    expect({ count: api.eventCount, head: api.headEventSha256 }).toEqual({ count: cli.eventCount, head: cli.headEventSha256 });
+    expect(api.eventCount).toBe(cli.eventCount);
+    expect(api.bodiesWithoutRoute).toEqual(cli.bodiesWithoutRoute);
+
+    // The route is what the two ledgers legitimately disagree about, so the
+    // head digests must NOT match. Asserting the inequality keeps this from
+    // silently becoming vacuous if the route ever stopped being recorded.
+    expect(api.headEventSha256).not.toBe(cli.headEventSha256);
+
+    // Recorded, per attempt, through the projection -- and differing in
+    // exactly the transport, agreeing on everything the policy chose.
+    expect(cli.recordedRoute).toMatchObject({ ...route, taskId: TASK, attempt: 1 });
+    expect(api.recordedRoute).toMatchObject({
+      ...route,
+      transportKind: "API_KEY",
+      taskId: TASK,
+      attempt: 1,
+    });
+    const differing = (["provider", "model", "accountId", "transportKind", "capabilityPolicyVersion", "resolvedAt"] as const)
+      .filter((field) => cli.recordedRoute?.[field] !== api.recordedRoute?.[field]);
+    expect(differing).toEqual(["transportKind"]);
   });
 
   it("leaves verifying evidence for both legs under executions/, and never the toy's effects/", async () => {
@@ -474,6 +535,115 @@ describe("one scenario through both legs of the assembled path", () => {
     expect(api.markerJson).not.toContain(SECRET);
     expect(api.markerJson).not.toContain("sk-");
     expect(api.markerJson.length).toBeGreaterThan(0);
+  });
+
+  it("records the admitted route in the ledger through the production walk, and the version is the shipped document's", async () => {
+    // P1/P2. Reachability, asserted through the assembled path: the route is
+    // resolved over the repository's real policy, executed by the port, and
+    // read back out of the ledger's own projection. Nothing here hand-builds
+    // an event -- a fixture that constructed the payload itself would prove
+    // the schema and nothing about whether production reaches it.
+    const registry = shippedRegistry();
+    const route = resolvedCliRoute();
+    const done = await walk("b1c-recorded-cli", cliPort(), route);
+
+    expect(done.state).toBe("CHECKPOINTED");
+    expect(done.recordedRoute).toEqual({
+      taskId: TASK,
+      attempt: 1,
+      provider: "claude",
+      model: "opus",
+      accountId: ACCOUNT,
+      transportKind: "CLI_SUBSCRIPTION",
+      capabilityPolicyVersion: registry.policyVersion,
+      resolvedAt: RESOLVED_AT,
+      recordedAt: done.recordedRoute?.recordedAt ?? "",
+      sequence: done.recordedRoute?.sequence ?? 0,
+    });
+
+    // The version is the document's, not a fixture's: it travels on the choice
+    // from the one producer of it, and nothing downstream re-read the file.
+    expect(done.recordedRoute?.capabilityPolicyVersion).toBe(registry.policyVersion);
+    expect(registry.policyVersion.length).toBeGreaterThan(0);
+
+    // The recording instant is the event's own, and the position is a real one.
+    expect(done.recordedRoute?.recordedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(done.recordedRoute?.sequence).toBeGreaterThan(0);
+  });
+
+  it("carries the route on exactly one event of the walk, and never restates it", async () => {
+    // P4. One fact, one place: the INTENT beat declares the run and the route
+    // it will happen on; no later event repeats it, exactly as no event after
+    // TASK_DISCOVERED repeats the initiative.
+    const done = await walk("b1c-one-place-cli", cliPort(), resolvedCliRoute());
+    expect(done.eventsCarryingRoute).toBe(1);
+    expect(done.intentPayloadRoute).toEqual({
+      provider: "claude",
+      model: "opus",
+      accountId: ACCOUNT,
+      transportKind: "CLI_SUBSCRIPTION",
+      capabilityPolicyVersion: shippedRegistry().policyVersion,
+      resolvedAt: RESOLVED_AT,
+    });
+  });
+
+  it("keeps the API client's secret out of the ledger the recorded route now rides in", async () => {
+    // The canary, extended to the surface V2-B1c opened. Recording a route
+    // puts new bytes in the log, so the scan that proved the trail and the
+    // evidence clean has to cover the log as well or the packet widens the
+    // exposure without widening the proof.
+    const route = resolvedCliRoute();
+    const root = scenario("b1c-ledger-canary");
+    const ledger = openLedger(scenarioLedgerPath(root));
+    ledgers.push(ledger);
+    const inv = invocation();
+    const effects = createExecutionEffects({
+      port: apiPort(),
+      route: { ...route, transportKind: "API_KEY" },
+      request: executionRequest(),
+      scenarioRoot: root,
+    });
+    await new SqliteSupervisor({
+      ledger,
+      invocation: inv,
+      effects,
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: INITIATIVE_ID,
+      route: { ...route, transportKind: "API_KEY" },
+    }).runToCheckpoint();
+
+    const serialized = ledger
+      .listEvents({ limit: 200 })
+      .events.map((entry) => entry.canonicalJson)
+      .join("\n");
+    expect(serialized.length).toBeGreaterThan(0);
+    expect(serialized).not.toContain(SECRET);
+    expect(serialized).not.toContain("sk-");
+    // No absolute path, no scenario directory, no transcript key either.
+    expect(serialized).not.toContain("/Users/");
+    expect(serialized).not.toContain(root);
+    // And the route really is in there, so the scan above is not vacuous.
+    expect(serialized).toContain("capabilityPolicyVersion");
+  });
+
+  it("rebuilds the recorded route byte-identically and reports no integrity problem", async () => {
+    // B1/B4. The single-implementation design gives replay equality for free;
+    // this proves the new arm did not break it, and that the drills' own
+    // rebuild receipt still holds now that the route is recorded.
+    const done = await walk("b1c-rebuild-cli", cliPort(), resolvedCliRoute());
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot("b1c-rebuild-cli")));
+    ledgers.push(ledger);
+
+    const before = ledger.getExecutionRoute(TASK, 1);
+    const rebuild = ledger.rebuildReadModel();
+    const after = ledger.getExecutionRoute(TASK, 1);
+
+    expect(rebuild.executionRouteRows).toBe(1);
+    expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+    expect(after).toEqual(done.recordedRoute);
+    expect(ledger.verifyIntegrity().problems.filter((problem) => problem.kind === "PROJECTION")).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 
   it("refuses in parity on both legs: an account with no binding, and a reattach", async () => {

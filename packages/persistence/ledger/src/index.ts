@@ -82,6 +82,7 @@ export type {
   AppliedMigration,
   EventPage,
   EventQuery,
+  ExecutionRouteReadModel,
   InitiativeAppendResult,
   InitiativeEventPage,
   InitiativeEventQuery,

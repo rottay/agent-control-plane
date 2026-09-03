@@ -1,4 +1,4 @@
-import type { ControlPlaneEvent, TaskState } from "@acp/contracts";
+import type { ControlPlaneEvent, ResolvedRoute, TaskState } from "@acp/contracts";
 import { canonicalJsonStringify } from "@acp/ledger";
 
 import type {
@@ -84,6 +84,21 @@ export interface BeatContext {
    * bytes and `assertInvocationContinuity` refuses.
    */
   readonly initiativeId: string;
+  /**
+   * The route this run was admitted on (V2-B1c).
+   *
+   * Required, with no default, exactly like `plan` and `initiativeId` above,
+   * and carried on the context rather than looked up per beat because the
+   * route is fixed for the attempt: a value that could change between two
+   * beats of one walk would let the INTENT and the effect disagree about what
+   * ran. It reaches the ledger through the INTENT event's payload and nowhere
+   * else.
+   *
+   * The walk does not resolve it and does not verify it against a router: the
+   * caller admitted it through the contract before the walk began, and this
+   * domain holds no routing authority.
+   */
+  readonly route: ResolvedRoute;
 }
 
 /** What one durable beat did. Small, canonical, and safe to journal. */
@@ -106,7 +121,7 @@ export interface BeatResult {
  * task.
  */
 export function assertInvocationContinuity(context: BeatContext): void {
-  const { ledger, invocation, emittedBy, initiativeId, plan } = context;
+  const { ledger, invocation, emittedBy, initiativeId, plan, route } = context;
   const task = ledger.getTask(invocation.taskId);
   if (task === null) return;
 
@@ -133,7 +148,13 @@ export function assertInvocationContinuity(context: BeatContext): void {
   // Step 0 is the same frozen object in every plan -- `READ_ONLY_PLAN` derives
   // steps 0-7 from the writer plan and the lifecycle test asserts the identity
   // -- so the rebuild does not depend on which plan this run walks.
-  const rebuilt = buildEvent({ invocation, step: planStep(0), emittedBy, initiativeId, plan });
+  // Step 0 is `TASK_DISCOVERED`, a PLAIN beat, so the route does not enter its
+  // payload and the rebuilt bytes are unchanged by V2-B1c. That is what keeps
+  // a ledger written before this packet resuming byte-for-byte — and it is
+  // also why a route substituted before the INTENT append is not refused here
+  // yet: step 0 carries nothing that would differ. Binding the route into the
+  // submission is a separate, later change.
+  const rebuilt = buildEvent({ invocation, step: planStep(0), emittedBy, initiativeId, plan, route });
   if (recorded.canonicalJson !== canonicalJsonStringify(rebuilt)) {
     throw new SupervisorError(
       "refusing to resume: these coordinates were begun by a different" +
@@ -247,6 +268,7 @@ export function appendPlanStep(context: BeatContext, step: PlanStep): BeatResult
     emittedBy: context.emittedBy,
     initiativeId: context.initiativeId,
     plan: context.plan,
+    route: context.route,
   });
 
   assertCausalPredecessor(context, step, event.causationId);

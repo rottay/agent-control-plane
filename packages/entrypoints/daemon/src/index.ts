@@ -296,9 +296,16 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
     // binding; the request is derived from the invocation and the emitter,
     // never from new config (D5). Both modes receive this same port, and a
     // refused admission stops here, inside the unwind, classified by code.
+    // One binding, read twice (V2-B1c). The effect port executes this route
+    // and the walk records this route; destructuring once here is what makes
+    // "the route recorded is the route executed" true by construction rather
+    // than by two call sites agreeing. It is the value the config door already
+    // admitted through `ResolvedRoute`; nothing re-resolves it.
+    const { route } = options.execution;
+
     const effects = createExecutionEffects({
       port: executionPortFor(options.execution, options.taskId),
-      route: options.execution.route,
+      route,
       request: {
         taskId: options.taskId,
         attempt: options.attempt,
@@ -321,6 +328,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         // will arrive with the packet rather than be assumed here.
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
         initiativeId: options.initiativeId,
+        route,
       });
       publish("RECONCILED", null);
       publish("READY", null);
@@ -338,6 +346,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
         initiativeId: options.initiativeId,
         effects,
+        route,
         stack,
         onPhase: (phase, pid) => {
           // Published where it happens, in the order it happens. Deferring

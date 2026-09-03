@@ -1,4 +1,5 @@
 import {
+  ResolvedRoute,
   RoadmapVersion,
   TERMINAL_STATES,
   parseWorkerIdentity,
@@ -7,11 +8,25 @@ import {
 } from "@acp/contracts";
 
 import type {
+  ExecutionRouteReadModel,
   InitiativeReadModel,
   RoadmapVersionReadModel,
   TaskReadModel,
   WorkerReadModel,
 } from "../types/index.js";
+
+/**
+ * The one payload key the recorded route travels under (V2-B1c).
+ *
+ * Declared here and, identically, at the producer in
+ * `@acp/runtime`'s event builder. Two homes for one key is a drift risk, so
+ * the fence pins both declarations by equality and compares their literals:
+ * the key cannot be changed on one side alone. It is deliberately NOT a new
+ * export of `@acp/contracts` — the shape is already contracts-owned
+ * (`ResolvedRoute`), and a payload key is the same class of fact as
+ * `initiativeId`, which this module has always read as a literal.
+ */
+const RECORDED_ROUTE_KEY = "route";
 
 /**
  * Pure projection rules.
@@ -163,6 +178,55 @@ export function nextWorkerTaskProjection(
 }
 
 /**
+ * The route one `RUN_STARTED` event recorded, if its payload carries one.
+ *
+ * Modelled on `nextRoadmapVersionProjection` deliberately, because the two
+ * make the same allocation of duties, and the asymmetry is the part a later
+ * reader gets wrong:
+ *
+ * - **At the producer**, a route that is not contract-admitted must never be
+ *   appended. Refusal there is refusal to write.
+ * - **Here, at the projection**, a payload that does not parse projects **no
+ *   row while the event still stands**. Refusing the event at replay would let
+ *   a projection disown history the log accepted; the event tables have no
+ *   delete path at all, and replay has to remain total.
+ *
+ * Collapsing the two — refusing at replay, or writing a partial row — either
+ * breaks rebuild totality or launders a malformed record into the read model.
+ *
+ * The row's identity comes from the EVENT (`taskId`, `attempt`) and never from
+ * the payload, so a payload cannot claim another task's route. That is the
+ * structural half of the binding. The other half — that the route recorded is
+ * the one this attempt was actually admitted on, rather than one substituted
+ * between a crash and a resume — belongs to the producer, and is not yet
+ * pinned: step 0 carries no route, so a resume that precedes the INTENT append
+ * is not refused today. Stated here rather than implied, because a reader
+ * would otherwise reasonably assume the ledger checked it.
+ */
+export function nextExecutionRouteProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): ExecutionRouteReadModel | null {
+  if (event.type !== "RUN_STARTED") return null;
+
+  const parsed = ResolvedRoute.safeParse(event.payload[RECORDED_ROUTE_KEY]);
+  if (!parsed.success) return null;
+
+  return {
+    taskId: event.taskId,
+    attempt: event.attempt,
+    provider: parsed.data.provider,
+    model: parsed.data.model,
+    accountId: parsed.data.accountId,
+    transportKind: parsed.data.transportKind,
+    capabilityPolicyVersion: parsed.data.capabilityPolicyVersion,
+    resolvedAt: parsed.data.resolvedAt,
+    recordedAt: event.recordedAt,
+    sequence,
+  };
+}
+
+/**
  * In-memory projection of an entire event stream.
  *
  * Used by rebuildReadModel to replay, and by verifyIntegrity to compute what
@@ -172,6 +236,7 @@ export interface ProjectionSnapshot {
   readonly tasks: Map<string, TaskReadModel>;
   readonly workers: Map<string, WorkerReadModel>;
   readonly workerTasks: Map<string, WorkerTaskProjection>;
+  readonly executionRoutes: Map<string, ExecutionRouteReadModel>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -179,12 +244,24 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     tasks: new Map<string, TaskReadModel>(),
     workers: new Map<string, WorkerReadModel>(),
     workerTasks: new Map<string, WorkerTaskProjection>(),
+    executionRoutes: new Map<string, ExecutionRouteReadModel>(),
   };
 }
 
 export function workerTaskKey(identity: string, taskId: string): string {
   // The identity pattern forbids a space, so this separator cannot collide.
   return identity + " " + taskId;
+}
+
+/**
+ * The key of one attempt's route row.
+ *
+ * A task id is a uuid and an attempt is an integer, so neither can contain the
+ * separator and the pair cannot collide — the same argument `workerTaskKey`
+ * makes about the identity pattern.
+ */
+export function executionRouteKey(taskId: string, attempt: number): string {
+  return taskId + " " + String(attempt);
 }
 
 /** Fold one event into an in-memory snapshot. */
@@ -212,6 +289,15 @@ export function applyEventToSnapshot(
   );
 
   snapshot.workerTasks.set(pairKey, nextWorkerTaskProjection(existingPair, event, sequence));
+
+  // A route row appears only for an event that carries an admitted route, and
+  // is keyed by the attempt that ran it. Events without one leave the map
+  // untouched, which is what keeps a ledger written before V2-B1c replaying to
+  // zero route rows instead of to an error.
+  const route = nextExecutionRouteProjection(event, sequence);
+  if (route !== null) {
+    snapshot.executionRoutes.set(executionRouteKey(route.taskId, route.attempt), route);
+  }
 }
 
 // ---------------------------------------------------------------------------

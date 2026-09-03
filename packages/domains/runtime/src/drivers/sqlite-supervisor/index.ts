@@ -5,6 +5,7 @@ import type {
   DriverMode,
   DriverStatus,
   ReconciliationReport,
+  ResolvedRoute,
   TaskState,
 } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
@@ -74,6 +75,16 @@ export interface SqliteSupervisorOptions {
    */
   readonly initiativeId: string;
   /**
+   * The route this run was admitted on (V2-B1c).
+   *
+   * Required, never defaulted, exactly like `commitPolicy` and `initiativeId`.
+   * It arrives with the packet already admitted through the contract, reaches
+   * the ledger in the INTENT event's payload, and is never resolved here: this
+   * driver holds no routing authority, and a default would put a route in the
+   * log that nothing chose.
+   */
+  readonly route: ResolvedRoute;
+  /**
    * Deliberate interruption seam, for the kill/restart drills only.
    *
    * Rollback and recovery are claims that cannot be verified by reading code.
@@ -101,6 +112,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
   readonly #emittedBy: string;
   readonly #plan: readonly PlanStep[];
   readonly #initiativeId: string;
+  readonly #route: ResolvedRoute;
   readonly #faultPoint: FaultPoint | undefined;
   readonly #onFault: (() => void) | undefined;
 
@@ -111,6 +123,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
     this.#emittedBy = options.emittedBy;
     this.#plan = planFor(options.commitPolicy);
     this.#initiativeId = options.initiativeId;
+    this.#route = options.route;
     this.#faultPoint = options.__faultPoint;
     this.#onFault = options.__onFault;
   }
@@ -265,6 +278,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
       emittedBy: this.#emittedBy,
       plan: this.#plan,
       initiativeId: this.#initiativeId,
+      route: this.#route,
     };
   }
 

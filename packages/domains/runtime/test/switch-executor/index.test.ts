@@ -1,4 +1,5 @@
 import { AccountRecord, CONTRACT_VERSION } from "@acp/contracts";
+import type { ResolvedRoute } from "@acp/contracts";
 import type { Lease } from "@acp/contracts";
 import { DEFAULT_ROUTING_CONFIG, decideSwitch } from "@acp/accounts";
 import type { RoutingRequest } from "@acp/accounts";
@@ -19,6 +20,23 @@ import {
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
+
+
+/**
+ * One admitted route for every fixture in this file (V2-B1c).
+ *
+ * A route is required, never defaulted, so every construction site states one.
+ * It satisfies the contract's own refinement: a CLI_SUBSCRIPTION route names a
+ * provider the kernel lists as one.
+ */
+const TEST_ROUTE: ResolvedRoute = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: "2026-08-27T12:00:00.000Z",
+};
 
 /**
  * Evidence for the switch executor.
@@ -164,6 +182,7 @@ function addTask(ledger: Ledger, taskId: string): DurableInvocation {
     invocation,
     emittedBy: EMITTED_BY,
     plan: LIFECYCLE_PLAN,
+    route: TEST_ROUTE,
     initiativeId: INITIATIVE_ID,
   };
   const step = LIFECYCLE_PLAN[0];
@@ -183,6 +202,7 @@ function openWithTask(id: string, taskId: string): { ledger: Ledger; invocation:
     invocation,
     emittedBy: EMITTED_BY,
     plan: LIFECYCLE_PLAN,
+    route: TEST_ROUTE,
     initiativeId: INITIATIVE_ID,
   };
   const step = LIFECYCLE_PLAN[0];

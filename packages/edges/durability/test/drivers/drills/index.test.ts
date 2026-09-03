@@ -35,7 +35,9 @@ import {
   submitAdvance,
 } from "../../../src/submit/index.js";
 import { reconcile } from "../../../src/drivers/restate-driver/index.js";
-import { releasePath } from "../../../src/drivers/restate-child/index.js";
+import { drillRoute, releasePath } from "../../../src/drivers/restate-child/index.js";
+
+
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -170,6 +172,7 @@ function beatFactory(root: ScenarioRoot, ledger: Ledger) {
     },
     invocation,
     emittedBy: EMITTED_BY,
+    route: drillRoute(invocation),
   });
 }
 
@@ -986,6 +989,11 @@ describe("driver equivalence", () => {
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
+      // Exactly what the child binds, imported from the child rather than
+      // restated here: the two legs of the equivalence drill must declare the
+      // same route or their canonical bytes cannot match, and a second copy of
+      // the literal is precisely how they would come to disagree.
+      route: drillRoute(invocation),
     }).runToCheckpoint();
 
     // Scenario B: Restate, on a different fresh ledger.
@@ -1018,6 +1026,7 @@ describe("driver equivalence", () => {
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
+      route: drillRoute(other),
     }).runToCheckpoint();
     expect(ledgerC.status().headEventSha256).not.toBe(a.headEventSha256);
 

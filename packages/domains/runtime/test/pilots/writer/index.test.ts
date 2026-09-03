@@ -1,3 +1,4 @@
+import type { ResolvedRoute } from "@acp/contracts";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -81,6 +82,23 @@ import {
   wrapAuthorizationEvent,
   writerInvocation,
 } from "./helpers/index.js";
+
+
+/**
+ * One admitted route for every fixture in this file (V2-B1c).
+ *
+ * A route is required, never defaulted, so every construction site states one.
+ * It satisfies the contract's own refinement: a CLI_SUBSCRIPTION route names a
+ * provider the kernel lists as one.
+ */
+const TEST_ROUTE: ResolvedRoute = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: "2026-08-27T12:00:00.000Z",
+};
 
 /**
  * P7C: the mechanical writer packet.
@@ -206,6 +224,7 @@ function beatContext(
     emittedBy,
     plan,
     initiativeId: PILOT_INITIATIVE_ID,
+    route: TEST_ROUTE,
     };
 }
 
@@ -311,6 +330,7 @@ describe("the writer packet, walked end to end", () => {
       emittedBy: PILOT_WRITER,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: PILOT_INITIATIVE_ID,
+      route: TEST_ROUTE,
     });
     await supervisor.advance(inv, "DISCOVERED"); // 1: classified
     await supervisor.advance(inv, "DT_CLASSIFIED"); // 2: ready

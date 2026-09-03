@@ -30,6 +30,23 @@ import {
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
 
+
+/**
+ * One admitted route for every fixture in this file (V2-B1c).
+ *
+ * A route is required, never defaulted, so every construction site states one.
+ * It satisfies the contract's own refinement: a CLI_SUBSCRIPTION route names a
+ * provider the kernel lists as one.
+ */
+const TEST_ROUTE: ResolvedRoute = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: "2026-08-27T12:00:00.000Z",
+};
+
 /**
  * Evidence for the execution-backed effect port (V2-B1b, stage 2).
  *
@@ -295,6 +312,7 @@ describe("the execution-backed effect port", () => {
       invocation,
       emittedBy: EMITTED_BY,
       plan: LIFECYCLE_PLAN,
+      route: TEST_ROUTE,
       initiativeId: INITIATIVE_ID,
     };
     for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) appendPlanStep(context, step);

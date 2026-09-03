@@ -1,4 +1,4 @@
-import type { CommitPolicy } from "@acp/contracts";
+import type { CommitPolicy, ResolvedRoute } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import type { DurableInvocation, EffectPort } from "@acp/runtime";
 import { SqliteSupervisor } from "@acp/runtime";
@@ -45,6 +45,15 @@ export interface SqliteModeInput {
    * site, and this mode never invents one.
    */
   readonly initiativeId: string;
+  /**
+   * The route the walk was admitted on, passed through for the same reason and
+   * in the same way as the policy and the initiative above (V2-B1c).
+   *
+   * It is the SAME value the daemon built the effect port from — one binding
+   * at the call site, read twice — so the route the log records and the route
+   * the execution runs cannot be two different values.
+   */
+  readonly route: ResolvedRoute;
 }
 
 export interface SqliteModeResult {
@@ -63,6 +72,7 @@ export async function runSqliteMode(input: SqliteModeInput): Promise<SqliteModeR
     emittedBy: input.emittedBy,
     commitPolicy: input.commitPolicy,
     initiativeId: input.initiativeId,
+    route: input.route,
   });
 
   const report = await supervisor.reconcile();

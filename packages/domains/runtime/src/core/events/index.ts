@@ -1,4 +1,6 @@
-import { CONTRACT_VERSION, ControlPlaneEvent } from "@acp/contracts";
+// `ResolvedRoute` is imported as a value: this module parses through it, and
+// the zod schema and the inferred type share the name.
+import { CONTRACT_VERSION, ControlPlaneEvent, ResolvedRoute } from "@acp/contracts";
 import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts";
 
 import type { DurableInvocation, OperationCoordinate } from "../../contracts/index.js";
@@ -14,10 +16,15 @@ import { LifecyclePlanError } from "../../errors/index.js";
  * every time it is called, in this process or a restarted one. That property is
  * what makes an exact replay append nothing instead of raising a conflict.
  *
- * Payloads carry coordinates and digests only. No path, no credential, no
- * provider output and no transcript: the ledger contract would reject those,
- * and building them here only to have the contract refuse them would move the
- * failure to a worse place.
+ * Payloads carry coordinates, digests and — on the INTENT beat alone — the
+ * admitted route (V2-B1c). No path, no credential, no provider output and no
+ * transcript: the ledger contract would reject those, and building them here
+ * only to have the contract refuse them would move the failure to a worse
+ * place. The route is safe by the same test rather than by assertion: every
+ * one of its field names survives the contract's credential guards, whose
+ * stems are suffix-matched, and every one of its values is an identifier or an
+ * instant. A route carrying credential-shaped material is refused by
+ * `ControlPlaneEvent.parse` below, here, before any append.
  */
 
 export interface BuildEventInput {
@@ -45,7 +52,37 @@ export interface BuildEventInput {
    * run is not walking.
    */
   readonly plan: readonly PlanStep[];
+  /**
+   * The route this run was admitted on (V2-B1c).
+   *
+   * Required, with no default, for the same reason `plan` and `initiativeId`
+   * are: a route that could be omitted would be a route that silently
+   * defaulted, and the whole point of recording one is that the log can say
+   * afterwards which policy chose which account for the work that ran.
+   *
+   * It is the value the caller ALREADY had admitted through the contract, not
+   * one resolved here. This module calls no router: `routeWithPolicy` and
+   * `resolveRoute` live in `@acp/accounts` and are never imported on this
+   * path, so there is exactly one producer of `capabilityPolicyVersion` and
+   * this is not it. Re-resolving at record time would be a second reader of a
+   * document that may have been re-cut in between — two answers to one
+   * question.
+   */
+  readonly route: ResolvedRoute;
 }
+
+/**
+ * The one payload key the recorded route travels under (V2-B1c).
+ *
+ * Declared here and, identically, at the consumer in `@acp/ledger`'s
+ * projection. Two homes for one key is a drift risk, so the fence pins both
+ * declarations by equality and compares their literals: the key cannot be
+ * changed on one side alone. It is deliberately not a new export of
+ * `@acp/contracts` — the shape is already contracts-owned (`ResolvedRoute`),
+ * and a payload key is the same class of fact as `initiativeId`, which this
+ * module has always written as a literal.
+ */
+const RECORDED_ROUTE_KEY = "route";
 
 /**
  * The payload for one step.
@@ -68,6 +105,7 @@ function payloadFor(
   step: PlanStep,
   operation: OperationCoordinate,
   initiativeId: string,
+  route: ResolvedRoute,
 ): Record<string, unknown> {
   const base = { submissionDigest: invocation.submissionDigest };
 
@@ -79,11 +117,26 @@ function payloadFor(
   }
 
   if (step.beat === "INTENT") {
+    // The INTENT beat is the truthful carrier of the route, and the only one.
+    // It is the step that declares the run about to happen, so it is the one
+    // place the route it will happen on can be stated; the OUTCOME never
+    // restates it, for the same reason no event after `TASK_DISCOVERED`
+    // restates the initiative. The fields are projected one by one rather
+    // than spread, so a wider object handed in here cannot smuggle a key the
+    // contract's guards would then have to catch.
     return {
       ...base,
       beat: "INTENT",
       operationId: operation.operationId,
       operationIndex: operation.operationIndex,
+      [RECORDED_ROUTE_KEY]: {
+        provider: route.provider,
+        model: route.model,
+        accountId: route.accountId,
+        transportKind: route.transportKind,
+        capabilityPolicyVersion: route.capabilityPolicyVersion,
+        resolvedAt: route.resolvedAt,
+      },
     };
   }
   if (step.beat === "OUTCOME") {
@@ -107,6 +160,21 @@ function payloadFor(
  */
 export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
   const { invocation, step, emittedBy, initiativeId } = input;
+
+  // The producer's half of the fail-closed law (V2-B1c).
+  //
+  // `ControlPlaneEvent` validates the payload as a bounded record of unknowns
+  // and runs the credential guards over it, but it does NOT reach inside and
+  // apply `ResolvedRoute`'s own refinement — so a CLI route naming a provider
+  // the kernel does not list would pass the event contract and land in the log
+  // unchallenged. The route is therefore admitted here, explicitly, and what
+  // is written is the parsed value.
+  //
+  // It is parsed on EVERY step and not only on the one that records it, so a
+  // walk with an inadmissible route refuses before it appends anything at all:
+  // `assertInvocationContinuity` builds step 0 before the first append, which
+  // makes this the earliest point a run can fail closed with zero delta.
+  const route = ResolvedRoute.parse(input.route);
 
   // The INTENT and OUTCOME beats address the SAME effect, so both derive the
   // operation from the intent step's index. An outcome that addressed its own
@@ -161,7 +229,7 @@ export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
     recordedAt: coordinate.recordedAt,
     correlationId: invocation.invocationId,
     causationId,
-    payload: payloadFor(invocation, step, operation, initiativeId),
+    payload: payloadFor(invocation, step, operation, initiativeId, route),
   });
 }
 

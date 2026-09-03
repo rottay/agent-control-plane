@@ -39,6 +39,8 @@ import {
   applyInitiativeEventToSnapshot,
   createInitiativeProjectionSnapshot,
   createProjectionSnapshot,
+  executionRouteKey,
+  nextExecutionRouteProjection,
   nextInitiativeProjection,
   nextRoadmapVersionProjection,
   nextTaskProjection,
@@ -54,6 +56,7 @@ import type {
   AppliedMigration,
   EventPage,
   EventQuery,
+  ExecutionRouteReadModel,
   InitiativeAppendResult,
   InitiativeEventPage,
   InitiativeEventQuery,
@@ -171,6 +174,19 @@ interface RoadmapVersionRow {
   readonly kind: string;
   readonly restores_version_id: string | null;
   readonly recorded_by: string;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
+interface ExecutionRouteRow {
+  readonly task_id: string;
+  readonly attempt: number;
+  readonly provider: string;
+  readonly model: string;
+  readonly account_id: string;
+  readonly transport_kind: string;
+  readonly capability_policy_version: string;
+  readonly resolved_at: string;
   readonly recorded_at: string;
   readonly sequence: number;
 }
@@ -318,6 +334,21 @@ function roadmapVersionRowToModel(row: RoadmapVersionRow): RoadmapVersionReadMod
     kind: row.kind as RoadmapVersionReadModel["kind"],
     restoresVersionId: row.restores_version_id,
     recordedBy: row.recorded_by,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
+}
+
+function executionRouteRowToModel(row: ExecutionRouteRow): ExecutionRouteReadModel {
+  return {
+    taskId: row.task_id,
+    attempt: row.attempt,
+    provider: row.provider,
+    model: row.model,
+    accountId: row.account_id,
+    transportKind: row.transport_kind as ExecutionRouteReadModel["transportKind"],
+    capabilityPolicyVersion: row.capability_policy_version,
+    resolvedAt: row.resolved_at,
     recordedAt: row.recorded_at,
     sequence: row.sequence,
   };
@@ -923,6 +954,38 @@ export class Ledger {
       sequence,
     );
     this.#upsertWorkerTask(nextPair);
+
+    // The route row, when the event carries an admitted one. Same function as
+    // the replay path uses, so the incremental projection and a rebuild cannot
+    // come to disagree about which events produce a row.
+    const route = nextExecutionRouteProjection(event, sequence);
+    if (route !== null) this.#upsertExecutionRoute(route);
+  }
+
+  #upsertExecutionRoute(route: ExecutionRouteReadModel): void {
+    this.#stmt(
+      "INSERT INTO execution_route_read_model (" +
+        "task_id, attempt, provider, model, account_id, transport_kind, " +
+        "capability_policy_version, resolved_at, recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (task_id, attempt) DO UPDATE SET " +
+        "provider = excluded.provider, model = excluded.model, " +
+        "account_id = excluded.account_id, transport_kind = excluded.transport_kind, " +
+        "capability_policy_version = excluded.capability_policy_version, " +
+        "resolved_at = excluded.resolved_at, recorded_at = excluded.recorded_at, " +
+        "sequence = excluded.sequence",
+    ).run(
+      route.taskId,
+      route.attempt,
+      route.provider,
+      route.model,
+      route.accountId,
+      route.transportKind,
+      route.capabilityPolicyVersion,
+      route.resolvedAt,
+      route.recordedAt,
+      route.sequence,
+    );
   }
 
   #upsertTask(task: TaskReadModel): void {
@@ -1620,6 +1683,7 @@ export class Ledger {
       for (const task of snapshot.tasks.values()) this.#upsertTask(task);
       for (const worker of snapshot.workers.values()) this.#upsertWorker(worker);
       for (const pair of snapshot.workerTasks.values()) this.#upsertWorkerTask(pair);
+      for (const route of snapshot.executionRoutes.values()) this.#upsertExecutionRoute(route);
 
       for (const initiative of initiativeSnapshot.initiatives.values()) {
         this.#upsertInitiative(initiative);
@@ -1648,6 +1712,7 @@ export class Ledger {
         throughSequence: replay.lastSequence,
         taskRows: snapshot.tasks.size,
         workerRows: snapshot.workers.size,
+        executionRouteRows: snapshot.executionRoutes.size,
         replayedInitiativeEvents: initiativeReplay.checked,
         initiativeThroughSequence: initiativeReplay.lastSequence,
         initiativeRows: initiativeSnapshot.initiatives.size,
@@ -2176,6 +2241,46 @@ export class Ledger {
       }
     }
 
+    // The route rows, compared as exact sets in both directions for the same
+    // reason the association rows are: a substituted route leaves the count
+    // unchanged while the projection claims an attempt ran on an account or a
+    // policy version it never ran on, which is precisely the claim this
+    // projection exists to be able to make.
+    const storedRoutes = new Map(
+      (
+        this.#stmt("SELECT * FROM execution_route_read_model").all() as ExecutionRouteRow[]
+      ).map((row) => [executionRouteKey(row.task_id, row.attempt), executionRouteRowToModel(row)]),
+    );
+
+    for (const [key, expected] of snapshot.executionRoutes) {
+      const stored = storedRoutes.get(key);
+      if (stored === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "execution_route_read_model is missing the route for " + key,
+          sequence: null,
+        });
+        continue;
+      }
+      if (canonicalJsonStringify(stored) !== canonicalJsonStringify(expected)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "execution_route_read_model row for " + key + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const key of storedRoutes.keys()) {
+      if (!snapshot.executionRoutes.has(key)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "execution_route_read_model holds the route for " + key + " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
+
     return problems;
   }
 
@@ -2264,6 +2369,36 @@ export class Ledger {
       | TaskRow
       | undefined;
     return row === undefined ? null : taskRowToModel(row);
+  }
+
+  /**
+   * The route one attempt of a task was admitted on, or null (V2-B1c).
+   *
+   * `(taskId, attempt)` and not `taskId`: a retry may have resolved a
+   * different account or model, and both answers are facts the ledger holds.
+   * Null means the attempt recorded no admitted route — either it predates
+   * V2-B1c, or its `RUN_STARTED` payload did not satisfy the contract and the
+   * projection refused it while the event itself still stands.
+   */
+  getExecutionRoute(taskId: string, attempt: number): ExecutionRouteReadModel | null {
+    this.#assertOpen("getExecutionRoute");
+    if (!Number.isInteger(attempt) || attempt < 1) {
+      throw new LedgerQueryError("attempt must be a positive integer");
+    }
+    const row = this.#stmt(
+      "SELECT * FROM execution_route_read_model WHERE task_id = ? AND attempt = ?",
+    ).get(taskId, attempt) as ExecutionRouteRow | undefined;
+    return row === undefined ? null : executionRouteRowToModel(row);
+  }
+
+  /** A task's recorded routes, in attempt order, so a retry's history reads in order. */
+  listExecutionRoutes(taskId: string): readonly ExecutionRouteReadModel[] {
+    this.#assertOpen("listExecutionRoutes");
+    return (
+      this.#stmt(
+        "SELECT * FROM execution_route_read_model WHERE task_id = ? ORDER BY attempt ASC",
+      ).all(taskId) as ExecutionRouteRow[]
+    ).map(executionRouteRowToModel);
   }
 
   /** Tasks ordered by taskId, so two rebuilds produce identical pages. */

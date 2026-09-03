@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CommitPolicy } from "@acp/contracts";
+import { CommitPolicy, ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 
 import type { DurableInvocation } from "../../contracts/index.js";
@@ -124,6 +124,35 @@ export function parseChildConfig(raw: unknown): ChildConfig {
   };
 }
 
+/**
+ * The route a toy-bound walk records (V2-B1c).
+ *
+ * A drill child binds the toy effect, so there is no admitted production route
+ * here and inventing one that looked like a production route would put a
+ * fiction in a drill ledger. What the walk records instead is what it truly
+ * is: a locally-hosted toy effect, on no account and under no capability
+ * policy. It is declared beside the toy binding rather than accepted from the
+ * config for the same reason the toy binding itself is not configurable — this
+ * file is one of the two the fence names as lawful toy binders, and a route
+ * that arrived from a caller could arrive at a production seam too.
+ *
+ * The instant is the invocation's own `submittedAt`, never a clock read: a
+ * value that reaches a ledger event may not depend on when the code ran. The
+ * composition is parsed through the contract, so this is not a second, laxer
+ * admission point — a malformed drill route refuses here exactly as a
+ * malformed production route refuses at the daemon's door.
+ */
+function drillRoute(invocation: DurableInvocation): ResolvedRoute {
+  return ResolvedRoute.parse({
+    provider: "toy",
+    model: "toy-effect",
+    accountId: "drill",
+    transportKind: "LOCAL_OR_SELF_HOSTED",
+    capabilityPolicyVersion: "drill",
+    resolvedAt: invocation.submittedAt,
+  });
+}
+
 /** Run one supervisor pass, optionally killing this process at a fault point. */
 export async function runChild(config: ChildConfig): Promise<void> {
   const scenarioRoot = resolveScenarioRoot(config.scenarioId);
@@ -148,6 +177,7 @@ export async function runChild(config: ChildConfig): Promise<void> {
       emittedBy: config.emittedBy,
       commitPolicy: config.commitPolicy,
       initiativeId: config.initiativeId,
+      route: drillRoute(config.invocation),
       __faultPoint: config.faultPoint ?? undefined,
       // A real signal, not an exception. SIGKILL cannot be caught, so nothing
       // in this process gets a chance to flush, close or tidy up, which is the

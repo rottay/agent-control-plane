@@ -1,3 +1,4 @@
+import type { ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,6 +16,23 @@ import type { ScenarioRoot } from "../../src/toy/repository/index.js";
 import { recordTokenObservation } from "../../src/usage/index.js";
 import type { DurableInvocation } from "../../src/contracts/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
+
+
+/**
+ * One admitted route for every fixture in this file (V2-B1c).
+ *
+ * A route is required, never defaulted, so every construction site states one.
+ * It satisfies the contract's own refinement: a CLI_SUBSCRIPTION route names a
+ * provider the kernel lists as one.
+ */
+const TEST_ROUTE: ResolvedRoute = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: "2026-08-27T12:00:00.000Z",
+};
 
 /**
  * Evidence for usage and reservation emission.
@@ -69,6 +87,7 @@ function openWithTask(id: string, taskId: string): { ledger: Ledger; invocation:
     invocation,
     emittedBy: EMITTED_BY,
     plan: LIFECYCLE_PLAN,
+    route: TEST_ROUTE,
     initiativeId: INITIATIVE_ID,
   };
   const step = LIFECYCLE_PLAN[0];
