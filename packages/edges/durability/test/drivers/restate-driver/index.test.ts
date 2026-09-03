@@ -33,12 +33,35 @@ import type {
   PostconditionVerdict,
   ScenarioRoot,
 } from "@acp/runtime";
-import type { Context } from "@restatedev/restate-sdk";
+import type {
+  Context,
+  WorkflowContext,
+  WorkflowSharedContext,
+} from "@restatedev/restate-sdk";
 
-import type { DurableStepContext, LedgerLike, RestateCacheState } from "../../../src/contracts/index.js";
-import { RESTATE_MODE, RestateDriver, advanceHandler, reconcile } from "../../../src/drivers/restate-driver/index.js";
+import {
+  RESTATE_GATE_PROMISE,
+  RESTATE_HANDLER_GATE_RESOLVE,
+  RESTATE_WORKFLOW_GATE,
+} from "../../../src/contracts/index.js";
+import type {
+  DurableStepContext,
+  GatePayload,
+  GateResolveContext,
+  GateRunContext,
+  LedgerLike,
+  RestateCacheState,
+} from "../../../src/contracts/index.js";
+import {
+  RESTATE_MODE,
+  RestateDriver,
+  advanceHandler,
+  gateResolveHandler,
+  gateRunHandler,
+  reconcile,
+} from "../../../src/drivers/restate-driver/index.js";
 import type { AdvanceContext } from "../../../src/drivers/restate-driver/index.js";
-import { cancelAdvance, parseCacheReply } from "../../../src/submit/index.js";
+import { cancelAdvance, parseCacheReply, resolveGate, sendAdvanceDelayed } from "../../../src/submit/index.js";
 
 
 /**
@@ -655,6 +678,13 @@ function portViolations(candidate: object): readonly string[] {
   if (typeof advance === "function" && advance.length !== 2) {
     problems.push("advance() must take (invocation, from)");
   }
+  // V2-B2-5 widened `timer` to carry its duration. A timer without one is not
+  // a timer, and a driver whose method dropped the parameter would silently
+  // schedule whatever it felt like -- so the arity is part of the port.
+  const timer = record["timer"];
+  if (typeof timer === "function" && timer.length !== 2) {
+    problems.push("timer() must take (invocation, delayMs)");
+  }
   return problems;
 }
 
@@ -748,7 +778,7 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
     expect(portViolations(noMode)).toEqual(["mode must be a non-empty DriverMode", ...VERB_VIOLATIONS]);
   });
 
-  it("narrows the SDK context to exactly three members (DurableStepContext)", () => {
+  it("still narrows the SDK context to exactly three members (DurableStepContext)", () => {
     // `DurableStepContext` is the repository's only type-level coupling to the
     // SDK outside the drivers, and it moved here with them. Its whole value is
     // that it is *narrower* than `Context`, so both directions are asserted at
@@ -766,6 +796,48 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
     // @ts-expect-error `get` is SDK surface the narrowing deliberately withholds.
     const withheld: unknown = seen.get;
     expect(withheld).toBeUndefined();
+
+    // V2-B2-5 deliberately did NOT widen this. The durable gate is a separate
+    // service with its own narrowing, so the ADVANCE walk gained no new SDK
+    // surface at all -- and in particular no suspension point. Both members a
+    // reader might expect the packet to have added are asserted absent, so a
+    // later widening has to break this test rather than ride along.
+
+    // @ts-expect-error `awakeable` is what the rejected SIGNAL design needed.
+    const noAwakeable: unknown = seen.awakeable;
+    expect(noAwakeable).toBeUndefined();
+
+    // @ts-expect-error `sleep` is what a timer inside the walk would have needed.
+    const noSleep: unknown = seen.sleep;
+    expect(noSleep).toBeUndefined();
+
+    // @ts-expect-error `promise` belongs to the gate's narrowing, not this one.
+    const noPromise: unknown = seen.promise;
+    expect(noPromise).toBeUndefined();
+  });
+
+  it("gives the durable gate its own narrowing, carrying only `promise`", () => {
+    // The gate is not the walk, so it does not inherit the walk's context. Its
+    // run side is `Pick<WorkflowContext,"promise">` and its release side the
+    // shared twin -- one member each, which is the whole surface the gate is
+    // allowed to reach.
+    const narrowRun = (context: WorkflowContext): GateRunContext => context;
+    const narrowResolve = (context: WorkflowSharedContext): GateResolveContext => context;
+    expect(typeof narrowRun).toBe("function");
+    expect(typeof narrowResolve).toBe("function");
+
+    const seenRun: GateRunContext = {
+      promise: undefined as unknown as GateRunContext["promise"],
+    };
+    expect(Object.keys(seenRun).sort()).toEqual(["promise"]);
+
+    // @ts-expect-error `run` is the walk's, and the gate journals no step.
+    const noRun: unknown = seenRun.run;
+    expect(noRun).toBeUndefined();
+
+    // @ts-expect-error the gate holds no state; `set` would be a second authority.
+    const noSet: unknown = seenRun.set;
+    expect(noSet).toBeUndefined();
   });
 });
 
@@ -933,6 +1005,59 @@ async function withAttachAnswering<T>(
   }
 }
 
+/** One request the driver made, recorded whole (V2-B2-5). */
+interface IngressCall {
+  readonly method: string;
+  readonly url: string;
+  readonly body: string | null;
+  readonly idempotencyKey: string | null;
+}
+
+/**
+ * Answer ingress without a server, and record exactly what was asked.
+ *
+ * `timer` and `signal` are each ONE derived request, so a stubbed `fetch` can
+ * prove everything a unit suite should prove about them: the address, the
+ * headers, the body and — the part that matters most for the negatives — that
+ * some calls are never made at all. That the shape describes the real engine is
+ * the drills' job, against the pinned server.
+ */
+async function withIngressAnswering<T>(
+  reply: { readonly status: number; readonly body: string },
+  run: () => Promise<T>,
+): Promise<{ readonly result: T; readonly asked: readonly IngressCall[] }> {
+  const original = globalThis.fetch;
+  const asked: IngressCall[] = [];
+  globalThis.fetch = ((input: unknown, init?: RequestInit): Promise<Response> => {
+    const headers = new Headers(init?.headers ?? {});
+    asked.push({
+      method: init?.method ?? "GET",
+      url: input instanceof URL ? input.toString() : String(input),
+      body: typeof init?.body === "string" ? init.body : null,
+      idempotencyKey: headers.get("idempotency-key"),
+    });
+    return Promise.resolve(new Response(reply.body, { status: reply.status }));
+  }) as typeof globalThis.fetch;
+  try {
+    return { result: await run(), asked };
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+/** What the engine says to an accepted delayed send, id and all. */
+const ENGINE_SCHEDULES = {
+  status: 202,
+  body: JSON.stringify({
+    invocationId: "inv_1abcdefghijklmnopqrstuvwxyz012345",
+    executionTime: "2026-09-03T12:00:03.000Z",
+    status: "Accepted",
+  }),
+};
+
+/** What the gate says to an accepted release. */
+const GATE_RESOLVES = { status: 200, body: JSON.stringify({ resolved: true }) };
+
 /**
  * The capability declaration, and the law that stops it being decorative
  * (V2-B2-1).
@@ -968,19 +1093,30 @@ describe("the driver declares what it cannot do, and the declaration is checked"
       REATTACH: (
         await withAttachAnswering(ATTACHED, () => driver.reattach(INVOCATION_FOR_CAPABILITIES))
       ).result,
-      SIGNAL: await driver.signal(INVOCATION_FOR_CAPABILITIES),
-      TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES),
+      SIGNAL: (
+        await withIngressAnswering(GATE_RESOLVES, () =>
+          driver.signal(INVOCATION_FOR_CAPABILITIES),
+        )
+      ).result,
+      TIMER: (
+        await withIngressAnswering(ENGINE_SCHEDULES, () =>
+          driver.timer(INVOCATION_FOR_CAPABILITIES, 1_000),
+        )
+      ).result,
     };
   };
 
-  it("declares two verbs UNSUPPORTED and CANCEL and REATTACH SUPPORTED, satisfying the contract", () => {
+  it("declares all four verbs SUPPORTED, satisfying the contract", () => {
+    // V2-B2-5 flips the last two, so this driver is capability complete. Each
+    // entry moved in the packet that drilled it and in no other; the fence
+    // pins the same four literals, so a flip cannot land in one place alone.
     const declared = capabilitySubject("declaration").driver.capabilities();
     expect(DriverCapabilities.safeParse(declared).success).toBe(true);
     expect(declared.verbs).toEqual({
       CANCEL: "SUPPORTED",
       REATTACH: "SUPPORTED",
-      SIGNAL: "UNSUPPORTED",
-      TIMER: "UNSUPPORTED",
+      SIGNAL: "SUPPORTED",
+      TIMER: "SUPPORTED",
     });
     // `SERIALIZED_PER_TASK` moved to SUPPORTED in V2-B2-3, and only because
     // that packet drilled it: one invocation held at a beat while a second is
@@ -991,20 +1127,20 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     expect(declared.mode).toBe(RESTATE_MODE);
   });
 
-  it("refuses every unsupported verb field-exactly: never a throw, never a silent no-op", async () => {
-    const observed = await OUTCOMES(capabilitySubject("unsupported-verbs"));
-    for (const [verb, at] of [
-      ["SIGNAL", "signal"],
-      ["TIMER", "timer"],
-    ] as const) {
-      // Field by field, not `toMatchObject`: the refusal reason and the `at`
-      // are the whole content of the answer, and `at` names the verb rather
-      // than anything about the work or the engine.
-      expect({ verb, outcome: observed[verb] }).toEqual({
-        verb,
-        outcome: { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at },
-      });
+  it("no verb refuses any more, and each accepted answer is the shape its contract allows", async () => {
+    // The mirror of what this test used to assert. Until V2-B2-5 two verbs
+    // returned `CAPABILITY_UNSUPPORTED`; none does now, and the driver source
+    // no longer even has an `unsupported()` helper to build one with.
+    const observed = await OUTCOMES(capabilitySubject("supported-verbs"));
+    for (const verb of ["CANCEL", "REATTACH", "SIGNAL", "TIMER"] as const) {
+      expect({ verb, ok: observed[verb].ok }).toEqual({ verb, ok: true });
     }
+
+    // SIGNAL and TIMER observe no ledger position, so each answers the bare
+    // `{ ok: true }` the contract sanctions rather than inventing a coordinate.
+    // CANCEL and REATTACH do observe one, and carry it.
+    expect(observed.SIGNAL).toEqual({ ok: true });
+    expect(observed.TIMER).toEqual({ ok: true });
   });
 
   it("satisfies the correspondence law on the real driver", async () => {
@@ -1015,21 +1151,42 @@ describe("the driver declares what it cannot do, and the declaration is checked"
   });
 
   it("catches a declaration that claims SUPPORTED while the verb refuses", async () => {
+    // With no verb refusing any more, the refusal has to be supplied by a stub
+    // for this direction to be exercised at all. That is the point of the test
+    // rather than a weakening of it: the law must still CATCH a driver that
+    // declared a capability and then refused it, and a suite that could only
+    // check directions its subject happens to exhibit would stop being a law.
     const subject = capabilitySubject("claims-supported");
-    const declared = subject.driver.capabilities();
-    const lying = { ...declared, verbs: { ...declared.verbs, SIGNAL: "SUPPORTED" as const } };
-    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
+    const observed = {
+      ...(await OUTCOMES(subject)),
+      SIGNAL: { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "signal" } as const,
+    };
+    expect(driverCapabilityMismatches(subject.driver.capabilities(), observed)).toEqual([
       "SIGNAL: declared SUPPORTED but refused",
     ]);
   });
 
   it("catches a declaration that claims UNSUPPORTED while the verb does not refuse", async () => {
     // The mirror, and the direction that would otherwise let a driver do work
-    // it told its caller it could not do.
+    // it told its caller it could not do. After V2-B2-5 the lie lives in the
+    // DECLARATION rather than in the observation: TIMER really does answer.
     const subject = capabilitySubject("claims-unsupported");
-    const observed = { ...(await OUTCOMES(subject)), TIMER: { ok: true } as const };
-    expect(driverCapabilityMismatches(subject.driver.capabilities(), observed)).toEqual([
+    const declared = subject.driver.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, TIMER: "UNSUPPORTED" as const } };
+    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
       "TIMER: declared UNSUPPORTED but did not refuse",
+    ]);
+  });
+
+  it("catches a declaration that claims SIGNAL UNSUPPORTED while it releases the gate", async () => {
+    // The direction the V2-B2-5 flip created for the other new verb. Without
+    // it the flip could be reverted in the declaration alone and the driver
+    // would go on signalling while telling its caller it cannot.
+    const subject = capabilitySubject("signal-lie");
+    const declared = subject.driver.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, SIGNAL: "UNSUPPORTED" as const } };
+    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
+      "SIGNAL: declared UNSUPPORTED but did not refuse",
     ]);
   });
 
@@ -1039,7 +1196,7 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     // exactly the pre-law state the packet exists to leave behind.
     const subject = capabilitySubject("restore");
     const declared = subject.driver.capabilities();
-    const lying = { ...declared, verbs: { ...declared.verbs, SIGNAL: "SUPPORTED" as const } };
+    const lying = { ...declared, verbs: { ...declared.verbs, TIMER: "UNSUPPORTED" as const } };
     const withoutLaw = (): readonly string[] => [];
     expect(withoutLaw()).toEqual([]);
     // And with the law back, the same input is caught -- so the assertion above
@@ -1142,8 +1299,12 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     const partial = await OUTCOMES(subject);
     const withoutSignal: Record<string, DriverOutcome> = { ...partial };
     delete withoutSignal["SIGNAL"];
+    // The declared state travels into the message, and as of V2-B2-5 that is
+    // SUPPORTED. An unobserved verb is reported either way: a law that only
+    // noticed missing evidence for the verbs it expected to refuse would go
+    // quiet exactly when a driver stopped answering for a capability it claims.
     expect(driverCapabilityMismatches(subject.driver.capabilities(), withoutSignal)).toEqual([
-      "SIGNAL: declared UNSUPPORTED but no outcome was observed",
+      "SIGNAL: declared SUPPORTED but no outcome was observed",
     ]);
   });
 });
@@ -1344,5 +1505,304 @@ describe("cancellation stops the engine, then settles the ledger", () => {
     await expect(
       cancelAdvance("http://example.test:8080", "http://127.0.0.1:9070", INVOCATION_FOR_CAPABILITIES),
     ).rejects.toThrow(/loopback only/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B2-5: the durable timer and the durable gate, by shape
+// ---------------------------------------------------------------------------
+
+/**
+ * What a unit suite can prove about these two verbs, and what it cannot.
+ *
+ * It can prove the SHAPE: the exact address each derives, the header each
+ * sends, the body each sends, and — for the negatives, which carry the weight —
+ * that some calls are never made at all. Every one of those is a decision this
+ * code makes before any engine sees it.
+ *
+ * It cannot prove that the engine honours any of it. That a delayed send really
+ * holds the beat, that a named durable promise really survives a SIGKILL, and
+ * that a second resolve really answers `409` are all claims about Restate, and
+ * they are drilled against the pinned server rather than asserted here.
+ */
+describe("the durable timer schedules through the engine (V2-B2-5)", () => {
+  it("issues exactly one delayed send, at the derived address and under the derived key", async () => {
+    const subject = capabilitySubject("timer-address");
+    const { result, asked } = await withIngressAnswering(ENGINE_SCHEDULES, () =>
+      subject.driver.timer(INVOCATION_FOR_CAPABILITIES, 3_000),
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(asked).toHaveLength(1);
+    const call = asked[0];
+    expect(call?.method).toBe("POST");
+    // The same target `sendAdvance` uses, plus the delay. Compared as a parsed
+    // URL rather than by substring, so a query parameter cannot hide in a path.
+    const target = new URL(call?.url ?? "");
+    expect(target.origin).toBe("http://127.0.0.1:8080");
+    expect(target.pathname).toBe(
+      "/AcpTask/" + INVOCATION_FOR_CAPABILITIES.taskId + "/advance/send",
+    );
+    expect(target.searchParams.get("delay")).toBe("PT3S");
+    // The key is the one derived before ingress, so a repeat is the same call.
+    expect(call?.idempotencyKey).toBe(INVOCATION_FOR_CAPABILITIES.invocationId);
+  });
+
+  it("renders whole seconds and sub-second delays without ever formatting a float", async () => {
+    const subject = capabilitySubject("timer-durations");
+    for (const [delayMs, expected] of [
+      [0, "PT0S"],
+      [1_000, "PT1S"],
+      [3_000, "PT3S"],
+      [250, "PT0.250S"],
+      [1_500, "PT1.500S"],
+      [61_001, "PT61.001S"],
+    ] as const) {
+      const { asked } = await withIngressAnswering(ENGINE_SCHEDULES, () =>
+        subject.driver.timer(INVOCATION_FOR_CAPABILITIES, delayMs),
+      );
+      expect({ delayMs, delay: new URL(asked[0]?.url ?? "").searchParams.get("delay") }).toEqual({
+        delayMs,
+        delay: expected,
+      });
+    }
+  });
+
+  it("refuses a malformed duration BEFORE the wire, with zero engine calls", async () => {
+    // The load-bearing negative, and the reason it is load-bearing is measured:
+    // the pinned server ACCEPTS `?delay=3s` with 202 and silently ignores it.
+    // So an unvalidated bad duration does not fail — it becomes no delay at
+    // all, and a timer nobody set looks exactly like one that already fired.
+    const subject = capabilitySubject("timer-refusals");
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const { asked } = await withIngressAnswering(ENGINE_SCHEDULES, async () => {
+        await expect(subject.driver.timer(INVOCATION_FOR_CAPABILITIES, bad)).rejects.toThrow(
+          /durable timer/,
+        );
+      });
+      // Observed, not argued: the refusal happened before anything was asked.
+      expect({ bad: String(bad), calls: asked.length }).toEqual({ bad: String(bad), calls: 0 });
+    }
+  });
+
+  it("throws rather than refusing when the engine would not take the timer", async () => {
+    // The same reasoning `reattach` gives: the capability is present, so a
+    // channel failure is not an answer about the work. A refusal here would
+    // tell a caller this engine cannot schedule.
+    const subject = capabilitySubject("timer-unreachable");
+    const { asked } = await withIngressAnswering({ status: 503, body: "unavailable" }, async () => {
+      await expect(subject.driver.timer(INVOCATION_FOR_CAPABILITIES, 1_000)).rejects.toThrow(
+        /did not accept the durable timer and answered 503/,
+      );
+    });
+    expect(asked).toHaveLength(1);
+    // The status, never the body: engine text may name an engine invocation id.
+    await withIngressAnswering({ status: 500, body: "inv_1leakySeventeenCharacters" }, async () => {
+      const error = await subject.driver
+        .timer(INVOCATION_FOR_CAPABILITIES, 1_000)
+        .then(() => null)
+        .catch((e: unknown) => e);
+      expect(String(error)).not.toMatch(/inv_/);
+    });
+  });
+
+  it("appends nothing when it schedules", async () => {
+    const subject = capabilitySubject("timer-appends-nothing");
+    const before = subject.ledger.status();
+    await withIngressAnswering(ENGINE_SCHEDULES, () =>
+      subject.driver.timer(INVOCATION_FOR_CAPABILITIES, 5_000),
+    );
+    const after = subject.ledger.status();
+    // Scheduling is not a lifecycle transition; the walk it schedules is what
+    // writes, and it writes exactly what it always did.
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+  });
+
+  it("refuses to schedule anywhere that is not loopback", async () => {
+    await expect(
+      sendAdvanceDelayed("http://example.test:8080", INVOCATION_FOR_CAPABILITIES, 1_000),
+    ).rejects.toThrow(/loopback only/);
+  });
+
+  it("keeps TimerResult to exactly {ok, status}", async () => {
+    // The engine's reply to a delayed send carries its OWN invocation id --
+    // `ENGINE_SCHEDULES` is that literal shape -- so the result type having
+    // nowhere to put it is what stops it travelling, and the fence pins it.
+    const { result } = await withIngressAnswering(ENGINE_SCHEDULES, () =>
+      sendAdvanceDelayed("http://127.0.0.1:8080", INVOCATION_FOR_CAPABILITIES, 1_000),
+    );
+    expect(Object.keys(result).sort()).toEqual(["ok", "status"]);
+    expect(result).toEqual({ ok: true, status: 202 });
+    expect(JSON.stringify(result)).not.toMatch(/inv_/);
+  });
+});
+
+describe("the durable gate makes SIGNAL real without touching AcpTask (V2-B2-5)", () => {
+  it("releases at an address built entirely from the derived invocation id", async () => {
+    const subject = capabilitySubject("signal-address");
+    const { result, asked } = await withIngressAnswering(GATE_RESOLVES, () =>
+      subject.driver.signal(INVOCATION_FOR_CAPABILITIES),
+    );
+
+    expect(result).toEqual({ ok: true });
+    // ONE request. No `/restate/lookup`, no admin call, no journal read: the
+    // whole reason this verb never learns an engine-minted identity.
+    expect(asked).toHaveLength(1);
+    const call = asked[0];
+    expect(call?.method).toBe("POST");
+    const target = new URL(call?.url ?? "");
+    expect(target.origin).toBe("http://127.0.0.1:8080");
+    expect(target.pathname).toBe(
+      "/" +
+        RESTATE_WORKFLOW_GATE +
+        "/" +
+        INVOCATION_FOR_CAPABILITIES.invocationId +
+        "/" +
+        RESTATE_HANDLER_GATE_RESOLVE,
+    );
+    // The workflow KEY is the derived id, and so is the idempotency key.
+    expect(target.pathname).toContain(INVOCATION_FOR_CAPABILITIES.invocationId);
+    expect(call?.idempotencyKey).toBe(INVOCATION_FOR_CAPABILITIES.invocationId);
+  });
+
+  it("sends a closed literal, never caller content", async () => {
+    // The redaction boundary, structurally. `signal(invocation)` takes no
+    // payload parameter, so there is no expression in which a prompt, a
+    // transcript or a tool argument could reach engine state through this door.
+    const subject = capabilitySubject("signal-payload");
+    const { asked } = await withIngressAnswering(GATE_RESOLVES, () =>
+      subject.driver.signal(INVOCATION_FOR_CAPABILITIES),
+    );
+    const payload: GatePayload = { released: true };
+    expect(asked[0]?.body).toBe(JSON.stringify(payload));
+    expect(JSON.parse(asked[0]?.body ?? "null")).toEqual({ released: true });
+  });
+
+  it("does not report a release the engine did not perform", async () => {
+    // A second resolve earns `409 "promise was already completed"` from the
+    // pinned server. It is deliberately NOT translated into success: only a
+    // caller holding the ledger may decide what a second signal means, and
+    // answering `ok` would erase the difference between "released it" and
+    // "found it already released".
+    const subject = capabilitySubject("signal-conflict");
+    await withIngressAnswering(
+      { status: 409, body: JSON.stringify({ code: 409, message: "promise was already completed" }) },
+      async () => {
+        await expect(subject.driver.signal(INVOCATION_FOR_CAPABILITIES)).rejects.toThrow(
+          /durable gate for this invocation answered 409/,
+        );
+      },
+    );
+
+    // And a gate that was never opened is not a release either.
+    await withIngressAnswering({ status: 404, body: "not found" }, async () => {
+      await expect(subject.driver.signal(INVOCATION_FOR_CAPABILITIES)).rejects.toThrow(
+        /answered 404/,
+      );
+    });
+  });
+
+  it("appends nothing when it releases", async () => {
+    const subject = capabilitySubject("signal-appends-nothing");
+    const before = subject.ledger.status();
+    await withIngressAnswering(GATE_RESOLVES, () =>
+      subject.driver.signal(INVOCATION_FOR_CAPABILITIES),
+    );
+    const after = subject.ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+  });
+
+  it("refuses to release anywhere that is not loopback", async () => {
+    await expect(
+      resolveGate("http://example.test:8080", INVOCATION_FOR_CAPABILITIES),
+    ).rejects.toThrow(/loopback only/);
+  });
+
+  it("keeps SignalResult to exactly {ok, status}", async () => {
+    const { result } = await withIngressAnswering(GATE_RESOLVES, () =>
+      resolveGate("http://127.0.0.1:8080", INVOCATION_FOR_CAPABILITIES),
+    );
+    expect(Object.keys(result).sort()).toEqual(["ok", "status"]);
+    expect(result).toEqual({ ok: true, status: 200 });
+  });
+
+  it("parks on the one named promise, and announces before and after", async () => {
+    // The handler, without a server. What is asserted is that it awaits THE
+    // named promise and nothing else, and that the two announcements bracket
+    // the wait -- which is what lets a drill proceed on a handshake instead of
+    // on elapsed time.
+    const names: string[] = [];
+    const points: string[] = [];
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolvePromise) => {
+      release = () => {
+        resolvePromise();
+      };
+    });
+    const ctx: GateRunContext = {
+      promise: ((name: string) => {
+        names.push(name);
+        return held;
+      }) as unknown as GateRunContext["promise"],
+    };
+
+    const running = gateRunHandler(
+      {
+        __onGate: (point) => {
+          points.push(point);
+          return Promise.resolve();
+        },
+      },
+      ctx,
+      INVOCATION_FOR_CAPABILITIES,
+    );
+
+    // Parked: it announced, and it has not returned.
+    await Promise.resolve();
+    expect(points).toEqual(["PARKED"]);
+    expect(names).toEqual([RESTATE_GATE_PROMISE]);
+
+    release();
+    expect(await running).toEqual({ released: true });
+    expect(points).toEqual(["PARKED", "RELEASED"]);
+    // Exactly one promise, asked for exactly once.
+    expect(names).toEqual([RESTATE_GATE_PROMISE]);
+  });
+
+  it("resolves the same named promise from the shared side", async () => {
+    const resolvedWith: unknown[] = [];
+    const names: string[] = [];
+    const ctx: GateResolveContext = {
+      promise: ((name: string) => {
+        names.push(name);
+        return {
+          resolve: (value: unknown) => {
+            resolvedWith.push(value);
+            return Promise.resolve();
+          },
+        };
+      }) as unknown as GateResolveContext["promise"],
+    };
+
+    const payload: GatePayload = { released: true };
+    expect(await gateResolveHandler(ctx, payload)).toEqual({ resolved: true });
+    // The same name the run side awaits -- two spellings would be a gate that
+    // could never be released.
+    expect(names).toEqual([RESTATE_GATE_PROMISE]);
+    expect(resolvedWith).toEqual([payload]);
+  });
+
+  it("holds no ledger, so waiting cannot become a second authority", () => {
+    // Structural rather than behavioural: `GateDependencies` has one optional
+    // announcement seam and no ledger, so there is no expression in which the
+    // gate could append. A gate that COULD write would be a place where a fact
+    // lived that the ledger did not hold.
+    const dependencies: Parameters<typeof gateRunHandler>[0] = {};
+    expect(Object.keys(dependencies)).toEqual([]);
+    // @ts-expect-error the gate is handed no ledger, and may not ask for one.
+    const noLedger: unknown = dependencies.ledger;
+    expect(noLedger).toBeUndefined();
   });
 });

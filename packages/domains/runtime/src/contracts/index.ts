@@ -226,11 +226,37 @@ export interface OrchestrationDriver {
   /** Rejoin an invocation already in flight, rather than starting a second one. */
   reattach(invocation: DurableInvocation): Promise<DriverOutcome>;
 
-  /** Deliver an external signal to a waiting invocation. */
+  /**
+   * Deliver an external signal to a waiting invocation.
+   *
+   * One parameter, deliberately. A payload nobody sends is stocking: the
+   * signal's whole content is THAT it arrived, and the coordinates it arrived
+   * for are already in the invocation. A driver that later needs to carry
+   * caller content has to widen this with the case that earns it.
+   */
   signal(invocation: DurableInvocation): Promise<DriverOutcome>;
 
-  /** Ask the engine to wait durably, so a sleep survives a restart. */
-  timer(invocation: DurableInvocation): Promise<DriverOutcome>;
+  /**
+   * Ask the engine to wait durably, so a sleep survives a restart.
+   *
+   * The duration is a parameter because a timer without one is not a timer.
+   * It is a CALLER value and never a clock read: nothing in this method may
+   * consult the wall clock to decide how long to wait, because a duration
+   * computed from `Date.now()` would differ on every replay and the wait would
+   * stop being deterministic. Reading it from driver construction options was
+   * rejected for the same reason a per-call value is not configuration.
+   *
+   * A driver that cannot schedule REFUSES. It may not sleep in-process and
+   * call that a durable timer: an in-process sleep dies with the process,
+   * which is the one property a durable timer exists to have.
+   *
+   * Note what the duration is not. It is neither `DERIVED`, `SUBMISSION` nor
+   * `JOURNALED` — those classify coordinates that reach a ledger event, and a
+   * duration reaches none. It is an argument to an engine call and it enters
+   * the coordinate vocabulary nowhere, so a later reader should not try to
+   * classify it.
+   */
+  timer(invocation: DurableInvocation, delayMs: number): Promise<DriverOutcome>;
 }
 
 /**

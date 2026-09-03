@@ -1,5 +1,5 @@
 import type { DurableInvocation } from "@acp/runtime";
-import type { Context } from "@restatedev/restate-sdk";
+import type { Context, WorkflowContext, WorkflowSharedContext } from "@restatedev/restate-sdk";
 
 /**
  * The contracts that belong to the Restate edge, not to the domain (P8-T G5).
@@ -25,6 +25,76 @@ import type { Context } from "@restatedev/restate-sdk";
  * surface by accident. Widening it is a deliberate edit to this line.
  */
 export type DurableStepContext = Pick<Context, "run" | "rand" | "date">;
+
+/**
+ * The durable gate, and where its names live (V2-B2-5).
+ *
+ * SIGNAL is a dedicated internal Restate **Workflow**, not a handler on
+ * `AcpTask`. The reason is the one the signal-design adjudication gave: a
+ * workflow's named durable promise is engine state keyed by the workflow key,
+ * so a signal that arrives BEFORE anything waits is still delivered, whereas an
+ * awakeable identifier does not exist until a handler has executed to it and a
+ * signal arriving first would be permanently lost. In production the resolver
+ * and the waiter are independent processes and their order is not ours to
+ * guarantee, so a design with that race is a design with a defect.
+ *
+ * It is also why `AcpTask` is untouched. Waiting inside an EXCLUSIVE object
+ * handler would hold the task key for the whole wait, so `advance` for that
+ * task would queue behind an unresolved gate — turning the per-task
+ * serialization B2-3 certified into something indistinguishable from a
+ * deadlock.
+ *
+ * **Two homes, stated rather than hidden.** The pre-existing `RESTATE_*`
+ * constants live in `packages/domains/runtime/src/constants/index.ts`, which is
+ * split residue from before P8-T G5 moved this edge out of the domain. These
+ * new names are declared HERE, edge-local, because that is the smaller change
+ * and the more correct home: a domain package should not name an engine's
+ * services. Unifying the two is owed work and is deliberately not this
+ * packet's; naming it is.
+ */
+export const RESTATE_WORKFLOW_GATE = "AcpGate";
+
+/** The gate's blocking handler: it awaits the promise and returns. */
+export const RESTATE_HANDLER_GATE_RUN = "run";
+
+/**
+ * The gate's release handler, which must be SHARED.
+ *
+ * Shared so it never holds the key it is releasing. An exclusive resolver would
+ * queue behind the very `run` it exists to unblock, which is the same mistake
+ * as waiting inside `AcpTask` and fails the same way.
+ */
+export const RESTATE_HANDLER_GATE_RESOLVE = "resolve";
+
+/** The one named durable promise a gate holds. */
+export const RESTATE_GATE_PROMISE = "acpGate";
+
+/**
+ * What a release carries: that it happened, and nothing else.
+ *
+ * A closed literal rather than caller content, so no prompt, transcript, tool
+ * argument or provider payload can ride into engine state through this door.
+ */
+export interface GatePayload {
+  readonly released: true;
+}
+
+/**
+ * The gate's blocking context, narrowed to the one member it uses.
+ *
+ * A separate narrowing rather than a widening of `DurableStepContext`, because
+ * the two have nothing in common: the step context is what the ADVANCE walk may
+ * touch, and adding a member for a wait that walk never performs would hand
+ * every future step access to a suspension point nothing asked for.
+ *
+ * `promise` is a named durable promise addressed by the WORKFLOW KEY, which is
+ * `deriveInvocation`'s output. Nothing here is engine-minted, so unlike an
+ * awakeable identifier there is no value to discover, keep or leak.
+ */
+export type GateRunContext = Pick<WorkflowContext, "promise">;
+
+/** The release side of the same narrowing, over the shared context. */
+export type GateResolveContext = Pick<WorkflowSharedContext, "promise">;
 
 /**
  * The Virtual Object's entire durable state.

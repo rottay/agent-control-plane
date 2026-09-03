@@ -18,7 +18,11 @@ import {
 } from "@acp/runtime";
 import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
 import { RESTATE_ADMIN_URL, createExecutionEffects } from "@acp/runtime";
-import { RestateDriver, createAcpTaskObject } from "../restate-driver/index.js";
+import {
+  RestateDriver,
+  createAcpGateWorkflow,
+  createAcpTaskObject,
+} from "../restate-driver/index.js";
 import { startEndpoint } from "../restate-endpoint/index.js";
 import { attachAdvance, deriveInvocation } from "../../submit/index.js";
 
@@ -545,6 +549,27 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
     }
   };
 
+  /**
+   * The gate's announcements, deliberately NOT routed through `matches()`
+   * (V2-B2-5).
+   *
+   * `matches()` above treats any unrecognised name as the intent beat, so a
+   * gate announcement sent through it would silently become a second spelling
+   * of `AFTER_INTENT` — and every fault and pause drill would then be measuring
+   * a window it did not mean. The gate is a different service with a different
+   * lifecycle and it gets its own channel, on its own key name, so the two can
+   * never be confused by a reader or by a regex.
+   *
+   * It also carries no fault or pause point. The gate holds no ledger and
+   * appends nothing, so there is no window inside it worth killing a process
+   * in; what the drills need from it is only "it is parked" and "it was
+   * released", and both are announcements rather than seams.
+   */
+  const onGate = (point: "PARKED" | "RELEASED", invocationId: string): Promise<void> => {
+    process.stdout.write(JSON.stringify({ gate: point, invocationId }) + "\n");
+    return Promise.resolve();
+  };
+
   const endpoint = await startEndpoint({
     services: [
       createAcpTaskObject({
@@ -554,6 +579,9 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
         ledger,
         __onBeat: onBeat,
       }),
+      // Hosted beside the object, never inside it. The gate is what makes
+      // SIGNAL real without `AcpTask` ever blocking on a wait.
+      createAcpGateWorkflow({ __onGate: onGate }),
     ],
     port: config.port,
   });

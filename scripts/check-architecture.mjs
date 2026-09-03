@@ -1339,8 +1339,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **657
- * packet entries across 228 distinct paths**: 2 (P8-D) +
+ * P8, with the V2 packets that continue its coordinates, is therefore **668
+ * packet entries across 229 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1354,33 +1354,35 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
  * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) + 3 (V2-B6-fence) +
  * 15 (V2-B2-1) + 8 (V2-B2-2) + 7 (V2-B2-3) + 12 (V2-B2-4a) +
- * 12 (V2-B2-4b) = 657 entries, with 429 duplicate entries.
+ * 12 (V2-B2-4b) + 11 (V2-B2-5) = 668 entries, with 439 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 60 duplicates = 60   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 61 duplicates = 61   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
- *   2 paths ×  8 duplicates = 16   (`docs/ROADMAP.md`, and — since V2-B2-4b —
- *                                   the durability drills suite, which is the
- *                                   most-revisited suite in the B2 lane
- *                                   because every capability flip is drilled
- *                                   in it)
- *   6 paths ×  7 duplicates = 42   (the gateway's routes source and
+ *   1 path  ×  9 duplicates =  9   (the durability drills suite, which since
+ *                                   V2-B2-5 stands alone as the most-revisited
+ *                                   path in the phase after this file: every
+ *                                   capability flip in the B2 lane is drilled
+ *                                   in it, and B2-5 flips two)
+ *   3 paths ×  8 duplicates = 24   (`docs/ROADMAP.md`, and — since V2-B2-5 —
+ *                                   both driver suites, the durability
+ *                                   package's own and the SQLite supervisor's,
+ *                                   which move together because a capability
+ *                                   flip is asserted from both sides)
+ *   5 paths ×  7 duplicates = 35   (the gateway's routes source and
  *                                   build-server suite, the CLI suite, the
- *                                   contracts schema barrel, the SQLite
- *                                   supervisor suite since V2-B2-3, and —
- *                                   since V2-B2-4b — the durability package's
- *                                   own driver suite, which moved up as the
- *                                   drills suite moved out)
+ *                                   contracts schema barrel, and — since
+ *                                   V2-B2-5 — the Restate drill child)
  *   7 paths ×  6 duplicates = 42
- *  10 paths ×  5 duplicates = 50
+ *   9 paths ×  5 duplicates = 45
  *   9 paths ×  4 duplicates = 36
  *  20 paths ×  3 duplicates = 60
- *  35 paths ×  2 duplicates = 70
+ *  37 paths ×  2 duplicates = 74
  *  42 paths ×  1 duplicate  = 42
  *
- * 60 + 11 + 16 + 42 + 42 + 50 + 36 + 60 + 70 + 42 = 429.
+ * 61 + 11 + 9 + 24 + 35 + 42 + 45 + 36 + 60 + 74 + 42 = 439.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1837,6 +1839,31 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * ×0 → ×1 — its first duplicate, one packet after it entered the phase. The
  * three novel paths enter at ZERO duplicates and so appear in no band row at
  * all, which is why 657 − 228 = 429 rather than 432.
+ *
+ * V2-B2-5 adds **eleven entries, one of them novel**. Entries move 657 → 668,
+ * distinct 228 → 229, duplicates 429 → 439. The novel path is
+ * `packages/edges/durability/src/drivers/restate-endpoint/index.ts` — not new
+ * to the repository, but this is its first IN-PHASE appearance, and its only
+ * other declaration is `P2C_WRITE_SET`, so by the standing convention that
+ * scopes this arithmetic to the phase it counts fresh here, exactly as
+ * `submit/index.ts` did at V2-B2-4a and ADR 0005 at V2-B2-4b. It moves because
+ * `StartEndpointOptions.services` had to admit a `WorkflowDefinition`: the gate
+ * is a workflow, and that narrowing admitted Virtual Objects only.
+ *
+ * That leaves **ten** single-step band moves rather than eleven, and each is one
+ * already-owned path gaining a duplicate: this file ×60 → ×61, the durability
+ * drills suite ×8 → ×9, that package's driver suite and the SQLite supervisor
+ * suite ×7 → ×8, the drill child ×6 → ×7, the Restate driver ×5 → ×6, the
+ * runtime contracts and `submit/index.ts` ×1 → ×2, and the durability contracts
+ * and ADR 0005 ×0 → ×1. The novel path enters at ZERO duplicates and so appears
+ * in no band row at all, which is why 668 − 229 = 439 rather than 440.
+ *
+ * A packet with no NEW file is worth a sentence of its own: V2-B2-5 creates
+ * none. `AcpGate` is a new service but it lives beside `createAcpTaskObject` in
+ * the driver that already declares the object, because the audit that adjudicated
+ * this design required the gate factory to stay package-internal and
+ * deep-imported by the child and the tests — which is precisely what a file
+ * they both already import gives it.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3959,6 +3986,69 @@ const V2B24A_WRITE_SET = [
  * matches what that law reports; correcting another packet's narrative is not
  * this packet's to do, and the writer's report names it for the DT.)
  */
+/**
+ * V2-B2-5: the handler waits, and the last two refusals become verbs.
+ *
+ * TIMER is a delayed send: the same target and the same derived idempotency key
+ * `sendAdvance` uses, plus `?delay=<ISO8601>`. The ENGINE holds the schedule, so
+ * the drills kill the endpoint child and then the server itself on the same data
+ * root and still get exactly one firing. The client-side duration validation is
+ * load-bearing rather than defensive, and the drill proves why against the real
+ * binary: `?delay=3s` is ACCEPTED with 202 and silently ignored, so an
+ * unvalidated bad duration becomes no delay at all — while the same parameter on
+ * a blocking call is refused by name, which is how we know it is understood.
+ *
+ * SIGNAL is a named durable promise on a dedicated `AcpGate` WORKFLOW keyed by
+ * the derived invocation id, and this is the packet's one architectural
+ * decision. The awakeable-inside-`AcpTask` design was rejected on evidence:
+ * an awakeable identifier does not exist until the handler reaches it, so a
+ * signal arriving first is permanently lost; recovering it would have meant
+ * reading admin journal metadata or `sys_journal`, which are operational
+ * surfaces that version separately from ingress; and an exclusive `wait` would
+ * have held the task key, making the serialization B2-3 certified
+ * indistinguishable from a deadlock. `AcpTask` is therefore untouched — no
+ * handler added, none changed — which is why the cancellation and serialization
+ * drills are re-run unmodified as preservation assertions.
+ *
+ * **This verb never learns an engine-minted identity at all**, which is
+ * strictly stronger than what `cancel` can claim. There is no `/restate/lookup`
+ * and no admin call: the workflow key IS `deriveInvocation`'s output, so the
+ * drill asserts the single engine call is addressed by the derived id and that
+ * no `inv_…`, `awk_1…` or `sign_1…` string reaches any surface.
+ *
+ * Eleven paths, all eleven written, and **no novel path in the phase** — every
+ * one already appears in an in-phase write-set, which is unusual enough to be
+ * worth saying out loud: the whole delta lands in the duplicate bands and the
+ * distinct count does not move. `restate-endpoint/index.ts` is the only path
+ * new to this LANE, and it is in-phase already via `P8T_G5_WRITE_SET`; it moves
+ * because `StartEndpointOptions.services` had to admit a `WorkflowDefinition`.
+ *
+ * Absent, each for a reason: the durability-plane contract, because
+ * `DriverAccepted` already sanctions the bare `{ok:true}` these two verbs
+ * answer with and neither `DRIVER_REFUSALS` nor `DRIVER_CAPABILITIES` moves;
+ * the SQLite supervisor SOURCE, because its four refusals already exist and the
+ * widened `timer` arity needs no implementation change — TypeScript admits the
+ * narrower method, and the pin below on its verbatim zero-argument refusal
+ * would in fact BREAK if it were widened; the durability barrel and README,
+ * because the gate factory stays package-internal exactly as `cancelAdvance`
+ * does, so `DURABILITY_PUBLIC_EXPORTS` does not move; and
+ * `runtime/src/constants`, because the new names are declared edge-local — a
+ * two-homes inconsistency this packet NAMES rather than fixes.
+ */
+const V2B25_WRITE_SET = [
+  "packages/domains/runtime/src/contracts/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/edges/durability/src/contracts/index.ts",
+  "packages/edges/durability/src/submit/index.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/src/drivers/restate-endpoint/index.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "docs/architecture/0005-restate-driver-and-adoption.md",
+  "scripts/check-architecture.mjs",
+];
+
 const V2B24B_WRITE_SET = [
   "packages/domains/runtime/src/cancellation/index.ts",
   "packages/domains/runtime/test/cancellation/index.test.ts",
@@ -4348,6 +4438,7 @@ const WRITE_SET = [
   ...V2B23_WRITE_SET,
   ...V2B24A_WRITE_SET,
   ...V2B24B_WRITE_SET,
+  ...V2B25_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5079,8 +5170,12 @@ const PATH_SCOPED_LAWS = [
   { law: "the publication hook's semantics, driven case by case", scope: ".githooks/pre-push" },
   { law: "both drivers declare their capabilities, pinned by equality", scope: "the two driver sources" },
   {
-    law: "no engine-minted invocation id can leave the durability edge",
+    law: "no engine-minted identity can leave the durability edge",
     scope: "packages/edges/durability/src/submit/index.ts",
+  },
+  {
+    law: "the durable gate releases without holding the key it releases",
+    scope: "packages/edges/durability/src/drivers/restate-driver/index.ts",
   },
   {
     law: "the ledger and the event builder never reach for the router",
@@ -7383,7 +7478,29 @@ if (tracked.status === 0) {
         // is still stopped, a CHECKPOINTED task refused with zero engine calls
         // observed, and a real process SIGKILLed between the engine call and
         // the settlement leaving a recoverable open intent.
-        verbs: { CANCEL: "SUPPORTED", REATTACH: "SUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
+        //
+        // TIMER moved to SUPPORTED in V2-B2-5. It is a delayed send, so the
+        // ENGINE holds the schedule: the drills fire one exactly once into the
+        // ledger, kill the endpoint child and then the server itself on the
+        // same data root and still get one firing, schedule twice and get one
+        // walk, and prove the beat was HELD rather than merely slow by driving
+        // a second undelayed task to CHECKPOINTED in the same window while the
+        // delayed task's trail stays empty. The malformed-duration refusal is
+        // drilled with zero engine calls observed, and beside it the real
+        // server is shown accepting `?delay=3s` with 202 and ignoring it --
+        // which is what makes that client-side refusal load-bearing.
+        //
+        // SIGNAL moved to SUPPORTED in the same packet, and by a different
+        // mechanism than first proposed: a named durable promise on a
+        // dedicated AcpGate WORKFLOW keyed by the DERIVED invocation id. The
+        // drills release a held gate exactly once, release the INTENDED one
+        // while a second stays held, cover both replay orders across an
+        // endpoint SIGKILL, leave the ledger byte-identical for a key that
+        // never parked, and -- the case the rejected awakeable design
+        // structurally cannot pass -- release a gate whose run had not been
+        // submitted yet. AcpTask is untouched, which is why the cancellation
+        // and serialization drills stand unedited as preservation assertions.
+        verbs: { CANCEL: "SUPPORTED", REATTACH: "SUPPORTED", SIGNAL: "SUPPORTED", TIMER: "SUPPORTED" },
         // SERIALIZED_PER_TASK moved to SUPPORTED in V2-B2-3, with the same-key
         // and different-key drills that earned it. The SQLite entry above did
         // not move and is not expected to: no cross-process guard exists for it
@@ -7426,6 +7543,12 @@ if (tracked.status === 0) {
         }
       }
       // An UNSUPPORTED verb has to refuse in the same file that declared it.
+      // Since V2-B2-5 the Restate entry has no UNSUPPORTED verb left, so this
+      // loop covers only the SQLite supervisor. That is correct rather than a
+      // gap: the law is "a declaration must not be decorative", and a driver
+      // with nothing to refuse has nothing for it to check. The other
+      // direction -- SUPPORTED verbs that actually answer -- is the runtime
+      // correspondence law, applied to real driver objects by both suites.
       for (const verb of Object.keys(declaration.verbs)) {
         const method = verb.toLowerCase();
         if (declaration.verbs[verb] !== "UNSUPPORTED") continue;
@@ -7451,6 +7574,125 @@ if (tracked.status === 0) {
     );
   }
 
+  // V2-B2-5: the durable gate releases without holding the key it releases,
+  // and `AcpTask` gained no handler.
+  //
+  // Two shapes, and both are load-bearing rather than stylistic.
+  //
+  // An EXCLUSIVE `resolve` would queue behind the very `run` it exists to
+  // release — the gate would deadlock itself, and the failure would look like a
+  // slow signal rather than a wrong one. And a THIRD handler on `AcpTask` is
+  // exactly how waiting creeps back into the object whose exclusivity V2-B2-3
+  // certified: a wait inside it holds the task key, so `advance` for that task
+  // would queue behind an unresolved gate and the serialization property would
+  // become indistinguishable from a deadlock. Both are stated as shapes because
+  // both would otherwise be a comment somebody has to remember.
+  //
+  // Driven case by case, with the negatives written out: a law checked only
+  // against source that already satisfies it would pass just as happily if the
+  // predicate checked nothing.
+  {
+    const GATE_HOME = "packages/edges/durability/src/drivers/restate-driver/index.ts";
+
+    /** Every way a driver source breaks the gate's shape, named. Empty is conformance. */
+    const gateViolations = (source) => {
+      const problems = [];
+      const gate = source.match(/export function createAcpGateWorkflow\([\s\S]*?\n\}\n/);
+      if (gate === null) {
+        problems.push("the gate workflow is not declared");
+      } else {
+        const body = gate[0];
+        if (!/\[RESTATE_HANDLER_GATE_RESOLVE\]: handlers\.workflow\.shared\(/.test(body)) {
+          problems.push("the gate's resolve handler is not registered shared");
+        }
+        if (/\[RESTATE_HANDLER_GATE_RUN\]: handlers\.workflow\.shared\(/.test(body)) {
+          problems.push("the gate's run handler is registered shared");
+        }
+        if (!/workflow\(\{/.test(body)) {
+          problems.push("the gate is not a workflow, so it has no named durable promise");
+        }
+      }
+
+      const object = source.match(/export function createAcpTaskObject\([\s\S]*?\n\}\n/);
+      if (object === null) {
+        problems.push("the task object is not declared");
+      } else {
+        const handlers = [...object[0].matchAll(/\[(RESTATE_HANDLER_[A-Z_]+)\]:/g)].map((m) => m[1]).sort();
+        if (handlers.join(",") !== "RESTATE_HANDLER_ADVANCE,RESTATE_HANDLER_READ_CACHE") {
+          problems.push("AcpTask declares handlers {" + handlers.join(", ") + "}; it must stay exactly advance and readCache");
+        }
+        if (/awakeable\(/.test(object[0])) {
+          problems.push("AcpTask creates an awakeable; the gate is a workflow precisely so it does not");
+        }
+      }
+      return problems;
+    };
+
+    const real = readIfPresent(GATE_HOME);
+    const REAL = real === null ? "" : stripComments(real);
+
+    // The negatives are minimal sources carrying exactly one defect each.
+    const SHARED_RUN = REAL.replace(
+      "[RESTATE_HANDLER_GATE_RUN]: async (",
+      "[RESTATE_HANDLER_GATE_RUN]: handlers.workflow.shared(async (",
+    );
+    const EXCLUSIVE_RESOLVE = REAL.replace(
+      "[RESTATE_HANDLER_GATE_RESOLVE]: handlers.workflow.shared(",
+      "[RESTATE_HANDLER_GATE_RESOLVE]: (",
+    );
+    const THIRD_HANDLER = REAL.replace(
+      "      [RESTATE_HANDLER_READ_CACHE]: handlers.object.shared(",
+      "      [RESTATE_HANDLER_GATE_RUN]: async () => undefined,\n      [RESTATE_HANDLER_READ_CACHE]: handlers.object.shared(",
+    );
+
+    const CASES = [
+      { name: "the real driver source", source: REAL, expect: [] },
+      {
+        name: "a gate whose resolve is exclusive",
+        source: EXCLUSIVE_RESOLVE,
+        expect: ["the gate's resolve handler is not registered shared"],
+      },
+      {
+        name: "a gate whose run is shared",
+        source: SHARED_RUN,
+        expect: ["the gate's run handler is registered shared"],
+      },
+      {
+        name: "a task object that grew a third handler",
+        source: THIRD_HANDLER,
+        expect: [
+          "AcpTask declares handlers {RESTATE_HANDLER_ADVANCE, RESTATE_HANDLER_GATE_RUN, RESTATE_HANDLER_READ_CACHE}; it must stay exactly advance and readCache",
+        ],
+      },
+    ];
+
+    requireScope("the durable gate releases without holding the key it releases", CASES.length);
+    if (real === null) {
+      fail(GATE_HOME + " is missing; it declares the durable gate and the task object");
+    } else {
+      for (const probe of CASES) {
+        const observed = gateViolations(probe.source);
+        if (JSON.stringify(observed) !== JSON.stringify(probe.expect)) {
+          fail(
+            "the gate shape law disagreed on " +
+              probe.name +
+              ": expected [" +
+              probe.expect.join(" | ") +
+              "] but observed [" +
+              observed.join(" | ") +
+              "]",
+          );
+        }
+      }
+      notes.push(
+        "the durable gate is a workflow whose resolve handler is shared and whose run handler is not," +
+          " and AcpTask still declares exactly advance and readCache (" +
+          CASES.length +
+          " driven cases, 3 of them negative)",
+      );
+    }
+  }
+
   // V2-B2-4a, widened by V2-B2-4b: no engine-minted invocation id may leave
   // the durability edge.
   //
@@ -7473,7 +7715,7 @@ if (tracked.status === 0) {
   {
     const SEND_HOME = "packages/edges/durability/src/submit/index.ts";
     const source = readIfPresent(SEND_HOME);
-    requireScope("no engine-minted invocation id can leave the durability edge", 1);
+    requireScope("no engine-minted identity can leave the durability edge", 1);
     if (source === null) {
       fail(SEND_HOME + " is missing; it is where the nonblocking send lives");
     } else {
@@ -7482,7 +7724,12 @@ if (tracked.status === 0) {
       // Both result shapes, by the same rule and in one loop: a second copy of
       // the check is how the two would come to disagree about what "exactly
       // two members" means.
-      for (const name of ["SendResult", "CancelResult"]) {
+      // Four shapes now, in ONE loop. V2-B2-5 adds the two new verbs' results:
+      // a delayed send's reply carries the engine's own invocation id exactly
+      // as an undelayed one does, and while the gate resolve never learns an
+      // engine identity at all, pinning its shape costs nothing and stops the
+      // next packet widening it into somewhere one could ride.
+      for (const name of ["SendResult", "CancelResult", "TimerResult", "SignalResult"]) {
         const shape = stripped.match(new RegExp("export interface " + name + " \\{([\\s\\S]*?)\\n\\}"));
         if (shape === null) {
           fail(SEND_HOME + " no longer declares " + name + "; that call would have no pinned shape");
@@ -7526,6 +7773,67 @@ if (tracked.status === 0) {
         );
       }
 
+      // The delayed send is held to the same discipline as the plain one: its
+      // reply carries `{"invocationId":"inv_...","executionTime":...}`, so it
+      // must be consumed to release the socket and kept by nothing.
+      const delayed = stripped.match(/export async function sendAdvanceDelayed\([\s\S]*?\n\}/);
+      if (delayed === null) {
+        fail(SEND_HOME + " no longer declares sendAdvanceDelayed(); the durable timer has no sender");
+      } else {
+        if (!/\n {2}await response\.text\(\);/.test(delayed[0])) {
+          fail(
+            SEND_HOME +
+              " no longer reads and discards the delayed-send reply body; it carries the engine's own invocation id",
+          );
+        }
+        if (/JSON\.parse/.test(delayed[0])) {
+          fail(SEND_HOME + " parses the delayed-send reply body; nothing may read the engine id it carries");
+        }
+        if (!/return \{ ok: response\.ok, status: response\.status \};/.test(delayed[0])) {
+          fail(SEND_HOME + " no longer returns exactly the delayed-send status pair");
+        }
+        // The duration is validated before anything is addressed, so a
+        // malformed timer costs zero engine calls. This is not defensive: the
+        // pinned server accepts a malformed delay and silently ignores it.
+        if (!/const delay = isoDurationFromMillis\(delayMs\);/.test(delayed[0])) {
+          fail(
+            SEND_HOME +
+              " no longer converts the delay through isoDurationFromMillis before building the target;" +
+              " an unvalidated duration is accepted by the server and silently becomes no delay at all",
+          );
+        }
+      }
+      if (!/\nfunction isoDurationFromMillis\(/.test(stripped)) {
+        fail(
+          SEND_HOME +
+            " no longer declares isoDurationFromMillis as a module-local function; the duration guard is the timer's only validation",
+        );
+      }
+
+      // The gate release carries a closed literal, never caller content.
+      const gate = stripped.match(/export async function resolveGate\([\s\S]*?\n\}/);
+      if (gate === null) {
+        fail(SEND_HOME + " no longer declares resolveGate(); the durable gate has no releaser");
+      } else {
+        if (!/const payload: GatePayload = \{ released: true \};/.test(gate[0])) {
+          fail(
+            SEND_HOME +
+              " no longer sends a closed literal to the gate; a caller-supplied body would be a door for a" +
+              " prompt, a transcript or a tool argument into engine state",
+          );
+        }
+        if (!/return \{ ok: response\.ok, status: response\.status \};/.test(gate[0])) {
+          fail(SEND_HOME + " no longer returns exactly the gate status pair");
+        }
+        if (/restate\/lookup/.test(gate[0])) {
+          fail(
+            SEND_HOME +
+              " resolves the gate through /restate/lookup; the workflow key IS the derived invocation id and this" +
+              " path must never learn an engine-minted one",
+          );
+        }
+      }
+
       const body = stripped.match(/export async function sendAdvance\([\s\S]*?\n\}/);
       if (body === null) {
         fail(SEND_HOME + " no longer declares sendAdvance()");
@@ -7552,9 +7860,10 @@ if (tracked.status === 0) {
       }
     }
     notes.push(
-      "SendResult and CancelResult are pinned to {ok, status}, sendAdvance keeps nothing from the" +
-        " reply body, and the lookup resolver is module-local, so no engine-minted invocation id" +
-        " can leave " +
+      "SendResult, CancelResult, TimerResult and SignalResult are pinned to {ok, status}; sendAdvance and" +
+        " sendAdvanceDelayed keep nothing from their reply bodies; the delay is validated before the wire;" +
+        " the gate release sends a closed literal and never a lookup; and the lookup resolver is" +
+        " module-local, so no engine-minted identity can leave " +
         SEND_HOME,
     );
   }

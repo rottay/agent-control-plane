@@ -5,13 +5,17 @@ import type {
   DriverCapabilities,
   DriverMode,
   DriverOutcome,
-  DriverRefused,
   DriverStatus,
   ReconciliationVerdict,
   TaskState,
 } from "@acp/contracts";
-import { TerminalError, handlers, object } from "@restatedev/restate-sdk";
-import type { ObjectContext, ObjectSharedContext } from "@restatedev/restate-sdk";
+import { TerminalError, handlers, object, workflow } from "@restatedev/restate-sdk";
+import type {
+  ObjectContext,
+  ObjectSharedContext,
+  WorkflowContext,
+  WorkflowSharedContext,
+} from "@restatedev/restate-sdk";
 
 import {
   DATA_ROOT_DRILLS,
@@ -32,8 +36,17 @@ import {
 } from "@acp/runtime";
 import type { BeatContext, DurableInvocation, OrchestrationDriver } from "@acp/runtime";
 
-import { attachAdvance, cancelAdvance } from "../../submit/index.js";
+import { attachAdvance, cancelAdvance, resolveGate, sendAdvanceDelayed } from "../../submit/index.js";
+import {
+  RESTATE_GATE_PROMISE,
+  RESTATE_HANDLER_GATE_RESOLVE,
+  RESTATE_HANDLER_GATE_RUN,
+  RESTATE_WORKFLOW_GATE,
+} from "../../contracts/index.js";
 import type {
+  GatePayload,
+  GateResolveContext,
+  GateRunContext,
   LedgerLike,
   RestateCacheState,
   RestateDriverOptions,
@@ -417,18 +430,115 @@ export function createAcpTaskObject(dependencies: ObjectDependencies) {
 }
 
 // ---------------------------------------------------------------------------
-// The driver
+// The durable gate (V2-B2-5)
 // ---------------------------------------------------------------------------
 
 /**
- * The one refusal this driver returns, built in one place.
+ * What the gate needs, which is deliberately not a ledger.
  *
- * `at` names the verb and nothing else — never engine output, never an
- * invocation id, never a path.
+ * The gate holds no fact. It appends nothing, reads nothing and projects
+ * nothing, so it is handed no ledger and could not write one if it wanted to —
+ * which is the structural form of "waiting changes no authority". Its only
+ * dependency is an optional announcement seam, and that exists for the drills
+ * for the same reason `__onBeat` does: a drill must proceed on a handshake
+ * rather than on elapsed time.
  */
-function unsupported(at: string): DriverRefused {
-  return { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at };
+export interface GateDependencies {
+  /** Announce a gate transition. Test seam only; never a fact. */
+  readonly __onGate?:
+    | ((point: "PARKED" | "RELEASED", invocationId: string) => Promise<void>)
+    | undefined;
 }
+
+/**
+ * The gate's blocking half: park until the named durable promise resolves.
+ *
+ * Extracted so it has exactly one implementation and can be exercised without
+ * a server, the same reason `advanceHandler` is extracted.
+ *
+ * It runs no reconciliation and asserts no continuity, and that is correct
+ * rather than an omission: those guards exist to protect APPENDS, and this
+ * handler performs none. A gate that refused on a non-resumable verdict would
+ * be making a claim about a task it never touches.
+ */
+export async function gateRunHandler(
+  dependencies: GateDependencies,
+  ctx: GateRunContext,
+  invocation: DurableInvocation,
+): Promise<{ readonly released: true }> {
+  await dependencies.__onGate?.("PARKED", invocation.invocationId);
+  // The named durable promise IS the wait. It is engine state keyed by the
+  // workflow key, so a release that arrived BEFORE this line ran has already
+  // completed it and this returns immediately — the property that makes the
+  // signal-before-park race impossible rather than merely unlikely.
+  await ctx.promise<GatePayload>(RESTATE_GATE_PROMISE);
+  await dependencies.__onGate?.("RELEASED", invocation.invocationId);
+  return { released: true };
+}
+
+/**
+ * The gate's release half, which must never hold the key.
+ *
+ * A second resolve is the engine's business, not this handler's: measured
+ * against the pinned server it answers `409 "promise was already completed"`,
+ * and that status travels back to the driver rather than being swallowed here.
+ */
+export async function gateResolveHandler(
+  ctx: GateResolveContext,
+  payload: GatePayload,
+): Promise<{ readonly resolved: true }> {
+  await ctx.promise<GatePayload>(RESTATE_GATE_PROMISE).resolve(payload);
+  return { resolved: true };
+}
+
+/**
+ * Build the gate workflow (V2-B2-5).
+ *
+ * A WORKFLOW rather than a handler on `AcpTask`, and the two reasons are the
+ * whole design.
+ *
+ * **Only a workflow has a named durable promise.** `ctx.promise(name)` exists
+ * on `WorkflowContext`/`WorkflowSharedContext` and nowhere else. It is engine
+ * state keyed by the workflow key — the derived invocation id — rather than a
+ * journal position, so it needs no engine-minted identifier, none is discovered
+ * and none can leak. The rejected alternative, an awakeable inside a Virtual
+ * Object, has an identifier that does not exist until the handler reaches it,
+ * which makes a signal arriving first permanently lost.
+ *
+ * **`AcpTask` must not block.** Waiting inside an exclusive object handler
+ * would hold the task key for the whole wait, so `advance` for that task would
+ * queue behind an unresolved gate. The per-task serialization B2-3 certified
+ * would then be indistinguishable from a deadlock. Keeping the gate in its own
+ * service is what leaves that property exactly as it was — which is why X3 is a
+ * preservation assertion here and not a risk.
+ *
+ * `run` is the workflow's exclusive entry; `resolve` is SHARED so releasing
+ * never queues behind the wait it releases.
+ */
+export function createAcpGateWorkflow(dependencies: GateDependencies = {}) {
+  return workflow({
+    name: RESTATE_WORKFLOW_GATE,
+    handlers: {
+      [RESTATE_HANDLER_GATE_RUN]: async (
+        ctx: WorkflowContext,
+        invocation: DurableInvocation,
+      ): Promise<{ readonly released: true }> =>
+        gateRunHandler(dependencies, ctx as unknown as GateRunContext, invocation),
+
+      [RESTATE_HANDLER_GATE_RESOLVE]: handlers.workflow.shared(
+        async (
+          ctx: WorkflowSharedContext,
+          payload: GatePayload,
+        ): Promise<{ readonly resolved: true }> =>
+          gateResolveHandler(ctx as unknown as GateResolveContext, payload),
+      ),
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The driver
+// ---------------------------------------------------------------------------
 
 /**
  * The one place an attach body becomes a number, or a refusal to guess.
@@ -478,12 +588,34 @@ export class RestateDriver implements OrchestrationDriver {
   /**
    * What this engine can be asked for (V2-B2-1).
    *
-   * Two verbs are still `UNSUPPORTED`, and neither is a statement about
-   * Restate: the engine does offer durable timers and awakeables. It is a
-   * statement about THIS DRIVER, which does not yet call either. A capability
-   * declares what a caller may rely on, so it may not run ahead of the code
-   * that would honour it — each later B2 packet flips exactly one entry and
-   * lands the drill that earns it.
+   * As of V2-B2-5 no verb is `UNSUPPORTED`, so this driver is capability
+   * complete. Every entry below moved in the packet that drilled it and in no
+   * other, which is the discipline the declaration exists to keep: a capability
+   * states what a caller may rely on, so it may never run ahead of the code
+   * that honours it.
+   *
+   * `TIMER` is `SUPPORTED` as of V2-B2-5, and only because that packet drilled
+   * it. It is a delayed send, so the ENGINE holds the schedule: the drills fire
+   * one exactly once and land it in the ledger, kill the endpoint child and
+   * kill the server on the same data root and still get exactly one firing, ask
+   * twice and get one scheduled walk, and — the discriminator — prove the beat
+   * was genuinely held rather than merely slow by driving a second, undelayed
+   * task to completion in the same window and finding the delayed task's trail
+   * still empty. The malformed-duration negative refuses with zero engine calls
+   * observed, which matters more than it looks: the server accepts a malformed
+   * delay and ignores it, so without that refusal a broken timer would look
+   * like a fired one.
+   *
+   * `SIGNAL` is `SUPPORTED` as of V2-B2-5, and only because that packet drilled
+   * it. It resolves a named durable promise on a dedicated `AcpGate` workflow
+   * keyed by the DERIVED invocation id, so no engine-minted identifier is
+   * looked up, returned or kept. The drills release a held gate exactly once,
+   * release the INTENDED one while a second gate stays held, cover both replay
+   * orders across an endpoint SIGKILL, and — the case the rejected
+   * awakeable design structurally could not pass — release a gate whose `run`
+   * had not been submitted yet and observe the later `run` return immediately.
+   * `AcpTask` is untouched by all of it, which is why the serialization and
+   * cancellation drills are re-run unmodified as preservation assertions.
    *
    * `CANCEL` is `SUPPORTED` as of V2-B2-4b, and only because that packet
    * drilled it. Cancellation is three ordered acts: refuse a terminal task
@@ -523,8 +655,8 @@ export class RestateDriver implements OrchestrationDriver {
       verbs: {
         CANCEL: "SUPPORTED",
         REATTACH: "SUPPORTED",
-        SIGNAL: "UNSUPPORTED",
-        TIMER: "UNSUPPORTED",
+        SIGNAL: "SUPPORTED",
+        TIMER: "SUPPORTED",
       },
       properties: { SERIALIZED_PER_TASK: "SUPPORTED" },
     };
@@ -622,19 +754,79 @@ export class RestateDriver implements OrchestrationDriver {
   }
 
   /**
-   * The two verbs that still refuse what this driver has not learned to do.
+   * Release the durable gate this invocation names (V2-B2-5).
    *
-   * Typed refusals, never throws and never silent no-ops, for the reason the
-   * owned execution boundary already gives: starting fresh while a caller
-   * believes it reattached, or reporting nothing while a caller believes it
-   * cancelled, are the failures that cost the most and show the least.
+   * One request, to a workflow keyed by `invocation.invocationId` — the id this
+   * side derived from `(taskId, attempt)` before ingress. There is no lookup,
+   * no admin call and no journal read, so unlike `cancel` this verb never even
+   * learns an engine-minted identity, let alone keeps one.
+   *
+   * **It appends nothing, and that is the intended shape.** Waiting is not a
+   * lifecycle transition: the ledger records what the task DID, and a task that
+   * paused did nothing. Inventing a `TASK_WAITING` event would have added a
+   * lifecycle state, a transition and a module for a fact no caller needs, so
+   * the verb answers with the bare `{ ok: true }` the contract already sanctions
+   * for a verb that observes no ledger position.
+   *
+   * **A non-2xx throws rather than refusing**, on exactly `reattach`'s
+   * reasoning below: the only refusal this contract has is
+   * `CAPABILITY_UNSUPPORTED`, and the capability is present. A gate that could
+   * not be reached is a failure of the channel, not an answer about the work,
+   * and reporting it as a refusal would tell a caller this engine cannot signal
+   * when what happened is that this attempt could not deliver.
+   *
+   * That includes the `409 "promise was already completed"` a second release
+   * earns. It is deliberately NOT translated into success here: only a caller
+   * holding the ledger may decide what a second signal means, and quietly
+   * reporting `ok` would erase the difference between "released it" and "found
+   * it already released".
    */
-  signal(): Promise<DriverOutcome> {
-    return Promise.resolve(unsupported("signal"));
+  async signal(invocation: DurableInvocation): Promise<DriverOutcome> {
+    const released = await resolveGate(this.#options.ingressUrl, invocation);
+    if (!released.ok) {
+      // The status, never the body: a router or handler error text is engine
+      // output and may name an engine invocation id.
+      throw new SupervisorError(
+        "the durable gate for this invocation answered " +
+          String(released.status) +
+          "; the ledger remains the authority on what the task did",
+      );
+    }
+    return { ok: true };
   }
 
-  timer(): Promise<DriverOutcome> {
-    return Promise.resolve(unsupported("timer"));
+  /**
+   * Ask the engine to begin the walk later, and to hold the schedule itself
+   * (V2-B2-5).
+   *
+   * A delayed send: the same target and the same derived idempotency key
+   * `sendAdvance` uses, plus `?delay=<ISO8601>`. The engine owns the timer, so
+   * it survives this process dying and it survives the server being killed and
+   * restarted on the same data root — which is precisely what separates a
+   * durable timer from a `setTimeout` that dies with whoever set it. Nothing
+   * here sleeps in-process.
+   *
+   * **A malformed duration is refused before the wire, and that is not
+   * defensive.** Measured against the pinned server, `?delay=3s` is accepted
+   * with `202` and simply ignored — so an unvalidated bad duration silently
+   * becomes no delay at all, and a timer nobody set is indistinguishable from
+   * one that already fired. `sendAdvanceDelayed` therefore validates first, and
+   * the refusal costs zero engine calls.
+   *
+   * Like `signal`, it appends nothing at call time and answers `{ ok: true }`:
+   * what the scheduled walk eventually does is recorded by the walk, in the
+   * events it always wrote.
+   */
+  async timer(invocation: DurableInvocation, delayMs: number): Promise<DriverOutcome> {
+    const scheduled = await sendAdvanceDelayed(this.#options.ingressUrl, invocation, delayMs);
+    if (!scheduled.ok) {
+      throw new SupervisorError(
+        "the engine did not accept the durable timer and answered " +
+          String(scheduled.status) +
+          "; nothing was scheduled and the ledger is untouched",
+      );
+    }
+    return { ok: true };
   }
 
   /**

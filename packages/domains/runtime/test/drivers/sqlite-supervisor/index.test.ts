@@ -892,11 +892,17 @@ function capabilitySubject(): SqliteSupervisor {
  * directions are built deliberately and asserted to be caught.
  */
 describe("the driver declares what it cannot do, and the declaration is checked", () => {
+  // `timer` takes a duration as of V2-B2-5, and this call passes one. The
+  // supervisor's own implementation still declares no parameters, which is
+  // deliberate and is exactly what TypeScript's method compatibility allows: a
+  // driver that refuses does not need to look at what it was asked for. The
+  // arity therefore moves on the PORT and not on this driver, and the fence's
+  // pin on its verbatim zero-argument refusal keeps saying so.
   const OUTCOMES = async (driver: OrchestrationDriver) => ({
     CANCEL: await driver.cancel(INVOCATION_FOR_CAPABILITIES),
     REATTACH: await driver.reattach(INVOCATION_FOR_CAPABILITIES),
     SIGNAL: await driver.signal(INVOCATION_FOR_CAPABILITIES),
-    TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES),
+    TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES, 1_000),
   });
 
   it("declares every verb UNSUPPORTED, and the declaration satisfies the contract", () => {
@@ -928,6 +934,54 @@ describe("the driver declares what it cannot do, and the declaration is checked"
         outcome: { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at },
       });
     }
+  });
+
+  it("still refuses SIGNAL and TIMER field-exactly now that the other driver supports them, and appends nothing", async () => {
+    // The divergence, asserted from this side (V2-B2-5). The Restate driver
+    // flipped both verbs to SUPPORTED in that packet; this one did not, and the
+    // point of a capability declaration is that a caller can discover the
+    // difference without trying it.
+    //
+    // Simulating parity here would be the single worst thing this driver could
+    // do. A `setTimeout` calling itself a durable timer, or an in-process
+    // promise calling itself a signal, would both evaporate with the process —
+    // and the caller would have been told the opposite.
+    const root = scenario("capability-divergence");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const supervisor = new SqliteSupervisor({
+      ledger,
+      invocation: INVOCATION_FOR_CAPABILITIES,
+      effects: toyEffects(root),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: TEST_ROUTE,
+    });
+
+    // Asked THROUGH the port, which is where the arity lives. The class still
+    // declares zero parameters for both verbs and that is not an oversight: a
+    // driver that refuses need not look at what it was asked for, and
+    // TypeScript's method compatibility is what lets the honest narrower
+    // implementation satisfy the wider contract.
+    const port: OrchestrationDriver = supervisor;
+    const before = ledger.status().eventCount;
+    expect(await port.signal(INVOCATION_FOR_CAPABILITIES)).toEqual({
+      ok: false,
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "signal",
+    });
+    expect(await port.timer(INVOCATION_FOR_CAPABILITIES, 1_000)).toEqual({
+      ok: false,
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "timer",
+    });
+
+    expect(supervisor.capabilities().verbs.SIGNAL).toBe("UNSUPPORTED");
+    expect(supervisor.capabilities().verbs.TIMER).toBe("UNSUPPORTED");
+    // Asking cost the log nothing. A refusal that appended would be a driver
+    // recording an opinion about work it declined to do.
+    expect(ledger.status().eventCount).toBe(before);
+    expect(ledger.status().eventCount).toBe(0);
   });
 
   it("satisfies the correspondence law on the real driver", async () => {

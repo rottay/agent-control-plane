@@ -2,7 +2,7 @@ import { createServer } from "node:http2";
 import type { Http2Server, ServerHttp2Session } from "node:http2";
 
 import { createEndpointHandler } from "@restatedev/restate-sdk";
-import type { VirtualObjectDefinition } from "@restatedev/restate-sdk";
+import type { VirtualObjectDefinition, WorkflowDefinition } from "@restatedev/restate-sdk";
 
 import { LOOPBACK_HOST, RUNTIME_SERVICE_PORT } from "@acp/runtime";
 
@@ -39,7 +39,24 @@ export interface EndpointHandle {
 }
 
 export interface StartEndpointOptions {
-  readonly services: readonly VirtualObjectDefinition<string, unknown>[];
+  /**
+   * What this endpoint hosts.
+   *
+   * Widened from Virtual Objects alone to admit workflows as well (V2-B2-5).
+   * The SDK's own `EndpointOptions.services` always accepted both; this
+   * narrowing was the repository's, made when a Virtual Object was the only
+   * thing there was to host. The durable gate is a workflow — because only a
+   * workflow has the named durable promise the gate is — so the narrowing had
+   * to admit one or the endpoint could not serve it.
+   *
+   * It stays a narrowing rather than becoming `unknown[]`: services and plain
+   * objects are still different things, and this list is the only place that
+   * distinction is enforced.
+   */
+  readonly services: readonly (
+    | VirtualObjectDefinition<string, unknown>
+    | WorkflowDefinition<string, unknown>
+  )[];
   /** Defaults to the pinned service port. 0 asks the OS for a free one. */
   readonly port?: number | undefined;
 }

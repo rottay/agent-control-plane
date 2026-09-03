@@ -52,7 +52,9 @@ import {
   deriveInvocation,
   readCacheThroughHandler,
   registerDeployment,
+  resolveGate,
   sendAdvance,
+  sendAdvanceDelayed,
   submitAdvance,
 } from "../../../src/submit/index.js";
 import { RestateDriver, reconcile } from "../../../src/drivers/restate-driver/index.js";
@@ -1000,6 +1002,27 @@ interface DrillReceipt {
   readonly intentStillOpen?: boolean;
   /** The verdict `reconcile` reached over a crashed cancellation. */
   readonly recoveryVerdict?: string;
+  // --- V2-B2-5: durable timers and the durable gate -------------------------
+  /** What the delayed send answered. 202, or nothing was scheduled. */
+  readonly timerStatus?: number;
+  /** The ISO8601 duration scheduled. A caller value, never a clock read. */
+  readonly timerDelay?: string;
+  /** Beats the DELAYED task had while another task ran to completion beside it. */
+  readonly beatsWhileScheduled?: number;
+  /** Effect markers the delayed walk left. One, or it fired more than once. */
+  readonly timerFirings?: number;
+  /** What the engine answered a second, identical schedule. Recorded, not assumed. */
+  readonly secondTimerStatus?: number;
+  /** Distinct gates held at one moment. Two is what makes "the intended one" mean something. */
+  readonly gatesHeld?: number;
+  /** Distinct gates released. */
+  readonly gatesReleased?: number;
+  /** What the gate answered a SECOND resolve. Recorded verbatim, never assumed. */
+  readonly secondResolveStatus?: number;
+  /** Was the gate released before its run had ever been submitted? */
+  readonly releasedBeforePark?: boolean;
+  /** Surfaces swept for an engine identity. The count, never the identity. */
+  readonly surfacesSwept?: number;
 }
 
 /**
@@ -2712,6 +2735,924 @@ describe("cancellation settles the ledger truth", () => {
     });
     expect(supervisor.capabilities().verbs.CANCEL).toBe("UNSUPPORTED");
     // Nothing was appended by asking.
+    expect(ledger.status().eventCount).toBe(0);
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-B2-5: durable timers, against the pinned server
+// ---------------------------------------------------------------------------
+
+/**
+ * The same driver the cancellation drills build, named for what these ask of
+ * it. A second factory would be a second thing to keep in step.
+ */
+const timerDriverFor = cancelDriverFor;
+
+/**
+ * Timers are about WHEN, so these drills never measure time with a clock.
+ *
+ * A bare wait cannot tell "scheduled" from "slow", which is the whole
+ * difficulty: a drill that slept and then found no beats would pass just as
+ * happily against a driver that dropped the timer on the floor. So the
+ * discriminator is another task — a second, undelayed submission driven all the
+ * way to `CHECKPOINTED` on the same endpoint. That establishes the window was
+ * genuinely long enough for work to happen, and the delayed task's trail being
+ * empty in the same window is then evidence rather than an absence of evidence.
+ */
+describe("durable timers are held by the engine", () => {
+  it("T1 fires exactly once, and the walk it schedules lands in the ledger", async () => {
+    ensureChildBuilt();
+    const id = "timer-fires-once";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const driver = timerDriverFor(root, ledger, invocation, server);
+    // The verb answers `{ ok: true }` and nothing else: it observes no ledger
+    // position, because at this instant there is not one to observe.
+    expect(await driver.timer(invocation, 2_000)).toEqual({ ok: true });
+
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+    const head = ledger.status();
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    // One marker: the delayed walk ran once, not once per retry.
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+    const live = JSON.stringify(ledger.getTask(taskId));
+    ledger.rebuildReadModel();
+    expect(JSON.stringify(ledger.getTask(taskId))).toBe(live);
+
+    emitReceipt({
+      drill: "TIMER-FIRES-ONCE",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      timerDelay: "PT2S",
+      timerFirings: markers(root),
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("T2 holds the beat: a second task completes beside it while its trail stays empty", async () => {
+    ensureChildBuilt();
+    const id = "timer-holds-the-beat";
+    const delayedTask = randomUUID();
+    const delayed = deriveInvocation(delayedTask, 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, delayed, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const driver = timerDriverFor(root, ledger, delayed, server);
+    expect(await driver.timer(delayed, 30_000)).toEqual({ ok: true });
+
+    // The discriminator: a DIFFERENT task, undelayed, driven to completion on
+    // the same endpoint. The window is now demonstrably wide enough for a whole
+    // plan to run, so an empty trail is a held timer and not a slow one.
+    const beside = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "b".repeat(64));
+    expect((await submitAdvance(server.ingressUrl, beside, 120_000)).status).toBe(200);
+    expect(await waitForCheckpoint(ledger, beside.taskId)).toBe(true);
+
+    const beatsWhileScheduled = taskTrail(ledger, delayedTask).length;
+    expect(beatsWhileScheduled).toBe(0);
+    expect(ledger.getTask(delayedTask)).toBeNull();
+    // And the effect the delayed walk would perform has not been performed.
+    expect(markers(root)).toBe(1);
+
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "TIMER-HOLDS-THE-BEAT",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      timerDelay: "PT30S",
+      beatsWhileScheduled,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("T3 survives the death of the endpoint that would run it", async () => {
+    ensureChildBuilt();
+    const id = "timer-endpoint-death";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const doomed = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const driver = timerDriverFor(root, ledger, invocation, server);
+    expect(await driver.timer(invocation, 5_000)).toEqual({ ok: true });
+
+    // The process that would have served the scheduled invocation dies before
+    // it fires. The schedule is the ENGINE's, so this must not lose it.
+    doomed.kill("SIGKILL");
+    const died = await waitForExit(doomed);
+    expect(died.signal).toBe("SIGKILL");
+
+    await startChild(id, invocation, null);
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+    const head = ledger.status();
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "TIMER-ENDPOINT-DEATH",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: died.signal,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      timerDelay: "PT5S",
+      timerFirings: markers(root),
+    });
+  }, 240_000);
+
+  it("T4 survives the death of the server that holds it", async () => {
+    ensureChildBuilt();
+    const id = "timer-server-death";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const first = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(first.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const driver = timerDriverFor(root, ledger, invocation, first);
+    expect(await driver.timer(invocation, 8_000)).toEqual({ ok: true });
+    expect(taskTrail(ledger, taskId)).toEqual([]);
+
+    // This is the drill that separates an ENGINE-held timer from a
+    // client-held one: the process that accepted the schedule is destroyed.
+    const killed = await stopServer(first, "SIGKILL");
+    if (killed === null) throw new Error("T4's SIGKILL was not the first stop of this handle");
+    expect(killed.signal).toBe("SIGKILL");
+    await stopChild(child);
+
+    // Same data root, so the schedule is whatever the engine durably kept.
+    const second = trackServer(await startServer(root));
+    await startChild(id, invocation, null);
+    await registerDeployment(second.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+    const head = ledger.status();
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "TIMER-SERVER-DEATH",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: "SIGKILL",
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      timerDelay: "PT8S",
+      timerFirings: markers(root),
+    });
+  }, 240_000);
+
+  it("T5 scheduling twice is the same schedule, not a second one", async () => {
+    ensureChildBuilt();
+    const id = "timer-idempotent";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    // Through the submit helper rather than the driver, so the engine's own
+    // answer to each call is recorded rather than flattened into `{ok:true}`.
+    const firstSchedule = await sendAdvanceDelayed(server.ingressUrl, invocation, 3_000);
+    const secondSchedule = await sendAdvanceDelayed(server.ingressUrl, invocation, 3_000);
+    expect(firstSchedule.status).toBe(202);
+    // Recorded, never assumed: the derived idempotency key is what makes the
+    // second call the same call.
+    expect(secondSchedule.status).toBe(202);
+
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+    const head = ledger.status();
+    // One walk, one append set, one effect -- not two of anything.
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "TIMER-IDEMPOTENT",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      timerStatus: firstSchedule.status,
+      secondTimerStatus: secondSchedule.status,
+      timerFirings: markers(root),
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("T6 refuses a malformed duration with zero engine calls, and the server would not have", async () => {
+    ensureChildBuilt();
+    const id = "timer-malformed";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const driver = timerDriverFor(root, ledger, invocation, server);
+    const { calls } = await countingEngineCalls(async () => {
+      for (const bad of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        await expect(driver.timer(invocation, bad)).rejects.toThrow(/durable timer/);
+      }
+    });
+    // Observed through the spy, not argued: nothing reached the engine.
+    expect(calls).toEqual([]);
+    expect(ledger.status().eventCount).toBe(0);
+
+    // Why the client-side refusal is load-bearing rather than defensive: the
+    // server ACCEPTS a malformed duration and silently ignores it. Asserted
+    // here against the real engine so the claim is measured, not remembered.
+    const ignored = await fetch(
+      server.ingressUrl + "/AcpTask/" + randomUUID() + "/advance/send?delay=3s",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    await ignored.text();
+    expect(ignored.status).toBe(202);
+
+    // Whereas the parameter IS understood: on a blocking call it is refused by
+    // name. Understood on sends, unvalidated on sends, therefore validated by
+    // this repository.
+    const onCall = await fetch(
+      server.ingressUrl + "/AcpTask/" + randomUUID() + "/advance?delay=PT1S",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    const onCallBody = await onCall.text();
+    expect(onCall.status).toBe(400);
+    expect(onCallBody).toContain("delay query parameter");
+
+    emitReceipt({
+      drill: "TIMER-MALFORMED-REFUSED",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      engineCalls: calls.length,
+      secondTimerStatus: ignored.status,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-B2-5: the durable gate, against the pinned server
+// ---------------------------------------------------------------------------
+
+/**
+ * SIGNAL is a named durable promise on a dedicated workflow, so these drills
+ * measure delivery rather than discovery.
+ *
+ * The design they exercise is deliberately not the one first proposed. An
+ * awakeable inside `AcpTask` would have had an identifier that does not exist
+ * until the handler reaches it, which makes a signal arriving first
+ * permanently lost — and S0 below is exactly that case, passing. It would also
+ * have held the task key for the whole wait, so `advance` would have queued
+ * behind an unresolved gate. Keeping the gate in its own service is what lets
+ * the serialization and cancellation drills stand unedited as preservation
+ * assertions.
+ */
+describe("the durable gate delivers signals", () => {
+  /** Distinct gates the child has announced at a point. */
+  function gatesAt(child: ChildProcess, point: "PARKED" | "RELEASED"): ReadonlySet<string> {
+    const text = childOutput.get(child)?.text ?? "";
+    const ids = new Set<string>();
+    const pattern = new RegExp('"gate":"' + point + '","invocationId":"([0-9a-f-]+)"', "g");
+    for (const match of text.matchAll(pattern)) {
+      const id = match[1];
+      if (id !== undefined) ids.add(id);
+    }
+    return ids;
+  }
+
+  /** Wait on a CONDITION -- the announcement -- never on elapsed time. */
+  async function waitForGates(
+    child: ChildProcess,
+    point: "PARKED" | "RELEASED",
+    count: number,
+    deadlineMs = 60_000,
+  ): Promise<number> {
+    const started = Date.now();
+    let seen = 0;
+    while (Date.now() - started < deadlineMs) {
+      seen = gatesAt(child, point).size;
+      if (seen >= count) return seen;
+      if (child.exitCode !== null || child.signalCode !== null) return seen;
+      await delay(25);
+    }
+    return seen;
+  }
+
+  /**
+   * Park a gate: submit its `run` without waiting for it.
+   *
+   * No `idempotency-key` header, and that is the engine's rule rather than a
+   * choice — a workflow handler is already idempotent by its key, and the
+   * pinned server refuses an explicit one. The derived id is still the
+   * authority here; it is simply carried as the workflow KEY rather than as a
+   * header.
+   */
+  async function parkGate(ingressUrl: string, invocation: DurableInvocation): Promise<number> {
+    const response = await fetch(
+      ingressUrl + "/AcpGate/" + invocation.invocationId + "/run/send",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(invocation),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    await response.text();
+    return response.status;
+  }
+
+  it("S0 releases a gate whose run was never submitted, and the later run returns at once", async () => {
+    // The case the rejected awakeable design structurally cannot pass. There,
+    // the identifier does not exist until the handler runs, so a signal that
+    // arrives first has nowhere to land and is lost. Here the promise is engine
+    // state keyed by the workflow key, so it is simply already complete.
+    ensureChildBuilt();
+    const id = "gate-before-park";
+    const invocation = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const before = ledger.status();
+    const driver = cancelDriverFor(root, ledger, invocation, server);
+
+    // Signal FIRST. Nothing is waiting, and nothing ever has been.
+    expect(await driver.signal(invocation)).toEqual({ ok: true });
+    expect(gatesAt(child, "PARKED").size).toBe(0);
+
+    // Only now is the gate submitted -- and it does not wait.
+    expect(await parkGate(server.ingressUrl, invocation)).toBe(202);
+    expect(await waitForGates(child, "RELEASED", 1)).toBe(1);
+    expect(gatesAt(child, "RELEASED").has(invocation.invocationId)).toBe(true);
+
+    // Waiting is not a lifecycle transition, so the log did not move.
+    const after = ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+
+    emitReceipt({
+      drill: "GATE-RELEASED-BEFORE-PARK",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: after.eventCount,
+      effectMarkers: markers(root),
+      headSequence: after.headSequence,
+      headEventSha256: after.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      releasedBeforePark: true,
+      gatesReleased: gatesAt(child, "RELEASED").size,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("S1 releases a held gate, exactly once, and the ledger does not move", async () => {
+    ensureChildBuilt();
+    const id = "gate-releases-held";
+    const invocation = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    expect(await parkGate(server.ingressUrl, invocation)).toBe(202);
+    // A handshake, not a sleep: the gate announced that it is holding.
+    expect(await waitForGates(child, "PARKED", 1)).toBe(1);
+    expect(gatesAt(child, "RELEASED").size).toBe(0);
+
+    const before = ledger.status();
+    const driver = cancelDriverFor(root, ledger, invocation, server);
+    const { result, calls } = await countingEngineCalls(() => driver.signal(invocation));
+
+    expect(result).toEqual({ ok: true });
+    // ONE engine call, to an address built from the derived id alone. No
+    // lookup, no admin: the whole reason this verb never sees an engine id.
+    expect(calls).toEqual([
+      "POST " + server.ingressUrl + "/AcpGate/" + invocation.invocationId + "/resolve",
+    ]);
+
+    expect(await waitForGates(child, "RELEASED", 1)).toBe(1);
+    expect(gatesAt(child, "RELEASED")).toEqual(new Set([invocation.invocationId]));
+
+    const after = ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "GATE-RELEASES-HELD",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: after.eventCount,
+      effectMarkers: markers(root),
+      headSequence: after.headSequence,
+      headEventSha256: after.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      gatesHeld: 1,
+      gatesReleased: gatesAt(child, "RELEASED").size,
+      engineCalls: calls.length,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("S2 releases the INTENDED gate: a second one is still held afterwards", async () => {
+    // Without this, S1 would pass just as happily on a system that released
+    // everything. Two gates, one signal, and the other must still be waiting.
+    ensureChildBuilt();
+    const id = "gate-intended-only";
+    const gateA = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const gateB = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "b".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, gateA, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    expect(await parkGate(server.ingressUrl, gateA)).toBe(202);
+    expect(await parkGate(server.ingressUrl, gateB)).toBe(202);
+    // Two DISTINCT gates held at one moment -- the same discriminator the
+    // different-keys serialization drill uses.
+    expect(await waitForGates(child, "PARKED", 2)).toBe(2);
+    expect(gatesAt(child, "PARKED")).toEqual(new Set([gateA.invocationId, gateB.invocationId]));
+
+    const driver = cancelDriverFor(root, ledger, gateA, server);
+    expect(await driver.signal(gateA)).toEqual({ ok: true });
+    expect(await waitForGates(child, "RELEASED", 1)).toBe(1);
+
+    // Exactly A, and B is untouched.
+    expect(gatesAt(child, "RELEASED")).toEqual(new Set([gateA.invocationId]));
+    expect(gatesAt(child, "RELEASED").has(gateB.invocationId)).toBe(false);
+    expect(gatesAt(child, "PARKED").has(gateB.invocationId)).toBe(true);
+
+    // Releasing B now proves B really was still waiting rather than gone.
+    expect(await driver.signal(gateB)).toEqual({ ok: true });
+    expect(await waitForGates(child, "RELEASED", 2)).toBe(2);
+    expect(gatesAt(child, "RELEASED")).toEqual(new Set([gateA.invocationId, gateB.invocationId]));
+
+    expect(ledger.status().eventCount).toBe(0);
+
+    emitReceipt({
+      drill: "GATE-INTENDED-ONLY",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      gatesHeld: 2,
+      gatesReleased: 2,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("S3 releasing twice releases once: the verb is idempotent, a bare second request is refused", async () => {
+    ensureChildBuilt();
+    const id = "gate-second-release";
+    const invocation = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    expect(await parkGate(server.ingressUrl, invocation)).toBe(202);
+    expect(await waitForGates(child, "PARKED", 1)).toBe(1);
+
+    const first = await resolveGate(server.ingressUrl, invocation);
+    expect(first).toEqual({ ok: true, status: 200 });
+    expect(await waitForGates(child, "RELEASED", 1)).toBe(1);
+
+    // Deliberately WITHOUT the idempotency key, so this measures the engine's
+    // answer to a genuinely second release rather than a replay of the first.
+    const second = await fetch(
+      server.ingressUrl + "/AcpGate/" + invocation.invocationId + "/resolve",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ released: true }),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    const secondBody = await second.text();
+    // Recorded, never assumed. Measured against the pinned server this is 409.
+    expect(second.status).toBe(409);
+    expect(secondBody).toContain("promise was already completed");
+
+    // But calling the VERB twice is not that, and the difference is the whole
+    // value of deriving the key. `signal()` sends `invocationId` as the
+    // idempotency key, so a second call is the SAME call: the engine replays
+    // its first answer and reports success rather than conflict. A caller that
+    // retries after a timeout therefore gets a truthful `ok` instead of a
+    // spurious failure, and the gate is still released exactly once.
+    //
+    // Measured rather than assumed -- this drill originally asserted the
+    // opposite and the engine corrected it.
+    const repeated = await cancelDriverFor(root, ledger, invocation, server).signal(invocation);
+    expect(repeated).toEqual({ ok: true });
+
+    // That the driver does not LAUNDER a real 409 into success is a different
+    // claim, and it is asserted where a real 409 can be produced on demand:
+    // the unit suite, against a stubbed engine. Here the engine will not emit
+    // one through this path, so asserting it here would require faking the
+    // very thing this file exists to run for real.
+
+    // Still one release, and still nothing appended by any of it.
+    expect(gatesAt(child, "RELEASED")).toEqual(new Set([invocation.invocationId]));
+    expect(ledger.status().eventCount).toBe(0);
+
+    emitReceipt({
+      drill: "GATE-SECOND-RELEASE-REFUSED",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      gatesReleased: 1,
+      secondResolveStatus: second.status,
+      engineCalls: 2,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("S4 survives replay in both orders: released before the kill, and after the restart", async () => {
+    ensureChildBuilt();
+    const id = "gate-replay";
+    const early = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const late = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "b".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const doomed = await startChild(id, early, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    // Both gates park; one is released before the endpoint dies and one is not.
+    expect(await parkGate(server.ingressUrl, early)).toBe(202);
+    expect(await parkGate(server.ingressUrl, late)).toBe(202);
+    expect(await waitForGates(doomed, "PARKED", 2)).toBe(2);
+
+    const driver = cancelDriverFor(root, ledger, early, server);
+    expect(await driver.signal(early)).toEqual({ ok: true });
+    expect(await waitForGates(doomed, "RELEASED", 1)).toBe(1);
+
+    doomed.kill("SIGKILL");
+    const died = await waitForExit(doomed);
+    expect(died.signal).toBe("SIGKILL");
+
+    const replacement = await startChild(id, early, null);
+
+    // Order 1: released BEFORE the kill. A replay sees a completed promise, so
+    // the gate does not wait again -- and the completion survived the restart,
+    // which a second release proves by being refused.
+    const stillComplete = await fetch(
+      server.ingressUrl + "/AcpGate/" + early.invocationId + "/resolve",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ released: true }),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    await stillComplete.text();
+    expect(stillComplete.status).toBe(409);
+
+    // Order 2: released AFTER the restart. The address is recomputed from
+    // `(taskId, attempt)` by a driver that was never told it.
+    const rebuilt = deriveInvocation(
+      late.taskId,
+      late.attempt,
+      late.submittedAt,
+      late.submissionDigest,
+    );
+    expect(rebuilt.invocationId).toBe(late.invocationId);
+    expect(await cancelDriverFor(root, ledger, rebuilt, server).signal(rebuilt)).toEqual({
+      ok: true,
+    });
+    expect(await waitForGates(replacement, "RELEASED", 1)).toBe(1);
+    expect(gatesAt(replacement, "RELEASED").has(late.invocationId)).toBe(true);
+
+    expect(ledger.status().eventCount).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "GATE-REPLAY-BOTH-ORDERS",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: died.signal,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      gatesHeld: 2,
+      secondResolveStatus: stillComplete.status,
+    });
+
+    await stopChild(replacement);
+  }, 240_000);
+
+  it("S5 a gate for a key that never parked leaves the ledger byte-identical", async () => {
+    ensureChildBuilt();
+    const id = "gate-never-parked";
+    const walked = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const never = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "b".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, walked, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    // A real task, so the ledger has something to be byte-identical about.
+    expect((await submitAdvance(server.ingressUrl, walked, 120_000)).status).toBe(200);
+    expect(await waitForCheckpoint(ledger, walked.taskId)).toBe(true);
+
+    const before = ledger.status();
+    const beforeEvents = JSON.stringify(ledger.listEvents({ limit: 200 }).events);
+
+    // Signalling a gate nobody ever opened is accepted by the engine -- the
+    // promise is simply created complete -- and it appends NOTHING. That is the
+    // property worth asserting: the gate holds no fact, so it cannot invent one.
+    expect(await cancelDriverFor(root, ledger, never, server).signal(never)).toEqual({ ok: true });
+
+    const after = ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headSequence).toBe(before.headSequence);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+    expect(JSON.stringify(ledger.listEvents({ limit: 200 }).events)).toBe(beforeEvents);
+    expect(ledger.getTask(never.taskId)).toBeNull();
+
+    emitReceipt({
+      drill: "GATE-NEVER-PARKED-APPENDS-NOTHING",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: after.eventCount,
+      effectMarkers: markers(root),
+      headSequence: after.headSequence,
+      headEventSha256: after.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      gatesHeld: 0,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("S6 no engine-minted identity reaches any surface, and the DERIVED one addresses the gate", async () => {
+    ensureChildBuilt();
+    const id = "gate-no-engine-identity";
+    const invocation = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    // A completed walk, so the surfaces below have real content to sweep.
+    expect((await submitAdvance(server.ingressUrl, invocation, 120_000)).status).toBe(200);
+    expect(await waitForCheckpoint(ledger, invocation.taskId)).toBe(true);
+
+    expect(await parkGate(server.ingressUrl, invocation)).toBe(202);
+    expect(await waitForGates(child, "PARKED", 1)).toBe(1);
+
+    const driver = cancelDriverFor(root, ledger, invocation, server);
+    const { result, calls } = await countingEngineCalls(() => driver.signal(invocation));
+    expect(result).toEqual({ ok: true });
+    expect(await waitForGates(child, "RELEASED", 1)).toBe(1);
+
+    // The control that makes the sweep mean something, and it is a different
+    // control from the cancellation drill's. There, an engine id demonstrably
+    // EXISTED and had to be shown absent. Here the stronger claim holds: the
+    // signal path never asks for one. The single call it made is addressed by
+    // the DERIVED id, and no lookup or admin request appears beside it.
+    expect(calls).toEqual([
+      "POST " + server.ingressUrl + "/AcpGate/" + invocation.invocationId + "/resolve",
+    ]);
+    expect(calls.join(" ")).not.toContain("/restate/lookup");
+    expect(calls.join(" ")).not.toContain(server.adminUrl);
+
+    const report = await reconcile({
+      ledger,
+      invocation,
+      readCache: () => readCacheThroughHandler(server.ingressUrl, invocation.taskId),
+    });
+    const surfaces: readonly [string, unknown][] = [
+      ["outcome", result],
+      ["events", ledger.listEvents({ limit: 200 }).events.map((r) => r.event)],
+      ["task read model", ledger.getTask(invocation.taskId)],
+      ["task list", ledger.listTasks().tasks],
+      ["reconciliation report", report],
+      ["driver status", await driver.status()],
+    ];
+    for (const [name, surface] of surfaces) {
+      const serialized = JSON.stringify(surface);
+      expect({ name, leaked: ENGINE_INVOCATION_ID_SHAPE.test(serialized) }).toEqual({
+        name,
+        leaked: false,
+      });
+      // The two awakeable shapes the pinned server names, which the rejected
+      // design would have had to carry and this one never mints.
+      expect({ name, leaked: /awk_1|sign_1/.test(serialized) }).toEqual({ name, leaked: false });
+    }
+
+    // And what IS there is the derived address, which the ledger owns.
+    expect(
+      JSON.stringify(ledger.listEvents({ taskId: invocation.taskId, limit: 200 }).events.map((r) => r.event)),
+    ).toContain(invocation.invocationId);
+
+    emitReceipt({
+      drill: "GATE-NO-ENGINE-IDENTITY",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: report.verdict,
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      // The COUNT of surfaces swept, never the identity: a receipt naming what
+      // it looked for would be the leak it exists to deny.
+      surfacesSwept: surfaces.length,
+      engineCalls: calls.length,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("X1 the two drivers now disagree about every verb, and the SQLite one still refuses field-exactly", async () => {
+    // A regression assertion on existing behaviour, said plainly rather than
+    // presented as new evidence: the supervisor source is untouched and its own
+    // suite asserts these refusals. What is NEW is that the divergence is now
+    // total -- one driver supports all four verbs and the other supports none.
+    const root = scenario("gate-sqlite-refusal");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const invocation = deriveInvocation(randomUUID(), 1, "2026-09-03T12:00:00.000Z", "c".repeat(64));
+    const supervisor = new SqliteSupervisor({
+      ledger,
+      invocation,
+      effects: toyEffects(root),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: drillRoute(invocation),
+    });
+
+    expect(await supervisor.signal()).toEqual({
+      ok: false,
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "signal",
+    });
+    expect(await supervisor.timer()).toEqual({
+      ok: false,
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "timer",
+    });
+    expect(supervisor.capabilities().verbs.SIGNAL).toBe("UNSUPPORTED");
+    expect(supervisor.capabilities().verbs.TIMER).toBe("UNSUPPORTED");
+    // It did not quietly delegate to the other driver, and asking cost nothing.
     expect(ledger.status().eventCount).toBe(0);
   }, 60_000);
 });

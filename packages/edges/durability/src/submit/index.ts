@@ -6,7 +6,11 @@ import {
 } from "@acp/runtime";
 import type { DurableInvocation } from "@acp/runtime";
 
-import type { RestateCacheState } from "../contracts/index.js";
+import {
+  RESTATE_HANDLER_GATE_RESOLVE,
+  RESTATE_WORKFLOW_GATE,
+} from "../contracts/index.js";
+import type { GatePayload, RestateCacheState } from "../contracts/index.js";
 
 /**
  * Deterministic submission and registration, over global `fetch`.
@@ -158,6 +162,172 @@ export async function sendAdvance(
   });
   // Read and drop. The body is consumed so the socket is released, and it is
   // dropped on the floor rather than returned: see `SendResult`.
+  await response.text();
+  return { ok: response.ok, status: response.status };
+}
+
+/**
+ * What a delayed send returns: the same two members, for the same reason.
+ *
+ * A delayed `/send` answers with the engine's own identity exactly as an
+ * undelayed one does — measured against the pinned server, the reply is
+ * `{"invocationId":"inv_...","executionTime":"...","status":"Accepted"}` — so
+ * this shape has nowhere to put it and the body is read and dropped. The fence
+ * pins that it stays `{ok, status}`, beside `SendResult` and `CancelResult`.
+ */
+export interface TimerResult {
+  readonly ok: boolean;
+  readonly status: number;
+}
+
+/**
+ * A duration as ISO8601, or a refusal to send a malformed one (V2-B2-5).
+ *
+ * This validation is load-bearing rather than defensive, and the preflight is
+ * why it is stated that strongly. Measured against the pinned server, a
+ * malformed duration on the send path is **not refused**: `?delay=3s` answered
+ * `202 Accepted` with an `executionTime` of the current instant. So a bad
+ * duration does not fail loudly — it silently becomes NO DELAY, and a timer
+ * nobody set looks exactly like a timer that already fired.
+ *
+ * The server does understand the parameter; it just does not police it. The
+ * proof is the neighbouring case: `?delay=` on a blocking call answers `400
+ * "cannot use the delay query parameter with calls. The delay is supported
+ * only with sends"`. Understood on sends, unvalidated on sends, therefore
+ * validated here.
+ *
+ * Built from integer arithmetic rather than by formatting a float, so no
+ * duration can reach the wire as `PT3.0000000000000004S`.
+ */
+function isoDurationFromMillis(delayMs: number): string {
+  if (!Number.isFinite(delayMs)) {
+    throw new Error("a durable timer needs a finite duration in milliseconds");
+  }
+  if (!Number.isInteger(delayMs)) {
+    throw new Error("a durable timer needs a whole number of milliseconds");
+  }
+  if (delayMs < 0) {
+    throw new Error("a durable timer cannot be scheduled into the past");
+  }
+  const seconds = Math.floor(delayMs / 1000);
+  const millis = delayMs % 1000;
+  return millis === 0
+    ? "PT" + String(seconds) + "S"
+    : "PT" + String(seconds) + "." + String(millis).padStart(3, "0") + "S";
+}
+
+/**
+ * Schedule the walk to begin later, and let the ENGINE hold the schedule
+ * (V2-B2-5).
+ *
+ * Exactly `sendAdvance`'s target and exactly its idempotency key, plus
+ * `?delay=<ISO8601>`. That is the whole mechanism, and everything durable about
+ * it belongs to the engine: it holds the timer, it fires once, and it survives
+ * both this process dying and the server being killed and restarted on the same
+ * data root. Nothing here sleeps.
+ *
+ * A `ctx.sleep` inside `advance` was rejected and the reason is worth keeping.
+ * This method is called from OUTSIDE a handler, so it could not reach one; and
+ * putting a wait into the fixed walk would change the journal entry order every
+ * existing drill counts, for a wait nothing asked for.
+ *
+ * The duration is validated before the URL is built, so a malformed timer costs
+ * ZERO engine calls — which is what the refusal drill observes rather than
+ * argues.
+ */
+export async function sendAdvanceDelayed(
+  ingressUrl: string,
+  invocation: DurableInvocation,
+  delayMs: number,
+  timeoutMs = 30_000,
+): Promise<TimerResult> {
+  assertLoopback(ingressUrl);
+  // Before the target, so a refusal happens before anything is addressed.
+  const delay = isoDurationFromMillis(delayMs);
+  const target = new URL(
+    "/" + RESTATE_OBJECT_NAME + "/" + invocation.taskId + "/" + RESTATE_HANDLER_ADVANCE + "/send",
+    ingressUrl,
+  );
+  target.searchParams.set("delay", delay);
+
+  const response = await fetch(target, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": invocation.invocationId,
+    },
+    body: JSON.stringify(invocation),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  // Read and drop, exactly as `sendAdvance` does: this reply carries the
+  // engine's own invocation id and nothing may keep it.
+  await response.text();
+  return { ok: response.ok, status: response.status };
+}
+
+/**
+ * What releasing a gate returns: whether it took, and nothing else.
+ *
+ * The same two members again, and here the absence costs nothing to arrange,
+ * because this path never learns an engine identity in the first place. There
+ * is no lookup and no admin call: the address is the derived invocation id.
+ */
+export interface SignalResult {
+  readonly ok: boolean;
+  readonly status: number;
+}
+
+/**
+ * Release the durable gate these coordinates name (V2-B2-5).
+ *
+ * ONE request, to `/AcpGate/{invocationId}/resolve`. The workflow key IS
+ * `deriveInvocation`'s output for `(taskId, attempt)`, so the gate is addressed
+ * entirely by a value this side computed before ingress — no `/restate/lookup`,
+ * no admin API, no journal introspection, no `inv_…` and no `awk_1…`/`sign_1…`.
+ * This path is strictly cleaner than `cancelAdvance`, which still has to
+ * resolve an engine id transiently.
+ *
+ * The handler it reaches is SHARED, so releasing never queues behind the `run`
+ * it is releasing.
+ *
+ * The payload is a closed literal, never caller content. A signal's whole
+ * content is that it arrived; letting a caller put a body here would be a door
+ * for a prompt, a transcript or a tool argument into engine state, which the
+ * redaction law forbids and which no drill would catch until it leaked.
+ *
+ * Two answers the caller must be able to tell apart, and only the driver —
+ * holding the ledger — may say what either means for the task. `2xx` is a
+ * release. Everything else, including the `409 "promise was already completed"`
+ * a second resolve earns, is handed back as a status rather than interpreted
+ * here.
+ */
+export async function resolveGate(
+  ingressUrl: string,
+  invocation: DurableInvocation,
+  timeoutMs = 30_000,
+): Promise<SignalResult> {
+  assertLoopback(ingressUrl);
+  const target = new URL(
+    "/" +
+      RESTATE_WORKFLOW_GATE +
+      "/" +
+      invocation.invocationId +
+      "/" +
+      RESTATE_HANDLER_GATE_RESOLVE,
+    ingressUrl,
+  );
+  const payload: GatePayload = { released: true };
+
+  const response = await fetch(target, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": invocation.invocationId,
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  // Read and drop, for the reason every other send does it.
   await response.text();
   return { ok: response.ok, status: response.status };
 }

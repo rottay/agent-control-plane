@@ -256,6 +256,127 @@ is untouched. The asymmetry is the same one ADR 0004 records for per-task
 serialization: the capability declaration carries the difference so a caller
 can read it rather than discover it.
 
+## Waiting is a dedicated workflow, and the timer is the engine's own schedule (V2-B2-5)
+
+The last two verbs stop being refusals here. They are recorded together because
+they were decided together, and because the reasoning that separates them is the
+same reasoning in both cases: put the durable thing where the engine already
+keeps durable things, and keep it out of `AcpTask`.
+
+### TIMER is a delayed send, not a sleep in the walk
+
+`timer(invocation, delayMs)` issues one nonblocking send to the object's own
+`advance` handler with `?delay=<ISO8601>`, under the derived invocation id as
+the idempotency key — the same target and the same key `sendAdvance` already
+uses. The engine holds the schedule, so the timer survives the death of the
+process that set it and the death of the server that accepted it.
+
+`ctx.sleep` inside `advance` was rejected. The port method is called from
+outside a handler and could not reach one; and adding a wait to the fixed walk
+would change the journal entry order every existing drill counts, for a wait
+nothing asked for. The determinism law is unchanged: the duration is a caller
+value, never a clock read, and it reaches no ledger event — so it is neither
+`DERIVED`, `SUBMISSION` nor `JOURNALED`, and it enters the coordinate
+vocabulary nowhere.
+
+**The client-side validation is load-bearing, and that is a measured claim.**
+The pinned server does not police the parameter it accepts: `?delay=3s` answers
+`202 Accepted` with an `executionTime` of the current instant, so a malformed
+duration silently becomes no delay at all and a timer nobody set is
+indistinguishable from one that already fired. The parameter *is* understood —
+on a blocking call it is refused by name, `400 "cannot use the delay query
+parameter with calls. The delay is supported only with sends"`. Understood on
+sends, unvalidated on sends, therefore validated here, before the URL is built,
+at a cost of zero engine calls.
+
+### SIGNAL is a named durable promise on a dedicated `AcpGate` workflow
+
+`signal(invocation)` performs exactly one ingress POST to
+`/AcpGate/{invocation.invocationId}/resolve`. The workflow key IS
+`deriveInvocation`'s output for `(taskId, attempt)`. There is no
+`/restate/lookup`, no admin call and no journal read, so — unlike `cancel`, which
+must still resolve an engine id transiently — this path never learns an
+engine-minted identifier at all. `SignalResult` is exactly `{ok, status}`.
+
+`run` awaits `ctx.promise(GATE)`; `resolve` is a **shared** handler that
+resolves the same named promise, so releasing never queues behind the wait it is
+releasing.
+
+**Why not an awakeable inside `AcpTask`.** That was the first design and it was
+rejected on evidence, not taste:
+
+- *A signal arriving first would be permanently lost.* An awakeable identifier
+  does not exist until the handler has executed to that journal command. In
+  production the resolver and the waiter are independent processes and their
+  order is not ours to guarantee, so that is a race, not an edge case. A named
+  durable promise has no such window: it is engine state keyed by the workflow
+  key, and a release that arrives first simply completes it. The drill is S0,
+  and the awakeable design structurally cannot pass it.
+- *It would have depended on engine introspection internals.* Recovering the
+  identifier meant reading admin `/invocations/{id}/journal/{idx}/metadata` or
+  the `sys_journal` table — operational surfaces that version separately from
+  ingress. This repository already refuses to CONSTRUCT an address from a format
+  it cannot check; reading one out of an engine journal is the same refusal.
+- *The discovery would have been a heuristic.* "Scan a bounded index range and
+  accept exactly one awakeable entry" couples SIGNAL to the shape of the fixed
+  walk, and every future plan step moves the range — silently.
+- *It would have blocked `AcpTask`.* An exclusive `wait` holds the object key
+  for the whole wait, so `advance` for that task would queue behind an
+  unresolved gate. The per-task serialization certified at V2-B2-3 would become
+  indistinguishable from a deadlock.
+
+Registering an engine-minted identifier in object state or in the ledger is
+rejected **permanently**, not held as a fallback: it contradicts the
+`RestateCacheState` law and creates a second authority.
+
+### What the gate deliberately does not do
+
+It appends nothing. It holds no ledger and is handed none, so it could not
+append if it wanted to — `GateDependencies` carries one optional announcement
+seam and nothing else. Waiting is not a lifecycle transition: the ledger records
+what a task DID, and a task that paused did nothing. Inventing a `TASK_WAITING`
+event would have added a lifecycle state, a transition, a module and a mirrored
+suite for a fact no caller needs, so both verbs answer with the bare
+`{ ok: true }` that `DriverAccepted` already sanctions for a verb observing no
+ledger position.
+
+`AcpTask` is untouched by this packet — no handler added, none changed — which
+is why the cancellation and serialization drills are re-run **unmodified** as
+preservation assertions rather than rewritten.
+
+### Idempotency, and one correction the engine made
+
+`signal()` sends the derived invocation id as the idempotency key, so calling
+the verb twice is the SAME call: the engine replays its first answer and reports
+success. A caller retrying after a timeout therefore gets a truthful `ok`
+instead of a spurious conflict, and the gate is still released exactly once. A
+genuinely distinct second request — one without the key — is refused with
+`409 "promise was already completed"`, and the driver does not launder that into
+success: only a caller holding the ledger may decide what a second signal means.
+
+The drill for this originally asserted the opposite and the engine corrected it;
+the assertion now records what was measured.
+
+Workflow `run` submissions carry **no** idempotency-key header, because the
+engine refuses one there — a workflow handler is already idempotent by its key.
+The derived id is still the authority; it is carried as the workflow key rather
+than as a header.
+
+### Two homes for the Restate names, named rather than fixed
+
+`RESTATE_WORKFLOW_GATE`, `RESTATE_HANDLER_GATE_RUN`,
+`RESTATE_HANDLER_GATE_RESOLVE` and `RESTATE_GATE_PROMISE` are declared
+edge-local in `packages/edges/durability/src/contracts/index.ts`, while the
+pre-existing `RESTATE_*` constants still live in
+`packages/domains/runtime/src/constants/index.ts` — split residue from before
+P8-T G5 moved this edge out of the domain. Edge-local is the smaller change and
+the more correct home, since a domain package should not name an engine's
+services. Unifying the two is owed work and is deliberately not this packet's.
+
+`StartEndpointOptions.services` widened from Virtual Objects alone to admit
+workflows. The SDK always accepted both; the narrowing was this repository's,
+made when an object was the only thing there was to host.
+
 ## Adoption criterion, stated so it can fail
 
 RESTATE is adopted only if D1 passes 3/3, D2–D5 pass, and the head digest after
@@ -302,5 +423,15 @@ equality, so `CANCEL` cannot move without the packet and the drill that earn
 it, and pins `SendResult` and `CancelResult` to exactly `{ok, status}` — the
 fence half of "no engine-minted invocation id leaves this edge", stated as a
 shape rather than as a scan because a shape cannot be forgotten.
+
+For V2-B2-5 it additionally widens that identity law to loop over
+`SendResult`, `CancelResult`, `TimerResult` and `SignalResult` in one place —
+one loop rather than four copies, because copies are how the four would come to
+disagree about what "exactly two members" means — and pins that the gate's
+`resolve` handler is registered SHARED and that `AcpTask`'s handler set is
+unchanged. A shared `resolve` matters structurally: an exclusive one would
+queue behind the very `run` it exists to release, and an added `AcpTask` handler
+is exactly how waiting would creep back into the object whose exclusivity B2-3
+certified.
 
 P2D adds the daemon and the `launchd` template.
