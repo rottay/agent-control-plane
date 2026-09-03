@@ -828,7 +828,12 @@ describe("the driver declares what it cannot do, and the declaration is checked"
       SIGNAL: "UNSUPPORTED",
       TIMER: "UNSUPPORTED",
     });
-    expect(declared.properties).toEqual({ SERIALIZED_PER_TASK: "UNSUPPORTED" });
+    // `SERIALIZED_PER_TASK` moved to SUPPORTED in V2-B2-3, and only because
+    // that packet drilled it: one invocation held at a beat while a second is
+    // submitted, counting DISTINCT held tasks — one for the same key, two for
+    // different keys. B2-1 pinned this truth here and in the fence so a
+    // capability could not move in one place alone; both moved together.
+    expect(declared.properties).toEqual({ SERIALIZED_PER_TASK: "SUPPORTED" });
     expect(declared.mode).toBe(capabilitySubject().mode);
   });
 

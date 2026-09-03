@@ -334,6 +334,50 @@ async function waitForChildSays(
   return false;
 }
 
+/**
+ * Wait until the child has announced a pause `count` times (V2-B2-3).
+ *
+ * Counting rather than matching once is what turns the pause into a
+ * discriminator: each held invocation announces, so two announcements while
+ * nothing has been released means two invocations are held at the same moment.
+ * The wait ends on the condition and the deadline only bounds failure, so
+ * nothing here depends on how long anything takes.
+ */
+async function waitForHeldTasks(
+  child: ChildProcess,
+  count: number,
+  deadlineMs = 60_000,
+): Promise<number> {
+  const started = Date.now();
+  let seen = 0;
+  while (Date.now() - started < deadlineMs) {
+    seen = heldTasks(child).size;
+    if (seen >= count) return seen;
+    if (child.exitCode !== null || child.signalCode !== null) return seen;
+    await delay(25);
+  }
+  return seen;
+}
+
+/**
+ * The DISTINCT tasks the child has announced as held.
+ *
+ * Distinct, not a count of lines, and that distinction is the drill. Restate
+ * redelivers an invocation whose handler stopped responding, so a bare
+ * announcement count reaches two for one task that was retried — which is
+ * indistinguishable from two tasks held at once unless the announcement says
+ * which task it belongs to. It does.
+ */
+function heldTasks(child: ChildProcess): ReadonlySet<string> {
+  const text = childOutput.get(child)?.text ?? "";
+  const tasks = new Set<string>();
+  for (const match of text.matchAll(/"paused":"[A-Z_]+","taskId":"([0-9a-f-]+)"/g)) {
+    const task = match[1];
+    if (task !== undefined) tasks.add(task);
+  }
+  return tasks;
+}
+
 function waitForExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolvePromise) => {
     if (child.exitCode !== null || child.signalCode !== null) {
@@ -701,6 +745,8 @@ interface DrillReceipt {
   readonly executionEvidence?: number;
   /** How many times the port was started, across every process. One, or the effect replayed. */
   readonly executionStarts?: number;
+  /** Invocations held at one moment. Two for different keys, one for the same (V2-B2-3). */
+  readonly concurrentPauses?: number;
 }
 
 function emitReceipt(receipt: DrillReceipt): void {
@@ -1300,4 +1346,145 @@ describe("D1 over the assembled execution path", () => {
       });
     }, 240_000);
   }
+});
+
+
+/**
+ * Per-task serialization, drilled (V2-B2-3).
+ *
+ * The Virtual Object is keyed by `taskId`, so Restate serializes invocations
+ * per key by construction. That has been an architectural claim since ADR 0004;
+ * these two drills turn it into evidence, and the pair is what makes the
+ * evidence mean something.
+ *
+ * The handshake is the child's pause, now asynchronous: a held invocation stops
+ * itself and leaves the endpoint live. Each held invocation announces, so the
+ * NUMBER of announcements outstanding while nothing has been released says how
+ * many invocations are running at that moment. Two for different keys, one for
+ * the same key. Nothing here sleeps and nothing infers from duration — while
+ * the pause blocked the whole process, both cases looked identical, which is
+ * exactly why this packet had to change the seam before it could measure.
+ */
+describe("per-task serialization", () => {
+  it("same key: two concurrent submissions produce one effect and one append set", async () => {
+    // The child runs from `dist`; build it, or the drill measures a stale one.
+    ensureChildBuilt();
+    const id = "serialize-same-key";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    // Two submissions of the SAME key, in flight together.
+    const first = submitAdvance(server.ingressUrl, invocation, 120_000).catch(() => null);
+    const second = submitAdvance(server.ingressUrl, invocation, 120_000).catch(() => null);
+
+    // Exactly one reaches the beat. The second cannot, because the object is
+    // keyed by this task and the first holds the key.
+    expect(await waitForHeldTasks(child, 1)).toBe(1);
+    // Give a second invocation every chance to arrive, then confirm none did.
+    // The wait is bounded and its purpose is to make the negative honest: the
+    // claim is that nothing else got through, so something must have had the
+    // opportunity to.
+    await delay(1_000);
+    expect(heldTasks(child).size).toBe(1);
+    expect([...heldTasks(child)]).toEqual([taskId]);
+
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    await Promise.all([first, second]);
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+
+    // One effect, one append set, no duplicate keys, and a head both callers
+    // agree on because there is only one.
+    const head = ledger.status();
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    emitReceipt({
+      drill: "SERIALIZE-SAME-KEY",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: true,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      concurrentPauses: heldTasks(child).size,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("different keys: two concurrent submissions are held at once, so it is per key and not global", async () => {
+    // The discriminator. If serialization were global — or if the harness were
+    // simply stopping the world — this would show one held invocation, exactly
+    // as the same-key case does. Two means the object serializes by key and
+    // leaves everything else running.
+    // The child runs from `dist`; build it, or the drill measures a stale one.
+    ensureChildBuilt();
+    const id = "serialize-different-keys";
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const taskA = randomUUID();
+    const taskB = randomUUID();
+    const invocationA = deriveInvocation(taskA, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const invocationB = deriveInvocation(taskB, 1, "2026-08-27T12:00:00.000Z", "b".repeat(64));
+
+    const child = await startChild(id, invocationA, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const runA = submitAdvance(server.ingressUrl, invocationA, 120_000).catch(() => null);
+    const runB = submitAdvance(server.ingressUrl, invocationB, 120_000).catch(() => null);
+
+    // Both held, at the same moment, with nothing released.
+    expect(await waitForHeldTasks(child, 2)).toBe(2);
+    // Both keys, held at the same moment -- and named, so this cannot be one
+    // invocation redelivered.
+    expect([...heldTasks(child)].sort()).toEqual([taskA, taskB].sort());
+
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    await Promise.all([runA, runB]);
+    expect(await waitForCheckpoint(ledger, taskA)).toBe(true);
+    expect(await waitForCheckpoint(ledger, taskB)).toBe(true);
+
+    // Each key got its own full plan and its own effect.
+    const head = ledger.status();
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length * 2);
+    expect(markers(root)).toBe(2);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    emitReceipt({
+      drill: "SERIALIZE-DIFFERENT-KEYS",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: true,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      // Measured, not asserted twice: the receipt carries what the drill saw.
+      concurrentPauses: heldTasks(child).size,
+    });
+
+    await stopChild(child);
+  }, 240_000);
 });

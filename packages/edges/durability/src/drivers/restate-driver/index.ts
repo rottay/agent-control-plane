@@ -242,7 +242,26 @@ export interface ObjectDependencies {
   readonly initiativeId: string;
   readonly ledger: LedgerLike;
   /** Deliberate interruption seam for the kill drills. Never set in normal use. */
-  readonly __onBeat?: ((point: string) => void) | undefined;
+  /**
+   * Deliberate interruption seam for the kill drills. Never set in normal use.
+   *
+   * Awaited (V2-B2-3). It was fire-and-forget, which meant a drill could only
+   * hold a beat by blocking the whole process — and a process-wide block cannot
+   * tell per-key serialization from global serialization, because it stops
+   * everything either way. Awaiting it lets a drill hold exactly one
+   * invocation, which is the thing the serialization drills need to observe.
+   *
+   * The return type is `unknown` rather than `void | Promise<void>` so the
+   * landed callbacks that end in an expression — `(point) => beats.push(point)`
+   * — keep compiling. Awaiting a non-thenable is a no-op, so a hook that
+   * returns nothing behaves exactly as it did.
+   *
+   * It also names the task. Without that a drill can only count announcements,
+   * and a count cannot tell two invocations held at once from one invocation
+   * redelivered twice — which is a difference the serialization drills exist to
+   * measure. Callbacks that ignore the second argument are unaffected.
+   */
+  readonly __onBeat?: ((point: string, taskId: string) => unknown) | undefined;
 }
 
 interface ObjectState {
@@ -327,7 +346,7 @@ export async function advanceHandler(
         return fatal(error);
       }
     });
-    dependencies.__onBeat?.("AFTER_INTENT_" + String(step.index));
+    await dependencies.__onBeat?.("AFTER_INTENT_" + String(step.index), invocation.taskId);
 
     if (step.beat === "INTENT") {
       await ctx.run("effect/" + step.transitionId + "/" + String(step.index), async () => {
@@ -338,7 +357,7 @@ export async function advanceHandler(
           return fatal(error);
         }
       });
-      dependencies.__onBeat?.("AFTER_EFFECT");
+      await dependencies.__onBeat?.("AFTER_EFFECT", invocation.taskId);
 
       const outcome = plan[step.index + 1];
       if (outcome?.beat === "OUTCOME") {
@@ -353,7 +372,7 @@ export async function advanceHandler(
             return fatal(error);
           }
         });
-        dependencies.__onBeat?.("AFTER_OUTCOME");
+        await dependencies.__onBeat?.("AFTER_OUTCOME", invocation.taskId);
       }
     }
   }
@@ -438,11 +457,14 @@ export class RestateDriver implements OrchestrationDriver {
    * so it may not run ahead of the code that would honour it — each later B2
    * packet flips exactly one entry and lands the drill that earns it.
    *
-   * `SERIALIZED_PER_TASK` is the same discipline applied to a fact that happens
-   * to be true already: the object is keyed by task, so Restate does serialize
-   * per task. It stays `UNSUPPORTED` until the packet that drills it, because a
-   * declaration nobody has tested is exactly the decorative claim the
-   * correspondence law exists to prevent.
+   * `SERIALIZED_PER_TASK` is `SUPPORTED` as of V2-B2-3, and only because that
+   * packet drilled it. The object is keyed by task, so Restate serializes per
+   * key by construction — but construction was the claim, not the evidence.
+   * The drills hold one invocation at a beat and count how many others reach
+   * it: one for the same key, two for different keys. That pair is what
+   * separates per-key serialization from a global lock and from a harness that
+   * merely stopped the world, and it is why this entry moved while the four
+   * verbs did not.
    */
   capabilities(): DriverCapabilities {
     return {
@@ -454,7 +476,7 @@ export class RestateDriver implements OrchestrationDriver {
         SIGNAL: "UNSUPPORTED",
         TIMER: "UNSUPPORTED",
       },
-      properties: { SERIALIZED_PER_TASK: "UNSUPPORTED" },
+      properties: { SERIALIZED_PER_TASK: "SUPPORTED" },
     };
   }
 

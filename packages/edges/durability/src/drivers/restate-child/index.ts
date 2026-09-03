@@ -271,12 +271,28 @@ export function releasePath(scenarioRoot: string, beat: string): string {
  * were synchronous. `Atomics.wait` sleeps without burning a core, and the
  * deadline means a drill that forgets to release fails rather than hangs.
  */
-function blockUntilReleased(file: string, deadlineMs: number): void {
+/**
+ * Hold this invocation until the drill releases it (V2-B2-3).
+ *
+ * Asynchronous, and that is the whole point of the change. The previous form
+ * spun on `Atomics.wait`, which blocks the main thread: every other invocation
+ * on this endpoint stopped too, so a drill could never tell whether a second
+ * task was waiting because Restate serializes per key or because the harness
+ * had stopped the process. Measured before the change — concurrent work did not
+ * run during the block and ran the moment it lifted.
+ *
+ * Awaiting a poll holds exactly one invocation and leaves the endpoint live,
+ * which is what makes the same-key and different-key drills discriminate. The
+ * interval is a poll, not a sleep: the wait ends on the condition, and the
+ * deadline is a bound on failure rather than a duration anyone relies on.
+ */
+async function blockUntilReleased(file: string, deadlineMs: number): Promise<void> {
   const started = Date.now();
-  const idle = new Int32Array(new SharedArrayBuffer(4));
   while (!existsSync(file)) {
     if (Date.now() - started > deadlineMs) return;
-    Atomics.wait(idle, 0, 0, 50);
+    await new Promise<void>((wake) => {
+      setTimeout(wake, 25);
+    });
   }
 }
 
@@ -313,7 +329,7 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
       config.effect === "EXECUTION" ? executionDrillRoute(invocation) : drillRoute(invocation),
   });
 
-  const onBeat = (point: string): void => {
+  const onBeat = async (point: string, taskId: string): Promise<void> => {
     // A real signal. SIGKILL cannot be caught, so nothing here flushes, closes
     // or tidies up, which is the only honest simulation of losing the process
     // mid-step. The INTENT fault fires only on the intent step's own append.
@@ -337,8 +353,10 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
     // The pause handshake: announce, then hold the invocation open until the
     // drill has done whatever it needed a live plan for.
     if (config.pauseAt !== null && matches(config.pauseAt)) {
-      process.stdout.write(JSON.stringify({ paused: config.pauseAt }) + "\n");
-      blockUntilReleased(releasePath(scenarioRoot, config.pauseAt), 120_000);
+      // The task is named so a drill can count DISTINCT held invocations; a
+      // bare count cannot tell two invocations from one redelivered twice.
+      process.stdout.write(JSON.stringify({ paused: config.pauseAt, taskId }) + "\n");
+      await blockUntilReleased(releasePath(scenarioRoot, config.pauseAt), 120_000);
     }
   };
 

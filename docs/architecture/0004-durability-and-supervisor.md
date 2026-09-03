@@ -169,6 +169,41 @@ A template may be written and linted. P2 automation may never call
 failing plist and a failing drill are indistinguishable, and debugging the pair
 together is how a phase loses a day.
 
+## Per-task serialization: the two drivers differ, and the difference is declared (V2-B2-3)
+
+This record established that both drivers are first-class and that authority
+never leaves the ledger. It did not say what happens when one task is advanced
+twice at once, and the two engines answer differently.
+
+**Restate serializes per task, and it is drilled.** The Virtual Object is keyed
+by `taskId`, so concurrent invocations on one key run one at a time. That was an
+architectural claim until V2-B2-3 held one invocation at a beat and counted how
+many others reached it: one for the same key, two for different keys. The pair
+matters more than either half — a single same-key measurement is equally
+consistent with a global lock, and with a harness that merely stopped the
+world. `SERIALIZED_PER_TASK` moved to `SUPPORTED` on that evidence and on
+nothing else.
+
+**The SQLite supervisor does not, and declares `UNSUPPORTED`.** This is not a
+gap awaiting a fix; it follows from this record's own design. The supervisor
+holds no durable state of its own, and a guard that made per-task serialization
+true would have to span processes — a lock table, a lease keyed on the task, a
+pid file. Each is a durable record of who is running, which is the second
+account of execution position the supervisor exists without. An in-process latch
+would be lawful and would catch nothing that matters, because the concurrency
+that threatens a SQLite deployment is a second daemon, not a second object in
+one heap.
+
+The honest consequence is drilled rather than asserted: with the interleaving
+forced, two walks of one task both probe the effect as absent and both perform
+it. The ledger is undamaged throughout — its idempotency key refuses the
+duplicate append — so what per-task serialization would buy is the effect's
+single execution, and that is exactly what this driver cannot promise.
+
+Declaring the difference is the point. Emulating Restate's serialization on
+SQLite would be simulated parity; claiming it without emulating it would be
+worse. The capability declaration carries the asymmetry so a caller can read it.
+
 ## What this does not decide
 
 - the state machine's transition table, which is P2B;
@@ -176,7 +211,11 @@ together is how a phase loses a day.
   fail, the supervisor is the permanent answer and nothing about authority
   changes;
 - any mutating observation route. P2 adds none, and may add a read-only,
-  redacted driver-status view only after the runtime and drills are green.
+  redacted driver-status view only after the runtime and drills are green;
+- whether the SQLite supervisor should ever gain per-task serialization. V2-B2-3
+  decided only that it does not have it today and that no lawful guard was
+  available within this record's design; a later phase that changes what the
+  supervisor may hold could revisit it.
 
 ## Consequences
 

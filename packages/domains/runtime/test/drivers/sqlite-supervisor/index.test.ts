@@ -1139,3 +1139,93 @@ describe("kill and restart over the assembled execution path, 3/3", () => {
     expect(effectMarkerCount(root)).toBe(1);
   }, 120_000);
 });
+
+
+/**
+ * Why the SQLite supervisor declares SERIALIZED_PER_TASK: "UNSUPPORTED"
+ * (V2-B2-3).
+ *
+ * This is the honest negative that justifies the declaration rather than a
+ * missing feature apologised for. Two walks of the same task, running at once
+ * with nothing between them, both probe the effect as NOT_DONE and both perform
+ * it. The ledger stays sound throughout — its idempotency key refuses the
+ * duplicate append — so what is lost is not integrity but the effect's
+ * single-execution guarantee, which is precisely what per-task serialization
+ * would buy and precisely what this driver cannot offer.
+ *
+ * It cannot offer it because the only guards that would work span processes: a
+ * lock table, a lease keyed on the task, a pid file. Every one of them is a
+ * durable record of who is running, which is the second account of execution
+ * position this driver refuses by design — `sqlite-supervisor/index.ts` says so
+ * where the cursor would have gone. An in-process latch would be lawful and
+ * would catch nothing that matters, because the concurrency that threatens a
+ * SQLite deployment is two daemons rather than two objects in one heap.
+ *
+ * So the declaration is the truthful one, and this drill is the reason.
+ */
+describe("SQLite does not serialize per task, and says so", () => {
+  it("declares SERIALIZED_PER_TASK UNSUPPORTED", () => {
+    expect(capabilitySubject().capabilities().properties).toEqual({
+      SERIALIZED_PER_TASK: "UNSUPPORTED",
+    });
+  });
+
+  it("two concurrent walks of one task perform the effect twice, and the ledger still holds", async () => {
+    const taskId = "5e21a112-0000-4000-8000-000000000001";
+    const root = scenario("sqlite-no-serialization");
+    const invocation = invocationFor(taskId);
+
+    // Two supervisors, two handles on the same ledger file, one task. No guard
+    // stands between them, which is the fact under test.
+    const ledgerA = track(openLedger(scenarioLedgerPath(root)));
+    const ledgerB = track(openLedger(scenarioLedgerPath(root)));
+
+    // A barrier that holds the first walk inside `apply` until the second has
+    // also entered it. This does not CREATE the race — it schedules it. Both
+    // walks probe NOT_DONE before either writes evidence, which is exactly what
+    // two processes do when neither can see the other, and nothing in this
+    // driver prevents it. Forcing the order makes the drill deterministic
+    // instead of dependent on how the event loop happened to interleave.
+    let applies = 0;
+    let bothInside: () => void = () => undefined;
+    const barrier = new Promise<void>((release) => {
+      bothInside = release;
+    });
+    const countingEffects = (): EffectPort => ({
+      apply: async (operation) => {
+        applies += 1;
+        if (applies >= 2) bothInside();
+        await barrier;
+        applyEffect(root, operation);
+      },
+      probe: (operation) => Promise.resolve(probeEffect(root, operation)),
+    });
+
+    const walk = (ledger: Ledger): Promise<unknown> =>
+      new SqliteSupervisor({
+        ledger,
+        invocation,
+        effects: countingEffects(),
+        emittedBy: EMITTED_BY,
+        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+        initiativeId: TEST_INITIATIVE_ID,
+        route: TEST_ROUTE,
+      })
+        .runToCheckpoint()
+        // One of the two will lose a race on an append and refuse; that is the
+        // ledger defending itself, and it is not what this drill measures.
+        .catch(() => null);
+
+    await Promise.all([walk(ledgerA), walk(ledgerB)]);
+
+    // The effect ran more than once. This is the whole claim, and it is why the
+    // capability is declared UNSUPPORTED rather than assumed.
+    expect(applies).toBeGreaterThan(1);
+
+    // And the ledger is undamaged: one plan, no duplicate keys, integrity clean.
+    // Serialization is a property of the effect, not of the log.
+    const keys = ledgerA.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    expect(ledgerA.verifyIntegrity().ok).toBe(true);
+  }, 120_000);
+});

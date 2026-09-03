@@ -1336,8 +1336,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **626
- * packet entries across 223 distinct paths**: 2 (P8-D) +
+ * P8, with the V2 packets that continue its coordinates, is therefore **633
+ * packet entries across 224 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1350,27 +1350,27 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
  * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) + 3 (V2-B6-fence) +
- * 15 (V2-B2-1) + 8 (V2-B2-2) = 626 entries, with 403 duplicate entries.
+ * 15 (V2-B2-1) + 8 (V2-B2-2) + 7 (V2-B2-3) = 633 entries, with 409 duplicate
+ * entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 57 duplicates = 57   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 58 duplicates = 58   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
- *   4 paths ×  7 duplicates = 28   (the gateway's routes source and
- *                                   build-server suite, the CLI suite and the
- *                                   contracts schema barrel)
- *   6 paths ×  6 duplicates = 36   (the protocol surface, the workspace file,
- *                                   and — since V2-B2-2 — the runtime
- *                                   supervisor suite)
+ *   5 paths ×  7 duplicates = 35   (the gateway's routes source and
+ *                                   build-server suite, the CLI suite, the
+ *                                   contracts schema barrel, and — since
+ *                                   V2-B2-3 — the durability drills suite)
+ *   6 paths ×  6 duplicates = 36
  *   8 paths ×  5 duplicates = 40
  *  12 paths ×  4 duplicates = 48
  *  21 paths ×  3 duplicates = 63
- *  34 paths ×  2 duplicates = 68
+ *  33 paths ×  2 duplicates = 66
  *  44 paths ×  1 duplicate  = 44
  *
- * 57 + 11 + 8 + 28 + 36 + 40 + 48 + 63 + 68 + 44 = 403.
+ * 58 + 11 + 8 + 35 + 36 + 40 + 48 + 63 + 66 + 44 = 409.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1781,6 +1781,13 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * opens nothing. Entries move 618 → 626, distinct holds at 223, duplicates
  * 395 → 403. Eight band steps, one per entry: this file ×57 → ×58, and seven
  * drill-side paths one band each.
+ *
+ * V2-B2-3 adds **seven entries, one of them novel** — ADR 0004, which had not
+ * been reopened since P2 and is where the two drivers' serialization answers
+ * now sit. Entries move 626 → 633, distinct 223 → 224, duplicates 403 → 409.
+ * Six band steps, one per duplicate: this file ×58 → ×59, the durability
+ * drills suite into ×7, the driver's own suite into ×5, and three more one
+ * band each.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3742,6 +3749,56 @@ const V2B22_WRITE_SET = [
 ];
 
 /**
+ * V2-B2-3: per-task serialization, declared and drilled.
+ *
+ * The plane now states what happens when one task is advanced twice at once,
+ * and the two drivers answer differently on the record.
+ *
+ * **Restate flips `SERIALIZED_PER_TASK` to `SUPPORTED`, and only on evidence.**
+ * The Virtual Object is keyed by task, so serialization was always true by
+ * construction — but construction is a claim. The drills hold one invocation at
+ * a beat and count how many others reach it: one for the same key, two for
+ * different keys. The pair is the point. A same-key measurement alone is
+ * equally consistent with a global lock and with a harness that stopped the
+ * world, which is exactly what the previous pause primitive did.
+ *
+ * That primitive is why this packet needed an eleventh path. `blockUntilReleased`
+ * spun on `Atomics.wait`, blocking the whole endpoint: measured, concurrent work
+ * did not run during the block and ran the instant it lifted. It is now an
+ * awaited poll, so a drill holds one invocation and leaves the endpoint live.
+ * `__onBeat` is awaited to match, typed `unknown` so the landed expression-bodied
+ * hooks still compile. D2's receipt is byte-identical across the change — same
+ * head digest, same `midPlanEvents`, same `pausedAt` — which is the condition
+ * that change had to meet.
+ *
+ * **SQLite keeps `UNSUPPORTED`, and that is the packet's other result rather
+ * than its shortfall.** Every guard that would make it true spans processes — a
+ * lock table, a task-keyed lease, a pid file — and each is the second account of
+ * who is running that the supervisor exists without. An in-process latch would
+ * be lawful and would catch nothing that matters. The honest negative is
+ * drilled: with the interleaving forced, two walks of one task both probe the
+ * effect as absent and both perform it, while the ledger stays sound.
+ *
+ * Seven paths written of twelve authorized. Two arrived by measurement rather
+ * than by the brief: the drill child, because the pause it hosts had to stop
+ * blocking the endpoint before anything could be measured; and the driver's own
+ * suite, because B2-1 pinned capability truth in two places on purpose and both
+ * had to move for the flip. The durability README is untouched because no
+ * export moved and its surface claim still holds; the contract, its suite, the
+ * supervisor source and the runtime barrel are untouched because the SQLite
+ * ruling needed no vocabulary, no guard and no new export.
+ */
+const V2B23_WRITE_SET = [
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "docs/architecture/0004-durability-and-supervisor.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -4055,6 +4112,7 @@ const WRITE_SET = [
   ...V2B6FENCE_WRITE_SET,
   ...V2B21_WRITE_SET,
   ...V2B22_WRITE_SET,
+  ...V2B23_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -6932,7 +6990,11 @@ if (tracked.status === 0) {
       {
         path: "packages/edges/durability/src/drivers/restate-driver/index.ts",
         verbs: { CANCEL: "UNSUPPORTED", REATTACH: "UNSUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
-        properties: { SERIALIZED_PER_TASK: "UNSUPPORTED" },
+        // SERIALIZED_PER_TASK moved to SUPPORTED in V2-B2-3, with the same-key
+        // and different-key drills that earned it. The SQLite entry below did
+        // not move and is not expected to: no cross-process guard exists for it
+        // that would not be a second account of who is running.
+        properties: { SERIALIZED_PER_TASK: "SUPPORTED" },
       },
     ];
 
