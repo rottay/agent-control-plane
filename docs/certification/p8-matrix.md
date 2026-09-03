@@ -287,8 +287,21 @@ repository.
 - Pixel-level sighted evidence at desktop and mobile widths, and `color-contrast`
   — blocked on the browser bridge, a standing result of the phase.
 - Sighted QA over the main workflows — same blocker.
-- Runner death: the drill teardowns cover a failure *inside* a run, where hooks
-  execute. A hard kill of the test runner runs no hook at all; that path belongs
-  to the roadmap's pool/provenance law, not to the teardown packets.
+- Runner death: **closed by V2-B6-3**. The row stays under this heading as the
+  historical record of what P8 carried forward: it is no longer owed, and the
+  closure landed in a later packet rather than in P8. The drill teardowns cover
+  a failure *inside* a run, where hooks execute; a hard kill of the test runner
+  runs no hook at all, and this row sent that path to "the roadmap's
+  pool/provenance law". That was a dangling referent — both halves of that law
+  had already landed (the serialized vitest pool, and provenance registration in
+  one act with the spawn) and neither absorbed runner death, so nothing was
+  queued behind the deferral. The closure extends the provenance half rather
+  than adding a law: each registered pid is also appended, with its suite and
+  spawn site and a start-time-plus-argv identity digest, to ignored state under
+  `.acp-local/`; the next controlled run sweeps only entries from a foreign run
+  whose pid is still alive and whose identity still matches, so a reused pid is
+  reported and never signalled. The drill in the daemon drills proves all three
+  directions: the orphan survives a hard kill, the sweep reaps exactly it and
+  names its provenance, and with the sweep bypassed it survives again.
 - Deferred stack adoption: TanStack Table, TanStack Virtual, Recharts, Lucide,
   dnd-kit — listed in the criterion, not adopted, because no surface needed them.

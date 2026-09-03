@@ -1,8 +1,19 @@
 import type { ResolvedRoute } from "@acp/contracts";
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  appendFileSync,
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +69,7 @@ const TEST_ROUTE: ResolvedRoute = {
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const PACKAGE_ROOT = resolve(HERE, "..", "..");
+const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..", "..");
 const CHILD_ENTRY = join(PACKAGE_ROOT, "dist", "daemon-child", "index.js");
 const SUBMITTED_AT = "2026-08-27T18:46:07.000Z";
 
@@ -104,7 +116,213 @@ beforeAll(() => {
   if (built.status !== 0 || !existsSync(CHILD_ENTRY)) {
     throw new Error("could not build the daemon package for the drills");
   }
+
+  // Reap what a previous run's death left behind, before this run spawns
+  // anything of its own (V2-B6-3). Runs first so an orphan holding a pinned
+  // port cannot make this run's bind look like a live conflict.
+  const swept = sweepDurableRegistry();
+  if (swept.reaped.length > 0 || swept.refusedUnvalidated > 0) {
+    process.stdout.write(
+      "RECEIPT " +
+        JSON.stringify({
+          drill: "RUNNER-DEATH-SWEEP",
+          reaped: swept.reaped.length,
+          provenance: swept.reaped,
+          refusedUnvalidated: swept.refusedUnvalidated,
+          alreadyGone: swept.alreadyGone,
+        }) +
+        "\n",
+    );
+  }
 }, 120_000);
+
+/**
+ * The durable half of the provenance registry (V2-B6-3).
+ *
+ * `spawned` is an in-process array reaped by `afterEach`/`afterAll`, which
+ * covers a failure INSIDE a run. It cannot cover the death of the runner: a
+ * SIGKILL of the vitest worker runs no hook, the array dies with the process,
+ * and anything it named survives unrecorded. That was the gap the three scope
+ * comments deferred to a pool/provenance law which had, in fact, already
+ * closed without absorbing it.
+ *
+ * The closure extends the provenance half rather than inventing a parallel
+ * law: the same registration act that fills `spawned` also appends a line
+ * here, so a pid outlives the worker that spawned it and the NEXT controlled
+ * run can reap it by provenance. The file is ignored ephemeral state under
+ * `.acp-local/`, never a tracked artifact, and it is removed when it empties.
+ *
+ * What is stored is deliberately a digest, not a command line: identity has to
+ * survive a restart, and an absolute path written to disk would be provenance
+ * leaking into a place nothing redacts.
+ */
+const REGISTRY_DIR = join(REPO_ROOT, ".acp-local", "runner-death");
+const REGISTRY_FILE = join(REGISTRY_DIR, "registry.jsonl");
+
+/** This run's identity. Entries carrying it are live, not stale. */
+const RUN_ID = randomUUID();
+
+interface DurableEntry {
+  readonly runId: string;
+  readonly pid: number;
+  readonly suite: string;
+  readonly spawnSite: string;
+  /** sha256(pid, start time, argv) captured at registration. Never the argv itself. */
+  readonly identity: string;
+}
+
+/**
+ * A process's identity as the operating system reports it, right now.
+ *
+ * Start time plus argv, digested. Start time alone is too coarse (two
+ * processes can begin in the same second) and argv alone is reused by every
+ * later invocation of the same command; together they are what distinguishes
+ * "the pid we spawned" from "a pid the kernel handed to somebody else after
+ * ours exited". Null when the pid is gone, which is itself an answer.
+ */
+function processIdentity(pid: number): string | null {
+  const probe = spawnSync("ps", ["-ww", "-p", String(pid), "-o", "lstart=,command="], {
+    encoding: "utf8",
+  });
+  const line = probe.status === 0 ? probe.stdout.trim() : "";
+  if (line === "") return null;
+  // The `ps` line alone, with no separator and nothing concatenated onto it.
+  // Every producer of this digest has to spell it identically, and a separator
+  // one side writes as an escape while the other writes it as a byte is a
+  // mismatch indistinguishable from a reused pid: it fails safe, but it never
+  // reaps. The pid is compared on its own field instead.
+  return createHash("sha256").update(line, "utf8").digest("hex");
+}
+
+function readRegistry(): DurableEntry[] {
+  let raw: string;
+  try {
+    raw = readFileSync(REGISTRY_FILE, "utf8");
+  } catch {
+    return [];
+  }
+  const entries: DurableEntry[] = [];
+  for (const line of raw.split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        typeof (parsed as DurableEntry).pid === "number" &&
+        typeof (parsed as DurableEntry).runId === "string" &&
+        typeof (parsed as DurableEntry).identity === "string"
+      ) {
+        entries.push(parsed as DurableEntry);
+      }
+    } catch {
+      // A torn final line is the expected shape of a crash mid-append. It is
+      // dropped rather than repaired: a half-written entry names no pid this
+      // file can validate, and guessing would be the one thing a reaper may
+      // never do.
+    }
+  }
+  return entries;
+}
+
+function writeRegistry(entries: readonly DurableEntry[]): void {
+  if (entries.length === 0) {
+    rmSync(REGISTRY_FILE, { force: true });
+    return;
+  }
+  mkdirSync(REGISTRY_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(REGISTRY_FILE, entries.map((e) => JSON.stringify(e)).join("\n") + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+/** Append one registration. Best-effort: a drill must not fail because hygiene state could not be written. */
+function recordDurable(pid: number, spawnSite: string): void {
+  const identity = processIdentity(pid);
+  if (identity === null) return;
+  try {
+    mkdirSync(REGISTRY_DIR, { recursive: true, mode: 0o700 });
+    appendFileSync(
+      REGISTRY_FILE,
+      JSON.stringify({ runId: RUN_ID, pid, suite: "daemon-drills", spawnSite, identity } satisfies DurableEntry) + "\n",
+      { encoding: "utf8", mode: 0o600 },
+    );
+  } catch {
+    // ignored ephemeral state; never load-bearing for a drill's verdict
+  }
+}
+
+/**
+ * Drop this run's own registrations, leaving every other run's alone.
+ *
+ * Called when a suite finishes normally: its processes are gone, so its rows
+ * are noise, and a registry that only ever grows would eventually make the
+ * sweep walk a long list of the long dead.
+ *
+ * Deliberately NOT `rm -rf` on the directory. Another suite's registrations
+ * live in the same file and may name processes that are still running; a blunt
+ * delete here would throw away the record that a later sweep needs to reap
+ * them, which is the one failure this whole mechanism exists to prevent.
+ */
+function releaseDurable(): void {
+  writeRegistry(readRegistry().filter((entry) => entry.runId !== RUN_ID));
+}
+
+export interface SweepOutcome {
+  readonly reaped: readonly string[];
+  readonly refusedUnvalidated: number;
+  readonly alreadyGone: number;
+}
+
+/**
+ * Reap the orphans a previous run's death left behind (V2-B6-3).
+ *
+ * Three conditions must ALL hold before this function signals anything, and
+ * the order is the safety argument:
+ *
+ * 1. the entry belongs to a different run — never this one's own live children;
+ * 2. the pid is alive — a dead entry is simply dropped;
+ * 3. its start time and argv still digest to exactly what was recorded — so a
+ *    pid the kernel reissued to an unrelated process is refused, reported and
+ *    left alone.
+ *
+ * Nothing here matches by name, by pattern or by process family; the only
+ * thing it can kill is a pid this repository's own drills wrote down together
+ * with proof of which process that pid was.
+ */
+function sweepDurableRegistry(): SweepOutcome {
+  const reaped: string[] = [];
+  let refusedUnvalidated = 0;
+  let alreadyGone = 0;
+  const kept: DurableEntry[] = [];
+
+  for (const entry of readRegistry()) {
+    if (entry.runId === RUN_ID) {
+      kept.push(entry);
+      continue;
+    }
+    const identity = processIdentity(entry.pid);
+    if (identity === null) {
+      alreadyGone += 1;
+      continue;
+    }
+    if (identity !== entry.identity) {
+      // The pid was reused. Refusing is the whole point of recording identity.
+      refusedUnvalidated += 1;
+      continue;
+    }
+    try {
+      process.kill(entry.pid, "SIGKILL");
+      reaped.push(entry.suite + "/" + entry.spawnSite);
+    } catch {
+      alreadyGone += 1;
+    }
+  }
+
+  writeRegistry(kept);
+  return { reaped, refusedUnvalidated, alreadyGone };
+}
 
 /**
  * Register a pid the moment this file learns it (P8-9-1b, L1).
@@ -112,9 +330,17 @@ beforeAll(() => {
  * Deduplicated, because the announcement republishes the child's own pid that
  * the spawn already registered, and a doubled entry would make the leak
  * receipt's count say something untrue about how many processes existed.
+ *
+ * The durable append happens in the same act (V2-B6-3), so the two registries
+ * cannot disagree about what was spawned and forgetting remains impossible by
+ * construction — which is the property P8-9-1 established and this extends
+ * past the lifetime of the worker.
  */
-function trackPid(pid: number | null | undefined): void {
-  if (typeof pid === "number" && pid > 0 && !spawned.includes(pid)) spawned.push(pid);
+function trackPid(pid: number | null | undefined, spawnSite = "trackPid"): void {
+  if (typeof pid === "number" && pid > 0 && !spawned.includes(pid)) {
+    spawned.push(pid);
+    recordDurable(pid, spawnSite);
+  }
 }
 
 /**
@@ -791,9 +1017,16 @@ describe("a server that never reaches readiness", () => {
  * cleanup — and the next test checks the pid.
  *
  * Scope, so nobody reads more into it: this covers a failure *inside* the run,
- * where hooks still execute. It does not cover the death of the runner itself;
- * in a hard kill of the vitest process no hook runs at all, and that path
- * belongs to the roadmap's pool/provenance law, not here.
+ * where hooks still execute. The death of the runner itself is a different
+ * path — a hard kill of the vitest worker runs no hook at all — and it is
+ * covered separately, by the durable registry above and the drill below
+ * (V2-B6-3).
+ *
+ * That sentence used to defer runner-death to "the roadmap's pool/provenance
+ * law". It was a dangling referent: both halves of that law had already landed
+ * — the serialized pool in `vitest.config.ts`, the single-act provenance
+ * helper here — and neither absorbed runner-death, so the deferral named a
+ * closed destination and nothing was queued behind it.
  */
 describe("the teardown sweeps what no drill stopped", () => {
   let sweptPid: number | null = null;
@@ -824,4 +1057,206 @@ describe("the teardown sweeps what no drill stopped", () => {
     if (sweptPid === null) throw new Error("the probe above did not record a pid");
     expect(String(sweptPid) + ":" + String(isAlive(sweptPid))).toBe(String(sweptPid) + ":false");
   });
+});
+
+/**
+ * Runner death: the orphan a hard kill leaves, and the sweep that reaps it
+ * (V2-B6-3).
+ *
+ * This is the drill the three scope comments used to defer. It cannot kill its
+ * own vitest worker -- that would end the run -- so it stands up a SUB-runner:
+ * a generated script that spawns a long-lived grandchild, registers it in the
+ * real durable registry under a foreign run id, and then idles. SIGKILLing
+ * that sub-runner reproduces exactly the condition the in-process array cannot
+ * survive: no hook executes, nothing reaps, and the grandchild is left behind
+ * with only the durable record naming it.
+ *
+ * Every path below reaps what it spawned in `finally`, so a failing assertion
+ * cannot leak the very thing this drill is about.
+ */
+describe("runner death leaves an orphan, and the next run reaps it", () => {
+  const scratch: string[] = [];
+  const strays: number[] = [];
+
+  afterAll(async () => {
+    // Belt and braces: nothing this describe created may outlive it, whatever
+    // happened above.
+    for (const pid of strays.splice(0)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    await sleep(100);
+    for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+    releaseDurable();
+  });
+
+  /** A sub-runner that registers a grandchild durably and then waits to be killed. */
+  function writeRunner(): string {
+    const dir = mkdtempSync(join(realpathSync(tmpdir()), "acp-runner-death-"));
+    scratch.push(dir);
+    const script = join(dir, "runner.mjs");
+    writeFileSync(
+      script,
+      [
+        'import { spawn, spawnSync } from "node:child_process";',
+        'import { createHash } from "node:crypto";',
+        'import { appendFileSync, mkdirSync } from "node:fs";',
+        "const [registryDir, registryFile, runId] = process.argv.slice(2);",
+        'const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1e9)"], { stdio: "ignore" });',
+        'const probe = spawnSync("ps", ["-ww", "-p", String(child.pid), "-o", "lstart=,command="], { encoding: "utf8" });',
+        'const identity = createHash("sha256").update(probe.stdout.trim(), "utf8").digest("hex");',
+        "mkdirSync(registryDir, { recursive: true, mode: 0o700 });",
+        "appendFileSync(",
+        "  registryFile,",
+        '  JSON.stringify({ runId, pid: child.pid, suite: "runner-death-drill", spawnSite: "sub-runner", identity }) + "\\n",',
+        '  { encoding: "utf8", mode: 0o600 },',
+        ");",
+        'process.stdout.write(JSON.stringify({ child: child.pid }) + "\\n");',
+        "setInterval(() => {}, 1e9);",
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o700 },
+    );
+    return script;
+  }
+
+  /** Start a sub-runner, wait for its announcement, and hard-kill it. Returns the orphan's pid. */
+  async function orphanFromRunnerDeath(): Promise<number> {
+    const runner = spawn(process.execPath, [writeRunner(), REGISTRY_DIR, REGISTRY_FILE, randomUUID()], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const announced = await new Promise<{ child: number }>((resolvePromise, rejectPromise) => {
+      const timer = setTimeout(() => {
+        rejectPromise(new Error("the sub-runner never announced"));
+      }, 15_000);
+      let buffered = "";
+      runner.stdout.on("data", (chunk: Buffer) => {
+        buffered += chunk.toString("utf8");
+        const line = buffered.split("\n")[0];
+        if (line !== undefined && line.trim() !== "") {
+          clearTimeout(timer);
+          resolvePromise(JSON.parse(line) as { child: number });
+        }
+      });
+    });
+    strays.push(announced.child);
+    if (runner.pid !== undefined) {
+      // The hard kill. No hook of the sub-runner's can run, which is the whole
+      // condition under test.
+      process.kill(runner.pid, "SIGKILL");
+    }
+    for (let waited = 0; waited < 3_000 && runner.pid !== undefined && isAlive(runner.pid); waited += 50) {
+      await sleep(50);
+    }
+    return announced.child;
+  }
+
+  it("red: the orphan survives the runner, and only the durable record names it", async () => {
+    const orphan = await orphanFromRunnerDeath();
+    try {
+      // The gap, demonstrated rather than asserted from prose: no hook ran, and
+      // the process is still there.
+      expect(isAlive(orphan)).toBe(true);
+      // The in-process array knows nothing about it -- it belongs to a worker
+      // that no longer exists.
+      expect(spawned.includes(orphan)).toBe(false);
+      // The durable registry does.
+      expect(readRegistry().some((entry) => entry.pid === orphan)).toBe(true);
+    } finally {
+      try {
+        process.kill(orphan, "SIGKILL");
+      } catch {
+        // already reaped
+      }
+    }
+  }, 40_000);
+
+  it("green: the next run's sweep reaps exactly that pid and reports its provenance", async () => {
+    const orphan = await orphanFromRunnerDeath();
+    let reapedBySweep = false;
+    try {
+      expect(isAlive(orphan)).toBe(true);
+      const outcome = sweepDurableRegistry();
+      reapedBySweep = true;
+      await sleep(200);
+
+      expect(outcome.reaped).toContain("runner-death-drill/sub-runner");
+      expect(isAlive(orphan)).toBe(false);
+      // The entry is gone with the process, so a later run cannot re-signal a
+      // pid the kernel has since handed to somebody else.
+      expect(readRegistry().some((entry) => entry.pid === orphan)).toBe(false);
+    } finally {
+      if (!reapedBySweep) {
+        try {
+          process.kill(orphan, "SIGKILL");
+        } catch {
+          // already reaped
+        }
+      }
+    }
+  }, 40_000);
+
+  it("restore: with the sweep bypassed, the same orphan survives again", async () => {
+    // The discriminator. If this passed with the sweep in place, the green
+    // above would be proving nothing about the sweep.
+    const orphan = await orphanFromRunnerDeath();
+    try {
+      expect(isAlive(orphan)).toBe(true);
+      await sleep(200);
+      // No sweep called here -- that is the entire difference from the case above.
+      expect(isAlive(orphan)).toBe(true);
+    } finally {
+      try {
+        process.kill(orphan, "SIGKILL");
+      } catch {
+        // already reaped
+      }
+      await sleep(100);
+      // And the registry is left clean for the suites that follow.
+      writeRegistry(readRegistry().filter((entry) => entry.pid !== orphan));
+    }
+  }, 40_000);
+
+  it("refuses a pid whose identity no longer matches, and never signals it", async () => {
+    // The safety property that matters most. A pid the kernel reissued to an
+    // unrelated process must be reported and left alone -- so this registers a
+    // live process under a DELIBERATELY WRONG identity and proves the sweep
+    // walks away from it.
+    const bystander = spawn(process.execPath, ["-e", "setInterval(()=>{},1e9)"], { stdio: "ignore" });
+    const pid = bystander.pid;
+    if (pid === undefined) throw new Error("the bystander did not start");
+    strays.push(pid);
+    try {
+      mkdirSync(REGISTRY_DIR, { recursive: true, mode: 0o700 });
+      appendFileSync(
+        REGISTRY_FILE,
+        JSON.stringify({
+          runId: randomUUID(),
+          pid,
+          suite: "runner-death-drill",
+          spawnSite: "reused-pid",
+          identity: "0".repeat(64),
+        }) + "\n",
+        { encoding: "utf8", mode: 0o600 },
+      );
+
+      const outcome = sweepDurableRegistry();
+      await sleep(200);
+
+      expect(outcome.refusedUnvalidated).toBeGreaterThanOrEqual(1);
+      expect(outcome.reaped).not.toContain("runner-death-drill/reused-pid");
+      // Untouched, which is the whole claim.
+      expect(isAlive(pid)).toBe(true);
+      // And not carried forward, so the registry cannot grow without bound.
+      expect(readRegistry().some((entry) => entry.spawnSite === "reused-pid")).toBe(false);
+    } finally {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+  }, 40_000);
 });

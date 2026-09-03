@@ -1,6 +1,16 @@
 import { spawn, spawnSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -113,9 +123,81 @@ function track(ledger: Ledger): Ledger {
  * provenance, and forgetting is impossible by construction rather than by
  * memory.
  */
+/**
+ * The durable half of the provenance registry, registration side (V2-B6-3).
+ *
+ * `spawnedPids` dies with the worker, so a SIGKILL of the runner leaves this
+ * file's servers and children alive and unrecorded. Appending the same fact to
+ * ignored state under `.acp-local/` lets the next controlled run find them.
+ *
+ * **Registration only.** The reaper — the part that signals a process — lives
+ * in exactly one place, `packages/entrypoints/daemon/test/drills/index.test.ts`,
+ * and sweeps every suite's entries from this same file. Two homes for an
+ * append are harmless; two homes for a kill would not be, so there is one.
+ *
+ * The identity digest is `ps` start-time plus argv, so a pid the kernel later
+ * reissues to an unrelated process cannot be mistaken for one of ours. What is
+ * stored is the digest, never the argv: an absolute path written to disk would
+ * be provenance leaking somewhere nothing redacts it.
+ */
+const REGISTRY_DIR = join(REPO_ROOT, ".acp-local", "runner-death");
+const REGISTRY_FILE = join(REGISTRY_DIR, "registry.jsonl");
+const RUN_ID = randomUUID();
+
+function recordDurable(pid: number, spawnSite: string): void {
+  const probe = spawnSync("ps", ["-ww", "-p", String(pid), "-o", "lstart=,command="], {
+    encoding: "utf8",
+  });
+  const line = probe.status === 0 ? probe.stdout.trim() : "";
+  if (line === "") return;
+  const identity = createHash("sha256").update(line, "utf8").digest("hex");
+  try {
+    mkdirSync(REGISTRY_DIR, { recursive: true, mode: 0o700 });
+    appendFileSync(
+      REGISTRY_FILE,
+      JSON.stringify({ runId: RUN_ID, pid, suite: "durability-drills", spawnSite, identity }) + "\n",
+      { encoding: "utf8", mode: 0o600 },
+    );
+  } catch {
+    // Ignored ephemeral state; a drill's verdict never depends on it.
+  }
+}
+
+/**
+ * Drop this run's own registrations when the suite ends normally.
+ *
+ * Only this run's: another suite's rows may name processes that are still
+ * alive, and deleting the file wholesale would throw away exactly the record a
+ * later sweep needs in order to reap them.
+ */
+function releaseDurable(): void {
+  let raw: string;
+  try {
+    raw = readFileSync(REGISTRY_FILE, "utf8");
+  } catch {
+    return;
+  }
+  const kept = raw
+    .split("\n")
+    .filter((line) => line.trim() !== "" && !line.includes(RUN_ID));
+  if (kept.length === 0) {
+    rmSync(REGISTRY_FILE, { force: true });
+    return;
+  }
+  writeFileSync(REGISTRY_FILE, kept.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+}
+
+/** Register a pid in both registries in one act, so they cannot disagree. */
+function trackSpawnedPid(pid: number, spawnSite: string): void {
+  if (pid > 0 && !spawnedPids.includes(pid)) {
+    spawnedPids.push(pid);
+    recordDurable(pid, spawnSite);
+  }
+}
+
 function trackServer(server: ServerHandle): ServerHandle {
   servers.push(server);
-  if (server.pid > 0) spawnedPids.push(server.pid);
+  if (server.pid > 0) trackSpawnedPid(server.pid, "trackServer");
   return server;
 }
 
@@ -214,7 +296,7 @@ function startChild(
       cwd: REPO_ROOT,
     });
     children.push(child);
-    if (child.pid !== undefined) spawnedPids.push(child.pid);
+    if (child.pid !== undefined) trackSpawnedPid(child.pid, "startChild");
     const sink = { text: "" };
     childOutput.set(child, sink);
     child.stdout.on("data", (chunk: Buffer) => {
@@ -642,6 +724,9 @@ function assertNoLeakedProcesses(): number {
  * only placement that actually proves the file leaked nothing.
  */
 afterAll(() => {
+  // This run's processes are gone, so its durable rows are noise. Released
+  // before the leak receipt so the registry ends a green run empty (V2-B6-3).
+  releaseDurable();
   const processesChecked = assertNoLeakedProcesses();
   emitReceipt({
     drill: "D5-FINAL",
@@ -1060,8 +1145,16 @@ describe("driver equivalence", () => {
  *
  * Scope, stated so nobody reads more into it: this covers a failure *inside*
  * the run, where hooks still execute. It does not cover the death of the
- * runner itself — in a hard kill of the vitest process no hook runs at all,
- * and that path belongs to the pool/provenance law in the roadmap, not here.
+ * runner itself — in a hard kill of the vitest process no hook runs at all.
+ * That path is covered separately (V2-B6-3): every pid this file registers is
+ * also appended to the durable registry above, and the daemon drills' sweep
+ * reaps whatever a dead run left behind, by provenance, on the next run.
+ *
+ * It used to say that path "belongs to the pool/provenance law in the
+ * roadmap". That was a dangling referent: both halves of that law had landed —
+ * the serialized pool in `vitest.config.ts`, the single-act provenance
+ * registration here — and neither absorbed runner death, so the deferral
+ * pointed at a closed destination with nothing queued behind it.
  */
 describe("the teardown sweeps what no drill stopped", () => {
   let sweptPid: number | null = null;
