@@ -3,6 +3,7 @@ import { isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ResolvedRoute } from "@acp/contracts";
+import { canonicalJsonStringify, sha256Hex } from "@acp/ledger";
 
 import { ModeError } from "../errors/index.js";
 import { isDaemonMode } from "../lifecycle/index.js";
@@ -83,6 +84,82 @@ export interface DaemonChildConfig {
   readonly checkPorts: boolean;
   /** The execution the walk performs. Required; there is no toy default (V2-B1b). */
   readonly execution: DaemonExecutionConfig;
+}
+
+/**
+ * What this run was asked to do, as one value (V2-B1c, stage 2).
+ *
+ * B1c stage 1 recorded the admitted route on the INTENT event, which made the
+ * route explainable after the fact but left it **unpinned**: nothing bound the
+ * route to the submission, so a resume that reached the daemon with a
+ * different route was adopted rather than refused. Where the INTENT had
+ * already been appended the ledger caught it late, on an idempotency conflict.
+ * Where the crash preceded the INTENT append, nothing caught it at all —
+ * `assertInvocationContinuity` rebuilds step 0, and step 0 carried no route.
+ *
+ * The determinism law (`@acp/runtime`'s `CoordinateOrigin`) admits three
+ * provenances, and a resolved route is none of `DERIVED` — it is a function of
+ * the policy document, the registry, quota state and a caller-supplied instant,
+ * so it cannot be recomputed from `DurableInvocation`. It is therefore
+ * `SUBMISSION`, and `SUBMISSION` is only worth anything if it is pinned by a
+ * digest that rides an event replayed on every resume. That mechanism already
+ * exists: `submissionDigest` is carried in the base payload of **every** event
+ * precisely so that resubmitting different content under the same coordinates
+ * fails closed. This type is what that digest is taken over.
+ *
+ * So the route is bound by making it part of the preimage rather than by
+ * adding a field to `DurableInvocation` (whose shape is B3's to change) or a
+ * new event (which would change what a resuming SSE consumer sees between two
+ * sequence numbers, also B3's). A changed route changes the digest, a changed
+ * digest changes step 0's bytes, and the continuity guard refuses — with no
+ * new law and no new vocabulary.
+ *
+ * **Only safe provenance enters the preimage.** Task coordinates, the instant,
+ * the initiative, and the six contract fields of the admitted route: every one
+ * an identifier or a timestamp. No credential, no prompt, no tool argument, no
+ * environment value, no path. The preimage is hashed and discarded — it is
+ * never logged, never persisted and never carried on an event; what travels is
+ * the digest.
+ */
+export interface DaemonSubmission {
+  readonly taskId: string;
+  readonly attempt: number;
+  readonly submittedAt: string;
+  readonly initiativeId: string;
+  /** The route as the contract admitted it. Never a wider or laxer value. */
+  readonly route: ResolvedRoute;
+}
+
+/**
+ * The canonical preimage, as bytes.
+ *
+ * `canonicalJsonStringify` is the ledger's own canonicalizer, the same one the
+ * event chain is digested over, so key order here is a property of the
+ * function rather than of how this literal happens to be written: two callers
+ * spelling the fields in different orders produce identical bytes. The route's
+ * six fields are projected one by one rather than spread, so a wider object
+ * cannot widen the preimage and silently change every digest.
+ */
+export function canonicalSubmission(submission: DaemonSubmission): string {
+  return canonicalJsonStringify({
+    taskId: submission.taskId,
+    attempt: submission.attempt,
+    submittedAt: submission.submittedAt,
+    initiativeId: submission.initiativeId,
+    route: {
+      provider: submission.route.provider,
+      model: submission.route.model,
+      accountId: submission.route.accountId,
+      transportKind: submission.route.transportKind,
+      capabilityPolicyVersion: submission.route.capabilityPolicyVersion,
+      resolvedAt: submission.route.resolvedAt,
+    },
+  });
+}
+
+/** The digest of the canonical preimage. One producer, one algorithm. */
+export function canonicalSubmissionDigest(submission: DaemonSubmission): string {
+  return sha256Hex(canonicalSubmission(submission));
 }
 
 /**
@@ -200,6 +277,38 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   // Required, never defaulted (V2-B1b, D4/D5): a config that does not say
   // which route it executes, and through which admitted binding, gets no daemon.
   const execution = parseExecutionSection(value["execution"]);
+
+  // The door (V2-B1c, stage 2). The declared digest must be exactly the digest
+  // of the submission this config describes, route included.
+  //
+  // Until now any 64 lowercase hex characters passed, which made
+  // `submissionDigest` a value the config asserted about itself and nothing
+  // checked. That is the hole: the digest rides every event and the continuity
+  // guard compares it, so an unbound digest let a resume under a different
+  // route rebuild step 0 to the SAME bytes and be waved through. Binding it
+  // here — at load, before a ledger is opened, before a beat runs, before
+  // anything is appended — is what makes the route `SUBMISSION` rather than
+  // ambient.
+  //
+  // Computed once, and compared. There is deliberately no fallback and no
+  // "recompute if absent" branch: a config that cannot state its own digest
+  // gets no daemon, because a default here would restore exactly the silence
+  // this check exists to end. The refusal names the field and never prints
+  // either digest — one is the caller's and one is derived from the route, and
+  // neither belongs in a log line.
+  const expectedDigest = canonicalSubmissionDigest({
+    taskId,
+    attempt,
+    submittedAt,
+    initiativeId,
+    route: execution.route,
+  });
+  if (submissionDigest !== expectedDigest) {
+    throw new ModeError(
+      "submissionDigest is not the digest of the submission this config declares;" +
+        " the route, the task coordinates and the instant are all part of it",
+    );
+  }
 
   return {
     mode,

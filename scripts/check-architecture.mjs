@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **592
+ * P8, with the V2 packets that continue its coordinates, is therefore **600
  * packet entries across 222 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
@@ -1349,31 +1349,33 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
- * 27 (V2-B1b-2) + 29 (V2-B1c-1) = 592 entries, with 370 duplicate entries.
+ * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) = 600 entries, with 378
+ * duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 53 duplicates = 53   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 54 duplicates = 54   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
  *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
  *                                   build-server suite, and the CLI suite)
  *   5 paths ×  6 duplicates = 30   (the protocol surface and the workspace file)
- *   7 paths ×  5 duplicates = 35   (the contracts schema barrel, the protocol
+ *   8 paths ×  5 duplicates = 40   (the contracts schema barrel, the protocol
  *                                   route and parity surface with its parity
  *                                   suite, the console's app root and api
- *                                   client, and the root README)
+ *                                   client, the root README, and — since
+ *                                   V2-B1c-2 — the daemon drills suite)
  *   8 paths ×  4 duplicates = 32   (the initiatives suite, the console manifest,
  *                                   the console styles sheet, the accounts-view
- *                                   suite, and — since V2-B1c-1 — the supervisor
- *                                   and drills suites, `mode-restate` and the
- *                                   daemon drills suite)
+ *                                   suite, the supervisor and durability drills
+ *                                   suites, `mode-restate`, and the daemon
+ *                                   entry point)
  *  24 paths ×  3 duplicates = 72
- *  31 paths ×  2 duplicates = 62
- *  46 paths ×  1 duplicate  = 46
+ *  34 paths ×  2 duplicates = 68
+ *  42 paths ×  1 duplicate  = 42
  *
- * 53 + 11 + 8 + 21 + 30 + 35 + 32 + 72 + 62 + 46 = 370.
+ * 54 + 11 + 8 + 21 + 30 + 40 + 32 + 72 + 68 + 42 = 378.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1744,6 +1746,18 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * ledger's fold since P7I-2 and no P8 packet ever needed to open it; B1c is
  * the first change that adds a read model rather than a field, which is
  * exactly the kind of change that reaches it.
+ *
+ * V2-B1c-2, the pinning stage, adds **eight entries and no novel path at
+ * all** — the shape of a packet that binds an existing value rather than
+ * opening a surface. Entries move 592 → 600, distinct holds at 222,
+ * duplicates 370 → 378. Eight band steps, one per entry, and they are worth
+ * listing because every one is a daemon path revisited: this file's own row,
+ * ×54 → ×55; the daemon drills suite ×5 → ×6, so ×5 reads eight; the daemon
+ * entry point ×4 → ×5 and the fallback suite ×3 → ×4, so ×4 holds at eight;
+ * and four paths ×2 → ×3 (the daemon child, the bin, drills-execution and
+ * launchd-lifecycle suites), so ×3 reads thirty-four and ×2 reads forty-two.
+ * ×1 is untouched at ninety-five, which is what "no novel path" looks like
+ * from the other end.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3529,6 +3543,48 @@ const V2B1C1_WRITE_SET = [
 ];
 
 /**
+ * V2-B1c, stage 2: the admitted route is bound into the submission.
+ *
+ * The pinning half of B1c, and the only thing it changes. Stage 1 recorded the
+ * route on the INTENT beat and left it unpinned, which closed one of the two
+ * resume windows and not the other: after the INTENT append a changed route
+ * collided at the idempotency key, but before it, `assertInvocationContinuity`
+ * rebuilt a step 0 that carried no route and the substitution was adopted in
+ * silence.
+ *
+ * `canonicalSubmission` makes the preimage -- task coordinates, the instant,
+ * the initiative and the six contract fields of the admitted route -- and
+ * `canonicalSubmissionDigest` hashes it with the ledger's own canonicalizer, so
+ * key order is a property of the function rather than of the caller's literal.
+ * `parseDaemonChildConfig` refuses a declared digest that is not that value,
+ * at load, before a ledger is opened. Because the digest rides every event's
+ * base payload, a changed route now changes step 0's bytes and continuity
+ * refuses -- with no new event type, no new projection, no change to
+ * `DurableInvocation`'s shape, and no new law beyond the one below.
+ *
+ * The route is `SUBMISSION` in the determinism law's own vocabulary, which is
+ * what it always had to be: it is a function of the policy document, the
+ * registry, quota state and a caller-supplied instant, so it cannot be
+ * derived from an invocation, and a `SUBMISSION` value is only worth anything
+ * pinned by a digest that replays.
+ *
+ * Eight paths, none novel. `resolveRoute` is still unwired (B3 owns that), the
+ * ledger schema is untouched, and the C4 equality-modulo-route survives intact
+ * because both of its legs are one submission executed over two transports and
+ * therefore share one digest.
+ */
+const V2B1C2_WRITE_SET = [
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3838,6 +3894,7 @@ const WRITE_SET = [
   ...V2B1B1_WRITE_SET,
   ...V2B1B2_WRITE_SET,
   ...V2B1C1_WRITE_SET,
+  ...V2B1C2_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -4487,6 +4544,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the toy effect binds no production seam (route a: deep specifiers into toy/repository)", scope: "packages/*/*/src/**" },
   { law: "the toy effect binds no production seam (route b: the toy names from @acp/runtime)", scope: "packages/*/*/src/**" },
   { law: "the recorded route travels under one pinned key", scope: "packages/*/*/src/**" },
+  { law: "the submission digest has one producer and one door", scope: "packages/*/*/src/**" },
   {
     law: "the ledger and the event builder never reach for the router",
     scope: "packages/persistence/ledger/src/** and packages/domains/runtime/src/core/**",
@@ -6588,6 +6646,81 @@ if (tracked.status === 0) {
         );
       }
     }
+
+  // V2-B1c stage 2: the submission digest binds the admitted route, and the
+  // door is the only place that decides it.
+  //
+  // Three arms, each falsifiable on its own. (a) exactly one module declares
+  // the canonical preimage and its digest, pinned by equality in both
+  // directions -- a second producer would be a second answer to "what was
+  // asked for". (b) the preimage names all six route fields, so a field
+  // quietly dropped from it stops being pinned and a resume could change it
+  // unrefused; this is the arm that would have caught the hole stage 1 left.
+  // (c) the door compares a declared digest against the computed one, with no
+  // fallback -- the literal `!==` comparison and its refusal must both be
+  // present, because a door that recomputed silently would accept anything.
+  {
+    const srcSources = present.filter((relativePath) => /\/src\/.*\.tsx?$/.test(relativePath));
+    const SUBMISSION_HOME = "packages/entrypoints/daemon/src/daemon-child/index.ts";
+    const producers = srcSources.filter((relativePath) => {
+      const content = readIfPresent(relativePath);
+      return content !== null && /export function canonicalSubmissionDigest\s*\(/.test(stripComments(content));
+    });
+
+    requireScope("the submission digest has one producer and one door", srcSources.length);
+    if (producers.join(",") !== SUBMISSION_HOME) {
+      fail(
+        "the canonical submission digest must be produced in exactly " +
+          SUBMISSION_HOME +
+          "; found [" +
+          producers.join(", ") +
+          "]",
+      );
+    }
+
+    const home = stripComments(readIfPresent(SUBMISSION_HOME) ?? "");
+    const ROUTE_FIELDS = [
+      "provider",
+      "model",
+      "accountId",
+      "transportKind",
+      "capabilityPolicyVersion",
+      "resolvedAt",
+    ];
+    const preimage = home.match(/export function canonicalSubmission\s*\([^)]*\)[^{]*\{([\s\S]*?)\n\}/);
+    if (preimage === null) {
+      fail(SUBMISSION_HOME + " no longer declares the canonical submission preimage");
+    } else {
+      for (const field of ROUTE_FIELDS) {
+        if (!new RegExp("\\b" + field + ":\\s*submission\\.route\\." + field + "\\b").test(preimage[1] ?? "")) {
+          fail(
+            SUBMISSION_HOME +
+              " leaves route." +
+              field +
+              " out of the canonical submission; a route field outside the preimage is a field a resume may change unrefused",
+          );
+        }
+      }
+      if (!/canonicalJsonStringify\(/.test(preimage[1] ?? "")) {
+        fail(SUBMISSION_HOME + " no longer canonicalizes the submission preimage, so key order could change the digest");
+      }
+    }
+
+    if (!/submissionDigest !== expectedDigest/.test(home)) {
+      fail(SUBMISSION_HOME + " no longer compares the declared submission digest against the computed one");
+    }
+    if (!/const expectedDigest = canonicalSubmissionDigest\(/.test(home)) {
+      fail(SUBMISSION_HOME + " no longer computes the expected submission digest at the door");
+    }
+
+    notes.push(
+      "the submission digest has one producer and one door: " +
+        SUBMISSION_HOME +
+        ", binding all " +
+        ROUTE_FIELDS.length +
+        " route fields, compared without fallback",
+    );
+  }
 
     notes.push(
       "the recorded route travels under one pinned key (\"" +

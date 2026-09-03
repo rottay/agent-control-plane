@@ -22,6 +22,7 @@ import {
 import type { DaemonExecutionConfig } from "../../src/daemon-child/index.js";
 import { ModeError, SingletonError } from "../../src/errors/index.js";
 import { UnwindStack, portIsFree } from "../../src/lifecycle/index.js";
+import { canonicalSubmissionDigest } from "../../src/daemon-child/index.js";
 import { startRestateMode } from "../../src/mode-restate/index.js";
 import { daemonRootPath, pidfilePath, resolveDaemonRoot, statusPath } from "../../src/paths/index.js";
 import { recoverStaleLock } from "../../src/singleton/index.js";
@@ -58,7 +59,27 @@ const TEST_ROUTE: ResolvedRoute = {
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const PACKAGE_ROOT = resolve(HERE, "..", "..");
 const CHILD_ENTRY = join(PACKAGE_ROOT, "dist", "daemon-child", "index.js");
-const DIGEST = "b".repeat(64);
+const SUBMITTED_AT = "2026-08-27T18:46:07.000Z";
+
+/**
+ * The digest a drill config must declare (V2-B1c, stage 2).
+ *
+ * Computed from the same values the config states, through the one producer,
+ * rather than written as arbitrary hex: the door now refuses a digest that is
+ * not the digest of the submission, so a literal here would refuse every
+ * drill. Taking it from the real function is also what keeps these fixtures
+ * honest — a change to the preimage moves them with it instead of leaving
+ * them asserting against a constant nobody maintains.
+ */
+function digestFor(taskId: string): string {
+  return canonicalSubmissionDigest({
+    taskId,
+    attempt: 1,
+    submittedAt: SUBMITTED_AT,
+    initiativeId: DRILL_INITIATIVE_ID,
+    route: executionConfig().route,
+  });
+}
 const EMITTED_BY = "claude/opus/implementer/01";
 const TASK_FOR_UNVERIFIED = "11111111-2222-5333-8444-555555555555";
 /** One fixed initiative for every daemon drill packet. */
@@ -299,10 +320,9 @@ function configFor(
       emittedBy: EMITTED_BY,
       taskId,
       attempt: 1,
-      submittedAt: "2026-08-27T18:46:07.000Z",
-      submissionDigest: DIGEST,
+      submittedAt: SUBMITTED_AT,
+      submissionDigest: digestFor(taskId),
       initiativeId: DRILL_INITIATIVE_ID,
-      route: TEST_ROUTE,
       holdOpen: true,
       checkPorts: false,
       execution: executionConfig(),
@@ -488,10 +508,12 @@ describe("the singleton against a live daemon", () => {
         mode: "SQLITE_SUPERVISOR",
         scenarioId: scenario("daemon-duplicate-second"),
         emittedBy: EMITTED_BY,
-        taskId: randomUUID(),
+        ...(() => {
+          const taskId = randomUUID();
+          return { taskId, submissionDigest: digestFor(taskId) };
+        })(),
         attempt: 1,
-        submittedAt: "2026-08-27T18:46:07.000Z",
-        submissionDigest: DIGEST,
+        submittedAt: SUBMITTED_AT,
         initiativeId: DRILL_INITIATIVE_ID,
         checkPorts: false,
         execution: executionConfig(),
@@ -552,8 +574,19 @@ describe("Restate requested but not verified", () => {
             taskId: TASK_FOR_UNVERIFIED,
             attempt: 1,
             invocationId: TASK_FOR_UNVERIFIED,
-            submittedAt: "2026-08-27T18:46:07.000Z",
-            submissionDigest: DIGEST,
+            submittedAt: SUBMITTED_AT,
+            // The digest of this invocation's own submission, route included.
+            // This mode refuses before any beat runs, so nothing checks it
+            // here -- which is exactly why it is computed rather than
+            // invented: a fixture that states a digest no route produces is
+            // the kind of quiet untruth this stage exists to remove.
+            submissionDigest: canonicalSubmissionDigest({
+              taskId: TASK_FOR_UNVERIFIED,
+              attempt: 1,
+              submittedAt: SUBMITTED_AT,
+              initiativeId: DRILL_INITIATIVE_ID,
+              route: TEST_ROUTE,
+            }),
           },
           scenarioRoot: root,
           emittedBy: EMITTED_BY,
@@ -689,10 +722,12 @@ describe("the Restate mode", () => {
           mode: "RESTATE",
           scenarioId: id,
           emittedBy: EMITTED_BY,
-          taskId: randomUUID(),
+          ...(() => {
+            const taskId = randomUUID();
+            return { taskId, submissionDigest: digestFor(taskId) };
+          })(),
           attempt: 1,
-          submittedAt: "2026-08-27T18:46:07.000Z",
-          submissionDigest: DIGEST,
+          submittedAt: SUBMITTED_AT,
           initiativeId: DRILL_INITIATIVE_ID,
           checkPorts: true,
           execution: executionConfig(),

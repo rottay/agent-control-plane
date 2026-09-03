@@ -17,6 +17,7 @@ import {
   INTENT_STEP,
   LIFECYCLE_PLAN,
   SqliteSupervisor,
+  buildEvent,
   createExecutionEffects,
   operationForStep,
   removeScenarioRoot,
@@ -25,6 +26,9 @@ import {
 } from "@acp/runtime";
 import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
 import { afterEach, describe, expect, it } from "vitest";
+
+import { canonicalSubmission, canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
+import type { DaemonSubmission } from "../../../src/daemon-child/index.js";
 
 /**
  * The conformance fixture for the execution-port substitution (V2-B1b, C4).
@@ -301,8 +305,35 @@ function recording(port: ModelExecutionPort, trail: ExecutionEvent[]): ModelExec
   };
 }
 
+const SUBMITTED_AT = "2026-08-30T12:00:00.000Z";
+
+/** The submission this fixture's walks declare, for a given admitted route. */
+function submissionFor(route: ResolvedRoute): DaemonSubmission {
+  return { taskId: TASK, attempt: 1, submittedAt: SUBMITTED_AT, initiativeId: INITIATIVE_ID, route };
+}
+
+function invocationFor(route: ResolvedRoute): DurableInvocation {
+  return deriveInvocation(TASK, 1, SUBMITTED_AT, canonicalSubmissionDigest(submissionFor(route)));
+}
+
+/**
+ * The invocation both legs of the conformance walk share (V2-B1c, stage 2).
+ *
+ * It is the CLI submission's digest, and both legs use it deliberately: this
+ * fixture compares two TRANSPORTS for ONE submission — the API leg executes
+ * the same resolved route with the transport kind substituted at the port, as
+ * the policy section above states, because the shipped document admits no API
+ * transport. One submission therefore means one digest, which is what keeps
+ * every event before the INTENT byte-identical across the two legs and keeps
+ * the equality-modulo-route assertion measuring the route rather than the
+ * submission.
+ *
+ * It is computed rather than written as arbitrary hex, because since stage 2
+ * the digest has a meaning: a fixture stating one no submission produces would
+ * be exactly the quiet untruth the door now refuses.
+ */
 function invocation(): DurableInvocation {
-  return deriveInvocation(TASK, 1, "2026-08-30T12:00:00.000Z", "b".repeat(64));
+  return invocationFor(resolvedCliRoute());
 }
 
 function executionRequest(): ExecutionRequest {
@@ -703,5 +734,242 @@ describe("one scenario through both legs of the assembled path", () => {
     const route = resolvedCliRoute();
     const outcome = await cliPort().start({ ...route, transportKind: "API_KEY" }, executionRequest());
     expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.transportKind" });
+  });
+});
+
+/**
+ * The route is pinned by the submission (V2-B1c, stage 2 — I3/R2/N4).
+ *
+ * Stage 1 recorded the route and left it unpinned. These are the two windows a
+ * resume can land in, and before this stage only one of them was closed:
+ *
+ * - **After the INTENT append** the ledger already held a route, so rebuilding
+ *   it under a different one produced different bytes under the same key and
+ *   the append failed. Late, but closed.
+ * - **Before the INTENT append** nothing carried the route at all.
+ *   `assertInvocationContinuity` rebuilds step 0, step 0 is a PLAIN beat, and
+ *   its bytes were identical whichever route the resume arrived with. The
+ *   changed route was adopted in silence. That is the load-bearing case.
+ *
+ * Binding the route into the submission digest closes the second window with
+ * the machinery that already existed: the digest rides every event's base
+ * payload, so a changed route changes step 0's bytes and continuity refuses.
+ */
+describe("a changed route cannot be adopted by a resume", () => {
+  /** Everything the plan appends strictly before the INTENT beat. */
+  function seedThroughStep(
+    ledger: Ledger,
+    inv: DurableInvocation,
+    route: ResolvedRoute,
+    lastIndexExclusive: number,
+  ): void {
+    for (const step of LIFECYCLE_PLAN.slice(0, lastIndexExclusive)) {
+      ledger.append(
+        buildEvent({
+          invocation: inv,
+          step,
+          emittedBy: EMITTED_BY,
+          initiativeId: INITIATIVE_ID,
+          plan: LIFECYCLE_PLAN,
+          route,
+        }),
+      );
+    }
+  }
+
+  /** A port nothing may reach: every case here refuses before a beat runs. */
+  const refusingEffects = {
+    apply: (): Promise<void> => Promise.reject(new Error("no effect may run in this drill")),
+    probe: (): Promise<"NOT_DONE"> => Promise.resolve("NOT_DONE" as const),
+  };
+
+  function supervisorFor(ledger: Ledger, inv: DurableInvocation, route: ResolvedRoute): SqliteSupervisor {
+    return new SqliteSupervisor({
+      ledger,
+      invocation: inv,
+      effects: refusingEffects,
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: INITIATIVE_ID,
+      route,
+    });
+  }
+
+  it("N4(b): refuses before the intent was ever appended, and changes nothing", async () => {
+    const routeA = resolvedCliRoute();
+    const routeB = { ...routeA, accountId: "acct-substituted-mid-crash" };
+    const root = scenario("b1c2-n4b");
+    const ledger = openLedger(scenarioLedgerPath(root));
+    ledgers.push(ledger);
+
+    const invA = invocationFor(routeA);
+    seedThroughStep(ledger, invA, routeA, INTENT_STEP.index);
+
+    // The crash window, stated as a fact rather than assumed: the plan is
+    // partway through and no RUN_STARTED exists, so nothing anywhere in the
+    // ledger names a route yet.
+    const before = ledger.status();
+    expect(before.eventCount).toBe(INTENT_STEP.index);
+    expect(ledger.listEvents({ limit: 50 }).events.map((e) => e.event.type)).not.toContain("RUN_STARTED");
+    expect(ledger.getExecutionRoute(TASK, 1)).toBeNull();
+
+    // The resume arrives on a different account. It is a different submission,
+    // and the digest says so before anything is asked of the ledger.
+    const invB = invocationFor(routeB);
+    expect(invB.submissionDigest).not.toBe(invA.submissionDigest);
+
+    await expect(supervisorFor(ledger, invB, routeB).runToCheckpoint()).rejects.toThrow(
+      /begun by a different invocation/,
+    );
+
+    // Zero delta: refusing has to leave the ledger exactly as it was, or the
+    // refusal has itself become a write.
+    const after = ledger.status();
+    expect({ count: after.eventCount, head: after.headEventSha256 }).toEqual({
+      count: before.eventCount,
+      head: before.headEventSha256,
+    });
+    expect(ledger.getExecutionRoute(TASK, 1)).toBeNull();
+
+    // And the original submission still resumes, which is what proves the
+    // refusal is about the route rather than about resuming at all.
+    await expect(supervisorFor(ledger, invA, routeA).runToCheckpoint()).rejects.toThrow(
+      /no effect may run in this drill/,
+    );
+    expect(ledger.listEvents({ limit: 50 }).events.map((e) => e.event.type)).toContain("RUN_STARTED");
+    expect(ledger.getExecutionRoute(TASK, 1)).toMatchObject({ accountId: routeA.accountId });
+  });
+
+  it("N4(a): refuses after the intent was appended, and changes nothing", async () => {
+    const routeA = resolvedCliRoute();
+    const routeB = { ...routeA, model: "sonnet" };
+    const root = scenario("b1c2-n4a");
+    const ledger = openLedger(scenarioLedgerPath(root));
+    ledgers.push(ledger);
+
+    const invA = invocationFor(routeA);
+    seedThroughStep(ledger, invA, routeA, INTENT_STEP.index + 1);
+
+    const before = ledger.status();
+    expect(ledger.getExecutionRoute(TASK, 1)).toMatchObject({ model: routeA.model });
+
+    const invB = invocationFor(routeB);
+    expect(invB.submissionDigest).not.toBe(invA.submissionDigest);
+    await expect(supervisorFor(ledger, invB, routeB).runToCheckpoint()).rejects.toThrow();
+
+    const after = ledger.status();
+    expect({ count: after.eventCount, head: after.headEventSha256 }).toEqual({
+      count: before.eventCount,
+      head: before.headEventSha256,
+    });
+    // The recorded route is still the one that actually ran.
+    expect(ledger.getExecutionRoute(TASK, 1)).toMatchObject({ model: routeA.model });
+  });
+
+  it("keeps the second guard real: an unbound digest still collides at the intent", async () => {
+    // Belt and braces, and a record of what the pre-stage-2 world relied on.
+    // If the digest were NOT bound to the route -- the old behaviour, forged
+    // here by reusing A's digest under B's route -- continuity passes, because
+    // step 0's bytes match. The append of the INTENT is then the only thing
+    // standing between a substituted route and the log, and it holds.
+    const routeA = resolvedCliRoute();
+    const routeB = { ...routeA, accountId: "acct-forged" };
+    const root = scenario("b1c2-unbound");
+    const ledger = openLedger(scenarioLedgerPath(root));
+    ledgers.push(ledger);
+
+    const invA = invocationFor(routeA);
+    seedThroughStep(ledger, invA, routeA, INTENT_STEP.index + 1);
+    const before = ledger.status();
+
+    // A's digest, B's route: exactly what an unbound digest permitted.
+    await expect(supervisorFor(ledger, invA, routeB).runToCheckpoint()).rejects.toThrow();
+    const after = ledger.status();
+    expect({ count: after.eventCount, head: after.headEventSha256 }).toEqual({
+      count: before.eventCount,
+      head: before.headEventSha256,
+    });
+  });
+
+  it("binds every field of the route into the digest, and nothing else", () => {
+    const route = resolvedCliRoute();
+    const base = canonicalSubmissionDigest(submissionFor(route));
+
+    // Each of the six contract fields moves the digest. A field that did not
+    // would be a field a resume could change without being refused.
+    const variants: readonly [string, ResolvedRoute][] = [
+      ["provider", { ...route, provider: "codex" }],
+      ["model", { ...route, model: "sonnet" }],
+      ["accountId", { ...route, accountId: "acct-other" }],
+      ["transportKind", { ...route, transportKind: "API_KEY" }],
+      ["capabilityPolicyVersion", { ...route, capabilityPolicyVersion: "9999-01-01.1" }],
+      ["resolvedAt", { ...route, resolvedAt: "2026-08-30T12:00:06.000Z" }],
+    ];
+    for (const [field, changed] of variants) {
+      expect({ field, same: canonicalSubmissionDigest(submissionFor(changed)) === base }).toEqual({
+        field,
+        same: false,
+      });
+    }
+
+    // The task coordinates and the instant are bound too.
+    expect(canonicalSubmissionDigest({ ...submissionFor(route), attempt: 2 })).not.toBe(base);
+    expect(canonicalSubmissionDigest({ ...submissionFor(route), submittedAt: "2026-08-30T12:00:01.000Z" })).not.toBe(base);
+    expect(
+      canonicalSubmissionDigest({
+        ...submissionFor(route),
+        initiativeId: "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a02",
+      }),
+    ).not.toBe(base);
+  });
+
+  it("is canonical: key order in the caller's object cannot change the digest", () => {
+    const route = resolvedCliRoute();
+    const forward = submissionFor(route);
+    const reversed: DaemonSubmission = {
+      route: {
+        resolvedAt: route.resolvedAt,
+        capabilityPolicyVersion: route.capabilityPolicyVersion,
+        transportKind: route.transportKind,
+        accountId: route.accountId,
+        model: route.model,
+        provider: route.provider,
+      },
+      initiativeId: forward.initiativeId,
+      submittedAt: forward.submittedAt,
+      attempt: forward.attempt,
+      taskId: forward.taskId,
+    };
+    expect(canonicalSubmission(reversed)).toBe(canonicalSubmission(forward));
+    expect(canonicalSubmissionDigest(reversed)).toBe(canonicalSubmissionDigest(forward));
+    expect(canonicalSubmissionDigest(forward)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("puts nothing in the preimage but coordinates, an instant and the admitted route", () => {
+    // The preimage is hashed and discarded, but it is still material this
+    // process holds, so what may appear in it is asserted rather than assumed.
+    const preimage = canonicalSubmission(submissionFor(resolvedCliRoute()));
+    const parsed: unknown = JSON.parse(preimage);
+    expect(Object.keys(parsed as Record<string, unknown>).sort()).toEqual([
+      "attempt",
+      "initiativeId",
+      "route",
+      "submittedAt",
+      "taskId",
+    ]);
+    expect(
+      Object.keys((parsed as { route: Record<string, unknown> }).route).sort(),
+    ).toEqual([
+      "accountId",
+      "capabilityPolicyVersion",
+      "model",
+      "provider",
+      "resolvedAt",
+      "transportKind",
+    ]);
+    expect(preimage).not.toContain(SECRET);
+    expect(preimage).not.toContain("sk-");
+    expect(preimage).not.toContain("/Users/");
+    expect(preimage).not.toContain(REPO_ROOT);
   });
 });

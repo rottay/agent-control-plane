@@ -22,6 +22,7 @@ import { removeScenarioRoot } from "@acp/runtime";
 import { daemonRootPath } from "../../../src/paths/index.js";
 import { writeLaunchAgentAt } from "../../../src/launchd/render/index.js";
 import type { LaunchAgentValues } from "../../../src/launchd/render/index.js";
+import { canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
 
 /**
@@ -219,14 +220,32 @@ function stageAgent(): Staged {
       mode: "SQLITE_SUPERVISOR",
       scenarioId,
       emittedBy: "claude/opus/implementer/01",
-      taskId: randomUUID(),
-      attempt: 1,
-      submittedAt: "2026-08-27T18:46:07.000Z",
-      submissionDigest: "d".repeat(64),
-      initiativeId: "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01",
+      ...(() => {
+        // One submission, stated once and digested through the one producer.
+        // The door refuses a declared digest that is not this value, so the
+        // fixture computes it rather than asserting arbitrary hex
+        // (V2-B1c, stage 2).
+        const taskId = randomUUID();
+        const submittedAt = "2026-08-27T18:46:07.000Z";
+        const initiativeId = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+        const execution = executionConfigIn(root);
+        return {
+          taskId,
+          attempt: 1,
+          submittedAt,
+          submissionDigest: canonicalSubmissionDigest({
+            taskId,
+            attempt: 1,
+            submittedAt,
+            initiativeId,
+            route: execution.route,
+          }),
+          initiativeId,
+          execution,
+        };
+      })(),
       holdOpen: true,
       checkPorts: false,
-      execution: executionConfigIn(root),
     }),
   );
   chmodSync(configPath, 0o600);

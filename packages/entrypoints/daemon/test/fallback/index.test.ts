@@ -20,6 +20,7 @@ import {
   scenarioLedgerPath,
 } from "@acp/runtime";
 
+import { canonicalSubmissionDigest } from "../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig } from "../../src/daemon-child/index.js";
 import { portIsFree } from "../../src/lifecycle/index.js";
 
@@ -69,7 +70,7 @@ import { portIsFree } from "../../src/lifecycle/index.js";
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const PACKAGE_ROOT = resolve(HERE, "..", "..");
 const CHILD_ENTRY = join(PACKAGE_ROOT, "dist", "daemon-child", "index.js");
-const DIGEST = "c".repeat(64);
+const SUBMITTED_AT = "2026-08-30T00:00:00.000Z";
 const EMITTED_BY = "claude/opus/implementer/01";
 /** One fixed initiative for this gate's packet. */
 const GATE_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a02";
@@ -230,8 +231,16 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
       emittedBy: EMITTED_BY,
       taskId,
       attempt: 1,
-      submittedAt: "2026-08-30T00:00:00.000Z",
-      submissionDigest: DIGEST,
+      submittedAt: SUBMITTED_AT,
+      // Computed through the one producer: the door refuses a digest that is
+      // not the digest of this submission, route included (V2-B1c, stage 2).
+      submissionDigest: canonicalSubmissionDigest({
+        taskId,
+        attempt: 1,
+        submittedAt: SUBMITTED_AT,
+        initiativeId: GATE_INITIATIVE_ID,
+        route: executionConfig().route,
+      }),
       initiativeId: GATE_INITIATIVE_ID,
       holdOpen: false,
       // The landed drills' own idiom: SQLITE_SUPERVISOR binds nothing, so the

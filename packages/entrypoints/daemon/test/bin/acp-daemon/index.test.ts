@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { CONFIG_MAX_BYTES, checkConfigPath, loadDaemonConfig } from "../../../src/bin/config-file/index.js";
+import { canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
 import { EXIT_CONFIG_CONTENT, EXIT_CONFIG_PATH, EXIT_USAGE, runPackagedEntry } from "../../../src/bin/acp-daemon/index.js";
 
@@ -83,19 +84,33 @@ function validExecution(): DaemonExecutionConfig {
   };
 }
 
+const SUBMITTED_AT = "2026-08-27T18:46:07.000Z";
+const CONFIG_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
 function validConfig(): Record<string, unknown> {
+  const taskId = randomUUID();
+  const execution = validExecution();
   return {
     mode: "SQLITE_SUPERVISOR",
     scenarioId: "config-contract",
     emittedBy: "claude/opus/implementer/01",
-    taskId: randomUUID(),
+    taskId,
     attempt: 1,
-    submittedAt: "2026-08-27T18:46:07.000Z",
-    submissionDigest: "c".repeat(64),
-    initiativeId: "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01",
+    submittedAt: SUBMITTED_AT,
+    // The digest of this very submission, route included. The door refuses
+    // anything else, so a literal here would make every case below invalid
+    // for a reason none of them is about (V2-B1c, stage 2).
+    submissionDigest: canonicalSubmissionDigest({
+      taskId,
+      attempt: 1,
+      submittedAt: SUBMITTED_AT,
+      initiativeId: CONFIG_INITIATIVE_ID,
+      route: execution.route,
+    }),
+    initiativeId: CONFIG_INITIATIVE_ID,
     holdOpen: false,
     checkPorts: false,
-    execution: validExecution(),
+    execution,
   };
 }
 
@@ -182,6 +197,11 @@ describe("the config content law", () => {
       { ...validConfig(), execution: undefined },
       { ...validConfig(), execution: { ...execution, route: { ...execution.route, provider: "acme" } } },
       { ...validConfig(), execution: { ...execution, binding: { ...execution.binding, binary: "relative/node" } } },
+      // V2-B1c stage 2: the digest must be the digest of THIS submission.
+      // Well-formed hex is no longer enough — that shape check is what let an
+      // unbound value through, and an unbound value is what let a resume adopt
+      // a changed route.
+      { ...validConfig(), submissionDigest: "a".repeat(64) },
     ]) {
       expect(loadDaemonConfig(writeConfig(dir, broken))).toMatchObject({
         reason: "INVALID_CONFIG",
@@ -256,5 +276,43 @@ describe("the built artifact", () => {
     const observed = JSON.parse(result.stdout.trim()) as { entry: string; code: number };
     expect(observed.entry).toBe("function");
     expect(observed.code).toBe(0);
+  });
+});
+describe("the submission digest binds the route (V2-B1c, stage 2)", () => {
+  it("accepts a config whose declared digest is the digest of its own submission", () => {
+    const dir = stage();
+    expect(loadDaemonConfig(writeConfig(dir, validConfig()))).toMatchObject({ ok: true });
+  });
+
+  it("refuses a config whose route moved without its digest", () => {
+    // The exact shape of the hole this stage closes: everything else about the
+    // submission is unchanged, and only the account differs. Before the digest
+    // covered the route, this config was indistinguishable from the original.
+    const dir = stage();
+    const base = validConfig();
+    const execution = base["execution"] as DaemonExecutionConfig;
+    const moved = {
+      ...base,
+      execution: { ...execution, route: { ...execution.route, accountId: "acct-substituted" } },
+    };
+    expect(loadDaemonConfig(writeConfig(dir, moved))).toMatchObject({ reason: "INVALID_CONFIG" });
+  });
+
+  it("refuses a config whose coordinates moved without its digest", () => {
+    const dir = stage();
+    expect(
+      loadDaemonConfig(writeConfig(dir, { ...validConfig(), attempt: 2 })),
+    ).toMatchObject({ reason: "INVALID_CONFIG" });
+  });
+
+  it("has no fallback: an absent digest is refused, never recomputed", () => {
+    // A recompute-if-absent branch would restore exactly the silence the
+    // binding removes, so absence is a refusal like any other.
+    const dir = stage();
+    const withoutDigest: Record<string, unknown> = { ...validConfig() };
+    delete withoutDigest["submissionDigest"];
+    expect(loadDaemonConfig(writeConfig(dir, withoutDigest))).toMatchObject({
+      reason: "INVALID_CONFIG",
+    });
   });
 });

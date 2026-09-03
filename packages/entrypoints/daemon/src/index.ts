@@ -108,6 +108,22 @@ export interface DaemonOptions {
   readonly taskId: string;
   readonly attempt: number;
   readonly submittedAt: string;
+  /**
+   * The digest of this run's canonical submission (V2-B1c, stage 2).
+   *
+   * Not an opaque 64-hex token any more. It is
+   * `canonicalSubmissionDigest({taskId, attempt, submittedAt, initiativeId, route})`
+   * over the admitted route in `execution`, and the config door refuses a
+   * declared value that is not exactly that. It is what pins the route as
+   * `SUBMISSION`: it rides every event's base payload, so a resume carrying a
+   * different route rebuilds step 0 to different bytes and the continuity
+   * guard refuses instead of adopting the change.
+   *
+   * A caller assembling `DaemonOptions` by hand is therefore stating a fact it
+   * must actually compute; `canonicalSubmissionDigest` is exported from
+   * `./daemon-child/index.js` so there is one producer of it and no second
+   * spelling of the preimage.
+   */
   readonly submissionDigest: string;
   /**
    * The initiative this packet belongs to.
