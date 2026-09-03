@@ -1,7 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -266,9 +266,32 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
       // task row that merely says so.
       const trail = ledger.listEvents({ limit: 20 }).events.map((record) => record.event.type);
       expect(trail).toEqual(LIFECYCLE_PLAN.map((step) => step.eventType));
+
+      // V2-B2-2: the gate is re-proved over the ASSEMBLED path, not inherited
+      // from the toy era. This daemon built a real `ModelExecutionPort` from
+      // its admitted CLI binding, so the walk recorded the admitted route and
+      // the effect left digest-keyed evidence. Restriction 1 — "removing
+      // Restate leaves the fallback operational" — is therefore discharged
+      // against what the plane actually runs.
+      expect(ledger.getExecutionRoute(taskId, 1)).toMatchObject({
+        provider: executionConfig().route.provider,
+        model: executionConfig().route.model,
+        accountId: executionConfig().route.accountId,
+        transportKind: "CLI_SUBSCRIPTION",
+      });
     } finally {
       ledger.close();
     }
+
+    // Evidence under the scenario's own `executions/`, and no toy marker at
+    // all. This is the assertion that fails if the fallback is ever quietly
+    // pointed back at the toy.
+    const scenarioRoot = resolveScenarioRoot(id);
+    const evidence = existsSync(join(scenarioRoot, "executions"))
+      ? readdirSync(join(scenarioRoot, "executions")).filter((name) => name.endsWith(".json"))
+      : [];
+    expect(evidence).toHaveLength(1);
+    expect(existsSync(join(scenarioRoot, "effects"))).toBe(false);
 
     // The port precheck's own evidence, checked again: still unbound after
     // the daemon ran its full plan and exited cleanly. SQLITE_SUPERVISOR

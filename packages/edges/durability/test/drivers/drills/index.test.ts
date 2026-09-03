@@ -278,6 +278,7 @@ function startChild(
   invocation: DurableInvocation,
   faultPoint: string | null,
   pauseAt: string | null = null,
+  effect: "TOY" | "EXECUTION" = "TOY",
 ): Promise<ChildProcess> {
   const config = JSON.stringify({
     scenarioId,
@@ -289,6 +290,7 @@ function startChild(
     faultPoint,
     pauseAt,
     port: RUNTIME_SERVICE_PORT,
+    effect,
   });
   return new Promise<ChildProcess>((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [CHILD_ENTRY, config], {
@@ -695,6 +697,10 @@ interface DrillReceipt {
   readonly midPlanEvents?: number;
   /** Beat the child announced before the kill. Proves it was a handshake. */
   readonly pausedAt?: string;
+  /** Digest-keyed markers the execution effect left. Toy runs leave none (V2-B2-2). */
+  readonly executionEvidence?: number;
+  /** How many times the port was started, across every process. One, or the effect replayed. */
+  readonly executionStarts?: number;
 }
 
 function emitReceipt(receipt: DrillReceipt): void {
@@ -1185,4 +1191,113 @@ describe("the teardown sweeps what no drill stopped", () => {
     if (sweptPid === null) throw new Error("the probe above did not record a pid");
     expect(String(sweptPid) + ":" + String(alive(sweptPid))).toBe(String(sweptPid) + ":false");
   });
+});
+
+
+/**
+ * D1, re-proved over the ASSEMBLED effect (V2-B2-2).
+ *
+ * The D1 matrix above earned its certificate against the toy. Restate's own
+ * guarantees were never in doubt; what was untested is the pair — a journalled
+ * beat whose effect is awaited, drained to a terminal event and evidenced by
+ * digest. `AFTER_EFFECT` is the load-bearing point: the endpoint dies with the
+ * effect done and no outcome journalled, and the redelivered beat must close
+ * the intent from probe evidence rather than from the assumption that a beat
+ * which got that far must have finished.
+ *
+ * Only D1 is re-run here. D2 (mid-plan server kill), D3 (driver-behind) and D4
+ * (empty ledger) are about the handshake, reconciliation and cold start; none
+ * of them turns on what the effect is, so re-running each over the execution
+ * port would cost three more server starts and prove nothing this does not.
+ * Said here rather than left as an unexplained gap.
+ */
+describe("D1 over the assembled execution path", () => {
+  function executionStarts(scenarioRoot: string): number {
+    const log = join(scenarioRoot, "execution-starts.log");
+    if (!existsSync(log)) return 0;
+    return readFileSync(log, "utf8").split("\n").filter((line) => line.trim() !== "").length;
+  }
+
+  function executionEvidence(scenarioRoot: string): readonly string[] {
+    const home = join(scenarioRoot, "executions");
+    if (!existsSync(home)) return [];
+    return readdirSync(home).filter((name) => name.endsWith(".json")).sort();
+  }
+
+  for (const fault of ["AFTER_INTENT", "AFTER_EFFECT", "AFTER_OUTCOME"] as const) {
+    it("recovers from a SIGKILL " + fault.toLowerCase().replace("_", " "), async () => {
+      // Hyphenated: the toy's scenario-id boundary admits lowercase
+      // alphanumerics and hyphens only, and the fault names carry underscores.
+      const id = "d1-execution-" + fault.toLowerCase().replaceAll("_", "-");
+      const taskId = randomUUID();
+      const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+      const root = scenario(id);
+      const ledger = track(openLedger(scenarioLedgerPath(root)));
+      const server = trackServer(await startServer(root));
+
+      const faulty = await startChild(id, invocation, fault, null, "EXECUTION");
+      await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+      const submission = submitAdvance(server.ingressUrl, invocation, 120_000).catch(() => null);
+      const died = await waitForExit(faulty);
+      expect(died.signal).toBe("SIGKILL");
+
+      await startChild(id, invocation, null, null, "EXECUTION");
+      await submission;
+
+      expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+      expect(ledger.status().eventCount).toBe(LIFECYCLE_PLAN.length);
+
+      // The discriminator against the toy: evidence under `executions/`,
+      // digest-keyed, and no toy marker anywhere. Run this with the toy bound
+      // and these three assertions fail.
+      expect(markers(root)).toBe(0);
+      expect(executionEvidence(root)).toHaveLength(1);
+      expect(executionStarts(root)).toBe(1);
+
+      const head = ledger.status();
+      const integrity = ledger.verifyIntegrity();
+      expect(integrity.problems).toEqual([]);
+
+      const liveTask = ledger.getTask(taskId);
+      const liveWorkers = ledger.listWorkers().workers;
+      ledger.rebuildReadModel();
+      const rebuildIdentical =
+        JSON.stringify(ledger.getTask(taskId)) === JSON.stringify(liveTask) &&
+        JSON.stringify(ledger.listWorkers().workers) === JSON.stringify(liveWorkers);
+      expect(rebuildIdentical).toBe(true);
+
+      const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+      expect(keys.length - new Set(keys).size).toBe(0);
+
+      const report = await reconcile({
+        ledger,
+        invocation,
+        readCache: () => readCacheThroughHandler(server.ingressUrl, taskId),
+      });
+      expect(report.safeToResume).toBe(true);
+
+      // The recorded route says what actually ran.
+      expect(ledger.getExecutionRoute(taskId, 1)).toMatchObject({
+        provider: "drill",
+        model: "scripted-execution",
+      });
+
+      emitReceipt({
+        drill: "D1-EXECUTION",
+        mode: "RESTATE",
+        faultPoint: fault,
+        signal: died.signal,
+        eventCount: head.eventCount,
+        effectMarkers: markers(root),
+        executionEvidence: executionEvidence(root).length,
+        executionStarts: executionStarts(root),
+        headSequence: head.headSequence,
+        headEventSha256: head.headEventSha256,
+        verdict: report.verdict,
+        integrityOk: integrity.ok,
+        rebuildIdentical,
+        duplicateKeys: 0,
+      });
+    }, 240_000);
+  }
 });

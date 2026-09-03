@@ -209,7 +209,7 @@ Split by word, because these are different claims with different evidence:
 
 | | |
 |---|---|
-| **Evidence** | `bcb3487` (SQLite fallback certification gate for the daemon) and `7730780` (neutral telemetry with the Langfuse boundary optional). The runtime drills prove the Restate path fails closed without failing over on its own — mode is an operator decision, asserted by D4. |
+| **Evidence** | `bcb3487` (SQLite fallback certification gate for the daemon) and `7730780` (neutral telemetry with the Langfuse boundary optional). The runtime drills prove the Restate path fails closed without failing over on its own — mode is an operator decision, asserted by D4. **Re-proved over the assembled execution path by V2-B2-2**, not inherited from the toy era: the fallback gate now asserts the walk recorded its admitted CLI route and left digest-keyed evidence under `executions/` with no toy marker present, so restriction 1 is discharged against what the plane actually runs rather than against a filesystem marker standing in for it. |
 | **Status** | **MET.** |
 
 > - Una actualización de la política de routing cambia el modelo elegible

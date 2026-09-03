@@ -1,8 +1,13 @@
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { appendFileSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CommitPolicy, ResolvedRoute } from "@acp/contracts";
+import type {
+  ExecutionEvent,
+  ExecutionRequest,
+  ModelExecutionPort,
+} from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 
 import type { DurableInvocation } from "../../contracts/index.js";
@@ -13,6 +18,10 @@ import {
   resolveScenarioRoot,
   scenarioLedgerPath,
 } from "../../toy/repository/index.js";
+// The scenario-root brand, type-only: erased at compile time, so this adds no
+// runtime edge and the toy-binding law counts the specifier above, not this.
+import type { ScenarioRoot } from "../../toy/repository/index.js";
+import { createExecutionEffects } from "../../execution-effects/index.js";
 import { SqliteSupervisor } from "../sqlite-supervisor/index.js";
 import type { FaultPoint } from "../sqlite-supervisor/index.js";
 
@@ -43,6 +52,23 @@ interface ChildConfig {
   /** The packet's initiative. Required in the JSON, never defaulted here. */
   readonly initiativeId: string;
   readonly faultPoint: FaultPoint | null;
+  /**
+   * Which effect this walk performs (V2-B2-2).
+   *
+   * `TOY` is the historical binding and stays the default: the drills that
+   * predate this packet spawn this child without saying, and changing what
+   * they mean from outside their own files would re-anchor them rather than
+   * re-prove anything.
+   *
+   * `EXECUTION` drives the real `createExecutionEffects` — an awaited drain to
+   * a terminal event, digest-keyed evidence under the scenario's own
+   * `executions/` directory, and the three-verdict probe. That is the path
+   * recovery has to be re-proved over: the toy's completion is observable the
+   * instant `apply` returns, and a real effect's is not, so a certificate
+   * earned over the toy says nothing about a restart that lands between the
+   * effect and its outcome.
+   */
+  readonly effect: "TOY" | "EXECUTION";
 }
 
 /**
@@ -93,6 +119,15 @@ export function parseChildConfig(raw: unknown): ChildConfig {
     throw new SupervisorError("faultPoint must be null or a known fault point");
   }
 
+  // V2-B2-2. Absence means TOY: the drills that predate this packet spawn this
+  // child without saying which effect they want, and changing their meaning
+  // from outside their own files would re-anchor them rather than re-prove
+  // anything. A value that is neither is refused rather than coerced.
+  const effect = value["effect"] ?? "TOY";
+  if (effect !== "TOY" && effect !== "EXECUTION") {
+    throw new SupervisorError("effect must be TOY or EXECUTION");
+  }
+
   const taskId = inv["taskId"];
   const attempt = inv["attempt"];
   const invocationId = inv["invocationId"];
@@ -120,6 +155,7 @@ export function parseChildConfig(raw: unknown): ChildConfig {
     commitPolicy: commitPolicy.data,
     initiativeId,
     faultPoint: faultPoint as FaultPoint | null,
+    effect,
     invocation: { taskId, attempt, invocationId, submittedAt, submissionDigest },
   };
 }
@@ -153,6 +189,95 @@ function drillRoute(invocation: DurableInvocation): ResolvedRoute {
   });
 }
 
+/**
+ * The route an execution-backed drill walk records (V2-B2-2).
+ *
+ * Distinct from `drillRoute` and deliberately so: this walk really does drain a
+ * `ModelExecutionPort` to a terminal event and write digest-keyed evidence, so
+ * recording it as the toy would understate what happened. The subject is a
+ * scripted local one — no provider, no account, no capability policy — and the
+ * route says exactly that.
+ */
+/** Where the scripted port records each start, for a later process to count. */
+// Module-local in both drill children rather than exported from one and
+// imported by the other: unifying it would mean widening the runtime barrel,
+// which is outside this packet's write-set. The name is a filename the drills
+// read back, not a contract.
+const EXECUTION_STARTS = "execution-starts.log";
+
+function executionDrillRoute(invocation: DurableInvocation): ResolvedRoute {
+  return ResolvedRoute.parse({
+    provider: "drill",
+    model: "scripted-execution",
+    accountId: "drill",
+    transportKind: "LOCAL_OR_SELF_HOSTED",
+    capabilityPolicyVersion: "drill",
+    resolvedAt: invocation.submittedAt,
+  });
+}
+
+/**
+ * A scripted execution, standing in for a provider the runtime may not import.
+ *
+ * `packages/domains/runtime` may name accounts, contracts and the ledger and
+ * nothing else, so a real adapter cannot be reached from here and must not be:
+ * the dependency direction is the law, not a convenience. What this stands in
+ * for is the *subject*, not the mechanism — the port is driven, the events are
+ * real `ExecutionEvent` values, and everything after the port is the production
+ * module. The daemon's own execution drill is where a real adapter over a
+ * scripted peer is exercised; what this child exists to prove is recovery, and
+ * recovery is a property of the effect module and the ledger, not of the
+ * provider on the other side of the port.
+ *
+ * The trail is fixed rather than generated, so two runs of the same drill
+ * produce the same evidence digest and a restart is comparing like with like.
+ */
+function scriptedPort(route: ResolvedRoute, scenarioRoot: ScenarioRoot): ModelExecutionPort {
+  return {
+    start(candidate: ResolvedRoute, request: ExecutionRequest) {
+      // One line per start, appended where a later process can read it. This is
+      // what makes "the effect did not run a second time" an observation rather
+      // than an inference: the restart is a different process, so an in-memory
+      // counter could not survive to be asked.
+      appendFileSync(join(scenarioRoot, EXECUTION_STARTS), request.taskId + "\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      const trail: ExecutionEvent[] = [
+        { kind: "started", route: candidate, resolvedModel: "scripted-execution", protocolVersion: "drill-1" },
+        { kind: "usage", stepIndex: 0, tokensUsed: 1 },
+        { kind: "state", toState: "TURN_COMPLETED" },
+        { kind: "completed", stepIndex: 0 },
+      ];
+      return Promise.resolve({
+        ok: true as const,
+        sessionId: request.taskId + "/" + String(request.attempt),
+        route: candidate,
+        events: (): AsyncIterable<ExecutionEvent> => ({
+          async *[Symbol.asyncIterator]() {
+            for (const event of trail) {
+              // Yield across a turn of the loop so the drain is genuinely
+              // asynchronous. A synchronous stream would let `apply` settle
+              // within one tick, which is precisely the toy's shape and would
+              // make an AFTER_EFFECT kill prove nothing new.
+              await Promise.resolve();
+              yield event;
+            }
+          },
+        }),
+      });
+    },
+    interrupt: () => Promise.resolve(),
+    healthProbe: () =>
+      Promise.resolve({
+        status: "OK" as const,
+        checkedAt: route.resolvedAt,
+        latencyMs: null,
+        classifiedError: null,
+      }),
+  };
+}
+
 /** Run one supervisor pass, optionally killing this process at a fault point. */
 export async function runChild(config: ChildConfig): Promise<void> {
   const scenarioRoot = resolveScenarioRoot(config.scenarioId);
@@ -167,17 +292,33 @@ export async function runChild(config: ChildConfig): Promise<void> {
       // ledger's recovery law over an effect whose completion is trivially
       // observable, and B2 re-proves them against the real one. The fence's
       // toy-binding law names this file as one of the two lawful deep importers.
-      effects: {
-        apply: (operation) => {
-          applyEffect(scenarioRoot, operation);
-          return Promise.resolve();
-        },
-        probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
-      },
+      effects:
+        config.effect === "EXECUTION"
+          ? createExecutionEffects({
+              port: scriptedPort(executionDrillRoute(config.invocation), scenarioRoot),
+              route: executionDrillRoute(config.invocation),
+              request: {
+                taskId: config.invocation.taskId,
+                attempt: config.invocation.attempt,
+                identity: config.emittedBy,
+                reattach: null,
+              },
+              scenarioRoot,
+            })
+          : {
+              apply: (operation) => {
+                applyEffect(scenarioRoot, operation);
+                return Promise.resolve();
+              },
+              probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
+            },
       emittedBy: config.emittedBy,
       commitPolicy: config.commitPolicy,
       initiativeId: config.initiativeId,
-      route: drillRoute(config.invocation),
+      route:
+        config.effect === "EXECUTION"
+          ? executionDrillRoute(config.invocation)
+          : drillRoute(config.invocation),
       __faultPoint: config.faultPoint ?? undefined,
       // A real signal, not an exception. SIGKILL cannot be caught, so nothing
       // in this process gets a chance to flush, close or tidy up, which is the

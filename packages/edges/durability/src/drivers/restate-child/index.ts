@@ -1,8 +1,9 @@
-import { existsSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CommitPolicy, ResolvedRoute } from "@acp/contracts";
+import type { ExecutionEvent, ExecutionRequest, ModelExecutionPort } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 
 import {
@@ -14,7 +15,8 @@ import {
   resolveScenarioRoot,
   scenarioLedgerPath,
 } from "@acp/runtime";
-import type { BeatContext, DurableInvocation } from "@acp/runtime";
+import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import { createExecutionEffects } from "@acp/runtime";
 import { createAcpTaskObject } from "../restate-driver/index.js";
 import { startEndpoint } from "../restate-endpoint/index.js";
 
@@ -53,6 +55,16 @@ export interface RestateChildConfig {
    */
   readonly pauseAt: string | null;
   readonly port: number;
+  /**
+   * Which effect the journalled beats perform (V2-B2-2).
+   *
+   * `TOY` stays the default for the drills that predate this packet. With
+   * `EXECUTION` the beats drive `createExecutionEffects`: an awaited drain to a
+   * terminal event, digest-keyed evidence under `executions/`, and the
+   * three-verdict probe. Recovery is re-proved over that path because the toy
+   * settles inside one tick and so leaves no interval for a restart to land in.
+   */
+  readonly effect: "TOY" | "EXECUTION";
 }
 
 /**
@@ -82,6 +94,69 @@ export function drillRoute(invocation: DurableInvocation): ResolvedRoute {
     capabilityPolicyVersion: "drill",
     resolvedAt: invocation.submittedAt,
   });
+}
+
+/** Where the scripted port records each start, for a later process to count. */
+// Module-local in both drill children rather than exported from one and
+// imported by the other: unifying it would mean widening the runtime barrel,
+// which is outside this packet's write-set. The name is a filename the drills
+// read back, not a contract.
+const EXECUTION_STARTS = "execution-starts.log";
+
+/** The route an execution-backed drill walk records (V2-B2-2). */
+function executionDrillRoute(invocation: DurableInvocation): ResolvedRoute {
+  return ResolvedRoute.parse({
+    provider: "drill",
+    model: "scripted-execution",
+    accountId: "drill",
+    transportKind: "LOCAL_OR_SELF_HOSTED",
+    capabilityPolicyVersion: "drill",
+    resolvedAt: invocation.submittedAt,
+  });
+}
+
+/**
+ * A scripted execution, standing in for a provider this package may not import.
+ *
+ * `@acp/durability` may name contracts, the ledger, the runtime and the Restate
+ * SDK — not the providers edge — so the subject is scripted here for the same
+ * reason it is in the SQLite drill child. What is under test is recovery, which
+ * is a property of the effect module and the ledger rather than of whatever
+ * sits on the far side of the port.
+ */
+function scriptedPort(scenarioRoot: ScenarioRoot): ModelExecutionPort {
+  return {
+    start(candidate: ResolvedRoute, request: ExecutionRequest) {
+      appendFileSync(join(scenarioRoot, EXECUTION_STARTS), request.taskId + "\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      const trail: ExecutionEvent[] = [
+        { kind: "started", route: candidate, resolvedModel: "scripted-execution", protocolVersion: "drill-1" },
+        { kind: "usage", stepIndex: 0, tokensUsed: 1 },
+        { kind: "state", toState: "TURN_COMPLETED" },
+        { kind: "completed", stepIndex: 0 },
+      ];
+      return Promise.resolve({
+        ok: true as const,
+        sessionId: request.taskId + "/" + String(request.attempt),
+        route: candidate,
+        events: (): AsyncIterable<ExecutionEvent> => ({
+          async *[Symbol.asyncIterator]() {
+            for (const event of trail) {
+              // Genuinely asynchronous, so an AFTER_EFFECT kill has an interval
+              // to land in. A synchronous stream would reproduce the toy's shape.
+              await Promise.resolve();
+              yield event;
+            }
+          },
+        }),
+      });
+    },
+    interrupt: () => Promise.resolve(),
+    healthProbe: () =>
+      Promise.resolve({ status: "OK" as const, checkedAt: new Date(0).toISOString(), latencyMs: null, classifiedError: null }),
+  };
 }
 
 /** Validate the child's configuration. Nothing is read from the environment. */
@@ -115,6 +190,12 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   const faultPoint = typeof rawFault === "string" ? rawFault : null;
   const rawPause = value["pauseAt"] ?? null;
   const pauseAt = typeof rawPause === "string" ? rawPause : null;
+  // V2-B2-2. Absence means TOY, so the drills that predate this packet keep
+  // their meaning; anything else is refused rather than coerced.
+  const effect = value["effect"] ?? "TOY";
+  if (effect !== "TOY" && effect !== "EXECUTION") {
+    throw new SupervisorError("effect must be TOY or EXECUTION");
+  }
   const rawPort = value["port"] ?? RUNTIME_SERVICE_PORT;
 
   if (typeof scenarioId !== "string") throw new SupervisorError("scenarioId must be a string");
@@ -166,6 +247,7 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
     faultPoint,
     pauseAt,
     port: rawPort,
+    effect,
     invocation: { taskId, attempt, invocationId, submittedAt, submissionDigest },
   };
 }
@@ -205,16 +287,30 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
 
   const beat = (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
     ledger,
-    effects: {
-      apply: (operation) => {
-        applyEffect(scenarioRoot, operation);
-        return Promise.resolve();
-      },
-      probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
-    },
+    effects:
+      config.effect === "EXECUTION"
+        ? createExecutionEffects({
+            port: scriptedPort(scenarioRoot),
+            route: executionDrillRoute(invocation),
+            request: {
+              taskId: invocation.taskId,
+              attempt: invocation.attempt,
+              identity: config.emittedBy,
+              reattach: null,
+            },
+            scenarioRoot,
+          })
+        : {
+            apply: (operation) => {
+              applyEffect(scenarioRoot, operation);
+              return Promise.resolve();
+            },
+            probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
+          },
     invocation,
     emittedBy: config.emittedBy,
-    route: drillRoute(invocation),
+    route:
+      config.effect === "EXECUTION" ? executionDrillRoute(invocation) : drillRoute(invocation),
   });
 
   const onBeat = (point: string): void => {

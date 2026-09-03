@@ -973,3 +973,45 @@ describe("a changed route cannot be adopted by a resume", () => {
     expect(preimage).not.toContain(REPO_ROOT);
   });
 });
+
+
+/**
+ * Restart over the REAL adapter: the effect is not performed twice (V2-B2-2).
+ *
+ * The drill children prove recovery across a genuine SIGKILL with a scripted
+ * subject, because neither the runtime nor the durability package may import
+ * the providers edge. This is the other half of the same claim, on the one path
+ * where a real adapter is reachable: a second walk over a scenario that already
+ * completed starts no execution at all.
+ *
+ * That is the AFTER_EFFECT property stated from the far side. A restart closes
+ * an open intent from probe evidence; a restart of a *closed* one performs
+ * nothing. Both are the same guarantee — the effect module answers from
+ * evidence, never from assumption — and this is the version of it that runs
+ * against the provider adapter the plane will actually use.
+ */
+describe("a restart over the real adapter performs no second execution", () => {
+  it("starts the port once across two walks of the same scenario", async () => {
+    const route = resolvedCliRoute();
+    const name = "b2-2-restart-cli";
+
+    const first = await walk(name, cliPort(), route);
+    expect(first.state).toBe("CHECKPOINTED");
+    expect(first.trail.filter((event) => event.kind === "started")).toHaveLength(1);
+    expect(first.evidence).toHaveLength(1);
+
+    // The same scenario, the same invocation, a fresh port and a fresh trail.
+    // Everything durable is already there, so nothing should be executed.
+    const second = await walk(name, cliPort(), route);
+    expect(second.state).toBe("CHECKPOINTED");
+    expect(second.trail).toEqual([]);
+    expect(second.evidence).toEqual(first.evidence);
+    expect(second.eventCount).toBe(first.eventCount);
+    expect(second.headEventSha256).toBe(first.headEventSha256);
+
+    // And the evidence the probe answered from is byte-identical: the second
+    // walk read it, it did not rewrite it.
+    expect(second.markerJson).toBe(first.markerJson);
+    expect(second.probe).toBe("DONE");
+  }, 120_000);
+});

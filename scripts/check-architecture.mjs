@@ -1336,7 +1336,7 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **618
+ * P8, with the V2 packets that continue its coordinates, is therefore **626
  * packet entries across 223 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
@@ -1350,30 +1350,27 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
  * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) + 3 (V2-B6-fence) +
- * 15 (V2-B2-1) = 618 entries, with 395 duplicate entries.
+ * 15 (V2-B2-1) + 8 (V2-B2-2) = 626 entries, with 403 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 56 duplicates = 56   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 57 duplicates = 57   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
  *   4 paths ×  7 duplicates = 28   (the gateway's routes source and
- *                                   build-server suite, the CLI suite, and —
- *                                   since V2-B2-1 — the contracts schema
- *                                   barrel)
- *   5 paths ×  6 duplicates = 30   (the protocol surface and the workspace file)
- *   8 paths ×  5 duplicates = 40   (the protocol route and parity surface with
- *                                   its parity suite, the console's app root
- *                                   and api client, the root README, the daemon
- *                                   drills suite, and the runtime supervisor
- *                                   suite)
- *  11 paths ×  4 duplicates = 44
+ *                                   build-server suite, the CLI suite and the
+ *                                   contracts schema barrel)
+ *   6 paths ×  6 duplicates = 36   (the protocol surface, the workspace file,
+ *                                   and — since V2-B2-2 — the runtime
+ *                                   supervisor suite)
+ *   8 paths ×  5 duplicates = 40
+ *  12 paths ×  4 duplicates = 48
  *  21 paths ×  3 duplicates = 63
- *  36 paths ×  2 duplicates = 72
- *  43 paths ×  1 duplicate  = 43
+ *  34 paths ×  2 duplicates = 68
+ *  44 paths ×  1 duplicate  = 44
  *
- * 56 + 11 + 8 + 28 + 30 + 40 + 44 + 63 + 72 + 43 = 395.
+ * 57 + 11 + 8 + 28 + 36 + 40 + 48 + 63 + 68 + 44 = 403.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1779,6 +1776,11 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * explicit re-export list. Two briefed paths went unwritten and are carried
  * anyway, as the convention allows: the durability barrel and its README, since
  * this packet adds no durability export and that pin holds at twenty-two.
+ *
+ * V2-B2-2 adds **eight entries and no novel path** — a re-certification packet
+ * opens nothing. Entries move 618 → 626, distinct holds at 223, duplicates
+ * 395 → 403. Eight band steps, one per entry: this file ×57 → ×58, and seven
+ * drill-side paths one band each.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3699,6 +3701,47 @@ const V2B21_WRITE_SET = [
 ];
 
 /**
+ * V2-B2-2: recovery re-proved over the assembled path, not inherited.
+ *
+ * The 3/3 kill-restart matrix and the D1 matrix earned their certificates
+ * against the toy effect, whose `apply` settles inside one tick and whose
+ * completion is a marker file that either exists or does not. That says nothing
+ * about a restart landing between a real effect and its outcome, because with
+ * the toy there is no interval to land in.
+ *
+ * Both drill children gain an `effect` selector. `TOY` stays the default, so
+ * the drills that predate this packet keep their meaning and the toy-binding
+ * law's two pinned importers are untouched. `EXECUTION` drives the production
+ * `createExecutionEffects`: an awaited drain to a terminal event, digest-keyed
+ * evidence under the scenario's own `executions/`, and the three-verdict probe.
+ * Neither package may import the providers edge, so the SUBJECT is scripted in
+ * both children while everything after the port is the real module — and the
+ * daemon's own drill, where a real adapter is reachable, carries the
+ * restart-performs-nothing half.
+ *
+ * `AFTER_EFFECT` is the load-bearing case in both matrices: the kill lands with
+ * the effect done and no outcome appended, and the restart closes the intent
+ * from probe evidence. The drills count port STARTS across processes, so
+ * "executed exactly once" is observed rather than inferred; removing the
+ * evidence makes the restart execute a second time, which is the negative that
+ * proves the first number meant something.
+ *
+ * Eight paths declared, seven written. The fence is the eighth and carries this
+ * record; no law changed, because the evidence here is behavioural and belongs
+ * in the drills rather than in a source-shaped pin.
+ */
+const V2B22_WRITE_SET = [
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "docs/certification/p8-matrix.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -4011,6 +4054,7 @@ const WRITE_SET = [
   ...V2B1C2_WRITE_SET,
   ...V2B6FENCE_WRITE_SET,
   ...V2B21_WRITE_SET,
+  ...V2B22_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,

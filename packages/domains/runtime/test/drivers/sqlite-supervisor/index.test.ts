@@ -1,6 +1,6 @@
 import type { ResolvedRoute } from "@acp/contracts";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -156,6 +156,7 @@ function runChildProcess(
   scenarioId: string,
   invocation: DurableInvocation,
   faultPoint: FaultPoint | null,
+  effect: "TOY" | "EXECUTION" = "TOY",
 ): Promise<ChildOutcome> {
   const config = JSON.stringify({
     scenarioId,
@@ -166,6 +167,7 @@ function runChildProcess(
     initiativeId: TEST_INITIATIVE_ID,
     route: TEST_ROUTE,
     faultPoint,
+    effect,
   });
   return new Promise<ChildOutcome>((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [CHILD_ENTRY, config], {
@@ -975,4 +977,165 @@ describe("the driver declares what it cannot do, and the declaration is checked"
       "SIGNAL: declared UNSUPPORTED but no outcome was observed",
     ]);
   });
+});
+
+
+/**
+ * The same three fault points, re-proved over the ASSEMBLED effect (V2-B2-2).
+ *
+ * The 3/3 drill above earned its certificate against the toy, whose `apply`
+ * settles within one tick and whose completion is a file that either exists or
+ * does not. That says nothing about a restart landing between a real effect and
+ * its outcome, because with the toy there is no interval to land in.
+ *
+ * These runs drive `createExecutionEffects`: the port is drained asynchronously
+ * to a terminal event, evidence is written under the scenario's own
+ * `executions/` directory keyed by the operation digest, and the probe answers
+ * DONE / NOT_DONE / UNKNOWN from that evidence. `AFTER_EFFECT` is the
+ * load-bearing case — the kill lands with the effect done and no outcome
+ * appended, and the restart must close the intent from probe evidence rather
+ * than from the assumption that having got that far it must have finished.
+ */
+describe("kill and restart over the assembled execution path, 3/3", () => {
+  const EXECUTION_TASK_IDS = [
+    "e0000000-0000-4000-8000-000000000001",
+    "e0000000-0000-4000-8000-000000000002",
+    "e0000000-0000-4000-8000-000000000003",
+  ] as const;
+
+  /** How many times the scripted port was STARTED, across every process. */
+  function executionStarts(scenarioRoot: string): number {
+    const log = join(scenarioRoot, "execution-starts.log");
+    if (!existsSync(log)) return 0;
+    return readFileSync(log, "utf8").split("\n").filter((line) => line.trim() !== "").length;
+  }
+
+  /** The evidence markers the execution effect leaves, by name. */
+  function executionEvidence(scenarioRoot: string): readonly string[] {
+    const home = join(scenarioRoot, "executions");
+    if (!existsSync(home)) return [];
+    return readdirSync(home).filter((name) => name.endsWith(".json")).sort();
+  }
+
+  for (const [index, { id, fault }] of FAULT_SCENARIOS.entries()) {
+    it("recovers from a SIGKILL " + fault.toLowerCase().replace("_", " "), async () => {
+      ensureChildBuilt();
+      const taskId = EXECUTION_TASK_IDS[index] ?? EXECUTION_TASK_IDS[0];
+      TASK_ID_IN_PLAY = taskId;
+      const invocation = invocationFor(taskId);
+      const scenarioId = "execution-" + id;
+      const root = scenario(scenarioId);
+      const ledgerPath = scenarioLedgerPath(root);
+
+      const killed = await runChildProcess(scenarioId, invocation, fault, "EXECUTION");
+      expect(killed.signal).toBe("SIGKILL");
+      expect(killed.code).toBeNull();
+
+      const afterCrash = snapshot(ledgerPath);
+      expect(afterCrash.state).not.toBe("CHECKPOINTED");
+
+      // The discriminator against the toy: this walk left evidence under
+      // `executions/`, digest-keyed, and no `effects/` marker at all. Run the
+      // same drill with the toy bound and this assertion fails, which is what
+      // stops the packet from being a re-run dressed as a re-certification.
+      expect(effectMarkerCount(root)).toBe(0);
+      if (fault !== "AFTER_INTENT") {
+        expect(executionEvidence(root)).toHaveLength(1);
+      }
+
+      const restarted = await runChildProcess(scenarioId, invocation, null, "EXECUTION");
+      expect(restarted.signal).toBeNull();
+      expect(restarted.code).toBe(0);
+
+      const afterRestart = snapshot(ledgerPath);
+      expect(afterRestart.state).toBe("CHECKPOINTED");
+      expect(afterRestart.eventCount).toBe(LIFECYCLE_PLAN.length);
+      expect(executionEvidence(root)).toHaveLength(1);
+
+      // The effect ran exactly once across both processes, whichever side of it
+      // the kill landed on. For AFTER_EFFECT this is the whole claim: the
+      // restart closed an open intent WITHOUT re-executing, which it can only
+      // do from probe evidence.
+      expect(executionStarts(root)).toBe(1);
+
+      const replayed = await runChildProcess(scenarioId, invocation, null, "EXECUTION");
+      expect(replayed.code).toBe(0);
+      const afterReplay = snapshot(ledgerPath);
+      expect(afterReplay.eventCount).toBe(afterRestart.eventCount);
+      expect(afterReplay.headEventSha256).toBe(afterRestart.headEventSha256);
+      expect(executionStarts(root)).toBe(1);
+
+      const ledger = track(openLedger(ledgerPath));
+      const integrity = ledger.verifyIntegrity();
+      expect(integrity.problems).toEqual([]);
+      expect(integrity.ok).toBe(true);
+      const before = ledger.listEvents({ limit: 50 }).events.map((e) => e.eventSha256);
+      ledger.rebuildReadModel();
+      expect(ledger.listEvents({ limit: 50 }).events.map((e) => e.eventSha256)).toEqual(before);
+      expect(ledger.verifyIntegrity().ok).toBe(true);
+
+      // The recorded route is the execution one, not the toy's: the walk says
+      // what it actually did.
+      expect(ledger.getExecutionRoute(taskId, 1)).toMatchObject({
+        provider: "drill",
+        model: "scripted-execution",
+      });
+    }, 120_000);
+  }
+
+  it("negative: with the evidence removed, the restart executes a second time", async () => {
+    // The causal negative the positive above depends on. If the restart closed
+    // the intent by assumption rather than by probe evidence, deleting the
+    // evidence would change nothing. It changes everything: the probe answers
+    // NOT_DONE, `closeIntent` applies again, and the port records a second
+    // start — a non-idempotent replay, caught.
+    ensureChildBuilt();
+    const taskId = "e0000000-0000-4000-8000-00000000000f";
+    TASK_ID_IN_PLAY = taskId;
+    const invocation = invocationFor(taskId);
+    const scenarioId = "execution-evidence-removed";
+    const root = scenario(scenarioId);
+
+    const killed = await runChildProcess(scenarioId, invocation, "AFTER_EFFECT", "EXECUTION");
+    expect(killed.signal).toBe("SIGKILL");
+    expect(executionStarts(root)).toBe(1);
+    const evidence = executionEvidence(root);
+    expect(evidence).toHaveLength(1);
+
+    // Remove exactly the probe's evidence and nothing else.
+    rmSync(join(root, "executions", evidence[0] ?? ""), { force: true });
+    expect(executionEvidence(root)).toHaveLength(0);
+
+    const restarted = await runChildProcess(scenarioId, invocation, null, "EXECUTION");
+    expect(restarted.code).toBe(0);
+
+    // Executed twice. The ledger is still sound -- the outcome is appended once,
+    // because the ledger's idempotency is a separate guarantee -- which is
+    // precisely why the effect's own idempotency needed its own proof.
+    expect(executionStarts(root)).toBe(2);
+    expect(snapshot(scenarioLedgerPath(root)).eventCount).toBe(LIFECYCLE_PLAN.length);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  }, 120_000);
+
+  it("restore: the same drill over the toy leaves no execution evidence at all", async () => {
+    // The restore half, and the reason the assertions above discriminate. Point
+    // the child back at the toy and the new evidence assertions cannot hold:
+    // there is no `executions/` directory, no digest-keyed marker and no start
+    // log, because nothing was drained. A packet whose assertions still passed
+    // here would have re-run the old drill under a new name.
+    ensureChildBuilt();
+    const taskId = "e0000000-0000-4000-8000-0000000000f0";
+    TASK_ID_IN_PLAY = taskId;
+    const invocation = invocationFor(taskId);
+    const scenarioId = "execution-restore-toy";
+    const root = scenario(scenarioId);
+
+    const killed = await runChildProcess(scenarioId, invocation, "AFTER_EFFECT", "TOY");
+    expect(killed.signal).toBe("SIGKILL");
+
+    expect(executionEvidence(root)).toHaveLength(0);
+    expect(executionStarts(root)).toBe(0);
+    expect(effectMarkerCount(root)).toBe(1);
+  }, 120_000);
 });
