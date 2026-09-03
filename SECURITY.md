@@ -10,9 +10,11 @@ security document quietly describing something that no longer exists.
 
 ## Reporting
 
-This repository has no remote and is not published. There is no external
-reporting channel to route a report to, and inventing one would be worse than
-saying so. Raise a security concern with the repository owner directly.
+This repository is published at
+`https://github.com/rottay/agent-control-plane` and is private. There is no
+external reporting channel and no security mailbox; inventing one would be
+worse than saying so. Raise a security concern with the repository owner
+directly.
 
 ## What this system is
 
@@ -155,13 +157,27 @@ The dependency graph is frozen and the install is inert.
 
 ## The repository cannot publish itself
 
-Pushing is denied unconditionally by a hook with no argument, environment
-variable, ref pattern or remote that makes it allow one. No remote is
-configured, and none may be added by an agent. The fence verifies both that the
-hook still denies and that `core.hooksPath` still points at it — a fence that
-is installed but not armed is not a fence.
+Pushing **denies by default**. The owner authorized publishing committed `main`
+on 2026-09-03, and the hook is the mechanical form of exactly that: it permits
+`refs/heads/main` to `refs/heads/main` on `origin` at the canonical URL,
+fast-forward only, and only when `ACP_OWNER_PUBLISH=1` is set for that single
+command. Deletions, tags, other branches, other remotes, non-fast-forward
+updates and credential-bearing URLs are each refused by name. No agent may set
+that variable or add a remote.
 
-> Anchor: `.githooks/pre-push` — `PUSH DENIED by the Agent Control Plane pre-push fence.`
+The fence does not read the hook, it runs it — thirteen denied cases and two
+permitted ones, against fake refs with no network — and it verifies that
+`core.hooksPath` still points at it, because a fence that is installed but not
+armed is not a fence. It also asserts the configured remote is the canonical
+one by exact URL and that the URL carries no credentials, so a token cannot
+live in `git config`.
+
+Publishing the repository is not operational cutover. P9 stays deferred, and
+the fence still refuses a cutover claim or a `NEXT_P9` marker in the roadmap.
+
+> Anchor: `.githooks/pre-push` — `PUSH DENIED by the Agent Control Plane publication fence.`
+> Anchor: `.githooks/pre-push` — `ACP_OWNER_PUBLISH`
+> Anchor: `scripts/check-architecture.mjs` — `PUBLISH_URL`
 
 Local commits are allowed only with a `CommitAuthorizationReceipt` from an
 independent verifier.

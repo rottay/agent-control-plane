@@ -5,11 +5,15 @@ rules here are unusual on purpose, and two of them will surprise you.
 
 ## Two things to know first
 
-**You cannot push, and neither can we.** `.githooks/pre-push` refuses
-unconditionally. There is no argument, environment variable, ref pattern or
-remote that makes it allow a push, and no remote is configured. This is not a
-misconfiguration to be helpfully fixed: it is the authority regime this
-repository runs under, and `pnpm check` verifies that the hook still denies.
+**You cannot push, and nor can we without a deliberate act.**
+`.githooks/pre-push` denies by default. The owner authorized publishing
+committed `main` on 2026-09-03, so there is now exactly one way through the
+hook — `main` to `main` on `origin` at the canonical URL, fast-forward only,
+with `ACP_OWNER_PUBLISH=1` set for that single command — and no way at all for
+anything else: no tags, no other branches, no other remote, no deletions, no
+force. This is not a misconfiguration to be helpfully fixed: it is the
+authority regime this repository runs under, and `pnpm check` drives the hook
+over its whole deny/permit matrix rather than trusting it.
 
 **Nothing here is adopted into real operation.** The system observes and
 decides; it does not act. Adoption is a single explicit decision that happens
@@ -44,9 +48,9 @@ pnpm check   # fence → lint → typecheck → tests
 It runs the architecture fence **first**, before the compiler and the tests,
 because the fence is what decides whether a change was allowed to be made at
 all. It checks write-set conformance, the roadmap digest, authority literals,
-the pre-push denial, the hook path, the absence of remotes and credential
-stores — and, since G10, that the documentation still matches the code it
-describes.
+the publication hook's deny/permit matrix, the hook path, the canonical remote
+and the absence of credential stores — and, since G10, that the documentation
+still matches the code it describes.
 
 If `pnpm check` fails, that is the answer. Do not work around it, and do not
 weaken a law to make your change fit: propose the law change separately, with

@@ -44,9 +44,10 @@ git config core.hooksPath .githooks
 
 **Do this before running any check.** It is per-checkout local Git config, so a
 fresh clone does not have it, and nothing sets it for you. Two things depend on
-it: `.githooks/pre-push` refuses every push unconditionally, and the
-architecture fence verifies that the hook path is actually active — a fence that
-merely *believed* the hook was armed would be worth nothing.
+it: `.githooks/pre-push` denies every push that is not an explicitly
+authorized publication of `main`, and the architecture fence verifies that the
+hook path is actually active — a fence that merely *believed* the hook was armed
+would be worth nothing.
 
 Without it, the health check below fails on exactly this, and says so:
 
@@ -265,8 +266,10 @@ An empty result is the expected one. If it is not empty, see
 
 ## What this plane deliberately does not do
 
-- No push, no remote. The repository has none, and `.githooks/pre-push` refuses
-  unconditionally.
+- No push except a deliberate publication. `.githooks/pre-push` denies by
+  default; only `main` to `main` on the canonical `origin`, fast-forward only,
+  with `ACP_OWNER_PUBLISH=1` set for that single command, is permitted, and no
+  agent may set it.
 - No product cutover. Adoption into real operation is a separate, unauthorised
   step and nothing on these pages performs it.
 - No browser-rendered evidence. The browser bridge does not connect in this

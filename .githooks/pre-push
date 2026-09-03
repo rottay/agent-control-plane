@@ -1,32 +1,128 @@
 #!/bin/sh
 #
-# Agent Control Plane mechanical no-push fence.
+# Agent Control Plane publication fence.
 #
-# Roadmap law: "negar ... y cualquier push". There is no argument, environment
-# variable, ref pattern or remote that makes this hook allow a push. It is
-# unconditional on purpose: a fence with an escape hatch is not a fence.
+# Supersedes the unconditional no-push fence. The owner authorized publication
+# of committed `main` on 2026-09-03 ("Autorizo retirar la fence de no-push de
+# Agent Control Plane y publicar main"), and this hook is the mechanical form
+# of exactly that authorization and nothing wider.
+#
+# It is still a fence, because it still DEFAULTS TO DENY. What changed is that
+# there is now one narrow, explicit, single-use way through it instead of none.
+# Every condition below must hold; any one of them failing denies the push:
+#
+#   1. ACP_OWNER_PUBLISH=1 is set for this single invocation;
+#   2. the remote is named `origin`;
+#   3. its URL is the canonical repository URL, with no embedded credentials;
+#   4. every ref being pushed is refs/heads/main -> refs/heads/main;
+#   5. nothing is being deleted;
+#   6. every update is a fast-forward.
+#
+# Publishing the REPOSITORY is not operational cutover. P9 -- adoption of this
+# control plane into real operation -- remains deferred and unauthorized, and
+# no push can grant it. See docs/ROADMAP.md.
+#
+# ACP_OWNER_PUBLISH is deliberately an environment variable for ONE command:
+#
+#   ACP_OWNER_PUBLISH=1 git push origin main
+#
+# It must never be exported from a shell profile, written into a tracked file,
+# or set for an agent. A standing authorization is not an explicit one.
 #
 # Enable once per clone with:
 #   git config core.hooksPath .githooks
 #
-# scripts/check-architecture.mjs verifies both that this hook still denies and
-# that core.hooksPath is set to .githooks.
+# scripts/check-architecture.mjs pins this file by digest, drives the whole
+# matrix below against fake refs with no network, and verifies that
+# core.hooksPath actually points here -- a fence installed but not armed is not
+# a fence.
 
 set -eu
 
+CANONICAL_REMOTE="origin"
+CANONICAL_URL="https://github.com/rottay/agent-control-plane.git"
+CANONICAL_REF="refs/heads/main"
+ZERO="0000000000000000000000000000000000000000"
+
+remote_name="${1:-}"
+remote_url="${2:-}"
+
 # Drain stdin so git never blocks writing the ref list into a closed pipe.
-while IFS= read -r _line; do :; done 2>/dev/null || true
+drain() {
+  while IFS= read -r _drained; do :; done 2>/dev/null || true
+}
 
-printf "%s\n" "----------------------------------------------------------------" >&2
-printf "%s\n" "PUSH DENIED by the Agent Control Plane pre-push fence." >&2
-printf "%s\n" "" >&2
-printf "%s\n" "This repository is under the P0 authority regime:" >&2
-printf "%s\n" "  - local commits are allowed only with a CommitAuthorizationReceipt;" >&2
-printf "%s\n" "  - no push is authorized, to any remote, for any ref, ever;" >&2
-printf "%s\n" "  - no remote is configured, and none may be added by an agent." >&2
-printf "%s\n" "" >&2
-printf "%s\n" "Only the owner may publish this repository, and only by removing" >&2
-printf "%s\n" "this fence deliberately as a separate, reviewed decision." >&2
-printf "%s\n" "----------------------------------------------------------------" >&2
+deny() {
+  drain
+  printf "%s\n" "----------------------------------------------------------------" >&2
+  printf "%s\n" "PUSH DENIED by the Agent Control Plane publication fence." >&2
+  printf "%s\n" "" >&2
+  printf "%s\n" "reason: $1" >&2
+  printf "%s\n" "" >&2
+  printf "%s\n" "This fence denies by default. The owner authorized publishing" >&2
+  printf "%s\n" "committed main to the canonical remote, and nothing else:" >&2
+  printf "%s\n" "  - remote must be $CANONICAL_REMOTE at $CANONICAL_URL;" >&2
+  printf "%s\n" "  - ref must be $CANONICAL_REF -> $CANONICAL_REF;" >&2
+  printf "%s\n" "  - no deletions, no tags, no other refs, no force;" >&2
+  printf "%s\n" "  - ACP_OWNER_PUBLISH=1 must be set for that one command." >&2
+  printf "%s\n" "" >&2
+  printf "%s\n" "Repository publication is not operational cutover. P9 stays" >&2
+  printf "%s\n" "deferred and unauthorized regardless of what is published." >&2
+  printf "%s\n" "----------------------------------------------------------------" >&2
+  exit 1
+}
 
-exit 1
+# 1. Default deny. Absence of the signal is the normal case, not an error case.
+if [ "${ACP_OWNER_PUBLISH:-}" != "1" ]; then
+  deny "no explicit owner authorization for this invocation (ACP_OWNER_PUBLISH is not 1)"
+fi
+
+# 2 and 3. Exactly one remote is publishable, by name and by URL. Credentials
+# in a URL would be a secret travelling through argv, so that is its own
+# refusal rather than a URL mismatch.
+case "$remote_url" in
+  *"@"*) deny "the remote URL carries embedded credentials" ;;
+esac
+if [ "$remote_name" != "$CANONICAL_REMOTE" ]; then
+  deny "remote is '$remote_name', not '$CANONICAL_REMOTE'"
+fi
+if [ "$remote_url" != "$CANONICAL_URL" ] && [ "$remote_url" != "${CANONICAL_URL%.git}" ]; then
+  deny "remote URL is not the canonical repository URL"
+fi
+
+# 4, 5 and 6. Every line git offers must be main -> main, additive, and a
+# fast-forward. One bad line denies the whole push: git gives the hook the
+# complete ref list, so a mixed push is refused as a whole rather than in part.
+refs_seen=0
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  refs_seen=$((refs_seen + 1))
+
+  if [ "$local_ref" = "(delete)" ] || [ "$local_sha" = "$ZERO" ]; then
+    deny "deleting a remote ref is not authorized ($remote_ref)"
+  fi
+  if [ "$local_ref" != "$CANONICAL_REF" ]; then
+    deny "only $CANONICAL_REF may be pushed, not '$local_ref'"
+  fi
+  if [ "$remote_ref" != "$CANONICAL_REF" ]; then
+    deny "only $CANONICAL_REF may be updated, not '$remote_ref'"
+  fi
+  if [ "$remote_sha" != "$ZERO" ]; then
+    # Local check, no network. An unknown remote commit also fails here, which
+    # is the fail-closed answer: what cannot be shown to be a fast-forward is
+    # treated as one that is not.
+    if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+      deny "non-fast-forward update of $remote_ref"
+    fi
+  fi
+done
+
+# Nothing offered is not a reason to allow. Fail closed.
+if [ "$refs_seen" -eq 0 ]; then
+  deny "no ref updates were offered to the hook"
+fi
+
+printf "%s\n" "Agent Control Plane publication fence: authorized." >&2
+printf "%s\n" "  $refs_seen ref update(s), $CANONICAL_REF only, fast-forward only." >&2
+printf "%s\n" "  Repository publication only. P9 operational cutover stays deferred." >&2
+exit 0

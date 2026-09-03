@@ -58,20 +58,45 @@ declared write-set.
 never commits, never spawns implementers, and never runs the build to make a
 failing check pass. Read-only is enforced by the contract, not by good manners.
 
-### 5. Local commits only, and never push
+### 5. Local commits, and publication only by explicit owner act
 
 Local commits require a `CommitAuthorizationReceipt` issued after independent
-validation. Agents **never push**, to any remote, for any ref, under any
-instruction that does not come from the owner directly.
+validation. Agents **never push**, to any remote, for any ref, on their own
+authority or on any instruction that does not come from the owner directly.
 
-`.githooks/pre-push` refuses unconditionally. Arm it once per checkout:
+The repository is published. The owner authorized it on 2026-09-03:
+*"Autorizo retirar la fence de no-push de Agent Control Plane y publicar main"*.
+That authorization covers publishing committed `main` to one canonical remote
+and nothing else.
+
+`.githooks/pre-push` therefore **denies by default** and permits exactly one
+shape: `refs/heads/main` to `refs/heads/main` on `origin` at
+`https://github.com/rottay/agent-control-plane.git`, fast-forward only, with
+`ACP_OWNER_PUBLISH=1` set for that single command:
+
+```sh
+ACP_OWNER_PUBLISH=1 git push origin main
+```
+
+Deletions, tags, other branches, other remotes, non-fast-forward updates and
+credential-bearing URLs are all refused. `ACP_OWNER_PUBLISH` is a one-shot
+signal: exporting it from a profile, writing it into a tracked file, or setting
+it for an agent turns an explicit authorization into a standing one, which is
+precisely what it exists to prevent. No agent may set it.
+
+Arm the hook once per checkout:
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
-`pnpm check` fails if that setting is missing. No remote may be configured or
-added by an agent.
+`pnpm check` fails if that setting is missing, drives the hook over its whole
+deny/permit matrix, and asserts the remote is the canonical one by exact URL
+with no credentials in it.
+
+**Publishing the repository is not operational cutover.** P9 remains deferred
+and unauthorized; law 8 is untouched by this ruling, and the fence still
+refuses a `NEXT_P9` or any cutover claim in the roadmap.
 
 ### 6. No destructive Git
 
@@ -142,5 +167,5 @@ pnpm check
 ```
 
 `pnpm check` runs the architecture fence first: write-set conformance, the
-roadmap digest, authority literals, the pre-push denial, the hook path and the
-absence of remotes and credential stores.
+roadmap digest, authority literals, the publication hook's deny/permit matrix,
+the hook path, the canonical remote and the absence of credential stores.

@@ -1,8 +1,13 @@
 name: ci
 
-# This workflow is frozen in P0 as a contract. The repository has no remote and
-# is never pushed, so it does not run today. If the owner ever publishes this
-# repository, CI must run exactly the same gate a local writer runs.
+# This workflow was frozen in P0 as a contract, for the case the owner ever
+# published the repository. That happened on 2026-09-03, so this contract is
+# now live rather than hypothetical: CI runs exactly the same gate a local
+# writer runs, and nothing here may diverge from `pnpm check`.
+#
+# It grants no publication authority of its own. Pushing is governed by
+# `.githooks/pre-push`, which denies by default and is a local hook CI does not
+# execute; this workflow only ever reads and checks.
 
 on:
   push:

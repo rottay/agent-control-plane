@@ -67,11 +67,12 @@ unclassified package guards a surface with no declared audience:
   `server`, `cli`, `ui` — the entrypoints. They are the product, not the
   library.
 
-The fence asserts the classification against each manifest. Nothing publishes,
-tags, or drops `private: true` until `LICENSE`, `SECURITY.md` and
-`CONTRIBUTING.md` land together in G10; until then the enforcement is what
-already stands — the unconditional pre-push refusal, `private: true`
-everywhere, and zero remotes.
+The fence asserts the classification against each manifest. No **package**
+publishes, tags, or drops `private: true`: G10 landed `LICENSE`, `SECURITY.md`
+and `CONTRIBUTING.md`, and the enforcement that stands is `private: true`
+everywhere plus the publication fence. The owner published the **repository**
+on 2026-09-03, which is a different act: source became visible at one canonical
+remote, and no package became publishable to a registry by it.
 
 ### Extensibility: a bounded registration seam, and no more
 

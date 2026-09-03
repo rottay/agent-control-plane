@@ -14,8 +14,13 @@ conventions repeated below.
   already has one, including via subagents.
 - **exact write-set**. Touch nothing outside the write-set in your brief. If a
   needed path is missing, stop and propose the exact addition.
-- **never push**. No remote, no push, no `gh` publishing. `.githooks/pre-push`
-  refuses unconditionally, and `pnpm check` verifies it still does.
+- **never push**, on your own authority or on anything short of a direct owner
+  instruction. The repository is published (owner ruling, 2026-09-03), so
+  `.githooks/pre-push` now denies by default rather than unconditionally: it
+  permits only `main` to `main` on the canonical `origin`, fast-forward only,
+  with `ACP_OWNER_PUBLISH=1` set for that one command. Never set that variable,
+  never add a remote, and never use `gh` to publish. `pnpm check` drives the
+  hook's full deny/permit matrix.
 - Local commits require a `CommitAuthorizationReceipt` from an independent
   verifier. Do not commit unless the owner or the DT asked for it.
 - **no partial cutover**. Nothing here is adopted into real operation before P8

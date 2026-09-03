@@ -4,7 +4,8 @@
  *
  * This runs first in `pnpm check`. It is deliberately dependency free and
  * deterministic: it reads the working tree, asks git a few read-only
- * questions, and executes the pre-push hook to prove it still denies.
+ * questions, and drives the pre-push hook over a fixed matrix of fake ref
+ * updates -- no network -- to prove exactly what it denies and what it permits.
  *
  * It enforces the P0 laws that a type system cannot:
  *
@@ -12,9 +13,11 @@
  *      additions, and nothing else;
  *   2. docs/ROADMAP.md is still the byte-exact kickoff roadmap;
  *   3. the authority documents still carry their critical literals;
- *   4. the pre-push hook exists, is executable and always refuses;
+ *   4. the pre-push hook exists, is executable, denies by default, and permits
+ *      only an explicitly authorized, main-only, fast-forward publication;
  *   5. core.hooksPath is actually pointed at .githooks, so the fence is live;
- *   6. no remote is configured;
+ *   6. the only configured remote is the canonical `origin`, by exact URL and
+ *      carrying no credentials;
  *   7. no credential store is present in the repository.
  *
  * P1A adds three more, all of which exist because P1A introduces the first
@@ -3879,6 +3882,63 @@ const V2B24A_WRITE_SET = [
 ];
 
 /**
+ * Publication authorization: the no-push fence becomes a publication fence.
+ *
+ * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
+ * retirar la fence de no-push de Agent Control Plane y publicar main" — and
+ * this packet is the mechanical form of exactly that, and deliberately of
+ * nothing wider.
+ *
+ * **The fence did not weaken; it became specific.** It used to assert an
+ * absence: no remote at all, and a hook with no way through it. It now asserts
+ * a shape: one remote, named `origin`, at one exact URL, carrying no
+ * credentials; and a hook that denies by default and permits only
+ * `refs/heads/main` to `refs/heads/main`, fast-forward only, with
+ * `ACP_OWNER_PUBLISH=1` set for a single invocation. Forbidding everything is
+ * easy to check and easy to satisfy by accident; permitting one thing is
+ * neither, which is why the hook is now DRIVEN over thirteen denied cases and
+ * two permitted ones rather than called once. A digest pin proves the file was
+ * not edited; only the matrix proves what it means.
+ *
+ * **Publication is not cutover, and that is held mechanically.** P9 stays
+ * deferred: `FORBIDDEN_ROADMAP_LITERALS` is untouched, so the marker that would
+ * queue P9 and both cutover claims remain unwritable in the roadmap — the
+ * ruling could not even quote them, and says so. The Estado line keeps
+ * `NO_PRODUCT_CUTOVER`, and the hook states the distinction in its own refusal
+ * text so an operator reading a denial is told it too.
+ *
+ * Fourteen paths. The fourteenth arrived by measurement rather than by the
+ * brief: `scripts/architecture/roots.test.mjs` holds the synthetic-tree
+ * negative that used to assert ANY remote fails, which is the old law. It now
+ * asserts the three the new one forbids -- a non-canonical URL, a second
+ * remote, and a URL carrying credentials -- because a negative left asserting
+ * a retired law is worse than no negative: it passes for the wrong reason.
+ *
+ * `README.md` is the one document this packet does NOT touch,
+ * by explicit owner instruction, so four of its statements about pushing are
+ * knowingly left stale; the writer's report names them by line. Its authority
+ * literals are unaffected, since none of them is push-related. No product,
+ * runtime or UI code is touched, and no credential or token enters a tracked
+ * file — the hook and the fence both refuse a URL that carries one.
+ */
+const PUBLICATION_WRITE_SET = [
+  ".githooks/pre-push",
+  ".github/workflows/ci.yml",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "docs/ROADMAP.md",
+  "docs/architecture/0014-repository-topology.md",
+  "docs/certification/metrics-baseline.md",
+  "docs/certification/p8-matrix.md",
+  "docs/operations/runbook.md",
+  "docs/operations/update-rollback.md",
+  "scripts/architecture/roots.test.mjs",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -4194,6 +4254,7 @@ const WRITE_SET = [
   ...V2B22_WRITE_SET,
   ...V2B23_WRITE_SET,
   ...V2B24A_WRITE_SET,
+  ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -4324,7 +4385,7 @@ function assertAdrNumbering() {
 }
 
 const ROADMAP_SHA256 =
-  "ccbab993b06a1ae3f0776e23b1a658bdf8c46f9585eb0bd387e2d7daf35e343a";
+  "bf4c63b5a230e48f348847d8aee64cb61bd0e5696e9cd35b9531e796333b5a9a";
 
 /**
  * The Estado line P7 closure is allowed to have produced.
@@ -4376,8 +4437,10 @@ const ROADMAP_SHA256 =
  * P8_COMPLETE, and the same run that enforces it prints the certification as
  * its last line or fails: the claim and its evidence cannot be separated.
  *
- * What P8 completion does NOT mean: nothing is adopted, nothing publishes,
- * and P9 has not been asked for. The four quantitative acceptance criteria
+ * What P8 completion does NOT mean: nothing is adopted and P9 has not been
+ * asked for. (The repository itself was published on 2026-09-03 by a separate
+ * owner ruling; publishing source is not adopting a control plane, and the
+ * forbidden-literal list below is what keeps the two apart mechanically.) The four quantitative acceptance criteria
  * have their machinery landed and digest-pinned but no production
  * measurement, because production does not exist; that decision — accept as
  * scoped, re-scope, or hold — is the owner's, taken at the bounded debrief on
@@ -4456,12 +4519,19 @@ const FORBIDDEN_ROADMAP_LITERALS = [
 ];
 
 /**
- * The no-push fence is tamper-evident. Any edit to the hook changes this digest
- * and fails the gate until the pin is updated deliberately, so the hook cannot
- * be quietly softened into a no-op that still exits nonzero on a happy path.
+ * The publication fence is tamper-evident. Any edit to the hook changes this
+ * digest and fails the gate until the pin is updated deliberately, so the hook
+ * cannot be quietly widened into one that permits more than the owner
+ * authorized.
+ *
+ * The digest moved once, at the publication ruling of 2026-09-03, when the
+ * unconditional no-push hook was replaced by the default-deny publication
+ * hook. A digest pin alone would not have caught a softening that still
+ * denied on a happy path, which is why the probe below is a matrix rather than
+ * a single call.
  */
 const PRE_PUSH_SHA256 =
-  "991a22f42db599bdf618cb3c2b686b91350d909aeb4bcc239467b28f8b883515";
+  "b7f1f0960f989973343d2a891f4b3df3c0f8d72f30af4a118cf954c6839e3a91";
 
 /**
  * Literals that encode authority. If any of these disappears, the document no
@@ -4686,6 +4756,30 @@ const AUTHORITY_LITERALS = {
  * described it.
  */
 const EXPIRED_LITERALS = {
+  // Retired by the publication ruling of 2026-09-03. Each of these was true
+  // while the hook was unconditional and no remote existed, and each is false
+  // now that the hook denies by default and one canonical remote is
+  // authorized. Registered in the same packet that rewrote them, per this
+  // file's own convention, so the old absolute claim cannot creep back in
+  // beside the new conditional one.
+  //
+  // `README.md` is deliberately absent from this registry. The owner excluded
+  // it from the publication packet, so four of its statements about pushing are
+  // knowingly stale; registering them here would fail the gate on a file this
+  // packet was told not to touch, which would convert a known documentation
+  // debt into a broken build. The writer's report names the lines instead.
+  "AGENTS.md": ["refuses unconditionally", "No remote may be configured or added by an agent"],
+  "CLAUDE.md": ["No remote, no push", "refuses unconditionally"],
+  "CONTRIBUTING.md": [
+    "You cannot push, and neither can we",
+    "There is no argument, environment variable, ref pattern or remote that makes it allow a push",
+  ],
+  "SECURITY.md": [
+    "This repository has no remote and is not published",
+    "Pushing is denied unconditionally",
+  ],
+  "docs/operations/update-rollback.md": ["There is no remote and no release channel"],
+  "docs/architecture/0014-repository-topology.md": ["the unconditional pre-push refusal"],
   "packages/domains/runtime/README.md": [
     "There is no Restate driver",
     "This is P2B",
@@ -4882,6 +4976,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the toy effect binds no production seam (route b: the toy names from @acp/runtime)", scope: "packages/*/*/src/**" },
   { law: "the recorded route travels under one pinned key", scope: "packages/*/*/src/**" },
   { law: "the submission digest has one producer and one door", scope: "packages/*/*/src/**" },
+  { law: "the publication hook's semantics, driven case by case", scope: ".githooks/pre-push" },
   { law: "both drivers declare their capabilities, pinned by equality", scope: "the two driver sources" },
   {
     law: "the send result cannot carry an engine-minted invocation id",
@@ -5214,28 +5309,112 @@ if (hookSource === null) {
   }
 }
 
+/**
+ * The publication semantics, driven rather than read (publication ruling).
+ *
+ * A digest pin proves the hook was not edited; it cannot prove the hook means
+ * what the ruling says. So the matrix below runs the real hook against fake ref
+ * updates -- side-effect free, and with no network, because every check the
+ * hook makes is local -- and asserts the verdict of each case.
+ *
+ * The negatives carry the weight. A single positive would pass just as happily
+ * against a hook that permitted everything, which is exactly the softening a
+ * digest cannot see. Each row names one condition of the owner's authorization
+ * and violates only that one, so a permission that leaked would be attributable
+ * rather than merely visible.
+ */
+const PUBLISH_REMOTE = "origin";
+const PUBLISH_URL = "https://github.com/rottay/agent-control-plane.git";
+
 if (hookExecutable) {
-  // Probe under a realistic hook environment. Git invokes pre-push with GIT_DIR
-  // set and the remote name and URL as argv, so the probe must not accidentally
-  // pass only because the hook was run bare.
-  const attempt = spawnSync(hookPath, ["origin", "https://example.invalid/repo.git"], {
-    cwd: REPO_ROOT,
-    input: "refs/heads/main " + "0".repeat(40) + " refs/heads/main " + "0".repeat(40) + "\n",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_DIR: join(REPO_ROOT, ".git"),
-      GIT_WORK_TREE: REPO_ROOT,
-      GIT_PUSH_OPTION_COUNT: "0",
-    },
-  });
-  const output = ((attempt.stdout ?? "") + (attempt.stderr ?? "")).toLowerCase();
-  if (attempt.status === 0) {
-    fail(".githooks/pre-push exited zero; a push would be allowed");
-  } else if (!output.includes("push denied")) {
-    fail(".githooks/pre-push refused without a clear denial message");
+  const ZERO = "0".repeat(40);
+  const head = (git(["rev-parse", "HEAD"]).stdout ?? "").trim();
+  const parent = (git(["rev-parse", "HEAD~1"]).stdout ?? "").trim();
+  const line = (localRef, localSha, remoteRef, remoteSha) =>
+    localRef + " " + localSha + " " + remoteRef + " " + remoteSha + "\n";
+  const mainToMain = (localSha, remoteSha) =>
+    line("refs/heads/main", localSha, "refs/heads/main", remoteSha);
+
+  // Git invokes pre-push with GIT_DIR set and the remote name and URL in argv,
+  // so every probe supplies all three; a probe run bare could pass for reasons
+  // a real push would not have.
+  const probe = (authorized, remoteName, remoteUrl, input) =>
+    spawnSync(hookPath, [remoteName, remoteUrl], {
+      cwd: REPO_ROOT,
+      input,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...(authorized === null ? {} : { ACP_OWNER_PUBLISH: authorized }),
+        GIT_DIR: join(REPO_ROOT, ".git"),
+        GIT_WORK_TREE: REPO_ROOT,
+        GIT_PUSH_OPTION_COUNT: "0",
+      },
+    });
+
+  const DENY = [
+    ["no authorization signal", null, PUBLISH_REMOTE, PUBLISH_URL, mainToMain(head, ZERO)],
+    ["a signal that is not exactly 1", "yes", PUBLISH_REMOTE, PUBLISH_URL, mainToMain(head, ZERO)],
+    ["a non-canonical remote name", "1", "upstream", PUBLISH_URL, mainToMain(head, ZERO)],
+    ["a non-canonical remote URL", "1", PUBLISH_REMOTE, "https://github.com/rottay/other.git", mainToMain(head, ZERO)],
+    ["a URL carrying credentials", "1", PUBLISH_REMOTE, "https://token@github.com/rottay/agent-control-plane.git", mainToMain(head, ZERO)],
+    ["a tag", "1", PUBLISH_REMOTE, PUBLISH_URL, line("refs/tags/v1", head, "refs/tags/v1", ZERO)],
+    ["a branch other than main", "1", PUBLISH_REMOTE, PUBLISH_URL, line("refs/heads/wip", head, "refs/heads/wip", ZERO)],
+    ["main onto another remote ref", "1", PUBLISH_REMOTE, PUBLISH_URL, line("refs/heads/main", head, "refs/heads/other", ZERO)],
+    ["a deletion", "1", PUBLISH_REMOTE, PUBLISH_URL, line("(delete)", ZERO, "refs/heads/main", head)],
+    ["a non-fast-forward", "1", PUBLISH_REMOTE, PUBLISH_URL, mainToMain(parent, head)],
+    ["a remote commit this clone does not have", "1", PUBLISH_REMOTE, PUBLISH_URL, mainToMain(head, "1".repeat(40))],
+    ["an empty ref list", "1", PUBLISH_REMOTE, PUBLISH_URL, ""],
+    ["main together with a tag", "1", PUBLISH_REMOTE, PUBLISH_URL, mainToMain(head, ZERO) + line("refs/tags/v1", head, "refs/tags/v1", ZERO)],
+  ];
+  const PERMIT = [
+    ["the first publication of main", "1", PUBLISH_REMOTE, PUBLISH_URL, mainToMain(head, ZERO)],
+    ["a fast-forward of an existing main", "1", PUBLISH_REMOTE, PUBLISH_URL, mainToMain(head, parent)],
+  ];
+
+  if (head === "" || parent === "") {
+    fail("the publication matrix needs HEAD and HEAD~1 to build fast-forward cases");
   } else {
-    notes.push("pre-push hook refuses with exit " + attempt.status);
+    requireScope("the publication hook's semantics, driven case by case", DENY.length + PERMIT.length);
+    let denied = 0;
+    for (const [label, authorized, remoteName, remoteUrl, input] of DENY) {
+      const attempt = probe(authorized, remoteName, remoteUrl, input);
+      const output = ((attempt.stdout ?? "") + (attempt.stderr ?? "")).toLowerCase();
+      if (attempt.status === 0) {
+        fail(".githooks/pre-push permitted " + label + "; the owner authorized none of that");
+      } else if (!output.includes("push denied")) {
+        fail(".githooks/pre-push refused " + label + " without a clear denial message");
+      } else {
+        denied += 1;
+      }
+    }
+    let permitted = 0;
+    for (const [label, authorized, remoteName, remoteUrl, input] of PERMIT) {
+      const attempt = probe(authorized, remoteName, remoteUrl, input);
+      if (attempt.status !== 0) {
+        fail(
+          ".githooks/pre-push denied " + label + ", which the owner did authorize; a fence " +
+            "that denies the authorized case is not stricter, it is broken",
+        );
+      } else {
+        permitted += 1;
+      }
+    }
+    // The distinction the ruling turns on, asserted in the hook's own text so
+    // an operator reading a refusal is told it too.
+    const hookText = hookSource ?? "";
+    for (const required of ["ACP_OWNER_PUBLISH", "refs/heads/main", "P9"]) {
+      if (!hookText.includes(required)) {
+        fail(".githooks/pre-push no longer mentions " + required + "; its own text is the operator's copy of the ruling");
+      }
+    }
+    if (!/P9[\s\S]{0,80}defer/i.test(hookText)) {
+      fail(".githooks/pre-push no longer says P9 stays deferred; publication would read as cutover");
+    }
+    notes.push(
+      "publication hook drilled: " + denied + " denied case(s) and " + permitted +
+        " permitted case(s); default is deny, main-only, fast-forward-only, P9 stated deferred",
+    );
   }
 }
 
@@ -5253,29 +5432,45 @@ if (configuredHooksPath !== ".githooks") {
   notes.push("core.hooksPath is .githooks");
 }
 
-// --- 7. no remote ----------------------------------------------------------
+// --- 7. exactly one remote, and it is the canonical one --------------------
+//
+// The publication ruling of 2026-09-03 replaced "no remote may exist" with "one
+// remote may exist, and it is this one". The check is not weaker for it: it now
+// asserts a name AND an exact URL where it used to assert an absence, so a
+// second remote, a renamed remote, a fork URL or a credential-bearing URL is a
+// violation rather than something the old law happened to cover by forbidding
+// everything.
+//
+// Absence stays legal. A clone that has not added the remote can publish
+// nothing, and requiring the remote in order to pass would make the gate fail
+// for a checkout that is simply not the publishing one.
 
 const remotes = git(["remote"]);
 const remoteList = (remotes.stdout ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
-// Fail closed. P0 authorizes no remote locally. The single tolerated exception
-// is a GitHub Actions checkout, which necessarily creates exactly one remote
-// named origin. Any other remote, any extra remote, or the same remote outside
-// GitHub Actions is a violation, not an environment quirk.
-const inGithubActions = process.env.GITHUB_ACTIONS === "true";
-const isExactlyOrigin = remoteList.length === 1 && remoteList[0] === "origin";
 if (remoteList.length === 0) {
-  notes.push("no git remote is configured");
-} else if (inGithubActions && isExactlyOrigin) {
-  notes.push(
-    "CI EXCEPTION: exactly one remote named origin, tolerated only under GITHUB_ACTIONS",
-  );
+  notes.push("no git remote is configured; nothing can be published from this clone");
 } else {
-  fail(
-    "P0 authorizes no remote" +
-      (inGithubActions ? " other than a lone origin under GitHub Actions" : "") +
-      ", found: " +
-      remoteList.join(", "),
-  );
+  const extra = remoteList.filter((name) => name !== PUBLISH_REMOTE);
+  if (extra.length > 0) {
+    fail(
+      "the only publishable remote is " + PUBLISH_REMOTE + ", found also the remote(s): " + extra.join(", "),
+    );
+  }
+  const configured = (git(["remote", "get-url", PUBLISH_REMOTE]).stdout ?? "").trim();
+  if (configured.includes("@")) {
+    // Checked before the URL comparison so the message never repeats the
+    // secret it is refusing.
+    fail("the remote " + PUBLISH_REMOTE + " has a URL carrying embedded credentials; a token may not live in git config");
+  } else if (configured !== PUBLISH_URL && configured !== PUBLISH_URL.replace(/\.git$/, "")) {
+    fail(
+      "the remote " + PUBLISH_REMOTE + " points at " + configured +
+        " but the only authorized repository is " + PUBLISH_URL,
+    );
+  } else {
+    notes.push(
+      "one remote, " + PUBLISH_REMOTE + ", at the authorized URL, with no credentials in it",
+    );
+  }
 }
 
 // --- 8. no credential stores ----------------------------------------------

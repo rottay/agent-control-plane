@@ -2,10 +2,12 @@
 
 ## What "update" means in this repository
 
-There is no remote and no release channel. `.githooks/pre-push` refuses
-unconditionally and the fence verifies that it still does. So an update is not a
-fetch — it is a deliberate, local change to pinned versions, followed by the
-full gate battery.
+There is no release channel. The repository is published, but publication is
+one-way and manual: `.githooks/pre-push` denies by default and permits only an
+explicitly authorized fast-forward of `main`, which the fence drives case by
+case. Nothing fetches updates into this repository and there is no automatic
+release. So an update is not a fetch — it is a deliberate, local change to
+pinned versions, followed by the full gate battery.
 
 Every shared version is pinned exactly, in one place, in the workspace catalog.
 A range would let a rendering or cache-semantics change arrive unreviewed, which

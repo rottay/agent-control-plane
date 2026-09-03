@@ -162,10 +162,15 @@ self-reported before staging, and one adjudicated widening. Both are on the
 record in `.acp-local/`, which is the point — the number that matters is not
 "zero incidents" but "zero incidents that were not written down".
 
-**Zero pushes.** There is no remote to push to and `.githooks/pre-push` refuses
-unconditionally; the fence verifies both the hook's content digest and that
-`core.hooksPath` actually points at it. This is structural rather than
-behavioural, which is the stronger form.
+**Zero pushes during P8.** No push occurred while the phase ran, and at the
+time nothing could: there was no remote and `.githooks/pre-push` refused
+unconditionally. That fence was retired by a separate owner ruling on
+2026-09-03, after this baseline closed, and replaced by a default-deny
+publication hook — so the figure above is a closed historical measurement, not
+a claim about the repository today. The fence still verifies the hook's content
+digest and that `core.hooksPath` points at it, and now also drives the hook's
+whole deny/permit matrix. Structural rather than behavioural, which is the
+stronger form.
 
 ## 3. The four quantitative criteria — a decision the owner has not made
 

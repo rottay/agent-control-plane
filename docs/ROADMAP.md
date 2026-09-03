@@ -834,6 +834,45 @@ Checkpoint independiente: Codex.
   del owner, 2026-08-31): ningún esfuerzo de diseño o implementación hasta
   nueva autorización explícita del owner.
 
+#### Ruling del owner (2026-09-03): publicación del repositorio, sin cutover
+
+Autorización recibida textualmente: *"Autorizo retirar la fence de no-push de
+Agent Control Plane y publicar main"*.
+
+Alcance exacto de lo autorizado:
+
+- publicar la rama `main` **ya committeada** en un único remote canónico,
+  `origin` en `https://github.com/rottay/agent-control-plane.git` (privado);
+- retirar la fence de no-push **incondicional** y reemplazarla por una fence de
+  publicación explícita que **deniega por defecto**.
+
+Alcance exacto de lo **no** autorizado, y que ninguna publicación concede:
+
+- P9 ni cutover operativo, que siguen diferidos y sin prioridad ni ETA (ruling
+  del owner, 2026-08-31, intacto);
+- releases o publicación de paquetes automáticos: los paquetes siguen
+  `private: true` y el non-goal "no push ni release automáticos" sigue vigente,
+  porque la publicación autorizada es manual, de un solo uso y de una sola rama;
+- otras ramas, tags, borrados, force-push, otros remotes, ni URLs con
+  credenciales;
+- ninguna intervención sobre Modern Rescue.
+
+Forma mecánica: `.githooks/pre-push` deniega salvo que se cumplan todas las
+condiciones — `ACP_OWNER_PUBLISH=1` en esa única invocación, remote `origin`
+con la URL canónica y sin credenciales, `refs/heads/main` hacia
+`refs/heads/main`, sin borrados y solo fast-forward. `ACP_OWNER_PUBLISH` es una
+señal de un solo uso: exportarla desde un profile, escribirla en un archivo
+versionado o dársela a un agente convertiría una autorización explícita en una
+permanente, que es justamente lo que evita. Ningún agente puede fijarla.
+
+**Publicar el repositorio no es adoptar el control plane.** La distinción se
+sostiene mecánicamente, no por prosa: el fence mantiene su lista de literales
+prohibidos en este roadmap — el marcador que encolaría P9 y las dos afirmaciones
+de cutover autorizado, que este ruling no saca de la lista y que por eso no
+pueden escribirse aquí, ni siquiera para citarlas — la línea Estado conserva
+`NO_PRODUCT_CUTOVER`, y el propio hook lo dice en su texto de rechazo.
+Publicar código fuente hace visible lo construido; no autoriza que opere nada.
+
 ## Criterio de paralelización
 
 Se paraleliza cuando los write-sets, autoridades y derivados sean disjuntos. La

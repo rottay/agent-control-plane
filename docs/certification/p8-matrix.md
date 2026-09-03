@@ -256,7 +256,7 @@ refused and never echoed.
 
 | | |
 |---|---|
-| **Evidence** | Structural, not behavioural: **zero remotes configured**, `.githooks/pre-push` refuses unconditionally and the fence verifies both its content digest and that `core.hooksPath` actually points at it. The fence's product-authority scan asserts that no tracked file names a product repository outside a narrow, named exemption list. P9 is recorded as deferred without priority or ETA. |
+| **Evidence** | Structural, not behavioural. **At P8 closure:** zero remotes configured and `.githooks/pre-push` refusing unconditionally. **Since the publication ruling of 2026-09-03:** exactly one remote, the canonical `origin`, asserted by exact URL and refused if it carries credentials; the hook denies by default and the fence drives its full deny/permit matrix rather than reading it. Either way the fence verifies the hook's content digest and that `core.hooksPath` actually points at it. The product-authority scan still asserts that no tracked file names a product repository outside a narrow, named exemption list. **Publishing the repository is not cutover:** P9 remains deferred without priority or ETA, and the fence still refuses a `NEXT_P9` or any cutover claim in the roadmap. |
 | **Status** | **MET.** |
 
 ---

@@ -268,7 +268,12 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).toContain("core.hooksPath");
   });
 
-  it("refuses a tree that declares a remote", () => {
+  // The publication ruling of 2026-09-03 replaced "no remote may exist" with
+  // "one remote may exist, and it is this one". These three cases are what that
+  // law actually forbids, and they replace the single case that used to be
+  // enough when every remote was a violation. A lone canonical origin is now
+  // legal, so asserting that ANY remote fails would assert the old law.
+  it("refuses a remote that is not the canonical repository", () => {
     const root = syntheticTree();
     execFileSync("git", ["remote", "add", "origin", "https://example.invalid/x.git"], { cwd: root });
     write(root, "README.md", "# probe\n");
@@ -277,6 +282,37 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const { status, output } = runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output.toLowerCase()).toContain("remote");
+    expect(output).toContain("only authorized repository");
+  });
+
+  it("refuses a second remote beside the canonical one", () => {
+    const root = syntheticTree();
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/rottay/agent-control-plane.git"], { cwd: root });
+    execFileSync("git", ["remote", "add", "mirror", "https://example.invalid/x.git"], { cwd: root });
+    write(root, "README.md", "# probe\n");
+    commitAll(root);
+
+    const { status, output } = runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("found also the remote(s): mirror");
+  });
+
+  it("refuses a canonical remote whose URL carries credentials", () => {
+    // The credential case is checked before the URL comparison, so the refusal
+    // names the problem without echoing the secret back into the output.
+    const root = syntheticTree();
+    execFileSync(
+      "git",
+      ["remote", "add", "origin", "https://token@github.com/rottay/agent-control-plane.git"],
+      { cwd: root },
+    );
+    write(root, "README.md", "# probe\n");
+    commitAll(root);
+
+    const { status, output } = runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("embedded credentials");
+    expect(output).not.toContain("token@");
   });
 
   it("refuses a tracked file that no write-set declares (write-set conformance)", () => {
