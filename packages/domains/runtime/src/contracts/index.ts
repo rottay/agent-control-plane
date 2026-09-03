@@ -1,6 +1,9 @@
+import { DRIVER_CAPABILITIES, isDriverRefused } from "@acp/contracts";
 import type {
   ControlPlaneEvent,
+  DriverCapabilities,
   DriverMode,
+  DriverOutcome,
   DriverStatus,
   ReconciliationReport,
   TaskState,
@@ -196,4 +199,81 @@ export interface OrchestrationDriver {
     invocation: DurableInvocation,
     from: TaskState,
   ): Promise<ControlPlaneEvent | null>;
+
+  /**
+   * Declare what this driver's engine can be asked for (V2-B2-1).
+   *
+   * Synchronous and side-effect free: a capability is a fact about the engine,
+   * known by construction, and a declaration that had to reach the network
+   * could fail — leaving a caller unable to learn what is supported at exactly
+   * the moment it needed to know.
+   *
+   * It is not a claim a driver makes on its own recognisance. Every
+   * `UNSUPPORTED` verb below must refuse for every input, and every
+   * `SUPPORTED` one must not; `driverCapabilityMismatches` is that law, and
+   * both drivers' suites apply it to the real object.
+   */
+  capabilities(): DriverCapabilities;
+
+  /**
+   * Ask the engine to abandon a durable invocation.
+   *
+   * Cancelling the DURABLE invocation, not a running provider process: killing
+   * a live agent session needs a harness port that does not exist yet.
+   */
+  cancel(invocation: DurableInvocation): Promise<DriverOutcome>;
+
+  /** Rejoin an invocation already in flight, rather than starting a second one. */
+  reattach(invocation: DurableInvocation): Promise<DriverOutcome>;
+
+  /** Deliver an external signal to a waiting invocation. */
+  signal(invocation: DurableInvocation): Promise<DriverOutcome>;
+
+  /** Ask the engine to wait durably, so a sleep survives a restart. */
+  timer(invocation: DurableInvocation): Promise<DriverOutcome>;
+}
+
+/**
+ * The correspondence law, as a function (V2-B2-1).
+ *
+ * A capability declaration is worth nothing if it can disagree with the
+ * behaviour it describes, and nothing about a strictObject prevents that: a
+ * driver may declare `CANCEL: "SUPPORTED"` and refuse every call, or declare
+ * `UNSUPPORTED` and quietly do the work. Both are lies a type system cannot
+ * catch, and both are exactly what a caller reading the declaration would be
+ * misled by.
+ *
+ * So the law is stated once, here, and applied to real driver objects by both
+ * drivers' suites:
+ *
+ *     for every verb v:  declared(v) === "UNSUPPORTED"  ⟺  v() refuses
+ *
+ * Returns the mismatches rather than throwing, so a caller can report every
+ * disagreement at once instead of the first — the same shape
+ * `verifyIntegrity` uses, and for the same reason.
+ *
+ * Properties are deliberately absent: `SERIALIZED_PER_TASK` has no method, so
+ * there is nothing to compare it against and no honest way to include it.
+ */
+export function driverCapabilityMismatches(
+  declared: DriverCapabilities,
+  observed: Readonly<Record<string, DriverOutcome>>,
+): readonly string[] {
+  const mismatches: string[] = [];
+  for (const verb of DRIVER_CAPABILITIES) {
+    const state = declared.verbs[verb];
+    const outcome = observed[verb];
+    if (outcome === undefined) {
+      mismatches.push(verb + ": declared " + state + " but no outcome was observed");
+      continue;
+    }
+    const refused = isDriverRefused(outcome);
+    if (state === "UNSUPPORTED" && !refused) {
+      mismatches.push(verb + ": declared UNSUPPORTED but did not refuse");
+    }
+    if (state === "SUPPORTED" && refused) {
+      mismatches.push(verb + ": declared SUPPORTED but refused");
+    }
+  }
+  return mismatches;
 }

@@ -104,6 +104,136 @@ export const DriverStatus = z
 export type DriverStatus = z.infer<typeof DriverStatus>;
 
 /**
+ * The four durable verbs a driver may support (V2-B2-1).
+ *
+ * Closed, and closed on purpose: a fifth verb is a contract change, not a
+ * configuration value. Each names a thing a caller can ASK a driver to do, and
+ * each therefore has a method on the port — which is what lets the declaration
+ * below be checked against behaviour rather than believed.
+ *
+ * This is not a second model-capability registry. Model capabilities describe
+ * what a provider's model can do and stay `UNKNOWN` until a real-subject drill
+ * confirms them; these describe what an orchestration driver's own engine
+ * offers, which is knowable by construction from the engine's own API. Two
+ * different questions about two different subjects, and the roadmap's
+ * single-registry restriction governs the other one.
+ */
+export const DRIVER_CAPABILITIES = ["CANCEL", "REATTACH", "SIGNAL", "TIMER"] as const;
+export const DriverCapability = z.enum(DRIVER_CAPABILITIES);
+export type DriverCapability = z.infer<typeof DriverCapability>;
+
+/**
+ * Structural properties a driver either has or does not, with no verb attached.
+ *
+ * `SERIALIZED_PER_TASK` is a fact about how an engine schedules, not something
+ * a caller invokes. It is kept in its own shape rather than flattened in beside
+ * the verbs precisely because it cannot participate in the correspondence law:
+ * there is no method to compare a declaration against. Inventing a
+ * `serialize()` nobody calls, purely so one flat enum could be used, would buy
+ * symmetry with a lie.
+ */
+export const DRIVER_CAPABILITY_PROPERTIES = ["SERIALIZED_PER_TASK"] as const;
+export const DriverCapabilityProperty = z.enum(DRIVER_CAPABILITY_PROPERTIES);
+export type DriverCapabilityProperty = z.infer<typeof DriverCapabilityProperty>;
+
+/**
+ * Two states, deliberately not three.
+ *
+ * The model-capability vocabulary carries `UNKNOWN` because a model's abilities
+ * are only learnable by drilling a real subject. A driver's are not: the engine
+ * either exposes the operation or it does not, and the code that would call it
+ * is in this repository. So there is no honest third state here, and adding one
+ * would give a driver somewhere to hide.
+ */
+export const DRIVER_CAPABILITY_STATES = ["SUPPORTED", "UNSUPPORTED"] as const;
+export const DriverCapabilityState = z.enum(DRIVER_CAPABILITY_STATES);
+export type DriverCapabilityState = z.infer<typeof DriverCapabilityState>;
+
+/**
+ * What a driver declares about its own engine.
+ *
+ * A self-report, exactly like `DriverStatus`, and it lives beside it for the
+ * same reason: a reader may see it, and a driver must satisfy it. It carries no
+ * application fact — nothing here says what a task is doing, only what the
+ * engine advancing it can be asked for.
+ *
+ * The declaration is not decorative. For every verb, `UNSUPPORTED` means the
+ * corresponding method returns a `DriverRefused` for every input, and
+ * `SUPPORTED` means it does not; that correspondence is checked rather than
+ * promised (`driverCapabilityMismatches` in `@acp/runtime`, and the fence's own
+ * pin over both driver sources).
+ */
+export const DriverCapabilities = z
+  .strictObject({
+    contractVersion: ContractVersion,
+    mode: DriverMode,
+    /** One entry per verb. Every verb is answered; silence is not a state. */
+    verbs: z.strictObject({
+      CANCEL: DriverCapabilityState,
+      REATTACH: DriverCapabilityState,
+      SIGNAL: DriverCapabilityState,
+      TIMER: DriverCapabilityState,
+    }),
+    /** Properties, which have no method and no correspondence obligation. */
+    properties: z.strictObject({
+      SERIALIZED_PER_TASK: DriverCapabilityState,
+    }),
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: true });
+  });
+export type DriverCapabilities = z.infer<typeof DriverCapabilities>;
+
+/**
+ * Why a driver refused a verb.
+ *
+ * Closed and sorted, like every other refusal vocabulary in this package. One
+ * member today, because at the packet that introduces the verbs there is
+ * exactly one honest reason to refuse: the engine does not offer the operation.
+ * A later packet that needs a second reason adds it together with the drill
+ * that earns it, rather than stocking the enum in advance with names nothing
+ * returns.
+ */
+export const DRIVER_REFUSALS = ["CAPABILITY_UNSUPPORTED"] as const;
+export const DriverRefusal = z.enum(DRIVER_REFUSALS);
+export type DriverRefusal = z.infer<typeof DriverRefusal>;
+
+/**
+ * A refusal from a driver verb, carrying a closed reason and where it applied.
+ *
+ * The same shape `ExecutionRefused` already established at the owned execution
+ * boundary, for the same reasons: `ok: false` makes the union discriminable
+ * without a thrown error, and `at` names a verb or a field — never engine
+ * output, never a path, never anything about the work being advanced.
+ */
+export interface DriverRefused {
+  readonly ok: false;
+  readonly refusal: DriverRefusal;
+  /** The verb or field that was refused. Never engine output. */
+  readonly at: string;
+}
+
+/**
+ * A verb that was accepted.
+ *
+ * Deliberately empty today. B2-1 implements no verb, so there is nothing true
+ * to put in it, and a placeholder field invented now would be a shape every
+ * later packet had to work around. Each packet that makes a verb real widens
+ * this arm with what that verb actually produces.
+ */
+export interface DriverAccepted {
+  readonly ok: true;
+}
+
+/** What a driver verb answers: accepted, or refused with a closed reason. */
+export type DriverOutcome = DriverAccepted | DriverRefused;
+
+/** Is this outcome a refusal? One test, so callers cannot each invent their own. */
+export function isDriverRefused(outcome: DriverOutcome): outcome is DriverRefused {
+  return !outcome.ok;
+}
+
+/**
  * The classification of a driver's view against the ledger.
  *
  * Fail-closed by construction: exactly two verdicts permit resuming, and both

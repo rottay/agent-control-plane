@@ -31,6 +31,7 @@ new records from `_template.md`, which carries the required fields.
 | 0013 | [The plane's first write route](0013-the-first-write-route.md) | accepted |
 | 0014 | [Repository topology: five strata, and what may depend on what](0014-repository-topology.md) | accepted, amended by 0015 |
 | 0015 | [The topology's package names, restated: 0014 amended, not superseded](0015-topology-nomenclature-restatement.md) | accepted |
+| 0016 | [A driver declares what it cannot do, and the declaration is checked](0016-driver-capability-declaration.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

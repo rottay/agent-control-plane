@@ -2,7 +2,10 @@ import { CONTRACT_VERSION, ReconciliationReport } from "@acp/contracts";
 import type {
   CommitPolicy,
   ControlPlaneEvent,
+  DriverCapabilities,
   DriverMode,
+  DriverOutcome,
+  DriverRefused,
   DriverStatus,
   ReconciliationVerdict,
   TaskState,
@@ -395,6 +398,16 @@ export function createAcpTaskObject(dependencies: ObjectDependencies) {
 // The driver
 // ---------------------------------------------------------------------------
 
+/**
+ * The one refusal this driver returns, built in one place.
+ *
+ * `at` names the verb and nothing else — never engine output, never an
+ * invocation id, never a path.
+ */
+function unsupported(at: string): DriverRefused {
+  return { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at };
+}
+
 export class RestateDriver implements OrchestrationDriver {
   readonly mode: DriverMode = RESTATE_MODE;
 
@@ -413,6 +426,60 @@ export class RestateDriver implements OrchestrationDriver {
     this.#beat = beat;
     this.#commitPolicy = commitPolicy;
     this.#initiativeId = initiativeId;
+  }
+
+  /**
+   * What this engine can be asked for (V2-B2-1).
+   *
+   * All four verbs are `UNSUPPORTED` today, and none of them is a statement
+   * about Restate: the engine does offer durable timers, awakeables,
+   * cancellation and attach. It is a statement about THIS DRIVER, which does
+   * not yet call any of them. A capability declares what a caller may rely on,
+   * so it may not run ahead of the code that would honour it — each later B2
+   * packet flips exactly one entry and lands the drill that earns it.
+   *
+   * `SERIALIZED_PER_TASK` is the same discipline applied to a fact that happens
+   * to be true already: the object is keyed by task, so Restate does serialize
+   * per task. It stays `UNSUPPORTED` until the packet that drills it, because a
+   * declaration nobody has tested is exactly the decorative claim the
+   * correspondence law exists to prevent.
+   */
+  capabilities(): DriverCapabilities {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      mode: this.mode,
+      verbs: {
+        CANCEL: "UNSUPPORTED",
+        REATTACH: "UNSUPPORTED",
+        SIGNAL: "UNSUPPORTED",
+        TIMER: "UNSUPPORTED",
+      },
+      properties: { SERIALIZED_PER_TASK: "UNSUPPORTED" },
+    };
+  }
+
+  /**
+   * The four verbs, each refusing what this driver has not yet learned to do.
+   *
+   * Typed refusals, never throws and never silent no-ops, for the reason the
+   * owned execution boundary already gives: starting fresh while a caller
+   * believes it reattached, or reporting nothing while a caller believes it
+   * cancelled, are the failures that cost the most and show the least.
+   */
+  cancel(): Promise<DriverOutcome> {
+    return Promise.resolve(unsupported("cancel"));
+  }
+
+  reattach(): Promise<DriverOutcome> {
+    return Promise.resolve(unsupported("reattach"));
+  }
+
+  signal(): Promise<DriverOutcome> {
+    return Promise.resolve(unsupported("signal"));
+  }
+
+  timer(): Promise<DriverOutcome> {
+    return Promise.resolve(unsupported("timer"));
   }
 
   /**

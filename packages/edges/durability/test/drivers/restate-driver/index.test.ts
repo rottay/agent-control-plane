@@ -1,3 +1,6 @@
+import { DriverCapabilities } from "@acp/contracts";
+import type { DriverOutcome } from "@acp/contracts";
+import { driverCapabilityMismatches } from "@acp/runtime";
 import { CONTRACT_VERSION, ReconciliationReport, findCredentialViolations } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
@@ -621,7 +624,17 @@ function outcomeKey(invocation: DurableInvocation): string {
  * only means something if a non-conforming value fails it, so the negative
  * control below is as load-bearing as the positive one.
  */
-const PORT_METHODS = ["status", "reconcile", "advance"] as const;
+const PORT_METHODS = [
+  "status",
+  "reconcile",
+  "advance",
+  // V2-B2-1: declaring and the four verbs are port members like any other.
+  "capabilities",
+  "cancel",
+  "reattach",
+  "signal",
+  "timer",
+] as const;
 
 /** Every way a candidate fails `OrchestrationDriver`, named. Empty is conformance. */
 function portViolations(candidate: object): readonly string[] {
@@ -704,7 +717,18 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
       status: () => Promise.resolve(null),
       reconcile: () => Promise.resolve(null),
     };
-    expect(portViolations(missingAdvance)).toEqual(["advance() must be a method"]);
+    // V2-B2-1 widened the port, so a stub that predates it now violates the
+    // five new members too. Listed in full rather than loosened to a
+    // `toContain`: the whole value of this control is that it names exactly
+    // what is missing.
+    const VERB_VIOLATIONS = [
+      "capabilities() must be a method",
+      "cancel() must be a method",
+      "reattach() must be a method",
+      "signal() must be a method",
+      "timer() must be a method",
+    ];
+    expect(portViolations(missingAdvance)).toEqual(["advance() must be a method", ...VERB_VIOLATIONS]);
 
     const wrongArity = {
       mode: "RESTATE",
@@ -712,14 +736,14 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
       reconcile: () => Promise.resolve(null),
       advance: (invocation: unknown) => Promise.resolve(invocation),
     };
-    expect(portViolations(wrongArity)).toEqual(["advance() must take (invocation, from)"]);
+    expect(portViolations(wrongArity)).toEqual([...VERB_VIOLATIONS, "advance() must take (invocation, from)"]);
 
     const noMode = {
       status: () => Promise.resolve(null),
       reconcile: () => Promise.resolve(null),
       advance: (invocation: unknown, from: unknown) => Promise.resolve([invocation, from]),
     };
-    expect(portViolations(noMode)).toEqual(["mode must be a non-empty DriverMode"]);
+    expect(portViolations(noMode)).toEqual(["mode must be a non-empty DriverMode", ...VERB_VIOLATIONS]);
   });
 
   it("narrows the SDK context to exactly three members (DurableStepContext)", () => {
@@ -740,5 +764,137 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
     // @ts-expect-error `get` is SDK surface the narrowing deliberately withholds.
     const withheld: unknown = seen.get;
     expect(withheld).toBeUndefined();
+  });
+});
+
+/**
+ * The subject for the capability tests: stubs only, no ledger file, no server,
+ * no network. None of the four verbs reaches any of them, which is the point.
+ */
+const INVOCATION_FOR_CAPABILITIES = invocationFor("5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a02");
+
+function capabilitySubject(): RestateDriver {
+  const beat = (candidate: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
+    ledger: {
+      append: () => {
+        throw new SupervisorError("the capability fixture never appends");
+      },
+      getTask: () => null,
+      getEventBySequence: () => null,
+      getEventByIdempotencyKey: () => null,
+    } satisfies LedgerPort,
+    effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
+    invocation: candidate,
+    emittedBy: EMITTED_BY,
+    route: TEST_ROUTE,
+  });
+  return new RestateDriver(
+    {
+      ledger: STUB_LEDGER,
+      invocation: INVOCATION_FOR_CAPABILITIES,
+      emittedBy: EMITTED_BY,
+      ingressUrl: "http://127.0.0.1:8080",
+      adminUrl: "http://127.0.0.1:9070",
+    },
+    beat,
+    "NO_COMMIT",
+    TEST_INITIATIVE_ID,
+  );
+}
+
+/**
+ * The capability declaration, and the law that stops it being decorative
+ * (V2-B2-1).
+ *
+ * The stub cases are the ones that discriminate. A declaration checked only
+ * against a driver that already agrees with it proves nothing: it would pass
+ * just as happily if the law compared nothing at all. So both mismatch
+ * directions are built deliberately and asserted to be caught.
+ */
+describe("the driver declares what it cannot do, and the declaration is checked", () => {
+  const OUTCOMES = async (driver: OrchestrationDriver) => ({
+    CANCEL: await driver.cancel(INVOCATION_FOR_CAPABILITIES),
+    REATTACH: await driver.reattach(INVOCATION_FOR_CAPABILITIES),
+    SIGNAL: await driver.signal(INVOCATION_FOR_CAPABILITIES),
+    TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES),
+  });
+
+  it("declares every verb UNSUPPORTED, and the declaration satisfies the contract", () => {
+    const declared = capabilitySubject().capabilities();
+    expect(DriverCapabilities.safeParse(declared).success).toBe(true);
+    expect(declared.verbs).toEqual({
+      CANCEL: "UNSUPPORTED",
+      REATTACH: "UNSUPPORTED",
+      SIGNAL: "UNSUPPORTED",
+      TIMER: "UNSUPPORTED",
+    });
+    expect(declared.properties).toEqual({ SERIALIZED_PER_TASK: "UNSUPPORTED" });
+    expect(declared.mode).toBe(capabilitySubject().mode);
+  });
+
+  it("refuses every verb field-exactly: never a throw, never a silent no-op", async () => {
+    const observed = await OUTCOMES(capabilitySubject());
+    for (const [verb, at] of [
+      ["CANCEL", "cancel"],
+      ["REATTACH", "reattach"],
+      ["SIGNAL", "signal"],
+      ["TIMER", "timer"],
+    ] as const) {
+      // Field by field, not `toMatchObject`: the refusal reason and the `at`
+      // are the whole content of the answer, and `at` names the verb rather
+      // than anything about the work or the engine.
+      expect({ verb, outcome: observed[verb] }).toEqual({
+        verb,
+        outcome: { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at },
+      });
+    }
+  });
+
+  it("satisfies the correspondence law on the real driver", async () => {
+    const subject = capabilitySubject();
+    expect(driverCapabilityMismatches(subject.capabilities(), await OUTCOMES(subject))).toEqual([]);
+  });
+
+  it("catches a declaration that claims SUPPORTED while the verb refuses", async () => {
+    const subject = capabilitySubject();
+    const declared = subject.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, CANCEL: "SUPPORTED" as const } };
+    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
+      "CANCEL: declared SUPPORTED but refused",
+    ]);
+  });
+
+  it("catches a declaration that claims UNSUPPORTED while the verb does not refuse", async () => {
+    // The mirror, and the direction that would otherwise let a driver do work
+    // it told its caller it could not do.
+    const subject = capabilitySubject();
+    const observed = { ...(await OUTCOMES(subject)), TIMER: { ok: true } as const };
+    expect(driverCapabilityMismatches(subject.capabilities(), observed)).toEqual([
+      "TIMER: declared UNSUPPORTED but did not refuse",
+    ]);
+  });
+
+  it("restores: with the law's comparison removed, the same mismatching stub passes", async () => {
+    // The restore half, in the only honest form available to a pure function:
+    // a comparison that does not compare returns no mismatches, which is
+    // exactly the pre-law state the packet exists to leave behind.
+    const subject = capabilitySubject();
+    const declared = subject.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, CANCEL: "SUPPORTED" as const } };
+    const withoutLaw = (): readonly string[] => [];
+    expect(withoutLaw()).toEqual([]);
+    // And with the law back, the same input is caught -- so the assertion above
+    // is describing an absence of checking, not an absence of a defect.
+    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject)).length).toBe(1);
+  });
+
+  it("reports a verb whose outcome was never observed rather than passing it", async () => {
+    const subject = capabilitySubject();
+    const partial = await OUTCOMES(subject);
+    const withoutSignal: Record<string, DriverOutcome> = { ...partial };
+    delete withoutSignal["SIGNAL"];
+    expect(driverCapabilityMismatches(subject.capabilities(), withoutSignal)).toEqual([
+      "SIGNAL: declared UNSUPPORTED but no outcome was observed",
+    ]);
   });
 });

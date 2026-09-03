@@ -62,6 +62,16 @@ export {
   DriverMode,
   DriverHealth,
   DriverStatus,
+  DRIVER_CAPABILITIES,
+  DRIVER_CAPABILITY_PROPERTIES,
+  DRIVER_CAPABILITY_STATES,
+  DRIVER_REFUSALS,
+  DriverCapability,
+  DriverCapabilityProperty,
+  DriverCapabilityState,
+  DriverCapabilities,
+  DriverRefusal,
+  isDriverRefused,
   ReconciliationVerdict,
   ReconciliationReport,
   InitiativeStatus,
@@ -94,3 +104,4 @@ export type {
   ModelExecutionPort,
 } from "./schemas/index.js";
 export type { ReconciliationDiscrepancy } from "./schemas/index.js";
+export type { DriverAccepted, DriverOutcome, DriverRefused } from "./schemas/index.js";

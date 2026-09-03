@@ -147,6 +147,10 @@ export type {
   StepBeat,
 } from "./contracts/index.js";
 
+// The correspondence law (V2-B2-1). Exported so both drivers' suites apply the
+// same function to their real object rather than each re-deriving the rule.
+export { driverCapabilityMismatches } from "./contracts/index.js";
+
 export {
   PostconditionUnknownError,
   ReconciliationError,

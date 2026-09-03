@@ -1336,8 +1336,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **603
- * packet entries across 222 distinct paths**: 2 (P8-D) +
+ * P8, with the V2 packets that continue its coordinates, is therefore **618
+ * packet entries across 223 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1349,34 +1349,31 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
- * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) + 3 (V2-B6-fence) = 603
- * entries, with 381 duplicate entries.
+ * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) + 3 (V2-B6-fence) +
+ * 15 (V2-B2-1) = 618 entries, with 395 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 55 duplicates = 55   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 56 duplicates = 56   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
- *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
- *                                   build-server suite, and the CLI suite)
- *   6 paths ×  6 duplicates = 36   (the protocol surface, the workspace file,
- *                                   and — since V2-B6-fence — the contracts
- *                                   schema barrel)
- *   7 paths ×  5 duplicates = 35   (the protocol route and parity surface with
+ *   4 paths ×  7 duplicates = 28   (the gateway's routes source and
+ *                                   build-server suite, the CLI suite, and —
+ *                                   since V2-B2-1 — the contracts schema
+ *                                   barrel)
+ *   5 paths ×  6 duplicates = 30   (the protocol surface and the workspace file)
+ *   8 paths ×  5 duplicates = 40   (the protocol route and parity surface with
  *                                   its parity suite, the console's app root
- *                                   and api client, the root README, and the
- *                                   daemon drills suite)
- *   8 paths ×  4 duplicates = 32   (the initiatives suite, the console manifest,
- *                                   the console styles sheet, the accounts-view
- *                                   suite, the supervisor and durability drills
- *                                   suites, `mode-restate`, and the daemon
- *                                   entry point)
- *  24 paths ×  3 duplicates = 72
- *  35 paths ×  2 duplicates = 70
- *  41 paths ×  1 duplicate  = 41
+ *                                   and api client, the root README, the daemon
+ *                                   drills suite, and the runtime supervisor
+ *                                   suite)
+ *  11 paths ×  4 duplicates = 44
+ *  21 paths ×  3 duplicates = 63
+ *  36 paths ×  2 duplicates = 72
+ *  43 paths ×  1 duplicate  = 43
  *
- * 55 + 11 + 8 + 21 + 36 + 35 + 32 + 72 + 70 + 41 = 381.
+ * 56 + 11 + 8 + 28 + 30 + 40 + 44 + 63 + 72 + 43 = 395.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1767,6 +1764,21 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * ×55 → ×56; the contracts schema barrel ×6 → ×7, which is why ×6 reads six
  * and ×5 reads seven; and the fence's own probe file ×2 → ×3, so ×3 reads
  * thirty-five and ×2 reads forty-one. ×1 is untouched at forty-one.
+ *
+ * V2-B2-1 adds **fifteen entries, exactly one of them novel** — ADR 0016, the
+ * only new distinct path anywhere in B2-1. Entries move 603 → 618, distinct
+ * 222 → 223, duplicates 381 → 395. Fourteen band steps, one per duplicate, and
+ * the novel path causes none of them: this file's own row, ×56 → ×57; the
+ * contracts schema barrel ×7 → ×8; five paths ×4 → ×5 (the contracts package
+ * entry, the SQLite driver, the runtime barrel, the durability driver suite);
+ * and the rest one band each. ×1 reads forty-three.
+ *
+ * Fourteen of the fifteen were briefed. `packages/kernel/contracts/src/index.ts`
+ * is the DT's authorized correction — the packet cannot compile without it,
+ * because the package exposes only its root specifier and that entry is an
+ * explicit re-export list. Two briefed paths went unwritten and are carried
+ * anyway, as the convention allows: the durability barrel and its README, since
+ * this packet adds no durability export and that pin holds at twenty-two.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3641,6 +3653,52 @@ const V2B6FENCE_WRITE_SET = [
 ];
 
 /**
+ * V2-B2-1: the driver declares what it cannot do, and the declaration is checked.
+ *
+ * The first B2 packet, and it implements no behaviour on purpose. The port
+ * gains `capabilities()` and the four verbs the capability vocabulary names;
+ * both drivers declare all four `UNSUPPORTED` and return field-exact
+ * `CAPABILITY_UNSUPPORTED` refusals. What makes that more than a comment is the
+ * correspondence law — `driverCapabilityMismatches`, applied by both drivers'
+ * suites to the real object, rejecting a declaration that disagrees with its
+ * own behaviour in either direction — and the pin below, which fixes both
+ * declarations by equality so a capability cannot be flipped invisibly.
+ *
+ * `SERIALIZED_PER_TASK` is a property, not a verb: no method, so no
+ * correspondence obligation, and it is kept in its own shape rather than
+ * flattened in beside the verbs. Restate's is declared `UNSUPPORTED` even
+ * though the engine does serialize per task, because the drill that earns it
+ * belongs to a later packet and a declaration nobody has tested is the
+ * decorative claim this packet exists to make impossible.
+ *
+ * Fifteen paths. Fourteen were briefed; `packages/kernel/contracts/src/index.ts`
+ * was authorized by the DT after measurement showed the packet could not
+ * compile without it — the package exposes only its root specifier and that
+ * entry is an explicit re-export list, so a name added to the schemas barrel is
+ * unreachable to runtime. A write-set correction, not scope expansion. Two of
+ * the briefed paths went unwritten: the durability barrel and its README, since
+ * the packet adds no durability export and `DURABILITY_PUBLIC_EXPORTS` holds at
+ * twenty-two.
+ */
+const V2B21_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/durability-plane/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/domains/runtime/src/contracts/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/src/index.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/README.md",
+  "docs/architecture/0016-driver-capability-declaration.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3952,6 +4010,7 @@ const WRITE_SET = [
   ...V2B1C1_WRITE_SET,
   ...V2B1C2_WRITE_SET,
   ...V2B6FENCE_WRITE_SET,
+  ...V2B21_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -4640,6 +4699,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the toy effect binds no production seam (route b: the toy names from @acp/runtime)", scope: "packages/*/*/src/**" },
   { law: "the recorded route travels under one pinned key", scope: "packages/*/*/src/**" },
   { law: "the submission digest has one producer and one door", scope: "packages/*/*/src/**" },
+  { law: "both drivers declare their capabilities, pinned by equality", scope: "the two driver sources" },
   {
     law: "the ledger and the event builder never reach for the router",
     scope: "packages/persistence/ledger/src/** and packages/domains/runtime/src/core/**",
@@ -6808,6 +6868,89 @@ if (tracked.status === 0) {
       fail(SUBMISSION_HOME + " no longer computes the expected submission digest at the door");
     }
 
+  // V2-B2-1: both drivers' capability declarations are pinned by equality, and
+  // every UNSUPPORTED verb refuses in the source that declares it.
+  //
+  // The runtime correspondence law (`driverCapabilityMismatches`, applied by
+  // both drivers' suites) is what proves a declaration matches behaviour. This
+  // is the other half: it fixes WHAT is declared, so flipping a capability is
+  // a visible edit to a pinned literal rather than a line that rides along
+  // inside an unrelated change. B2-2..B2-5 each move exactly one Restate entry
+  // and update this pin in the same packet; the SQLite entries are expected
+  // never to move.
+  {
+    const DRIVER_DECLARATIONS = [
+      {
+        path: "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+        verbs: { CANCEL: "UNSUPPORTED", REATTACH: "UNSUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
+        properties: { SERIALIZED_PER_TASK: "UNSUPPORTED" },
+      },
+      {
+        path: "packages/edges/durability/src/drivers/restate-driver/index.ts",
+        verbs: { CANCEL: "UNSUPPORTED", REATTACH: "UNSUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
+        properties: { SERIALIZED_PER_TASK: "UNSUPPORTED" },
+      },
+    ];
+
+    requireScope("both drivers declare their capabilities, pinned by equality", DRIVER_DECLARATIONS.length);
+    for (const declaration of DRIVER_DECLARATIONS) {
+      const source = readIfPresent(declaration.path);
+      if (source === null) {
+        fail(declaration.path + " is missing; it declares a driver's capabilities");
+        continue;
+      }
+      const stripped = stripComments(source);
+      const block = stripped.match(/capabilities\(\): DriverCapabilities \{[\s\S]*?\n {2}\}/);
+      if (block === null) {
+        fail(declaration.path + " no longer declares capabilities(); a driver may not go silent about what it offers");
+        continue;
+      }
+      const body = block[0];
+      for (const [name, expected] of Object.entries({ ...declaration.verbs, ...declaration.properties })) {
+        const found = new RegExp(name + ':\\s*"(SUPPORTED|UNSUPPORTED)"').exec(body);
+        if (found === null) {
+          fail(declaration.path + " no longer declares " + name + "; every capability is answered or none is trustworthy");
+          continue;
+        }
+        if (found[1] !== expected) {
+          fail(
+            declaration.path +
+              " declares " +
+              name +
+              " as " +
+              found[1] +
+              " but the pin says " +
+              expected +
+              "; a capability flip lands with the packet and the drill that earns it, never on its own",
+          );
+        }
+      }
+      // An UNSUPPORTED verb has to refuse in the same file that declared it.
+      for (const verb of Object.keys(declaration.verbs)) {
+        const method = verb.toLowerCase();
+        if (declaration.verbs[verb] !== "UNSUPPORTED") continue;
+        if (!new RegExp(method + '\\(\\): Promise<DriverOutcome> \\{\\s*return Promise\\.resolve\\(unsupported\\("' + method + '"\\)\\);').test(stripped)) {
+          fail(
+            declaration.path +
+              " declares " +
+              verb +
+              " UNSUPPORTED but " +
+              method +
+              "() does not return the unsupported refusal; the declaration would be decorative",
+          );
+        }
+      }
+    }
+    notes.push(
+      DRIVER_DECLARATIONS.length +
+        " driver capability declarations pinned by equality (" +
+        Object.keys(DRIVER_DECLARATIONS[0].verbs).length +
+        " verbs, " +
+        Object.keys(DRIVER_DECLARATIONS[0].properties).length +
+        " property), each UNSUPPORTED verb refusing in the source that declares it",
+    );
+  }
+
     notes.push(
       "the submission digest has one producer and one door: " +
         SUBMISSION_HOME +
@@ -8814,7 +8957,6 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "EnforcementRefusal",
   "EnforcementRefused",
   "EventCoordinate",
-  // V2-B1b stage 2: the execution-backed effect port, exactly three names.
   "ExecutionEffectError",
   "ExecutionEffectsInput",
   "FaultPoint",
@@ -8903,6 +9045,7 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "deriveOperationCoordinate",
   "deterministicUuid",
   "drillRoot",
+  "driverCapabilityMismatches",
   "eventName",
   "executeSwitchPlan",
   "nextStep",
@@ -9145,10 +9288,22 @@ if (accountsIndex === null) {
   "ConfidenceLevel",
   "ControlPlaneEvent",
   "ControlPlaneEventType",
+  "DRIVER_CAPABILITIES",
+  "DRIVER_CAPABILITY_PROPERTIES",
+  "DRIVER_CAPABILITY_STATES",
   "DRIVER_HEALTH_STATES",
   "DRIVER_MODES",
+  "DRIVER_REFUSALS",
+  "DriverAccepted",
+  "DriverCapabilities",
+  "DriverCapability",
+  "DriverCapabilityProperty",
+  "DriverCapabilityState",
   "DriverHealth",
   "DriverMode",
+  "DriverOutcome",
+  "DriverRefusal",
+  "DriverRefused",
   "DriverStatus",
   "EVENT_PAYLOAD_MAX_BYTES",
   "EXCEPTIONAL_STATES",
@@ -9205,12 +9360,13 @@ if (accountsIndex === null) {
   "findCredentialViolations",
   "findTranscriptViolations",
   "formatWorkerIdentity",
+  "isDriverRefused",
   "isExceptionalState",
   "isLifecycleState",
   "parseWorkerIdentity",
   "serializedByteLength",
   "utf8ByteLength",
-  ];
+];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
   if (schemasBarrel === null) {

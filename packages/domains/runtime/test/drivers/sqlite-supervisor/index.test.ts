@@ -8,7 +8,10 @@ import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { DurableInvocation } from "../../../src/contracts/index.js";
+import { DriverCapabilities } from "@acp/contracts";
+import type { DriverOutcome } from "@acp/contracts";
+import type { DurableInvocation, OrchestrationDriver } from "../../../src/contracts/index.js";
+import { driverCapabilityMismatches } from "../../../src/contracts/index.js";
 import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
 import { applyEffect, probeEffect } from "../../../src/toy/repository/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, READ_ONLY_PLAN } from "../../../src/core/lifecycle/index.js";
@@ -855,5 +858,121 @@ describe("the plan comes from the packet's commit policy", () => {
     // plan it is walking, or a shorter plan would be given a longer budget and
     // the guard would stop meaning what it says.
     expect(READ_ONLY_PLAN.length).toBeLessThan(LIFECYCLE_PLAN.length);
+  });
+});
+
+/**
+ * The subject for the capability tests: a supervisor whose ledger is never
+ * touched, because none of the four verbs reaches one.
+ */
+const INVOCATION_FOR_CAPABILITIES = invocationFor("11111111-1111-4111-8111-111111111111");
+
+function capabilitySubject(): SqliteSupervisor {
+  const root = scenario("capability-declaration");
+  return new SqliteSupervisor({
+    ledger: track(openLedger(scenarioLedgerPath(root))),
+    invocation: INVOCATION_FOR_CAPABILITIES,
+    effects: toyEffects(root),
+    emittedBy: EMITTED_BY,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    initiativeId: TEST_INITIATIVE_ID,
+    route: TEST_ROUTE,
+  });
+}
+
+/**
+ * The capability declaration, and the law that stops it being decorative
+ * (V2-B2-1).
+ *
+ * The stub cases are the ones that discriminate. A declaration checked only
+ * against a driver that already agrees with it proves nothing: it would pass
+ * just as happily if the law compared nothing at all. So both mismatch
+ * directions are built deliberately and asserted to be caught.
+ */
+describe("the driver declares what it cannot do, and the declaration is checked", () => {
+  const OUTCOMES = async (driver: OrchestrationDriver) => ({
+    CANCEL: await driver.cancel(INVOCATION_FOR_CAPABILITIES),
+    REATTACH: await driver.reattach(INVOCATION_FOR_CAPABILITIES),
+    SIGNAL: await driver.signal(INVOCATION_FOR_CAPABILITIES),
+    TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES),
+  });
+
+  it("declares every verb UNSUPPORTED, and the declaration satisfies the contract", () => {
+    const declared = capabilitySubject().capabilities();
+    expect(DriverCapabilities.safeParse(declared).success).toBe(true);
+    expect(declared.verbs).toEqual({
+      CANCEL: "UNSUPPORTED",
+      REATTACH: "UNSUPPORTED",
+      SIGNAL: "UNSUPPORTED",
+      TIMER: "UNSUPPORTED",
+    });
+    expect(declared.properties).toEqual({ SERIALIZED_PER_TASK: "UNSUPPORTED" });
+    expect(declared.mode).toBe(capabilitySubject().mode);
+  });
+
+  it("refuses every verb field-exactly: never a throw, never a silent no-op", async () => {
+    const observed = await OUTCOMES(capabilitySubject());
+    for (const [verb, at] of [
+      ["CANCEL", "cancel"],
+      ["REATTACH", "reattach"],
+      ["SIGNAL", "signal"],
+      ["TIMER", "timer"],
+    ] as const) {
+      // Field by field, not `toMatchObject`: the refusal reason and the `at`
+      // are the whole content of the answer, and `at` names the verb rather
+      // than anything about the work or the engine.
+      expect({ verb, outcome: observed[verb] }).toEqual({
+        verb,
+        outcome: { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at },
+      });
+    }
+  });
+
+  it("satisfies the correspondence law on the real driver", async () => {
+    const subject = capabilitySubject();
+    expect(driverCapabilityMismatches(subject.capabilities(), await OUTCOMES(subject))).toEqual([]);
+  });
+
+  it("catches a declaration that claims SUPPORTED while the verb refuses", async () => {
+    const subject = capabilitySubject();
+    const declared = subject.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, CANCEL: "SUPPORTED" as const } };
+    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
+      "CANCEL: declared SUPPORTED but refused",
+    ]);
+  });
+
+  it("catches a declaration that claims UNSUPPORTED while the verb does not refuse", async () => {
+    // The mirror, and the direction that would otherwise let a driver do work
+    // it told its caller it could not do.
+    const subject = capabilitySubject();
+    const observed = { ...(await OUTCOMES(subject)), TIMER: { ok: true } as const };
+    expect(driverCapabilityMismatches(subject.capabilities(), observed)).toEqual([
+      "TIMER: declared UNSUPPORTED but did not refuse",
+    ]);
+  });
+
+  it("restores: with the law's comparison removed, the same mismatching stub passes", async () => {
+    // The restore half, in the only honest form available to a pure function:
+    // a comparison that does not compare returns no mismatches, which is
+    // exactly the pre-law state the packet exists to leave behind.
+    const subject = capabilitySubject();
+    const declared = subject.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, CANCEL: "SUPPORTED" as const } };
+    const withoutLaw = (): readonly string[] => [];
+    expect(withoutLaw()).toEqual([]);
+    // And with the law back, the same input is caught -- so the assertion above
+    // is describing an absence of checking, not an absence of a defect.
+    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject)).length).toBe(1);
+  });
+
+  it("reports a verb whose outcome was never observed rather than passing it", async () => {
+    const subject = capabilitySubject();
+    const partial = await OUTCOMES(subject);
+    const withoutSignal: Record<string, DriverOutcome> = { ...partial };
+    delete withoutSignal["SIGNAL"];
+    expect(driverCapabilityMismatches(subject.capabilities(), withoutSignal)).toEqual([
+      "SIGNAL: declared UNSUPPORTED but no outcome was observed",
+    ]);
   });
 });

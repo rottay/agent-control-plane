@@ -103,12 +103,25 @@ export {
   DRIVER_HEALTH_STATES,
   DriverHealth,
   DriverStatus,
+  DRIVER_CAPABILITIES,
+  DriverCapability,
+  DRIVER_CAPABILITY_PROPERTIES,
+  DriverCapabilityProperty,
+  DRIVER_CAPABILITY_STATES,
+  DriverCapabilityState,
+  DriverCapabilities,
+  DRIVER_REFUSALS,
+  DriverRefusal,
+  isDriverRefused,
   RECONCILIATION_VERDICTS,
   ReconciliationVerdict,
   RESUMABLE_VERDICTS,
   ReconciliationReport,
 } from "./durability-plane/index.js";
 export type {
+  DriverAccepted,
+  DriverOutcome,
+  DriverRefused,
   ReconciliationDiscrepancy,
 } from "./durability-plane/index.js";
 export {

@@ -10,39 +10,43 @@ import {
   ACCOUNT_ACTION_NOTE_MAX,
   ACCOUNT_ACTION_STATE,
   AccountActionEvent,
-  ROADMAP_CONTENT_MAX_BYTES,
-  utf8ByteLength,
   AccountRecord,
   CHECKPOINT_MAX_BYTES,
+  CLI_SUBSCRIPTION_PROVIDERS,
   CONTRACT_VERSION,
   CONTROL_PLANE_EVENT_TYPES,
   Checkpoint,
   CommitAuthorizationReceipt,
   ControlPlaneEvent,
+  DRIVER_CAPABILITIES,
+  DRIVER_CAPABILITY_PROPERTIES,
+  DRIVER_CAPABILITY_STATES,
   DRIVER_HEALTH_STATES,
   DRIVER_MODES,
+  DRIVER_REFUSALS,
+  DriverCapabilities,
   DriverHealth,
   DriverMode,
   DriverStatus,
   EVENT_PAYLOAD_MAX_BYTES,
   EXCEPTIONAL_STATES,
+  EXECUTION_REFUSALS,
+  ExecutionEvent,
+  ExecutionRequest,
   INITIATIVE_EVENT_TYPES,
   INITIATIVE_STATUSES,
   Initiative,
   InitiativeEvent,
   LIFECYCLE_STATES,
-  ROADMAP_VERSION_KINDS,
   RECONCILIATION_VERDICTS,
-  RoadmapVersion,
-  CLI_SUBSCRIPTION_PROVIDERS,
-  EXECUTION_REFUSALS,
-  ExecutionEvent,
-  ExecutionRequest,
-  ResolvedRoute,
-  TRANSPORT_KINDS,
   RESUMABLE_VERDICTS,
+  ROADMAP_CONTENT_MAX_BYTES,
+  ROADMAP_VERSION_KINDS,
   ReconciliationReport,
   ReconciliationVerdict,
+  ResolvedRoute,
+  RoadmapVersion,
+  TRANSPORT_KINDS,
   TaskEnvelope,
   WORKER_ROLES,
   WorkerIdentityString,
@@ -52,10 +56,12 @@ import {
   findCredentialViolations,
   findTranscriptViolations,
   formatWorkerIdentity,
+  isDriverRefused,
   isExceptionalState,
   isLifecycleState,
   parseWorkerIdentity,
   serializedByteLength,
+  utf8ByteLength,
 } from "../../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -1699,5 +1705,73 @@ describe("the account-action vocabulary (P8-8G packet 2)", () => {
     expect(
       AccountActionEvent.safeParse(event({ note: "x".repeat(ACCOUNT_ACTION_NOTE_MAX + 1) })).success,
     ).toBe(false);
+  });
+});
+
+
+describe("the driver capability declaration (V2-B2-1)", () => {
+  const declaration = {
+    contractVersion: CONTRACT_VERSION,
+    mode: "RESTATE",
+    verbs: { CANCEL: "UNSUPPORTED", REATTACH: "UNSUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
+    properties: { SERIALIZED_PER_TASK: "UNSUPPORTED" },
+  };
+
+  it("closes its vocabularies, and keeps verbs and properties apart", () => {
+    // Sorted and closed, like every other vocabulary here. A fifth verb or a
+    // second property is a contract change, which is what a pin is for.
+    expect([...DRIVER_CAPABILITIES]).toEqual(["CANCEL", "REATTACH", "SIGNAL", "TIMER"]);
+    expect([...DRIVER_CAPABILITY_PROPERTIES]).toEqual(["SERIALIZED_PER_TASK"]);
+    expect([...DRIVER_REFUSALS]).toEqual(["CAPABILITY_UNSUPPORTED"]);
+  });
+
+  it("admits two states and no third", () => {
+    // The absent `UNKNOWN` is the point: a driver's capabilities are knowable
+    // by construction, so a third state would only be somewhere to hide.
+    expect([...DRIVER_CAPABILITY_STATES]).toEqual(["SUPPORTED", "UNSUPPORTED"]);
+    expect(
+      DriverCapabilities.safeParse({
+        ...declaration,
+        verbs: { ...declaration.verbs, CANCEL: "UNKNOWN" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts a complete declaration and refuses a partial one", () => {
+    expect(DriverCapabilities.safeParse(declaration).success).toBe(true);
+    // Every verb is answered or none of them is trustworthy.
+    const withoutCancel: Record<string, string> = { ...declaration.verbs };
+    delete withoutCancel["CANCEL"];
+    expect(
+      DriverCapabilities.safeParse({ ...declaration, verbs: withoutCancel }).success,
+    ).toBe(false);
+  });
+
+  it("refuses a verb or property the vocabulary does not name", () => {
+    expect(
+      DriverCapabilities.safeParse({
+        ...declaration,
+        verbs: { ...declaration.verbs, TELEPORT: "SUPPORTED" },
+      }).success,
+    ).toBe(false);
+    expect(
+      DriverCapabilities.safeParse({
+        ...declaration,
+        properties: { ...declaration.properties, CHEAP: "SUPPORTED" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("carries the credential guards every self-report carries", () => {
+    // Not a new redaction mechanism: the same `attachGuards` DriverStatus and
+    // ReconciliationReport already run, reached through the same superRefine.
+    expect(
+      DriverCapabilities.safeParse({ ...declaration, apiKey: "sk-not-allowed-here" }).success,
+    ).toBe(false);
+  });
+
+  it("discriminates a refusal from an acceptance", () => {
+    expect(isDriverRefused({ ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "cancel" })).toBe(true);
+    expect(isDriverRefused({ ok: true })).toBe(false);
   });
 });

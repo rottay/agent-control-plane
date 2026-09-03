@@ -2,7 +2,10 @@ import { CONTRACT_VERSION } from "@acp/contracts";
 import type {
   CommitPolicy,
   ControlPlaneEvent,
+  DriverCapabilities,
   DriverMode,
+  DriverOutcome,
+  DriverRefused,
   DriverStatus,
   ReconciliationReport,
   ResolvedRoute,
@@ -103,6 +106,16 @@ export interface RunResult {
   readonly replayed: number;
 }
 
+/**
+ * The one refusal this driver returns, built in one place.
+ *
+ * `at` names the verb and nothing else — never engine output, never a path, and
+ * never anything about the work being advanced.
+ */
+function unsupported(at: string): DriverRefused {
+  return { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at };
+}
+
 export class SqliteSupervisor implements OrchestrationDriver {
   readonly mode: DriverMode = "SQLITE_SUPERVISOR";
 
@@ -131,6 +144,62 @@ export class SqliteSupervisor implements OrchestrationDriver {
   // -------------------------------------------------------------------------
   // OrchestrationDriver
   // -------------------------------------------------------------------------
+  /**
+   * What this engine can be asked for (V2-B2-1).
+   *
+   * All four verbs are `UNSUPPORTED`, and that is the honest answer rather than
+   * a placeholder: this driver is a single process walking a plan, and it has
+   * no durable timer, no external signal, no invocation to rejoin and no
+   * cancellation channel of its own. Emulating any of them in-process — a
+   * `setTimeout` calling itself a durable timer, say — would be simulated
+   * parity, which is the one thing a two-driver plane must never publish.
+   *
+   * `SERIALIZED_PER_TASK` is `UNSUPPORTED` for a different reason, and it is
+   * worth stating: the supervisor deliberately holds no cursor, because a
+   * cursor would be a second account of how far the work has got. Any guard
+   * that made per-task serialization true here would have to keep exactly such
+   * an account, so the honest declaration is the negative one until a packet
+   * proves otherwise.
+   */
+  capabilities(): DriverCapabilities {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      mode: this.mode,
+      verbs: {
+        CANCEL: "UNSUPPORTED",
+        REATTACH: "UNSUPPORTED",
+        SIGNAL: "UNSUPPORTED",
+        TIMER: "UNSUPPORTED",
+      },
+      properties: { SERIALIZED_PER_TASK: "UNSUPPORTED" },
+    };
+  }
+
+  /**
+   * The four verbs, each refusing exactly what it declared it cannot do.
+   *
+   * A typed refusal, never a throw and never a silent no-op. A throw would make
+   * "unsupported" indistinguishable from "broke"; a no-op would let a caller
+   * believe the work happened. Neither delegates to the other driver: a
+   * supervisor that quietly handed cancellation to Restate would make the mode
+   * flag a lie, which is the failure this plane is built to refuse.
+   */
+  cancel(): Promise<DriverOutcome> {
+    return Promise.resolve(unsupported("cancel"));
+  }
+
+  reattach(): Promise<DriverOutcome> {
+    return Promise.resolve(unsupported("reattach"));
+  }
+
+  signal(): Promise<DriverOutcome> {
+    return Promise.resolve(unsupported("signal"));
+  }
+
+  timer(): Promise<DriverOutcome> {
+    return Promise.resolve(unsupported("timer"));
+  }
+
 
   status(): Promise<DriverStatus> {
     const status = this.#ledger.status();
