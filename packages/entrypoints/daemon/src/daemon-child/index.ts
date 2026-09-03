@@ -3,7 +3,7 @@ import { isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ResolvedRoute } from "@acp/contracts";
-import { canonicalJsonStringify, sha256Hex } from "@acp/ledger";
+import { canonicalSubmission, canonicalSubmissionDigest } from "@acp/runtime";
 
 import { ModeError } from "../errors/index.js";
 import { isDaemonMode } from "../lifecycle/index.js";
@@ -87,80 +87,42 @@ export interface DaemonChildConfig {
 }
 
 /**
- * What this run was asked to do, as one value (V2-B1c, stage 2).
+ * The submission, its preimage and its digest -- declared in `@acp/runtime`,
+ * re-exported here (V2-B7S).
  *
- * B1c stage 1 recorded the admitted route on the INTENT event, which made the
- * route explainable after the fact but left it **unpinned**: nothing bound the
- * route to the submission, so a resume that reached the daemon with a
- * different route was adopted rather than refused. Where the INTENT had
- * already been appended the ledger caught it late, on an idempotency conflict.
- * Where the crash preceded the INTENT append, nothing caught it at all —
- * `assertInvocationContinuity` rebuilds step 0, and step 0 carried no route.
+ * **The door did not move; the producer did.** Everything below this comment
+ * about what the digest means still holds, and the comparison that enforces it
+ * is still in this file, a hundred lines down, unchanged. What changed is the
+ * address of the declaration: the composition root that elects a route now has
+ * to compute the digest this door will recompute, and it lives above the walk
+ * in `@acp/runtime`. Leaving the producer here would have forced that root to
+ * depend on `@acp/daemon` -- an entrypoint depending on an entrypoint, through
+ * a `.`-only export map and a fence-pinned public surface -- for one function.
  *
- * The determinism law (`@acp/runtime`'s `CoordinateOrigin`) admits three
- * provenances, and a resolved route is none of `DERIVED` — it is a function of
- * the policy document, the registry, quota state and a caller-supplied instant,
- * so it cannot be recomputed from `DurableInvocation`. It is therefore
- * `SUBMISSION`, and `SUBMISSION` is only worth anything if it is pinned by a
- * digest that rides an event replayed on every resume. That mechanism already
- * exists: `submissionDigest` is carried in the base payload of **every** event
- * precisely so that resubmitting different content under the same coordinates
- * fails closed. This type is what that digest is taken over.
+ * Re-exported rather than re-declared, and that distinction is the whole point:
+ * a second declaration would be a second answer to "what was asked for", which
+ * is exactly what the fence's one-producer arm refuses. It is a re-export, so
+ * the five daemon test files that import these names through this module keep
+ * resolving with no edit at all, `test/fallback` included -- B2-4a certifies
+ * that file untouched and this packet never opens it.
  *
- * So the route is bound by making it part of the preimage rather than by
- * adding a field to `DurableInvocation` (whose shape is B3's to change) or a
- * new event (which would change what a resuming SSE consumer sees between two
- * sequence numbers, also B3's). A changed route changes the digest, a changed
- * digest changes step 0's bytes, and the continuity guard refuses — with no
- * new law and no new vocabulary.
- *
- * **Only safe provenance enters the preimage.** Task coordinates, the instant,
- * the initiative, and the six contract fields of the admitted route: every one
- * an identifier or a timestamp. No credential, no prompt, no tool argument, no
- * environment value, no path. The preimage is hashed and discarded — it is
- * never logged, never persisted and never carried on an event; what travels is
- * the digest.
+ * V2-B1c stage 2's reasoning, which the move does not disturb: stage 1 recorded
+ * the admitted route on the INTENT event, which made the route explainable
+ * after the fact but left it **unpinned**, so a resume that reached the daemon
+ * with a different route was adopted rather than refused. The determinism law
+ * admits three provenances and a resolved route is none of `DERIVED` -- it is a
+ * function of the policy document, the registry, quota state and a
+ * caller-supplied instant. It is therefore `SUBMISSION`, and `SUBMISSION` is
+ * only worth anything if it is pinned by a digest that rides an event replayed
+ * on every resume. A changed route changes the digest, a changed digest changes
+ * step 0's bytes, and the continuity guard refuses -- with no new law and no new
+ * vocabulary.
  */
-export interface DaemonSubmission {
-  readonly taskId: string;
-  readonly attempt: number;
-  readonly submittedAt: string;
-  readonly initiativeId: string;
-  /** The route as the contract admitted it. Never a wider or laxer value. */
-  readonly route: ResolvedRoute;
-}
-
-/**
- * The canonical preimage, as bytes.
- *
- * `canonicalJsonStringify` is the ledger's own canonicalizer, the same one the
- * event chain is digested over, so key order here is a property of the
- * function rather than of how this literal happens to be written: two callers
- * spelling the fields in different orders produce identical bytes. The route's
- * six fields are projected one by one rather than spread, so a wider object
- * cannot widen the preimage and silently change every digest.
- */
-export function canonicalSubmission(submission: DaemonSubmission): string {
-  return canonicalJsonStringify({
-    taskId: submission.taskId,
-    attempt: submission.attempt,
-    submittedAt: submission.submittedAt,
-    initiativeId: submission.initiativeId,
-    route: {
-      provider: submission.route.provider,
-      model: submission.route.model,
-      accountId: submission.route.accountId,
-      transportKind: submission.route.transportKind,
-      capabilityPolicyVersion: submission.route.capabilityPolicyVersion,
-      resolvedAt: submission.route.resolvedAt,
-    },
-  });
-}
-
-/** The digest of the canonical preimage. One producer, one algorithm. */
-export function canonicalSubmissionDigest(submission: DaemonSubmission): string {
-  return sha256Hex(canonicalSubmission(submission));
-}
+// Imported above so the door below can call it verbatim, and re-exported here
+// so the five daemon suites that reach for these names through this module
+// keep resolving unchanged. A re-export, never a second declaration.
+export { canonicalSubmission, canonicalSubmissionDigest };
+export type { DaemonSubmission } from "@acp/runtime";
 
 /**
  * An absolute, canonical path, in the `config-file` manner.

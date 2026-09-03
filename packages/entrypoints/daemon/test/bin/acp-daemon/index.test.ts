@@ -8,8 +8,19 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { CONFIG_MAX_BYTES, checkConfigPath, loadDaemonConfig } from "../../../src/bin/config-file/index.js";
-import { canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
-import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
+import { DEFAULT_ROUTING_CONFIG, EVIDENCE_ABSENT, loadPolicyRegistry } from "@acp/accounts";
+import type { CandidateEvidence, PolicyRouteRequest, QuotaOutcome, RoutingRequest } from "@acp/accounts";
+import { AccountRecord, CONTRACT_VERSION } from "@acp/contracts";
+import type { ResolvedRoute } from "@acp/contracts";
+import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort } from "@acp/providers";
+import { composeSubmission } from "@acp/runtime";
+
+// V2-B7S: still imported through this module, which is now a re-export of
+// `@acp/runtime`. That these two lines need no edit is the point of the
+// re-export -- the other four daemon suites that reach for the same names are
+// untouched by this packet, `test/fallback` included.
+import { canonicalSubmission, canonicalSubmissionDigest, parseDaemonChildConfig } from "../../../src/daemon-child/index.js";
+import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
 import { EXIT_CONFIG_CONTENT, EXIT_CONFIG_PATH, EXIT_USAGE, runPackagedEntry } from "../../../src/bin/acp-daemon/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
@@ -314,5 +325,304 @@ describe("the submission digest binds the route (V2-B1c, stage 2)", () => {
     expect(loadDaemonConfig(writeConfig(dir, withoutDigest))).toMatchObject({
       reason: "INVALID_CONFIG",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B7S: the elected route, at the door it has to survive
+// ---------------------------------------------------------------------------
+
+/**
+ * The submission path's own end of the contract, drilled where the door lives.
+ *
+ * The composer is proved as a function in `runtime/test/submission`. What can
+ * only be proved here is the join: that a config document built from an
+ * election is a document this daemon's door admits, and that the digest the
+ * composer computed is the digest the door recomputes. If those two ever
+ * disagree there are two spellings of the preimage, which is exactly what the
+ * one-producer law exists to prevent.
+ *
+ * `@acp/accounts` is imported by a **test** here, which is what the daemon's
+ * import law has always allowed and what its comment says in as many words: a
+ * daemon *source* naming it would be a daemon that resolves, and D5 refused
+ * that. Nothing in `src/` names it, and the fence's new L-B7S law now says so
+ * mechanically.
+ */
+
+const B7S_ACCOUNT = "acct-b7s-door";
+const B7S_INITIATIVE = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+const B7S_TASK = "b7500000-0000-4000-8000-000000000001";
+const B7S_NOW = "2026-09-01T12:00:00Z";
+const B7S_RESET = "2026-12-01T00:00:00Z";
+const B7S_SUBMITTED_AT = "2026-09-01T00:00:00.000Z";
+const B7S_RESOLVED_AT = "2026-09-01T00:00:05.000Z";
+const SHIPPED_POLICY = join(REPO_ROOT, "packages", "domains", "accounts", "policy", "capability-policy.json");
+
+/**
+ * The digest of a fixed submission under the **pre-move** implementation, at
+ * base `cd8367c` (A3).
+ *
+ * A literal lifted from before the relocation, not a value recomputed from the
+ * code under test: recomputing would assert only that the implementation agrees
+ * with itself, which is precisely the thing a move must not be allowed to do
+ * quietly. The same literal is pinned in `runtime/test/submission`, so both
+ * ends of the re-export are held to the identical number.
+ */
+const B7S_PRE_MOVE_DIGEST = "af1d5cf93384691b6b526a59b6a319b1907864bd1e7a0c42ba4883580aad0d94";
+
+const B7S_FIXED_SUBMISSION: DaemonSubmission = Object.freeze({
+  taskId: B7S_TASK,
+  attempt: 1,
+  submittedAt: B7S_SUBMITTED_AT,
+  initiativeId: B7S_INITIATIVE,
+  route: Object.freeze({
+    provider: "claude",
+    model: "opus",
+    accountId: "acct-b7s-fixture",
+    transportKind: "CLI_SUBSCRIPTION",
+    capabilityPolicyVersion: "2026-08-30.1",
+    resolvedAt: B7S_RESOLVED_AT,
+  }),
+});
+
+function b7sRecord(): AccountRecord {
+  const parsed = AccountRecord.safeParse({
+    contractVersion: CONTRACT_VERSION,
+    accountId: B7S_ACCOUNT,
+    provider: "claude",
+    alias: B7S_ACCOUNT,
+    authMode: "PREAUTHENTICATED_PROFILE",
+    authProfileRef: "profile://acp-b7s-" + B7S_ACCOUNT,
+    credentialRef: null,
+    plan: "max",
+    enabledModels: ["opus", "sonnet"],
+    knownLimits: { weekly: 1_000_000 },
+    resetSchedule: { kind: "DECLARED", nextResetAt: B7S_RESET, timezone: "UTC", confidence: "HIGH" },
+    quotaEstimate: {
+      remainingRatio: 0.5,
+      estimatedTokensRemaining: 500_000,
+      estimatedAt: B7S_NOW,
+      confidence: "MEDIUM",
+    },
+    lastHealthProbe: null,
+    lastClassifiedError: null,
+    status: "AVAILABLE",
+    isolatedConfigRoot: "/tmp/acp-b7s-" + B7S_ACCOUNT,
+    contextSwitchCost: { estimatedTokens: 1_000, estimatedSeconds: 10 },
+  });
+  if (!parsed.success) throw new Error("fixture is not a valid AccountRecord");
+  return parsed.data;
+}
+
+function b7sRouting(): RoutingRequest {
+  const outcome: QuotaOutcome = {
+    ok: true,
+    estimate: {
+      accountId: B7S_ACCOUNT,
+      limitKey: "weekly",
+      limitTokens: 1_000_000,
+      observedTokensUsed: 500_000,
+      observationCount: 3,
+      remainingRatio: 0.5,
+      estimatedTokensRemaining: 500_000,
+      overBudget: false,
+      confidence: "MEDIUM",
+      estimatedAt: B7S_NOW,
+      reset: { kind: "DECLARED", nextResetAt: B7S_RESET, timezone: "UTC", millisUntilReset: 3_600_000, confidence: "HIGH" },
+    },
+  };
+  const evidence: CandidateEvidence = {
+    accountId: B7S_ACCOUNT,
+    acceptance: EVIDENCE_ABSENT,
+    contextAffinity: EVIDENCE_ABSENT,
+    capabilities: { known: false },
+  };
+  return {
+    records: [b7sRecord()],
+    estimates: [{ accountId: B7S_ACCOUNT, outcome }],
+    evidence: [evidence],
+    task: {
+      model: "",
+      estimatedTokens: 10_000,
+      estimatedDurationSeconds: 60,
+      reserveTokens: 5_000,
+      requiredCapabilities: [],
+    },
+    config: DEFAULT_ROUTING_CONFIG,
+    now: B7S_NOW,
+  };
+}
+
+function b7sRequest(transportKind: PolicyRouteRequest["transportKind"]): PolicyRouteRequest {
+  return { role: "implementer", routing: b7sRouting(), transportKind };
+}
+
+function b7sRegistry(path: string = SHIPPED_POLICY) {
+  const outcome = loadPolicyRegistry(path);
+  if (!outcome.ok) throw new Error("the policy document did not load: " + outcome.reason);
+  return outcome.registry;
+}
+
+describe("A3: the relocated producer is still reachable here, and unchanged", () => {
+  it("exports both names from this module, as values", () => {
+    // The five daemon suites import these through this path. A re-export that
+    // stopped exporting either would break four files this packet may not open.
+    expect(typeof canonicalSubmission).toBe("function");
+    expect(typeof canonicalSubmissionDigest).toBe("function");
+  });
+
+  it("computes the digest the pre-move implementation computed", () => {
+    expect(canonicalSubmissionDigest(B7S_FIXED_SUBMISSION)).toBe(B7S_PRE_MOVE_DIGEST);
+  });
+
+  it("still builds the preimage over the six route fields and nothing else", () => {
+    const preimage: unknown = JSON.parse(canonicalSubmission(B7S_FIXED_SUBMISSION));
+    const route = (preimage as { route: Record<string, unknown> }).route;
+    expect(Object.keys(route).sort()).toEqual([
+      "accountId",
+      "capabilityPolicyVersion",
+      "model",
+      "provider",
+      "resolvedAt",
+      "transportKind",
+    ]);
+  });
+});
+
+describe("A2: an elected route survives the door", () => {
+  it("admits a config the composer built, and recomputes the same digest", () => {
+    const composed = composeSubmission(b7sRequest("CLI_SUBSCRIPTION"), b7sRegistry(), {
+      taskId: B7S_TASK,
+      attempt: 1,
+      submittedAt: B7S_SUBMITTED_AT,
+      initiativeId: B7S_INITIATIVE,
+      resolvedAt: B7S_RESOLVED_AT,
+    });
+    expect(composed.ok).toBe(true);
+    if (!composed.ok) return;
+
+    const home = realpathSync(tmpdir());
+    const document = {
+      mode: "SQLITE_SUPERVISOR",
+      scenarioId: "b7s-door",
+      emittedBy: "claude/opus/implementer/01",
+      taskId: B7S_TASK,
+      attempt: 1,
+      submittedAt: B7S_SUBMITTED_AT,
+      submissionDigest: composed.submissionDigest,
+      initiativeId: B7S_INITIATIVE,
+      holdOpen: false,
+      checkPorts: false,
+      execution: {
+        route: composed.submission.route,
+        binding: {
+          binary: realpathSync(process.execPath),
+          configRoot: home,
+          workdir: home,
+          limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+        },
+      },
+    };
+
+    // The real door, not a re-implementation of it.
+    const parsed = parseDaemonChildConfig(document);
+    expect(parsed.submissionDigest).toBe(composed.submissionDigest);
+    expect(parsed.execution.route).toEqual(composed.submission.route);
+    expect(parsed.execution.route.capabilityPolicyVersion).toBe("2026-08-30.1");
+  });
+
+  it("refuses the same document when the elected route is swapped underneath the digest", () => {
+    // The negative that makes the first case mean something: if the door did
+    // not recompute, an elected route could be replaced after election and
+    // nothing downstream would notice.
+    const composed = composeSubmission(b7sRequest("CLI_SUBSCRIPTION"), b7sRegistry(), {
+      taskId: B7S_TASK,
+      attempt: 1,
+      submittedAt: B7S_SUBMITTED_AT,
+      initiativeId: B7S_INITIATIVE,
+      resolvedAt: B7S_RESOLVED_AT,
+    });
+    if (!composed.ok) throw new Error("the election refused");
+
+    const home = realpathSync(tmpdir());
+    const swapped: ResolvedRoute = { ...composed.submission.route, model: "sonnet" };
+    expect(() =>
+      parseDaemonChildConfig({
+        mode: "SQLITE_SUPERVISOR",
+        scenarioId: "b7s-door",
+        emittedBy: "claude/opus/implementer/01",
+        taskId: B7S_TASK,
+        attempt: 1,
+        submittedAt: B7S_SUBMITTED_AT,
+        submissionDigest: composed.submissionDigest,
+        initiativeId: B7S_INITIATIVE,
+        holdOpen: false,
+        checkPorts: false,
+        execution: {
+          route: swapped,
+          binding: {
+            binary: realpathSync(process.execPath),
+            configRoot: home,
+            workdir: home,
+            limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+          },
+        },
+      }),
+    ).toThrow(/submissionDigest is not the digest/);
+  });
+});
+
+describe("N2: a non-CLI elected transport fails closed at the port", () => {
+  it("is refused by the port with TRANSPORT_UNAVAILABLE at route.transportKind", async () => {
+    // The shipped document cannot elect this: every model in it declares
+    // CLI_SUBSCRIPTION only. So the policy is copied and edited to make an
+    // API_KEY route electable -- which is what makes the refusal below a
+    // statement about the PORT rather than about the policy.
+    const dir = stage();
+    const copy = join(dir, "capability-policy.json");
+    const document = JSON.parse(readFileSync(SHIPPED_POLICY, "utf8")) as {
+      models: { model: string; transports: string[] }[];
+    };
+    for (const entry of document.models) entry.transports = ["CLI_SUBSCRIPTION", "API_KEY"];
+    writeFileSync(copy, JSON.stringify(document));
+    chmodSync(copy, 0o600);
+
+    const composed = composeSubmission(b7sRequest("API_KEY"), b7sRegistry(copy), {
+      taskId: B7S_TASK,
+      attempt: 1,
+      submittedAt: B7S_SUBMITTED_AT,
+      initiativeId: B7S_INITIATIVE,
+      resolvedAt: B7S_RESOLVED_AT,
+    });
+    expect(composed.ok).toBe(true);
+    if (!composed.ok) return;
+    // The composer elected it. It did not refuse, and it must not: whether a
+    // transport can be served is the port's question, not the elector's.
+    expect(composed.submission.route.transportKind).toBe("API_KEY");
+
+    const home = realpathSync(tmpdir());
+    const port = createExecutionPort({
+      bindings: new Map([
+        [
+          B7S_ACCOUNT,
+          {
+            adapter: claudeAdapter,
+            binary: admitBinary(realpathSync(process.execPath), { provider: "claude", taskId: B7S_TASK }),
+            configRoot: admitConfigRoot(home, { provider: "claude", taskId: B7S_TASK }),
+            workdir: admitWorkdir(home, { provider: "claude", taskId: B7S_TASK }),
+            limits: { timeoutMs: 10_000, outputBudgetBytes: 65_536, interruptGraceMs: 120, termGraceMs: 120 },
+          },
+        ],
+      ]),
+    });
+
+    const outcome = await port.start(composed.submission.route, {
+      taskId: B7S_TASK,
+      attempt: 1,
+      identity: "claude/opus/implementer/01",
+      reattach: null,
+    });
+
+    expect(outcome).toMatchObject({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.transportKind" });
   });
 });

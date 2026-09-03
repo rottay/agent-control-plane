@@ -263,3 +263,23 @@ export type {
   CancellationSettlement,
   CancellationVerdict,
 } from "./cancellation/index.js";
+
+// V2-B7S: the submission path. The composition root above the walk elects a
+// route by policy and binds it to the attempt with the digest the daemon's
+// door recomputes. The two digest functions are DECLARED here and re-exported
+// by `daemon/src/daemon-child` — the producer moved so an elector outside the
+// daemon can compute what the door will compare, and the door itself did not
+// move at all. D5 is discharged, not reversed: the walk still receives a route
+// it did not resolve.
+export {
+  canonicalSubmission,
+  canonicalSubmissionDigest,
+  composeSubmission,
+} from "./submission/index.js";
+export type {
+  DaemonSubmission,
+  SubmissionComposed,
+  SubmissionCoordinates,
+  SubmissionOutcome,
+  SubmissionRefused,
+} from "./submission/index.js";

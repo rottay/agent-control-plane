@@ -24,6 +24,7 @@
  *    chain risk bought for nothing.
  */
 
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 import {
@@ -39,6 +40,16 @@ import {
 import type { ApiErrorCode } from "@acp/protocol";
 import { LEDGER_MIGRATIONS, LedgerError, openLedger } from "@acp/ledger";
 import type { EventQuery, Ledger, TaskQuery, WorkerQuery } from "@acp/ledger";
+import {
+  DEFAULT_ROUTING_CONFIG,
+  EVIDENCE_ABSENT,
+  buildRegistry,
+  estimateQuota,
+  loadAccountsFile,
+  loadPolicyRegistry,
+} from "@acp/accounts";
+import type { CandidateEvidence, PolicyRouteRequest, RoutingRequest } from "@acp/accounts";
+import { composeSubmission } from "@acp/runtime";
 
 import {
   renderError,
@@ -120,9 +131,24 @@ const OPTIONS = {
   "emitted-by": { type: "string" },
   "to-state": { type: "string" },
   "skip-integrity": { type: "boolean" },
+  config: { type: "string" },
+  accounts: { type: "string" },
+  policy: { type: "string" },
+  "estimated-tokens": { type: "string" },
+  "reserve-tokens": { type: "string" },
+  "duration-seconds": { type: "string" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean", short: "V" },
 } as const;
+
+/**
+ * The planning verb's name, as one literal (V2-B7S).
+ *
+ * Named rather than spelled twice: the command table declares it and `run`
+ * branches on it, and two spellings of one verb is how a branch and a table
+ * come to disagree about which command was asked for.
+ */
+export const SUBMISSION_COMMAND = "submission";
 
 type OptionName = keyof typeof OPTIONS;
 type ParsedValues = Partial<Record<OptionName, string | boolean>>;
@@ -186,6 +212,16 @@ const COMMANDS: readonly CommandSpec[] = [
     options: [],
     summary: "verify the hash chain, the schema and the projections",
   },
+  // V2-B7S. The one verb that plans rather than observes, and the only one
+  // that needs no ledger: it reads a daemon config document, re-elects its
+  // route over the current policy and accounts, and prints the updated
+  // document. It opens nothing, writes nothing and appends nothing.
+  {
+    name: SUBMISSION_COMMAND,
+    positional: null,
+    options: ["config", "accounts", "policy", "estimated-tokens", "reserve-tokens", "duration-seconds"],
+    summary: "re-elect a daemon config's route by policy and print the updated document",
+  },
 ];
 
 const USAGE = ((): string => {
@@ -225,8 +261,19 @@ const USAGE = ((): string => {
     "  --limit <n>           Page size, 1 to 200.",
     "  --skip-integrity      overview: report counts without verifying the chain.",
     "",
+    "Submission planning (V2-B7S):",
+    "  --config <path>            Daemon config document to re-elect. Absolute.",
+    "  --accounts <path>          Owner accounts file. Absolute.",
+    "  --policy <path>            Capability policy document. Absolute.",
+    "  --estimated-tokens <n>     Tokens the next atomic step is expected to cost.",
+    "  --reserve-tokens <n>       Tokens held back for checkpoint and verification.",
+    "  --duration-seconds <n>     Wall-clock seconds the next atomic step may take.",
+    "",
     "This CLI opens the ledger read-only and never writes. It prints no absolute",
-    "path and no event payload value.",
+    "path and no event payload value. `acp submission` opens no ledger at all: it",
+    "reads three documents, elects a route and prints one document to stdout. It",
+    "creates and modifies no file, so the CLI plans as well as observes and still",
+    "never writes.",
     "",
   ].join("\n");
 })();
@@ -571,6 +618,265 @@ function emitFailure(failed: CliFailure, format: OutputFormat, io: CliIo): numbe
   return failed.exitCode;
 }
 
+// ---------------------------------------------------------------------------
+// The submission verb (V2-B7S)
+// ---------------------------------------------------------------------------
+
+/**
+ * The composition root, above the walk.
+ *
+ * D5 (`.acp-local/v2-b1b-brief.md:83-93`, carried into commit `0418cae`)
+ * forbade **the walk** resolving and named the submission path as the elector's
+ * home. This is that home's CLI leg. The daemon is behaviourally unchanged by
+ * it: it still receives an admitted route it did not resolve, through the same
+ * config door, compared against the same digest.
+ *
+ * **It writes nothing and opens no ledger.** Three documents are read, a route
+ * is elected, one document is printed. That is why the branch below sits ahead
+ * of the `--database` law and ahead of `openLedger`: this verb has no ledger to
+ * name, and requiring one would be requiring a thing it never touches.
+ *
+ * **The config is carried, not re-validated.** Exactly two fields are replaced,
+ * `execution.route` and `submissionDigest`; everything else passes through as
+ * opaque JSON. The four coordinates the digest is taken over are read because
+ * they are the digest's own inputs, not because this verb judges the document —
+ * the daemon's door remains the only validator of the whole of it, and a second
+ * validator here would be a second authority on what a config is.
+ *
+ * **No credential is read.** `credentialRef` and `authProfileRef` are fields of
+ * the loaded `AccountRecord` and nothing in this file names either.
+ */
+
+/**
+ * The transport vocabulary, exhaustive **by type**.
+ *
+ * A `Record` keyed by the union rather than a list of strings, which is the
+ * idiom the observation plane's refusal map already uses and for the same
+ * reason: a transport kind added to the contract breaks this file at compile
+ * time instead of falling through to a default. There is deliberately no
+ * default arm — the config names a transport and this verb admits it or
+ * refuses, and a default would let an unknown transport be elected silently.
+ *
+ * Note what this does **not** do: it admits the transport the config already
+ * asked for. It does not elect one. Every model in the shipped policy document
+ * declares `CLI_SUBSCRIPTION` only, so no policy edit can move a route onto a
+ * different transport — see ADR 0018.
+ */
+const TRANSPORT_KINDS: Readonly<
+  Record<PolicyRouteRequest["transportKind"], PolicyRouteRequest["transportKind"]>
+> = Object.freeze({
+  CLI_SUBSCRIPTION: "CLI_SUBSCRIPTION",
+  API_KEY: "API_KEY",
+  LOCAL_OR_SELF_HOSTED: "LOCAL_OR_SELF_HOSTED",
+});
+
+function admitTransportKind(candidate: string): PolicyRouteRequest["transportKind"] {
+  const admitted = Object.hasOwn(TRANSPORT_KINDS, candidate)
+    ? TRANSPORT_KINDS[candidate as PolicyRouteRequest["transportKind"]]
+    : undefined;
+  if (admitted === undefined) {
+    throw failure(
+      EXIT_USAGE,
+      "BAD_REQUEST",
+      "the config's route names a transport this build does not know",
+      "config.execution.route.transportKind",
+    );
+  }
+  return admitted;
+}
+
+/** A required absolute path option, refused by name and never by value. */
+function absolutePathOption(values: ParsedValues, name: OptionName): string {
+  const supplied = stringOption(values, name);
+  if (supplied === undefined || supplied === "") {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "--" + name + " is required", "acp " + SUBMISSION_COMMAND);
+  }
+  if (!supplied.startsWith("/")) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "--" + name + " must be an absolute path", "acp " + SUBMISSION_COMMAND);
+  }
+  return supplied;
+}
+
+/** A required non-negative integer option. No default: a budget is never guessed. */
+function integerOption(values: ParsedValues, name: OptionName): number {
+  const supplied = stringOption(values, name);
+  if (supplied === undefined || !/^[0-9]+$/.test(supplied)) {
+    throw failure(
+      EXIT_USAGE,
+      "BAD_REQUEST",
+      "--" + name + " is required and must be a non-negative integer",
+      "acp " + SUBMISSION_COMMAND,
+    );
+  }
+  return Number(supplied);
+}
+
+/** Read one JSON document, refusing by field name and never by content. */
+function readJsonDocument(path: string, at: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the " + at + " could not be read", at);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the " + at + " is not valid JSON", at);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the " + at + " is not a JSON object", at);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function requiredString(document: Record<string, unknown>, key: string): string {
+  const value = document[key];
+  if (typeof value !== "string" || value === "") {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config does not declare " + key, "config." + key);
+  }
+  return value;
+}
+
+/**
+ * The worker role the run executes under, taken from the identity the config
+ * already declares rather than from a flag of its own.
+ *
+ * A worker identity is `provider/model/role/instance`; the role is its third
+ * segment. Reading it here means the elected route is eligible for the role the
+ * config says will run it, instead of a role a caller could assert separately
+ * from the identity the events will carry.
+ */
+function roleFromIdentity(emittedBy: string): string {
+  const role = emittedBy.split("/")[2];
+  if (role === undefined || role === "") {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config's emittedBy names no role", "config.emittedBy");
+  }
+  return role;
+}
+
+interface SubmissionResult {
+  readonly document: unknown;
+  readonly exitCode: number;
+}
+
+function runSubmission(values: ParsedValues, io: CliIo): SubmissionResult {
+  const configPath = absolutePathOption(values, "config");
+  const accountsPath = absolutePathOption(values, "accounts");
+  const policyPath = absolutePathOption(values, "policy");
+  const estimatedTokens = integerOption(values, "estimated-tokens");
+  const reserveTokens = integerOption(values, "reserve-tokens");
+  const estimatedDurationSeconds = integerOption(values, "duration-seconds");
+
+  const config = readJsonDocument(configPath, "config document");
+
+  // Only what the digest is taken over, and the transport the config already
+  // asked for. Everything else stays opaque.
+  const taskId = requiredString(config, "taskId");
+  const submittedAt = requiredString(config, "submittedAt");
+  const initiativeId = requiredString(config, "initiativeId");
+  const emittedBy = requiredString(config, "emittedBy");
+  const attempt = config["attempt"];
+  if (typeof attempt !== "number" || !Number.isInteger(attempt)) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config does not declare attempt", "config.attempt");
+  }
+  const execution = config["execution"];
+  if (typeof execution !== "object" || execution === null || Array.isArray(execution)) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config declares no execution", "config.execution");
+  }
+  const executionRecord = execution as Record<string, unknown>;
+  const currentRoute = executionRecord["route"];
+  if (typeof currentRoute !== "object" || currentRoute === null || Array.isArray(currentRoute)) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config declares no execution route", "config.execution.route");
+  }
+  const transportKind = (currentRoute as Record<string, unknown>)["transportKind"];
+  if (typeof transportKind !== "string" || transportKind === "") {
+    throw failure(
+      EXIT_USAGE,
+      "BAD_REQUEST",
+      "the config's route declares no transportKind",
+      "config.execution.route.transportKind",
+    );
+  }
+
+  const now = io.now();
+
+  const accounts = loadAccountsFile(accountsPath);
+  if (!accounts.ok) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the accounts file was refused", accounts.reason);
+  }
+  const policy = loadPolicyRegistry(policyPath);
+  if (!policy.ok) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the policy document was refused", policy.reason);
+  }
+
+  const registry = buildRegistry(accounts.registry.accounts);
+  const evidence: CandidateEvidence[] = registry.accounts.map((record) => ({
+    accountId: record.accountId,
+    acceptance: EVIDENCE_ABSENT,
+    contextAffinity: EVIDENCE_ABSENT,
+    capabilities: { known: false },
+  }));
+  const estimates = registry.accounts.map((record) => ({
+    accountId: record.accountId,
+    // The same fold the observation plane already performs in production: no
+    // observations are supplied, so the estimate is the record's own published
+    // position. A second way of estimating would be a second answer.
+    outcome: estimateQuota({
+      record,
+      observations: [],
+      limitKey: Object.keys(record.knownLimits)[0] ?? "",
+      now,
+    }),
+  }));
+
+  const routing: RoutingRequest = {
+    records: registry.accounts,
+    estimates,
+    evidence,
+    task: {
+      // Ignored by the policy seam, which chooses the model; carried because
+      // the request type is shared with `rankAccounts`.
+      model: "",
+      estimatedTokens,
+      estimatedDurationSeconds,
+      reserveTokens,
+      requiredCapabilities: [],
+    },
+    config: DEFAULT_ROUTING_CONFIG,
+    now,
+  };
+
+  const request: PolicyRouteRequest = {
+    role: roleFromIdentity(emittedBy),
+    routing,
+    transportKind: admitTransportKind(transportKind),
+  };
+
+  const composed = composeSubmission(request, policy.registry, {
+    taskId,
+    attempt,
+    submittedAt,
+    initiativeId,
+    resolvedAt: now,
+  });
+  if (!composed.ok) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "no route could be elected", composed.reason);
+  }
+
+  // Exactly two fields are replaced. Everything else is the caller's document,
+  // byte for byte, for the daemon's door to judge.
+  return {
+    document: {
+      ...config,
+      submissionDigest: composed.submissionDigest,
+      execution: { ...executionRecord, route: composed.submission.route },
+    },
+    exitCode: EXIT_OK,
+  };
+}
+
 /**
  * Run the CLI over an argument vector and return the process exit code.
  *
@@ -651,6 +957,19 @@ export function run(argv: readonly string[], io: CliIo = defaultIo): number {
       format,
       io,
     );
+  }
+
+  // V2-B7S. The planning verb branches here, ahead of the `--database` law and
+  // ahead of `openLedger`: it opens no ledger, so requiring one would require a
+  // thing it never touches. Every verb below this line is untouched by it.
+  if (spec.name === SUBMISSION_COMMAND) {
+    try {
+      const result = runSubmission(values, io);
+      io.stdout(renderJson(result.document));
+      return result.exitCode;
+    } catch (error: unknown) {
+      return emitFailure(error instanceof CliFailure ? error : fromUnknownError(error), format, io);
+    }
   }
 
   const databasePath = stringOption(values, "database");

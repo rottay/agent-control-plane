@@ -15,11 +15,12 @@
  * 4. its failures are closed codes with deterministic messages and exit codes.
  */
 
-import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -35,6 +36,15 @@ import {
   WorkerPageResponse,
 } from "@acp/protocol";
 import { openLedger } from "@acp/ledger";
+import {
+  DEFAULT_ROUTING_CONFIG,
+  EVIDENCE_ABSENT,
+  buildRegistry,
+  estimateQuota,
+  loadAccountsFile,
+  loadPolicyRegistry,
+} from "@acp/accounts";
+import { composeSubmission } from "@acp/runtime";
 
 import {
   EXIT_INTEGRITY,
@@ -858,5 +868,445 @@ describe("integrity", () => {
     expect(overview.integrity.checked).toBe(true);
     expect(overview.integrity.ok).toBe(false);
     expect(overview.notice).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B7S: the composition root, as a verb
+// ---------------------------------------------------------------------------
+
+/**
+ * The CLI leg of the submission path.
+ *
+ * `acp submission` is the one verb that plans rather than observes, and the one
+ * that opens no ledger at all. Everything asserted here is asserted about the
+ * real `run()` over real files in a real temporary directory: the election is
+ * driven by a policy document on disk, and the only thing that changes between
+ * the two A1 runs is the bytes of that document.
+ *
+ * **Stated limit, and it belongs in the report as well as here.** A6 below is
+ * CLI/in-process equivalence: the verb's stdout and an in-process
+ * `composeSubmission` over the same inputs and the same injected instant agree.
+ * There is no API leg in this repository, so nothing here is three-way
+ * equivalence and nothing here should be read as such.
+ */
+
+const B7S_ACCOUNT = "acct-b7s-cli";
+const B7S_TASK = "b7500000-0000-4000-8000-0000000000c1";
+const B7S_INITIATIVE = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+const B7S_SUBMITTED_AT = "2026-08-27T00:00:00.000Z";
+const B7S_RESET = "2026-12-01T00:00:00Z";
+const B7S_PROFILE_REF = "profile://acp-b7s-cli-canary";
+const SHIPPED_POLICY = join(
+  cliRepoRoot(),
+  "packages",
+  "domains",
+  "accounts",
+  "policy",
+  "capability-policy.json",
+);
+
+function cliRepoRoot(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "..");
+}
+
+/** A canonical, owner-only staging directory: the loaders admit nothing less. */
+function b7sStage(): string {
+  const created = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "acp-b7s-cli-")));
+  chmodSync(created, 0o700);
+  temporaryDirectories.push(created);
+  return created;
+}
+
+function writeAccountsFile(dir: string, enabledModels: readonly string[]): string {
+  const path = join(dir, "accounts.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      contractVersion: LEDGER_CONTRACT_VERSION,
+      accounts: [
+        {
+          contractVersion: LEDGER_CONTRACT_VERSION,
+          accountId: B7S_ACCOUNT,
+          provider: "claude",
+          alias: B7S_ACCOUNT,
+          authMode: "PREAUTHENTICATED_PROFILE",
+          // A canary: this value is on the record the verb loads, and must
+          // never appear in what the verb prints (N4).
+          authProfileRef: B7S_PROFILE_REF,
+          credentialRef: null,
+          plan: "max",
+          enabledModels: [...enabledModels],
+          knownLimits: { weekly: 1_000_000 },
+          resetSchedule: { kind: "DECLARED", nextResetAt: B7S_RESET, timezone: "UTC", confidence: "HIGH" },
+          quotaEstimate: {
+            remainingRatio: 0.5,
+            estimatedTokensRemaining: 500_000,
+            estimatedAt: "2026-08-26T00:00:00Z",
+            confidence: "MEDIUM",
+          },
+          lastHealthProbe: null,
+          lastClassifiedError: null,
+          status: "AVAILABLE",
+          isolatedConfigRoot: "/tmp/acp-b7s-" + B7S_ACCOUNT,
+          contextSwitchCost: { estimatedTokens: 1_000, estimatedSeconds: 10 },
+        },
+      ],
+    }),
+  );
+  chmodSync(path, 0o600);
+  return path;
+}
+
+/** A daemon config carrying a deliberately stale route, for the verb to replace. */
+function writeConfigDocument(dir: string, extra: Record<string, unknown> = {}): string {
+  const path = join(dir, "daemon.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      mode: "SQLITE_SUPERVISOR",
+      scenarioId: "b7s-cli",
+      emittedBy: "claude/opus/implementer/01",
+      taskId: B7S_TASK,
+      attempt: 1,
+      submittedAt: B7S_SUBMITTED_AT,
+      submissionDigest: "0".repeat(64),
+      initiativeId: B7S_INITIATIVE,
+      holdOpen: false,
+      checkPorts: false,
+      // A field the daemon's door knows nothing about, carried to prove the
+      // verb passes the document through rather than rebuilding it.
+      operatorNote: "carried through untouched",
+      execution: {
+        route: {
+          provider: "claude",
+          model: "sonnet",
+          accountId: B7S_ACCOUNT,
+          transportKind: "CLI_SUBSCRIPTION",
+          capabilityPolicyVersion: "stale",
+          resolvedAt: "2026-01-01T00:00:00.000Z",
+        },
+        binding: {
+          binary: realpathSync(process.execPath),
+          configRoot: dir,
+          workdir: dir,
+          limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+        },
+      },
+      ...extra,
+    }),
+  );
+  chmodSync(path, 0o600);
+  return path;
+}
+
+function submissionArgv(config: string, accounts: string, policy: string): readonly string[] {
+  return [
+    "submission",
+    "--config",
+    config,
+    "--accounts",
+    accounts,
+    "--policy",
+    policy,
+    "--estimated-tokens",
+    "10000",
+    "--reserve-tokens",
+    "5000",
+    "--duration-seconds",
+    "60",
+  ];
+}
+
+/**
+ * The emitted document, structurally.
+ *
+ * Typed here rather than through `ResolvedRoute` because the CLI depends on
+ * `@acp/protocol`, `@acp/ledger`, `@acp/accounts` and `@acp/runtime` and on
+ * nothing else — importing the kernel for a test-local shape would widen a
+ * dependency surface the fence pins by equality.
+ */
+interface EmittedRoute {
+  readonly provider: string;
+  readonly model: string;
+  readonly accountId: string;
+  readonly transportKind: string;
+  readonly capabilityPolicyVersion: string;
+  readonly resolvedAt: string;
+}
+
+interface EmittedConfig {
+  readonly submissionDigest: string;
+  readonly operatorNote?: string;
+  readonly execution: { readonly route: EmittedRoute; readonly binding: Record<string, unknown> };
+  readonly [key: string]: unknown;
+}
+
+describe("A1 (CLI leg): the elected model follows the policy document", () => {
+  it("elects a different model when only the policy bytes change", () => {
+    const dir = b7sStage();
+    const accounts = writeAccountsFile(dir, ["opus", "sonnet"]);
+    const config = writeConfigDocument(dir);
+    const policy = join(dir, "capability-policy.json");
+    copyFileSync(SHIPPED_POLICY, policy);
+
+    const sourceBefore = createHash("sha256").update(readFileSync(SHIPPED_POLICY)).digest("hex");
+
+    const first = invoke(submissionArgv(config, accounts, policy));
+    expect(first.exitCode).toBe(EXIT_OK);
+    const firstDocument = JSON.parse(first.stdout) as EmittedConfig;
+    expect(firstDocument.execution.route.model).toBe("opus");
+    expect(firstDocument.execution.route.capabilityPolicyVersion).toBe("2026-08-30.1");
+
+    // The only edit in this test. No source file, no flag and no fixture moves.
+    const document = JSON.parse(readFileSync(policy, "utf8")) as {
+      policyVersion: string;
+      models: { model: string }[];
+    };
+    document.policyVersion = "2026-09-01.1";
+    document.models = document.models.filter((entry) => entry.model !== "opus");
+    writeFileSync(policy, JSON.stringify(document));
+
+    const second = invoke(submissionArgv(config, accounts, policy));
+    expect(second.exitCode).toBe(EXIT_OK);
+    const secondDocument = JSON.parse(second.stdout) as EmittedConfig;
+
+    expect(secondDocument.execution.route.model).toBe("sonnet");
+    expect(secondDocument.execution.route.model).not.toBe(firstDocument.execution.route.model);
+    expect(secondDocument.execution.route.capabilityPolicyVersion).toBe("2026-09-01.1");
+    expect(secondDocument.submissionDigest).not.toBe(firstDocument.submissionDigest);
+
+    // The repository's shipped document was read by both runs and written by
+    // neither. `model switch por política sin código`, literally.
+    expect(createHash("sha256").update(readFileSync(SHIPPED_POLICY)).digest("hex")).toBe(sourceBefore);
+  });
+
+  it("replaces exactly two fields and carries the rest of the document through", () => {
+    const dir = b7sStage();
+    const config = writeConfigDocument(dir);
+    const before = JSON.parse(readFileSync(config, "utf8")) as EmittedConfig;
+    const emitted = JSON.parse(
+      invoke(submissionArgv(config, writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY)).stdout,
+    ) as EmittedConfig;
+
+    // Changed: the route and the digest. Nothing else, including a field the
+    // daemon's own door does not know about.
+    expect(emitted.submissionDigest).not.toBe(before.submissionDigest);
+    expect(emitted.execution.route).not.toEqual(before.execution.route);
+    expect(emitted.operatorNote).toBe("carried through untouched");
+    expect(emitted.execution.binding).toEqual(before.execution.binding);
+    for (const key of ["mode", "scenarioId", "emittedBy", "taskId", "attempt", "submittedAt", "initiativeId", "holdOpen", "checkPorts"]) {
+      expect(emitted[key]).toEqual(before[key]);
+    }
+    expect(Object.keys(emitted).sort()).toEqual(Object.keys(before).sort());
+  });
+
+  it("writes nothing: the config it read is byte-identical afterwards", () => {
+    const dir = b7sStage();
+    const config = writeConfigDocument(dir);
+    const accounts = writeAccountsFile(dir, ["opus"]);
+    const digestBefore = createHash("sha256").update(readFileSync(config)).digest("hex");
+
+    expect(invoke(submissionArgv(config, accounts, SHIPPED_POLICY)).exitCode).toBe(EXIT_OK);
+
+    expect(createHash("sha256").update(readFileSync(config)).digest("hex")).toBe(digestBefore);
+  });
+});
+
+describe("A6: CLI and in-process composition agree", () => {
+  it("produces the same digest for the same inputs and the same injected instant", () => {
+    const dir = b7sStage();
+    const accounts = writeAccountsFile(dir, ["opus", "sonnet"]);
+    const config = writeConfigDocument(dir);
+
+    const emitted = JSON.parse(invoke(submissionArgv(config, accounts, SHIPPED_POLICY)).stdout) as EmittedConfig;
+
+    // The same election, composed in process against the same instant the CLI
+    // was given. This is CLI/in-process equivalence and nothing wider: there is
+    // no API leg in this repository to be a third party to it.
+    const loaded = loadAccountsFile(accounts);
+    if (!loaded.ok) throw new Error("the accounts fixture did not load: " + loaded.reason);
+    const policy = loadPolicyRegistry(SHIPPED_POLICY);
+    if (!policy.ok) throw new Error("the policy did not load: " + policy.reason);
+    const records = buildRegistry(loaded.registry.accounts).accounts;
+
+    const composed = composeSubmission(
+      {
+        role: "implementer",
+        transportKind: "CLI_SUBSCRIPTION",
+        routing: {
+          records,
+          estimates: records.map((record) => ({
+            accountId: record.accountId,
+            outcome: estimateQuota({
+              record,
+              observations: [],
+              limitKey: Object.keys(record.knownLimits)[0] ?? "",
+              now: FIXED_NOW,
+            }),
+          })),
+          evidence: records.map((record) => ({
+            accountId: record.accountId,
+            acceptance: EVIDENCE_ABSENT,
+            contextAffinity: EVIDENCE_ABSENT,
+            capabilities: { known: false } as const,
+          })),
+          task: {
+            model: "",
+            estimatedTokens: 10_000,
+            estimatedDurationSeconds: 60,
+            reserveTokens: 5_000,
+            requiredCapabilities: [],
+          },
+          config: DEFAULT_ROUTING_CONFIG,
+          now: FIXED_NOW,
+        },
+      },
+      policy.registry,
+      {
+        taskId: B7S_TASK,
+        attempt: 1,
+        submittedAt: B7S_SUBMITTED_AT,
+        initiativeId: B7S_INITIATIVE,
+        resolvedAt: FIXED_NOW,
+      },
+    );
+    if (!composed.ok) throw new Error("the in-process election refused: " + composed.reason);
+
+    expect(emitted.submissionDigest).toBe(composed.submissionDigest);
+    expect(emitted.execution.route).toEqual(composed.submission.route);
+  });
+
+  it("is deterministic: two runs with the same clock are byte-identical (N8)", () => {
+    const dir = b7sStage();
+    const accounts = writeAccountsFile(dir, ["opus", "sonnet"]);
+    const config = writeConfigDocument(dir);
+    const first = invoke(submissionArgv(config, accounts, SHIPPED_POLICY));
+    const second = invoke(submissionArgv(config, accounts, SHIPPED_POLICY));
+    expect(second.stdout).toBe(first.stdout);
+    expect(first.stdout).toContain(FIXED_NOW);
+  });
+});
+
+describe("N4 and N5: the verb prints no credential and no absolute path from a route", () => {
+  it("prints neither credentialRef nor authProfileRef, by substring", () => {
+    const dir = b7sStage();
+    const invocation = invoke(
+      submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY),
+    );
+    expect(invocation.exitCode).toBe(EXIT_OK);
+    expect(invocation.stdout).not.toContain("credentialRef");
+    expect(invocation.stdout).not.toContain("authProfileRef");
+    expect(invocation.stdout).not.toContain(B7S_PROFILE_REF);
+    expect(invocation.stderr).not.toContain(B7S_PROFILE_REF);
+  });
+
+  it("puts no absolute path in the elected route, though the binding it carries has them", () => {
+    const dir = b7sStage();
+    const emitted = JSON.parse(
+      invoke(submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY)).stdout,
+    ) as EmittedConfig;
+
+    // The route: no path, anywhere in it.
+    expect(JSON.stringify(emitted.execution.route)).not.toContain("/");
+    // The binding: absolute by law, and untouched. Asserting this is what makes
+    // the claim above narrow and true rather than broad and false.
+    expect(JSON.stringify(emitted.execution.binding)).toContain(dir);
+  });
+});
+
+describe("the verb's refusals are closed and name no value", () => {
+  it("refuses a relative path by field name", () => {
+    const dir = b7sStage();
+    const invocation = invoke([
+      "submission",
+      "--config",
+      "relative/daemon.json",
+      "--accounts",
+      writeAccountsFile(dir, ["opus"]),
+      "--policy",
+      SHIPPED_POLICY,
+      "--estimated-tokens",
+      "10000",
+      "--reserve-tokens",
+      "5000",
+      "--duration-seconds",
+      "60",
+    ]);
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(invocation.stderr).toContain("--config must be an absolute path");
+    expect(invocation.stderr).not.toContain("relative/daemon.json");
+  });
+
+  it("requires each budget rather than guessing one", () => {
+    const dir = b7sStage();
+    const invocation = invoke([
+      "submission",
+      "--config",
+      writeConfigDocument(dir),
+      "--accounts",
+      writeAccountsFile(dir, ["opus"]),
+      "--policy",
+      SHIPPED_POLICY,
+      "--reserve-tokens",
+      "5000",
+      "--duration-seconds",
+      "60",
+    ]);
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(invocation.stderr).toContain("--estimated-tokens is required");
+  });
+
+  it("refuses by the landed vocabulary when nothing can be elected (N1)", () => {
+    const dir = b7sStage();
+    const invocation = invoke(
+      submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["haiku"]), SHIPPED_POLICY),
+    );
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(invocation.stderr).toContain("no route could be elected");
+    expect(invocation.stdout).toBe("");
+  });
+});
+
+describe("N9: the existing verbs did not move", () => {
+  it("still requires --database, with the same code and the same sentence", () => {
+    const invocation = invoke(["overview", "--format", "json"]);
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(errorJson(invocation).error.code).toBe("BAD_REQUEST");
+    expect(errorJson(invocation).error.message).toBe("--database is required");
+    expect(errorJson(invocation).error.detail).toBe(
+      "the ledger is never guessed from the environment or the working directory",
+    );
+  });
+
+  it("still requires --database for every observation verb", () => {
+    for (const verb of ["tasks", "workers", "events", "status", "integrity"]) {
+      const invocation = invoke([verb, "--format", "json"]);
+      expect(invocation.exitCode).toBe(EXIT_USAGE);
+      expect(errorJson(invocation).error.message).toBe("--database is required");
+    }
+  });
+
+  it("still answers overview UNAVAILABLE rather than failing blank without a ledger", () => {
+    const invocation = invoke(["overview", "--database", absentLedgerPath(), "--format", "json"]);
+    expect(invocation.exitCode).toBe(EXIT_UNAVAILABLE);
+    const parsed = OverviewResponse.safeParse(json(invocation));
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.state).toBe("UNAVAILABLE");
+  });
+
+  it("does not accept the submission flags on an observation verb", () => {
+    const invocation = invoke(["tasks", "--database", absentLedgerPath(), "--config", "/tmp/x.json"]);
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(invocation.stderr).toContain("not accepted by acp tasks");
+  });
+
+  it("does not require --database for the planning verb, which opens no ledger", () => {
+    const dir = b7sStage();
+    const invocation = invoke(
+      submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY),
+    );
+    expect(invocation.exitCode).toBe(EXIT_OK);
+    expect(invocation.stderr).toBe("");
   });
 });

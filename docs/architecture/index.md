@@ -33,6 +33,7 @@ new records from `_template.md`, which carries the required fields.
 | 0015 | [The topology's package names, restated: 0014 amended, not superseded](0015-topology-nomenclature-restatement.md) | accepted |
 | 0016 | [A driver declares what it cannot do, and the declaration is checked](0016-driver-capability-declaration.md) | accepted |
 | 0017 | [The ledger sequence is the stream, and the only cursor](0017-the-stream-boundary.md) | accepted |
+| 0018 | [The submission path elects the route, and the walk still does not](0018-the-submission-path.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

@@ -160,12 +160,18 @@ importers:
 
   packages/entrypoints/cli:
     dependencies:
+      '@acp/accounts':
+        specifier: workspace:*
+        version: link:../../domains/accounts
       '@acp/ledger':
         specifier: workspace:*
         version: link:../../persistence/ledger
       '@acp/protocol':
         specifier: workspace:*
         version: link:../../kernel/protocol
+      '@acp/runtime':
+        specifier: workspace:*
+        version: link:../../domains/runtime
     devDependencies:
       vitest:
         specifier: 3.2.4

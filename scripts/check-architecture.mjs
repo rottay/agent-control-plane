@@ -4162,6 +4162,50 @@ const V2B3B_WRITE_SET = [
 ];
 
 /**
+ * V2-B7S: the plane composes its own submission.
+ *
+ * **Twelve paths, and the twelfth is `pnpm-lock.yaml`.** The packet was mapped
+ * at eleven; the twelfth is mechanically forced by one of the eleven and was
+ * not improvised. `packages/entrypoints/cli/package.json` gains two workspace
+ * edges, and in this repository's pnpm layout — isolated node-linker, no
+ * hoisting, `link-workspace-packages=true` — a workspace edge is materialized
+ * as a symlink under the consuming package's own `node_modules`, created by
+ * `pnpm install` and recorded in the lockfile's `importers` block. Measured, not
+ * assumed: with the manifest edited and the lockfile untouched, `tsc --build`
+ * reports `TS2307: Cannot find module '@acp/runtime'`, and adding tsconfig
+ * project references does **not** fix it, because a bare specifier resolves
+ * through `node_modules` regardless of what a reference orders. The lockfile
+ * delta is six insertions and zero deletions: exactly the two `link:` entries.
+ * The two CLI tsconfigs are deliberately NOT here — with the symlinks present
+ * the unmodified tsconfig builds clean, so they were never part of the remedy.
+ *
+ * The producer of the submission digest moves to `@acp/runtime` and the daemon
+ * re-exports it; the door — the `expectedDigest` computation and the
+ * `submissionDigest !== expectedDigest` refusal — does not move at all. That is
+ * what keeps all five daemon suites resolving with zero edits, `test/fallback`
+ * above all, which B2-4a certifies as untouched and which is absent from this
+ * list.
+ *
+ * `DAEMON_ALLOWED_PACKAGES` and `DAEMON_TEST_ONLY_IMPORTS` are deliberately
+ * unchanged by this packet, so the diff itself is the evidence that D5 was
+ * discharged rather than reversed.
+ */
+const V2B7S_WRITE_SET = [
+  "packages/domains/runtime/src/submission/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/package.json",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0018-the-submission-path.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4538,6 +4582,7 @@ const WRITE_SET = [
   ...V2B25_WRITE_SET,
   ...V2B3A_WRITE_SET,
   ...V2B3B_WRITE_SET,
+  ...V2B7S_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5284,6 +5329,12 @@ const PATH_SCOPED_LAWS = [
   { law: "the Restate SDK is named by import in one package only", scope: "every tracked .ts/.tsx/.mjs/.js" },
   { law: "the contracts schema barrel holds only re-exports", scope: "packages/kernel/contracts/src/schemas/index.ts" },
   { law: "a supervised process imports only what it is allowed", scope: "packages/entrypoints/daemon/{src,test}/**" },
+  // V2-B7S. The elector is not the walk: one new path-shaped surface, so one
+  // new row. The register and the `requireScope` call sites both move 38 → 39,
+  // and `assertPathScopedInventory` fails and prints both numbers if only one
+  // side of this edit lands — which is exactly what it did while this row was
+  // missing.
+  { law: "the elector is not the walk", scope: "packages/entrypoints/daemon/src/**" },
   { law: "no module spawns for plutil", scope: "packages/entrypoints/daemon/src/launchd/**" },
   { law: "the packaged entry reads no environment", scope: "packages/entrypoints/daemon/src/bin/**" },
   { law: "observation collectors stay passive", scope: "packages/domains/observation/{src,test}/**" },
@@ -6102,7 +6153,13 @@ const P1B_DEPENDENCY_LAW = [
   },
   {
     manifest: "packages/entrypoints/cli/package.json",
-    dependencies: ["@acp/protocol", "@acp/ledger"],
+    // V2-B7S adds exactly two, and they are the same two `CLI_ALLOWED_PACKAGES`
+    // names above: a manifest edge the import scan refuses is a dependency that
+    // exists on paper and fails at the gate, and the reverse is a dependency
+    // that exists in code and not in the graph. Both move together, here and
+    // in the lockfile's `importers` block, which is where a workspace edge is
+    // actually materialized.
+    dependencies: ["@acp/accounts", "@acp/protocol", "@acp/ledger", "@acp/runtime"],
     devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
@@ -7646,26 +7703,39 @@ if (tracked.status === 0) {
   // (c) the door compares a declared digest against the computed one, with no
   // fallback -- the literal `!==` comparison and its refusal must both be
   // present, because a door that recomputed silently would accept anything.
+  //
+  // V2-B7S SPLITS this law into a producer home and a door home. It is not
+  // weakened by the split and it is not re-anchored to nothing: all three arms
+  // survive, each now pinned where it actually lives. The producer moved to
+  // `@acp/runtime` so the composition root above the walk can compute the
+  // digest the door will recompute, without an entrypoint depending on an
+  // entrypoint; the door did not move at all, and arm (c) still reads the same
+  // two literals out of the same file it always did.
   {
     const srcSources = present.filter((relativePath) => /\/src\/.*\.tsx?$/.test(relativePath));
-    const SUBMISSION_HOME = "packages/entrypoints/daemon/src/daemon-child/index.ts";
+    const SUBMISSION_PRODUCER = "packages/domains/runtime/src/submission/index.ts";
+    const SUBMISSION_DOOR = "packages/entrypoints/daemon/src/daemon-child/index.ts";
     const producers = srcSources.filter((relativePath) => {
       const content = readIfPresent(relativePath);
       return content !== null && /export function canonicalSubmissionDigest\s*\(/.test(stripComments(content));
     });
 
     requireScope("the submission digest has one producer and one door", srcSources.length);
-    if (producers.join(",") !== SUBMISSION_HOME) {
+    // (a) One declaring producer, pinned by equality in both directions. A
+    // re-export is not a declaration, which is what lets the door keep the name
+    // reachable without becoming a second answer to "what was asked for".
+    if (producers.join(",") !== SUBMISSION_PRODUCER) {
       fail(
         "the canonical submission digest must be produced in exactly " +
-          SUBMISSION_HOME +
+          SUBMISSION_PRODUCER +
           "; found [" +
           producers.join(", ") +
           "]",
       );
     }
 
-    const home = stripComments(readIfPresent(SUBMISSION_HOME) ?? "");
+    const producer = stripComments(readIfPresent(SUBMISSION_PRODUCER) ?? "");
+    const door = stripComments(readIfPresent(SUBMISSION_DOOR) ?? "");
     const ROUTE_FIELDS = [
       "provider",
       "model",
@@ -7674,14 +7744,15 @@ if (tracked.status === 0) {
       "capabilityPolicyVersion",
       "resolvedAt",
     ];
-    const preimage = home.match(/export function canonicalSubmission\s*\([^)]*\)[^{]*\{([\s\S]*?)\n\}/);
+    // (b) All six route fields in the preimage, read from the producer.
+    const preimage = producer.match(/export function canonicalSubmission\s*\([^)]*\)[^{]*\{([\s\S]*?)\n\}/);
     if (preimage === null) {
-      fail(SUBMISSION_HOME + " no longer declares the canonical submission preimage");
+      fail(SUBMISSION_PRODUCER + " no longer declares the canonical submission preimage");
     } else {
       for (const field of ROUTE_FIELDS) {
         if (!new RegExp("\\b" + field + ":\\s*submission\\.route\\." + field + "\\b").test(preimage[1] ?? "")) {
           fail(
-            SUBMISSION_HOME +
+            SUBMISSION_PRODUCER +
               " leaves route." +
               field +
               " out of the canonical submission; a route field outside the preimage is a field a resume may change unrefused",
@@ -7689,16 +7760,32 @@ if (tracked.status === 0) {
         }
       }
       if (!/canonicalJsonStringify\(/.test(preimage[1] ?? "")) {
-        fail(SUBMISSION_HOME + " no longer canonicalizes the submission preimage, so key order could change the digest");
+        fail(SUBMISSION_PRODUCER + " no longer canonicalizes the submission preimage, so key order could change the digest");
       }
     }
 
-    if (!/submissionDigest !== expectedDigest/.test(home)) {
-      fail(SUBMISSION_HOME + " no longer compares the declared submission digest against the computed one");
+    // (c) The door, unmoved: the literal comparison and the computation that
+    // feeds it, both still in the daemon's own config module.
+    if (!/submissionDigest !== expectedDigest/.test(door)) {
+      fail(SUBMISSION_DOOR + " no longer compares the declared submission digest against the computed one");
     }
-    if (!/const expectedDigest = canonicalSubmissionDigest\(/.test(home)) {
-      fail(SUBMISSION_HOME + " no longer computes the expected submission digest at the door");
+    if (!/const expectedDigest = canonicalSubmissionDigest\(/.test(door)) {
+      fail(SUBMISSION_DOOR + " no longer computes the expected submission digest at the door");
     }
+    // The split's own seam: the door must still make both names reachable, or
+    // the five daemon suites that import them through it stop resolving.
+    if (!/export \{ canonicalSubmission, canonicalSubmissionDigest \}/.test(door)) {
+      fail(SUBMISSION_DOOR + " no longer re-exports the submission preimage and digest the daemon suites import from it");
+    }
+    notes.push(
+      "the submission digest has one declaring producer (" +
+        SUBMISSION_PRODUCER +
+        ") whose preimage pins all " +
+        ROUTE_FIELDS.length +
+        " route fields, and one door (" +
+        SUBMISSION_DOOR +
+        ") that compares a declared digest against the computed one and re-exports both names",
+    );
 
   // V2-B2-1: both drivers' capability declarations are pinned by equality, and
   // every UNSUPPORTED verb refuses in the source that declares it.
@@ -8123,13 +8210,6 @@ if (tracked.status === 0) {
     );
   }
 
-    notes.push(
-      "the submission digest has one producer and one door: " +
-        SUBMISSION_HOME +
-        ", binding all " +
-        ROUTE_FIELDS.length +
-        " route fields, compared without fallback",
-    );
   }
 
     notes.push(
@@ -8801,6 +8881,49 @@ if (tracked.status === 0) {
 
   notes.push(
     daemonSources.length + " daemon sources import only what a supervised process is allowed",
+  );
+
+  // --- L-B7S: the elector is not the walk (V2-B7S) --------------------------
+  //
+  // D5 forbade **the walk** resolving and named the submission path as the
+  // elector's home. The daemon import allowlist above already refuses
+  // `@acp/accounts` in a daemon source, which closes the direct route. This
+  // closes the proxy route: `composeSubmission` lives in `@acp/runtime`, which
+  // the daemon may import, so a daemon source could otherwise reach the elector
+  // through a package it is allowed to name. Naming the three symbols rather
+  // than the package is what makes that impossible without also forbidding the
+  // runtime the daemon legitimately depends on.
+  //
+  // Scoped to `src/**` on purpose. A daemon **test** may resolve routes — the
+  // conformance fixture has done exactly that since B1b, and `test/bin` does it
+  // now to prove an elected route survives the door. What must never resolve is
+  // the supervised process itself.
+  const daemonProductionSources = daemonSources.filter(
+    (relativePath) => inArea(relativePath, "daemon", "src", PACKAGE_STRATA),
+  );
+  const ELECTOR_SYMBOLS = ["@acp/accounts", "resolveRoute", "loadPolicyRegistry", "composeSubmission"];
+  requireScope("the elector is not the walk", daemonProductionSources.length);
+  for (const relativePath of daemonProductionSources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    for (const symbol of ELECTOR_SYMBOLS) {
+      if (live.includes(symbol)) {
+        fail(
+          relativePath +
+            " names " +
+            symbol +
+            "; the daemon receives an admitted route it did not resolve, and election belongs to the" +
+            " submission path above the walk (D5)",
+        );
+      }
+    }
+  }
+  notes.push(
+    daemonProductionSources.length +
+      " daemon production sources name none of " +
+      ELECTOR_SYMBOLS.join(", ") +
+      "; the elector is not the walk",
   );
 }
 
@@ -9774,7 +9897,14 @@ const PROTOCOL_ALLOWED_PACKAGES = new Set(["@acp/contracts", "zod"]);
 const PROTOCOL_ALLOWED_BUILTINS = new Set([]);
 const PROTOCOL_TEST_ONLY_IMPORTS = new Set(["vitest", "node:fs", "node:path", "node:url"]);
 
-const CLI_ALLOWED_PACKAGES = new Set(["@acp/ledger", "@acp/protocol"]);
+// V2-B7S: the CLI hosts the composition root (D-B7S-1 = alpha), so it gains
+// exactly two workspace edges — `@acp/accounts` for the owner file and the
+// policy document, `@acp/runtime` for `composeSubmission`. Its identity widens
+// honestly from observation to observation-and-planning: the verb still opens
+// no ledger and still writes no file, which is why the package's own help text
+// keeps saying it never writes. Nothing here reaches `@acp/daemon`; the
+// producer moved to a domain precisely so it would not have to.
+const CLI_ALLOWED_PACKAGES = new Set(["@acp/accounts", "@acp/ledger", "@acp/protocol", "@acp/runtime"]);
 const CLI_ALLOWED_BUILTINS = new Set([
   "node:crypto",
   "node:fs",
@@ -10247,6 +10377,20 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "settleCancellation",
   "validatePlan",
   "verifyPrestate",
+  // V2-B7S: the submission path. The two digest names are DECLARED here now
+  // and re-exported by the daemon; `composeSubmission` and its value types are
+  // new, and each has a use site in this packet (the CLI verb, and the drills
+  // that prove the election). The surface grows by eight and is pinned by
+  // equality in both directions, so the growth is a visible edit rather than a
+  // name that rode along.
+  "DaemonSubmission",
+  "SubmissionComposed",
+  "SubmissionCoordinates",
+  "SubmissionOutcome",
+  "SubmissionRefused",
+  "canonicalSubmission",
+  "canonicalSubmissionDigest",
+  "composeSubmission",
 ];
 
 /**
