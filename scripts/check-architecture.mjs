@@ -4116,6 +4116,52 @@ const V2B3A_WRITE_SET = [
 ];
 
 /**
+ * V2-B3b: the console consumes and reconciles the stream B3a opened.
+ *
+ * **Fourteen paths, which is the mapped maximum, and every one of them is
+ * used.** The map allowed fourteen; nothing was dropped and nothing was added.
+ *
+ * Three are new and each is the home of exactly one concern: `api/stream` holds
+ * the reconciliation and the connection (the browser's only cursor lives
+ * there), `hooks/use-event-stream` binds one scope to one mounted view and
+ * nothing else, and `components/stream-status` renders the five states. The
+ * two views and `api/client` change by addition — the paged reads they already
+ * made are untouched, and the client gains one door for the gap-filling page a
+ * recovery needs.
+ *
+ * **`@tanstack/react-query` is deliberately not adopted here (DT decision
+ * D-B3b-1, option α).** The console's data layer is `useAsyncResource`, the
+ * dependency has no consumer anywhere in `src` or `test`, and this packet
+ * leaves that true rather than migrating two views into a cache inside a
+ * streaming packet. The deferral is recorded, not disguised: nothing here
+ * removes the dependency and nothing here claims it is used.
+ *
+ * **What is deliberately absent.** No package manifest — this adds no
+ * dependency, and the polyfill names the browser package may not link were
+ * already fenced by B3a's L3. No gateway, protocol or contracts path: B3a's
+ * server is finished and this packet reads it as published. No README, no
+ * roadmap, no ADR — the ADR number line belongs to the packet that opened the
+ * boundary, and a client that consumes a published contract adds no decision
+ * to it.
+ */
+const V2B3B_WRITE_SET = [
+  "packages/entrypoints/console/src/api/stream/index.ts",
+  "packages/entrypoints/console/src/api/client/index.ts",
+  "packages/entrypoints/console/src/hooks/use-event-stream/index.ts",
+  "packages/entrypoints/console/src/components/stream-status/index.tsx",
+  "packages/entrypoints/console/src/views/events-view/index.tsx",
+  "packages/entrypoints/console/src/views/task-detail-view/index.tsx",
+  "packages/entrypoints/console/src/styles/components.css",
+  "packages/entrypoints/console/test/api/stream/index.test.ts",
+  "packages/entrypoints/console/test/api/client/index.test.ts",
+  "packages/entrypoints/console/test/hooks/use-event-stream/index.test.ts",
+  "packages/entrypoints/console/test/components/stream-status/index.test.tsx",
+  "packages/entrypoints/console/test/views/index.test.tsx",
+  "packages/entrypoints/console/test/live-dom/index.test.tsx",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4491,6 +4537,7 @@ const WRITE_SET = [
   ...V2B24B_WRITE_SET,
   ...V2B25_WRITE_SET,
   ...V2B3A_WRITE_SET,
+  ...V2B3B_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5265,6 +5312,17 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the stream channel map is total over the event vocabulary",
     scope: "packages/kernel/protocol/src/schemas/index.ts",
+  },
+  // V2-B3b. The client end of the same pair of laws: the browser now holds a
+  // cursor and opens a connection, so both need a scope of their own. The
+  // register and the `requireScope` call sites both move 36 → 38.
+  {
+    law: "the console mints no sequence",
+    scope: "packages/entrypoints/console/src/api/stream/**",
+  },
+  {
+    law: "the console opens the stream in one module",
+    scope: "packages/entrypoints/console/src/**",
   },
 ];
 
@@ -6256,6 +6314,28 @@ const CONSOLE_FORBIDDEN_IMPORTS = [
   "@microsoft/fetch-event-source",
 ];
 
+/**
+ * Where the browser's stream cursor lives, and the only module that may open a
+ * connection to fill it (V2-B3b).
+ *
+ * The global's name is assembled rather than written: the forbidden-import law
+ * above scans every file of this package for the lowercase package names, and
+ * the fence is not that package — but keeping the two spellings apart here
+ * makes it obvious that one is an API and the others are dependencies.
+ */
+const CONSOLE_STREAM_MODULE_PREFIX = "packages/entrypoints/console/src/api/stream/";
+const CONSOLE_STREAM_OPENER = "packages/entrypoints/console/src/api/stream/index.ts";
+const CONSOLE_STREAM_GLOBAL = "Event" + "Source";
+
+/** Expressions that would mint a position rather than receive one. */
+const CONSOLE_SEQUENCE_MINTS = ["Date.now", "performance.now", "randomUUID", "Math.random"];
+
+/**
+ * What a stream cursor may be assigned from: a sequence that arrived on a row,
+ * the head a `hello` named, or zero, which is the unanchored state.
+ */
+const CONSOLE_CURSOR_SOURCE = /^\s*(?:0|headSequence|[A-Za-z0-9_$.]+\.sequence)\s*;?\s*$/;
+
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const uiFiles = present.filter((relativePath) => inPackage(relativePath, "console", PACKAGE_STRATA));
@@ -6306,6 +6386,100 @@ if (tracked.status === 0) {
   notes.push(
     uiSourceFiles.length + " browser package sources name neither jsdom nor axe-core",
   );
+
+  // --- 14b. the console mints no sequence (V2-B3b, L4) ---------------------
+  //
+  // B3a's L1 says the server's stream mints no identity. This is the same law
+  // on the other end of the wire, and it is needed for the same reason: the
+  // browser now holds a cursor, and a cursor a client can invent is a client
+  // that can silently disagree with the ledger about where it got to. Scoped
+  // to the reconciler's own directory, because that is the only place a
+  // position is written.
+  //
+  // Two halves. The minting expressions are refused outright — a clock, a
+  // random value or a generated id has no business producing a position. And
+  // every write to `lastApplied` must take its value from a `sequence` that
+  // arrived, from a `headSequence` a `hello` carried, or from `0`, which is
+  // the unanchored state. `lastApplied += 1` is exactly the shape that would
+  // pass a review and be wrong.
+  const consoleStreamFiles = uiSourceFiles.filter((relativePath) =>
+    relativePath.startsWith(CONSOLE_STREAM_MODULE_PREFIX),
+  );
+  requireScope("the console mints no sequence", consoleStreamFiles.length);
+  let cursorWrites = 0;
+  for (const relativePath of consoleStreamFiles) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    for (const minted of CONSOLE_SEQUENCE_MINTS) {
+      if (content.includes(minted)) {
+        fail(
+          relativePath +
+            " names " +
+            minted +
+            "; the console's stream cursor is a ledger sequence and may not be minted here",
+        );
+      }
+    }
+    for (const line of content.split("\n")) {
+      if (/lastApplied\s*(?:\+\+|--)/.test(line) || /lastApplied\s*[-+*/%|&^]=/.test(line)) {
+        fail(
+          relativePath +
+            " advances the stream cursor arithmetically (" +
+            line.trim() +
+            "); it may only take the value of a sequence the ledger sent",
+        );
+        continue;
+      }
+      const assignment = /(?:^|[^.\w$])lastApplied\s*=(?!=)(.*)$/.exec(line);
+      if (assignment === null) continue;
+      cursorWrites += 1;
+      if (!CONSOLE_CURSOR_SOURCE.test(assignment[1] ?? "")) {
+        fail(
+          relativePath +
+            " writes the stream cursor from something that is not a ledger sequence (" +
+            line.trim() +
+            ")",
+        );
+      }
+    }
+  }
+  // A law that inspected a file but found no write is a law whose subject was
+  // renamed out from under it, which is the silent-pass shape `requireScope`
+  // exists to refuse one level up.
+  if (consoleStreamFiles.length > 0 && cursorWrites === 0) {
+    fail(
+      "the console mints no sequence inspected " +
+        consoleStreamFiles.length +
+        " file(s) and found no cursor write; the law's subject was renamed",
+    );
+  }
+  notes.push(
+    cursorWrites + " console stream cursor writes take their value from a ledger sequence",
+  );
+
+  // --- 14c. the console opens the stream in one module (V2-B3b, L5) --------
+  //
+  // One connection authority, checked by mechanism. A second module reaching
+  // for the browser's stream constructor would be a second cursor and a second
+  // cache — the exact pair this packet is forbidden to create — and it would
+  // not look wrong in review, because each half would be individually
+  // reasonable. Pinned by equality rather than by a ceiling, so both directions
+  // fail: a second opener, and a rename that leaves the law inspecting nothing.
+  const streamOpeners = uiSourceFiles.filter((relativePath) =>
+    (readIfPresent(relativePath) ?? "").includes(CONSOLE_STREAM_GLOBAL),
+  );
+  requireScope("the console opens the stream in one module", uiSourceFiles.length);
+  if (streamOpeners.join(",") !== CONSOLE_STREAM_OPENER) {
+    fail(
+      "the browser's stream constructor must be named in exactly [" +
+        CONSOLE_STREAM_OPENER +
+        "], found: [" +
+        streamOpeners.join(", ") +
+        "]",
+    );
+  } else {
+    notes.push("the browser package opens the event stream in one module only");
+  }
 }
 
 // --- the public/internal classification (P8-T G0, L8) -----------------------

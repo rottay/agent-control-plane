@@ -1,8 +1,9 @@
-import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "@acp/protocol";
+import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION, MAX_PAGE_LIMIT } from "@acp/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   fetchAccounts,
+  fetchEventBackfillPage,
   fetchEvents,
   fetchOverview,
   fetchTaskDetail,
@@ -187,6 +188,59 @@ describe("query construction", () => {
     expect(calledPath).toContain("state=RUNNING");
     expect(calledPath).toContain("limit=50");
     expect(calledPath).not.toContain("cursor");
+  });
+
+  it("builds the stream's gap-filling page from a sequence, unfiltered and at the page ceiling", async () => {
+    // V2-B3b. The one place the SSE `id:` vocabulary and the cursor vocabulary
+    // meet: the position came off a frame, not off a previous page, so the
+    // first cursor of a recovery is built from it here rather than at the call
+    // site. Unfiltered, because the console streams the whole tail and selects
+    // for display -- a filtered backfill would fill a different gap.
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        items: [],
+        page: { nextCursor: null, hasMore: false, limit: 200, returned: 0 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const result = await fetchEventBackfillPage(41);
+
+    expect(result.kind).toBe("ok");
+    const calledPath = String((fetchSpy.mock.calls[0] as unknown[])[0]);
+    expect(calledPath).toContain("/api/v1/events?");
+    expect(calledPath).toContain("cursor=41");
+    expect(calledPath).toContain("limit=" + String(MAX_PAGE_LIMIT));
+    expect(calledPath).not.toContain("taskId");
+    expect(calledPath).not.toContain("type=");
+  });
+
+  it("sends cursor=0 rather than dropping it, because zero is the head of an empty ledger", async () => {
+    // `buildQueryString` omits empty strings; a numeric zero must survive, or a
+    // recovery that starts at the beginning would silently ask for the default
+    // page instead.
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        items: [],
+        page: { nextCursor: null, hasMore: false, limit: 200, returned: 0 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    await fetchEventBackfillPage(0);
+    expect(String((fetchSpy.mock.calls[0] as unknown[])[0])).toContain("cursor=0");
+  });
+
+  it("classifies a failing gap-fill like every other read, rather than throwing", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(503, validApiError())));
+    const result = await fetchEventBackfillPage(7);
+    expect(result.kind).toBe("api-error");
+    if (result.kind === "api-error") {
+      expect(result.code).toBe("LEDGER_UNAVAILABLE");
+    }
   });
 
   it("encodes multiple filters for fetchEvents", async () => {

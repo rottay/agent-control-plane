@@ -1,14 +1,17 @@
 import { type TaskDetail } from "@acp/protocol";
-import { type JSX } from "react";
+import { useMemo, type JSX } from "react";
 
 import { fetchTaskDetail } from "../../api/client/index.js";
+import { STREAM_VIEW_ITEMS } from "../../api/stream/index.js";
 import { AsyncSection } from "../../components/async-section/index.js";
 import { IdValue } from "../../components/id-value/index.js";
 import { StatusBadge } from "../../components/status-badge/index.js";
+import { StreamStatus } from "../../components/stream-status/index.js";
 import { TimelineList } from "../../components/timeline-list/index.js";
 import { formatCount, formatTimestamp, humanizeConstant } from "../../format/index.js";
 import { taskStateTone } from "../../format/status-tone/index.js";
 import { useAsyncResource } from "../../hooks/use-async-resource/index.js";
+import { useEventStream } from "../../hooks/use-event-stream/index.js";
 import { buildHash, buildWorkerDetailHash, type Route } from "../../routing/hash-route/index.js";
 import { NotFoundView } from "../not-found-view/index.js";
 
@@ -27,6 +30,21 @@ export function TaskDetailView({ route }: TaskDetailViewProps): JSX.Element {
 function TaskDetailLoaded({ taskId }: { readonly taskId: string }): JSX.Element {
   const { resource, lastFetchedAt, refresh } = useAsyncResource((signal) => fetchTaskDetail(taskId, signal), [taskId]);
 
+  /**
+   * The live tail, selected down to this task (V2-B3b).
+   *
+   * The subscription is the same unfiltered one the timeline uses, for the
+   * reason `api/stream` gives at length: a `?taskId=` stream would deliver a
+   * subsequence of the ledger, and a client cannot tell a missing row from a
+   * non-adjacent one in a subsequence. Selecting locally keeps the exact-next
+   * sequence law checkable and costs this browser rows it will not draw.
+   */
+  const stream = useEventStream({ onDatabaseChanged: refresh });
+  const liveItems = useMemo(
+    () => stream.items.filter((item) => item.taskId === taskId).slice(-STREAM_VIEW_ITEMS),
+    [stream.items, taskId],
+  );
+
   return (
     <section aria-labelledby="task-detail-heading">
       <p>
@@ -35,6 +53,22 @@ function TaskDetailLoaded({ taskId }: { readonly taskId: string }): JSX.Element 
       <h1 id="task-detail-heading">
         Task <IdValue value={taskId} kind="task id" />
       </h1>
+
+      <StreamStatus status={stream} label="this task" />
+
+      {liveItems.length > 0 ? (
+        <section className="stream-live" aria-labelledby="task-detail-live-heading">
+          <h2 id="task-detail-live-heading" className="stream-live__heading">
+            Live since this page opened
+          </h2>
+          <p className="stream-live__note">
+            Events for this task, applied in ledger sequence order. The detail below is the response
+            that was fetched and does not move on its own.
+          </p>
+          <TimelineList caption="Live events for this task" items={liveItems} showTaskColumn={false} />
+        </section>
+      ) : null}
+
       <AsyncSection resource={resource} lastFetchedAt={lastFetchedAt} onRefresh={refresh} label="the task">
         {(data) => <TaskDetailContent task={data.task} />}
       </AsyncSection>

@@ -10,9 +10,19 @@
  * evidence.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  API_CONTRACT_VERSION,
+  LEDGER_CONTRACT_VERSION,
+  STREAM_CHANNEL_BY_EVENT_TYPE,
+  StreamFrame,
+  type TimelineItem,
+} from "@acp/protocol";
+import { act, useEffect, useRef, useState } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { setSessionBearerToken } from "../../src/api/client/index.js";
+import { type Route } from "../../src/routing/hash-route/index.js";
+import { EventsView } from "../../src/views/events-view/index.js";
 import {
   AXE_EXCLUDED_RULES,
   AXE_TAGS,
@@ -21,9 +31,13 @@ import {
   auditAccessibility,
   cleanupMountedRoots,
   countSelectorJoin,
+  fakeFetch,
   pressKey,
   renderIntoDocument,
   selectorJoin,
+  settle,
+  type FakeFetchCall,
+  type Mounted,
 } from "./index.js";
 
 afterEach(() => {
@@ -323,5 +337,467 @@ describe("the selector-join (C1)", () => {
     );
 
     expect(countSelectorJoin(mounted.container, '.data-table [data-priority="tertiary"]')).toBe(0);
+  });
+});
+
+/**
+ * The live event stream, in a mounted view (V2-B3b).
+ *
+ * The battery above proves the harness; this proves the surface. Everything
+ * here is asserted on the real `EventsView`, mounted, with the real reconciler
+ * behind it and frames built by the real `StreamFrame` schema — so what is
+ * measured is what a browser would put on the screen, not what a component
+ * returns in isolation.
+ *
+ * **The stated limit, unchanged from the packet's own account.** No test here
+ * drives a real browser `EventSource` against the real route. The server's
+ * framing is proven end to end in B3a's gateway suite over a live socket; the
+ * client's reconciliation is proven against schema-real frames; the join
+ * between them is owed, alongside the standing pixel-level evidence gap. jsdom
+ * does not implement `EventSource` at all, which is why a stand-in is
+ * installed below rather than the real thing being exercised.
+ */
+
+const STREAM_SHA_A = "a".repeat(64);
+const STREAM_SHA_B = "b".repeat(64);
+const STREAM_DATABASE = "1".repeat(64);
+const STREAM_TASK = "11111111-1111-4111-8111-111111111111";
+
+function streamItem(sequence: number): TimelineItem {
+  return {
+    sequence,
+    eventId: "00000000-0000-4000-8000-" + String(sequence).padStart(12, "0"),
+    taskId: STREAM_TASK,
+    attempt: 1,
+    transitionId: "t-" + String(sequence),
+    type: "TASK_DISCOVERED",
+    fromState: null,
+    toState: "DISCOVERED",
+    emittedBy: "claude/opus/coordinator/01",
+    occurredAt: "2026-01-01T00:00:00.000Z",
+    recordedAt: "2026-01-01T00:00:00.050Z",
+    correlationId: null,
+    causationId: null,
+    previousSha256: STREAM_SHA_A,
+    eventSha256: STREAM_SHA_B,
+    payloadByteSize: 12,
+    payloadKeys: ["reason"],
+  };
+}
+
+/** Serialized by the contract. Nothing in this file hand-writes a frame. */
+function streamFrameData(value: unknown): string {
+  return JSON.stringify(StreamFrame.parse(value));
+}
+
+function streamHello(headSequence: number, databaseId = STREAM_DATABASE): string {
+  return streamFrameData({
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    kind: "hello",
+    database: { id: databaseId, label: "acp.db", pathRedacted: true },
+    headSequence,
+  });
+}
+
+function streamEvent(row: TimelineItem): string {
+  return streamFrameData({
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    kind: "event",
+    channel: STREAM_CHANNEL_BY_EVENT_TYPE[row.type],
+    item: row,
+  });
+}
+
+function streamResync(): string {
+  return streamFrameData({
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    kind: "resync",
+    reason: "ANCHOR_AHEAD_OF_HEAD",
+  });
+}
+
+interface MountedSource {
+  readyState: number;
+  closes: number;
+  readonly listeners: Map<string, ((event: Event) => void)[]>;
+  deliver(type: string, data: string): void;
+  fire(type: string): void;
+  listenerCount(): number;
+}
+
+const mountedSources: MountedSource[] = [];
+
+function installStreamSource(): void {
+  class Fake {
+    public readyState = 1;
+    public closes = 0;
+    public readonly listeners = new Map<string, ((event: Event) => void)[]>();
+
+    public readonly url: string;
+
+    public constructor(url: string) {
+      this.url = url;
+      mountedSources.push(this as unknown as MountedSource);
+    }
+
+    public addEventListener(type: string, listener: (event: Event) => void): void {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+    }
+
+    public removeEventListener(type: string, listener: (event: Event) => void): void {
+      this.listeners.set(
+        type,
+        (this.listeners.get(type) ?? []).filter((candidate) => candidate !== listener),
+      );
+    }
+
+    public close(): void {
+      this.closes += 1;
+      this.readyState = 2;
+    }
+
+    public deliver(type: string, data: string): void {
+      act(() => {
+        for (const listener of this.listeners.get(type) ?? []) listener({ type, data } as unknown as Event);
+      });
+    }
+
+    public fire(type: string): void {
+      act(() => {
+        for (const listener of this.listeners.get(type) ?? []) listener({ type } as unknown as Event);
+      });
+    }
+
+    public listenerCount(): number {
+      let total = 0;
+      for (const listeners of this.listeners.values()) total += listeners.length;
+      return total;
+    }
+  }
+  vi.stubGlobal("EventSource", Fake);
+}
+
+function source(): MountedSource {
+  const latest = mountedSources.at(-1);
+  if (latest === undefined) throw new Error("expected the view to have opened a stream");
+  return latest;
+}
+
+/** The paged read the view makes on mount, plus whatever a recovery asks for. */
+function eventsResponder(rows: readonly TimelineItem[]) {
+  return (call: FakeFetchCall): { status: number; body: unknown } => {
+    const cursor = Number(new URL(call.url, "http://localhost").searchParams.get("cursor") ?? "0");
+    const items = rows.filter((row) => row.sequence > cursor);
+    return {
+      status: 200,
+      body: {
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        items,
+        page: { nextCursor: null, hasMore: false, limit: 200, returned: items.length },
+      },
+    };
+  };
+}
+
+function eventsRoute(): Route {
+  return { view: "events", taskId: null, workerIdentity: null, initiativeId: null, query: {}, raw: "" };
+}
+
+async function mountEventsView(rows: readonly TimelineItem[] = []): Promise<Mounted> {
+  vi.stubGlobal("fetch", fakeFetch(eventsResponder(rows)).fetch);
+  installStreamSource();
+  const mounted = renderIntoDocument(
+    <EventsView
+      route={eventsRoute()}
+      navigate={() => {
+        // navigation is not exercised by the stream battery
+      }}
+    />,
+  );
+  await settle();
+  return mounted;
+}
+
+function statusText(container: HTMLElement): string {
+  return container.querySelector("[data-stream-state]")?.textContent ?? "";
+}
+
+/** The sequence column of the live section only, in rendered order. */
+function liveSequences(container: HTMLElement): readonly string[] {
+  const live = container.querySelector(".stream-live");
+  if (live === null) return [];
+  // The sequence is the first cell of every body row — `TimelineList` declares
+  // it first and `DataTable` renders columns in declaration order.
+  return [...live.querySelectorAll("tbody tr")].map((row) => row.querySelector("td")?.textContent ?? "");
+}
+
+function statusState(container: HTMLElement): string {
+  return container.querySelector("[data-stream-state]")?.getAttribute("data-stream-state") ?? "";
+}
+
+afterEach(() => {
+  mountedSources.length = 0;
+  setSessionBearerToken(null);
+});
+
+describe("the live stream renders every state it can be in", () => {
+  it("announces connecting, then live, and applies rows into the visible timeline", async () => {
+    const mounted = await mountEventsView();
+    expect(statusState(mounted.container)).toBe("connecting");
+    expect(statusText(mounted.container)).toContain("Connecting");
+
+    source().fire("open");
+    source().deliver("acp.hello", streamHello(10));
+    expect(statusState(mounted.container)).toBe("live");
+
+    source().deliver("acp.event", streamEvent(streamItem(11)));
+    source().deliver("acp.event", streamEvent(streamItem(12)));
+
+    expect(statusState(mounted.container)).toBe("live");
+    expect(statusText(mounted.container)).toContain("through sequence 12");
+    expect(mounted.container.textContent).toContain("Live since this page opened");
+    expect(liveSequences(mounted.container)).toEqual(["11", "12"]);
+    expect(mounted.container.querySelector(".stream-live")?.textContent).toContain("Task discovered");
+  });
+
+  it("shows recovering while a gap is open, then lands the held row in order", async () => {
+    const mounted = await mountEventsView([streamItem(11), streamItem(12), streamItem(13)]);
+    source().fire("open");
+    source().deliver("acp.hello", streamHello(10));
+    source().deliver("acp.event", streamEvent(streamItem(13)));
+
+    // Visible, not silent: the operator is told the view is behind before the
+    // recovery finishes, and the gapped row is not on screen yet.
+    expect(statusState(mounted.container)).toBe("recovering");
+    expect(statusText(mounted.container)).toContain("gap");
+
+    await settle();
+    await settle();
+
+    expect(statusState(mounted.container)).toBe("live");
+    // Read from the live section alone, not from the whole page: the paged
+    // table below it holds the same rows, and an assertion that could not tell
+    // them apart would pass whether or not the recovery worked.
+    expect(liveSequences(mounted.container)).toEqual(["11", "12", "13"]);
+  });
+
+  it("shows disconnected while the browser retries, without clearing what it already applied", async () => {
+    const mounted = await mountEventsView();
+    source().fire("open");
+    source().deliver("acp.hello", streamHello(0));
+    source().deliver("acp.event", streamEvent(streamItem(1)));
+
+    source().readyState = 0;
+    source().fire("error");
+
+    expect(statusState(mounted.container)).toBe("disconnected");
+    expect(statusText(mounted.container)).toContain("retrying");
+    // A truthful reading already on screen is not thrown away because the
+    // transport hiccuped — the same rule the paged resource follows.
+    expect(mounted.container.textContent).toContain("Live since this page opened");
+  });
+
+  it("shows degraded and discards the live rows when the server refuses the anchor", async () => {
+    const mounted = await mountEventsView();
+    source().fire("open");
+    source().deliver("acp.hello", streamHello(0));
+    source().deliver("acp.event", streamEvent(streamItem(1)));
+    expect(mounted.container.textContent).toContain("Live since this page opened");
+
+    source().deliver("acp.resync", streamResync());
+
+    expect(statusState(mounted.container)).toBe("degraded");
+    expect(statusText(mounted.container)).toContain("ANCHOR_AHEAD_OF_HEAD");
+    expect(mounted.container.textContent).not.toContain("Live since this page opened");
+    // Not a reconnect loop: the connection closed itself.
+    expect(source().closes).toBe(1);
+  });
+
+  it("shows degraded where the browser has no EventSource at all", async () => {
+    // No stand-in installed: jsdom is exactly that browser.
+    vi.stubGlobal("fetch", fakeFetch(eventsResponder([])).fetch);
+    const mounted = renderIntoDocument(
+      <EventsView
+        route={eventsRoute()}
+        navigate={() => {
+          // not exercised
+        }}
+      />,
+    );
+    await settle();
+
+    expect(statusState(mounted.container)).toBe("degraded");
+    expect(statusText(mounted.container)).toContain("no server-sent event support");
+  });
+});
+
+/**
+ * A fetch stand-in that can hold the recovery's page open (postaudit blocker 1).
+ *
+ * The view's own mount read carries no `cursor`; a recovery's does. Answering
+ * the first immediately and holding the second is what lets a drill stage "the
+ * stream died while the gap was being filled" on a real mounted view.
+ */
+interface EventsGate {
+  readonly fetch: typeof globalThis.fetch;
+  pending(): number;
+  release(rows: readonly TimelineItem[]): void;
+}
+
+function deferredEventsFetch(): EventsGate {
+  const waiting: ((rows: readonly TimelineItem[]) => void)[] = [];
+  const json = (items: readonly TimelineItem[]): Response =>
+    new Response(
+      JSON.stringify({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        items,
+        page: { nextCursor: null, hasMore: false, limit: 200, returned: items.length },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+  const impl = ((input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (!url.includes("cursor=")) return Promise.resolve(json([]));
+    return new Promise<Response>((resolve) => {
+      waiting.push((rows) => {
+        resolve(json(rows));
+      });
+    });
+  }) as typeof globalThis.fetch;
+
+  return {
+    fetch: impl,
+    pending: () => waiting.length,
+    release(rows) {
+      const resolve = waiting.shift();
+      if (resolve === undefined) throw new Error("no backfill request is outstanding");
+      resolve(rows);
+    },
+  };
+}
+
+describe("a recovery that outlives its connection (postaudit blocker 1)", () => {
+  it("never renders Live over a source that died while the gap was being filled", async () => {
+    const gate = deferredEventsFetch();
+    vi.stubGlobal("fetch", gate.fetch);
+    installStreamSource();
+    const mounted = renderIntoDocument(
+      <EventsView
+        route={eventsRoute()}
+        navigate={() => {
+          // not exercised
+        }}
+      />,
+    );
+    await settle();
+
+    source().fire("open");
+    source().deliver("acp.hello", streamHello(10));
+    source().deliver("acp.event", streamEvent(streamItem(13)));
+    expect(statusState(mounted.container)).toBe("recovering");
+    expect(gate.pending()).toBe(1);
+
+    // The stream dies fatally — a server restart, a proxy reaping a long-lived
+    // connection — while the page is in flight. `readyState` is CLOSED, so the
+    // browser will not retry and no listener will fire again.
+    source().readyState = 2;
+    source().fire("error");
+    expect(statusState(mounted.container)).toBe("disconnected");
+
+    // The events route is unaffected and closes the gap.
+    await act(async () => {
+      gate.release([streamItem(11), streamItem(12)]);
+      await Promise.resolve();
+    });
+    await settle();
+    await settle();
+
+    // The rows are true and are on screen, in order.
+    expect(liveSequences(mounted.container)).toEqual(["11", "12", "13"]);
+    // And the banner still tells the truth about the connection. This is the
+    // exact screen the blocker described: before the fix it read
+    // `data-stream-state="live"` over a CLOSED source with no armed timer left
+    // to correct it, and nothing but a reload would ever have moved it.
+    expect(statusState(mounted.container)).toBe("disconnected");
+    expect(statusText(mounted.container)).toContain("Disconnected");
+    expect(statusText(mounted.container)).not.toContain("Live");
+  });
+});
+
+describe("the live stream's privacy boundary, measured on the DOM", () => {
+  it("puts no bearer token, absolute path or ledger digest on the screen", async () => {
+    setSessionBearerToken("s3cret-write-token");
+    const mounted = await mountEventsView();
+    source().fire("open");
+    source().deliver("acp.hello", streamHello(0));
+    source().deliver("acp.event", streamEvent(streamItem(1)));
+
+    const rendered = mounted.container.innerHTML;
+    expect(rendered).not.toContain("s3cret-write-token");
+    expect(rendered).not.toContain("Bearer");
+    expect(rendered).not.toContain("/Users/");
+    expect(rendered).not.toContain(STREAM_DATABASE);
+  });
+
+  it("refuses a frame that tried to carry a payload, so no value can reach the DOM", async () => {
+    // The negative that makes the claim non-vacuous. `TimelineItem` is strict,
+    // so a server that widened the frame with an actual payload cannot get it
+    // past the parser — and the scope says so rather than rendering what it
+    // could understand and discarding what it could not.
+    const mounted = await mountEventsView();
+    source().fire("open");
+    source().deliver("acp.hello", streamHello(0));
+    source().deliver(
+      "acp.event",
+      JSON.stringify({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        kind: "event",
+        channel: "lifecycle",
+        item: { ...streamItem(1), payload: { secret: "PAYLOAD-VALUE-THAT-MUST-NOT-RENDER" } },
+      }),
+    );
+
+    expect(mounted.container.innerHTML).not.toContain("PAYLOAD-VALUE-THAT-MUST-NOT-RENDER");
+    expect(statusState(mounted.container)).toBe("degraded");
+    expect(statusText(mounted.container)).toContain("stream contract");
+  });
+
+  it("refuses a hello whose database label was widened into a path", async () => {
+    const mounted = await mountEventsView();
+    source().fire("open");
+    source().deliver(
+      "acp.hello",
+      JSON.stringify({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        kind: "hello",
+        database: { id: STREAM_DATABASE, label: "/Users/someone/acp.db", pathRedacted: true },
+        headSequence: 0,
+      }),
+    );
+
+    expect(mounted.container.innerHTML).not.toContain("/Users/someone");
+    expect(statusState(mounted.container)).toBe("degraded");
+  });
+});
+
+describe("the live stream cleans up after itself", () => {
+  it("closes the source and drops every listener when the view unmounts", async () => {
+    const mounted = await mountEventsView();
+    source().fire("open");
+    expect(source().listenerCount()).toBeGreaterThan(0);
+
+    mounted.unmount();
+
+    expect(source().closes).toBe(1);
+    expect(source().listenerCount()).toBe(0);
+    expect(mountedSources).toHaveLength(1);
   });
 });

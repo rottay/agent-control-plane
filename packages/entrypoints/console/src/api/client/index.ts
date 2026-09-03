@@ -11,6 +11,7 @@ import {
   InitiativeTimelineResponse,
   IntegrityResult,
   LedgerStatusResponse,
+  MAX_PAGE_LIMIT,
   OverviewResponse,
   RoadmapContentResponse,
   RoadmapVersionWriteResponse,
@@ -339,6 +340,42 @@ export function fetchEvents(
   signal?: AbortSignal,
 ): Promise<ApiResult<EventPageResponse>> {
   const path = buildPath(API_ROUTES.events, { ...filters });
+  return fetchAndParse(path, EventPageResponse, signal);
+}
+
+/**
+ * One page of the gap the live stream could not close on its own (V2-B3b).
+ *
+ * The stream is the tail and this route is the authority on what lies between
+ * two positions in it, so the recovery path has exactly one door and it is
+ * here, beside every other request this UI makes — the stream module holds the
+ * reconciliation and knows nothing about paths, limits or transports.
+ *
+ * **Every page of a recovery is addressed by sequence, not by `nextCursor`.**
+ * The page contract asks readers to treat `nextCursor` as opaque and every
+ * other caller in this file does; this one does not, and the departure is
+ * total rather than confined to the first request. The reconciler never reads
+ * `nextCursor` at all — it cannot, because the position it resumes from
+ * arrived on an SSE `id:` line, and after each page it resumes from the
+ * sequence it has actually applied. Resuming from `lastApplied` is also the
+ * stronger choice: an opaque token would say where the *route* got to, and
+ * what the recovery needs is where the *reconciler* got to, which is the same
+ * number only when no row was dropped on the way in.
+ *
+ * This is the one place in the console where the page-cursor vocabulary is
+ * departed from, and it is written down here so a reader weighing how far
+ * `CursorPageMeta` has been bent gets the true answer: on every request this
+ * function makes, not once per recovery.
+ *
+ * Unfiltered on purpose: the console streams the whole tail and selects for
+ * display, so a filtered backfill would fill a different gap from the one the
+ * stream reported.
+ */
+export function fetchEventBackfillPage(
+  afterSequence: number,
+  signal?: AbortSignal,
+): Promise<ApiResult<EventPageResponse>> {
+  const path = buildPath(API_ROUTES.events, { cursor: String(afterSequence), limit: MAX_PAGE_LIMIT });
   return fetchAndParse(path, EventPageResponse, signal);
 }
 

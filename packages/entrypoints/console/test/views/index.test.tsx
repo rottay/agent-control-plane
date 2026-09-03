@@ -90,6 +90,21 @@ describe("EventsView", () => {
     expect(html).toContain('for="events-emittedBy"');
     expect(html).toContain('for="events-toState"');
   });
+
+  it("announces the live stream's own state on the very first render (V2-B3b)", () => {
+    // No effect has run here, so no connection exists yet — and that is
+    // precisely the state that must not be silent. The banner says
+    // "connecting" before anything has been attempted, rather than appearing
+    // only once something has gone wrong.
+    const html = renderToStaticMarkup(<EventsView route={route({ view: "events" })} navigate={noop} />);
+    expect(html).toContain('data-stream-state="connecting"');
+    expect(html).toContain("Connecting");
+  });
+
+  it("shows no live rows before a frame has arrived, rather than an empty live table", () => {
+    const html = renderToStaticMarkup(<EventsView route={route({ view: "events" })} navigate={noop} />);
+    expect(html).not.toContain("Live since this page opened");
+  });
 });
 
 describe("TaskDetailView", () => {
@@ -104,6 +119,18 @@ describe("TaskDetailView", () => {
   it("falls back to the not-found view when the route carries no task id", () => {
     const html = renderToStaticMarkup(<TaskDetailView route={route({ view: "task-detail", taskId: null })} />);
     expect(html).toContain("Not found");
+  });
+
+  it("announces the live stream's own state alongside the fetched detail (V2-B3b)", () => {
+    const html = renderToStaticMarkup(
+      <TaskDetailView route={route({ view: "task-detail", taskId: "123e4567-e89b-12d3-a456-426614174000" })} />,
+    );
+    expect(html).toContain('data-stream-state="connecting"');
+  });
+
+  it("opens no stream at all on the not-found arm, where there is no task to follow", () => {
+    const html = renderToStaticMarkup(<TaskDetailView route={route({ view: "task-detail", taskId: null })} />);
+    expect(html).not.toContain("data-stream-state");
   });
 });
 

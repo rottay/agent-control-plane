@@ -1,12 +1,15 @@
 import { DEFAULT_PAGE_LIMIT } from "@acp/protocol";
-import { useState, type SubmitEvent, type JSX } from "react";
+import { useMemo, useState, type SubmitEvent, type JSX } from "react";
 
 import { fetchEvents } from "../../api/client/index.js";
+import { STREAM_VIEW_ITEMS } from "../../api/stream/index.js";
 import { AsyncSection } from "../../components/async-section/index.js";
 import { FilterBar } from "../../components/filter-bar/index.js";
 import { Pagination } from "../../components/pagination/index.js";
+import { StreamStatus } from "../../components/stream-status/index.js";
 import { TimelineList } from "../../components/timeline-list/index.js";
 import { useAsyncResource } from "../../hooks/use-async-resource/index.js";
+import { useEventStream } from "../../hooks/use-event-stream/index.js";
 import { buildHash, type Route } from "../../routing/hash-route/index.js";
 import { type NavigateFn } from "../../routing/use-hash-route/index.js";
 
@@ -39,6 +42,33 @@ export function EventsView({ route, navigate }: EventsViewProps): JSX.Element {
   const { resource, lastFetchedAt, refresh } = useAsyncResource(
     (signal) => fetchEvents({ taskId, type, emittedBy, toState, cursor, limit: DEFAULT_PAGE_LIMIT }, signal),
     [taskId, type, emittedBy, toState, cursor],
+  );
+
+  /**
+   * The live tail (V2-B3b).
+   *
+   * The connection carries no filter. It is the whole ledger tail, reconciled
+   * once in `api/stream`, and the selection below is a *display* filter over
+   * rows this browser already holds — never a second subscription with a
+   * second cursor. A filtered stream would be a subsequence, and "apply only
+   * the next sequence" is not a claim anyone can make about a subsequence.
+   *
+   * A `hello` naming a different ledger clears the live scope on its own; the
+   * paged resource beside it is just as stale in that case, so it refetches.
+   */
+  const stream = useEventStream({ onDatabaseChanged: refresh });
+  const liveItems = useMemo(
+    () =>
+      stream.items
+        .filter(
+          (item) =>
+            (taskId === undefined || item.taskId === taskId) &&
+            (type === undefined || item.type === type) &&
+            (emittedBy === undefined || item.emittedBy === emittedBy) &&
+            (toState === undefined || item.toState === toState),
+        )
+        .slice(-STREAM_VIEW_ITEMS),
+    [stream.items, taskId, type, emittedBy, toState],
   );
 
   const hasActiveFilters = taskId !== undefined || type !== undefined || emittedBy !== undefined || toState !== undefined;
@@ -122,6 +152,21 @@ export function EventsView({ route, navigate }: EventsViewProps): JSX.Element {
           />
         </div>
       </FilterBar>
+
+      <StreamStatus status={stream} label="the timeline" />
+
+      {liveItems.length > 0 ? (
+        <section className="stream-live" aria-labelledby="events-live-heading">
+          <h2 id="events-live-heading" className="stream-live__heading">
+            Live since this page opened
+          </h2>
+          <p className="stream-live__note">
+            Applied in ledger sequence order, newest last. The page below is a fixed page and does not
+            move.
+          </p>
+          <TimelineList caption="Live event stream" items={liveItems} />
+        </section>
+      ) : null}
 
       <AsyncSection
         resource={resource}
