@@ -39,9 +39,11 @@ import { serverAvailability, startServer } from "../../../src/server-handle/inde
 import { platformKey, readTrackedPin, receiptMatchesPin } from "../../../src/server-handle/index.js";
 import type { ServerExit, ServerHandle } from "../../../src/server-handle/index.js";
 import {
+  attachAdvance,
   deriveInvocation,
   readCacheThroughHandler,
   registerDeployment,
+  sendAdvance,
   submitAdvance,
 } from "../../../src/submit/index.js";
 import { reconcile } from "../../../src/drivers/restate-driver/index.js";
@@ -312,6 +314,79 @@ function startChild(
       }
     });
   });
+}
+
+/**
+ * Start an ATTACH-role child and wait until it says it is attaching (V2-B2-4a).
+ *
+ * A separate spawner rather than a flag on `startChild`, because the two roles
+ * do not share a handshake: the endpoint announces `ready`, and this one
+ * announces the address it rebuilt. Waiting for the wrong line would make a
+ * client-death drill kill a process that had not yet asked for anything.
+ *
+ * The config carries the invocation, but the child does not use its id: it
+ * recomputes one from `(taskId, attempt)`. The drill asserts the two agree,
+ * which is what makes "a fresh process can rejoin" mean the address is
+ * derivable rather than inherited.
+ */
+function startAttachClient(
+  scenarioId: string,
+  invocation: DurableInvocation,
+): Promise<ChildProcess> {
+  const config = JSON.stringify({
+    scenarioId,
+    invocation,
+    emittedBy: EMITTED_BY,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    initiativeId: TEST_INITIATIVE_ID,
+    faultPoint: null,
+    pauseAt: null,
+    port: RUNTIME_SERVICE_PORT,
+    effect: "TOY",
+    role: "ATTACH",
+  });
+  return new Promise<ChildProcess>((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, [CHILD_ENTRY, config], {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: REPO_ROOT,
+    });
+    children.push(child);
+    if (child.pid !== undefined) trackSpawnedPid(child.pid, "startAttachClient");
+    const sink = { text: "" };
+    childOutput.set(child, sink);
+    child.stdout.on("data", (chunk: Buffer) => {
+      sink.text += chunk.toString("utf8");
+      if (sink.text.includes('"attaching":true')) resolvePromise(child);
+    });
+    child.once("error", rejectPromise);
+    child.once("close", (code, signal) => {
+      if (!sink.text.includes('"attaching":true')) {
+        rejectPromise(
+          new Error("attach client exited before asking: code " + String(code) + " signal " + String(signal)),
+        );
+      }
+    });
+  });
+}
+
+/** The line an ATTACH child prints once it has an answer, parsed. */
+function attachAnswer(
+  child: ChildProcess,
+): { attached: boolean; status?: number; body?: string } | null {
+  const text = childOutput.get(child)?.text ?? "";
+  for (const line of text.split("\n")) {
+    if (line.includes('"attached"')) {
+      return JSON.parse(line) as { attached: boolean; status?: number; body?: string };
+    }
+  }
+  return null;
+}
+
+/** The invocation id an ATTACH child rebuilt for itself. */
+function attachClientDerivedId(child: ChildProcess): string | null {
+  const text = childOutput.get(child)?.text ?? "";
+  const match = /"attaching":true,"invocationId":"([0-9a-f-]+)"/.exec(text);
+  return match?.[1] ?? null;
 }
 
 /**
@@ -747,6 +822,27 @@ interface DrillReceipt {
   readonly executionStarts?: number;
   /** Invocations held at one moment. Two for different keys, one for the same (V2-B2-3). */
   readonly concurrentPauses?: number;
+  // --- V2-B2-4a: the derived key addresses the invocation -------------------
+  /** What the nonblocking send answered. 202 Accepted, never a result. */
+  readonly sendStatus?: number;
+  /** What an attach on the derived key answered. */
+  readonly attachStatus?: number | null;
+  /** The ledger head the attach reported. Equal to the ledger's own, or the drill failed. */
+  readonly attachFinalSequence?: number | null;
+  /** Did a blocking submission on the same key answer identically? */
+  readonly blockingMatchesAttach?: boolean;
+  /** Neighbouring path shapes the router refused by name. */
+  readonly badPathRefusals?: number;
+  /** What an attach on a key that was never issued answered. */
+  readonly neverIssuedStatus?: number;
+  /** Did a client that was never told the id rebuild the same one? */
+  readonly derivedByFreshClient?: boolean;
+  /** Observers of one invocation, at one moment. */
+  readonly concurrentAttaches?: number;
+  /** Did every concurrent observer see the same answer? */
+  readonly attachBodiesAgree?: boolean;
+  /** How an attach ended when the server died under it. Rejected, never resolved. */
+  readonly attachSettledAs?: string;
 }
 
 function emitReceipt(receipt: DrillReceipt): void {
@@ -1483,6 +1579,456 @@ describe("per-task serialization", () => {
       duplicateKeys: 0,
       // Measured, not asserted twice: the receipt carries what the drill saw.
       concurrentPauses: heldTasks(child).size,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+});
+
+
+/**
+ * The invocation is addressable by the id derived before ingress (V2-B2-4a).
+ *
+ * Everything here rests on one fact that is measured rather than assumed: the
+ * attach address needs nothing Restate minted. `deriveInvocation` computes the
+ * idempotency key from `(taskId, attempt)` alone, and the ingress will resolve
+ * an invocation from `(target, idempotency key)`, so the address is
+ * RECONSTRUCTIBLE by anyone holding the coordinates. That is why a killed
+ * client can be replaced by a fresh one, and why nothing in this packet
+ * persists or returns an engine identity.
+ *
+ * The positives and the negatives are a pair. A passing attach on its own
+ * shows that some URL worked; it does not show that the derived-key form is
+ * what made it work. The wrong-segmentation drill supplies the other half —
+ * the router refuses the neighbouring shapes by name — so the two together say
+ * the derived key resolved it.
+ */
+describe("the derived key addresses the invocation", () => {
+  /** The head an attach reply names, or null if it did not name one. */
+  function finalSequenceIn(body: string): number | null {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const value = (parsed as Record<string, unknown>)["finalSequence"];
+    return typeof value === "number" ? value : null;
+  }
+
+  it("send returns while the invocation is still held, and attach answers what a blocking submit answers", async () => {
+    // The child runs from `dist`; build it, or the drill measures a stale one.
+    ensureChildBuilt();
+    const id = "attach-send-then-attach";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    // P1. The discriminator against `submitAdvance`, in two independent forms.
+    // The status is the engine's own word for it — 202 Accepted, with no
+    // result — and the hold is the behavioural half: the walk has not
+    // completed, and cannot, because only this drill can release it.
+    const sent = await sendAdvance(server.ingressUrl, invocation);
+    expect({ ok: sent.ok, status: sent.status }).toEqual({ ok: true, status: 202 });
+    expect(await waitForHeldTasks(child, 1)).toBe(1);
+    expect([...heldTasks(child)]).toEqual([taskId]);
+    expect(ledger.getTask(taskId)?.currentState).not.toBe("CHECKPOINTED");
+
+    // The result type cannot carry an engine identity, so no caller can
+    // persist one. Asserted on the value, not only in the type.
+    expect(Object.keys(sent).sort()).toEqual(["ok", "status"]);
+
+    // P2. Attach on the DERIVED id, while the invocation is genuinely in
+    // flight, and release only afterwards.
+    const attaching = attachAdvance(server.ingressUrl, invocation, 120_000);
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    const attached = await attaching;
+    expect(attached.status).toBe(200);
+
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+    const head = ledger.status();
+    expect(finalSequenceIn(attached.body)).toBe(head.headSequence);
+
+    // The same key, submitted blocking after completion, answers identically.
+    // This is what "attach is a convenience over the authority" means when it
+    // is measured rather than asserted: the two paths agree on the value, and
+    // the ledger agrees with both.
+    const blocking = await submitAdvance(server.ingressUrl, invocation, 30_000);
+    expect(blocking.status).toBe(200);
+    expect(blocking.body).toBe(attached.body);
+
+    // One invocation, one effect, one append set, whoever was listening.
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "ATTACH-SEND-THEN-ATTACH",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      sendStatus: sent.status,
+      attachStatus: attached.status,
+      attachFinalSequence: finalSequenceIn(attached.body),
+      blockingMatchesAttach: blocking.body === attached.body,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("refuses a wrong target segmentation and a never-issued key, without touching the ledger", async () => {
+    // Deliberately measured in the environment where the POSITIVE holds: the
+    // object is deployed and the key is one the engine really issued, so the
+    // only thing wrong with the neighbouring shapes is their segmentation.
+    // Measured against a bare server instead, the same paths answer 404 for an
+    // unknown service — a refusal that would have been about the deployment
+    // and would have proved nothing about the address.
+    ensureChildBuilt();
+    const id = "attach-refusals";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+    expect((await submitAdvance(server.ingressUrl, invocation, 120_000)).status).toBe(200);
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+
+    const before = ledger.status().eventCount;
+    expect(before).toBe(LIFECYCLE_PLAN.length);
+
+    // N1. The falsifier for the segmentation. `:invocation_target` for a
+    // Virtual Object handler is three segments; drop the handler, or drop the
+    // object key, and the router answers with its own grammar rather than
+    // resolving anything. Raw fetches on purpose: `attachAdvance` can only
+    // build the correct shape, so the wrong ones have to be spelled here.
+    const wrong: readonly [string, string][] = [
+      [
+        "no handler segment",
+        "/restate/invocation/AcpTask/" + taskId + "/" + invocation.invocationId + "/attach",
+      ],
+      [
+        "no object key segment",
+        "/restate/invocation/AcpTask/advance/" + invocation.invocationId + "/attach",
+      ],
+    ];
+    for (const [name, path] of wrong) {
+      const response = await fetch(new URL(path, server.ingressUrl), {
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = await response.text();
+      expect({ name, status: response.status }).toEqual({ name, status: 400 });
+      expect(body).toContain("bad path");
+      // And it names the shape that WOULD have worked, which is the shape
+      // `attachAdvance` builds.
+      expect(body).toContain("/restate/invocation/:invocation_target/:idempotency_key/attach");
+    }
+
+    // N2. A key that was never issued. Refused, and — the half that matters —
+    // refused without starting anything: the authority is unchanged, so the
+    // refusal is observable where it counts and not only in an HTTP status.
+    const neverIssued = deriveInvocation(randomUUID(), 9, "2026-08-27T12:00:00.000Z", "b".repeat(64));
+    const missing = await attachAdvance(server.ingressUrl, neverIssued, 10_000);
+    expect({ ok: missing.ok, status: missing.status }).toEqual({ ok: false, status: 404 });
+    expect(ledger.status().eventCount).toBe(before);
+    expect(ledger.getTask(neverIssued.taskId) ?? null).toBeNull();
+
+    emitReceipt({
+      drill: "ATTACH-REFUSALS",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      badPathRefusals: wrong.length,
+      neverIssuedStatus: missing.status,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("survives the death of the attaching client: a fresh process rejoins from coordinates alone", async () => {
+    ensureChildBuilt();
+    const id = "attach-client-death";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const endpoint = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const sent = await sendAdvance(server.ingressUrl, invocation);
+    expect(sent.status).toBe(202);
+    expect(await waitForHeldTasks(endpoint, 1)).toBe(1);
+
+    // A real client process, holding a real attach.
+    const firstClient = await startAttachClient(id, invocation);
+    // It rebuilt the address itself rather than using the one in its config.
+    expect(attachClientDerivedId(firstClient)).toBe(invocation.invocationId);
+
+    // Kill the CLIENT. Not the endpoint, not the server: the invocation is
+    // untouched and simply has nobody listening to it.
+    firstClient.kill("SIGKILL");
+    const died = await waitForExit(firstClient);
+    expect(died.signal).toBe("SIGKILL");
+    expect(attachAnswer(firstClient)).toBeNull();
+    // The work is still held, so the death cannot have completed it.
+    expect(heldTasks(endpoint).size).toBe(1);
+    expect(ledger.getTask(taskId)?.currentState).not.toBe("CHECKPOINTED");
+
+    // A second client, handed a DECOY id, which it must ignore. This is the
+    // drill: the handle needs no client state, so a fresh process rebuilds the
+    // address from `(taskId, attempt)` rather than from anything it was told —
+    // and a client that trusted its config would attach to the decoy and be
+    // told the invocation does not exist.
+    const decoy = randomUUID();
+    expect(decoy).not.toBe(invocation.invocationId);
+    const secondClient = await startAttachClient(id, { ...invocation, invocationId: decoy });
+    expect(attachClientDerivedId(secondClient)).toBe(invocation.invocationId);
+
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    expect(await waitForChildSays(secondClient, '"attached":true')).toBe(true);
+    const answer = attachAnswer(secondClient);
+    expect(answer?.attached).toBe(true);
+    expect(answer?.status).toBe(200);
+
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+    const head = ledger.status();
+    expect(finalSequenceIn(answer?.body ?? "null")).toBe(head.headSequence);
+
+    // One invocation, whatever happened to the listeners.
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "ATTACH-CLIENT-DEATH",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: died.signal,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      attachStatus: answer?.status ?? null,
+      attachFinalSequence: finalSequenceIn(answer?.body ?? "null"),
+      derivedByFreshClient:
+        attachClientDerivedId(secondClient) === invocation.invocationId &&
+        attachClientDerivedId(secondClient) !== decoy,
+    });
+
+    await stopChild(endpoint);
+  }, 240_000);
+
+  it("concurrent attaches observe one invocation, one effect and one append set", async () => {
+    ensureChildBuilt();
+    const id = "attach-concurrent";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const sent = await sendAdvance(server.ingressUrl, invocation);
+    expect(sent.status).toBe(202);
+    expect(await waitForHeldTasks(child, 1)).toBe(1);
+
+    // Two observers of one invocation, in flight together. This is the
+    // durability-layer form of "closing and reopening the UI neither cancels
+    // nor duplicates a run": watching is not running.
+    const first = attachAdvance(server.ingressUrl, invocation, 120_000);
+    const second = attachAdvance(server.ingressUrl, invocation, 120_000);
+
+    // Give a second invocation every chance to appear before denying that one
+    // did — the same discipline the same-key serialization drill uses.
+    await delay(1_000);
+    expect(heldTasks(child).size).toBe(1);
+
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(a.body).toBe(b.body);
+
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+    const head = ledger.status();
+    expect(finalSequenceIn(a.body)).toBe(head.headSequence);
+
+    // Counted, never inferred from duration: one held task, one effect, one
+    // plan's worth of events, no duplicate keys.
+    expect(heldTasks(child).size).toBe(1);
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "ATTACH-CONCURRENT",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      concurrentAttaches: 2,
+      concurrentPauses: heldTasks(child).size,
+      attachBodiesAgree: a.body === b.body,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("an endpoint may die while nobody is attached, and a later attach still answers", async () => {
+    ensureChildBuilt();
+    const id = "attach-detached-endpoint-death";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    // The endpoint kills itself mid-plan while NOBODY holds an attach: the
+    // send returned long before, and no observer exists. Nothing about the
+    // work depends on someone watching it.
+    const faulty = await startChild(id, invocation, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const sent = await sendAdvance(server.ingressUrl, invocation);
+    expect(sent.status).toBe(202);
+    const died = await waitForExit(faulty);
+    expect(died.signal).toBe("SIGKILL");
+
+    // A replacement endpoint, and only then an observer — arriving after the
+    // crash it never saw, at an address it computed rather than kept.
+    await startChild(id, invocation, null);
+    const attached = await attachAdvance(server.ingressUrl, invocation, 120_000);
+    expect(attached.status).toBe(200);
+
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+    const head = ledger.status();
+    expect(finalSequenceIn(attached.body)).toBe(head.headSequence);
+    expect(head.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(markers(root)).toBe(1);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "ATTACH-DETACHED-ENDPOINT-DEATH",
+      mode: "RESTATE",
+      faultPoint: "AFTER_INTENT",
+      signal: died.signal,
+      eventCount: head.eventCount,
+      effectMarkers: markers(root),
+      headSequence: head.headSequence,
+      headEventSha256: head.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      attachStatus: attached.status,
+      attachFinalSequence: finalSequenceIn(attached.body),
+    });
+  }, 240_000);
+
+  it("a server killed mid-attach fails closed rather than answering with a guess", async () => {
+    ensureChildBuilt();
+    const id = "attach-server-death";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+    const sent = await sendAdvance(server.ingressUrl, invocation);
+    expect(sent.status).toBe(202);
+    expect(await waitForHeldTasks(child, 1)).toBe(1);
+
+    const before = ledger.status();
+    // The verdict is bound to the promise at the moment it is created, before
+    // the kill. Awaiting it later would leave a window in which the rejection
+    // has no handler, and Node reports that as an unhandled rejection — a
+    // failure of the drill's bookkeeping that would look like a failure of the
+    // thing under test.
+    const attaching = attachAdvance(server.ingressUrl, invocation, 120_000).then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    // Kill the observation channel underneath a live attach.
+    await stopServer(server, "SIGKILL", 30_000);
+
+    // It rejects. It does not resolve with a fabricated result, and it does
+    // not resolve with a zero: an attach that could not complete says nothing
+    // about whether the task advanced, and saying nothing is the correct
+    // answer.
+    const settled = await attaching;
+    expect(settled).toBe("rejected");
+
+    // And it appended nothing on its way out. The authority is exactly where
+    // the walk left it.
+    const after = ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+
+    emitReceipt({
+      drill: "ATTACH-SERVER-DEATH",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: "SIGKILL",
+      eventCount: after.eventCount,
+      effectMarkers: markers(root),
+      headSequence: after.headSequence,
+      headEventSha256: after.headEventSha256,
+      verdict: "INDETERMINATE",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      attachSettledAs: settled,
     });
 
     await stopChild(child);

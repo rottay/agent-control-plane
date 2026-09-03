@@ -216,13 +216,28 @@ export interface DriverRefused {
 /**
  * A verb that was accepted.
  *
- * Deliberately empty today. B2-1 implements no verb, so there is nothing true
- * to put in it, and a placeholder field invented now would be a shape every
- * later packet had to work around. Each packet that makes a verb real widens
- * this arm with what that verb actually produces.
+ * It was deliberately empty at B2-1, which implemented no verb: each packet
+ * that makes a verb real widens this arm with what that verb actually
+ * produces, and a placeholder invented in advance would have been a shape
+ * every later packet had to work around.
+ *
+ * V2-B2-4a makes `REATTACH` real and so opens it, with one field and one
+ * meaning. Every member here must be a LEDGER coordinate. A driver may report
+ * how far the ledger got; it may not hand back anything the engine minted,
+ * because a caller that could persist an engine identity would make the
+ * orchestrator an authority over its own address — the thing the derived
+ * design exists to prevent. `finalSequence` is the ledger head the invocation
+ * reached, which is a fact the ledger already holds and can restate for
+ * itself.
+ *
+ * Optional, because it belongs to `REATTACH` alone. A later verb that produces
+ * nothing of this shape answers with a bare `{ ok: true }` rather than being
+ * forced to invent a sequence it never observed.
  */
 export interface DriverAccepted {
   readonly ok: true;
+  /** The ledger head the reattached invocation reached (V2-B2-4a). */
+  readonly finalSequence?: number;
 }
 
 /** What a driver verb answers: accepted, or refused with a closed reason. */

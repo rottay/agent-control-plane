@@ -8,6 +8,7 @@ import { openLedger } from "@acp/ledger";
 
 import {
   INTENT_STEP,
+  RESTATE_INGRESS_URL,
   RUNTIME_SERVICE_PORT,
   SupervisorError,
   applyEffect,
@@ -19,6 +20,7 @@ import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime"
 import { createExecutionEffects } from "@acp/runtime";
 import { createAcpTaskObject } from "../restate-driver/index.js";
 import { startEndpoint } from "../restate-endpoint/index.js";
+import { attachAdvance, deriveInvocation } from "../../submit/index.js";
 
 /**
  * The service endpoint, hosted in its own process so a drill can kill it.
@@ -28,6 +30,16 @@ import { startEndpoint } from "../restate-endpoint/index.js";
  * ledger handle, the page cache and every object intact, which is exactly what
  * a crash does not do. So the endpoint runs here and the drill sends it a real
  * SIGKILL at a chosen beat.
+ *
+ * It hosts a second role for the same reason (V2-B2-4a). A client-death drill
+ * is evidence only if the CLIENT process actually dies, and an aborted fetch
+ * inside the drill's own process is not that: the process that held the
+ * attach keeps its module state, its sockets and its memory of the address.
+ * So `role: "ATTACH"` runs an attaching client here, in its own process, and
+ * the drill sends it a real SIGKILL. It rebuilds the address from
+ * `(taskId, attempt)` through `deriveInvocation` rather than being told it,
+ * which is what makes the drill's later, fresh attach a proof that the handle
+ * needs no client state.
  *
  * Importing this module does nothing. It runs only as a process entry point.
  */
@@ -55,6 +67,15 @@ export interface RestateChildConfig {
    */
   readonly pauseAt: string | null;
   readonly port: number;
+  /**
+   * Which role this process plays (V2-B2-4a).
+   *
+   * `ENDPOINT` — the default, so every drill that predates this packet keeps
+   * its meaning — hosts the service. `ATTACH` hosts nothing: it rejoins one
+   * invocation and reports what it got. The default follows the `effect`
+   * selector's precedent for the same reason.
+   */
+  readonly role: "ENDPOINT" | "ATTACH";
   /**
    * Which effect the journalled beats perform (V2-B2-2).
    *
@@ -196,6 +217,12 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   if (effect !== "TOY" && effect !== "EXECUTION") {
     throw new SupervisorError("effect must be TOY or EXECUTION");
   }
+  // V2-B2-4a, and symmetric with `effect`: absence means the role every
+  // earlier drill relied on, and anything else is refused rather than coerced.
+  const role = value["role"] ?? "ENDPOINT";
+  if (role !== "ENDPOINT" && role !== "ATTACH") {
+    throw new SupervisorError("role must be ENDPOINT or ATTACH");
+  }
   const rawPort = value["port"] ?? RUNTIME_SERVICE_PORT;
 
   if (typeof scenarioId !== "string") throw new SupervisorError("scenarioId must be a string");
@@ -248,6 +275,7 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
     pauseAt,
     port: rawPort,
     effect,
+    role,
     invocation: { taskId, attempt, invocationId, submittedAt, submissionDigest },
   };
 }
@@ -296,8 +324,53 @@ async function blockUntilReleased(file: string, deadlineMs: number): Promise<voi
   }
 }
 
-/** Host the endpoint until this process is killed. */
+/**
+ * Attach to one invocation, from a process that holds nothing else (V2-B2-4a).
+ *
+ * The address is REBUILT here rather than read from the config's invocation.
+ * That is the whole content of the role: `deriveInvocation` is pure in
+ * `(taskId, attempt)`, so a process that never saw the first submission can
+ * still name the invocation, and the drill's proof that a fresh client can
+ * rejoin after the previous one was killed does not quietly depend on the
+ * drill having handed this process the answer.
+ *
+ * No ledger is opened and no endpoint is started. A client that could read the
+ * authority directly would prove nothing about attaching.
+ */
+async function runAttachClient(config: RestateChildConfig): Promise<void> {
+  const derived = deriveInvocation(
+    config.invocation.taskId,
+    config.invocation.attempt,
+    config.invocation.submittedAt,
+    config.invocation.submissionDigest,
+  );
+  process.stdout.write(
+    JSON.stringify({ attaching: true, invocationId: derived.invocationId }) + "\n",
+  );
+
+  try {
+    const result = await attachAdvance(RESTATE_INGRESS_URL, derived, 120_000);
+    process.stdout.write(
+      JSON.stringify({ attached: true, status: result.status, body: result.body }) + "\n",
+    );
+  } catch (error: unknown) {
+    // Classified, never a guessed result: an attach that could not complete
+    // says nothing about whether the task advanced.
+    process.stdout.write(
+      JSON.stringify({
+        attached: false,
+        reason: error instanceof Error ? error.name : "unknown",
+      }) + "\n",
+    );
+  }
+}
+
+/** Host the endpoint until this process is killed, or attach and report. */
 export async function runRestateChild(config: RestateChildConfig): Promise<void> {
+  if (config.role === "ATTACH") {
+    await runAttachClient(config);
+    return;
+  }
   const scenarioRoot = resolveScenarioRoot(config.scenarioId);
   const ledger = openLedger(scenarioLedgerPath(scenarioRoot));
 

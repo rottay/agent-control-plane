@@ -103,6 +103,128 @@ export async function submitAdvance(
 }
 
 /**
+ * What a nonblocking send returns: whether the server took it, and nothing else.
+ *
+ * The absence is the design (V2-B2-4a). Restate's `/send` reply body carries
+ * its OWN invocation id — `{"invocationId":"inv_...","status":"Accepted"}` —
+ * and that identity must never reach the ledger, a checkpoint, a read model or
+ * a log, because a ledger that depended on an address the engine minted would
+ * have handed the engine authority over its own coordinates. A rule stated in
+ * prose is a rule review has to remember; a result type that cannot express
+ * the id is one no careless caller can violate. So this shape has exactly two
+ * members, and the fence pins that it still does.
+ *
+ * Nothing is lost by not carrying it. The invocation is already addressable by
+ * the id THIS side derived before ingress, so a caller that wants to wait has
+ * `attachAdvance` and a caller that wants the truth has the ledger.
+ */
+export interface SendResult {
+  readonly ok: boolean;
+  readonly status: number;
+}
+
+/**
+ * Submit one invocation without waiting for it (V2-B2-4a).
+ *
+ * The same target and the same idempotency key as `submitAdvance`, with
+ * `/send` appended: the server answers once it has durably accepted the
+ * invocation, not once the work is done. A second `sendAdvance` for the same
+ * invocation is the same call rather than a second one, for exactly the reason
+ * a second `submitAdvance` is — the key governs, and it is derived.
+ *
+ * This is not fire-and-forget in the product sense. The outcome of the work is
+ * a ledger fact whether anyone is listening or not; attaching is how a caller
+ * WAITS, never how it learns.
+ */
+export async function sendAdvance(
+  ingressUrl: string,
+  invocation: DurableInvocation,
+  timeoutMs = 30_000,
+): Promise<SendResult> {
+  assertLoopback(ingressUrl);
+  const target = new URL(
+    "/" + RESTATE_OBJECT_NAME + "/" + invocation.taskId + "/" + RESTATE_HANDLER_ADVANCE + "/send",
+    ingressUrl,
+  );
+
+  const response = await fetch(target, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": invocation.invocationId,
+    },
+    body: JSON.stringify(invocation),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  // Read and drop. The body is consumed so the socket is released, and it is
+  // dropped on the floor rather than returned: see `SendResult`.
+  await response.text();
+  return { ok: response.ok, status: response.status };
+}
+
+/**
+ * What an attach returns.
+ *
+ * `body` is present here and absent from `SendResult`, and the asymmetry is
+ * the point rather than an oversight. On this path the body IS the answer —
+ * the handler's own `{"finalSequence":N}`, a ledger coordinate — or the
+ * router's refusal text, which a caller has to be able to read in order to
+ * tell a wrong address from an absent invocation.
+ */
+export interface AttachResult {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly body: string;
+}
+
+/**
+ * Rejoin an invocation already in flight, by the id derived before ingress.
+ *
+ * The address is `/restate/invocation/:invocation_target/:idempotency_key/attach`,
+ * where the target of a Virtual Object handler is its own three segments and
+ * the key is `invocation.invocationId` — the value `submitAdvance` and
+ * `sendAdvance` already send as `idempotency-key`, which `deriveInvocation`
+ * computes from `(taskId, attempt)` alone.
+ *
+ * So there is no handle object and nothing to keep. A caller that lost its
+ * memory RECOMPUTES the address rather than looking it up, which is what lets
+ * reattachment survive a client restart with no durable client state — and it
+ * is why no engine-minted identity is needed here, and therefore none is
+ * persisted.
+ *
+ * Two limits belong to the observation channel and not to the work. A refused
+ * or expired attach says nothing about whether the task advanced; the ledger
+ * does. And the retention window that lets a completed invocation still answer
+ * is engine configuration rather than a ledger fact, so a caller must never be
+ * built to depend on it: when an attach cannot answer, read the ledger.
+ */
+export async function attachAdvance(
+  ingressUrl: string,
+  invocation: DurableInvocation,
+  timeoutMs = 120_000,
+): Promise<AttachResult> {
+  assertLoopback(ingressUrl);
+  const target = new URL(
+    "/restate/invocation/" +
+      RESTATE_OBJECT_NAME +
+      "/" +
+      invocation.taskId +
+      "/" +
+      RESTATE_HANDLER_ADVANCE +
+      "/" +
+      invocation.invocationId +
+      "/attach",
+    ingressUrl,
+  );
+
+  const response = await fetch(target, {
+    method: "GET",
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  return { ok: response.ok, status: response.status, body: await response.text() };
+}
+
+/**
  * Read the object's cache through its shared handler, never through admin.
  *
  * Only a JSON literal `null` means "absent". Everything else that is not a

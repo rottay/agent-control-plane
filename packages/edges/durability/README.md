@@ -43,9 +43,13 @@ lives.
 
 ## Public surface
 
-The barrel exports exactly the twenty-two names the runtime barrel gave up in
-the split, and the fence pins them by equality in both directions. The
-package-internal surface — `advanceHandler`, `parseCacheReply`, the raw
+The barrel exports the names the runtime barrel gave up in the split, plus
+what later packets have added to the edge's own surface, and the fence pins
+the set by equality in both directions — against the table below as well as
+against the barrel, so a name can neither appear nor disappear on one side
+alone. The count deliberately does not appear in this sentence: an integer in
+prose is a fact no gate checks, and it goes stale the first time an export
+lands. The package-internal surface — `advanceHandler`, `parseCacheReply`, the raw
 `startServer`/`ServerHandle` pair, `releasePath` — stays internal and is
 deep-imported only by this package's own tests, exactly as before the move. A
 split that widened the public surface while it was at it would make the
@@ -67,8 +71,12 @@ before-and-after comparison meaningless.
 | `EndpointHandle` | type: the running endpoint |
 | `StartEndpointOptions` | type: how the endpoint is started |
 | `deriveInvocation` | derive the durable invocation for a step |
-| `submitAdvance` | submit an advance through the ingress |
-| `SubmitResult` | type: what a submission returns |
+| `submitAdvance` | submit an advance through the ingress and wait for it |
+| `SubmitResult` | type: what a blocking submission returns |
+| `sendAdvance` | submit an advance without waiting for it |
+| `SendResult` | type: what a send returns — no engine identity, by shape |
+| `attachAdvance` | rejoin an invocation by its derived id |
+| `AttachResult` | type: what an attach returns |
 | `readCacheThroughHandler` | read the cache by the same path the handler does |
 | `registerDeployment` | register this deployment with the server |
 | `startVerifiedServer` | start the pinned server and verify it answered |

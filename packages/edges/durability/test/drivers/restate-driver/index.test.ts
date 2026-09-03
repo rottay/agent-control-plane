@@ -768,8 +768,15 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
 });
 
 /**
- * The subject for the capability tests: stubs only, no ledger file, no server,
- * no network. None of the four verbs reaches any of them, which is the point.
+ * The subject for the capability tests: stubs only, no ledger file, no server.
+ *
+ * Three of the four verbs reach nothing at all, which is the point for them.
+ * `reattach` is the exception as of V2-B2-4a: it is real, so it does make an
+ * HTTP call, and the tests below answer that call with a stub rather than a
+ * server. What a unit suite can prove about it is the SHAPE — the address it
+ * derives, the ledger coordinate it returns, and that it never answers a
+ * failed observation with a refusal. That the shape describes the real engine
+ * is the drills' job, and they do it against the pinned server.
  */
 const INVOCATION_FOR_CAPABILITIES = invocationFor("5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a02");
 
@@ -803,6 +810,31 @@ function capabilitySubject(): RestateDriver {
 }
 
 /**
+ * Answer one attach without a server, and record the address it was made to.
+ *
+ * `globalThis.fetch` is swapped and restored around the call, the shape the
+ * daemon's own lifecycle suite already uses. The recording is half the value:
+ * a stub that only returned a body would prove the driver parses a reply, not
+ * that it asks at the address the derived key names.
+ */
+async function withAttachAnswering<T>(
+  reply: { readonly status: number; readonly body: string },
+  run: () => Promise<T>,
+): Promise<{ readonly result: T; readonly asked: readonly string[] }> {
+  const original = globalThis.fetch;
+  const asked: string[] = [];
+  globalThis.fetch = ((input: unknown): Promise<Response> => {
+    asked.push(input instanceof URL ? input.toString() : String(input));
+    return Promise.resolve(new Response(reply.body, { status: reply.status }));
+  }) as typeof globalThis.fetch;
+  try {
+    return { result: await run(), asked };
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+/**
  * The capability declaration, and the law that stops it being decorative
  * (V2-B2-1).
  *
@@ -810,21 +842,31 @@ function capabilitySubject(): RestateDriver {
  * against a driver that already agrees with it proves nothing: it would pass
  * just as happily if the law compared nothing at all. So both mismatch
  * directions are built deliberately and asserted to be caught.
+ *
+ * V2-B2-4a flipped `REATTACH`, and the law is what made that flip cost
+ * something: a declaration saying `SUPPORTED` while the method still returned
+ * `unsupported("reattach")` is caught here, in the same suite the fence pins
+ * alongside. Capability truth lives in two places on purpose, and both moved.
  */
 describe("the driver declares what it cannot do, and the declaration is checked", () => {
+  /** A reattach that answers, so the observed set is complete without a server. */
+  const ATTACHED = { status: 200, body: JSON.stringify({ finalSequence: 7 }) };
+
   const OUTCOMES = async (driver: OrchestrationDriver) => ({
     CANCEL: await driver.cancel(INVOCATION_FOR_CAPABILITIES),
-    REATTACH: await driver.reattach(INVOCATION_FOR_CAPABILITIES),
+    REATTACH: (
+      await withAttachAnswering(ATTACHED, () => driver.reattach(INVOCATION_FOR_CAPABILITIES))
+    ).result,
     SIGNAL: await driver.signal(INVOCATION_FOR_CAPABILITIES),
     TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES),
   });
 
-  it("declares every verb UNSUPPORTED, and the declaration satisfies the contract", () => {
+  it("declares three verbs UNSUPPORTED and REATTACH SUPPORTED, satisfying the contract", () => {
     const declared = capabilitySubject().capabilities();
     expect(DriverCapabilities.safeParse(declared).success).toBe(true);
     expect(declared.verbs).toEqual({
       CANCEL: "UNSUPPORTED",
-      REATTACH: "UNSUPPORTED",
+      REATTACH: "SUPPORTED",
       SIGNAL: "UNSUPPORTED",
       TIMER: "UNSUPPORTED",
     });
@@ -837,11 +879,10 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     expect(declared.mode).toBe(capabilitySubject().mode);
   });
 
-  it("refuses every verb field-exactly: never a throw, never a silent no-op", async () => {
+  it("refuses every unsupported verb field-exactly: never a throw, never a silent no-op", async () => {
     const observed = await OUTCOMES(capabilitySubject());
     for (const [verb, at] of [
       ["CANCEL", "cancel"],
-      ["REATTACH", "reattach"],
       ["SIGNAL", "signal"],
       ["TIMER", "timer"],
     ] as const) {
@@ -891,6 +932,80 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     // And with the law back, the same input is caught -- so the assertion above
     // is describing an absence of checking, not an absence of a defect.
     expect(driverCapabilityMismatches(lying, await OUTCOMES(subject)).length).toBe(1);
+  });
+
+  it("catches a declaration that claims REATTACH UNSUPPORTED while it answers", async () => {
+    // The direction the V2-B2-4a flip created, and the one that would let a
+    // driver do work it told its caller it could not do.
+    const subject = capabilitySubject();
+    const declared = subject.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, REATTACH: "UNSUPPORTED" as const } };
+    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
+      "REATTACH: declared UNSUPPORTED but did not refuse",
+    ]);
+  });
+
+  it("reattaches at the address derived before ingress, and answers with a ledger coordinate", async () => {
+    const subject = capabilitySubject();
+    const { result, asked } = await withAttachAnswering(ATTACHED, () =>
+      subject.reattach(INVOCATION_FOR_CAPABILITIES),
+    );
+
+    // The whole answer, field by field: an acceptance carrying the head the
+    // walk reached, and nothing the engine minted.
+    expect(result).toEqual({ ok: true, finalSequence: 7 });
+
+    // The address, exactly. `:invocation_target` for a Virtual Object handler
+    // is its three segments, and the last segment is the idempotency key —
+    // which is `deriveInvocation`'s output, not anything Restate assigned.
+    expect(asked).toEqual([
+      "http://127.0.0.1:8080/restate/invocation/AcpTask/" +
+        INVOCATION_FOR_CAPABILITIES.taskId +
+        "/advance/" +
+        INVOCATION_FOR_CAPABILITIES.invocationId +
+        "/attach",
+    ]);
+  });
+
+  it("throws rather than refusing when the attach could not answer", async () => {
+    // A capability refusal would say the engine cannot reattach. What actually
+    // happened is that this attempt could not see, which is a fact about the
+    // observation channel — so it throws, and the caller falls back to the
+    // ledger rather than being told a falsehood about the engine.
+    const subject = capabilitySubject();
+    await expect(
+      withAttachAnswering({ status: 404, body: '{"code":404,"message":"not found"}' }, () =>
+        subject.reattach(INVOCATION_FOR_CAPABILITIES),
+      ),
+    ).rejects.toBeInstanceOf(SupervisorError);
+  });
+
+  it("carries the status and never the engine's own text into the error", async () => {
+    // The refusal body from a real server names an engine invocation id. The
+    // driver reports the status it saw and stops there.
+    const subject = capabilitySubject();
+    const failure = await withAttachAnswering(
+      { status: 404, body: '{"message":"not found","id":"inv_12G2mtFCEW7b0uysHSZtM8sQ9pD8TndCov"}' },
+      () => subject.reattach(INVOCATION_FOR_CAPABILITIES).then(() => null).catch((e: unknown) => e),
+    );
+    const error = failure.result;
+    expect(error).toBeInstanceOf(SupervisorError);
+    expect((error as Error).message).toContain("404");
+    expect((error as Error).message).not.toContain("inv_");
+  });
+
+  it("refuses to guess a sequence from a reply that is not a handler result", async () => {
+    // The same discipline `parseCacheReply` holds: an unanswered question is
+    // not a zero. Coercing here would report that a reattached invocation had
+    // reached the start of the ledger.
+    const subject = capabilitySubject();
+    for (const body of ["not json", "null", "[]", '{"finalSequence":"11"}', '{"finalSequence":-1}', "{}"]) {
+      await expect(
+        withAttachAnswering({ status: 200, body }, () =>
+          subject.reattach(INVOCATION_FOR_CAPABILITIES),
+        ),
+      ).rejects.toBeInstanceOf(SupervisorError);
+    }
   });
 
   it("reports a verb whose outcome was never observed rather than passing it", async () => {

@@ -3,14 +3,15 @@ import type { Ledger } from "@acp/ledger";
 import type { EndpointHandle, SafeServerHandle } from "@acp/durability";
 import type { BeatContext, DurableInvocation, EffectPort, ScenarioRoot } from "@acp/runtime";
 import {
+  attachAdvance,
   createAcpTaskObject,
   readCacheThroughHandler,
   reconcile,
   registerDeployment,
+  sendAdvance,
   serverAvailability,
   startEndpoint,
   startVerifiedServer,
-  submitAdvance,
 } from "@acp/durability";
 import { RUNTIME_SERVICE_PORT, RUNTIME_SERVICE_URL } from "@acp/runtime";
 
@@ -170,13 +171,34 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
   return { server, endpoint, verdict: report.verdict };
 }
 
-/** Advance the invocation through the running endpoint. */
+/**
+ * Advance the invocation through the running endpoint, and wait for it.
+ *
+ * Two calls where there was one blocking submission (V2-B2-4a), and the
+ * daemon's own behaviour is unchanged by design: it still waits, still returns
+ * the status the walk ended with, and still publishes `SUPERVISING` only after
+ * the ledger has reached its terminal state. What moved is HOW it waits —
+ * through the address this side derived before ingress, rather than by holding
+ * the submitting request open.
+ *
+ * The substitution is the point, not an optimisation. A send/attach pair
+ * exercised only by drills would be exactly the defect V2 exists to correct:
+ * a library with fixtures and no assembled consumer. Putting the production
+ * seam on it means the daemon drills regress it for free, and means the
+ * capability this packet declares is one something actually calls.
+ *
+ * A send the server refused returns that status and never attaches: there is
+ * no invocation to rejoin, and attaching anyway would turn a clean refusal
+ * into a second, less specific one.
+ */
 export async function superviseRestate(
   server: SafeServerHandle,
   invocation: DurableInvocation,
 ): Promise<{ readonly status: number }> {
-  const result = await submitAdvance(server.ingressUrl, invocation);
-  return { status: result.status };
+  const sent = await sendAdvance(server.ingressUrl, invocation);
+  if (!sent.ok) return { status: sent.status };
+  const attached = await attachAdvance(server.ingressUrl, invocation);
+  return { status: attached.status };
 }
 /**
  * The endpoint is released before the server.

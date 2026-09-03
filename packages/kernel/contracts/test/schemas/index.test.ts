@@ -63,6 +63,7 @@ import {
   serializedByteLength,
   utf8ByteLength,
 } from "../../src/index.js";
+import type { DriverAccepted, DriverOutcome } from "../../src/index.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1773,5 +1774,47 @@ describe("the driver capability declaration (V2-B2-1)", () => {
   it("discriminates a refusal from an acceptance", () => {
     expect(isDriverRefused({ ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "cancel" })).toBe(true);
     expect(isDriverRefused({ ok: true })).toBe(false);
+  });
+
+  /**
+   * The accepted arm, opened by V2-B2-4a for `REATTACH`.
+   *
+   * Two properties, and only the second is new. The discrimination must not
+   * change when the arm carries a value — a widening that made an acceptance
+   * look like a refusal to `isDriverRefused` would silently invert every
+   * caller. And what the arm may carry is bounded to LEDGER coordinates: a
+   * driver that handed back an engine-minted address would let a caller
+   * persist it, and a ledger whose coordinates came from the engine would have
+   * given the engine authority over where its own facts live.
+   */
+  it("still discriminates when the accepted arm carries what a verb produced", () => {
+    const reattached: DriverOutcome = { ok: true, finalSequence: 11 };
+    expect(isDriverRefused(reattached)).toBe(false);
+    // Reached through the guard, which is the only way a caller should: the
+    // accepted arm is not addressable until the union has been discriminated.
+    expect(isDriverRefused(reattached) ? null : reattached.finalSequence).toBe(11);
+  });
+
+  it("carries ledger coordinates in the accepted arm and no engine identity", () => {
+    const reattached: DriverAccepted = { ok: true, finalSequence: 11 };
+    // Named members only, so a field added later has to be argued for here
+    // rather than arriving with whatever a driver happened to have on hand.
+    expect(Object.keys(reattached).sort()).toEqual(["finalSequence", "ok"]);
+    // Restate names its own invocations `inv_...`. Nothing in this shape can
+    // be one: every value is a number or the literal true.
+    for (const value of Object.values(reattached)) {
+      expect(typeof value === "number" || typeof value === "boolean").toBe(true);
+      expect(String(value).startsWith("inv_")).toBe(false);
+    }
+  });
+
+  it("lets a verb that produces nothing answer without inventing a sequence", () => {
+    // The reason the member is optional. CANCEL, SIGNAL and TIMER are still
+    // unimplemented; when one becomes real it widens this arm with what IT
+    // produces, and a required `finalSequence` would have forced it to report
+    // a ledger position it never observed.
+    const bare: DriverAccepted = { ok: true };
+    expect(bare.finalSequence).toBeUndefined();
+    expect(isDriverRefused(bare)).toBe(false);
   });
 });

@@ -13,8 +13,10 @@
  * appears under no import specifier anywhere outside this package, which the
  * fence asserts repository-wide rather than trusting.
  *
- * This barrel exports exactly the twenty-two names the runtime barrel gave up.
- * The package-internal surface — `advanceHandler`, `parseCacheReply`, the raw
+ * This barrel exports the names the runtime barrel gave up, plus what later
+ * packets have added to the edge's own surface, and the fence pins the set by
+ * equality in both directions rather than by a count in a sentence. The
+ * package-internal surface — `advanceHandler`, `parseCacheReply`, the raw
  * `startServer`/`ServerHandle` pair, `releasePath` — stays internal and is
  * deep-imported only by this package's own tests, exactly as it was before the
  * move. A split that widened the public surface while it was at it would make
@@ -28,12 +30,14 @@ export { startEndpoint } from "./drivers/restate-endpoint/index.js";
 export type { EndpointHandle, StartEndpointOptions } from "./drivers/restate-endpoint/index.js";
 
 export {
+  attachAdvance,
   deriveInvocation,
   readCacheThroughHandler,
   registerDeployment,
+  sendAdvance,
   submitAdvance,
 } from "./submit/index.js";
-export type { SubmitResult } from "./submit/index.js";
+export type { AttachResult, SendResult, SubmitResult } from "./submit/index.js";
 
 /**
  * The narrowed server lifecycle.

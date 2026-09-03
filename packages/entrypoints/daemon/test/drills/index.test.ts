@@ -25,6 +25,7 @@ import { openLedger } from "@acp/ledger";
 import {
   RESERVED_LOOPBACK_PORTS,
   RESTATE_INGRESS_PORT,
+  planFor,
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
@@ -875,6 +876,53 @@ describe("the Restate mode", () => {
     child.kill("SIGTERM");
     expect((await closed(child)).code).toBe(0);
     // Reverse unwind released the server too, not only this process.
+    expect(isAlive(announced.serverPid ?? -1)).toBe(false);
+  }, 180_000);
+
+  /**
+   * The send/attach substitution, regressed at the production seam (V2-B2-4a).
+   *
+   * `superviseRestate` no longer holds a blocking submission open: it sends,
+   * and then waits by attaching at the address derived before ingress. This
+   * drill asserts the property that substitution had to preserve — the daemon
+   * still WAITS. `SUPERVISING` is published after `superviseRestate` returns,
+   * and readiness is announced after that, so a ledger already at its terminal
+   * state by the time this test reads it means the daemon did not report
+   * supervision over work that was still running.
+   *
+   * That is the assertion that fails if the attach is dropped. Measured: with
+   * `superviseRestate` reduced to the send alone, readiness arrives before the
+   * walk finishes and the task is still `DISCOVERED` here.
+   *
+   * It is also the packet's answer to "who calls this?". A send/attach pair
+   * exercised only by drills would be a library with fixtures and no assembled
+   * consumer, which is the defect V2 exists to correct rather than repeat.
+   */
+  it("waits through send and attach, so supervision is never reported over unfinished work", async () => {
+    const id = scenario("daemon-restate-send-attach");
+    const plan = configFor(id, { mode: "RESTATE", checkPorts: true });
+    const { child, ready } = startChild(plan.config);
+    const announced = await ready;
+
+    expect(announced.phases).toContain("SUPERVISING");
+
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)));
+    try {
+      // The walk is over before the daemon says it is supervising. Both halves
+      // matter: the terminal state says the work finished, and the event count
+      // says it finished exactly once — an attach that duplicated the
+      // invocation would show a second plan's worth of events here.
+      expect(ledger.getTask(plan.taskId)?.currentState).toBe("CHECKPOINTED");
+      expect(ledger.status().eventCount).toBe(planFor("LOCAL_COMMIT_WITH_RECEIPT").length);
+      const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+      expect(keys.length - new Set(keys).size).toBe(0);
+      expect(ledger.verifyIntegrity().problems).toEqual([]);
+    } finally {
+      ledger.close();
+    }
+
+    child.kill("SIGTERM");
+    expect((await closed(child)).code).toBe(0);
     expect(isAlive(announced.serverPid ?? -1)).toBe(false);
   }, 180_000);
 

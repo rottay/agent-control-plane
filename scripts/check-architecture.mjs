@@ -1336,8 +1336,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **633
- * packet entries across 224 distinct paths**: 2 (P8-D) +
+ * P8, with the V2 packets that continue its coordinates, is therefore **645
+ * packet entries across 225 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1350,27 +1350,29 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
  * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) + 3 (V2-B6-fence) +
- * 15 (V2-B2-1) + 8 (V2-B2-2) + 7 (V2-B2-3) = 633 entries, with 409 duplicate
- * entries.
+ * 15 (V2-B2-1) + 8 (V2-B2-2) + 7 (V2-B2-3) + 12 (V2-B2-4a) = 645 entries, with
+ * 420 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 58 duplicates = 58   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 59 duplicates = 59   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
- *   5 paths ×  7 duplicates = 35   (the gateway's routes source and
+ *   6 paths ×  7 duplicates = 42   (the gateway's routes source and
  *                                   build-server suite, the CLI suite, the
- *                                   contracts schema barrel, and — since
- *                                   V2-B2-3 — the durability drills suite)
- *   6 paths ×  6 duplicates = 36
+ *                                   contracts schema barrel, the SQLite
+ *                                   supervisor suite since V2-B2-3, and —
+ *                                   since V2-B2-4a — the durability drills
+ *                                   suite)
+ *   7 paths ×  6 duplicates = 42
  *   8 paths ×  5 duplicates = 40
  *  12 paths ×  4 duplicates = 48
- *  21 paths ×  3 duplicates = 63
- *  33 paths ×  2 duplicates = 66
- *  44 paths ×  1 duplicate  = 44
+ *  19 paths ×  3 duplicates = 57
+ *  36 paths ×  2 duplicates = 72
+ *  41 paths ×  1 duplicate  = 41
  *
- * 58 + 11 + 8 + 35 + 36 + 40 + 48 + 63 + 66 + 44 = 409.
+ * 59 + 11 + 8 + 42 + 42 + 40 + 48 + 57 + 72 + 41 = 420.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1788,6 +1790,27 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * Six band steps, one per duplicate: this file ×58 → ×59, the durability
  * drills suite into ×7, the driver's own suite into ×5, and three more one
  * band each.
+ *
+ * V2-B2-4a adds **twelve entries, one of them novel**. Entries move 633 → 645,
+ * distinct 224 → 225, duplicates 409 → 420. The novel path is
+ * `packages/edges/durability/src/submit/index.ts`, which is where `sendAdvance`
+ * and `attachAdvance` land: it is not new to the repository, but this is its
+ * first IN-PHASE appearance. Its only other declaration is `P2C_WRITE_SET`,
+ * rewritten in place when G5 moved the module into `@acp/durability` under the
+ * relocation convention that keeps one declaration site per path — so by the
+ * standing convention that scopes this arithmetic to the phase, exactly as the
+ * runtime drill file's P2C and P7P occurrences are scoped to theirs, it counts
+ * fresh here.
+ *
+ * That is why this is **eleven** single-step band moves and not twelve. Eleven
+ * already-owned paths each gain a duplicate — this file ×58 → ×59, the
+ * durability drills suite into ×7, that package's driver suite and the daemon's
+ * drills into ×6, the drill child and the daemon's Restate mode into ×5, the
+ * contracts suite and the Restate driver into ×4, and the durability barrel,
+ * its README and the durability-plane contract into ×2 — while the twelfth,
+ * `submit/index.ts`, enters the phase at ZERO duplicates and so appears in no
+ * band row at all. A first in-phase appearance moves distinct and leaves the
+ * duplicate table alone, which is why 645 − 225 = 420 rather than 421.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3799,6 +3822,63 @@ const V2B23_WRITE_SET = [
 ];
 
 /**
+ * V2-B2-4a: the invocation becomes addressable, and REATTACH stops being a
+ * refusal.
+ *
+ * Submission could only be waited on by holding the submitting request open.
+ * This packet separates the two acts it had conflated: `sendAdvance` returns
+ * once the server has durably accepted the invocation, and `attachAdvance`
+ * rejoins one already in flight. `REATTACH` flips to `SUPPORTED`, here and in
+ * the driver's own suite, because B2-1 pinned capability truth in two places
+ * on purpose.
+ *
+ * **The address is derived, and that settles the authority question.** The
+ * attach path is
+ * `/restate/invocation/:invocation_target/:idempotency_key/attach`, and the
+ * key is `deriveInvocation`'s output — computed from `(taskId, attempt)`
+ * before ingress. So nothing Restate mints is needed, and therefore nothing
+ * Restate mints is persisted or returned: a caller that lost its memory
+ * RECOMPUTES the address rather than looking it up. The client-death drill is
+ * where that stops being a claim — a fresh process is handed a DECOY
+ * invocation id, ignores it, rebuilds the real one from coordinates, and gets
+ * the same answer the killed client was waiting for.
+ *
+ * `SendResult` is pinned below to exactly `{ok, status}`. Restate's `/send`
+ * reply body carries its own `invocationId`, and a result type that cannot
+ * express it is a rule no careless caller can break — which is worth more than
+ * the same rule written where review has to remember it.
+ *
+ * **The daemon moved onto the new pair, and that was the point.** V2 exists
+ * because `@acp/providers` had "cero consumidores"; a send/attach pair
+ * exercised only by drills would have reproduced that defect one layer down.
+ * `superviseRestate` now sends and then attaches, and its external behaviour
+ * is unchanged — it still waits, and the daemon still publishes `SUPERVISING`
+ * only after the walk is over. Measured, with the attach removed: readiness
+ * arrives while the task is still `DISCOVERED`.
+ *
+ * Twelve paths, and all twelve written. `durability/src/contracts` is absent
+ * because `RestateDriverOptions` already carries `ingressUrl`; the SQLite
+ * supervisor is absent because its entries are not expected to move and it
+ * already refuses `reattach`; and neither contracts barrel moves, because
+ * widening `DriverAccepted` with an optional member adds no export NAME and so
+ * leaves `CONTRACTS_SCHEMA_EXPORTS` at 85.
+ */
+const V2B24A_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/durability-plane/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/edges/durability/src/submit/index.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/src/index.ts",
+  "packages/edges/durability/README.md",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -4113,6 +4193,7 @@ const WRITE_SET = [
   ...V2B21_WRITE_SET,
   ...V2B22_WRITE_SET,
   ...V2B23_WRITE_SET,
+  ...V2B24A_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -4802,6 +4883,10 @@ const PATH_SCOPED_LAWS = [
   { law: "the recorded route travels under one pinned key", scope: "packages/*/*/src/**" },
   { law: "the submission digest has one producer and one door", scope: "packages/*/*/src/**" },
   { law: "both drivers declare their capabilities, pinned by equality", scope: "the two driver sources" },
+  {
+    law: "the send result cannot carry an engine-minted invocation id",
+    scope: "packages/edges/durability/src/submit/index.ts",
+  },
   {
     law: "the ledger and the event builder never reach for the router",
     scope: "packages/persistence/ledger/src/** and packages/domains/runtime/src/core/**",
@@ -6989,9 +7074,15 @@ if (tracked.status === 0) {
       },
       {
         path: "packages/edges/durability/src/drivers/restate-driver/index.ts",
-        verbs: { CANCEL: "UNSUPPORTED", REATTACH: "UNSUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
+        // REATTACH moved to SUPPORTED in V2-B2-4a, with the drills that earned
+        // it: a send that returns while the invocation is still held, an
+        // attach on the DERIVED key answering exactly what a blocking
+        // submission answers, a fresh client rejoining after the first was
+        // killed, two concurrent attaches observing one invocation, and the
+        // neighbouring path shapes refused by the router's own grammar.
+        verbs: { CANCEL: "UNSUPPORTED", REATTACH: "SUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
         // SERIALIZED_PER_TASK moved to SUPPORTED in V2-B2-3, with the same-key
-        // and different-key drills that earned it. The SQLite entry below did
+        // and different-key drills that earned it. The SQLite entry above did
         // not move and is not expected to: no cross-process guard exists for it
         // that would not be a second account of who is running.
         properties: { SERIALIZED_PER_TASK: "SUPPORTED" },
@@ -7054,6 +7145,76 @@ if (tracked.status === 0) {
         " verbs, " +
         Object.keys(DRIVER_DECLARATIONS[0].properties).length +
         " property), each UNSUPPORTED verb refusing in the source that declares it",
+    );
+  }
+
+  // V2-B2-4a: no engine-minted invocation id may leave the durability edge.
+  //
+  // Restate answers `/send` with its OWN identity —
+  // `{"invocationId":"inv_...","status":"Accepted"}` — and the whole authority
+  // argument for this plane depends on that value never becoming a coordinate
+  // anything keeps. The ledger derives the invocation id before ingress; if a
+  // caller could persist the engine's instead, the engine would own the
+  // address of facts the ledger is supposed to own.
+  //
+  // Stated as a shape rather than as a scan, because a shape cannot be
+  // forgotten. `SendResult` has exactly two members and `sendAdvance` reads the
+  // reply body only to release the socket, so there is no expression in which
+  // the id could survive the call. A scan for the string would pass a
+  // refactor that renamed it; this does not.
+  {
+    const SEND_HOME = "packages/edges/durability/src/submit/index.ts";
+    const source = readIfPresent(SEND_HOME);
+    requireScope("the send result cannot carry an engine-minted invocation id", 1);
+    if (source === null) {
+      fail(SEND_HOME + " is missing; it is where the nonblocking send lives");
+    } else {
+      const stripped = stripComments(source);
+
+      const shape = stripped.match(/export interface SendResult \{([\s\S]*?)\n\}/);
+      if (shape === null) {
+        fail(SEND_HOME + " no longer declares SendResult; the send would have no pinned shape");
+      } else {
+        const members = [...(shape[1] ?? "").matchAll(/readonly\s+([A-Za-z0-9_]+)\s*:/g)].map((m) => m[1]).sort();
+        if (members.join(",") !== "ok,status") {
+          fail(
+            SEND_HOME +
+              " declares SendResult as {" +
+              members.join(", ") +
+              "}; it must be exactly {ok, status}, because anything wider is somewhere the engine's own invocation id could ride out",
+          );
+        }
+      }
+
+      const body = stripped.match(/export async function sendAdvance\([\s\S]*?\n\}/);
+      if (body === null) {
+        fail(SEND_HOME + " no longer declares sendAdvance()");
+      } else {
+        const send = body[0];
+        if (!/\n {2}await response\.text\(\);/.test(send)) {
+          fail(
+            SEND_HOME +
+              " no longer reads and discards the send reply body; it must be consumed to release the socket and kept by nothing",
+          );
+        }
+        if (/JSON\.parse/.test(send)) {
+          fail(
+            SEND_HOME +
+              " parses the send reply body; that body carries Restate's own invocation id and nothing may read it",
+          );
+        }
+        if (!/return \{ ok: response\.ok, status: response\.status \};/.test(send)) {
+          fail(
+            SEND_HOME +
+              " no longer returns exactly the send status pair; a widened return is where an engine identity would escape",
+          );
+        }
+      }
+    }
+    notes.push(
+      "SendResult is pinned to {ok, status} and sendAdvance keeps nothing from the reply body," +
+        " so no engine-minted invocation id can leave " +
+        SEND_HOME,
     );
   }
 
@@ -9177,14 +9338,24 @@ const RUNTIME_PUBLIC_EXPORTS = [
 /**
  * `@acp/durability`'s closed export surface (P8-T G5).
  *
- * Exactly the twenty-two names the runtime barrel gave up — no more, and that
- * is the assertion. A split is only reversible-by-inspection if the two halves
- * add up: runtime went 166 → 149 (it dropped 22 and gained the 5 constants the
- * moved modules import), and this list is the 22. Pinned by equality in both
- * directions like its siblings, so a name appearing here that was never in the
- * runtime barrel is a widening, not a move.
+ * The twenty-two names the runtime barrel gave up, plus what later packets
+ * added to the edge's own surface — and the distinction is the assertion. A
+ * split is only reversible-by-inspection if the two halves add up: runtime
+ * went 166 → 149 (it dropped 22 and gained the 5 constants the moved modules
+ * import), and 22 of the entries below are that set. Everything after it
+ * arrived with a packet that argued for it, so a name appearing here without
+ * one is a widening, not a move.
+ *
+ * Pinned by equality in both directions like its siblings, and in both places:
+ * against the barrel, and against the README's own table, so a surface can
+ * neither grow nor shrink on one side alone.
  */
 const DURABILITY_PUBLIC_EXPORTS = [
+  // V2-B2-4a: the addressable pair and their result shapes.
+  "AttachResult",
+  "SendResult",
+  "attachAdvance",
+  "sendAdvance",
   "DurableStepContext",
   "EndpointHandle",
   "LedgerLike",

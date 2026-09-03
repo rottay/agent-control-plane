@@ -30,6 +30,7 @@ import {
 } from "@acp/runtime";
 import type { BeatContext, DurableInvocation, OrchestrationDriver } from "@acp/runtime";
 
+import { attachAdvance } from "../../submit/index.js";
 import type {
   LedgerLike,
   RestateCacheState,
@@ -427,6 +428,31 @@ function unsupported(at: string): DriverRefused {
   return { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at };
 }
 
+/**
+ * The one place an attach body becomes a number, or a refusal to guess.
+ *
+ * Same discipline as `parseCacheReply`: a reply that is not a well-formed
+ * answer THROWS rather than being coerced. A half-parsed body turned into a
+ * zero would report that a reattached invocation had reached the start of the
+ * ledger, which is a claim about the work made from an unanswered question.
+ */
+function parseFinalSequence(body: string): number {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    throw new SupervisorError("the attach returned a body that is not JSON");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new SupervisorError("the attach returned something that is not a handler result");
+  }
+  const sequence = (parsed as Record<string, unknown>)["finalSequence"];
+  if (typeof sequence !== "number" || !Number.isInteger(sequence) || sequence < 0) {
+    throw new SupervisorError("the attach reply carries no usable finalSequence");
+  }
+  return sequence;
+}
+
 export class RestateDriver implements OrchestrationDriver {
   readonly mode: DriverMode = RESTATE_MODE;
 
@@ -450,12 +476,24 @@ export class RestateDriver implements OrchestrationDriver {
   /**
    * What this engine can be asked for (V2-B2-1).
    *
-   * All four verbs are `UNSUPPORTED` today, and none of them is a statement
-   * about Restate: the engine does offer durable timers, awakeables,
-   * cancellation and attach. It is a statement about THIS DRIVER, which does
-   * not yet call any of them. A capability declares what a caller may rely on,
-   * so it may not run ahead of the code that would honour it — each later B2
-   * packet flips exactly one entry and lands the drill that earns it.
+   * Three verbs are still `UNSUPPORTED`, and none of them is a statement about
+   * Restate: the engine does offer durable timers, awakeables and
+   * cancellation. It is a statement about THIS DRIVER, which does not yet call
+   * any of them. A capability declares what a caller may rely on, so it may
+   * not run ahead of the code that would honour it — each later B2 packet
+   * flips exactly one entry and lands the drill that earns it.
+   *
+   * `REATTACH` is `SUPPORTED` as of V2-B2-4a, and only because that packet
+   * drilled it. `reattach` below rejoins a live invocation at the address this
+   * side derived before ingress, so the drills could measure the thing that
+   * actually distinguishes reattachment from resubmission: a send that returns
+   * while the invocation is still held, an attach on the derived key that
+   * answers with the same result a blocking submission answers with, a fresh
+   * process attaching after the first attaching process was killed, and two
+   * concurrent attaches observing ONE invocation, one effect and one append
+   * set. The wrong-segmentation and never-issued-key negatives refuse without
+   * touching the ledger, which is what makes the positives mean the derived
+   * key is what resolved them.
    *
    * `SERIALIZED_PER_TASK` is `SUPPORTED` as of V2-B2-3, and only because that
    * packet drilled it. The object is keyed by task, so Restate serializes per
@@ -472,7 +510,7 @@ export class RestateDriver implements OrchestrationDriver {
       mode: this.mode,
       verbs: {
         CANCEL: "UNSUPPORTED",
-        REATTACH: "UNSUPPORTED",
+        REATTACH: "SUPPORTED",
         SIGNAL: "UNSUPPORTED",
         TIMER: "UNSUPPORTED",
       },
@@ -481,7 +519,7 @@ export class RestateDriver implements OrchestrationDriver {
   }
 
   /**
-   * The four verbs, each refusing what this driver has not yet learned to do.
+   * The three verbs that still refuse what this driver has not learned to do.
    *
    * Typed refusals, never throws and never silent no-ops, for the reason the
    * owned execution boundary already gives: starting fresh while a caller
@@ -492,16 +530,52 @@ export class RestateDriver implements OrchestrationDriver {
     return Promise.resolve(unsupported("cancel"));
   }
 
-  reattach(): Promise<DriverOutcome> {
-    return Promise.resolve(unsupported("reattach"));
-  }
-
   signal(): Promise<DriverOutcome> {
     return Promise.resolve(unsupported("signal"));
   }
 
   timer(): Promise<DriverOutcome> {
     return Promise.resolve(unsupported("timer"));
+  }
+
+  /**
+   * Rejoin an invocation already in flight, rather than starting a second one
+   * (V2-B2-4a).
+   *
+   * The address is recomputed, never remembered: `invocation.invocationId` is
+   * `deriveInvocation`'s output for `(taskId, attempt)`, so this method needs
+   * no state of its own and a caller that restarted can call it with an
+   * invocation it rebuilt from coordinates. Nothing Restate mints is read,
+   * returned or stored.
+   *
+   * Three answers, and the shape of each is deliberate.
+   *
+   * It never returns a `DriverRefused`, because the only refusal this contract
+   * has is `CAPABILITY_UNSUPPORTED` and the capability is present: a server
+   * that could not be reached, an address that does not resolve or an
+   * invocation the engine has never heard of are failures of the OBSERVATION
+   * channel, not answers about the work. Reporting one as a refusal would tell
+   * a caller the engine cannot reattach when what actually happened is that
+   * this attempt could not see. So those throw, and the caller falls back to
+   * the authority that always knows — the ledger.
+   *
+   * What it returns on success is a ledger coordinate and only that. The
+   * handler's own output is `{ finalSequence }`, the head the walk reached, so
+   * the accepted arm carries a number the ledger can restate for itself rather
+   * than anything belonging to the engine.
+   */
+  async reattach(invocation: DurableInvocation): Promise<DriverOutcome> {
+    const result = await attachAdvance(this.#options.ingressUrl, invocation);
+    if (!result.ok) {
+      // The status, never the body: a router or handler error text is engine
+      // output and may name an engine invocation id.
+      throw new SupervisorError(
+        "the attach for this invocation answered " +
+          String(result.status) +
+          "; the ledger remains the authority on what the task did",
+      );
+    }
+    return { ok: true, finalSequence: parseFinalSequence(result.body) };
   }
 
   /**
