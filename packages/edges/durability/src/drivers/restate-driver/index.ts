@@ -24,13 +24,15 @@ import {
   applyIntentEffect,
   assertClaimedState,
   assertInvocationContinuity,
+  cancellationPrecheck,
   closeIntent,
   deterministicUuid,
   planFor,
+  settleCancellation,
 } from "@acp/runtime";
 import type { BeatContext, DurableInvocation, OrchestrationDriver } from "@acp/runtime";
 
-import { attachAdvance } from "../../submit/index.js";
+import { attachAdvance, cancelAdvance } from "../../submit/index.js";
 import type {
   LedgerLike,
   RestateCacheState,
@@ -476,12 +478,22 @@ export class RestateDriver implements OrchestrationDriver {
   /**
    * What this engine can be asked for (V2-B2-1).
    *
-   * Three verbs are still `UNSUPPORTED`, and none of them is a statement about
-   * Restate: the engine does offer durable timers, awakeables and
-   * cancellation. It is a statement about THIS DRIVER, which does not yet call
-   * any of them. A capability declares what a caller may rely on, so it may
-   * not run ahead of the code that would honour it — each later B2 packet
-   * flips exactly one entry and lands the drill that earns it.
+   * Two verbs are still `UNSUPPORTED`, and neither is a statement about
+   * Restate: the engine does offer durable timers and awakeables. It is a
+   * statement about THIS DRIVER, which does not yet call either. A capability
+   * declares what a caller may rely on, so it may not run ahead of the code
+   * that would honour it — each later B2 packet flips exactly one entry and
+   * lands the drill that earns it.
+   *
+   * `CANCEL` is `SUPPORTED` as of V2-B2-4b, and only because that packet
+   * drilled it. Cancellation is three ordered acts: refuse a terminal task
+   * before anything happens, stop the engine out of band, then settle the
+   * ledger truth probe-first. The drills measure the order rather than the
+   * membership — a `NOT_DONE` effect yields exactly one `TASK_CANCELLED`, a
+   * `DONE` effect closes the OUTCOME *before* it, an `UNKNOWN` effect appends
+   * nothing at all and leaves the intent open, and a `CHECKPOINTED` task is
+   * refused without an engine call. Mid-beat preemption is deliberately NOT
+   * part of it; see `cancel` below.
    *
    * `REATTACH` is `SUPPORTED` as of V2-B2-4a, and only because that packet
    * drilled it. `reattach` below rejoins a live invocation at the address this
@@ -509,7 +521,7 @@ export class RestateDriver implements OrchestrationDriver {
       contractVersion: CONTRACT_VERSION,
       mode: this.mode,
       verbs: {
-        CANCEL: "UNSUPPORTED",
+        CANCEL: "SUPPORTED",
         REATTACH: "SUPPORTED",
         SIGNAL: "UNSUPPORTED",
         TIMER: "UNSUPPORTED",
@@ -519,17 +531,104 @@ export class RestateDriver implements OrchestrationDriver {
   }
 
   /**
-   * The three verbs that still refuse what this driver has not learned to do.
+   * Abandon a durable invocation, and settle what the log says (V2-B2-4b).
+   *
+   * Three acts, in an order that is the whole content of the design.
+   *
+   * **1. Refuse a terminal task, before the engine and before the ledger.**
+   * `cancellationPrecheck` reads the state from the ledger. A task that has
+   * already ended is refused with nothing done to it — not one engine call,
+   * not one append. The ledger would not have caught this: its only lifecycle
+   * rule is continuity, so a `TASK_CANCELLED` declaring
+   * `fromState: "CHECKPOINTED"` matches the row and would be accepted.
+   * Continuity is checked in the same act, and for the reason `advance`
+   * checks it: cancelling a task another attempt began would settle one
+   * request's work under another request's identity.
+   *
+   * **2. Stop the engine, out of band.** `cancelAdvance` resolves the engine's
+   * own invocation id transiently and cancels it. Nothing has been claimed in
+   * the log yet, so a failure here leaves the ledger exactly as it was.
+   * `404` and `409` are not failures for this purpose and are treated as
+   * success: both mean the engine is not running this invocation, which is the
+   * postcondition this act exists to reach. Anything else — unreachable, a
+   * 5xx, a malformed lookup — THROWS before the ledger is touched, because a
+   * settlement written while the invocation might still be retrying is exactly
+   * the interleaving act 2 is ordered first to prevent.
+   *
+   * **3. Settle the ledger, probe-first.** `settleCancellation` holds the
+   * policy, in the domain, so a second driver that learns to cancel inherits
+   * it. `UNKNOWN` appends nothing and refuses.
+   *
+   * The residual window between acts 2 and 3 is safe and self-healing: the
+   * engine is stopped and the ledger still carries an open intent, which is
+   * precisely the state `reconcile` classifies without guessing and the
+   * operator path this plane already has. The drill kills the cancelling
+   * process in exactly that window and asserts it.
+   *
+   * **This is not mid-beat preemption, and that is deferred deliberately.**
+   * `advance` is an exclusive object handler, so while a walk holds the key
+   * nothing else runs on it — the property B2-3 certified. A cancel handler on
+   * the object would therefore QUEUE BEHIND the very walk it was meant to
+   * interrupt, which is why cancellation is an out-of-band engine call plus an
+   * in-process settlement and not a third handler. The two routes to real
+   * preemption are refused here with reasons: a cancellation flag in
+   * `RestateCacheState` is forbidden without an ADR by that type's own law and
+   * would be a fact the ledger does not hold, i.e. a second authority; and a
+   * SHARED cancel handler appending while the exclusive walk also appends
+   * would put two concurrent ledger writers on one task, destroying the
+   * per-task serialization B2-3 just certified. A cancellation therefore takes
+   * effect between beats, not inside one.
+   */
+  async cancel(invocation: DurableInvocation): Promise<DriverOutcome> {
+    const context: BeatContext = {
+      ...this.#beat(invocation),
+      plan: planFor(this.#commitPolicy),
+      initiativeId: this.#initiativeId,
+    };
+
+    // Act 1.
+    assertInvocationContinuity(context);
+    if (!cancellationPrecheck(context).proceed) {
+      return { ok: false, refusal: "TASK_TERMINAL", at: "cancel" };
+    }
+
+    // Act 2.
+    const stopped = await cancelAdvance(
+      this.#options.ingressUrl,
+      this.#options.adminUrl,
+      invocation,
+    );
+    if (!stopped.ok && stopped.status !== 404 && stopped.status !== 409) {
+      throw new SupervisorError(
+        "the engine did not accept the cancellation and answered " +
+          String(stopped.status) +
+          "; the ledger is untouched because a settlement over an invocation" +
+          " that may still be retrying could be followed by its next beat",
+      );
+    }
+
+    // Act 3.
+    const settlement = await settleCancellation(context);
+    switch (settlement.verdict) {
+      case "CANCELLED":
+        return { ok: true, finalSequence: this.#options.ledger.status().headSequence };
+      case "POSTCONDITION_UNKNOWN":
+        return { ok: false, refusal: "POSTCONDITION_UNKNOWN", at: "cancel" };
+      case "TASK_TERMINAL":
+        // The race act 1 cannot see into: the walk finished between the two
+        // acts. Same refusal, and still nothing appended.
+        return { ok: false, refusal: "TASK_TERMINAL", at: "cancel" };
+    }
+  }
+
+  /**
+   * The two verbs that still refuse what this driver has not learned to do.
    *
    * Typed refusals, never throws and never silent no-ops, for the reason the
    * owned execution boundary already gives: starting fresh while a caller
    * believes it reattached, or reporting nothing while a caller believes it
    * cancelled, are the failures that cost the most and show the least.
    */
-  cancel(): Promise<DriverOutcome> {
-    return Promise.resolve(unsupported("cancel"));
-  }
-
   signal(): Promise<DriverOutcome> {
     return Promise.resolve(unsupported("signal"));
   }

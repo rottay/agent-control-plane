@@ -17,8 +17,8 @@ import {
   scenarioLedgerPath,
 } from "@acp/runtime";
 import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
-import { createExecutionEffects } from "@acp/runtime";
-import { createAcpTaskObject } from "../restate-driver/index.js";
+import { RESTATE_ADMIN_URL, createExecutionEffects } from "@acp/runtime";
+import { RestateDriver, createAcpTaskObject } from "../restate-driver/index.js";
 import { startEndpoint } from "../restate-endpoint/index.js";
 import { attachAdvance, deriveInvocation } from "../../submit/index.js";
 
@@ -41,10 +41,30 @@ import { attachAdvance, deriveInvocation } from "../../submit/index.js";
  * which is what makes the drill's later, fresh attach a proof that the handle
  * needs no client state.
  *
+ * And a third role for the same reason again (V2-B2-4b). Cancellation has a
+ * window that matters — the engine is stopped and the ledger is not yet
+ * settled — and the only honest way to measure what a crash in that window
+ * leaves behind is for a real process to die inside it. `role: "CANCEL"` runs
+ * the real `RestateDriver.cancel` here, and its fault point kills this process
+ * on the settlement's first probe: after the engine call, before any append.
+ *
  * Importing this module does nothing. It runs only as a process entry point.
  */
 
+/** Beats the ENDPOINT role can fault or pause at. */
 const FAULT_POINTS: readonly string[] = ["AFTER_INTENT", "AFTER_EFFECT", "AFTER_OUTCOME"];
+
+/**
+ * Where the CANCEL role can fault, which is somewhere no beat exists.
+ *
+ * Kept as its own list rather than added to `FAULT_POINTS` for two reasons.
+ * It is not a beat: nothing announces it through `__onBeat`, so an ENDPOINT
+ * child asked for it would be asked for something it can never reach. And the
+ * endpoint's `matches()` treats any unrecognised name as the intent beat, so a
+ * fourth member of that list would silently become a second spelling of
+ * `AFTER_INTENT` — a fault drill that quietly measured the wrong window.
+ */
+const CANCEL_FAULT_POINTS: readonly string[] = ["BEFORE_SETTLEMENT"];
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 export interface RestateChildConfig {
@@ -68,14 +88,15 @@ export interface RestateChildConfig {
   readonly pauseAt: string | null;
   readonly port: number;
   /**
-   * Which role this process plays (V2-B2-4a).
+   * Which role this process plays (V2-B2-4a; `CANCEL` added by V2-B2-4b).
    *
    * `ENDPOINT` — the default, so every drill that predates this packet keeps
    * its meaning — hosts the service. `ATTACH` hosts nothing: it rejoins one
-   * invocation and reports what it got. The default follows the `effect`
-   * selector's precedent for the same reason.
+   * invocation and reports what it got. `CANCEL` hosts nothing either: it
+   * opens the ledger, runs the driver's real cancel, and reports the outcome.
+   * The default follows the `effect` selector's precedent for the same reason.
    */
-  readonly role: "ENDPOINT" | "ATTACH";
+  readonly role: "ENDPOINT" | "ATTACH" | "CANCEL";
   /**
    * Which effect the journalled beats perform (V2-B2-2).
    *
@@ -220,8 +241,8 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   // V2-B2-4a, and symmetric with `effect`: absence means the role every
   // earlier drill relied on, and anything else is refused rather than coerced.
   const role = value["role"] ?? "ENDPOINT";
-  if (role !== "ENDPOINT" && role !== "ATTACH") {
-    throw new SupervisorError("role must be ENDPOINT or ATTACH");
+  if (role !== "ENDPOINT" && role !== "ATTACH" && role !== "CANCEL") {
+    throw new SupervisorError("role must be ENDPOINT, ATTACH or CANCEL");
   }
   const rawPort = value["port"] ?? RUNTIME_SERVICE_PORT;
 
@@ -230,8 +251,14 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   if (rawFault !== null && faultPoint === null) {
     throw new SupervisorError("faultPoint must be null or a string");
   }
-  if (faultPoint !== null && !FAULT_POINTS.includes(faultPoint)) {
-    throw new SupervisorError("faultPoint must be null or a known fault point");
+  // Faults are role-scoped, because they name different things. A beat fault
+  // is announced by the endpoint's walk; the cancel fault is a point inside a
+  // settlement no endpoint runs. Admitting either for either role would let a
+  // drill ask for a fault that can never fire and read the resulting green as
+  // evidence.
+  const allowedFaults = role === "CANCEL" ? CANCEL_FAULT_POINTS : FAULT_POINTS;
+  if (faultPoint !== null && !allowedFaults.includes(faultPoint)) {
+    throw new SupervisorError("faultPoint must be null or a fault point this role can reach");
   }
   if (rawPause !== null && pauseAt === null) {
     throw new SupervisorError("pauseAt must be null or a string");
@@ -365,10 +392,95 @@ async function runAttachClient(config: RestateChildConfig): Promise<void> {
   }
 }
 
-/** Host the endpoint until this process is killed, or attach and report. */
+/**
+ * Cancel one invocation from a process of its own (V2-B2-4b).
+ *
+ * It runs the REAL `RestateDriver.cancel`, not a hand-rolled sequence of the
+ * three acts. A drill that re-implemented the order here would be measuring
+ * its own copy of the thing under test.
+ *
+ * The fault is injected through the effect port rather than through a seam on
+ * the driver, and that placement is what makes the window exact.
+ * `settleCancellation` probes as its first act, and it only reaches the probe
+ * after the engine call has returned — so a probe that kills this process
+ * lands precisely between "the engine is stopped" and "anything is appended",
+ * with no new parameter, option or hook on the production path to hold it.
+ *
+ * The address is rebuilt from `(taskId, attempt)` for the same reason the
+ * attach client rebuilds it: so the drill cannot be handed the answer.
+ */
+async function runCancelClient(config: RestateChildConfig): Promise<void> {
+  const scenarioRoot = resolveScenarioRoot(config.scenarioId);
+  const ledger = openLedger(scenarioLedgerPath(scenarioRoot));
+  const derived = deriveInvocation(
+    config.invocation.taskId,
+    config.invocation.attempt,
+    config.invocation.submittedAt,
+    config.invocation.submissionDigest,
+  );
+  process.stdout.write(
+    JSON.stringify({ cancelling: true, invocationId: derived.invocationId }) + "\n",
+  );
+
+  const beat = (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
+    ledger,
+    effects: {
+      apply: (operation) => {
+        applyEffect(scenarioRoot, operation);
+        return Promise.resolve();
+      },
+      probe: (operation) => {
+        if (config.faultPoint === "BEFORE_SETTLEMENT") {
+          // SIGKILL cannot be caught, so nothing flushes, closes or tidies up.
+          // The engine has already been cancelled; nothing has been appended.
+          process.kill(process.pid, "SIGKILL");
+        }
+        return Promise.resolve(probeEffect(scenarioRoot, operation));
+      },
+    },
+    invocation,
+    emittedBy: config.emittedBy,
+    route:
+      config.effect === "EXECUTION" ? executionDrillRoute(invocation) : drillRoute(invocation),
+  });
+
+  const driver = new RestateDriver(
+    {
+      ledger,
+      invocation: derived,
+      emittedBy: config.emittedBy,
+      ingressUrl: RESTATE_INGRESS_URL,
+      adminUrl: RESTATE_ADMIN_URL,
+    },
+    beat,
+    config.commitPolicy,
+    config.initiativeId,
+  );
+
+  try {
+    const outcome = await driver.cancel(derived);
+    process.stdout.write(JSON.stringify({ cancelled: true, outcome }) + "\n");
+  } catch (error: unknown) {
+    // Classified, never a guessed result, exactly as the attach client does.
+    process.stdout.write(
+      JSON.stringify({
+        cancelled: false,
+        reason: error instanceof Error ? error.name : "unknown",
+      }) + "\n",
+    );
+  } finally {
+    ledger.close();
+  }
+}
+
+/** Host the endpoint until this process is killed, or attach, or cancel. */
 export async function runRestateChild(config: RestateChildConfig): Promise<void> {
   if (config.role === "ATTACH") {
     await runAttachClient(config);
+    return;
+  }
+  if (config.role === "CANCEL") {
+    await runCancelClient(config);
     return;
   }
   const scenarioRoot = resolveScenarioRoot(config.scenarioId);

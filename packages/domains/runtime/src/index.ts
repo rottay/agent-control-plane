@@ -243,3 +243,23 @@ export type {
 
 export { executeSwitchPlan } from "./switch-executor/index.js";
 export type { SwitchExecutionInput, SwitchExecutionResult } from "./switch-executor/index.js";
+
+// V2-B2-4b: cancellation as a ledger settlement. The domain decides what the
+// log may be made to say -- terminal tasks refuse before anything happens, a
+// probed `DONE` closes the open intent before the cancellation, and `UNKNOWN`
+// appends nothing at all -- while stopping an engine stays with the edge that
+// knows one. One policy, so a second driver that learns to cancel inherits it
+// rather than writing it again.
+export {
+  CANCELLATION_EFFECTS,
+  CANCELLATION_TRANSITION_ID,
+  CANCELLATION_VERDICTS,
+  cancellationPrecheck,
+  settleCancellation,
+} from "./cancellation/index.js";
+export type {
+  CancellationEffect,
+  CancellationPrecheck,
+  CancellationSettlement,
+  CancellationVerdict,
+} from "./cancellation/index.js";

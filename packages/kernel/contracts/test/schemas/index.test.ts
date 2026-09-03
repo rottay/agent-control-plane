@@ -1723,7 +1723,15 @@ describe("the driver capability declaration (V2-B2-1)", () => {
     // second property is a contract change, which is what a pin is for.
     expect([...DRIVER_CAPABILITIES]).toEqual(["CANCEL", "REATTACH", "SIGNAL", "TIMER"]);
     expect([...DRIVER_CAPABILITY_PROPERTIES]).toEqual(["SERIALIZED_PER_TASK"]);
-    expect([...DRIVER_REFUSALS]).toEqual(["CAPABILITY_UNSUPPORTED"]);
+    // The refusal vocabulary grew at V2-B2-4b, under the rule B2-1 set for it:
+    // a reason arrives with the drill that earns it. `CANCEL` became real
+    // there, and a real verb refuses for reasons that are about the TASK
+    // rather than about the engine's capabilities.
+    expect([...DRIVER_REFUSALS]).toEqual([
+      "CAPABILITY_UNSUPPORTED",
+      "POSTCONDITION_UNKNOWN",
+      "TASK_TERMINAL",
+    ]);
   });
 
   it("admits two states and no third", () => {
@@ -1777,6 +1785,39 @@ describe("the driver capability declaration (V2-B2-1)", () => {
   });
 
   /**
+   * The two reasons V2-B2-4b added, and why they could not be the first one.
+   *
+   * `CANCEL` is `SUPPORTED` on the Restate driver as of that packet, so a
+   * refusal from it can no longer mean "the engine does not offer this". Both
+   * new members describe the task the caller named: it had already ended, or
+   * its effect could not be established. Answering either with
+   * `CAPABILITY_UNSUPPORTED` would tell a caller the engine cannot cancel,
+   * which is a false statement about the driver rather than a true one about
+   * the task -- and a caller that believed it would stop asking.
+   */
+  it("discriminates the task-level refusals exactly as it does the capability one", () => {
+    for (const refusal of ["POSTCONDITION_UNKNOWN", "TASK_TERMINAL"] as const) {
+      const refused: DriverOutcome = { ok: false, refusal, at: "cancel" };
+      expect(isDriverRefused(refused)).toBe(true);
+      // Reached through the guard, which is the only way a caller should: the
+      // reason is not addressable until the union has been discriminated.
+      expect(isDriverRefused(refused) ? refused.refusal : null).toBe(refusal);
+      // `at` names the verb and nothing else. Never engine output, never a
+      // path, never anything about the work being advanced.
+      expect(isDriverRefused(refused) ? refused.at : null).toBe("cancel");
+    }
+  });
+
+  it("keeps every refusal reason inside the closed vocabulary", () => {
+    // A driver that invented a reason would be describing a refusal nobody
+    // downstream can classify, which is the failure a closed enum prevents.
+    expect((DRIVER_REFUSALS as readonly string[]).includes("TASK_BUSY")).toBe(false);
+    for (const refusal of DRIVER_REFUSALS) {
+      expect(isDriverRefused({ ok: false, refusal, at: "cancel" })).toBe(true);
+    }
+  });
+
+  /**
    * The accepted arm, opened by V2-B2-4a for `REATTACH`.
    *
    * Two properties, and only the second is new. The discrimination must not
@@ -1809,12 +1850,28 @@ describe("the driver capability declaration (V2-B2-1)", () => {
   });
 
   it("lets a verb that produces nothing answer without inventing a sequence", () => {
-    // The reason the member is optional. CANCEL, SIGNAL and TIMER are still
+    // The reason the member is optional. SIGNAL and TIMER are still
     // unimplemented; when one becomes real it widens this arm with what IT
     // produces, and a required `finalSequence` would have forced it to report
     // a ledger position it never observed.
     const bare: DriverAccepted = { ok: true };
     expect(bare.finalSequence).toBeUndefined();
     expect(isDriverRefused(bare)).toBe(false);
+  });
+
+  it("gives the second real verb the same member, because it means the same thing", () => {
+    // V2-B2-4b made `CANCEL` real and added no member. What a cancellation
+    // produces is also a ledger head -- the position its settlement left the
+    // log at -- so it answers in the field that already means exactly that. A
+    // second number under a different name would be two spellings of one fact,
+    // and the first caller to read the wrong one would report the wrong head.
+    const cancelled: DriverAccepted = { ok: true, finalSequence: 12 };
+    expect(Object.keys(cancelled).sort()).toEqual(["finalSequence", "ok"]);
+    expect(isDriverRefused(cancelled)).toBe(false);
+    // Still a ledger coordinate and still nothing the engine minted: Restate
+    // names its own invocations `inv_...`, and this shape holds no string.
+    for (const value of Object.values(cancelled)) {
+      expect(typeof value === "number" || typeof value === "boolean").toBe(true);
+    }
   });
 });

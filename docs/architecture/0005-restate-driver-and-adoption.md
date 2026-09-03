@@ -180,6 +180,82 @@ they write lives under. `restate-data` stays the name of the per-scenario
 subdirectory. No scenario id and no absolute path crosses the boundary, and no
 public contract changed: `packages/contracts/` is untouched by P2C.
 
+## Cancellation is an out-of-band engine call plus a ledger settlement, and deliberately not a third handler (V2-B2-4b)
+
+Decision 1 fixed the Virtual Object as the shape of this driver, and decisions
+2 and 3 fixed what may live in it. Cancellation is the first verb that has to
+be reconciled against all three, because the obvious design — a `cancel`
+handler on the object — contradicts every one of them.
+
+**It cannot be a handler, and the reason is the property B2-3 certified.**
+`advance` is `handlers.object.exclusive`, so while a walk holds the key nothing
+else runs on that key. A domain-level cancel handler would therefore **queue
+behind the very walk it was meant to interrupt**, which makes it useless
+against a walk that is retrying — the case cancellation exists for.
+`createAcpTaskObject` keeps its two handlers, and no `RESTATE_HANDLER_CANCEL`
+constant exists.
+
+**So cancellation is three ordered acts, and the order is the content.**
+
+1. **Refuse a terminal task, before the engine and before the ledger.** The
+   ledger will not catch this: `Ledger.append` enforces continuity — the
+   event's `fromState` must equal the row's current state — and says nothing
+   about terminality. A `TASK_CANCELLED` declaring `fromState: "CHECKPOINTED"`
+   matches the row and *would be accepted*, quietly appending a cancellation
+   after a completed task. The guard is the driver's, and the drill measures
+   the driver rather than the ledger's manners.
+2. **Stop the engine, out of band.** The admin API cancels by an invocation id
+   Restate minted, which on its own would have inverted decision 6: the ledger
+   would depend on an address the engine owns. It does not, because the ingress
+   resolves that id on demand. Measured against the pinned binary, `POST
+   /restate/lookup` answers `{"invocationId": "inv_..."}` for
+   `(service, key, handler, idempotencyKey)` alone — every one of which this
+   side already holds, the last being `deriveInvocation`'s output. The id is a
+   local constant inside one function, and the function's return type has no
+   member it could occupy, so it is never returned, stored, logged, appended or
+   projected. `404` and `409` are treated as success here: both mean the engine
+   is not running this invocation, which is the postcondition this act exists
+   to reach. Anything else throws, before the ledger is touched.
+3. **Settle the ledger, probe-first.** The three-verdict discipline of decision
+   3's recovery law, unchanged: `DONE` closes the open intent — the OUTCOME is
+   appended *before* the cancellation — `NOT_DONE` appends one cancellation,
+   and `UNKNOWN` **appends nothing** and refuses, leaving the intent open for
+   an operator exactly as `PostconditionUnknownError` does. It does not call
+   `closeIntent`, because that function's `NOT_DONE` branch performs the
+   effect: a cancellation that repaired a missing effect would be doing the
+   work it was asked to abandon.
+
+**Engine before ledger, never the reverse.** If the ledger were settled first,
+the still-running invocation could append its own next beat between the two
+acts and the log would carry a cancellation followed by progress. Cancelling
+first makes the settlement the last write. The residual window — engine
+stopped, ledger not yet settled — is safe and self-healing: it leaves an open
+intent, which is the state `reconcile` classifies without guessing, and the
+drill kills a real process in exactly that window to show it.
+
+**The event is not a `PlanStep`, and could not be.** `PlanStep.toState` is a
+`LifecycleState`; `CANCELLED` is an `ExceptionalState`. `buildEvent` therefore
+cannot express a cancellation, and widening `PlanStep` would break the plan
+module's own law that every `toState` comes from the frozen `LIFECYCLE_STATES`.
+The precedent followed instead is `switch-executor`, which builds a
+`ControlPlaneEvent` directly from `deriveEventCoordinate` over the full
+`TaskState` union. The settlement policy lives in `@acp/runtime`, not here, for
+the reason decision 1 gives: one core, both drivers.
+
+**Mid-beat preemption is deferred, and both routes to it are refused with
+reasons.** A cancellation flag in `RestateCacheState` is forbidden without an
+ADR by decision 3's own law, and would be a fact the ledger does not hold — a
+second authority. A *shared* cancel handler that appended while the exclusive
+walk also appended would put two concurrent ledger writers on one task,
+destroying the per-task serialization ADR 0004 records. So a cancellation takes
+effect **between beats, not inside one**, and this record says so rather than
+leaving a reader to assume it is instantaneous.
+
+**The SQLite supervisor still declares `CANCEL: UNSUPPORTED`,** and its source
+is untouched. The asymmetry is the same one ADR 0004 records for per-task
+serialization: the capability declaration carries the difference so a caller
+can read it rather than discover it.
+
 ## Adoption criterion, stated so it can fail
 
 RESTATE is adopted only if D1 passes 3/3, D2–D5 pass, and the head digest after
@@ -220,5 +296,11 @@ endpoint file, that the endpoint pins loopback and calls neither `serve()` nor a
 numeric `listen`, that no production module reaches the server handle, that the
 forbidden package names appear nowhere outside the ADRs and the fence, and that
 the acquisition script guards its network call behind an entry-point check.
+
+For V2-B2-4b it additionally pins both drivers' capability declarations by
+equality, so `CANCEL` cannot move without the packet and the drill that earn
+it, and pins `SendResult` and `CancelResult` to exactly `{ok, status}` — the
+fence half of "no engine-minted invocation id leaves this edge", stated as a
+shape rather than as a scan because a shape cannot be forgotten.
 
 P2D adds the daemon and the `launchd` template.

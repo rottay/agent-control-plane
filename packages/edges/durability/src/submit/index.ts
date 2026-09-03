@@ -225,6 +225,112 @@ export async function attachAdvance(
 }
 
 /**
+ * What a cancellation of the engine answers: whether it took, and nothing else.
+ *
+ * The same two members `SendResult` has, for a stronger version of the same
+ * reason (V2-B2-4b). Cancelling reaches the admin API, which is addressed by
+ * an invocation id Restate itself minted — the one value in this whole design
+ * that must never become a coordinate anything keeps. A result type with
+ * nowhere to put it is a rule no careless caller can break, and the fence
+ * pins that this shape stays exactly `{ok, status}`.
+ */
+export interface CancelResult {
+  readonly ok: boolean;
+  readonly status: number;
+}
+
+/**
+ * Stop the invocation these coordinates name (V2-B2-4b).
+ *
+ * Two calls, one scope. The engine's admin surface cancels by ITS invocation
+ * id, which on its own would have inverted the authority this plane rests on:
+ * the ledger would depend on an address the engine owns. It does not, because
+ * the ingress resolves that id on demand from values this side already has —
+ * measured against the pinned binary, `POST /restate/lookup` answers
+ * `{"invocationId": "inv_..."}` for `(service, key, handler, idempotencyKey)`
+ * alone, and the idempotency key is `deriveInvocation`'s output for
+ * `(taskId, attempt)`.
+ *
+ * So the id is a local `const` in one function body and is gone when the
+ * function returns. It is never stored, never logged, never appended, never
+ * put in a read model and never handed back: the return type has no member it
+ * could occupy. That is the whole reason the lookup is not a separate exported
+ * function — a resolver that RETURNED the id would be a supply of engine
+ * identities for anyone to keep.
+ *
+ * What the caller gets is the status. `200`/`202` mean the engine took the
+ * cancellation, `404` means it has no such invocation and `409` means the
+ * invocation already completed — all three are answers about the engine's
+ * state, and only the driver, holding the ledger, may say what any of them
+ * means for the task. A lookup that cannot answer THROWS rather than
+ * returning a status about a call that was never made.
+ */
+export async function cancelAdvance(
+  ingressUrl: string,
+  adminUrl: string,
+  invocation: DurableInvocation,
+  timeoutMs = 30_000,
+): Promise<CancelResult> {
+  assertLoopback(ingressUrl);
+  // The admin base is the one new host this packet talks to, and it is guarded
+  // exactly like the ingress: ADR 0004 §6's loopback law is about the plane,
+  // not about a particular port.
+  assertLoopback(adminUrl);
+
+  const lookup = await fetch(new URL("/restate/lookup", ingressUrl), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      target: "idempotentInvocation",
+      service: RESTATE_OBJECT_NAME,
+      key: invocation.taskId,
+      handler: RESTATE_HANDLER_ADVANCE,
+      idempotencyKey: invocation.invocationId,
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!lookup.ok) {
+    // The status, never the body: a router error text is engine output.
+    throw new Error("the invocation lookup answered " + String(lookup.status));
+  }
+
+  const resolved = parseLookupReply(await lookup.text());
+  const cancelled = await fetch(
+    new URL("/invocations/" + encodeURIComponent(resolved) + "/cancel", adminUrl),
+    { method: "PATCH", signal: AbortSignal.timeout(timeoutMs) },
+  );
+  // Read and drop, exactly as `sendAdvance` does, and for the same reason: the
+  // socket is released and nothing from the reply survives the call.
+  await cancelled.text();
+  return { ok: cancelled.ok, status: cancelled.status };
+}
+
+/**
+ * The one place a lookup reply becomes an address, or a refusal to guess.
+ *
+ * Same discipline as `parseCacheReply`: a reply that is not a well-formed
+ * answer throws rather than being coerced. Cancelling at an address derived
+ * from a half-parsed body would be aiming a terminating operation at whatever
+ * the string happened to be.
+ */
+function parseLookupReply(text: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error("the invocation lookup returned a body that is not JSON");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("the invocation lookup returned something that is not a result");
+  }
+  const id = (parsed as Record<string, unknown>)["invocationId"];
+  if (typeof id !== "string" || id.length === 0) {
+    throw new Error("the invocation lookup reply names no invocation");
+  }
+  return id;
+}
+
+/**
  * Read the object's cache through its shared handler, never through admin.
  *
  * Only a JSON literal `null` means "absent". Everything else that is not a

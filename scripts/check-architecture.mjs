@@ -1339,8 +1339,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **645
- * packet entries across 225 distinct paths**: 2 (P8-D) +
+ * P8, with the V2 packets that continue its coordinates, is therefore **657
+ * packet entries across 228 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1353,29 +1353,34 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
  * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
  * 27 (V2-B1b-2) + 29 (V2-B1c-1) + 8 (V2-B1c-2) + 3 (V2-B6-fence) +
- * 15 (V2-B2-1) + 8 (V2-B2-2) + 7 (V2-B2-3) + 12 (V2-B2-4a) = 645 entries, with
- * 420 duplicate entries.
+ * 15 (V2-B2-1) + 8 (V2-B2-2) + 7 (V2-B2-3) + 12 (V2-B2-4a) +
+ * 12 (V2-B2-4b) = 657 entries, with 429 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 59 duplicates = 59   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 60 duplicates = 60   (`scripts/check-architecture.mjs`, every packet)
  *   1 path  × 11 duplicates = 11   (the lockfile)
- *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
+ *   2 paths ×  8 duplicates = 16   (`docs/ROADMAP.md`, and — since V2-B2-4b —
+ *                                   the durability drills suite, which is the
+ *                                   most-revisited suite in the B2 lane
+ *                                   because every capability flip is drilled
+ *                                   in it)
  *   6 paths ×  7 duplicates = 42   (the gateway's routes source and
  *                                   build-server suite, the CLI suite, the
  *                                   contracts schema barrel, the SQLite
  *                                   supervisor suite since V2-B2-3, and —
- *                                   since V2-B2-4a — the durability drills
- *                                   suite)
+ *                                   since V2-B2-4b — the durability package's
+ *                                   own driver suite, which moved up as the
+ *                                   drills suite moved out)
  *   7 paths ×  6 duplicates = 42
- *   8 paths ×  5 duplicates = 40
- *  12 paths ×  4 duplicates = 48
- *  19 paths ×  3 duplicates = 57
- *  36 paths ×  2 duplicates = 72
- *  41 paths ×  1 duplicate  = 41
+ *  10 paths ×  5 duplicates = 50
+ *   9 paths ×  4 duplicates = 36
+ *  20 paths ×  3 duplicates = 60
+ *  35 paths ×  2 duplicates = 70
+ *  42 paths ×  1 duplicate  = 42
  *
- * 59 + 11 + 8 + 42 + 42 + 40 + 48 + 57 + 72 + 41 = 420.
+ * 60 + 11 + 16 + 42 + 42 + 50 + 36 + 60 + 70 + 42 = 429.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1814,6 +1819,24 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * `submit/index.ts`, enters the phase at ZERO duplicates and so appears in no
  * band row at all. A first in-phase appearance moves distinct and leaves the
  * duplicate table alone, which is why 645 − 225 = 420 rather than 421.
+ *
+ * V2-B2-4b adds **twelve entries, three of them novel**. Entries move
+ * 645 → 657, distinct 225 → 228, duplicates 420 → 429. The novel three are
+ * `packages/domains/runtime/src/cancellation/index.ts` and its mirrored suite,
+ * which are new files, and `docs/architecture/0005-restate-driver-and-adoption.md`
+ * — not new to the repository, but this is its first IN-PHASE appearance. Its
+ * only other declaration is `P2C_WRITE_SET`, so by the standing convention
+ * that scopes this arithmetic to the phase it counts fresh here, exactly as
+ * `submit/index.ts` did one packet earlier.
+ *
+ * That leaves **nine** single-step band moves rather than twelve, and each is
+ * one already-owned path gaining a duplicate: this file ×59 → ×60, the
+ * durability drills suite ×7 → ×8, that package's driver suite ×6 → ×7, the
+ * drill child ×5 → ×6, the runtime barrel, the contracts suite and the Restate
+ * driver ×4 → ×5, the durability-plane contract ×2 → ×3, and `submit/index.ts`
+ * ×0 → ×1 — its first duplicate, one packet after it entered the phase. The
+ * three novel paths enter at ZERO duplicates and so appear in no band row at
+ * all, which is why 657 − 228 = 429 rather than 432.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3882,6 +3905,76 @@ const V2B24A_WRITE_SET = [
 ];
 
 /**
+ * V2-B2-4b: cancellation settles the ledger truth, and CANCEL stops being a
+ * refusal.
+ *
+ * The verb existed only as a typed refusal. This packet makes it real in three
+ * ordered acts, and the ORDER is the whole content: refuse a terminal task
+ * before the engine and before the ledger; stop the engine out of band; then
+ * settle the log probe-first. `CANCEL` flips to `SUPPORTED`, here and in the
+ * driver's own suite, because B2-1 pinned capability truth in two places on
+ * purpose.
+ *
+ * **The engine id is resolved and discarded, which is what keeps the authority
+ * where it is.** The admin API cancels by an id Restate minted. Measured
+ * against the pinned binary, `POST /restate/lookup` answers with that id for
+ * `(service, key, handler, idempotencyKey)` alone — every value this side
+ * already holds, the last being `deriveInvocation`'s output. So the id lives
+ * as a local constant inside one function whose return type has no member it
+ * could occupy: `CancelResult` is pinned below to exactly `{ok, status}`,
+ * beside `SendResult`, and the drill resolves the id itself and then asserts
+ * it appears in no event, read model, report or receipt.
+ *
+ * **It is deliberately not a third handler, and mid-beat preemption is
+ * deferred.** `advance` is exclusive, so a cancel handler on the object would
+ * queue behind the very walk it was meant to interrupt. The two routes to real
+ * preemption are refused with reasons in ADR 0005: a flag in
+ * `RestateCacheState` is a second authority, and a shared handler appending
+ * beside the exclusive walk would destroy the per-task serialization B2-3
+ * certified. `RESTATE_HANDLER_CANCEL` does not exist and
+ * `runtime/src/constants` is absent from this write-set.
+ *
+ * **`UNKNOWN` appends nothing, and that is the load-bearing negative.** The
+ * settlement reuses `closeIntent`'s three-verdict discipline but never
+ * `closeIntent` itself, because that function's `NOT_DONE` branch performs the
+ * effect — and a cancellation that repaired a missing effect would be doing the
+ * work it was asked to abandon.
+ *
+ * Twelve paths, all twelve written, three of them novel in this phase: the
+ * cancellation module, its mirrored suite, and ADR 0005 — whose only other
+ * declaration is `P2C_WRITE_SET`, so by the standing convention that scopes
+ * this arithmetic to the phase it counts fresh here, exactly as
+ * `submit/index.ts` did at V2-B2-4a. The SQLite supervisor is absent because
+ * its entries are not expected to move and it already refuses `cancel`;
+ * `durability/src/contracts` is absent because `RestateDriverOptions` already
+ * carries `adminUrl`; the durability barrel and README are absent because no
+ * durability export moves — the lookup and cancel pair is internal to the
+ * edge on purpose, since a resolver that could be imported would be a supply
+ * of engine identities; and neither contracts barrel moves, because widening
+ * `DRIVER_REFUSALS` with two members adds no export NAME and so leaves
+ * `CONTRACTS_SCHEMA_EXPORTS` untouched -- stated without an integer on purpose,
+ * per the B6-4 ruling: the pin is checked by equality a few hundred lines below,
+ * so a number repeated here would be a second, unchecked copy of it. (The
+ * V2-B2-4a record above still carries such a copy, "at 85", and it no longer
+ * matches what that law reports; correcting another packet's narrative is not
+ * this packet's to do, and the writer's report names it for the DT.)
+ */
+const V2B24B_WRITE_SET = [
+  "packages/domains/runtime/src/cancellation/index.ts",
+  "packages/domains/runtime/test/cancellation/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/kernel/contracts/src/schemas/durability-plane/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/edges/durability/src/submit/index.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "docs/architecture/0005-restate-driver-and-adoption.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4254,6 +4347,7 @@ const WRITE_SET = [
   ...V2B22_WRITE_SET,
   ...V2B23_WRITE_SET,
   ...V2B24A_WRITE_SET,
+  ...V2B24B_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -4985,7 +5079,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the publication hook's semantics, driven case by case", scope: ".githooks/pre-push" },
   { law: "both drivers declare their capabilities, pinned by equality", scope: "the two driver sources" },
   {
-    law: "the send result cannot carry an engine-minted invocation id",
+    law: "no engine-minted invocation id can leave the durability edge",
     scope: "packages/edges/durability/src/submit/index.ts",
   },
   {
@@ -7281,7 +7375,15 @@ if (tracked.status === 0) {
         // submission answers, a fresh client rejoining after the first was
         // killed, two concurrent attaches observing one invocation, and the
         // neighbouring path shapes refused by the router's own grammar.
-        verbs: { CANCEL: "UNSUPPORTED", REATTACH: "SUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
+        //
+        // CANCEL moved to SUPPORTED in V2-B2-4b, with the drills that earned
+        // that one: a NOT_DONE effect yielding exactly one TASK_CANCELLED and
+        // no beat after it, a DONE effect closing the OUTCOME first and the
+        // ORDER asserted, an UNKNOWN effect appending nothing while the engine
+        // is still stopped, a CHECKPOINTED task refused with zero engine calls
+        // observed, and a real process SIGKILLed between the engine call and
+        // the settlement leaving a recoverable open intent.
+        verbs: { CANCEL: "SUPPORTED", REATTACH: "SUPPORTED", SIGNAL: "UNSUPPORTED", TIMER: "UNSUPPORTED" },
         // SERIALIZED_PER_TASK moved to SUPPORTED in V2-B2-3, with the same-key
         // and different-key drills that earned it. The SQLite entry above did
         // not move and is not expected to: no cross-process guard exists for it
@@ -7349,42 +7451,79 @@ if (tracked.status === 0) {
     );
   }
 
-  // V2-B2-4a: no engine-minted invocation id may leave the durability edge.
+  // V2-B2-4a, widened by V2-B2-4b: no engine-minted invocation id may leave
+  // the durability edge.
   //
   // Restate answers `/send` with its OWN identity —
-  // `{"invocationId":"inv_...","status":"Accepted"}` — and the whole authority
-  // argument for this plane depends on that value never becoming a coordinate
-  // anything keeps. The ledger derives the invocation id before ingress; if a
-  // caller could persist the engine's instead, the engine would own the
-  // address of facts the ledger is supposed to own.
+  // `{"invocationId":"inv_...","status":"Accepted"}` — and answers
+  // `/restate/lookup` with the same kind of value, which is what the admin
+  // cancel is addressed by. The whole authority argument for this plane
+  // depends on that value never becoming a coordinate anything keeps. The
+  // ledger derives the invocation id before ingress; if a caller could persist
+  // the engine's instead, the engine would own the address of facts the ledger
+  // is supposed to own.
   //
   // Stated as a shape rather than as a scan, because a shape cannot be
-  // forgotten. `SendResult` has exactly two members and `sendAdvance` reads the
-  // reply body only to release the socket, so there is no expression in which
-  // the id could survive the call. A scan for the string would pass a
-  // refactor that renamed it; this does not.
+  // forgotten. `SendResult` and `CancelResult` each have exactly two members;
+  // `sendAdvance` reads the reply body only to release the socket; and the one
+  // function that does read an id out of a reply, `parseLookupReply`, is
+  // module-local, so the edge exposes no resolver anyone could call to obtain
+  // one. There is therefore no expression in which the id survives a call. A
+  // scan for the string would pass a refactor that renamed it; this does not.
   {
     const SEND_HOME = "packages/edges/durability/src/submit/index.ts";
     const source = readIfPresent(SEND_HOME);
-    requireScope("the send result cannot carry an engine-minted invocation id", 1);
+    requireScope("no engine-minted invocation id can leave the durability edge", 1);
     if (source === null) {
       fail(SEND_HOME + " is missing; it is where the nonblocking send lives");
     } else {
       const stripped = stripComments(source);
 
-      const shape = stripped.match(/export interface SendResult \{([\s\S]*?)\n\}/);
-      if (shape === null) {
-        fail(SEND_HOME + " no longer declares SendResult; the send would have no pinned shape");
-      } else {
+      // Both result shapes, by the same rule and in one loop: a second copy of
+      // the check is how the two would come to disagree about what "exactly
+      // two members" means.
+      for (const name of ["SendResult", "CancelResult"]) {
+        const shape = stripped.match(new RegExp("export interface " + name + " \\{([\\s\\S]*?)\\n\\}"));
+        if (shape === null) {
+          fail(SEND_HOME + " no longer declares " + name + "; that call would have no pinned shape");
+          continue;
+        }
         const members = [...(shape[1] ?? "").matchAll(/readonly\s+([A-Za-z0-9_]+)\s*:/g)].map((m) => m[1]).sort();
         if (members.join(",") !== "ok,status") {
           fail(
             SEND_HOME +
-              " declares SendResult as {" +
+              " declares " +
+              name +
+              " as {" +
               members.join(", ") +
               "}; it must be exactly {ok, status}, because anything wider is somewhere the engine's own invocation id could ride out",
           );
         }
+      }
+
+      // The resolver stays module-local. An exported one would be a supply of
+      // engine identities for any caller to keep, which is the failure the two
+      // pinned shapes above exist to make unrepresentable inside this file.
+      if (!/\nfunction parseLookupReply\(/.test(stripped)) {
+        fail(
+          SEND_HOME +
+            " no longer declares parseLookupReply as a module-local function; an exported resolver would hand out the engine's own invocation id",
+        );
+      }
+      if (/export\s+(?:async\s+)?function\s+parseLookupReply\b/.test(stripped)) {
+        fail(
+          SEND_HOME +
+            " exports parseLookupReply; the engine-minted id must have no exported producer",
+        );
+      }
+      const cancelBody = stripped.match(/export async function cancelAdvance\([\s\S]*?\n\}/);
+      if (cancelBody === null) {
+        fail(SEND_HOME + " no longer declares cancelAdvance()");
+      } else if (!/return \{ ok: cancelled\.ok, status: cancelled\.status \};/.test(cancelBody[0])) {
+        fail(
+          SEND_HOME +
+            " no longer returns exactly the cancel status pair; a widened return is where the resolved engine identity would escape",
+        );
       }
 
       const body = stripped.match(/export async function sendAdvance\([\s\S]*?\n\}/);
@@ -7413,8 +7552,9 @@ if (tracked.status === 0) {
       }
     }
     notes.push(
-      "SendResult is pinned to {ok, status} and sendAdvance keeps nothing from the reply body," +
-        " so no engine-minted invocation id can leave " +
+      "SendResult and CancelResult are pinned to {ok, status}, sendAdvance keeps nothing from the" +
+        " reply body, and the lookup resolver is module-local, so no engine-minted invocation id" +
+        " can leave " +
         SEND_HOME,
     );
   }
@@ -9395,7 +9535,14 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "BeatContext",
   "BeatResult",
   "BuildEventInput",
+  "CANCELLATION_EFFECTS",
+  "CANCELLATION_TRANSITION_ID",
+  "CANCELLATION_VERDICTS",
   "CONFLICT_KINDS",
+  "CancellationEffect",
+  "CancellationPrecheck",
+  "CancellationSettlement",
+  "CancellationVerdict",
   "CommitRecordOutcome",
   "CommitRecordRequest",
   "CommitRecorded",
@@ -9504,6 +9651,7 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "authorizeCommit",
   "buildConflictGraph",
   "buildEvent",
+  "cancellationPrecheck",
   "checkAdmission",
   "checkWriteSetConformance",
   "closeIntent",
@@ -9532,6 +9680,7 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "resolveScenarioRoot",
   "revokeLease",
   "scenarioLedgerPath",
+  "settleCancellation",
   "validatePlan",
   "verifyPrestate",
 ];

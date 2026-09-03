@@ -21,8 +21,11 @@ import type { Ledger } from "@acp/ledger";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
+  CANCELLATION_TRANSITION_ID,
+  INTENT_STEP,
   LIFECYCLE_PLAN,
   LOOPBACK_HOST,
+  OUTCOME_STEP,
   RESTATE_ADMIN_PORT,
   RESTATE_INGRESS_PORT,
   RUNTIME_SERVICE_PORT,
@@ -33,7 +36,13 @@ import {
   resolveScenarioRoot,
   scenarioLedgerPath,
 } from "@acp/runtime";
-import type { BeatContext, DurableInvocation, EffectPort, ScenarioRoot } from "@acp/runtime";
+import type {
+  BeatContext,
+  DurableInvocation,
+  EffectPort,
+  PostconditionVerdict,
+  ScenarioRoot,
+} from "@acp/runtime";
 
 import { serverAvailability, startServer } from "../../../src/server-handle/index.js";
 import { platformKey, readTrackedPin, receiptMatchesPin } from "../../../src/server-handle/index.js";
@@ -46,7 +55,7 @@ import {
   sendAdvance,
   submitAdvance,
 } from "../../../src/submit/index.js";
-import { reconcile } from "../../../src/drivers/restate-driver/index.js";
+import { RestateDriver, reconcile } from "../../../src/drivers/restate-driver/index.js";
 import { drillRoute, releasePath } from "../../../src/drivers/restate-child/index.js";
 
 
@@ -453,6 +462,137 @@ function heldTasks(child: ChildProcess): ReadonlySet<string> {
   return tasks;
 }
 
+/**
+ * Start a CANCEL-role child and wait until it says it is cancelling (V2-B2-4b).
+ *
+ * A separate spawner for the same reason `startAttachClient` is one: the roles
+ * do not share a handshake, and waiting for the wrong line would kill a
+ * process before it had asked the engine for anything.
+ */
+function startCancelClient(
+  scenarioId: string,
+  invocation: DurableInvocation,
+  faultPoint: string | null,
+): Promise<ChildProcess> {
+  const config = JSON.stringify({
+    scenarioId,
+    invocation,
+    emittedBy: EMITTED_BY,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    initiativeId: TEST_INITIATIVE_ID,
+    faultPoint,
+    pauseAt: null,
+    port: RUNTIME_SERVICE_PORT,
+    effect: "TOY",
+    role: "CANCEL",
+  });
+  return new Promise<ChildProcess>((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, [CHILD_ENTRY, config], {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: REPO_ROOT,
+    });
+    children.push(child);
+    if (child.pid !== undefined) trackSpawnedPid(child.pid, "startCancelClient");
+    const sink = { text: "" };
+    childOutput.set(child, sink);
+    child.stdout.on("data", (chunk: Buffer) => {
+      sink.text += chunk.toString("utf8");
+      if (sink.text.includes('"cancelling":true')) resolvePromise(child);
+    });
+    child.once("error", rejectPromise);
+    child.once("close", (code, signal) => {
+      if (!sink.text.includes('"cancelling":true')) {
+        rejectPromise(
+          new Error("cancel client exited before asking: code " + String(code) + " signal " + String(signal)),
+        );
+      }
+    });
+  });
+}
+
+/**
+ * A driver that cancels, built in the drill's own process (V2-B2-4b).
+ *
+ * It is the REAL `RestateDriver`, over the same ledger and the same scenario
+ * root the endpoint child walks, so the probe it takes sees the effect that
+ * child did or did not perform. `probe` overrides the toy verdict for the one
+ * drill that needs an unestablished postcondition, which is a state the toy
+ * effect cannot produce on its own — the marker either exists or it does not.
+ */
+function cancelDriverFor(
+  root: ScenarioRoot,
+  ledger: Ledger,
+  invocation: DurableInvocation,
+  server: ServerHandle,
+  probe?: () => Promise<PostconditionVerdict>,
+): RestateDriver {
+  const base = beatFactory(root, ledger);
+  const beat = (candidate: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => {
+    const context = base(candidate);
+    return probe === undefined
+      ? context
+      : {
+          ...context,
+          // Delegated rather than lifted out: the port's `apply` is a method,
+          // and only its verdict is being overridden here.
+          effects: { apply: (operation) => context.effects.apply(operation), probe },
+        };
+  };
+  return new RestateDriver(
+    {
+      ledger,
+      invocation,
+      emittedBy: EMITTED_BY,
+      ingressUrl: server.ingressUrl,
+      adminUrl: server.adminUrl,
+    },
+    beat,
+    "LOCAL_COMMIT_WITH_RECEIPT",
+    TEST_INITIATIVE_ID,
+  );
+}
+
+/** The URL one fetch argument names, whichever of its three forms it took. */
+function describeTarget(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  return input instanceof URL ? input.toString() : input.url;
+}
+
+/**
+ * Count what the driver asked the engine, while still really asking it.
+ *
+ * The refusal drills need "zero engine calls" to be observed rather than
+ * argued. A spy that replaced the call would have measured a different
+ * program; this one records and forwards, so the drill is still running
+ * against the pinned server.
+ */
+async function countingEngineCalls<T>(
+  run: () => Promise<T>,
+): Promise<{ readonly result: T; readonly calls: readonly string[] }> {
+  const original = globalThis.fetch;
+  // Bound for calling and kept unbound for restoring, which are two different
+  // needs: the spy must forward to the real implementation, and the teardown
+  // must put back exactly the value it found.
+  const forward = original.bind(globalThis);
+  const calls: string[] = [];
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+    calls.push((init?.method ?? "GET") + " " + describeTarget(input));
+    return forward(input, init);
+  }) as typeof globalThis.fetch;
+  try {
+    return { result: await run(), calls };
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+/** Every event of one task, in ledger order. */
+function taskTrail(ledger: Ledger, taskId: string): readonly { type: string; transitionId: string }[] {
+  return ledger
+    .listEvents({ taskId, limit: 200 })
+    .events.map((record) => ({ type: record.event.type, transitionId: record.event.transitionId }));
+}
+
 function waitForExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolvePromise) => {
     if (child.exitCode !== null || child.signalCode !== null) {
@@ -843,9 +983,40 @@ interface DrillReceipt {
   readonly attachBodiesAgree?: boolean;
   /** How an attach ended when the server died under it. Rejected, never resolved. */
   readonly attachSettledAs?: string;
+  // --- V2-B2-4b: cancellation settles the ledger truth ----------------------
+  /** What the probe found at settlement time. Never inferred from the state. */
+  readonly cancelEffect?: string;
+  /** Cancellations appended for the cancelled task. One, or the law failed. */
+  readonly cancellations?: number;
+  /** Engine calls the driver made. Zero for a refusal act 1 reached first. */
+  readonly engineCalls?: number;
+  /** The refusal a cancellation returned, when it returned one. */
+  readonly cancelRefusal?: string;
+  /** Was the OUTCOME appended immediately before the cancellation? */
+  readonly outcomeBeforeCancellation?: boolean;
+  /** Events appended to the cancelled task after its cancellation. Zero. */
+  readonly beatsAfterCancellation?: number;
+  /** Was the intent still open after a refused settlement? */
+  readonly intentStillOpen?: boolean;
+  /** The verdict `reconcile` reached over a crashed cancellation. */
+  readonly recoveryVerdict?: string;
 }
 
+/**
+ * Every receipt this file emitted, kept so the leak sweep can read them back.
+ *
+ * A receipt is a durable artifact in the same sense a ledger row is -- it is
+ * what a reader is handed afterwards -- so "no engine-minted identity is
+ * persisted" has to cover receipts too, and covering them by inspection would
+ * mean trusting whoever wrote the next one (V2-B2-4b).
+ */
+const emittedReceipts: DrillReceipt[] = [];
+
+/** Restate names its own invocations `inv_` plus a base62 blob. */
+const ENGINE_INVOCATION_ID_SHAPE = /inv_[A-Za-z0-9]{10,}/;
+
 function emitReceipt(receipt: DrillReceipt): void {
+  emittedReceipts.push(receipt);
   process.stdout.write("RECEIPT " + JSON.stringify(receipt) + "\n");
 }
 
@@ -875,6 +1046,12 @@ afterAll(() => {
   // This run's processes are gone, so its durable rows are noise. Released
   // before the leak receipt so the registry ends a green run empty (V2-B6-3).
   releaseDurable();
+  // No receipt this file emitted names an engine-minted invocation id
+  // (V2-B2-4b). Swept here rather than per drill so a receipt added later is
+  // covered without anyone having to remember to cover it.
+  for (const receipt of emittedReceipts) {
+    expect(JSON.stringify(receipt)).not.toMatch(ENGINE_INVOCATION_ID_SHAPE);
+  }
   const processesChecked = assertNoLeakedProcesses();
   emitReceipt({
     drill: "D5-FINAL",
@@ -2033,4 +2210,508 @@ describe("the derived key addresses the invocation", () => {
 
     await stopChild(child);
   }, 240_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-B2-4b: cancellation, against the pinned server
+// ---------------------------------------------------------------------------
+
+/**
+ * Cancellation is an ORDER, so these drills measure order.
+ *
+ * Every one of them holds a real invocation at a real beat on a real engine
+ * and then cancels it, because the properties worth proving only exist while
+ * something is genuinely in flight: a cancellation of a finished task proves
+ * nothing about interrupting one.
+ *
+ * The negatives carry the weight. Nothing at the previous HEAD can pass any of
+ * them, because nothing cancelled — and each is written so that the obvious
+ * wrong implementation fails it: a settlement that ran before the engine call
+ * fails the ordering drill, one that appended over an unestablished effect
+ * fails the UNKNOWN drill, and one that trusted the ledger's own lifecycle
+ * rules fails the terminal drill.
+ */
+describe("cancellation settles the ledger truth", () => {
+  /** How many cancellations this task carries. Never more than one. */
+  function cancellations(ledger: Ledger, taskId: string): number {
+    return taskTrail(ledger, taskId).filter((e) => e.type === "TASK_CANCELLED").length;
+  }
+
+  it("NOT_DONE: one cancellation, no effect performed, and no beat after it", async () => {
+    ensureChildBuilt();
+    const id = "cancel-not-done";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    // Held at the intent beat: the INTENT is durable, the effect has not run.
+    const child = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+    expect((await sendAdvance(server.ingressUrl, invocation)).status).toBe(202);
+    expect(await waitForHeldTasks(child, 1)).toBe(1);
+
+    const before = ledger.status();
+    const driver = cancelDriverFor(root, ledger, invocation, server);
+    const { result, calls } = await countingEngineCalls(() => driver.cancel(invocation));
+
+    // The engine was reached twice: resolve the address, then cancel at it.
+    expect(calls).toEqual([
+      "POST " + server.ingressUrl + "/restate/lookup",
+      calls[1] ?? "",
+    ]);
+    expect(calls[1]).toMatch(new RegExp("^PATCH " + server.adminUrl + "/invocations/inv_[A-Za-z0-9]+/cancel$"));
+
+    // Exactly one cancellation, and the effect was never performed: a
+    // cancellation that repaired the missing effect would be doing the work it
+    // was asked to abandon, and `closeIntent` would have done exactly that.
+    expect(result).toEqual({ ok: true, finalSequence: ledger.status().headSequence });
+    expect(cancellations(ledger, taskId)).toBe(1);
+    expect(ledger.status().eventCount).toBe(before.eventCount + 1);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CANCELLED");
+    expect(markers(root)).toBe(0);
+
+    const cancelled = taskTrail(ledger, taskId).at(-1);
+    expect(cancelled).toEqual({ type: "TASK_CANCELLED", transitionId: CANCELLATION_TRANSITION_ID });
+
+    const liveTask = JSON.stringify(ledger.getTask(taskId));
+    ledger.rebuildReadModel();
+    expect(JSON.stringify(ledger.getTask(taskId))).toBe(liveTask);
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+
+    // No beat after the cancellation, and NOT because nothing was running.
+    // The hold is released and a second task is driven to completion on the
+    // same endpoint, so the window in which the cancelled invocation could
+    // have appended is a window in which another one demonstrably did. A bare
+    // wait could not tell "stopped" from "slow".
+    const afterCancel = taskTrail(ledger, taskId).length;
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    const second = deriveInvocation(randomUUID(), 1, "2026-08-27T12:00:00.000Z", "b".repeat(64));
+    expect((await submitAdvance(server.ingressUrl, second, 120_000)).status).toBe(200);
+    expect(await waitForCheckpoint(ledger, second.taskId)).toBe(true);
+
+    const beatsAfterCancellation = taskTrail(ledger, taskId).length - afterCancel;
+    expect(beatsAfterCancellation).toBe(0);
+    expect(taskTrail(ledger, taskId).at(-1)?.type).toBe("TASK_CANCELLED");
+
+    emitReceipt({
+      drill: "CANCEL-NOT-DONE",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      cancelEffect: "NOT_DONE",
+      cancellations: cancellations(ledger, taskId),
+      engineCalls: calls.length,
+      beatsAfterCancellation,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("DONE: the outcome is appended BEFORE the cancellation, in that order", async () => {
+    ensureChildBuilt();
+    const id = "cancel-done";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    // Held AFTER the effect and before the outcome: the exact interval the
+    // three-beat law exists for, and the only one where a cancellation has to
+    // decide what to do about an effect that happened but was never recorded.
+    const child = await startChild(id, invocation, null, "AFTER_EFFECT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+    expect((await sendAdvance(server.ingressUrl, invocation)).status).toBe(202);
+    expect(await waitForChildSays(child, '"paused":"AFTER_EFFECT"')).toBe(true);
+    expect(markers(root)).toBe(1);
+
+    const before = ledger.status().eventCount;
+    const driver = cancelDriverFor(root, ledger, invocation, server);
+    const result = await driver.cancel(invocation);
+
+    expect(result).toEqual({ ok: true, finalSequence: ledger.status().headSequence });
+    // Two appends: the OUTCOME that records the effect, then the cancellation.
+    expect(ledger.status().eventCount).toBe(before + 2);
+
+    // The ORDER, not the membership. A set assertion would pass on a log whose
+    // cancellation came first, which is the three-beat law read backwards.
+    const trail = taskTrail(ledger, taskId);
+    const outcomeAt = trail.findIndex((e) => e.transitionId === OUTCOME_STEP.transitionId);
+    const cancelAt = trail.findIndex((e) => e.transitionId === CANCELLATION_TRANSITION_ID);
+    expect(outcomeAt).toBeGreaterThanOrEqual(0);
+    expect(cancelAt).toBe(outcomeAt + 1);
+    expect(cancellations(ledger, taskId)).toBe(1);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CANCELLED");
+    // The effect was performed once, by the walk, and not again by the cancel.
+    expect(markers(root)).toBe(1);
+
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+
+    emitReceipt({
+      drill: "CANCEL-DONE",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      pausedAt: "AFTER_EFFECT",
+      cancelEffect: "DONE",
+      cancellations: cancellations(ledger, taskId),
+      outcomeBeforeCancellation: cancelAt === outcomeAt + 1,
+    });
+
+    writeFileSync(releasePath(root, "AFTER_EFFECT"), "release", "utf8");
+    await stopChild(child);
+  }, 240_000);
+
+  it("UNKNOWN: appends nothing, refuses, and leaves the intent open", async () => {
+    ensureChildBuilt();
+    const id = "cancel-unknown";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+    expect((await sendAdvance(server.ingressUrl, invocation)).status).toBe(202);
+    expect(await waitForHeldTasks(child, 1)).toBe(1);
+
+    const before = ledger.status();
+    // The one verdict the toy effect cannot produce: its marker either exists
+    // or it does not. An effect whose completion cannot be established is the
+    // real case this refusal exists for, so it is injected rather than faked
+    // by breaking the ledger.
+    const driver = cancelDriverFor(root, ledger, invocation, server, () =>
+      Promise.resolve("UNKNOWN"),
+    );
+    const { result, calls } = await countingEngineCalls(() => driver.cancel(invocation));
+
+    expect(result).toEqual({ ok: false, refusal: "POSTCONDITION_UNKNOWN", at: "cancel" });
+    // The engine WAS stopped. Refusing to write is not refusing to act: leaving
+    // the invocation retrying while declining to record anything would be the
+    // worst of both.
+    expect(calls.length).toBe(2);
+
+    // Zero delta, asserted on the authority rather than on the return value.
+    const after = ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+    expect(cancellations(ledger, taskId)).toBe(0);
+
+    // And the intent is still open, which is what makes this recoverable: an
+    // operator finds exactly the state `PostconditionUnknownError` leaves.
+    const trail = taskTrail(ledger, taskId);
+    expect(ledger.getTask(taskId)?.currentState).toBe("RUNNING");
+    const intentStillOpen =
+      trail.some((e) => e.transitionId === INTENT_STEP.transitionId) &&
+      !trail.some((e) => e.transitionId === OUTCOME_STEP.transitionId);
+    expect(intentStillOpen).toBe(true);
+
+    emitReceipt({
+      drill: "CANCEL-UNKNOWN",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: after.eventCount,
+      effectMarkers: markers(root),
+      headSequence: after.headSequence,
+      headEventSha256: after.headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      cancelRefusal: "POSTCONDITION_UNKNOWN",
+      cancellations: 0,
+      engineCalls: calls.length,
+      intentStillOpen,
+    });
+
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    await stopChild(child);
+  }, 240_000);
+
+  it("CHECKPOINTED: refused with no engine call and no append", async () => {
+    ensureChildBuilt();
+    const id = "cancel-terminal";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null);
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+    expect((await submitAdvance(server.ingressUrl, invocation, 120_000)).status).toBe(200);
+    expect(await waitForCheckpoint(ledger, taskId)).toBe(true);
+
+    const before = ledger.status();
+    expect(before.eventCount).toBe(LIFECYCLE_PLAN.length);
+
+    const driver = cancelDriverFor(root, ledger, invocation, server);
+    const { result, calls } = await countingEngineCalls(() => driver.cancel(invocation));
+
+    expect(result).toEqual({ ok: false, refusal: "TASK_TERMINAL", at: "cancel" });
+    // Act 1 runs before act 2, so a completed run is never interfered with.
+    // Observed, not argued: the driver made no request of any kind.
+    expect(calls).toEqual([]);
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    expect(cancellations(ledger, taskId)).toBe(0);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+
+    emitReceipt({
+      drill: "CANCEL-TERMINAL",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: "CONSISTENT",
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      cancelRefusal: "TASK_TERMINAL",
+      cancellations: 0,
+      engineCalls: 0,
+    });
+
+    await stopChild(child);
+  }, 240_000);
+
+  it("SIGKILL between the engine call and the settlement leaves a recoverable open intent", async () => {
+    ensureChildBuilt();
+    const id = "cancel-kill-window";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const endpoint = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+    expect((await sendAdvance(server.ingressUrl, invocation)).status).toBe(202);
+    expect(await waitForHeldTasks(endpoint, 1)).toBe(1);
+
+    const before = ledger.status();
+
+    // A real process, running the real driver, dying in the real window: the
+    // settlement's first probe kills it, which is after the engine call
+    // returned and before anything has been appended.
+    const canceller = await startCancelClient(id, invocation, "BEFORE_SETTLEMENT");
+    const died = await waitForExit(canceller);
+    expect(died.signal).toBe("SIGKILL");
+    expect(childOutput.get(canceller)?.text.includes('"cancelled"')).toBe(false);
+
+    // What the crash left: nothing claimed, and an intent still open. This is
+    // the state the plane already knows how to recover from, which is why the
+    // residual window is safe rather than merely narrow.
+    const after = ledger.status();
+    expect(after.eventCount).toBe(before.eventCount);
+    expect(after.headEventSha256).toBe(before.headEventSha256);
+    expect(cancellations(ledger, taskId)).toBe(0);
+    expect(ledger.getTask(taskId)?.currentState).toBe("RUNNING");
+    const trail = taskTrail(ledger, taskId);
+    expect(trail.some((e) => e.transitionId === INTENT_STEP.transitionId)).toBe(true);
+    expect(trail.some((e) => e.transitionId === OUTCOME_STEP.transitionId)).toBe(false);
+
+    // And it is classified rather than guessed at: the reconciler answers with
+    // a verdict computed against the ledger head it names.
+    const report = await reconcile({
+      ledger,
+      invocation,
+      readCache: () => readCacheThroughHandler(server.ingressUrl, taskId),
+    });
+    expect(report.resolvedByLedger).toBe(true);
+    expect(["CONSISTENT", "DRIVER_BEHIND"]).toContain(report.verdict);
+
+    // The operator path, which is the one that already exists: cancel again.
+    // The engine is already stopped, so this second attempt gets `404`/`409`
+    // from it -- an engine that is not running this invocation -- and settles
+    // the ledger exactly once.
+    const driver = cancelDriverFor(root, ledger, invocation, server);
+    const result = await driver.cancel(invocation);
+    expect(result).toEqual({ ok: true, finalSequence: ledger.status().headSequence });
+    expect(cancellations(ledger, taskId)).toBe(1);
+    expect(ledger.status().eventCount).toBe(before.eventCount + 1);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CANCELLED");
+
+    const integrity = ledger.verifyIntegrity();
+    expect(integrity.problems).toEqual([]);
+    const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+    expect(keys.length - new Set(keys).size).toBe(0);
+
+    emitReceipt({
+      drill: "CANCEL-KILL-WINDOW",
+      mode: "RESTATE",
+      faultPoint: "BEFORE_SETTLEMENT",
+      signal: died.signal,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: report.verdict,
+      integrityOk: integrity.ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      cancellations: cancellations(ledger, taskId),
+      recoveryVerdict: report.verdict,
+      intentStillOpen: true,
+    });
+
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    await stopChild(endpoint);
+  }, 240_000);
+
+  it("the engine's own identity reaches no event, read model, report or receipt", async () => {
+    ensureChildBuilt();
+    const id = "cancel-no-engine-identity";
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const server = trackServer(await startServer(root));
+
+    const child = await startChild(id, invocation, null, "AFTER_INTENT");
+    await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+    expect((await sendAdvance(server.ingressUrl, invocation)).status).toBe(202);
+    expect(await waitForHeldTasks(child, 1)).toBe(1);
+
+    // The discriminating control, and without it this drill would pass on a
+    // system where no engine id existed at all. The drill resolves the id
+    // ITSELF, the same way and from the same four values the driver uses, and
+    // asserts it is a real one of the recognisable shape. Only then does
+    // "it appears nowhere" mean anything.
+    const lookup = await fetch(new URL("/restate/lookup", server.ingressUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        target: "idempotentInvocation",
+        service: "AcpTask",
+        key: taskId,
+        handler: "advance",
+        idempotencyKey: invocation.invocationId,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    expect(lookup.status).toBe(200);
+    const engineId = (JSON.parse(await lookup.text()) as { invocationId: string }).invocationId;
+    expect(engineId).toMatch(ENGINE_INVOCATION_ID_SHAPE);
+    // It is not the id this side derived, which is the whole reason it must
+    // not be kept: two addresses for one invocation, and only one of them
+    // belongs to the ledger.
+    expect(engineId).not.toBe(invocation.invocationId);
+
+    const driver = cancelDriverFor(root, ledger, invocation, server);
+    const outcome = await driver.cancel(invocation);
+    expect(outcome).toEqual({ ok: true, finalSequence: ledger.status().headSequence });
+
+    // The sweep, over everything a reader is ever handed.
+    const report = await reconcile({
+      ledger,
+      invocation,
+      readCache: () => readCacheThroughHandler(server.ingressUrl, taskId),
+    });
+    const surfaces: readonly [string, unknown][] = [
+      ["outcome", outcome],
+      ["events", ledger.listEvents({ limit: 200 }).events.map((r) => r.event)],
+      ["task read model", ledger.getTask(taskId)],
+      ["task list", ledger.listTasks().tasks],
+      ["reconciliation report", report],
+      ["driver status", await driver.status()],
+    ];
+    for (const [name, surface] of surfaces) {
+      const serialized = JSON.stringify(surface);
+      expect({ name, leaked: ENGINE_INVOCATION_ID_SHAPE.test(serialized) }).toEqual({
+        name,
+        leaked: false,
+      });
+      expect({ name, leaked: serialized.includes(engineId) }).toEqual({ name, leaked: false });
+    }
+
+    // And what IS there is the derived address, which the ledger owns.
+    expect(JSON.stringify(ledger.listEvents({ taskId, limit: 200 }).events.map((r) => r.event))).toContain(
+      invocation.invocationId,
+    );
+
+    emitReceipt({
+      drill: "CANCEL-NO-ENGINE-IDENTITY",
+      mode: "RESTATE",
+      faultPoint: null,
+      signal: null,
+      eventCount: ledger.status().eventCount,
+      effectMarkers: markers(root),
+      headSequence: ledger.status().headSequence,
+      headEventSha256: ledger.status().headEventSha256,
+      verdict: report.verdict,
+      integrityOk: ledger.verifyIntegrity().ok,
+      rebuildIdentical: true,
+      duplicateKeys: 0,
+      cancellations: cancellations(ledger, taskId),
+      // The count of surfaces swept, never the id itself: a receipt that
+      // named what it was looking for would be the leak it exists to deny.
+      engineCalls: surfaces.length,
+    });
+
+    writeFileSync(releasePath(root, "AFTER_INTENT"), "release", "utf8");
+    await stopChild(child);
+  }, 240_000);
+
+  it("the two drivers now disagree about CANCEL, and the SQLite one still refuses field-exactly", async () => {
+    // A regression assertion on an existing behaviour, and the packet says so
+    // rather than presenting it as new evidence: the supervisor source is
+    // untouched and its own suite asserts these four refusals. What IS new is
+    // the DIVERGENCE -- one driver cancels and the other does not -- which is
+    // exactly what a capability declaration exists to let a caller discover
+    // without trying it.
+    const root = scenario("cancel-sqlite-refusal");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const invocation = deriveInvocation(randomUUID(), 1, "2026-08-27T12:00:00.000Z", "c".repeat(64));
+    const supervisor = new SqliteSupervisor({
+      ledger,
+      invocation,
+      effects: toyEffects(root),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: drillRoute(invocation),
+    });
+
+    // Field by field, never a throw and never a silent no-op, and explicitly
+    // not delegating to the Restate driver: a supervisor that quietly handed
+    // cancellation over would make the mode flag a lie.
+    expect(await supervisor.cancel()).toEqual({
+      ok: false,
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "cancel",
+    });
+    expect(supervisor.capabilities().verbs.CANCEL).toBe("UNSUPPORTED");
+    // Nothing was appended by asking.
+    expect(ledger.status().eventCount).toBe(0);
+  }, 60_000);
 });

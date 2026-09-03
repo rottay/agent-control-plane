@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  INTENT_STEP,
   LIFECYCLE_PLAN,
   OUTCOME_STEP,
   READ_ONLY_PLAN,
@@ -29,6 +30,7 @@ import type {
   DurableInvocation,
   LedgerPort,
   OrchestrationDriver,
+  PostconditionVerdict,
   ScenarioRoot,
 } from "@acp/runtime";
 import type { Context } from "@restatedev/restate-sdk";
@@ -36,7 +38,7 @@ import type { Context } from "@restatedev/restate-sdk";
 import type { DurableStepContext, LedgerLike, RestateCacheState } from "../../../src/contracts/index.js";
 import { RESTATE_MODE, RestateDriver, advanceHandler, reconcile } from "../../../src/drivers/restate-driver/index.js";
 import type { AdvanceContext } from "../../../src/drivers/restate-driver/index.js";
-import { parseCacheReply } from "../../../src/submit/index.js";
+import { cancelAdvance, parseCacheReply } from "../../../src/submit/index.js";
 
 
 /**
@@ -768,46 +770,143 @@ describe("the Restate edge satisfies the orchestration port (G5)", () => {
 });
 
 /**
- * The subject for the capability tests: stubs only, no ledger file, no server.
+ * The subject for the capability tests, and why it needs a real ledger now.
  *
- * Three of the four verbs reach nothing at all, which is the point for them.
- * `reattach` is the exception as of V2-B2-4a: it is real, so it does make an
- * HTTP call, and the tests below answer that call with a stub rather than a
- * server. What a unit suite can prove about it is the SHAPE — the address it
- * derives, the ledger coordinate it returns, and that it never answers a
- * failed observation with a refusal. That the shape describes the real engine
- * is the drills' job, and they do it against the pinned server.
+ * Two of the four verbs reach nothing at all, which is the point for them.
+ * `reattach` stopped being one at V2-B2-4a and `cancel` stops being one here:
+ * both make real HTTP calls, and the tests below answer those with a stub
+ * rather than a server.
+ *
+ * `cancel` additionally READS AND WRITES the ledger, so a stub ledger that
+ * throws on append could not host it — and substituting one that accepted
+ * everything would have hidden the properties worth measuring, since the whole
+ * design is about which appends do and do not happen. So the subject is seeded
+ * on a real ledger into the one state a cancellation is interesting from:
+ * `RUNNING`, with the INTENT appended and no OUTCOME. What a unit suite can
+ * prove is the SHAPE — the address it derives, the ORDER of its acts, and what
+ * the log grew by. That the shape describes the real engine is the drills'
+ * job, and they do it against the pinned server.
  */
 const INVOCATION_FOR_CAPABILITIES = invocationFor("5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a02");
 
-function capabilitySubject(): RestateDriver {
+interface CapabilitySubject {
+  readonly driver: RestateDriver;
+  readonly ledger: Ledger;
+}
+
+function capabilitySubject(
+  name: string,
+  options: {
+    readonly probe?: () => Promise<PostconditionVerdict>;
+    readonly walk?: "OPEN_INTENT" | "CHECKPOINTED";
+  } = {},
+): CapabilitySubject {
+  const root = scenario("capability-" + name);
+  const ledger = openLedger(scenarioLedgerPath(root));
+  ledgers.push(ledger);
+  const probe = options.probe ?? ((): Promise<PostconditionVerdict> => Promise.resolve("NOT_DONE"));
+
   const beat = (candidate: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
-    ledger: {
-      append: () => {
-        throw new SupervisorError("the capability fixture never appends");
+    ledger,
+    effects: {
+      apply: () => {
+        throw new SupervisorError("the capability fixture never performs an effect");
       },
-      getTask: () => null,
-      getEventBySequence: () => null,
-      getEventByIdempotencyKey: () => null,
-    } satisfies LedgerPort,
-    effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
+      probe,
+    },
     invocation: candidate,
     emittedBy: EMITTED_BY,
     route: TEST_ROUTE,
   });
-  return new RestateDriver(
-    {
-      ledger: STUB_LEDGER,
-      invocation: INVOCATION_FOR_CAPABILITIES,
-      emittedBy: EMITTED_BY,
-      ingressUrl: "http://127.0.0.1:8080",
-      adminUrl: "http://127.0.0.1:9070",
-    },
-    beat,
-    "NO_COMMIT",
-    TEST_INITIATIVE_ID,
-  );
+
+  // Seeded by appending plan steps directly rather than by walking with a
+  // probe: the seed must be the same every run whatever the subject's probe
+  // is scripted to answer, or a fixture would be measuring itself.
+  const context: BeatContext = {
+    ...beat(INVOCATION_FOR_CAPABILITIES),
+    plan: LIFECYCLE_PLAN,
+    initiativeId: TEST_INITIATIVE_ID,
+  };
+  for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) {
+    if (step.beat === "OUTCOME") continue;
+    appendPlanStep(context, step);
+  }
+  if (options.walk === "CHECKPOINTED") {
+    appendPlanStep(context, OUTCOME_STEP);
+    for (const step of LIFECYCLE_PLAN.slice(OUTCOME_STEP.index + 1)) appendPlanStep(context, step);
+  }
+
+  return {
+    ledger,
+    driver: new RestateDriver(
+      {
+        ledger,
+        invocation: INVOCATION_FOR_CAPABILITIES,
+        emittedBy: EMITTED_BY,
+        ingressUrl: "http://127.0.0.1:8080",
+        adminUrl: "http://127.0.0.1:9070",
+      },
+      beat,
+      "LOCAL_COMMIT_WITH_RECEIPT",
+      TEST_INITIATIVE_ID,
+    ),
+  };
 }
+
+/** One call the driver made to the engine, recorded whole. */
+interface EngineCall {
+  readonly method: string;
+  readonly url: string;
+  readonly body: string | null;
+  /** What the ledger held at the moment the call was made (V2-B2-4b). */
+  readonly eventCount: number;
+}
+
+/**
+ * Answer the engine without a server, and record what was asked, when.
+ *
+ * The `eventCount` on each recorded call is what makes the ORDER measurable
+ * without a clock: if the engine call is made while the ledger still holds
+ * exactly what it held before `cancel` was invoked, then nothing was appended
+ * first. An assertion on the final state could not tell that apart from a
+ * settlement that ran before the engine was stopped.
+ */
+async function withEngineAnswering<T>(
+  script: {
+    readonly lookup: { readonly status: number; readonly body: string };
+    readonly cancel: { readonly status: number; readonly body: string };
+  },
+  ledger: Ledger,
+  run: () => Promise<T>,
+): Promise<{ readonly result: T; readonly asked: readonly EngineCall[] }> {
+  const original = globalThis.fetch;
+  const asked: EngineCall[] = [];
+  globalThis.fetch = ((input: unknown, init?: RequestInit): Promise<Response> => {
+    const url = input instanceof URL ? input.toString() : String(input);
+    asked.push({
+      method: init?.method ?? "GET",
+      url,
+      body: typeof init?.body === "string" ? init.body : null,
+      eventCount: ledger.status().eventCount,
+    });
+    const reply = url.includes("/restate/lookup") ? script.lookup : script.cancel;
+    return Promise.resolve(new Response(reply.body, { status: reply.status }));
+  }) as typeof globalThis.fetch;
+  try {
+    return { result: await run(), asked };
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+/** A real Restate invocation id, so a leak of one would be recognisable. */
+const ENGINE_INVOCATION_ID = "inv_1iyF5Za7tVoR5BFUOkvBqWRDZJOjlBRbJo";
+
+/** The engine taking a cancellation: the id resolves, the cancel is accepted. */
+const ENGINE_CANCELS = {
+  lookup: { status: 200, body: JSON.stringify({ invocationId: ENGINE_INVOCATION_ID }) },
+  cancel: { status: 202, body: "" },
+};
 
 /**
  * Answer one attach without a server, and record the address it was made to.
@@ -843,29 +942,42 @@ async function withAttachAnswering<T>(
  * just as happily if the law compared nothing at all. So both mismatch
  * directions are built deliberately and asserted to be caught.
  *
- * V2-B2-4a flipped `REATTACH`, and the law is what made that flip cost
- * something: a declaration saying `SUPPORTED` while the method still returned
- * `unsupported("reattach")` is caught here, in the same suite the fence pins
- * alongside. Capability truth lives in two places on purpose, and both moved.
+ * V2-B2-4a flipped `REATTACH` and V2-B2-4b flips `CANCEL`, and the law is what
+ * made each flip cost something: a declaration saying `SUPPORTED` while the
+ * method still returned `unsupported(...)` is caught here, in the same suite
+ * the fence pins alongside. Capability truth lives in two places on purpose,
+ * and both moved for both flips.
+ *
+ * The lying-declaration cases moved from `CANCEL` to `SIGNAL` in the same
+ * change, and that is not cosmetic: a negative control built on a verb that
+ * has since become real would have been asserting the old world and passing
+ * for the wrong reason.
  */
 describe("the driver declares what it cannot do, and the declaration is checked", () => {
   /** A reattach that answers, so the observed set is complete without a server. */
   const ATTACHED = { status: 200, body: JSON.stringify({ finalSequence: 7 }) };
 
-  const OUTCOMES = async (driver: OrchestrationDriver) => ({
-    CANCEL: await driver.cancel(INVOCATION_FOR_CAPABILITIES),
-    REATTACH: (
-      await withAttachAnswering(ATTACHED, () => driver.reattach(INVOCATION_FOR_CAPABILITIES))
-    ).result,
-    SIGNAL: await driver.signal(INVOCATION_FOR_CAPABILITIES),
-    TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES),
-  });
+  const OUTCOMES = async (subject: CapabilitySubject) => {
+    const driver: OrchestrationDriver = subject.driver;
+    return {
+      CANCEL: (
+        await withEngineAnswering(ENGINE_CANCELS, subject.ledger, () =>
+          driver.cancel(INVOCATION_FOR_CAPABILITIES),
+        )
+      ).result,
+      REATTACH: (
+        await withAttachAnswering(ATTACHED, () => driver.reattach(INVOCATION_FOR_CAPABILITIES))
+      ).result,
+      SIGNAL: await driver.signal(INVOCATION_FOR_CAPABILITIES),
+      TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES),
+    };
+  };
 
-  it("declares three verbs UNSUPPORTED and REATTACH SUPPORTED, satisfying the contract", () => {
-    const declared = capabilitySubject().capabilities();
+  it("declares two verbs UNSUPPORTED and CANCEL and REATTACH SUPPORTED, satisfying the contract", () => {
+    const declared = capabilitySubject("declaration").driver.capabilities();
     expect(DriverCapabilities.safeParse(declared).success).toBe(true);
     expect(declared.verbs).toEqual({
-      CANCEL: "UNSUPPORTED",
+      CANCEL: "SUPPORTED",
       REATTACH: "SUPPORTED",
       SIGNAL: "UNSUPPORTED",
       TIMER: "UNSUPPORTED",
@@ -876,13 +988,12 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     // different keys. B2-1 pinned this truth here and in the fence so a
     // capability could not move in one place alone; both moved together.
     expect(declared.properties).toEqual({ SERIALIZED_PER_TASK: "SUPPORTED" });
-    expect(declared.mode).toBe(capabilitySubject().mode);
+    expect(declared.mode).toBe(RESTATE_MODE);
   });
 
   it("refuses every unsupported verb field-exactly: never a throw, never a silent no-op", async () => {
-    const observed = await OUTCOMES(capabilitySubject());
+    const observed = await OUTCOMES(capabilitySubject("unsupported-verbs"));
     for (const [verb, at] of [
-      ["CANCEL", "cancel"],
       ["SIGNAL", "signal"],
       ["TIMER", "timer"],
     ] as const) {
@@ -897,25 +1008,27 @@ describe("the driver declares what it cannot do, and the declaration is checked"
   });
 
   it("satisfies the correspondence law on the real driver", async () => {
-    const subject = capabilitySubject();
-    expect(driverCapabilityMismatches(subject.capabilities(), await OUTCOMES(subject))).toEqual([]);
+    const subject = capabilitySubject("correspondence");
+    expect(
+      driverCapabilityMismatches(subject.driver.capabilities(), await OUTCOMES(subject)),
+    ).toEqual([]);
   });
 
   it("catches a declaration that claims SUPPORTED while the verb refuses", async () => {
-    const subject = capabilitySubject();
-    const declared = subject.capabilities();
-    const lying = { ...declared, verbs: { ...declared.verbs, CANCEL: "SUPPORTED" as const } };
+    const subject = capabilitySubject("claims-supported");
+    const declared = subject.driver.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, SIGNAL: "SUPPORTED" as const } };
     expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
-      "CANCEL: declared SUPPORTED but refused",
+      "SIGNAL: declared SUPPORTED but refused",
     ]);
   });
 
   it("catches a declaration that claims UNSUPPORTED while the verb does not refuse", async () => {
     // The mirror, and the direction that would otherwise let a driver do work
     // it told its caller it could not do.
-    const subject = capabilitySubject();
+    const subject = capabilitySubject("claims-unsupported");
     const observed = { ...(await OUTCOMES(subject)), TIMER: { ok: true } as const };
-    expect(driverCapabilityMismatches(subject.capabilities(), observed)).toEqual([
+    expect(driverCapabilityMismatches(subject.driver.capabilities(), observed)).toEqual([
       "TIMER: declared UNSUPPORTED but did not refuse",
     ]);
   });
@@ -924,9 +1037,9 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     // The restore half, in the only honest form available to a pure function:
     // a comparison that does not compare returns no mismatches, which is
     // exactly the pre-law state the packet exists to leave behind.
-    const subject = capabilitySubject();
-    const declared = subject.capabilities();
-    const lying = { ...declared, verbs: { ...declared.verbs, CANCEL: "SUPPORTED" as const } };
+    const subject = capabilitySubject("restore");
+    const declared = subject.driver.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, SIGNAL: "SUPPORTED" as const } };
     const withoutLaw = (): readonly string[] => [];
     expect(withoutLaw()).toEqual([]);
     // And with the law back, the same input is caught -- so the assertion above
@@ -937,18 +1050,30 @@ describe("the driver declares what it cannot do, and the declaration is checked"
   it("catches a declaration that claims REATTACH UNSUPPORTED while it answers", async () => {
     // The direction the V2-B2-4a flip created, and the one that would let a
     // driver do work it told its caller it could not do.
-    const subject = capabilitySubject();
-    const declared = subject.capabilities();
+    const subject = capabilitySubject("reattach-lie");
+    const declared = subject.driver.capabilities();
     const lying = { ...declared, verbs: { ...declared.verbs, REATTACH: "UNSUPPORTED" as const } };
     expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
       "REATTACH: declared UNSUPPORTED but did not refuse",
     ]);
   });
 
+  it("catches a declaration that claims CANCEL UNSUPPORTED while it cancels", async () => {
+    // The direction the V2-B2-4b flip created. Without this the flip could be
+    // reverted in the declaration alone and the driver would go on cancelling
+    // while telling its caller it cannot.
+    const subject = capabilitySubject("cancel-lie");
+    const declared = subject.driver.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, CANCEL: "UNSUPPORTED" as const } };
+    expect(driverCapabilityMismatches(lying, await OUTCOMES(subject))).toEqual([
+      "CANCEL: declared UNSUPPORTED but did not refuse",
+    ]);
+  });
+
   it("reattaches at the address derived before ingress, and answers with a ledger coordinate", async () => {
-    const subject = capabilitySubject();
+    const subject = capabilitySubject("reattach-address");
     const { result, asked } = await withAttachAnswering(ATTACHED, () =>
-      subject.reattach(INVOCATION_FOR_CAPABILITIES),
+      subject.driver.reattach(INVOCATION_FOR_CAPABILITIES),
     );
 
     // The whole answer, field by field: an acceptance carrying the head the
@@ -972,10 +1097,10 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     // happened is that this attempt could not see, which is a fact about the
     // observation channel — so it throws, and the caller falls back to the
     // ledger rather than being told a falsehood about the engine.
-    const subject = capabilitySubject();
+    const subject = capabilitySubject("attach-unanswerable");
     await expect(
       withAttachAnswering({ status: 404, body: '{"code":404,"message":"not found"}' }, () =>
-        subject.reattach(INVOCATION_FOR_CAPABILITIES),
+        subject.driver.reattach(INVOCATION_FOR_CAPABILITIES),
       ),
     ).rejects.toBeInstanceOf(SupervisorError);
   });
@@ -983,10 +1108,14 @@ describe("the driver declares what it cannot do, and the declaration is checked"
   it("carries the status and never the engine's own text into the error", async () => {
     // The refusal body from a real server names an engine invocation id. The
     // driver reports the status it saw and stops there.
-    const subject = capabilitySubject();
+    const subject = capabilitySubject("attach-error-text");
     const failure = await withAttachAnswering(
       { status: 404, body: '{"message":"not found","id":"inv_12G2mtFCEW7b0uysHSZtM8sQ9pD8TndCov"}' },
-      () => subject.reattach(INVOCATION_FOR_CAPABILITIES).then(() => null).catch((e: unknown) => e),
+      () =>
+        subject.driver
+          .reattach(INVOCATION_FOR_CAPABILITIES)
+          .then(() => null)
+          .catch((e: unknown) => e),
     );
     const error = failure.result;
     expect(error).toBeInstanceOf(SupervisorError);
@@ -998,23 +1127,222 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     // The same discipline `parseCacheReply` holds: an unanswered question is
     // not a zero. Coercing here would report that a reattached invocation had
     // reached the start of the ledger.
-    const subject = capabilitySubject();
+    const subject = capabilitySubject("attach-malformed");
     for (const body of ["not json", "null", "[]", '{"finalSequence":"11"}', '{"finalSequence":-1}', "{}"]) {
       await expect(
         withAttachAnswering({ status: 200, body }, () =>
-          subject.reattach(INVOCATION_FOR_CAPABILITIES),
+          subject.driver.reattach(INVOCATION_FOR_CAPABILITIES),
         ),
       ).rejects.toBeInstanceOf(SupervisorError);
     }
   });
 
   it("reports a verb whose outcome was never observed rather than passing it", async () => {
-    const subject = capabilitySubject();
+    const subject = capabilitySubject("unobserved");
     const partial = await OUTCOMES(subject);
     const withoutSignal: Record<string, DriverOutcome> = { ...partial };
     delete withoutSignal["SIGNAL"];
-    expect(driverCapabilityMismatches(subject.capabilities(), withoutSignal)).toEqual([
+    expect(driverCapabilityMismatches(subject.driver.capabilities(), withoutSignal)).toEqual([
       "SIGNAL: declared UNSUPPORTED but no outcome was observed",
     ]);
+  });
+});
+
+/**
+ * Cancellation, act by act (V2-B2-4b).
+ *
+ * The whole design is an ORDER, so every test here measures order or measures
+ * what the log grew by. A test that only checked the final state would pass
+ * just as happily on a driver that settled the ledger first and stopped the
+ * engine afterwards, which is the one arrangement this design exists to
+ * forbid.
+ *
+ * The engine is stubbed and the ledger is real, which puts the boundary in the
+ * right place: what the driver ASKS the engine is a shape a unit test can pin
+ * exactly, and what it WRITES is a fact only a real ledger can answer for.
+ */
+describe("cancellation stops the engine, then settles the ledger", () => {
+  it("resolves the address from the derived key and never hands the engine's id back", async () => {
+    const subject = capabilitySubject("cancel-address");
+    const before = subject.ledger.status().eventCount;
+
+    const { result, asked } = await withEngineAnswering(ENGINE_CANCELS, subject.ledger, () =>
+      subject.driver.cancel(INVOCATION_FOR_CAPABILITIES),
+    );
+
+    // Two calls, in this order, and no third.
+    expect(asked.map((call) => call.method + " " + call.url)).toEqual([
+      "POST http://127.0.0.1:8080/restate/lookup",
+      "PATCH http://127.0.0.1:9070/invocations/" + ENGINE_INVOCATION_ID + "/cancel",
+    ]);
+
+    // The lookup body, field by field. Every value is one this side already
+    // held: the object name and handler are constants, the key is the task,
+    // and the idempotency key is `deriveInvocation`'s output for
+    // `(taskId, attempt)`. Nothing Restate minted is an INPUT here, which is
+    // what makes the id it returns safe to use and throw away.
+    expect(JSON.parse(asked[0]?.body ?? "null")).toEqual({
+      target: "idempotentInvocation",
+      service: "AcpTask",
+      key: INVOCATION_FOR_CAPABILITIES.taskId,
+      handler: "advance",
+      idempotencyKey: INVOCATION_FOR_CAPABILITIES.invocationId,
+    });
+
+    // The answer is a ledger coordinate and nothing else. The engine's own id
+    // was in the reply this call read and is in none of what came back.
+    expect(result).toEqual({ ok: true, finalSequence: subject.ledger.status().headSequence });
+    expect(JSON.stringify(result)).not.toContain("inv_");
+
+    // And exactly one cancellation was appended.
+    expect(subject.ledger.status().eventCount).toBe(before + 1);
+    const events = subject.ledger.listEvents({ limit: 200 }).events;
+    expect(events.filter((r) => r.event.type === "TASK_CANCELLED").length).toBe(1);
+    // Nothing in the log names an engine identity either.
+    expect(JSON.stringify(events.map((r) => r.event))).not.toContain("inv_");
+  });
+
+  it("stops the engine BEFORE it appends anything", async () => {
+    const subject = capabilitySubject("cancel-order");
+    const before = subject.ledger.status().eventCount;
+
+    const { asked } = await withEngineAnswering(ENGINE_CANCELS, subject.ledger, () =>
+      subject.driver.cancel(INVOCATION_FOR_CAPABILITIES),
+    );
+
+    // The discriminator. Both engine calls were made while the ledger still
+    // held exactly what it held before `cancel` was invoked, so no append can
+    // have preceded them. Asserting only the end state could not tell this
+    // apart from a settlement that ran first — and a settlement that ran first
+    // could be followed in the log by the still-retrying invocation's next
+    // beat, leaving a cancellation with progress after it.
+    expect(asked.map((call) => call.eventCount)).toEqual([before, before]);
+    expect(subject.ledger.status().eventCount).toBe(before + 1);
+  });
+
+  it("refuses a terminal task without one engine call and without one append", async () => {
+    const subject = capabilitySubject("cancel-terminal", { walk: "CHECKPOINTED" });
+    const before = subject.ledger.status();
+    expect(subject.ledger.getTask(INVOCATION_FOR_CAPABILITIES.taskId)?.currentState).toBe(
+      "CHECKPOINTED",
+    );
+
+    const { result, asked } = await withEngineAnswering(ENGINE_CANCELS, subject.ledger, () =>
+      subject.driver.cancel(INVOCATION_FOR_CAPABILITIES),
+    );
+
+    expect(result).toEqual({ ok: false, refusal: "TASK_TERMINAL", at: "cancel" });
+    // Act 1 is before act 2, so a completed run is never interfered with.
+    expect(asked).toEqual([]);
+    expect(subject.ledger.status().eventCount).toBe(before.eventCount);
+    expect(subject.ledger.status().headEventSha256).toBe(before.headEventSha256);
+  });
+
+  it("refuses an UNKNOWN effect with zero appends, having still stopped the engine", async () => {
+    const subject = capabilitySubject("cancel-unknown", {
+      probe: () => Promise.resolve("UNKNOWN"),
+    });
+    const before = subject.ledger.status();
+
+    const { result, asked } = await withEngineAnswering(ENGINE_CANCELS, subject.ledger, () =>
+      subject.driver.cancel(INVOCATION_FOR_CAPABILITIES),
+    );
+
+    expect(result).toEqual({ ok: false, refusal: "POSTCONDITION_UNKNOWN", at: "cancel" });
+    // The engine WAS stopped: the refusal is about what may be written, not
+    // about what was asked of the engine. Leaving the invocation running while
+    // refusing would be the worst of both.
+    expect(asked.length).toBe(2);
+    expect(subject.ledger.status().eventCount).toBe(before.eventCount);
+    expect(subject.ledger.status().headEventSha256).toBe(before.headEventSha256);
+    // The intent is still open, which is the state an operator recovers from.
+    expect(subject.ledger.getTask(INVOCATION_FOR_CAPABILITIES.taskId)?.currentState).toBe("RUNNING");
+    expect(subject.ledger.getEventByIdempotencyKey(outcomeKey(INVOCATION_FOR_CAPABILITIES))).toBeNull();
+  });
+
+  it("throws rather than settling when the engine did not accept the cancellation", async () => {
+    // The window this ordering exists to close. If the engine may still be
+    // retrying, a settlement could be followed by that invocation's next beat,
+    // so the honest answer is to write nothing and say so.
+    const subject = capabilitySubject("cancel-engine-failed");
+    const before = subject.ledger.status();
+
+    const failure = await withEngineAnswering(
+      {
+        lookup: ENGINE_CANCELS.lookup,
+        cancel: { status: 503, body: '{"message":"unavailable","id":"' + ENGINE_INVOCATION_ID + '"}' },
+      },
+      subject.ledger,
+      () =>
+        subject.driver
+          .cancel(INVOCATION_FOR_CAPABILITIES)
+          .then(() => null)
+          .catch((e: unknown) => e),
+    );
+
+    const error = failure.result;
+    expect(error).toBeInstanceOf(SupervisorError);
+    expect((error as Error).message).toContain("503");
+    // The status, never the engine's own text — which named an invocation id.
+    expect((error as Error).message).not.toContain("inv_");
+    expect(subject.ledger.status().eventCount).toBe(before.eventCount);
+  });
+
+  it("treats 404 and 409 as an engine that is not running this invocation", async () => {
+    // Both mean the invocation is not in flight, which is exactly the
+    // postcondition act 2 exists to reach: an invocation the engine has never
+    // heard of, and one it has already completed. Refusing on either would
+    // leave a task uncancellable because the engine had already stopped it.
+    for (const status of [404, 409]) {
+      const subject = capabilitySubject("cancel-engine-" + String(status));
+      const before = subject.ledger.status().eventCount;
+      const { result } = await withEngineAnswering(
+        { lookup: ENGINE_CANCELS.lookup, cancel: { status, body: "{}" } },
+        subject.ledger,
+        () => subject.driver.cancel(INVOCATION_FOR_CAPABILITIES),
+      );
+      expect({ status, result }).toEqual({
+        status,
+        result: { ok: true, finalSequence: subject.ledger.status().headSequence },
+      });
+      expect(subject.ledger.status().eventCount).toBe(before + 1);
+    }
+  });
+
+  it("refuses to aim a cancellation at an address it could not read", async () => {
+    // The same discipline `parseCacheReply` and `parseFinalSequence` hold. A
+    // half-parsed body coerced into a string would point a TERMINATING
+    // operation at whatever that string happened to be.
+    for (const body of ["not json", "null", "[]", "{}", '{"invocationId":11}', '{"invocationId":""}']) {
+      const subject = capabilitySubject("cancel-malformed-" + String(body.length));
+      const before = subject.ledger.status().eventCount;
+      const failure = await withEngineAnswering(
+        { lookup: { status: 200, body }, cancel: ENGINE_CANCELS.cancel },
+        subject.ledger,
+        () =>
+          subject.driver
+            .cancel(INVOCATION_FOR_CAPABILITIES)
+            .then(() => null)
+            .catch((e: unknown) => e),
+      );
+      expect(failure.result).toBeInstanceOf(Error);
+      // Nothing was cancelled and nothing was written.
+      expect(failure.asked.length).toBe(1);
+      expect(subject.ledger.status().eventCount).toBe(before);
+    }
+  });
+
+  it("refuses to talk to anything that is not loopback", async () => {
+    // ADR 0004 §6's loopback law is about the plane, not about a port, and the
+    // admin base is the one new host this packet talks to.
+    const root = scenario("capability-cancel-offbox");
+    const ledger = openLedger(scenarioLedgerPath(root));
+    ledgers.push(ledger);
+    await expect(
+      cancelAdvance("http://127.0.0.1:8080", "http://10.0.0.1:9070", INVOCATION_FOR_CAPABILITIES),
+    ).rejects.toThrow(/loopback only/);
+    await expect(
+      cancelAdvance("http://example.test:8080", "http://127.0.0.1:9070", INVOCATION_FOR_CAPABILITIES),
+    ).rejects.toThrow(/loopback only/);
   });
 });

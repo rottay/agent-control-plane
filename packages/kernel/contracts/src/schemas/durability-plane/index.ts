@@ -187,14 +187,34 @@ export type DriverCapabilities = z.infer<typeof DriverCapabilities>;
 /**
  * Why a driver refused a verb.
  *
- * Closed and sorted, like every other refusal vocabulary in this package. One
- * member today, because at the packet that introduces the verbs there is
- * exactly one honest reason to refuse: the engine does not offer the operation.
- * A later packet that needs a second reason adds it together with the drill
- * that earns it, rather than stocking the enum in advance with names nothing
- * returns.
+ * Closed and sorted, like every other refusal vocabulary in this package. It
+ * held one member at B2-1, because at the packet that introduces the verbs
+ * there is exactly one honest reason to refuse: the engine does not offer the
+ * operation. The rule stated there was that a later packet adds a reason
+ * together with the drill that earns it rather than stocking the enum in
+ * advance, and V2-B2-4b is that packet.
+ *
+ * `CANCEL` becomes real there, and a real verb can refuse for reasons that are
+ * not about capability at all. Both new members describe the TASK, and both
+ * are drilled:
+ *
+ * - `POSTCONDITION_UNKNOWN` — the intent's effect could not be established, so
+ *   the cancellation appends nothing and leaves the intent open. Naming this
+ *   `CAPABILITY_UNSUPPORTED` would have told a caller the engine cannot
+ *   cancel, when what happened is that this task could not be settled.
+ * - `TASK_TERMINAL` — the task has already ended, so there is nothing to
+ *   cancel. Refused before the engine is touched and before anything is
+ *   appended.
+ *
+ * The correspondence law is unaffected and stays exactly as strict: a verb
+ * declared `SUPPORTED` must not refuse the call the law observes, whatever the
+ * reason on the refusal would have been.
  */
-export const DRIVER_REFUSALS = ["CAPABILITY_UNSUPPORTED"] as const;
+export const DRIVER_REFUSALS = [
+  "CAPABILITY_UNSUPPORTED",
+  "POSTCONDITION_UNKNOWN",
+  "TASK_TERMINAL",
+] as const;
 export const DriverRefusal = z.enum(DRIVER_REFUSALS);
 export type DriverRefusal = z.infer<typeof DriverRefusal>;
 
@@ -226,17 +246,28 @@ export interface DriverRefused {
  * how far the ledger got; it may not hand back anything the engine minted,
  * because a caller that could persist an engine identity would make the
  * orchestrator an authority over its own address — the thing the derived
- * design exists to prevent. `finalSequence` is the ledger head the invocation
+ * design exists to prevent. `finalSequence` is the ledger head the verb's work
  * reached, which is a fact the ledger already holds and can restate for
  * itself.
  *
- * Optional, because it belongs to `REATTACH` alone. A later verb that produces
- * nothing of this shape answers with a bare `{ ok: true }` rather than being
- * forced to invent a sequence it never observed.
+ * V2-B2-4b makes `CANCEL` real and adds no member, which is the intended
+ * shape rather than a shortcut. What a cancellation produces is also a ledger
+ * head — the position the settlement left the log at — so it answers in the
+ * field that already means exactly that. Two verbs, one meaning; a second
+ * field holding the same kind of number under a different name would be two
+ * spellings of one fact.
+ *
+ * Still optional, because a verb may genuinely produce nothing. `SIGNAL` and
+ * `TIMER` are unimplemented, and one that observes no ledger position answers
+ * with a bare `{ ok: true }` rather than being forced to invent one.
  */
 export interface DriverAccepted {
   readonly ok: true;
-  /** The ledger head the reattached invocation reached (V2-B2-4a). */
+  /**
+   * The ledger head this verb's work reached: for `REATTACH` the head the
+   * rejoined invocation walked to (V2-B2-4a), for `CANCEL` the head the
+   * settlement left behind (V2-B2-4b).
+   */
   readonly finalSequence?: number;
 }
 
