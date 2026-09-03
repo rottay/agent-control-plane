@@ -25,8 +25,6 @@ import {
 } from "../../core/step-executor/index.js";
 import type { BeatContext, BeatResult, EffectPort } from "../../core/step-executor/index.js";
 import { SupervisorError } from "../../errors/index.js";
-import { applyEffect, probeEffect } from "../../toy/repository/index.js";
-import type { ScenarioRoot } from "../../toy/repository/index.js";
 
 /**
  * The SQLite supervisor: a single process walking the shared plan.
@@ -48,11 +46,16 @@ export interface SqliteSupervisorOptions {
   readonly ledger: Ledger;
   readonly invocation: DurableInvocation;
   /**
-   * The scenario's own directory, as an opaque value only `resolveScenarioRoot`
-   * can produce. A plain string is deliberately not accepted: a caller that
-   * could name a directory could name a real repository.
+   * The side effect this run performs, injected and never defaulted (V2-B1b).
+   *
+   * Until stage 2 this class bound the toy filesystem marker itself, which
+   * made the toy the only effect a production walk could ever have. Now the
+   * caller says which port the beats drive: the daemon hands in the
+   * execution-backed port over the owned boundary, the drill children hand in
+   * the toy explicitly, and a caller that says nothing gets no supervisor. A
+   * default here would re-hide the binding this packet exists to make visible.
    */
-  readonly scenarioRoot: ScenarioRoot;
+  readonly effects: EffectPort;
   readonly emittedBy: string;
   /**
    * The packet's commit policy, which selects the plan this run walks.
@@ -94,7 +97,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
 
   readonly #ledger: Ledger;
   readonly #invocation: DurableInvocation;
-  readonly #scenarioRoot: ScenarioRoot;
+  readonly #effects: EffectPort;
   readonly #emittedBy: string;
   readonly #plan: readonly PlanStep[];
   readonly #initiativeId: string;
@@ -104,7 +107,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
   constructor(options: SqliteSupervisorOptions) {
     this.#ledger = options.ledger;
     this.#invocation = options.invocation;
-    this.#scenarioRoot = options.scenarioRoot;
+    this.#effects = options.effects;
     this.#emittedBy = options.emittedBy;
     this.#plan = planFor(options.commitPolicy);
     this.#initiativeId = options.initiativeId;
@@ -255,17 +258,9 @@ export class SqliteSupervisor implements OrchestrationDriver {
    * what is genuinely its own: the loop, the fault seam, and the ports.
    */
   #beat(invocation: DurableInvocation): BeatContext {
-    const scenarioRoot = this.#scenarioRoot;
-    const effects: EffectPort = {
-      apply: (operation) => {
-        applyEffect(scenarioRoot, operation);
-        return Promise.resolve();
-      },
-      probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
-    };
     return {
       ledger: this.#ledger,
-      effects,
+      effects: this.#effects,
       invocation,
       emittedBy: this.#emittedBy,
       plan: this.#plan,

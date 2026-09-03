@@ -1336,8 +1336,8 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *
  * P8-8D-pre adds the plane's first write route, its content store and ADR 0013.
  *
- * P8, with the V2 packets that continue its coordinates, is therefore **536
- * packet entries across 218 distinct paths**: 2 (P8-D) +
+ * P8, with the V2 packets that continue its coordinates, is therefore **563
+ * packet entries across 221 distinct paths**: 2 (P8-D) +
  * 4 (P8-1) + 31 (P8-W) + 7 (P8-2) + 6 (P8-3) + 6 (P8-4) + 6 (P8-5) + 3 (P8-6) +
  * 6 (P8-7) + 19 (P8-8A) + 10 (P8-8B) + 17 (P8-8C) + 22 (P8-8D-pre) +
  * 13 (P8-8D-c2) + 18 (P8-8D) + 2 (P8-T-docs) + 5 (P8-T2) + 17 (P8-8E-pre) +
@@ -1348,14 +1348,14 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * 2 (P8-10b) + 2 (P8-10c) + 4 (P8-T-G0) + 2 (P8-T-roadmap) +
  * 13 (P8-T-G1') + 22 (P8-T-G5) + 16 (P8-T-G6) + 38 (P8-T-G7) +
  * 3 (P8-T-G8) + 3 (P8-T-G8-diet) + 9 (P8-T-G9) + 1 (P8-T-G9b) +
- * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) = 536
- * entries, with 318 duplicate entries.
+ * 22 (P8-T-G10) + 4 (P8-E) + 2 (P8-E2) + 5 (V2-B1a) + 16 (V2-B1b-1) +
+ * 27 (V2-B1b-2) = 563 entries, with 342 duplicate entries.
  *
  * Folded from a computed duplicate-owner table and grouped by how many times
  * a path repeats, which is the form that stays checkable as the phase grows:
  *
- *   1 path  × 51 duplicates = 51   (`scripts/check-architecture.mjs`, every packet)
- *   1 path  × 10 duplicates = 10   (the lockfile)
+ *   1 path  × 52 duplicates = 52   (`scripts/check-architecture.mjs`, every packet)
+ *   1 path  × 11 duplicates = 11   (the lockfile)
  *   1 path  ×  8 duplicates =  8   (`docs/ROADMAP.md`)
  *   3 paths ×  7 duplicates = 21   (the gateway's routes source and
  *                                   build-server suite, and the CLI suite)
@@ -1367,11 +1367,11 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  *   4 paths ×  4 duplicates = 16   (the initiatives suite, the console manifest,
  *                                   the console styles sheet and the
  *                                   accounts-view suite)
- *  11 paths ×  3 duplicates = 33
- *  33 paths ×  2 duplicates = 66
- *  48 paths ×  1 duplicate  = 48
+ *  16 paths ×  3 duplicates = 48
+ *  36 paths ×  2 duplicates = 72
+ *  49 paths ×  1 duplicate  = 49
  *
- * 51 + 10 + 8 + 21 + 30 + 35 + 16 + 33 + 66 + 48 = 318.
+ * 52 + 11 + 8 + 21 + 30 + 35 + 16 + 48 + 72 + 49 = 342.
  *
  * Every parenthetical above is derived from the computed owner table, not from
  * memory of which packet touched what; the rows without one have more members
@@ -1709,6 +1709,22 @@ const P7IE_WRITE_SET = ["docs/ROADMAP.md", "README.md", "scripts/check-architect
  * before only by P8-W (the supervisor and its child, both pilot suites, the
  * restate driver, the restate child and `mode-sqlite`). ×1 therefore reads
  * forty-eight: eight departures, seven arrivals.
+ *
+ * V2-B1b-2, the semantic stage of the split, adds **twenty-seven entries,
+ * three of them novel** — the execution-effects module, its mirrored suite
+ * and the conformance fixture. Twenty-four ride as duplicates, all P8-owned.
+ * Entries move 536 → 563, distinct 218 → 221, duplicates 318 → 342.
+ * Twenty-four band steps, one per duplicate, and the three novel paths cause
+ * none of them: this file's own row, ×51 → ×52; the lockfile, ×10 → ×11;
+ * five paths ×2 → ×3 (the runtime barrel, the supervisor suite, the drills
+ * suite, `mode-restate` and the daemon drills suite), so ×3 reads sixteen;
+ * eight paths ×1 → ×2 (the supervisor and its child, both pilot suites,
+ * `mode-sqlite`, the daemon entry, the fallback suite and the policy
+ * module), so ×2 reads thirty-six (33 + 8 − 5); and nine paths entering ×1
+ * for the first time (the daemon child, its three manifests, the launchd
+ * lifecycle and bin suites, the resolution module and both accounts suites),
+ * so ×1 reads forty-nine (48 + 9 − 8). Three declared ceilings this stage did
+ * not exercise are not carried, as the array's own comment records.
  *
  * This file's appearances in earlier phases are
  * counted in those phases, since the standing convention scopes the
@@ -3338,6 +3354,80 @@ const V2B1B1_WRITE_SET = [
 ];
 
 /**
+ * V2-B1b, stage 2: the substitution -- the toy effect leaves the production
+ * seams.
+ *
+ * The semantic stage of the B1b split, on stage 1's commit. The runtime gains
+ * `execution-effects`: an `EffectPort` over the owned `ModelExecutionPort`,
+ * injected and never built here (the providers factory never enters the
+ * domain; the port is typed against `@acp/contracts`), with digest-keyed
+ * completion evidence under the scenario's own `executions/` directory and
+ * the toy's three-verdict probe law preserved exactly, so `closeIntent` is
+ * unchanged in meaning. The two production seams receive the port by
+ * injection, required and never defaulted: `SqliteSupervisorOptions.effects`
+ * and `beatFor`'s new parameter, with the toy import gone from both files;
+ * the two drill children pass the toy explicitly and remain its only lawful
+ * binders, which the two-route law above this file's fold pins by equality.
+ * The daemon carries the RESOLVED route in a required `execution` section --
+ * the contract's six fields, refinement included, plus one CLI binding
+ * admission, absolute-path hardened -- and builds the CLI-only port from it;
+ * an API route is refused by the port, never served (law 6 by construction).
+ * The conformance fixture drives one scripted scenario through the CLI leg
+ * (the real Claude adapter over a scripted node peer, the fixture's own argv
+ * builder) and the API leg (a structural client fake), both through the same
+ * effect module and the same walk, and asserts the contract: equal normalized
+ * trails, equivalent ledgers, verifying evidence, the redaction canary, and
+ * refusal parity. F1, F2 and F4 from B1a land at their seams:
+ * `RESOLUTION_PROVIDER_MISMATCH`, `POLICY_TRANSPORT_UNKNOWN` before ranking,
+ * and `POLICY_REQUEST_INVALID` mirroring `rankAccounts`. The stage-1
+ * postaudit's disposition rides here too: the collision scanner's extractor
+ * gains the `async` alternative it lacked.
+ *
+ * Twenty-seven paths carried, three novel: the effect module, its mirrored
+ * suite and the fixture. Four test suites were admitted at the writer's stop
+ * -- the supervisor suite and both pilot suites in the runtime, the drills
+ * suite in durability -- because the required `effects` option lawfully
+ * breaks every construction that named a scenario root, and each now passes
+ * the toy explicitly. The brief declared three ceilings this stage did not
+ * exercise, and none is carried: the runtime errors module (the error class
+ * lives in the new module) and the daemon status suite (it builds no child
+ * config) are byte-unchanged and owned only by P2-era packets, so carrying
+ * them would have added two distinct paths to this phase's fold for files the
+ * stage never touched; the conditional `config-file` entry named a path that
+ * does not exist. What is carried is what was written, and the fold reads
+ * 53 / 563 / 221 / 342 from exactly that.
+ */
+const V2B1B2_WRITE_SET = [
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/test/pilots/index.test.ts",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/package.json",
+  "packages/entrypoints/daemon/tsconfig.json",
+  "packages/entrypoints/daemon/test/tsconfig.json",
+  "pnpm-lock.yaml",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/domains/accounts/src/policy/index.ts",
+  "packages/domains/accounts/src/resolution/index.ts",
+  "packages/domains/accounts/test/policy/index.test.ts",
+  "packages/domains/accounts/test/resolution/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * P7I-2: the ledger mappings.
  *
  * Everything the sibling stream needs to exist durably, in the package that
@@ -3645,6 +3735,7 @@ const WRITE_SET = [
   ...P8E2_WRITE_SET,
   ...V2B1A_WRITE_SET,
   ...V2B1B1_WRITE_SET,
+  ...V2B1B2_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
   ...P5N_C1_WRITE_SET,
@@ -4291,6 +4382,8 @@ const PATH_SCOPED_LAWS = [
   { law: "the browser package links no ledger and no database driver", scope: "packages/entrypoints/console/**" },
   { law: "the live-DOM evidence tools stay test-scope", scope: "packages/entrypoints/console/src/**" },
   { law: "the runtime domain's import purity", scope: "packages/domains/runtime/{src,test}/**" },
+  { law: "the toy effect binds no production seam (route a: deep specifiers into toy/repository)", scope: "packages/*/*/src/**" },
+  { law: "the toy effect binds no production seam (route b: the toy names from @acp/runtime)", scope: "packages/*/*/src/**" },
   { law: "the Restate edge's import purity", scope: "packages/edges/durability/{src,test}/**" },
   { law: "the Restate SDK is named by import in one package only", scope: "every tracked .ts/.tsx/.mjs/.js" },
   { law: "the contracts schema barrel holds only re-exports", scope: "packages/kernel/contracts/src/schemas/index.ts" },
@@ -5852,12 +5945,29 @@ const DUPLICATION_ADJUDICATED = [
     packages: ["packages/entrypoints/console", "packages/entrypoints/daemon"],
     why: "unrelated concepts — a browser fetch resource and a daemon unwind handle; neither package imports the other",
   },
+  // Surfaced by V2-B1b stage 2, the first run of this scan with the `async`
+  // alternative: both declarations are `export async function`, pre-existing
+  // at that HEAD and untouched by the packet, so the collision predates it and
+  // was invisible to the scanner until its coverage was restored. Adjudicated
+  // by the DT through this register, the exclusion case the refuse/Resource
+  // precedents already record: not a rename of a pinned public surface, not a
+  // threshold move, and not silence.
+  {
+    name: "startServer",
+    packages: ["packages/edges/durability", "packages/entrypoints/gateway"],
+    why: "different servers under one verb — durability's starts the pinned Restate binary child and returns a SafeServerHandle, deliberately internal (the barrel withholds it; only startVerifiedServer leaves); the gateway's starts its HTTP listener and returns a RunningServer on its pinned public surface; the gateway does not depend on durability and neither package imports the other; pre-existing, surfaced by the restored async coverage",
+  },
 ];
 
 if (tracked.status === 0) {
   const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
   const sources = present.filter((relativePath) => /\/src\/.*\.tsx?$/.test(relativePath));
-  const declaration = /^export\s+(?:declare\s+)?(?:const|let|function|interface|type|class|enum)\s+([A-Za-z0-9_$]+)/;
+  // `async` sits between `export` and `function` (V2-B1b stage 2, the stage-1
+  // postaudit's disposition): without the alternative the scanner silently
+  // dropped every `export async function`, and reported three fewer names
+  // after stage 1 than before it. Mirrors the daemon barrel extractor below.
+  const declaration =
+    /^export\s+(?:declare\s+)?(?:async\s+)?(?:const|let|function|interface|type|class|enum)\s+([A-Za-z0-9_$]+)/;
   const homes = new Map();
   for (const relativePath of sources) {
     const content = readIfPresent(relativePath);
@@ -6211,6 +6321,68 @@ if (tracked.status === 0) {
         );
       }
     }
+  }
+
+  // V2-B1b stage 2: the toy effect never binds a production seam. Two routes
+  // over the shared extractor, each with an exact expected set and each
+  // failing closed on an empty one (preaudit C2). Route (a): a relative
+  // specifier resolving into `toy/repository` -- lawful in exactly the runtime
+  // barrel (its re-export) and the sqlite drill child. Route (b): the toy names
+  // `applyEffect`/`probeEffect` imported from the `@acp/runtime` barrel --
+  // lawful in exactly the Restate drill child. Src trees only, repository-wide:
+  // a test may bind the toy freely, and the law is about production seams.
+  {
+    const srcSources = present.filter((relativePath) => /\/src\/.*\.tsx?$/.test(relativePath));
+    const TOY_DEEP_IMPORTERS = new Set([
+      "packages/domains/runtime/src/index.ts",
+      "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+    ]);
+    const TOY_NAME_IMPORTERS = new Set(["packages/edges/durability/src/drivers/restate-child/index.ts"]);
+    const TOY_NAMES = /\b(?:applyEffect|probeEffect)\b/;
+    const deep = new Set();
+    const named = new Set();
+    for (const relativePath of srcSources) {
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      for (const specifier of importSpecifiers(content)) {
+        if (
+          (specifier.startsWith("./") || specifier.startsWith("../")) &&
+          /(?:^|\/)toy\/repository(?:\/index\.js)?$/.test(specifier)
+        ) {
+          deep.add(relativePath);
+        }
+      }
+      for (const clause of content.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["']@acp\/runtime["']/g)) {
+        if (TOY_NAMES.test(clause[1] ?? "")) named.add(relativePath);
+      }
+    }
+    requireScope("the toy effect binds no production seam (route a: deep specifiers into toy/repository)", srcSources.length);
+    requireScope("the toy effect binds no production seam (route b: the toy names from @acp/runtime)", srcSources.length);
+    for (const [route, expected, observed] of [
+      ["route a: deep specifiers into toy/repository", TOY_DEEP_IMPORTERS, deep],
+      ["route b: the toy names from @acp/runtime", TOY_NAME_IMPORTERS, named],
+    ]) {
+      if (expected.size === 0) {
+        fail("the toy-binding law's expected set for " + route + " is empty; a vacuous pass proves nothing");
+      }
+      for (const relativePath of observed) {
+        if (!expected.has(relativePath)) {
+          fail(relativePath + " binds the toy effect (" + route + "); the toy never binds a production seam");
+        }
+      }
+      for (const relativePath of expected) {
+        if (!observed.has(relativePath)) {
+          fail(relativePath + " no longer binds the toy effect (" + route + ") though the law expects it; re-pin the set");
+        }
+      }
+    }
+    notes.push(
+      "the toy effect binds no production seam: route a in " +
+        deep.size +
+        " file(s), route b in " +
+        named.size +
+        " file(s), both pinned by equality",
+    );
   }
 
   // A production source that spawned a process would be a daemon, which is P2D
@@ -6650,12 +6822,16 @@ if (tracked.status === 0) {
     // the one consumer that needs both — `mode-restate` drives the edge while
     // `mode-sqlite`, the toy helpers and the pinned constants stay in the
     // domain — so this is a widening by one, not a substitution.
-    const expected = ["@acp/contracts", "@acp/durability", "@acp/ledger", "@acp/runtime"];
+    // V2-B1b stage 2: `@acp/providers` joins -- the daemon builds the execution
+    // port from its config's admitted CLI binding -- and `@acp/accounts` is a
+    // devDependency only, because the conformance fixture resolves real routes
+    // while the daemon itself resolves nothing (D5).
+    const expected = ["@acp/contracts", "@acp/durability", "@acp/ledger", "@acp/providers", "@acp/runtime"];
     if (deps.join(",") !== expected.join(",")) {
       fail("packages/entrypoints/daemon dependencies must be exactly " + expected.join(", "));
     }
-    if (devDeps.join(",") !== "vitest") {
-      fail("packages/entrypoints/daemon devDependencies must be exactly vitest");
+    if (devDeps.join(",") !== "@acp/accounts,vitest") {
+      fail("packages/entrypoints/daemon devDependencies must be exactly @acp/accounts, vitest");
     }
     for (const forbidden of ["better-sqlite3", "@restatedev/restate-sdk"]) {
       if (deps.includes(forbidden)) {
@@ -6669,9 +6845,18 @@ if (tracked.status === 0) {
     notes.push("the daemon manifest declares the one exact bin and an exact dependency surface");
   }
 
-  const DAEMON_ALLOWED_PACKAGES = new Set(["@acp/contracts", "@acp/durability", "@acp/ledger", "@acp/runtime"]);
+  const DAEMON_ALLOWED_PACKAGES = new Set([
+    "@acp/contracts",
+    "@acp/durability",
+    "@acp/ledger",
+    // V2-B1b stage 2: the execution port and its admissions.
+    "@acp/providers",
+    "@acp/runtime",
+  ]);
   const DAEMON_ALLOWED_BUILTINS = new Set(["node:crypto", "node:fs", "node:path", "node:url"]);
-  const DAEMON_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os"]);
+  // `@acp/accounts` is test-only: the conformance fixture resolves real routes;
+  // a daemon source naming it would be a daemon that resolves, which D5 refused.
+  const DAEMON_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os", "@acp/accounts"]);
 
   requireScope("a supervised process imports only what it is allowed", daemonSources.length);
   for (const relativePath of daemonSources) {
@@ -8192,6 +8377,9 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "EnforcementRefusal",
   "EnforcementRefused",
   "EventCoordinate",
+  // V2-B1b stage 2: the execution-backed effect port, exactly three names.
+  "ExecutionEffectError",
+  "ExecutionEffectsInput",
   "FaultPoint",
   "GIT_READ_VERBS",
   "GRAPH_REFUSALS",
@@ -8272,6 +8460,7 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "checkAdmission",
   "checkWriteSetConformance",
   "closeIntent",
+  "createExecutionEffects",
   "currentState",
   "deriveEventCoordinate",
   "deriveOperationCoordinate",

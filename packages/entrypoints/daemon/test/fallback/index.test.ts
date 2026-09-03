@@ -1,7 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,7 @@ import {
   scenarioLedgerPath,
 } from "@acp/runtime";
 
+import type { DaemonExecutionConfig } from "../../src/daemon-child/index.js";
 import { portIsFree } from "../../src/lifecycle/index.js";
 
 /**
@@ -113,6 +115,61 @@ function scenario(name: string): string {
   return name;
 }
 
+/**
+ * The fake provider the daemon's execution effect runs (V2-B1b, stage 2).
+ *
+ * The daemon binds the real Claude adapter to whatever binary the config
+ * admits, so a config naming node itself cannot walk the plan: node rejects
+ * the adapter's `--output-format`. This is an owner-only script whose
+ * interpreter line is node's canonical path and whose only act is to speak the
+ * stream-json scenario the adapter parses, then exit 0. It proves the daemon's
+ * wiring and nothing about any provider; every capability stays UNKNOWN by law.
+ */
+const FAKE_PROVIDER_LINES: readonly string[] = [
+  JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
+  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 1234 } } }),
+  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+];
+
+let executionRoot: string | null = null;
+
+/** The `execution` section the gate's config carries. */
+function executionConfig(): DaemonExecutionConfig {
+  if (executionRoot === null) {
+    const created = mkdtempSync(join(realpathSync(tmpdir()), "acp-daemon-fallback-"));
+    chmodSync(created, 0o700);
+    writeFileSync(
+      join(created, "fake-provider"),
+      "#!" + realpathSync(process.execPath) + "\n" +
+        "const lines = " + JSON.stringify([...FAKE_PROVIDER_LINES]) + ";\n" +
+        "for (const line of lines) process.stdout.write(line + \"\\n\");\n" +
+        "process.exit(0);\n",
+      { mode: 0o700 },
+    );
+    executionRoot = created;
+  }
+  return {
+    route: {
+      provider: "claude",
+      model: "opus",
+      accountId: "acct-fallback-gate",
+      transportKind: "CLI_SUBSCRIPTION",
+      capabilityPolicyVersion: "2026-08-30.1",
+      resolvedAt: "2026-08-30T00:00:00.000Z",
+    },
+    binding: {
+      binary: join(executionRoot, "fake-provider"),
+      configRoot: executionRoot,
+      workdir: executionRoot,
+      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+    },
+  };
+}
+
+afterAll(() => {
+  if (executionRoot !== null) rmSync(executionRoot, { recursive: true, force: true });
+});
+
 /** Spawn the child and resolve once it announces readiness. */
 function startChild(config: string): { child: ChildProcess; ready: Promise<ReadyLine> } {
   const child = spawn(process.execPath, [CHILD_ENTRY, config], {
@@ -181,6 +238,7 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
       // precheck inside the daemon is not what this gate is drilling. The
       // direct port probes below, run before and after, are the evidence.
       checkPorts: false,
+      execution: executionConfig(),
     });
 
     const { child, ready } = startChild(config);

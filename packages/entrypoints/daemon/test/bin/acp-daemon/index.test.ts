@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { CONFIG_MAX_BYTES, checkConfigPath, loadDaemonConfig } from "../../../src/bin/config-file/index.js";
+import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
 import { EXIT_CONFIG_CONTENT, EXIT_CONFIG_PATH, EXIT_USAGE, runPackagedEntry } from "../../../src/bin/acp-daemon/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
@@ -56,6 +57,32 @@ function stage(): string {
   return dir;
 }
 
+/**
+ * A valid `execution` section (V2-B1b, D5): canonical, existing paths the
+ * config-file law admits at load. Ownership and permission admissions belong
+ * to the providers package and run only when a daemon actually starts, which
+ * nothing in this file does.
+ */
+function validExecution(): DaemonExecutionConfig {
+  const home = realpathSync(tmpdir());
+  return {
+    route: {
+      provider: "claude",
+      model: "opus",
+      accountId: "acct-config-contract",
+      transportKind: "CLI_SUBSCRIPTION",
+      capabilityPolicyVersion: "2026-08-30.1",
+      resolvedAt: "2026-08-27T18:46:07.000Z",
+    },
+    binding: {
+      binary: realpathSync(process.execPath),
+      configRoot: home,
+      workdir: home,
+      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+    },
+  };
+}
+
 function validConfig(): Record<string, unknown> {
   return {
     mode: "SQLITE_SUPERVISOR",
@@ -68,6 +95,7 @@ function validConfig(): Record<string, unknown> {
     initiativeId: "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01",
     holdOpen: false,
     checkPorts: false,
+    execution: validExecution(),
   };
 }
 
@@ -142,11 +170,18 @@ describe("the config content law", () => {
   it("refuses a document the daemon schema rejects", () => {
     // One schema, not two: the file contract cannot drift from the argv one.
     const dir = stage();
+    const execution = validExecution();
     for (const broken of [
       { ...validConfig(), mode: "AUTO" },
       { ...validConfig(), submissionDigest: "nope" },
       { ...validConfig(), attempt: 0 },
       { ...validConfig(), taskId: 7 },
+      // V2-B1b D5: the execution section is required, the route is the
+      // contract's (a CLI route naming a non-CLI provider refuses at load),
+      // and every binding path is absolute and canonical.
+      { ...validConfig(), execution: undefined },
+      { ...validConfig(), execution: { ...execution, route: { ...execution.route, provider: "acme" } } },
+      { ...validConfig(), execution: { ...execution, binding: { ...execution.binding, binary: "relative/node" } } },
     ]) {
       expect(loadDaemonConfig(writeConfig(dir, broken))).toMatchObject({
         reason: "INVALID_CONFIG",

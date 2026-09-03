@@ -23,7 +23,7 @@ import {
   assertInvocationContinuity,
   currentState as executorCurrentState,
 } from "../../src/core/step-executor/index.js";
-import type { BeatContext } from "../../src/core/step-executor/index.js";
+import type { BeatContext, EffectPort } from "../../src/core/step-executor/index.js";
 import { checkAdmission } from "../../src/conflict-graph/index.js";
 import { acquireLease, checkWriteSetConformance, verifyPrestate } from "../../src/enforcement/index.js";
 import type { EnforcementRefused, LeaseGranted } from "../../src/enforcement/index.js";
@@ -201,6 +201,17 @@ function invocation(taskId: string, submissionDigest: string): DurableInvocation
 // C3: identities
 // ---------------------------------------------------------------------------
 
+/** The toy port, passed explicitly to the supervisor (V2-B1b, stage 2): the pilot's subject stays the toy. */
+function toyEffects(scenarioRoot: ScenarioRoot): EffectPort {
+  return {
+    apply: (operation) => {
+      applyEffect(scenarioRoot, operation);
+      return Promise.resolve();
+    },
+    probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
+  };
+}
+
 describe("drill identities", () => {
   it("are valid four-segment WorkerIdentityStrings, pairwise distinct", () => {
     for (const identity of PILOT_IDENTITIES) {
@@ -345,7 +356,7 @@ describe("the read-only packet, walked end to end", () => {
     const supervisor = new SqliteSupervisor({
       ledger,
       invocation: inv,
-      scenarioRoot: root,
+      effects: toyEffects(root),
       emittedBy: PILOT_WRITER,
       commitPolicy: "NO_COMMIT",
       initiativeId: PILOT_INITIATIVE_ID,
@@ -530,7 +541,7 @@ describe("a planted violation revokes the lease and suspects the worktree", () =
     const resumed = new SqliteSupervisor({
       ledger,
       invocation: inv,
-      scenarioRoot: root,
+      effects: toyEffects(root),
       emittedBy: PILOT_WRITER,
       commitPolicy: "NO_COMMIT",
       initiativeId: PILOT_INITIATIVE_ID,

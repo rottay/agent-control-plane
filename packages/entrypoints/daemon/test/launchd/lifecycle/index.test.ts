@@ -22,6 +22,7 @@ import { removeScenarioRoot } from "@acp/runtime";
 import { daemonRootPath } from "../../../src/paths/index.js";
 import { writeLaunchAgentAt } from "../../../src/launchd/render/index.js";
 import type { LaunchAgentValues } from "../../../src/launchd/render/index.js";
+import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
 
 /**
  * One real launchd lifecycle, and nothing that survives it.
@@ -153,6 +154,46 @@ afterAll(() => {
   expect(unique).toEqual([]);
 });
 
+/**
+ * The fake provider the launched daemon's execution effect runs (V2-B1b,
+ * stage 2): an owner-only script under the disposable root, interpreter line
+ * node's canonical path, speaking the stream-json scenario the real Claude
+ * adapter parses. It proves the wiring under launchd and nothing about any
+ * provider; every capability stays UNKNOWN by law.
+ */
+function executionConfigIn(root: string): DaemonExecutionConfig {
+  const lines = [
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
+    JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 1234 } } }),
+    JSON.stringify({ type: "result", subtype: "turn_completed" }),
+  ];
+  const binary = join(root, "fake-provider");
+  writeFileSync(
+    binary,
+    "#!" + realpathSync(process.execPath) + "\n" +
+      "const lines = " + JSON.stringify(lines) + ";\n" +
+      "for (const line of lines) process.stdout.write(line + \"\\n\");\n" +
+      "process.exit(0);\n",
+    { mode: 0o700 },
+  );
+  return {
+    route: {
+      provider: "claude",
+      model: "opus",
+      accountId: "acct-launchd-drill",
+      transportKind: "CLI_SUBSCRIPTION",
+      capabilityPolicyVersion: "2026-08-30.1",
+      resolvedAt: "2026-08-27T18:46:07.000Z",
+    },
+    binding: {
+      binary,
+      configRoot: root,
+      workdir: root,
+      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+    },
+  };
+}
+
 interface Staged {
   readonly label: string;
   readonly root: string;
@@ -185,6 +226,7 @@ function stageAgent(): Staged {
       initiativeId: "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01",
       holdOpen: true,
       checkPorts: false,
+      execution: executionConfigIn(root),
     }),
   );
   chmodSync(configPath, 0o600);

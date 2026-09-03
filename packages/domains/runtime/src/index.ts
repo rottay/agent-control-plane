@@ -219,6 +219,16 @@ export type {
   LedgerPort,
 } from "./core/step-executor/index.js";
 
+// V2-B1b, stage 2: the execution-backed effect port. The beats' side effect
+// becomes a real execution on the owned `ModelExecutionPort`, injected -- the
+// providers factory never enters this stratum -- with digest-keyed completion
+// evidence under the scenario's own `executions/` directory and the toy's
+// three-verdict probe law preserved exactly. The toy port stays exported above
+// for the two drill children and the drills; the fence's toy-binding law names
+// them as its only lawful importers.
+export { ExecutionEffectError, createExecutionEffects } from "./execution-effects/index.js";
+export type { ExecutionEffectsInput } from "./execution-effects/index.js";
+
 
 export { recordTokenObservation } from "./usage/index.js";
 export type {

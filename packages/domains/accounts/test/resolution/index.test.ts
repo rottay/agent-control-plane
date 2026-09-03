@@ -9,6 +9,7 @@ import {
   ResolvedRoute,
   TRANSPORT_KINDS,
 } from "@acp/contracts";
+import type { TransportKind } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
 import * as accounts from "../../src/index.js";
@@ -98,11 +99,11 @@ function shipped(): PolicyRegistry {
 // Routing fixtures — the shape `rankAccounts` already takes
 // ---------------------------------------------------------------------------
 
-function record(accountId: string, enabledModels: readonly string[]): AccountRecord {
+function record(accountId: string, enabledModels: readonly string[], provider = "claude"): AccountRecord {
   const parsed = AccountRecord.safeParse({
     contractVersion: CONTRACT_VERSION,
     accountId,
-    provider: "claude",
+    provider,
     alias: accountId,
     authMode: "PREAUTHENTICATED_PROFILE",
     authProfileRef: "profile://acp-b1a-" + accountId,
@@ -158,11 +159,11 @@ function absent(accountId: string): CandidateEvidence {
   };
 }
 
-/** One account, enabling exactly the models named. */
-function routing(accountId: string, enabledModels: readonly string[]): RoutingRequest {
+/** One account, enabling exactly the models named, belonging to `provider`. */
+function routing(accountId: string, enabledModels: readonly string[], provider = "claude"): RoutingRequest {
   const outcome: QuotaOutcome = { ok: true, estimate: estimate(accountId) };
   return {
-    records: [record(accountId, enabledModels)],
+    records: [record(accountId, enabledModels, provider)],
     estimates: [{ accountId, outcome }],
     evidence: [absent(accountId)],
     task: {
@@ -182,10 +183,11 @@ function routing(accountId: string, enabledModels: readonly string[]): RoutingRe
 function request(
   enabledModels: readonly string[],
   overrides: Partial<PolicyRouteRequest> = {},
+  provider = "claude",
 ): PolicyRouteRequest {
   return {
     role: "implementer",
-    routing: routing("acct-a", enabledModels),
+    routing: routing("acct-a", enabledModels, provider),
     transportKind: "CLI_SUBSCRIPTION",
     ...overrides,
   };
@@ -309,9 +311,11 @@ describe("the route is the contract's, not this package's", () => {
     // The loader admits any provider string; the contract does not. The
     // resolution parses what it composed and refuses what the contract
     // refuses — the value never leaves, and the refusal names a path, never
-    // the value.
+    // the value. The account's record names the same provider as the entry,
+    // so the F1 vocabulary check (below) agrees and it is the contract that
+    // refuses here.
     const outcome = resolveRoute(
-      request(["opus"]),
+      request(["opus"], {}, "anthropic"),
       registryOf([entry("opus", { provider: "anthropic" })]),
       RESOLVED_AT,
     );
@@ -330,16 +334,18 @@ describe("the route is the contract's, not this package's", () => {
     });
 
     // A transport the registry and the request agree on but the kernel has
-    // never heard of is eligible to the policy and unlawful to the contract.
-    // The kernel's vocabulary governs.
+    // never heard of is refused before anything is ranked (F2, V2-B1b D8):
+    // the policy seam validates the kind against the kernel's vocabulary and
+    // names it by its own reason, which travels through this module
+    // untranslated. The kernel's vocabulary governs.
     expect(TRANSPORT_KINDS as readonly string[]).not.toContain("SMOKE_SIGNAL");
     expect(
       resolveRoute(
-        request(["opus"], { transportKind: "SMOKE_SIGNAL" }),
+        request(["opus"], { transportKind: "SMOKE_SIGNAL" as unknown as TransportKind }),
         registryOf([entry("opus", { transports: ["SMOKE_SIGNAL"] })]),
         RESOLVED_AT,
       ),
-    ).toEqual({ ok: false, reason: "RESOLUTION_ROUTE_INVALID", at: "route.transportKind" });
+    ).toEqual({ ok: false, reason: "POLICY_TRANSPORT_UNKNOWN", at: "request.transportKind" });
   });
 
   it("the barrel exports the function and not the type's name (C1)", () => {
@@ -355,6 +361,56 @@ describe("the route is the contract's, not this package's", () => {
     for (const redeclaration of ["const ResolvedRoute", "interface ResolvedRoute", "type ResolvedRoute", "export { ResolvedRoute", "export type { ResolvedRoute"]) {
       expect({ redeclaration, present: module.includes(redeclaration) }).toEqual({ redeclaration, present: false });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F1: the two provider vocabularies agree, or nothing routes (V2-B1b D7)
+// ---------------------------------------------------------------------------
+
+describe("the provider the record names must be the provider the entry names", () => {
+  it("refuses a mismatch closed at the route's provider, and never aliases", () => {
+    // An `anthropic`-era record meets a `claude` entry. The ranking cannot see
+    // it -- `rankAccounts` gates on enabled models -- so the resolution is the
+    // seam that has to, and it refuses rather than translating one vocabulary
+    // into the other. The refusal names a path, never either value.
+    const outcome = resolveRoute(
+      request(["opus"], {}, "anthropic"),
+      registryOf([entry("opus", { provider: "claude" })]),
+      RESOLVED_AT,
+    );
+    expect(outcome).toEqual({ ok: false, reason: "RESOLUTION_PROVIDER_MISMATCH", at: "route.provider" });
+    expect(JSON.stringify(outcome)).not.toContain("anthropic");
+  });
+
+  it("resolves when the two agree, whichever vocabulary they share", () => {
+    const agreed = resolved(
+      resolveRoute(request(["opus"], {}, "claude"), registryOf([entry("opus", { provider: "claude" })]), RESOLVED_AT),
+    );
+    expect(agreed.route.provider).toBe("claude");
+    // Agreement is checked, not the spelling: a non-CLI vocabulary that agrees
+    // with itself passes this seam and is then judged by the contract alone.
+    expect(
+      resolveRoute(request(["opus"], {}, "anthropic"), registryOf([entry("opus", { provider: "anthropic" })]), RESOLVED_AT),
+    ).toEqual({ ok: false, reason: "RESOLUTION_ROUTE_INVALID", at: "route.provider" });
+  });
+
+  it("passes the policy seam's classified refusal for a request that is not an object (F4)", () => {
+    // The null guard lives at the policy seam (D9); this module hands the
+    // refusal on untranslated instead of crashing on its own destructuring.
+    expect(resolveRoute(null as unknown as PolicyRouteRequest, shipped(), RESOLVED_AT)).toEqual({
+      ok: false,
+      reason: "POLICY_REQUEST_INVALID",
+      at: "request",
+    });
+  });
+
+  it("pins the resolution vocabulary at exactly three sorted names", () => {
+    expect([...RESOLUTION_REFUSALS]).toEqual([
+      "RESOLUTION_CHOICE_INCOMPLETE",
+      "RESOLUTION_PROVIDER_MISMATCH",
+      "RESOLUTION_ROUTE_INVALID",
+    ]);
   });
 });
 

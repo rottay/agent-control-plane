@@ -1,7 +1,8 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +18,7 @@ import {
   scenarioLedgerPath,
 } from "@acp/runtime";
 
+import type { DaemonExecutionConfig } from "../../src/daemon-child/index.js";
 import { ModeError, SingletonError } from "../../src/errors/index.js";
 import { UnwindStack, portIsFree } from "../../src/lifecycle/index.js";
 import { startRestateMode } from "../../src/mode-restate/index.js";
@@ -208,6 +210,61 @@ function scenario(name: string): string {
 }
 
 /**
+ * The fake provider the daemon's execution effect runs (V2-B1b, stage 2).
+ *
+ * The daemon binds the real Claude adapter to whatever binary the config
+ * admits, so a config naming node itself cannot walk the plan: node rejects
+ * the adapter's `--output-format`. This is an owner-only script whose
+ * interpreter line is node's canonical path and whose only act is to speak the
+ * stream-json scenario the adapter parses, then exit 0. It proves the daemon's
+ * wiring and nothing about any provider; every capability stays UNKNOWN by law.
+ */
+const FAKE_PROVIDER_LINES: readonly string[] = [
+  JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
+  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 1234 } } }),
+  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+];
+
+let executionRoot: string | null = null;
+
+/** The `execution` section every daemon config in this file carries. */
+function executionConfig(): DaemonExecutionConfig {
+  if (executionRoot === null) {
+    const created = mkdtempSync(join(realpathSync(tmpdir()), "acp-daemon-execution-"));
+    chmodSync(created, 0o700);
+    writeFileSync(
+      join(created, "fake-provider"),
+      "#!" + realpathSync(process.execPath) + "\n" +
+        "const lines = " + JSON.stringify([...FAKE_PROVIDER_LINES]) + ";\n" +
+        "for (const line of lines) process.stdout.write(line + \"\\n\");\n" +
+        "process.exit(0);\n",
+      { mode: 0o700 },
+    );
+    executionRoot = created;
+  }
+  return {
+    route: {
+      provider: "claude",
+      model: "opus",
+      accountId: "acct-daemon-drill",
+      transportKind: "CLI_SUBSCRIPTION",
+      capabilityPolicyVersion: "2026-08-30.1",
+      resolvedAt: "2026-08-27T18:46:07.000Z",
+    },
+    binding: {
+      binary: join(executionRoot, "fake-provider"),
+      configRoot: executionRoot,
+      workdir: executionRoot,
+      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+    },
+  };
+}
+
+afterAll(() => {
+  if (executionRoot !== null) rmSync(executionRoot, { recursive: true, force: true });
+});
+
+/**
  * A task identifier is a UUID, and a scenario identifier is a directory-safe
  * name. They are different alphabets and cannot be the same value.
  */
@@ -229,6 +286,7 @@ function configFor(
       initiativeId: DRILL_INITIATIVE_ID,
       holdOpen: true,
       checkPorts: false,
+      execution: executionConfig(),
       ...overrides,
     }),
   };
@@ -284,10 +342,15 @@ function closed(child: ChildProcess): Promise<{ code: number | null; signal: Nod
   });
 }
 
+/**
+ * The execution effect's evidence, one marker per completed operation
+ * (V2-B1b, stage 2). The daemon no longer binds the toy, so the toy's
+ * `effects/` markers are not what a daemon walk leaves behind.
+ */
 function markers(scenarioId: string): number {
-  const effects = join(resolveScenarioRoot(scenarioId), "effects");
-  return existsSync(effects)
-    ? readdirSync(effects).filter((name) => name.endsWith(".marker")).length
+  const executions = join(resolveScenarioRoot(scenarioId), "executions");
+  return existsSync(executions)
+    ? readdirSync(executions).filter((name) => name.endsWith(".json")).length
     : 0;
 }
 
@@ -412,6 +475,7 @@ describe("the singleton against a live daemon", () => {
         submissionDigest: DIGEST,
         initiativeId: DRILL_INITIATIVE_ID,
         checkPorts: false,
+        execution: executionConfig(),
       }),
     ).rejects.toThrow(SingletonError);
 
@@ -476,6 +540,8 @@ describe("Restate requested but not verified", () => {
           emittedBy: EMITTED_BY,
           commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
           initiativeId: DRILL_INITIATIVE_ID,
+          // Refused before any beat could run, so a stub is the honest port.
+          effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE" as const) },
           stack,
           onPhase: () => undefined,
           readAvailability: () => ({ available: false, reason: "no binary" }),
@@ -609,6 +675,7 @@ describe("the Restate mode", () => {
           submissionDigest: DIGEST,
           initiativeId: DRILL_INITIATIVE_ID,
           checkPorts: true,
+          execution: executionConfig(),
         }),
       ).rejects.toThrow(/already in use/);
 

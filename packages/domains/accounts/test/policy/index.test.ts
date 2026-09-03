@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AccountRecord, CONTRACT_VERSION } from "@acp/contracts";
+import { AccountRecord, CONTRACT_VERSION, TRANSPORT_KINDS } from "@acp/contracts";
+import type { TransportKind } from "@acp/contracts";
 import { afterAll, describe, expect, it } from "vitest";
 
 import {
@@ -12,7 +13,7 @@ import {
   loadPolicyRegistry,
   routeWithPolicy,
 } from "../../src/policy/index.js";
-import type { PolicyRegistry } from "../../src/policy/index.js";
+import type { PolicyRegistry, PolicyRouteRequest } from "../../src/policy/index.js";
 import type { QuotaEstimate, QuotaOutcome } from "../../src/quota/index.js";
 import { DEFAULT_ROUTING_CONFIG, EVIDENCE_ABSENT } from "../../src/routing/index.js";
 import type { CandidateEvidence, RoutingRequest } from "../../src/routing/index.js";
@@ -345,6 +346,56 @@ describe("routeWithPolicy is the only place a policy version is stamped", () => 
     expect(wrongTransport).toEqual({ ok: false, reason: "POLICY_NO_ELIGIBLE_MODEL", at: "models" });
   });
 
+  it("refuses a transport the kernel does not know BEFORE ranking, by its own name (F2, D8)", () => {
+    // The entry declares the unknown kind, so the policy alone would find it
+    // eligible; the request's records would rank if ranking ran. Neither
+    // happens: the kind is validated against the kernel's vocabulary first,
+    // and the refusal is its own -- never `POLICY_NO_ELIGIBLE_MODEL`, which
+    // keeps meaning "the registry could not serve a lawful request".
+    expect(TRANSPORT_KINDS as readonly string[]).not.toContain("SMOKE_SIGNAL");
+    const unknown = "SMOKE_SIGNAL" as unknown as TransportKind;
+    expect(
+      routeWithPolicy(
+        { role: "implementer", routing: routing("acct-a", ["opus"]), transportKind: unknown },
+        registryOf([entry("opus", { transports: ["SMOKE_SIGNAL"] })]),
+      ),
+    ).toEqual({ ok: false, reason: "POLICY_TRANSPORT_UNKNOWN", at: "request.transportKind" });
+
+    // Ordering, proved rather than asserted: with no records at all the
+    // router refuses in its own vocabulary when the transport is lawful, and
+    // says nothing at all when it is not -- the transport refusal came first.
+    const noRecords = { ...routing("acct-a", ["opus"]), records: [] };
+    const ranked = routeWithPolicy(
+      { role: "implementer", routing: noRecords, transportKind: "CLI_SUBSCRIPTION" },
+      registryOf([entry("opus")]),
+    );
+    expect(ranked.ok).toBe(false);
+    if (ranked.ok) throw new Error("expected a refusal");
+    expect(ranked.reason).not.toBe("POLICY_TRANSPORT_UNKNOWN");
+    expect(
+      routeWithPolicy(
+        { role: "implementer", routing: noRecords, transportKind: unknown },
+        registryOf([entry("opus", { transports: ["SMOKE_SIGNAL"] })]),
+      ),
+    ).toEqual({ ok: false, reason: "POLICY_TRANSPORT_UNKNOWN", at: "request.transportKind" });
+  });
+
+  it("refuses a request that is not an object, classified and never a TypeError (F4, D9)", () => {
+    // The exact shape `rankAccounts` carries: the request is proved to be an
+    // object before anything is read out of it.
+    for (const broken of [null, undefined, 42, "request", true]) {
+      expect(routeWithPolicy(broken as unknown as PolicyRouteRequest, registryOf([entry("opus")]))).toEqual({
+        ok: false,
+        reason: "POLICY_REQUEST_INVALID",
+        at: "request",
+      });
+    }
+    expect(POLICY_REFUSALS).toContain("POLICY_REQUEST_INVALID");
+    expect(POLICY_REFUSALS).toContain("POLICY_TRANSPORT_UNKNOWN");
+    expect([...POLICY_REFUSALS]).toEqual([...POLICY_REFUSALS].sort());
+    expect(new Set(POLICY_REFUSALS).size).toBe(POLICY_REFUSALS.length);
+  });
+
   it("follows a declared fallback and says so, rather than falling back silently", () => {
     // The account cannot serve `opus`, so the router refuses it; the policy's
     // declared fallback is tried next and the choice records where it came from.
@@ -399,7 +450,7 @@ describe("a policy update changes the chosen model with no source change", () =>
     const request = {
       role: "implementer" as const,
       routing: routing("acct-a", ["opus", "sonnet"]),
-      transportKind: "CLI_SUBSCRIPTION",
+      transportKind: "CLI_SUBSCRIPTION" as const,
     };
 
     // Two documents. The only differences are the order of `models` and the
@@ -441,7 +492,7 @@ describe("a policy update changes the chosen model with no source change", () =>
     const request = {
       role: "implementer" as const,
       routing: routing("acct-a", ["opus", "sonnet"]),
-      transportKind: "CLI_SUBSCRIPTION",
+      transportKind: "CLI_SUBSCRIPTION" as const,
     };
     const before = routeWithPolicy(request, first.registry);
     const after = routeWithPolicy(request, second.registry);
@@ -460,7 +511,7 @@ describe("a policy update changes the chosen model with no source change", () =>
     const request = {
       role: "implementer" as const,
       routing: routing("acct-a", ["opus", "sonnet"]),
-      transportKind: "CLI_SUBSCRIPTION",
+      transportKind: "CLI_SUBSCRIPTION" as const,
     };
 
     const cut1 = routeWithPolicy(request, registryOf(models, "2026-08-30.1"));

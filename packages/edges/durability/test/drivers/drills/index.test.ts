@@ -23,7 +23,7 @@ import {
   resolveScenarioRoot,
   scenarioLedgerPath,
 } from "@acp/runtime";
-import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import type { BeatContext, DurableInvocation, EffectPort, ScenarioRoot } from "@acp/runtime";
 
 import { serverAvailability, startServer } from "../../../src/server-handle/index.js";
 import { platformKey, readTrackedPin, receiptMatchesPin } from "../../../src/server-handle/index.js";
@@ -145,6 +145,17 @@ function markers(root: string): number {
   return existsSync(effects)
     ? readdirSync(effects).filter((name) => name.endsWith(".marker")).length
     : 0;
+}
+
+/** The toy port, passed explicitly to the supervisor (V2-B1b, stage 2): the drills' subject stays the toy. */
+function toyEffects(root: ScenarioRoot): EffectPort {
+  return {
+    apply: (operation) => {
+      applyEffect(root, operation);
+      return Promise.resolve();
+    },
+    probe: (operation) => Promise.resolve(probeEffect(root, operation)),
+  };
 }
 
 function beatFactory(root: ScenarioRoot, ledger: Ledger) {
@@ -971,7 +982,7 @@ describe("driver equivalence", () => {
     await new SqliteSupervisor({
       ledger: ledgerA,
       invocation,
-      scenarioRoot: rootA,
+      effects: toyEffects(rootA),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -1003,7 +1014,7 @@ describe("driver equivalence", () => {
     await new SqliteSupervisor({
       ledger: ledgerC,
       invocation: other,
-      scenarioRoot: rootC,
+      effects: toyEffects(rootC),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,

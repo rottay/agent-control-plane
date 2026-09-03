@@ -1,6 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
+import { TransportKind } from "@acp/contracts";
+
 import type { RoutingRecommendation, RoutingRefused, RoutingRequest } from "../routing/index.js";
 import { rankAccounts } from "../routing/index.js";
 
@@ -63,7 +65,11 @@ export type PolicyRefusal =
   | "POLICY_DUPLICATE_MODEL"
   | "POLICY_FALLBACK_UNKNOWN"
   // the registry cannot answer the question asked of it
-  | "POLICY_NO_ELIGIBLE_MODEL";
+  | "POLICY_NO_ELIGIBLE_MODEL"
+  // the request is not an object at all (F4, V2-B1b D9)
+  | "POLICY_REQUEST_INVALID"
+  // the request names a transport the kernel does not know (F2, V2-B1b D8)
+  | "POLICY_TRANSPORT_UNKNOWN";
 
 export const POLICY_REFUSALS: readonly PolicyRefusal[] = Object.freeze([
   "PATH_NOT_ABSOLUTE",
@@ -76,6 +82,8 @@ export const POLICY_REFUSALS: readonly PolicyRefusal[] = Object.freeze([
   "POLICY_FILE_NOT_REGULAR",
   "POLICY_FILE_TOO_LARGE",
   "POLICY_NO_ELIGIBLE_MODEL",
+  "POLICY_REQUEST_INVALID",
+  "POLICY_TRANSPORT_UNKNOWN",
   "POLICY_UNKNOWN_KEY",
 ]);
 
@@ -391,8 +399,15 @@ export interface PolicyRouteRequest {
    * parallel model-less request type would be a second shape of the same thing.
    */
   readonly routing: RoutingRequest;
-  /** The transport kind the execution will use, checked against the entry. */
-  readonly transportKind: string;
+  /**
+   * The transport kind the execution will use, checked against the entry.
+   *
+   * The kernel's closed vocabulary, not a free string (F2, V2-B1b D8): the
+   * type is contracts-owned, and `routeWithPolicy` validates the value at
+   * runtime before it scans a single entry, so an unknown kind is refused by
+   * its own name rather than surfacing as "no eligible model".
+   */
+  readonly transportKind: TransportKind;
 }
 
 export interface PolicyRouteChoice {
@@ -439,7 +454,24 @@ export function routeWithPolicy(
   request: PolicyRouteRequest,
   registry: PolicyRegistry,
 ): PolicyRouteOutcome {
+  // F4 (V2-B1b D9): the request is proved to be an object before anything is
+  // read out of it -- the exact shape `rankAccounts` carries. Destructuring
+  // first made `routeWithPolicy(null)` a TypeError, an uncatalogued crash where
+  // the seam promises a classified refusal.
+  const rawRequest: unknown = request;
+  if (typeof rawRequest !== "object" || rawRequest === null) {
+    return deny("POLICY_REQUEST_INVALID", "request");
+  }
   const { role, routing, transportKind } = request;
+
+  // F2 (V2-B1b D8): the transport is validated against the kernel's closed
+  // vocabulary BEFORE the eligibility scan. An unknown kind would otherwise
+  // make every entry ineligible and surface as `POLICY_NO_ELIGIBLE_MODEL`,
+  // which must keep meaning "the registry could not serve a lawful request".
+  // It never reaches `rankAccounts`.
+  if (!TransportKind.safeParse(transportKind).success) {
+    return deny("POLICY_TRANSPORT_UNKNOWN", "request.transportKind");
+  }
 
   const byModel = new Map(registry.models.map((entry) => [entry.model, entry]));
   const attempts: { readonly model: string; readonly from: string | null }[] = [];

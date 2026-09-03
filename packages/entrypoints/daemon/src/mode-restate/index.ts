@@ -1,7 +1,7 @@
 import type { CommitPolicy } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import type { EndpointHandle, SafeServerHandle } from "@acp/durability";
-import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import type { BeatContext, DurableInvocation, EffectPort, ScenarioRoot } from "@acp/runtime";
 import {
   createAcpTaskObject,
   readCacheThroughHandler,
@@ -12,12 +12,7 @@ import {
   startVerifiedServer,
   submitAdvance,
 } from "@acp/durability";
-import {
-  RUNTIME_SERVICE_PORT,
-  RUNTIME_SERVICE_URL,
-  applyEffect,
-  probeEffect,
-} from "@acp/runtime";
+import { RUNTIME_SERVICE_PORT, RUNTIME_SERVICE_URL } from "@acp/runtime";
 
 import {
   ENDPOINT_CLOSE_DEADLINE_MS,
@@ -53,6 +48,8 @@ export interface RestateModeInput {
   readonly commitPolicy: CommitPolicy;
   /** The packet's initiative, passed through: see `SqliteModeInput.initiativeId`. */
   readonly initiativeId: string;
+  /** The side effect the beats perform, passed through: see `SqliteModeInput.effects`. */
+  readonly effects: EffectPort;
   readonly stack: UnwindStack;
   /**
    * Announce a phase at the instant it is reached.
@@ -84,21 +81,22 @@ export interface RestateModeHandles {
   readonly verdict: string;
 }
 
-/** Bind a ledger and scenario into the shared beat context. */
+/**
+ * Bind a ledger and an effect port into the shared beat context.
+ *
+ * The port is the caller's (V2-B1b, stage 2). This seam used to construct the
+ * toy marker effect itself, which made the toy the only effect a production
+ * Restate walk could ever have; now the daemon hands in the execution-backed
+ * port over the owned boundary and this function binds nothing of its own.
+ */
 export function beatFor(
   ledger: Ledger,
-  scenarioRoot: ScenarioRoot,
   emittedBy: string,
+  effects: EffectPort,
 ): (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId"> {
   return (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
     ledger,
-    effects: {
-      apply: (operation) => {
-        applyEffect(scenarioRoot, operation);
-        return Promise.resolve();
-      },
-      probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
-    },
+    effects,
     invocation,
     emittedBy,
   });
@@ -130,7 +128,7 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
   const endpoint = await startEndpoint({
     services: [
       createAcpTaskObject({
-        beat: beatFor(input.ledger, input.scenarioRoot, input.emittedBy),
+        beat: beatFor(input.ledger, input.emittedBy, input.effects),
         commitPolicy: input.commitPolicy,
         initiativeId: input.initiativeId,
         ledger: input.ledger,

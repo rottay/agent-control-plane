@@ -1,6 +1,8 @@
 import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { ResolvedRoute } from "@acp/contracts";
 
 import { ModeError } from "../errors/index.js";
 import { isDaemonMode } from "../lifecycle/index.js";
@@ -30,6 +32,41 @@ import { startDaemon, stopDaemon, terminateDaemon } from "../index.js";
 const SHA256_HEX = new RegExp("^[0-9a-f]{64}$");
 const UUID = new RegExp("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", "i");
 
+/** The session budgets the CLI binding carries. Positive integers, all four. */
+export interface DaemonExecutionLimits {
+  readonly timeoutMs: number;
+  readonly outputBudgetBytes: number;
+  readonly interruptGraceMs: number;
+  readonly termGraceMs: number;
+}
+
+/**
+ * The one CLI binding admission the config carries (V2-B1b, D5).
+ *
+ * Absolute, canonical paths -- the `config-file` manner -- checked here for
+ * shape and existence. Ownership, permissions and the product-path ban are the
+ * providers package's own admissions, applied by `startDaemon` when the port
+ * is built, so neither law is restated in a second place.
+ */
+export interface DaemonExecutionBinding {
+  readonly binary: string;
+  readonly configRoot: string;
+  readonly workdir: string;
+  readonly limits: DaemonExecutionLimits;
+}
+
+/**
+ * The resolved route the daemon executes, and the binding that serves it.
+ *
+ * The route arrives RESOLVED: the daemon does not resolve (D5). It is parsed
+ * through the contracts' own schema, refinement included, so a CLI route
+ * naming a provider outside the CLI vocabulary is refused at config load.
+ */
+export interface DaemonExecutionConfig {
+  readonly route: ResolvedRoute;
+  readonly binding: DaemonExecutionBinding;
+}
+
 export interface DaemonChildConfig {
   readonly mode: DaemonMode;
   readonly scenarioId: string;
@@ -44,6 +81,84 @@ export interface DaemonChildConfig {
   readonly holdOpen: boolean;
   /** Skip the port precheck. Only for the SQLite drills, which bind nothing. */
   readonly checkPorts: boolean;
+  /** The execution the walk performs. Required; there is no toy default (V2-B1b). */
+  readonly execution: DaemonExecutionConfig;
+}
+
+/**
+ * An absolute, canonical path, in the `config-file` manner.
+ *
+ * Absolute, no `..` segment, and equal to its own realpath -- so it exists and
+ * traverses no symlink. The refusal names the field, never the value.
+ */
+function admittedPath(candidate: unknown, at: string): string {
+  if (typeof candidate !== "string" || candidate === "" || !isAbsolute(candidate)) {
+    throw new ModeError(at + " must be an absolute path");
+  }
+  if (candidate.split(sep).includes("..")) throw new ModeError(at + " must contain no .. segment");
+  let resolved: string;
+  try {
+    resolved = realpathSync(candidate);
+  } catch {
+    throw new ModeError(at + " does not exist");
+  }
+  if (resolved !== candidate) throw new ModeError(at + " must be canonical; it traverses a symlink");
+  return candidate;
+}
+
+function positiveInteger(value: unknown, at: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new ModeError(at + " must be a positive integer");
+  }
+  return value;
+}
+
+/** Validate the `execution` section: the contract's route, then the binding's paths and budgets. */
+function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
+  if (typeof raw !== "object" || raw === null) throw new ModeError("execution must be an object");
+  const value = raw as Record<string, unknown>;
+
+  // The contract admits the route, refinement included, or the config is
+  // refused at the door. The refusal carries the first failing field as a
+  // path and never the value that failed there.
+  const route = ResolvedRoute.safeParse(value["route"]);
+  if (!route.success) {
+    const issue = route.error.issues[0];
+    const path = issue === undefined ? [] : issue.path.map((segment) => String(segment));
+    throw new ModeError(["execution.route", ...path].join(".") + " does not satisfy the contract");
+  }
+
+  const binding = value["binding"];
+  if (typeof binding !== "object" || binding === null) {
+    throw new ModeError("execution.binding must be an object");
+  }
+  const admission = binding as Record<string, unknown>;
+  const limits = admission["limits"];
+  if (typeof limits !== "object" || limits === null) {
+    throw new ModeError("execution.binding.limits must be an object");
+  }
+  const budgets = limits as Record<string, unknown>;
+
+  return {
+    route: route.data,
+    binding: {
+      binary: admittedPath(admission["binary"], "execution.binding.binary"),
+      configRoot: admittedPath(admission["configRoot"], "execution.binding.configRoot"),
+      workdir: admittedPath(admission["workdir"], "execution.binding.workdir"),
+      limits: {
+        timeoutMs: positiveInteger(budgets["timeoutMs"], "execution.binding.limits.timeoutMs"),
+        outputBudgetBytes: positiveInteger(
+          budgets["outputBudgetBytes"],
+          "execution.binding.limits.outputBudgetBytes",
+        ),
+        interruptGraceMs: positiveInteger(
+          budgets["interruptGraceMs"],
+          "execution.binding.limits.interruptGraceMs",
+        ),
+        termGraceMs: positiveInteger(budgets["termGraceMs"], "execution.binding.limits.termGraceMs"),
+      },
+    },
+  };
 }
 
 /** Validate the child's configuration. Nothing is read from the environment. */
@@ -82,6 +197,9 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   }
   if (typeof holdOpen !== "boolean") throw new ModeError("holdOpen must be a boolean");
   if (typeof checkPorts !== "boolean") throw new ModeError("checkPorts must be a boolean");
+  // Required, never defaulted (V2-B1b, D4/D5): a config that does not say
+  // which route it executes, and through which admitted binding, gets no daemon.
+  const execution = parseExecutionSection(value["execution"]);
 
   return {
     mode,
@@ -94,6 +212,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
     initiativeId,
     holdOpen,
     checkPorts,
+    execution,
   };
 }
 
@@ -109,6 +228,7 @@ export async function runDaemonChild(config: DaemonChildConfig): Promise<number>
     submissionDigest: config.submissionDigest,
     initiativeId: config.initiativeId,
     checkPorts: config.checkPorts,
+    execution: config.execution,
   });
 
   const announce = (): void => {

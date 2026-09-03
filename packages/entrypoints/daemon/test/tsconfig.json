@@ -10,5 +10,5 @@
     "incremental": false
   },
   "include": ["**/*.ts", "../src/**/*.ts"],
-  "references": [{ "path": "../../../kernel/contracts" }, { "path": "../../../persistence/ledger" }, { "path": "../../../domains/runtime" }, { "path": "../../../edges/durability" }]
+  "references": [{ "path": "../../../kernel/contracts" }, { "path": "../../../persistence/ledger" }, { "path": "../../../domains/runtime" }, { "path": "../../../edges/durability" }, { "path": "../../../edges/providers" }, { "path": "../../../domains/accounts" }]
 }

@@ -27,7 +27,7 @@ import {
   assertInvocationContinuity,
   currentState as executorCurrentState,
 } from "../../../src/core/step-executor/index.js";
-import type { BeatContext } from "../../../src/core/step-executor/index.js";
+import type { BeatContext, EffectPort } from "../../../src/core/step-executor/index.js";
 import { GIT_READ_VERBS, acquireLease, checkWriteSetConformance, verifyPrestate } from "../../../src/enforcement/index.js";
 import type { EnforcementRefused, LeaseGranted } from "../../../src/enforcement/index.js";
 import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
@@ -218,6 +218,17 @@ function appendStepZero(context: BeatContext): void {
 // The happy path: eleven plan steps, a real authorization, a real commit
 // ---------------------------------------------------------------------------
 
+/** The toy port, passed explicitly to the supervisor (V2-B1b, stage 2): the pilot's subject stays the toy. */
+function toyEffects(scenarioRoot: ScenarioRoot): EffectPort {
+  return {
+    apply: (operation) => {
+      applyEffect(scenarioRoot, operation);
+      return Promise.resolve();
+    },
+    probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
+  };
+}
+
 describe("the writer packet, walked end to end", () => {
   it("authorizes, commits, and reconciles, in lawful order", async () => {
     const taskId = WRITER_HAPPY_TASK_ID;
@@ -296,7 +307,7 @@ describe("the writer packet, walked end to end", () => {
     const supervisor = new SqliteSupervisor({
       ledger,
       invocation: inv,
-      scenarioRoot: root,
+      effects: toyEffects(root),
       emittedBy: PILOT_WRITER,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: PILOT_INITIATIVE_ID,

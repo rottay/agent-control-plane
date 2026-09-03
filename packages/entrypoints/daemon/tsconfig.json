@@ -10,6 +10,7 @@
     { "path": "../../kernel/contracts" },
     { "path": "../../persistence/ledger" },
     { "path": "../../domains/runtime" },
-    { "path": "../../edges/durability" }
+    { "path": "../../edges/durability" },
+    { "path": "../../edges/providers" }
   ]
 }

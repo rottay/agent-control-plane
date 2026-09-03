@@ -231,10 +231,16 @@ importers:
       '@acp/ledger':
         specifier: workspace:*
         version: link:../../persistence/ledger
+      '@acp/providers':
+        specifier: workspace:*
+        version: link:../../edges/providers
       '@acp/runtime':
         specifier: workspace:*
         version: link:../../domains/runtime
     devDependencies:
+      '@acp/accounts':
+        specifier: workspace:*
+        version: link:../../domains/accounts
       vitest:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)

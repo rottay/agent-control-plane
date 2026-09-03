@@ -42,6 +42,15 @@ import type { RoutingRecommendation, RoutingRefused } from "../routing/index.js"
  * without an offset — is a classified refusal, never a route with a field
  * quietly repaired. The seam refuses closed; it does not improvise.
  *
+ * **The two provider vocabularies agree, or nothing routes (F1, V2-B1b D7).**
+ * The policy entry names the provider the route will carry; the ranked
+ * account's own record names the provider it belongs to. They are checked
+ * against each other here, and a disagreement is `RESOLUTION_PROVIDER_MISMATCH`
+ * at `route.provider` -- never an alias, never a translation table, because a
+ * mapping would be a second authority on a question the policy entry already
+ * answers. The ranking cannot see the disagreement: `rankAccounts` gates on
+ * enabled models, not on providers.
+ *
  * What it does **not** do is read the registry's version. The version travels
  * on the choice, because `routeWithPolicy` is the only producer of it; reading
  * it here as well would be two readers of one document.
@@ -54,11 +63,14 @@ import type { RoutingRecommendation, RoutingRefused } from "../routing/index.js"
 export type ResolutionRefusal =
   // the choice the policy returned cannot be composed into a route
   | "RESOLUTION_CHOICE_INCOMPLETE"
+  // the ranked account's record names a provider other than the chosen entry's
+  | "RESOLUTION_PROVIDER_MISMATCH"
   // the composed route does not satisfy the contracts-owned schema
   | "RESOLUTION_ROUTE_INVALID";
 
 export const RESOLUTION_REFUSALS: readonly ResolutionRefusal[] = Object.freeze([
   "RESOLUTION_CHOICE_INCOMPLETE",
+  "RESOLUTION_PROVIDER_MISMATCH",
   "RESOLUTION_ROUTE_INVALID",
 ]);
 
@@ -130,6 +142,14 @@ export function resolveRoute(
   if (entry === undefined) return deny("RESOLUTION_CHOICE_INCOMPLETE", "choice.model");
   const best = choice.recommendation.ranked[0];
   if (best === undefined) return deny("RESOLUTION_CHOICE_INCOMPLETE", "choice.recommendation.ranked");
+
+  // F1: the record is looked up in the request the caller already handed over
+  // -- the records are in scope, so no second source is consulted. A ranked
+  // head absent from those records is an incomplete choice, not a route; a
+  // head whose record names another provider than the entry is refused closed.
+  const record = request.routing.records.find((candidate) => candidate.accountId === best.accountId);
+  if (record === undefined) return deny("RESOLUTION_CHOICE_INCOMPLETE", "choice.recommendation.ranked");
+  if (record.provider !== entry.provider) return deny("RESOLUTION_PROVIDER_MISMATCH", "route.provider");
 
   // The contract admits the route, or nothing leaves. The refusal carries the
   // first failing field as a path and never the value that failed there.

@@ -18,13 +18,26 @@
  * P2D is not P2 completion, and it is no product adoption.
  */
 
+import type { ModelExecutionPort } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import { openLedger } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
+import type { CliBinding, ProviderAdapter } from "@acp/providers";
+import {
+  AdapterError,
+  admitBinary,
+  admitConfigRoot,
+  admitWorkdir,
+  claudeAdapter,
+  codexAdapter,
+  createExecutionPort,
+  kimiAdapter,
+} from "@acp/providers";
 import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
-import { resolveScenarioRoot, scenarioLedgerPath } from "@acp/runtime";
+import { createExecutionEffects, resolveScenarioRoot, scenarioLedgerPath } from "@acp/runtime";
 
 import { DRAIN_DEADLINE_MS } from "./constants/index.js";
+import type { DaemonExecutionConfig } from "./daemon-child/index.js";
 import type { DaemonErrorCode } from "./errors/index.js";
 import { ModeError, StartupError } from "./errors/index.js";
 import type { ProcessInspector, RecordedIdentity } from "./identity-probe/index.js";
@@ -110,6 +123,13 @@ export interface DaemonOptions {
   readonly clock?: (() => string) | undefined;
   /** Off only for unit tests that never bind anything. */
   readonly checkPorts?: boolean | undefined;
+  /**
+   * The execution the walk performs: the resolved route and the one admitted
+   * CLI binding that serves it (V2-B1b, D5). Required, never defaulted -- the
+   * toy effect is no longer bound anywhere in production, and a daemon that
+   * assumed one would re-hide exactly the binding this packet made visible.
+   */
+  readonly execution: DaemonExecutionConfig;
 }
 
 export interface StopResult {
@@ -271,12 +291,29 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
       options.submissionDigest,
     );
 
+    // S3b (V2-B1b, stage 2): the effect the walk performs. The port is built
+    // from the resolved route the config carries and the one admitted CLI
+    // binding; the request is derived from the invocation and the emitter,
+    // never from new config (D5). Both modes receive this same port, and a
+    // refused admission stops here, inside the unwind, classified by code.
+    const effects = createExecutionEffects({
+      port: executionPortFor(options.execution, options.taskId),
+      route: options.execution.route,
+      request: {
+        taskId: options.taskId,
+        attempt: options.attempt,
+        identity: options.emittedBy,
+        reattach: null,
+      },
+      scenarioRoot,
+    });
+
     if (options.mode === "SQLITE_SUPERVISOR") {
-      // S8. No S4-S7: this mode binds nothing and spawns nothing.
+      // S8. No S4-S7: this mode binds nothing and spawns nothing of its own.
       const result = await runSqliteMode({
         ledger: openedLedger,
         invocation,
-        scenarioRoot,
+        effects,
         emittedBy: options.emittedBy,
         // Today's behaviour, said out loud. The daemon supervises packets that
         // may commit locally under a receipt; a read-only packet is a policy
@@ -300,6 +337,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         // reason: one place a reader can find it, and no default anywhere.
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
         initiativeId: options.initiativeId,
+        effects,
         stack,
         onPhase: (phase, pid) => {
           // Published where it happens, in the order it happens. Deferring
@@ -414,6 +452,49 @@ async function bounded(work: Promise<StopResult>, deadlineMs: number): Promise<S
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/** The CLI adapters, by the provider name a resolved route carries. */
+const CLI_ADAPTERS: Readonly<Record<string, ProviderAdapter>> = Object.freeze({
+  claude: claudeAdapter,
+  codex: codexAdapter,
+  kimi: kimiAdapter,
+});
+
+/**
+ * Build the execution port from the config's resolved route and admitted
+ * binding (V2-B1b, D5/D6).
+ *
+ * The CLI leg only, and exactly one binding, keyed by the route's own account:
+ * `apiBindings` and `localBindings` are absent by construction, so a route on
+ * another transport is refused by the port with `TRANSPORT_UNAVAILABLE` at
+ * `route.transportKind` the first time the walk asks for its effect -- never
+ * served from a default. The binary, the configuration root and the working
+ * directory pass the providers package's own admissions here (ownership,
+ * permissions, canonical path, no product checkout), so a refused path stops
+ * the daemon inside its unwind, classified by the adapter's code and never by
+ * the path.
+ */
+function executionPortFor(execution: DaemonExecutionConfig, taskId: string): ModelExecutionPort {
+  const { route, binding } = execution;
+  const bindings = new Map<string, CliBinding>();
+  const adapter = route.transportKind === "CLI_SUBSCRIPTION" ? CLI_ADAPTERS[route.provider] : undefined;
+  if (adapter !== undefined) {
+    const context = { provider: route.provider, taskId };
+    try {
+      bindings.set(route.accountId, {
+        adapter,
+        binary: admitBinary(binding.binary, context),
+        configRoot: admitConfigRoot(binding.configRoot, context),
+        workdir: admitWorkdir(binding.workdir, context),
+        limits: binding.limits,
+      });
+    } catch (error: unknown) {
+      const code = error instanceof AdapterError ? error.code : "UNCLASSIFIED";
+      throw new StartupError("the execution binding was refused: " + code);
+    }
+  }
+  return createExecutionPort({ bindings });
 }
 
 /** The lock is released last, because everything else was acquired under it. */

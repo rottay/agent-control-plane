@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../../src/contracts/index.js";
 import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
-import { applyEffect } from "../../../src/toy/repository/index.js";
+import { applyEffect, probeEffect } from "../../../src/toy/repository/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, READ_ONLY_PLAN } from "../../../src/core/lifecycle/index.js";
 import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
 import {
@@ -21,6 +21,7 @@ import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
 import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
 import type { FaultPoint } from "../../../src/drivers/sqlite-supervisor/index.js";
 import { deterministicUuid } from "../../../src/core/coordinates/index.js";
+import type { EffectPort } from "../../../src/core/step-executor/index.js";
 
 /** One fixed initiative for every fixture in this file. */
 const TEST_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
@@ -71,6 +72,23 @@ function scenario(name: string): ScenarioRoot {
 function track(ledger: Ledger): Ledger {
   openLedgers.push(ledger);
   return ledger;
+}
+
+/**
+ * The toy port, passed explicitly (V2-B1b, stage 2).
+ *
+ * The supervisor no longer binds any effect itself; a caller says which port
+ * the beats drive. These drills keep the toy as their subject, so its
+ * completion is trivially observable on disk.
+ */
+function toyEffects(root: ScenarioRoot): EffectPort {
+  return {
+    apply: (operation) => {
+      applyEffect(root, operation);
+      return Promise.resolve();
+    },
+    probe: (operation) => Promise.resolve(probeEffect(root, operation)),
+  };
 }
 
 afterEach(() => {
@@ -277,7 +295,7 @@ function supervisorFor(
     supervisor: new SqliteSupervisor({
       ledger,
       invocation,
-      scenarioRoot: root,
+      effects: toyEffects(root),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -410,7 +428,7 @@ describe("the supervisor", () => {
     const supervisor = new SqliteSupervisor({
       ledger,
       invocation: invocationFor(taskId),
-      scenarioRoot: root,
+      effects: toyEffects(root),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -588,7 +606,7 @@ describe("the supervisor", () => {
       const intruder = new SqliteSupervisor({
         ledger,
         invocation: mutate(invocation),
-        scenarioRoot: root,
+        effects: toyEffects(root),
         emittedBy: EMITTED_BY,
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
         initiativeId: TEST_INITIATIVE_ID,
@@ -645,7 +663,7 @@ describe("the supervisor", () => {
     const otherInitiative = new SqliteSupervisor({
       ledger,
       invocation,
-      scenarioRoot: root,
+      effects: toyEffects(root),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: "5b5b5b5b-5b5b-4b5b-8b5b-5b5b5b5b5b01",
@@ -687,7 +705,7 @@ describe("the supervisor", () => {
     const twin = new SqliteSupervisor({
       ledger,
       invocation: { ...invocation },
-      scenarioRoot: root,
+      effects: toyEffects(root),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -767,7 +785,7 @@ describe("the plan comes from the packet's commit policy", () => {
     const result = await new SqliteSupervisor({
       ledger,
       invocation,
-      scenarioRoot: root,
+      effects: toyEffects(root),
       emittedBy: EMITTED_BY,
       commitPolicy,
       initiativeId: TEST_INITIATIVE_ID,

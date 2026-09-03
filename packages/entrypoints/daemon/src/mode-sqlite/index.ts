@@ -1,6 +1,6 @@
 import type { CommitPolicy } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
-import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import type { DurableInvocation, EffectPort } from "@acp/runtime";
 import { SqliteSupervisor } from "@acp/runtime";
 
 import { ModeError } from "../errors/index.js";
@@ -8,10 +8,12 @@ import { ModeError } from "../errors/index.js";
 /**
  * The SQLite mode.
  *
- * Binds no socket and spawns no child. That is not an incidental property of
- * the implementation, it is the whole point of the mode: it is the driver that
- * still works when the external server is unavailable, so anything it needed
- * from the network would defeat it.
+ * Binds no socket and spawns no child of its own. That is not an incidental
+ * property of the implementation, it is the whole point of the mode: it is the
+ * driver that still works when the external server is unavailable, so anything
+ * it needed from the network would defeat it. Whatever the injected effect
+ * port runs is the port's, admitted by the daemon that built it, and is not a
+ * dependency of this driver on any server (V2-B1b, stage 2).
  *
  * Reconciliation runs before the plan is walked, for the same reason it does in
  * Restate mode: a driver that starts advancing before it has agreed with the
@@ -21,7 +23,13 @@ import { ModeError } from "../errors/index.js";
 export interface SqliteModeInput {
   readonly ledger: Ledger;
   readonly invocation: DurableInvocation;
-  readonly scenarioRoot: ScenarioRoot;
+  /**
+   * The side effect the walk performs, built by the daemon from its config
+   * and handed through (V2-B1b, stage 2). Required and never defaulted here,
+   * for the same reason the policy is: the toy effect is no longer bound at
+   * this seam, and a mode that assumed one would re-hide the binding.
+   */
+  readonly effects: EffectPort;
   readonly emittedBy: string;
   /**
    * The packet's commit policy, which selects the plan the supervisor walks.
@@ -51,7 +59,7 @@ export async function runSqliteMode(input: SqliteModeInput): Promise<SqliteModeR
   const supervisor = new SqliteSupervisor({
     ledger: input.ledger,
     invocation: input.invocation,
-    scenarioRoot: input.scenarioRoot,
+    effects: input.effects,
     emittedBy: input.emittedBy,
     commitPolicy: input.commitPolicy,
     initiativeId: input.initiativeId,

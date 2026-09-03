@@ -26,9 +26,11 @@
     "@acp/contracts": "workspace:*",
     "@acp/durability": "workspace:*",
     "@acp/ledger": "workspace:*",
+    "@acp/providers": "workspace:*",
     "@acp/runtime": "workspace:*"
   },
   "devDependencies": {
+    "@acp/accounts": "workspace:*",
     "vitest": "3.2.4"
   }
 }

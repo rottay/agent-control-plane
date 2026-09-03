@@ -7,7 +7,12 @@ import { openLedger } from "@acp/ledger";
 
 import type { DurableInvocation } from "../../contracts/index.js";
 import { SupervisorError } from "../../errors/index.js";
-import { resolveScenarioRoot, scenarioLedgerPath } from "../../toy/repository/index.js";
+import {
+  applyEffect,
+  probeEffect,
+  resolveScenarioRoot,
+  scenarioLedgerPath,
+} from "../../toy/repository/index.js";
 import { SqliteSupervisor } from "../sqlite-supervisor/index.js";
 import type { FaultPoint } from "../sqlite-supervisor/index.js";
 
@@ -128,7 +133,18 @@ export async function runChild(config: ChildConfig): Promise<void> {
     const supervisor = new SqliteSupervisor({
       ledger,
       invocation: config.invocation,
-      scenarioRoot,
+      // The toy port, bound explicitly and here only (V2-B1b, stage 2). A drill
+      // child is not a production seam: the kill/restart drills prove the
+      // ledger's recovery law over an effect whose completion is trivially
+      // observable, and B2 re-proves them against the real one. The fence's
+      // toy-binding law names this file as one of the two lawful deep importers.
+      effects: {
+        apply: (operation) => {
+          applyEffect(scenarioRoot, operation);
+          return Promise.resolve();
+        },
+        probe: (operation) => Promise.resolve(probeEffect(scenarioRoot, operation)),
+      },
       emittedBy: config.emittedBy,
       commitPolicy: config.commitPolicy,
       initiativeId: config.initiativeId,
