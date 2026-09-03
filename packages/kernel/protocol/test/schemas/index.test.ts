@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { CONTROL_PLANE_EVENT_TYPES } from "@acp/contracts";
+
 import {
   API_ALLOWED_METHODS,
   API_WRITE_METHODS,
@@ -58,6 +60,11 @@ import {
   WorkerDetail,
   WorkerSummary,
   WorkersQuery,
+  STREAM_CHANNELS,
+  STREAM_CHANNEL_BY_EVENT_TYPE,
+  STREAM_RESYNC_REASONS,
+  StreamFrame,
+  StreamQuery,
   taskPath,
   workerPath,
 } from "../../src/index.js";
@@ -1748,5 +1755,209 @@ describe("the write door's two authentication codes (P8-8G)", () => {
     expect(ApiErrorCode.safeParse("AUTH_REQUIRED").success).toBe(true);
     expect(ApiErrorCode.safeParse("WRITE_BEARER_UNCONFIGURED").success).toBe(true);
     expect(ApiErrorCode.safeParse("UNAUTHORIZED").success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The event stream (V2-B3a)
+// ---------------------------------------------------------------------------
+
+describe("the stream channel map is total over the ledger's own vocabulary", () => {
+  it("names every event type the contract declares, and nothing else", () => {
+    // Read out of `@acp/contracts` rather than restated here. A literal list
+    // would pass forever: the failure this catches is a type added upstream
+    // and never mapped, and a fixture that was written beside the map cannot
+    // see that happen.
+    const mapped = Object.keys(STREAM_CHANNEL_BY_EVENT_TYPE).sort();
+    expect(mapped).toEqual([...CONTROL_PLANE_EVENT_TYPES].sort());
+    expect(mapped).toHaveLength(CONTROL_PLANE_EVENT_TYPES.length);
+  });
+
+  it("maps each type exactly once, to a declared channel", () => {
+    for (const type of CONTROL_PLANE_EVENT_TYPES) {
+      const channel = STREAM_CHANNEL_BY_EVENT_TYPE[type];
+      expect({ type, declared: STREAM_CHANNELS.includes(channel) }).toEqual({
+        type,
+        declared: true,
+      });
+    }
+  });
+
+  it("leaves no channel empty, so the reduction is a partition and not a label", () => {
+    // A channel nothing maps to is a channel a reader can subscribe and never
+    // hear from — indistinguishable, from the outside, from a quiet system.
+    const populated = new Set(Object.values(STREAM_CHANNEL_BY_EVENT_TYPE));
+    expect([...populated].sort()).toEqual([...STREAM_CHANNELS].sort());
+  });
+
+  it("is frozen, so a consumer cannot re-channel an event at runtime", () => {
+    expect(Object.isFrozen(STREAM_CHANNEL_BY_EVENT_TYPE)).toBe(true);
+  });
+
+  it("partitions the vocabulary into the five declared sizes", () => {
+    // The counts are the shape of the reduction, and stating them is what makes
+    // a silent re-channelling — moving a type from one channel to another —
+    // fail here rather than surface as a UI that quietly stopped showing a row.
+    const sizes: Record<string, number> = {};
+    for (const channel of Object.values(STREAM_CHANNEL_BY_EVENT_TYPE)) {
+      sizes[channel] = (sizes[channel] ?? 0) + 1;
+    }
+    expect(sizes).toEqual({ lifecycle: 7, execution: 5, steps: 2, state: 7, progress: 2 });
+    const total = Object.values(sizes).reduce((sum, count) => sum + count, 0);
+    expect(total).toBe(CONTROL_PLANE_EVENT_TYPES.length);
+  });
+});
+
+describe("the stream query is the events query without its page controls", () => {
+  it("accepts the four filters", () => {
+    const parsed = StreamQuery.safeParse({
+      taskId: TASK_ID,
+      type: "RUN_STARTED",
+      emittedBy: WRITER,
+      toState: "RUNNING",
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("accepts no filters at all", () => {
+    expect(StreamQuery.safeParse({}).success).toBe(true);
+  });
+
+  it("refuses a cursor and a limit, because neither is the caller's to set", () => {
+    // The cursor authority is the Last-Event-ID header and the page size is the
+    // server's. Accepting either here would be a second place to say where a
+    // reader is, and two places can disagree.
+    expect(StreamQuery.safeParse({ cursor: 5 }).success).toBe(false);
+    expect(StreamQuery.safeParse({ limit: 10 }).success).toBe(false);
+  });
+
+  it("refuses an unknown parameter, so a typo is a 400 and not a silent stream", () => {
+    expect(StreamQuery.safeParse({ taksId: TASK_ID }).success).toBe(false);
+  });
+
+  it("names exactly the filters EventsQuery names, minus the two page controls", () => {
+    // Derived rather than restated: a filter added to the paged route and not
+    // to the stream would make the two routes answer different questions under
+    // the same query vocabulary.
+    const paged = Object.keys(EventsQuery.shape).filter(
+      (key) => key !== "cursor" && key !== "limit",
+    );
+    expect(Object.keys(StreamQuery.shape).sort()).toEqual(paged.sort());
+  });
+});
+
+describe("the stream frame", () => {
+  const VERSIONS = {
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+  };
+
+  it("accepts the three kinds it declares", () => {
+    expect(
+      StreamFrame.safeParse({ ...VERSIONS, kind: "hello", database: DATABASE, headSequence: 7 })
+        .success,
+    ).toBe(true);
+    expect(
+      StreamFrame.safeParse({
+        ...VERSIONS,
+        kind: "event",
+        channel: "lifecycle",
+        item: TIMELINE_ITEM,
+      }).success,
+    ).toBe(true);
+    expect(
+      StreamFrame.safeParse({ ...VERSIONS, kind: "resync", reason: "ANCHOR_AHEAD_OF_HEAD" })
+        .success,
+    ).toBe(true);
+  });
+
+  it("admits a hello against an empty ledger, whose head is zero", () => {
+    expect(
+      StreamFrame.safeParse({ ...VERSIONS, kind: "hello", database: DATABASE, headSequence: 0 })
+        .success,
+    ).toBe(true);
+  });
+
+  it("refuses a kind it does not declare", () => {
+    expect(StreamFrame.safeParse({ ...VERSIONS, kind: "heartbeat" }).success).toBe(false);
+    expect(
+      StreamFrame.safeParse({ ...VERSIONS, kind: "event", channel: "audit", item: TIMELINE_ITEM })
+        .success,
+    ).toBe(false);
+  });
+
+  it("refuses a resync reason outside the closed list", () => {
+    expect(
+      StreamFrame.safeParse({ ...VERSIONS, kind: "resync", reason: "TOO_OLD" }).success,
+    ).toBe(false);
+    expect(STREAM_RESYNC_REASONS).toEqual(["ANCHOR_AHEAD_OF_HEAD"]);
+  });
+
+  it("keeps each arm strict, so a field cannot ride along on the wrong kind", () => {
+    // A resync carrying an item, or a hello carrying a channel, would be a
+    // frame whose kind no longer describes it.
+    expect(
+      StreamFrame.safeParse({
+        ...VERSIONS,
+        kind: "resync",
+        reason: "ANCHOR_AHEAD_OF_HEAD",
+        item: TIMELINE_ITEM,
+      }).success,
+    ).toBe(false);
+    expect(
+      StreamFrame.safeParse({
+        ...VERSIONS,
+        kind: "hello",
+        database: DATABASE,
+        headSequence: 1,
+        channel: "lifecycle",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("carries no payload, and refuses a frame that grew one", () => {
+    // The privacy boundary, stated where it is enforced: the item is the
+    // redacted projection, and there is no field here for a payload value.
+    const withPayload = {
+      ...VERSIONS,
+      kind: "event",
+      channel: "lifecycle",
+      item: { ...TIMELINE_ITEM, payload: { prompt: "..." } },
+    };
+    expect(StreamFrame.safeParse(withPayload).success).toBe(false);
+  });
+
+  it("refuses a credential-shaped payload key, through the same guards every response uses", () => {
+    const leaky = {
+      ...VERSIONS,
+      kind: "event",
+      channel: "lifecycle",
+      item: { ...TIMELINE_ITEM, payloadKeys: ["apiKey"] },
+    };
+    expect(StreamFrame.safeParse(leaky).success).toBe(false);
+  });
+
+  it("pins both version lines, so a frame from another build cannot be read as this one's", () => {
+    expect(
+      StreamFrame.safeParse({
+        ...VERSIONS,
+        apiContractVersion: "0.1.0",
+        kind: "resync",
+        reason: "ANCHOR_AHEAD_OF_HEAD",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("the stream's refusal code", () => {
+  it("is declared, and is not one of the codes it could have been confused with", () => {
+    expect(API_ERROR_CODES).toContain("STREAM_CAPACITY");
+    expect(ApiErrorCode.safeParse("STREAM_CAPACITY").success).toBe(true);
+    // The three it is deliberately not: the caller sent nothing wrong, this is
+    // not a defect, and the ledger is fine.
+    expect(ApiErrorCode.safeParse("TOO_MANY_STREAMS").success).toBe(false);
+    for (const code of ["BAD_REQUEST", "INTERNAL", "LEDGER_UNAVAILABLE"]) {
+      expect(API_ERROR_CODES.filter((declared) => declared === code)).toHaveLength(1);
+    }
   });
 });

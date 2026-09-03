@@ -53,6 +53,7 @@ cursors and redaction. This document is the readable form of the same table.
 | `initiativeAgents` | GET | `/api/v1/initiatives/:initiativeId/agents` | `initiativeId` (uuid) | none | `InitiativeAgentsResponse` |
 | `accounts` | GET | `/api/v1/accounts` | — | none | `AccountsResponse` |
 | `accountActions` | GET, POST | `/api/v1/accounts/:accountId/actions` | `accountId` (bounded label) | none | `AccountActionsResponse` / `AccountActionWriteResponse` |
+| `eventStream` | GET | `/api/v1/events/stream` | — | `StreamQuery` | `StreamFrame` (Server-Sent Events) |
 
 ## The two writes
 
@@ -68,6 +69,44 @@ the mechanism and its anchors.
 
 A write that is refused answers with a classified refusal rather than a bare
 failure: `AccountActionRefusalDto` names which rule refused it.
+
+## The one stream
+
+`eventStream` is the only route that answers with a connection rather than a
+body. It is still a **read** — registered through a twin of the read registrar
+that reuses the same 405 set, so `API_ALLOWED_METHODS` is still `["GET"]` and
+`API_WRITE_ROUTES` is still the two routes above.
+
+| Property | Value |
+| --- | --- |
+| Media type | `text/event-stream`, `cache-control: no-store`, no `content-length` |
+| Cursor | the `Last-Event-ID` request header, and nothing else |
+| Frame identity | an `id:` line on **event frames only**, equal to the ledger `sequence` |
+| Body | one `StreamFrame` per frame, JSON, on a single `data:` line |
+| Keep-alive | `: heartbeat`, an SSE comment, so it cannot advance a cursor |
+| Connections | at most 8 at once; the next is refused `STREAM_CAPACITY` (503) |
+
+**Resuming.** Send `Last-Event-ID` with the sequence you last received. The
+cursor is exclusive, like every other cursor here, so the row you name is not
+repeated. Omit the header and the stream serves live from the current head
+after one `hello` frame — history is `events`' job, not the stream's.
+
+**The two unusable anchors, and how they differ.** An anchor that is not a
+decimal sequence is a `BAD_REQUEST` envelope, answered before the connection is
+hijacked. An anchor **ahead of the head** is a ledger this client was not
+reading — rebuilt, or a different file — and receives one `resync` frame with
+`reason: "ANCHOR_AHEAD_OF_HEAD"` and a close. It is never silently restarted
+from zero. There is no "too old": the event log is never pruned.
+
+**Channels.** Every frame carries a `channel`, one of `lifecycle`, `execution`,
+`steps`, `state`, `progress`. The mapping from the twenty-three ledger event
+types onto them is `STREAM_CHANNEL_BY_EVENT_TYPE`, and it is total and
+one-to-one — the fence and the protocol suite both assert it against the
+contract's own vocabulary, so a new event type cannot appear unmapped.
+
+**The tail is a polled read, not a push.** This process opens the ledger
+read-only and the writer is a different process, so there is no change
+notification to subscribe to. ADR 0017 records why a broker was refused.
 
 ## Parameter validation
 

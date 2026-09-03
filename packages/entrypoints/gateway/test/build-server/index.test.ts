@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   API_CONTRACT_VERSION,
+  API_ROUTES,
   API_ROUTE_PATTERNS,
   AccountsResponse,
   ApiError,
@@ -930,6 +931,33 @@ describe("the served surface matches the frozen route table", () => {
     await app.close();
   });
 
+  /**
+   * The one route whose GET cannot be injected, named rather than skipped
+   * silently (V2-B3a).
+   *
+   * `app.inject()` never opens a socket, and it cannot terminate a hijacked
+   * response: a GET on the stream would hang this suite rather than assert
+   * anything. So the GET arm below transfers to
+   * `test/stream/index.test.ts`, which drives the same route over a **real
+   * loopback socket** and asserts the 200, the `text/event-stream` content
+   * type and the frames themselves.
+   *
+   * This is a coverage transfer, not a weakening, and the two assertions after
+   * the loop are what keep it one: the exclusion set is pinned to exactly this
+   * singleton, so a second route cannot join it quietly, and the route's full
+   * 405 matrix stays inside the generic law below rather than travelling with
+   * the GET.
+   */
+  const INJECTION_EXCLUDED = [API_ROUTES.eventStream];
+
+  it("excludes exactly one parameterless route from GET injection, and says which", () => {
+    // The pin. Without it, "we skip the ones inject cannot do" is a sentence
+    // that grows a route at a time until the generic law covers nothing.
+    expect(INJECTION_EXCLUDED).toEqual(["/api/v1/events/stream"]);
+    expect(INJECTION_EXCLUDED).toHaveLength(1);
+    expect(API_ROUTE_PATTERNS).toContain(API_ROUTES.eventStream);
+  });
+
   it("answers every parameterless frozen pattern, and 405s every non-GET on it", async () => {
     // Derived from the contract's own table rather than from a list restated
     // here: a route added to `API_ROUTES` and never registered would answer
@@ -938,13 +966,39 @@ describe("the served surface matches the frozen route table", () => {
     const app = buildServer({ ledgerPath: path });
     const parameterless = API_ROUTE_PATTERNS.filter((pattern) => !pattern.includes(":"));
 
+    let injectedGets = 0;
     for (const url of parameterless) {
-      const get = await app.inject({ method: "GET", url });
-      expect({ url, ok: get.statusCode < 400 }).toEqual({ url, ok: true });
-
+      // The 405 arm runs for EVERY parameterless route, the stream included: a
+      // refusal needs no hijack, so nothing about the method surface moves to
+      // another file.
       const post = await app.inject({ method: "POST", url });
       expect({ url, status: post.statusCode }).toEqual({ url, status: 405 });
+
+      if ((INJECTION_EXCLUDED as readonly string[]).includes(url)) continue;
+      const get = await app.inject({ method: "GET", url });
+      expect({ url, ok: get.statusCode < 400 }).toEqual({ url, ok: true });
+      injectedGets += 1;
     }
+
+    // The loop did not pass by looking at nothing, and it skipped exactly one.
+    expect(injectedGets).toBe(parameterless.length - INJECTION_EXCLUDED.length);
+    expect(injectedGets).toBeGreaterThan(0);
+    await app.close();
+  });
+
+  it("keeps the stream's own 405 set identical to every other read's (V2-B3a)", async () => {
+    // The stream is registered through a twin of `registerGet` that reuses the
+    // same OTHER_METHODS list. This is where that stops being a claim about the
+    // source and becomes an observation about the server.
+    const { path } = seedDatabase();
+    const app = buildServer({ ledgerPath: path });
+    for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
+      const response = await app.inject({ method, url: API_ROUTES.eventStream });
+      expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
+      expect(ApiError.parse(response.json()).error.code).toBe("METHOD_NOT_ALLOWED");
+    }
+    // And the stream did not become the plane's third write.
+    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
     await app.close();
   });
 });

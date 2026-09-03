@@ -54,6 +54,13 @@ export const API_ROUTES = Object.freeze({
   // action history; POST records an action. Registered through the same
   // guarded registrar as the first, so the bearer is inherited structurally.
   accountActions: "/api/v1/accounts/:accountId/actions",
+  // V2-B3a: the ledger sequence as a stream. A GET, under the same versioned
+  // prefix, and deliberately a **sibling** of `events` rather than a mode of
+  // it: the two answer the same rows with different liveness contracts, and a
+  // `?live=1` on the paged route would have made one path sometimes return a
+  // body that ends and sometimes one that does not. It reads; the write table
+  // below is unchanged at exactly two.
+  eventStream: "/api/v1/events/stream",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;

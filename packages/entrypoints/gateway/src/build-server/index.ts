@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { classifyFastifyError, sendApiError } from "../errors/index.js";
 import { openLedgerSource } from "../ledger-source/index.js";
 import { registerRoutes } from "../routes/index.js";
+import { createStreamRegistry } from "../stream/index.js";
 import {
   ROADMAP_CONTENT_MAX_BYTES,
   ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
@@ -113,8 +114,33 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     },
   });
   const source = openLedgerSource(options.ledgerPath);
+  const streams = createStreamRegistry();
 
-  app.addHook("onClose", () => {
+  // Shutdown is an ORDER, not a race (V2-B3a).
+  //
+  // Until the stream existed, every response this plane sent had ended before
+  // `close()` was ever called, so closing the ledger in one hook was the whole
+  // of shutdown. A live stream breaks that in two independent ways, and both
+  // had to be answered here rather than inside the stream module:
+  //
+  //   • `preClose` runs before Fastify stops the server and before the user
+  //     `onClose` hooks. Ending the streams here is what lets `close()` resolve
+  //     at all: an SSE response is an in-flight request, never an idle
+  //     connection, so Fastify's own connection handling will wait for it
+  //     indefinitely and `RunningServer.close()` would simply never return.
+  //   • the ledger closes only after that drain. A handler holding a cursor
+  //     when the handle goes away raises `LedgerClosedError` **inside** an
+  //     already-hijacked response, where there is no envelope left to carry it.
+  //
+  // The drain is idempotent and is called from both hooks on purpose: the
+  // order above is Fastify's, and a law this one depends on should not be a law
+  // this file merely assumes.
+  app.addHook("preClose", async () => {
+    await streams.drain();
+  });
+
+  app.addHook("onClose", async () => {
+    await streams.drain();
     if (source.kind === "open") {
       source.ledger.close();
     }
@@ -126,6 +152,13 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     sendApiError(reply, classified.code, classified.message, classified.detail);
   });
 
-  registerRoutes(app, source, options.accountsFilePath, options.writeBearerPath, options.now);
+  registerRoutes(
+    app,
+    source,
+    streams,
+    options.accountsFilePath,
+    options.writeBearerPath,
+    options.now,
+  );
   return app;
 }

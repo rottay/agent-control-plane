@@ -17,6 +17,7 @@ import {
   MAX_SCOPED_TIMELINE_ITEMS,
   RoadmapContentQuery,
   RoadmapContentResponse,
+  StreamQuery,
   RoadmapVersionWriteRequest,
   RoadmapVersionWriteResponse,
   IntegrityResult,
@@ -64,6 +65,7 @@ import {
   workerSummary,
 } from "../mappers/index.js";
 import { assertEmptyQuery, parseQuery, parseTaskIdParam } from "../query-schemas/index.js";
+import { parseStreamAnchor, type StreamRegistry } from "../stream/index.js";
 
 /**
  * Route registration for the P1 read-only observation surface.
@@ -111,6 +113,71 @@ function registerGet(
       );
     },
   });
+}
+
+/**
+ * Register the one route that answers with a connection rather than a body.
+ *
+ * A twin of `registerGet`, and deliberately a twin rather than a widening: it
+ * reuses the **same** `OTHER_METHODS` list, so the per-path method law is
+ * byte-unchanged and the stream refuses `POST`/`PUT`/`PATCH`/`DELETE` exactly
+ * as every other read does. `API_ALLOWED_METHODS` stays `["GET"]` and
+ * `API_WRITE_ROUTES` stays two, because a stream is a read.
+ *
+ * The one thing that cannot be shared is `guarded`: it sends `200` with the
+ * handler's return value, and there is no return value here — the handler
+ * hijacks the reply and writes frames itself. `guardedStream` below keeps the
+ * other half of guarded's contract, which is the half that matters: nothing
+ * leaves this route except a stream or the one error envelope.
+ */
+function registerStream(
+  app: FastifyInstance,
+  path: string,
+  handler: (request: FastifyRequest, reply: FastifyReply) => void,
+): void {
+  app.get(path, guardedStream(handler));
+  app.route({
+    method: [...OTHER_METHODS],
+    url: path,
+    handler: (request, reply) => {
+      sendApiError(
+        reply,
+        "METHOD_NOT_ALLOWED",
+        "method " + request.method + " is not allowed on this route; only GET is",
+      );
+    },
+  });
+}
+
+/**
+ * The stream's guard: every refusal happens **before** the hijack, or not at all.
+ *
+ * Once a reply is hijacked there is no envelope left to send — the status line
+ * and the SSE headers are already on the wire — so this wrapper's job is to
+ * make sure everything that could refuse has refused first. The handler it
+ * wraps does its parsing, its ledger check and its capacity check before it
+ * calls `serve`, and `reply.sent` is what tells this function which side of
+ * that line a thrown value landed on.
+ */
+function guardedStream(
+  handler: (request: FastifyRequest, reply: FastifyReply) => void,
+): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
+  return async (request, reply) => {
+    try {
+      handler(request, reply);
+    } catch (error: unknown) {
+      // Hijacked already: the frames are the response, and a second answer
+      // would be two responses on one socket. Ending is the connection's own
+      // job, and it does it.
+      if (reply.sent || reply.raw.headersSent) return;
+      if (error instanceof ApiRouteError) {
+        sendApiError(reply, error.code, error.message, error.detail);
+        return;
+      }
+      const classified = classifyUnexpectedError(error);
+      sendApiError(reply, classified.code, classified.message);
+    }
+  };
 }
 
 /**
@@ -261,6 +328,7 @@ function registerGetAndPost(
 export function registerRoutes(
   app: FastifyInstance,
   source: LedgerSource,
+  streams: StreamRegistry,
   accountsFilePath?: string,
   writeBearerPath?: string,
   now?: () => string,
@@ -396,6 +464,38 @@ export function registerRoutes(
         returned: items.length,
       },
     });
+  });
+
+  // The same rows, as a connection (V2-B3a). A read, through a registrar that
+  // reuses the read 405 set — so the plane's method surface did not move — and
+  // deliberately mounted beside the paged route rather than inside it.
+  //
+  // **Everything that can refuse, refuses before the hijack.** Once the SSE
+  // headers are written there is no envelope left to send, so the order below
+  // is the design and not an accident: a malformed query, a malformed anchor,
+  // an unavailable ledger and a full registry are all answered as ordinary
+  // `ApiError` bodies with ordinary status codes, and only a request that
+  // survives all four reaches `serve`.
+  registerStream(app, API_ROUTES.eventStream, (request, reply) => {
+    const filters = parseQuery(StreamQuery, queryOf(request));
+    const anchor = parseStreamAnchor(headerOf(request, "last-event-id"));
+    if (anchor.kind === "malformed") {
+      // The header's own bytes are never echoed: it is caller-supplied input,
+      // and this plane does not reflect caller input in an error body.
+      throw new ApiRouteError(
+        "BAD_REQUEST",
+        "Last-Event-ID must be a decimal ledger sequence",
+      );
+    }
+    const { ledger, database } = requireOpen(source);
+    if (streams.isFull()) {
+      throw new ApiRouteError(
+        "STREAM_CAPACITY",
+        "this server is already holding as many event streams as it will hold",
+        String(streams.capacity),
+      );
+    }
+    streams.serve(reply, { ledger, database, filters, anchor });
   });
 
   app.setNotFoundHandler((request, reply) => {

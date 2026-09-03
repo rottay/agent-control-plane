@@ -35,8 +35,25 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * `0.3.0` → `0.4.0` at P8-8D-c2: a read route that serves the stored roadmap
  * document. Additive, and a read — the plane's write surface is unchanged at
  * exactly one route.
+ *
+ * `0.8.0` → `0.9.0` at V2-B3a: the durable ledger sequence becomes a
+ * reconnectable event stream. Additive in shape — no existing route, field or
+ * type changed, and every read a pinned reader made before it still answers
+ * identically — but the minor moves for the same reason `0.3.0` did, and only
+ * the second time it has ever applied: **what this API *is* changed.** A reader
+ * at `0.8.0` was right to assume every response here is a bounded body that
+ * ends; at `0.9.0` one route answers with a connection that stays open, carries
+ * frames as they are recorded, and expects to be resumed by header after it
+ * drops. That is not a new field on an old shape, and a version number exists
+ * to say so.
+ *
+ * The write surface did not move: `API_WRITE_ROUTES` is still exactly two, and
+ * `API_ALLOWED_METHODS` is still exactly `["GET"]`. `LEDGER_CONTRACT_VERSION`
+ * does not move either — the stream carries the events the ledger already
+ * recorded, in the projection the read routes already serve, so nothing about
+ * recorded history changed.
  */
-export const API_CONTRACT_VERSION = "0.8.0" as const;
+export const API_CONTRACT_VERSION = "0.9.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

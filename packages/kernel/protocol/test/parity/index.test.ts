@@ -35,6 +35,7 @@ import {
   InitiativeAgentsResponse,
   InitiativeTimelineResponse,
   RoadmapContentResponse,
+  StreamFrame,
 } from "../../src/schemas/index.js";
 
 describe("the contract covers every frozen route", () => {
@@ -127,6 +128,11 @@ describe("the binding table matches the schemas it claims to bind", () => {
     initiativeAgents: InitiativeAgentsResponse,
     accounts: AccountsResponse,
     accountActions: AccountActionsResponse,
+    // V2-B3a. The stream's "response" is one frame, and the frame is a union —
+    // the second in this table, after the accounts read. Its bindable surface
+    // is the union of its arms' keys, which is the rule `accounts` established
+    // and which `shapeKeys` below already resolves.
+    eventStream: StreamFrame,
   };
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {
@@ -158,6 +164,41 @@ describe("the binding table matches the schemas it claims to bind", () => {
       const bound = PARITY_BINDINGS[route].map((binding) => binding.field).sort();
       expect({ route, fields: bound }).toEqual({ route, fields: shapeKeys(schemas[route]) });
     }
+  });
+
+  it("binds the stream to the union of its frame kinds, not to one of them (V2-B3a)", () => {
+    // The failure this catches is a table bound to the arm someone happened to
+    // be looking at: bind only `hello` and a client rendering `item` renders a
+    // field the parity law never checked.
+    const bound = PARITY_BINDINGS.eventStream.map((binding) => binding.field).sort();
+    expect(bound).toEqual(shapeKeys(StreamFrame));
+    for (const field of ["kind", "channel", "item", "database", "headSequence", "reason"]) {
+      expect({ field, bound: bound.includes(field) }).toEqual({ field, bound: true });
+    }
+  });
+
+  it("keeps the stream's item comparable, and only its liveness reason excepted (V2-B3a)", () => {
+    // `item` and `channel` must stay comparable: the whole claim of the packet
+    // is that the stream is a transport over the same projection, and a field
+    // excused from the equality is a field where the two could diverge unseen.
+    const comparable = comparableFields("eventStream");
+    expect(comparable).toContain("item");
+    expect(comparable).toContain("channel");
+    expect(comparable).not.toContain("reason");
+
+    // The exceptions are the two frozen version constants every route carries,
+    // plus exactly one field of this route's own.
+    const excepted = declaredExceptions("eventStream").map((binding) => binding.field);
+    expect(excepted).toEqual(["apiContractVersion", "ledgerContractVersion", "reason"]);
+    expect(
+      declaredExceptions("eventStream")
+        .filter((binding) => binding.source !== "CONTRACT_VERSION")
+        .map((binding) => binding.field),
+    ).toEqual(["reason"]);
+    // And the exception says why, like every other one in this table.
+    const reason = PARITY_BINDINGS.eventStream.find((binding) => binding.field === "reason");
+    expect(reason?.source).toBe("LIVENESS");
+    expect(reason?.because ?? "").not.toBe("");
   });
 
   it("declares every volatile field that actually appears in a response", () => {

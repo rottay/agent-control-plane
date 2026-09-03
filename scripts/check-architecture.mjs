@@ -4065,6 +4065,57 @@ const V2B24B_WRITE_SET = [
 ];
 
 /**
+ * V2-B3a: the durable ledger sequence becomes a reconnectable SSE stream.
+ *
+ * **Twenty-one paths, and the last two arrived by adjudication rather than by
+ * the brief.** The packet was mapped at nineteen; two mechanically forced
+ * consumers of decisions already accepted were missing from that map, the
+ * writer stopped on the write-set law rather than improvising them, and the DT
+ * ruled `ACCEPT_21_PATHS`. Both are one-line changes and both are named here so
+ * the record shows why the number moved:
+ *
+ *   • `gateway/src/errors/index.ts` — `STATUS_BY_CODE` is a TOTAL
+ *     `Record<ApiErrorCode, number>`, so adding `STREAM_CAPACITY` to the closed
+ *     code list is a compile error there whether or not the stream ever calls
+ *     `sendApiError`. Giving the stream its own status table would not have
+ *     silenced it and would have created the second status authority that file
+ *     exists to prevent.
+ *   • `cli/test/cli/index.test.ts` — pins `apiContractVersion` as a LITERAL, on
+ *     purpose and by its own comment, because comparing the CLI's output to the
+ *     constant it prints would assert only that it can echo itself. Every prior
+ *     version bump moved that literal; this one does too.
+ *
+ * `README.md` and `docs/ROADMAP.md` are deliberately NOT here. The root
+ * README's "17 routes" line and the roadmap's "API 0.8.0" sentence both go
+ * stale with this packet, neither is fence-pinned, and the DT recorded them as
+ * a separate documentation-coherence packet rather than letting a code packet
+ * widen into prose it was not asked to touch.
+ */
+const V2B3A_WRITE_SET = [
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/entrypoints/gateway/src/stream/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "packages/entrypoints/gateway/src/constants/index.ts",
+  "packages/entrypoints/gateway/src/errors/index.ts",
+  "packages/entrypoints/gateway/test/stream/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "docs/api-reference.md",
+  "docs/architecture/0017-the-stream-boundary.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4439,6 +4490,7 @@ const WRITE_SET = [
   ...V2B24A_WRITE_SET,
   ...V2B24B_WRITE_SET,
   ...V2B25_WRITE_SET,
+  ...V2B3A_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5203,6 +5255,17 @@ const PATH_SCOPED_LAWS = [
   { law: "the protocol package imports only what it is allowed", scope: "packages/kernel/protocol/{src,test}/**" },
   { law: "the cli package imports only what it is allowed", scope: "packages/entrypoints/cli/{src,test}/**" },
   { law: "package READMEs match the surface they claim", scope: "README_SURFACE_CLAIMS (5 registered sections)" },
+  // V2-B3a. Two new path-shaped surfaces, so two new rows: the register and the
+  // `requireScope` call sites both move 34 → 36, and the count law after this
+  // list is what would have failed had only one side been edited.
+  {
+    law: "the stream mints no identity",
+    scope: "packages/entrypoints/gateway/src/stream/**",
+  },
+  {
+    law: "the stream channel map is total over the event vocabulary",
+    scope: "packages/kernel/protocol/src/schemas/index.ts",
+  },
 ];
 
 /**
@@ -6173,6 +6236,24 @@ const CONSOLE_FORBIDDEN_IMPORTS = [
   "better-sqlite3",
   "node:sqlite",
   "sqlite3",
+  // V2-B3a, L3: the console links no EventSource polyfill.
+  //
+  // Added with the stream rather than with the console that will read it,
+  // because this is the moment the temptation appears and a law that arrives
+  // after the dependency is a law that arrives too late. The browser has
+  // `EventSource` natively; neither test environment does (Node 22 hides it
+  // behind a flag, jsdom does not implement it), and the correct answer to that
+  // is a stubbed global in the suite, not a package in the manifest — a
+  // polyfill would put a second reconnect implementation, with its own opinion
+  // about Last-Event-ID, underneath the one cursor law this plane rests on.
+  //
+  // Registered here rather than as a law of its own, so the path-scoped
+  // inventory count is unchanged: this reuses the browser package's existing
+  // scope and its existing `requireScope` call site.
+  "eventsource",
+  "event-source-polyfill",
+  "reconnecting-eventsource",
+  "@microsoft/fetch-event-source",
 ];
 
 if (tracked.status === 0) {
@@ -11165,6 +11246,197 @@ if (pinSource === null) {
       }
       if (established) {
         notes.push("the Restate server pin establishes both archive and binary digests");
+      }
+    }
+  }
+}
+
+// --- 21f. the stream boundary (V2-B3a) --------------------------------------
+//
+// Two laws, both path-scoped and both registered above. They exist because the
+// stream is the first response on this plane that does not end on its own, and
+// the two ways it could go quietly wrong are exactly the two things a reviewer
+// cannot check by reading once: an identity that is not the ledger's, and a
+// channel table that stopped covering the vocabulary.
+
+// L1 — the stream mints no identity.
+//
+// The whole design rests on `Last-Event-ID` only ever holding a value that was
+// a row's `sequence`. That is a property of ONE expression, so the law is
+// stated over that expression rather than over the module's vocabulary: the
+// directory contains exactly one producer of an `id:` line, and it is
+// `String(sequence)` where `sequence` is the parameter naming the row.
+//
+// `Date.now` is deliberately NOT in the forbidden list, and the third clause is
+// what makes that safe. The connection needs a clock to know when a line has
+// gone idle enough to deserve a heartbeat, and forbidding it outright would
+// have forced a worse implementation for a law that would still not have said
+// the thing worth saying. What matters is that no clock reading reaches the id,
+// and clause 3 asserts that directly: there is one `id:` site and its
+// expression is fixed.
+{
+  const STREAM_DIR = "packages/entrypoints/gateway/src/stream/";
+  const streamSources =
+    tracked.status === 0
+      ? tracked.stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((relativePath) => relativePath.startsWith(STREAM_DIR) && relativePath.endsWith(".ts"))
+      : [];
+  for (const relativePath of V2B3A_WRITE_SET) {
+    if (relativePath.startsWith(STREAM_DIR) && !streamSources.includes(relativePath)) {
+      streamSources.push(relativePath);
+    }
+  }
+  requireScope("the stream mints no identity", streamSources.length);
+
+  // Every way a module can conjure a fresh value. A transport needs none of
+  // them: everything it sends was already numbered by the ledger.
+  const MINTS = ["randomUUID", "performance.now", "Math.random", "node:crypto"];
+  let idSites = 0;
+  for (const relativePath of streamSources.sort()) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const stripped = stripComments(content);
+
+    for (const mint of MINTS) {
+      if (stripped.includes(mint)) {
+        fail(
+          relativePath +
+            " names " +
+            mint +
+            "; the stream mints no identity — the ledger sequence is the only one",
+        );
+      }
+    }
+    // A counter is the classic second sequence: it agrees with the ledger's
+    // right up to the first reconnect, and then does not.
+    if (/\+\+|--[^-]/.test(stripped)) {
+      fail(
+        relativePath +
+          " carries an increment or decrement operator; a counter in the stream is a second sequence authority",
+      );
+    }
+
+    for (const line of stripped.split("\n")) {
+      if (!line.includes('"id: "')) continue;
+      idSites += 1;
+      if (!/"id: " \+ String\(sequence\)/.test(line)) {
+        fail(
+          relativePath +
+            " writes an id line from something other than String(sequence): " +
+            line.trim().slice(0, 120),
+        );
+      }
+    }
+  }
+  if (idSites !== 1) {
+    fail(
+      "the stream directory holds " +
+        idSites +
+        ' expression(s) writing an "id: " line; there must be exactly one, so the identity has one producer',
+    );
+  } else {
+    notes.push("the stream has exactly one id producer, and it is String(sequence)");
+  }
+}
+
+// L2 — the stream channel map is total over the event vocabulary.
+//
+// Read out of the two sources rather than imported: this fence is
+// dependency-free and runs before any build, so the compiled packages may not
+// exist when it runs. The failure it catches is a twenty-fourth event type
+// added upstream and never mapped — which would stream as `undefined` and reach
+// a reader as a channel nobody subscribed to.
+{
+  const VOCABULARY_HOME = "packages/kernel/contracts/src/schemas/control-plane-event/index.ts";
+  const CHANNEL_HOME = "packages/kernel/protocol/src/schemas/index.ts";
+  requireScope("the stream channel map is total over the event vocabulary", 1);
+
+  const vocabularySource = readIfPresent(VOCABULARY_HOME);
+  const channelSource = readIfPresent(CHANNEL_HOME);
+  if (vocabularySource === null || channelSource === null) {
+    fail("the stream channel law cannot read both " + VOCABULARY_HOME + " and " + CHANNEL_HOME);
+  } else {
+    const vocabularyStart = vocabularySource.indexOf("export const CONTROL_PLANE_EVENT_TYPES = [");
+    const vocabularyEnd =
+      vocabularyStart === -1 ? -1 : vocabularySource.indexOf("] as const;", vocabularyStart);
+    const mapStart = channelSource.indexOf("export const STREAM_CHANNEL_BY_EVENT_TYPE");
+    const mapEnd = mapStart === -1 ? -1 : channelSource.indexOf("});", mapStart);
+    const channelsStart = channelSource.indexOf("export const STREAM_CHANNELS = [");
+    const channelsEnd =
+      channelsStart === -1 ? -1 : channelSource.indexOf("] as const;", channelsStart);
+
+    if (vocabularyStart === -1 || vocabularyEnd === -1) {
+      fail(VOCABULARY_HOME + " no longer declares CONTROL_PLANE_EVENT_TYPES as a frozen array");
+    } else if (mapStart === -1 || mapEnd === -1) {
+      fail(CHANNEL_HOME + " no longer declares STREAM_CHANNEL_BY_EVENT_TYPE as a frozen object");
+    } else if (channelsStart === -1 || channelsEnd === -1) {
+      fail(CHANNEL_HOME + " no longer declares STREAM_CHANNELS as a frozen array");
+    } else {
+      const vocabulary = [
+        ...vocabularySource.slice(vocabularyStart, vocabularyEnd).matchAll(/^\s+"([A-Z_]+)",/gm),
+      ].map((match) => match[1]);
+      const channels = new Set(
+        [...channelSource.slice(channelsStart, channelsEnd).matchAll(/"([a-z]+)"/g)].map(
+          (match) => match[1],
+        ),
+      );
+      const mapped = [
+        ...channelSource.slice(mapStart, mapEnd).matchAll(/^\s+([A-Z_]+):\s*"([a-z]+)",/gm),
+      ].map((match) => ({ type: match[1], channel: match[2] }));
+
+      if (vocabulary.length === 0 || mapped.length === 0 || channels.size === 0) {
+        fail("the stream channel law parsed an empty vocabulary, map or channel list; it would pass vacuously");
+      } else {
+        const seen = new Map();
+        for (const entry of mapped) {
+          if (seen.has(entry.type)) {
+            fail("STREAM_CHANNEL_BY_EVENT_TYPE maps " + entry.type + " twice");
+          }
+          seen.set(entry.type, entry.channel);
+          if (!channels.has(entry.channel)) {
+            fail(
+              "STREAM_CHANNEL_BY_EVENT_TYPE sends " +
+                entry.type +
+                " to " +
+                entry.channel +
+                ", which STREAM_CHANNELS does not declare",
+            );
+          }
+        }
+        for (const type of vocabulary) {
+          if (!seen.has(type)) {
+            fail(
+              "STREAM_CHANNEL_BY_EVENT_TYPE does not map " +
+                type +
+                ", which CONTROL_PLANE_EVENT_TYPES declares; an unmapped type streams as no channel at all",
+            );
+          }
+        }
+        for (const type of seen.keys()) {
+          if (!vocabulary.includes(type)) {
+            fail(
+              "STREAM_CHANNEL_BY_EVENT_TYPE maps " +
+                type +
+                ", which CONTROL_PLANE_EVENT_TYPES does not declare",
+            );
+          }
+        }
+        // A channel nothing maps to is one a reader can subscribe and never
+        // hear from — indistinguishable, from outside, from a quiet system.
+        for (const channel of channels) {
+          if (!mapped.some((entry) => entry.channel === channel)) {
+            fail("STREAM_CHANNELS declares " + channel + ", which no event type maps to");
+          }
+        }
+        notes.push(
+          "the stream channel map is a total function from " +
+            vocabulary.length +
+            " event types onto " +
+            channels.size +
+            " channels, none empty",
+        );
       }
     }
   }

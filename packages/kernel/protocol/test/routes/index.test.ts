@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  API_ALLOWED_METHODS,
   API_ROUTES,
+  API_ROUTE_PATTERNS,
+  API_WRITE_ROUTES,
+  isWriteRoute,
   accountActionsPath,
   initiativeAgentsPath,
   initiativeEventsPath,
@@ -136,5 +140,48 @@ describe("the route grammar refuses every identifier outside it (G9)", () => {
     const seen = new Set<string>();
     for (let i = 0; i < ITERATIONS; i += 1) seen.add(outsideUuid(makeRandom(0x5eed_0011 + i)).violation);
     expect(seen.size).toBe(8);
+  });
+});
+
+/**
+ * The stream route's place in the frozen table (V2-B3a).
+ *
+ * This file is otherwise a property suite over the route *builders*, and the
+ * stream has no builder — it takes no path parameter, so there is nothing to
+ * validate before encoding. What it does have is a position in the table that
+ * two other laws depend on, and those are asserted here rather than left to be
+ * noticed: the route is a read, and its path is a sibling of the paged route
+ * rather than a prefix of it.
+ */
+describe("the stream route is a read, and does not collide with the paged one (V2-B3a)", () => {
+  it("sits under the versioned prefix like every other route", () => {
+    expect(API_ROUTES.eventStream).toBe("/api/v1/events/stream");
+    expect(API_ROUTES.eventStream.startsWith("/api/v1/")).toBe(true);
+  });
+
+  it("takes no path parameter, so there is no builder and nothing to encode", () => {
+    // Stated rather than assumed: a parameter added here later would need a
+    // validating builder like every other dynamic route has, and this is where
+    // that obligation would come due.
+    expect(API_ROUTES.eventStream).not.toContain(":");
+  });
+
+  it("adds nothing to the write surface", () => {
+    // A long-lived connection is still a read. The write table is the short
+    // list a reviewer glances at to answer "what can mutate?", and it did not
+    // move.
+    expect(isWriteRoute("eventStream")).toBe(false);
+    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
+    expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+  });
+
+  it("is a distinct pattern, and a suffix of the paged route rather than a rewrite of it", () => {
+    // The two answer the same rows under different liveness contracts. They
+    // must be different paths: a `?live=1` on one path would make the same URL
+    // sometimes return a body that ends and sometimes one that does not.
+    expect(API_ROUTES.eventStream).not.toBe(API_ROUTES.events);
+    expect(API_ROUTES.eventStream.startsWith(API_ROUTES.events + "/")).toBe(true);
+    const patterns = [...API_ROUTE_PATTERNS];
+    expect(new Set(patterns).size).toBe(patterns.length);
   });
 });

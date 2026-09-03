@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +19,7 @@ import {
   WorkerDetailResponse,
   WorkerPageResponse,
   bindingCoversAllRoutes,
+  StreamFrame,
   canonicalRows,
   canonicalize,
   comparableFields,
@@ -43,6 +45,7 @@ import {
 import { uiRowModel } from "@acp/console/row-model";
 
 import { buildServer } from "../../src/build-server/index.js";
+import { startServer } from "../../src/start/index.js";
 
 /**
  * The three-way parity proof: ledger, CLI and UI must tell the same story.
@@ -437,6 +440,109 @@ describe("ordering, pagination and cursors are part of the equality", () => {
     };
     const reversed = { ...body, items: [...body.items].reverse() };
     expect(canonicalRows("tasks", reversed)).not.toEqual(canonicalRows("tasks", body));
+  });
+});
+
+/**
+ * Read a whole stream that is anchored at zero, up to `count` frames.
+ *
+ * A small reader rather than the full client the stream suite carries: this
+ * file needs one shape of read — replay the log, then stop — and a second copy
+ * of the general client would be more to keep in step than to write.
+ */
+function readStream(port: number, path: string, count: number): Promise<StreamFrame[]> {
+  return new Promise((resolve, reject) => {
+    const frames: StreamFrame[] = [];
+    let pending = "";
+    const req = request(
+      {
+        host: "127.0.0.1",
+        port,
+        path,
+        method: "GET",
+        headers: { "last-event-id": "0" },
+        agent: false,
+      },
+      (response) => {
+        if (response.statusCode !== 200) {
+          reject(new Error("expected 200, got " + String(response.statusCode)));
+          return;
+        }
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          pending += chunk;
+          const blocks = pending.split("\n\n");
+          pending = blocks.pop() ?? "";
+          for (const block of blocks) {
+            const data = block
+              .split("\n")
+              .filter((line) => line.startsWith("data: "))
+              .map((line) => line.slice(6))
+              .join("");
+            if (data === "") continue;
+            frames.push(StreamFrame.parse(JSON.parse(data)));
+          }
+          if (frames.length >= count) {
+            req.destroy();
+            resolve(frames);
+          }
+        });
+        response.on("error", () => {
+          resolve(frames);
+        });
+      },
+    );
+    req.on("error", (error) => {
+      // The destroy above is how this reader stops; it is not a failure.
+      if (frames.length >= count) return;
+      reject(error);
+    });
+    req.end();
+    setTimeout(() => {
+      reject(new Error("timed out reading the stream"));
+    }, 20_000).unref();
+  });
+}
+
+describe("the stream is a fourth transport of the same rows, not a fourth projection (V2-B3a)", () => {
+  it("carries the item the CLI builds from the ledger, for the same sequence", async () => {
+    // The load-bearing independence is the same one the rest of this file
+    // rests on: the CLI derives its rows from the ledger without ever seeing
+    // the server's answer, let alone the stream's. If the stream were a second
+    // projection rather than a transport, this is where the two would part.
+    const { path } = seed();
+    const running = await startServer({ ledgerPath: path, port: 0 });
+    try {
+      const cliBuilt = (() => {
+        const ledger = openLedger(path, { readOnly: true });
+        try {
+          return buildEventPage(ledger, { limit: DEFAULT_PAGE_LIMIT }) as {
+            items: readonly unknown[];
+          };
+        } finally {
+          ledger.close();
+        }
+      })();
+
+      const frames = await readStream(running.port, API_ROUTES.eventStream, cliBuilt.items.length);
+      expect(frames).toHaveLength(cliBuilt.items.length);
+
+      for (const [index, item] of cliBuilt.items.entries()) {
+        const frame = frames[index];
+        if (frame?.kind !== "event") throw new Error("expected an event frame");
+        expect(canonicalize(frame.item)).toEqual(canonicalize(item));
+      }
+    } finally {
+      await running.close();
+    }
+  });
+
+  it("binds the stream route like every other, so the contract still covers what is served", () => {
+    // The route table grew; the parity table has to have grown with it, or
+    // `bindingCoversAllRoutes` would be false and every claim in this file
+    // would be a claim about a table with a hole in it.
+    expect(bindingCoversAllRoutes()).toBe(true);
+    expect(PARITY_ROUTES).toContain("eventStream");
   });
 });
 

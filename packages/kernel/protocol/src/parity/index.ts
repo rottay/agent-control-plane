@@ -302,6 +302,44 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("items", "LEDGER"),
       bind("count", "LEDGER"),
     ]),
+    /**
+     * The event stream (V2-B3a).
+     *
+     * The bound fields are the **union of the frame union's arms** — every
+     * field a reader can receive, whichever kind it gets — which is the same
+     * rule `accounts` established when it became the first union here.
+     *
+     * `item` binds to `LEDGER` in the strongest sense in this table: it is the
+     * identical `TimelineItem` the `events` route serves for the same row,
+     * built by the same mapper. That is what makes "the stream is a transport,
+     * not a second projection" a checkable claim rather than an intention, and
+     * a drill compares the two projections row by row.
+     *
+     * `channel` binds to `LEDGER` too, and deliberately not to a new source:
+     * it is a total function of `item.type`, declared as data in
+     * `STREAM_CHANNEL_BY_EVENT_TYPE`, so any client holding the same event can
+     * derive the same channel without asking this process anything. A field
+     * two clients can compute identically from ledger state is ledger-derived,
+     * however it happens to be transported.
+     *
+     * `reason` is the one exception, and it is `LIVENESS` rather than
+     * `LEDGER`: "this connection cannot serve the anchor you gave me" is a
+     * fact about *this process's* handle on the file — which ledger it opened,
+     * how far it has read — and not a fact recorded anywhere in the ledger.
+     * Binding it to `LEDGER` would claim a CLI folding the same events would
+     * arrive at the same value, and it would not, because it was never given
+     * an anchor.
+     */
+    eventStream: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("kind", "LEDGER"),
+      bind("channel", "LEDGER"),
+      bind("item", "LEDGER"),
+      bind("database", "LEDGER"),
+      bind("headSequence", "LEDGER"),
+      bind("reason", "LIVENESS", "why this process's handle cannot serve the anchor; never a fact in the ledger"),
+    ]),
   });
 
 /** Every route the contract covers, matching the frozen route table exactly. */

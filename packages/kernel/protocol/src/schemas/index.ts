@@ -221,6 +221,14 @@ export const API_ERROR_CODES = [
   // operator's mistake in a caller's language.
   "AUTH_REQUIRED",
   "WRITE_BEARER_UNCONFIGURED",
+  // V2-B3a: the stream's connection ceiling. A visible one-line widening of a
+  // closed list, which is this repository's convention for a genuinely new
+  // refusal — and it is genuinely new: every code above it describes something
+  // wrong with the request or with the database, and this one describes neither.
+  // The caller sent a valid request; this process is simply already holding as
+  // many long-lived connections as it will hold. `BAD_REQUEST` would blame the
+  // caller for the server's arithmetic and `INTERNAL` would claim a defect.
+  "STREAM_CAPACITY",
   "LEDGER_UNAVAILABLE",
   "LEDGER_INTEGRITY",
   "INTERNAL",
@@ -1100,6 +1108,162 @@ export const EventsQuery = z.strictObject({
   limit: PageLimit,
 });
 export type EventsQuery = z.infer<typeof EventsQuery>;
+
+// ---------------------------------------------------------------------------
+// The event stream (V2-B3a)
+// ---------------------------------------------------------------------------
+
+/**
+ * The reduced vocabulary a stream reader subscribes in.
+ *
+ * Five channels over twenty-three event types. The reduction is the point: a
+ * reader that wants "did anything happen to the lifecycle" should not have to
+ * enumerate seven type names and be wrong the day a twenty-fourth is added.
+ * The map below is what makes the reduction checkable rather than editorial.
+ */
+export const STREAM_CHANNELS = [
+  "lifecycle",
+  "execution",
+  "steps",
+  "state",
+  "progress",
+] as const;
+export const StreamChannel = z.enum(STREAM_CHANNELS);
+export type StreamChannel = z.infer<typeof StreamChannel>;
+
+/**
+ * Every ledger event type, in exactly one channel.
+ *
+ * **Total and injective on purpose, and asserted rather than asserted-about.**
+ * The suite reads `CONTROL_PLANE_EVENT_TYPES` out of the contract and requires
+ * this table to name each member exactly once, so a type added upstream fails
+ * here instead of silently streaming as some default channel — which is how a
+ * reader ends up believing a channel is quiet when it is merely unmapped.
+ *
+ * Three of the five channels are **structurally live and behaviourally empty**
+ * in any current walk: nothing outside a test emits `LEASE_ACQUIRED`,
+ * `COMMIT_AUTHORIZED`, `TOKEN_USAGE_RECORDED` or the account-switch pair yet.
+ * The map is over the vocabulary, not over what happens to be emitted, so it
+ * carries them anyway — and ADR 0017 says so in those words rather than
+ * presenting five channels of observed traffic.
+ */
+export const STREAM_CHANNEL_BY_EVENT_TYPE: Readonly<
+  Record<ControlPlaneEventType, StreamChannel>
+> = Object.freeze({
+  // lifecycle — a task's own progress through the states.
+  TASK_DISCOVERED: "lifecycle",
+  TASK_CLASSIFIED: "lifecycle",
+  TASK_READY: "lifecycle",
+  RUN_STARTED: "lifecycle",
+  TASK_STATE_CHANGED: "lifecycle",
+  TASK_FAILED: "lifecycle",
+  TASK_CANCELLED: "lifecycle",
+  // execution — what it took to run it: a slot, an account, a raised hand.
+  SLOT_RESERVED: "execution",
+  ACCOUNT_SWITCH_STARTED: "execution",
+  ACCOUNT_SWITCH_COMPLETED: "execution",
+  AUTH_REQUIRED_RAISED: "execution",
+  QUOTA_WARNING: "execution",
+  // steps — the durable walk's own beats.
+  ATOMIC_STEP_COMPLETED: "steps",
+  CHECKPOINT_WRITTEN: "steps",
+  // state — the authority facts: who held what, what was authorized, what was
+  // verified. These are the events a reviewer reads, not the ones a runner does.
+  LEASE_ACQUIRED: "state",
+  LEASE_REVOKED: "state",
+  WRITE_SET_VIOLATION_DETECTED: "state",
+  COMMIT_AUTHORIZED: "state",
+  COMMIT_RECORDED: "state",
+  VERIFICATION_COMPLETED: "state",
+  AUDIT_COMPLETED: "state",
+  // progress — usage attribution, which moves no state and is not a lifecycle
+  // fact even though it rides the task stream.
+  TOKEN_USAGE_RECORDED: "progress",
+  TOKEN_RESERVATION_RECORDED: "progress",
+});
+
+/**
+ * Why a connection cannot serve the anchor it was given.
+ *
+ * One reason today, and a closed list rather than a string so a client can
+ * branch on it. No retention window exists — the ledger's event log is never
+ * pruned, and the only `DELETE FROM` in it targets projection tables — so
+ * "your anchor is too old" cannot arise. The single unusable anchor is one
+ * this ledger has never reached, which means the client is holding a position
+ * from a different file or from before a rebuild.
+ */
+export const STREAM_RESYNC_REASONS = ["ANCHOR_AHEAD_OF_HEAD"] as const;
+export const StreamResyncReason = z.enum(STREAM_RESYNC_REASONS);
+export type StreamResyncReason = z.infer<typeof StreamResyncReason>;
+
+/**
+ * The stream's query, which is `EventsQuery` minus its two page controls.
+ *
+ * `cursor` is absent because the cursor authority is the `Last-Event-ID`
+ * header — two places to say where a reader is would be two places for them to
+ * disagree. `limit` is absent because the page size is the server's business:
+ * a stream has no page for a caller to size.
+ *
+ * Strict, like every other query here, so an unknown parameter is a
+ * `BAD_REQUEST` answered **before** the connection is hijacked — a caller with
+ * a typo gets an error envelope it can read, not a silent stream of the wrong
+ * rows.
+ */
+export const StreamQuery = z.strictObject({
+  taskId: Uuid.optional(),
+  type: ControlPlaneEventType.optional(),
+  emittedBy: WorkerIdentityString.optional(),
+  toState: TaskState.optional(),
+});
+export type StreamQuery = z.infer<typeof StreamQuery>;
+
+/**
+ * One frame on the wire, in the three kinds a connection can carry.
+ *
+ * **The identity law, made structural.** Only the `event` arm corresponds to a
+ * ledger row, and only an `event` frame is written with an SSE `id:` line whose
+ * value is that row's `sequence` verbatim. `hello` and `resync` carry no `id:`
+ * at all, and a heartbeat is an SSE comment rather than a frame. A browser's
+ * `Last-Event-ID` can therefore only ever hold a value that was a row's
+ * sequence — which is what "one sequence authority" means once it stops being
+ * a sentence and becomes a shape.
+ *
+ * **The privacy boundary is `TimelineItem` and nothing else.** No transcript,
+ * no prompt, no tool argument, no credential, no absolute path and no provider
+ * payload crosses, because none of them has a field here — the item carries
+ * payload key names and a byte size, never a payload value, and the `hello`
+ * frame's `database` is the same redacted identity every other route sends.
+ */
+const streamFrameVersions = {
+  apiContractVersion: ApiContractVersion,
+  ledgerContractVersion: LedgerContractVersion,
+};
+
+export const StreamFrame = z
+  .discriminatedUnion("kind", [
+    /** Sent once, on a connection that carries no anchor: here is the ledger, here is its head. */
+    z.strictObject({
+      ...streamFrameVersions,
+      kind: z.literal("hello"),
+      database: LedgerDatabaseIdentity,
+      headSequence: SequenceOrZero,
+    }),
+    /** One ledger row. The only arm that is written with an `id:` line. */
+    z.strictObject({
+      ...streamFrameVersions,
+      kind: z.literal("event"),
+      channel: StreamChannel,
+      item: TimelineItem,
+    }),
+    /** This connection cannot serve the anchor it was given, and says which way. */
+    z.strictObject({
+      ...streamFrameVersions,
+      kind: z.literal("resync"),
+      reason: StreamResyncReason,
+    }),
+  ])
+  .superRefine(attachGuards);
+export type StreamFrame = z.infer<typeof StreamFrame>;
 
 // ---------------------------------------------------------------------------
 // Initiatives (P8-8A)

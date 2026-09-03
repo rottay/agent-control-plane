@@ -52,6 +52,15 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   // 403, not 401: no credential would work, because this process holds none.
   // A 401 invites a retry with better headers; there is no better header.
   WRITE_BEARER_UNCONFIGURED: 403,
+  // 503, beside LEDGER_UNAVAILABLE and deliberately not 400 or 429 (V2-B3a).
+  // The ninth caller sent nothing wrong: this process is at its stream
+  // connection ceiling, which is a fact about this process's current capacity
+  // and not a defect in the request — the same distinction
+  // WRITE_BEARER_UNCONFIGURED draws against AUTH_REQUIRED. 429 is refused as
+  // well, and for a sharper reason: it would promise rate-limit semantics —
+  // a window, a quota, a Retry-After a caller could honour — that this plane
+  // does not implement and has no intention of implementing.
+  STREAM_CAPACITY: 503,
   LEDGER_UNAVAILABLE: 503,
   LEDGER_INTEGRITY: 500,
   INTERNAL: 500,
