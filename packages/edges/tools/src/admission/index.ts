@@ -50,6 +50,11 @@ export type ToolAdmissionOutcome =
   | { readonly ok: true; readonly server: AdmittedToolServer }
   | { readonly ok: false; readonly refusal: ToolRefusal; readonly at: string };
 
+/** The whole document's verdict: every server, or the first refusal and where. */
+export type ToolDocumentOutcome =
+  | { readonly ok: true; readonly servers: readonly AdmittedToolServer[] }
+  | { readonly ok: false; readonly refusal: ToolRefusal; readonly at: string };
+
 /** The only two hostnames that are this machine, spelled as literals. */
 const TOOL_LOOPBACK_HOSTS: readonly string[] = ["127.0.0.1", "::1"];
 
@@ -231,4 +236,59 @@ export function admitToolServer(descriptor: ToolServerDescriptor): ToolAdmission
       allowlist: Object.freeze(allowlist),
     }),
   };
+}
+
+/**
+ * The whole tool document, admitted or refused as one (V2-B4b stage 3C).
+ *
+ * The door reads and JSON-parses the operator's file and hands the **already
+ * parsed value** here, as `unknown`. This module may not read a file — the law
+ * confines `node:fs` to the command check above — and that division is the
+ * right one anyway: reading is the entrypoint's job, deciding is this one's.
+ *
+ * `unknown` rather than a declared array is the same discipline
+ * {@link admitToolServer} applies to `descriptor.args` and `descriptor.tools`:
+ * the value came off a disk an operator edits, so the runtime is the only place
+ * that knows its shape, and borrowing a guarantee from a declared type that was
+ * never checked is how a malformed document becomes a live child.
+ *
+ * **All or nothing.** One bad descriptor refuses the document. A partial
+ * admission would start a plane whose reachable tools depend on which entries
+ * happened to parse, and an operator would have no way to tell a working
+ * configuration from a half-working one.
+ *
+ * Refusals name the index, so `servers[2].serverId` points at the entry that
+ * caused it rather than making an operator bisect the file.
+ */
+export function admitToolServers(raw: unknown): ToolDocumentOutcome {
+  if (!Array.isArray(raw)) return { ok: false, refusal: "SERVER_NOT_ADMITTED", at: "servers" };
+  const entries = raw as readonly unknown[];
+  if (entries.length === 0) {
+    return { ok: false, refusal: "SERVER_NOT_ADMITTED", at: "servers" };
+  }
+
+  const admitted: AdmittedToolServer[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < entries.length; index += 1) {
+    const at = "servers[" + String(index) + "]";
+    const entry = entries[index];
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return { ok: false, refusal: "SERVER_NOT_ADMITTED", at };
+    }
+    const outcome = admitToolServer(entry as ToolServerDescriptor);
+    if (!outcome.ok) {
+      // The per-descriptor refusal already names its field; prefixing the index
+      // keeps that precision and adds which entry it was about.
+      return { ok: false, refusal: outcome.refusal, at: at + "." + outcome.at.replace(/^descriptor\./, "") };
+    }
+    // Two servers under one id would make `sessionId + "/" + serverId` name two
+    // different children, so the connection key would stop identifying one.
+    if (seen.has(outcome.server.serverId)) {
+      return { ok: false, refusal: "SERVER_NOT_ADMITTED", at: at + ".serverId" };
+    }
+    seen.add(outcome.server.serverId);
+    admitted.push(outcome.server);
+  }
+
+  return { ok: true, servers: Object.freeze(admitted) };
 }

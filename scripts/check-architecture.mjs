@@ -4567,6 +4567,78 @@ const V2B4B_S3B_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b stage 3C — the API door for the explicit tool operation.
+ *
+ * Stage 3B built the operation and left it with no caller. This packet is the
+ * door: `taskToolCalls`, GET and POST, registered through the same guarded
+ * registrar as the plane's other two writes. It is the first route in this
+ * repository whose handler starts a child process and speaks a protocol to it,
+ * which is why `API_CONTRACT_VERSION` moves with it — a reader at `0.9.0` was
+ * right that nothing this process serves starts another process.
+ *
+ * **A door, not a policy.** There is no automatic tool choice, no `listTools`
+ * at readiness and no daemon-side tool plane. The plane calls a tool because an
+ * operator asked it to over an authenticated route, and never because a walk
+ * decided to. L-B4B-8 and L-B4B-9 below are what keep that mechanical.
+ *
+ * **The composition seam.** `openToolOperation` is the one site outside this
+ * package's own suites that constructs a protocol port, and the gateway reaches
+ * a tool only through `runToolCall`. That second half is load-bearing: the port
+ * builds a refusal receipt from the caller's raw names, so a refusal on an
+ * out-of-grammar name would be unrecordable, and the operation's prechecks are
+ * what close it. A door that called `callTool` directly would reopen it.
+ *
+ * **`SECURITY.md` moves with the write table.** Its "Two write routes, both
+ * named." was a counted claim the SECURITY law cannot check — the law verifies
+ * that each anchor's file and literal exist, not that a sentence beside them
+ * still counts correctly. Left alone it would have become false the moment the
+ * third route landed. It is count-free now, and the anchor is untouched, so the
+ * anchor total does not move.
+ *
+ * `TOOLS_PUBLIC_EXPORTS` moves 30 → **35**, not the 34 the plan estimated: the
+ * scope's input type is on the surface beside its output, as
+ * `ToolProtocolPortInput` already is. `PATH_SCOPED_LAWS` moves 57 → 60 for the
+ * three laws below. The gateway's dependency row moves 5 → 7. Nothing else
+ * pinned moves: `API_ALLOWED_METHODS` is still `["GET"]`, the nine payload keys
+ * and `TOOLS_RECEIPT_SHAPE` are untouched, and `LEDGER_CONTRACT_VERSION` does
+ * not move — the row this route appends has been in the ledger contract since
+ * stage 2, and the door is what was missing.
+ */
+const V2B4B_S3C_WRITE_SET = [
+  "packages/edges/tools/src/admission/index.ts",
+  "packages/edges/tools/src/operation/index.ts",
+  "packages/edges/tools/src/index.ts",
+  "packages/edges/tools/README.md",
+  "packages/edges/tools/test/operation/index.test.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/entrypoints/gateway/src/tool-calls/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "packages/entrypoints/gateway/src/start/index.ts",
+  "packages/entrypoints/gateway/src/bin/index.ts",
+  "packages/entrypoints/gateway/src/errors/index.ts",
+  "packages/entrypoints/gateway/package.json",
+  "packages/entrypoints/gateway/tsconfig.json",
+  "packages/entrypoints/gateway/test/tsconfig.json",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/bin/index.test.ts",
+  "packages/entrypoints/gateway/README.md",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "docs/api-reference.md",
+  "SECURITY.md",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4951,6 +5023,7 @@ const WRITE_SET = [
   ...V2B4B_S2_WRITE_SET,
   ...V2B4B_S3A_WRITE_SET,
   ...V2B4B_S3B_WRITE_SET,
+  ...V2B4B_S3C_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5834,6 +5907,21 @@ const PATH_SCOPED_LAWS = [
     law: "the identifier grammar has one declaration and two importers",
     scope: "packages/edges/tools/{src,test}/** and packages/domains/runtime/{src,test}/**",
   },
+  // V2-B4b stage 3C. Three laws that together keep "a door, not a policy"
+  // mechanical rather than conventional: one composition site, one path from a
+  // door to a tool, and no content on any durable or broadcast surface.
+  {
+    law: "the tool protocol port has exactly one composition site",
+    scope: "every tracked src file outside packages/edges/tools own suites",
+  },
+  {
+    law: "the door reaches a tool only through the runtime operation",
+    scope: "packages/entrypoints/gateway/src/**",
+  },
+  {
+    law: "tool call content never becomes durable or broadcast",
+    scope: "packages/entrypoints/gateway/src/** and packages/kernel/protocol/src/**",
+  },
 ];
 
 /**
@@ -6635,7 +6723,18 @@ const P1B_DEPENDENCY_LAW = [
     // domain, and nothing in accounts names a server, transitively or
     // otherwise. Five declaration sites, all in this packet's write-set: the
     // manifest, this law, the lockfile, and both project references.
-    dependencies: ["@acp/accounts", "@acp/protocol", "@acp/ledger", "@acp/observation", "fastify"],
+    dependencies: [
+      "@acp/accounts",
+      "@acp/protocol",
+      "@acp/ledger",
+      "@acp/observation",
+      // V2-B4b stage 3C: the tool-call door composes the runtime's
+      // operation over the tool edge's scope. Both are workspace edges,
+      // not third-party packages, and the DT authorized exactly these two.
+      "@acp/runtime",
+      "@acp/tools",
+      "fastify",
+    ],
     devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
@@ -11771,6 +11870,11 @@ const GATEWAY_TS_ALIASES = {
 const GATEWAY_TS_REFERENCES = [
   "../../domains/accounts",
   "../../domains/observation",
+  // V2-B4b stage 3C: the tool-call door composes the runtime's operation over
+  // the tool edge's scope, so the project references both. Two workspace edges
+  // the DT authorized by name, not a widening of what the gateway may reach.
+  "../../domains/runtime",
+  "../../edges/tools",
   "../../kernel/protocol",
   "../../persistence/ledger",
   "../cli",
@@ -12801,6 +12905,12 @@ const TOOLS_PUBLIC_EXPORTS = [
   "TOOL_MCP_PROTOCOL_VERSION",
   "TOOL_MCP_CLIENT_NAME",
   "admitToolServer",
+  // V2-B4b stage 3C: the operator document and the operation scope.
+  "admitToolServers",
+  "ToolDocumentOutcome",
+  "openToolOperation",
+  "ToolOperationScope",
+  "ToolOperationInput",
   "AdmittedToolServer",
   "ToolAdmissionOutcome",
   "ToolCallReceipt",
@@ -13227,6 +13337,134 @@ if (tracked.status === 0) {
   requireScope("the identifier grammar has one declaration and two importers", grammarScanned);
   notes.push(
     "one bounded identifier grammar, declared in @acp/contracts and imported by the tool edge and the recorder",
+  );
+}
+
+// L-B4B-8/9/10 -- the door is a door, and content stays out of the record.
+//
+// The DT accepted a narrowly scoped process-start authority. "Narrowly scoped"
+// is a claim about where the authority can be reached from, so it is checked
+// where it can be: the number of places that construct a port, the path a door
+// takes to a tool, and what may travel on a durable or broadcast surface.
+const TOOLS_OPERATION_SITE = "packages/edges/tools/src/operation/index.ts";
+const GATEWAY_TOOL_DOOR = "packages/entrypoints/gateway/src/tool-calls/index.ts";
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+
+  // L-B4B-8. Exactly one file outside `@acp/tools`' own suites constructs a
+  // protocol port, and it is the operation module. A second composition site is
+  // a second place that can start a child, which is the authority spreading.
+  let compositionScanned = 0;
+  const composers = [];
+  for (const relativePath of present) {
+    if (!relativePath.endsWith(".ts")) continue;
+    // The package's own suites may construct one: that is what proves the port
+    // works at all, and a law that forbade it would forbid the evidence.
+    if (relativePath.startsWith("packages/edges/tools/test/")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    compositionScanned += 1;
+    const code = stripComments(content);
+    // The factory's own declaration site is not a composition of it. Matching
+    // the call shape alone would name the file that defines the function.
+    if (code.includes("export function createToolProtocolPort")) continue;
+    if (!code.includes("createToolProtocolPort(")) continue;
+    composers.push(relativePath);
+  }
+  const unexpected = composers.filter((candidate) => candidate !== TOOLS_OPERATION_SITE);
+  if (unexpected.length > 0) {
+    fail(
+      "createToolProtocolPort is composed at " +
+        unexpected.join(", ") +
+        "; the one site outside this package's suites is " +
+        TOOLS_OPERATION_SITE +
+        ", and a second is process-start authority spreading past the seam that names it",
+    );
+  }
+  if (!composers.includes(TOOLS_OPERATION_SITE)) {
+    fail(
+      TOOLS_OPERATION_SITE +
+        " no longer composes createToolProtocolPort; the composition site the law names would be empty",
+    );
+  }
+  requireScope("the tool protocol port has exactly one composition site", compositionScanned);
+
+  // L-B4B-9. The door reaches a tool only through the operation. Checking that
+  // the door names `runToolCall` is not enough on its own: what makes the
+  // refusal path recordable is that it does NOT reach the port directly, since
+  // the port builds its refusal receipt from the caller's raw names.
+  let doorScanned = 0;
+  for (const relativePath of present) {
+    if (!relativePath.startsWith("packages/entrypoints/gateway/src/")) continue;
+    if (!relativePath.endsWith(".ts")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    doorScanned += 1;
+    const code = stripComments(content);
+    if (code.includes("createToolProtocolPort")) {
+      fail(
+        relativePath +
+          " constructs a tool protocol port; the gateway composes an operation scope and never a port," +
+          " because a port refusal is built from the caller's raw names and would not be recordable",
+      );
+    }
+    if (code.includes(".callTool(")) {
+      fail(
+        relativePath +
+          " calls a tool port directly; the door reaches a tool only through runToolCall, whose" +
+          " prechecks are what make every refusal recordable",
+      );
+    }
+  }
+  const door = readIfPresent(GATEWAY_TOOL_DOOR);
+  if (door === null) {
+    fail(GATEWAY_TOOL_DOOR + " is missing; it is the door this law is about");
+  } else if (!stripComments(door).includes("runToolCall(")) {
+    fail(
+      GATEWAY_TOOL_DOOR +
+        " no longer calls runToolCall; a door that reached a tool another way would be one whose" +
+        " refusals are not guaranteed to reach the ledger",
+    );
+  }
+  requireScope("the door reaches a tool only through the runtime operation", doorScanned);
+
+  // L-B4B-10. Content never becomes durable or broadcast. The response body is
+  // the only surface it may reach, so the row model and the stream item must
+  // not name it, and the door must not hand it to an append or a frame.
+  let contentScanned = 0;
+  const rowModel = readIfPresent("packages/kernel/protocol/src/schemas/index.ts");
+  if (rowModel === null) {
+    fail("packages/kernel/protocol/src/schemas/index.ts is missing; the row model cannot be checked");
+  } else {
+    contentScanned += 1;
+    const code = stripComments(rowModel);
+    const rowStart = code.indexOf("export const ToolCallRow");
+    const rowEnd = rowStart < 0 ? -1 : code.indexOf("export type ToolCallRow", rowStart);
+    if (rowStart < 0 || rowEnd < 0) {
+      fail("ToolCallRow is not declared in the protocol schemas; the GET row model cannot be checked");
+      // A member named exactly `content`, not the substring: `contentBlocks` is
+      // a count and belongs on the row, which is the whole point of recording a
+      // size instead of the thing it measures.
+    } else if (/\bcontent\s*:/.test(code.slice(rowStart, rowEnd))) {
+      fail(
+        "ToolCallRow names a content member; content is never durable, so a row model that carried" +
+          " one would promise a field no client can fold out of the ledger",
+      );
+    }
+  }
+  const mappers = readIfPresent("packages/entrypoints/gateway/src/mappers/index.ts");
+  if (mappers !== null) {
+    contentScanned += 1;
+    if (/payload\s*:/.test(stripComments(mappers))) {
+      fail(
+        "packages/entrypoints/gateway/src/mappers/index.ts projects a payload onto a stream item;" +
+          " a timeline item carries key names and a byte size, never values",
+      );
+    }
+  }
+  requireScope("tool call content never becomes durable or broadcast", contentScanned);
+  notes.push(
+    "one tool composition site, one door path through runToolCall, and no content on a durable or broadcast surface",
   );
 }
 

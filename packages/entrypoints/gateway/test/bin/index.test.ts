@@ -93,13 +93,24 @@ describe("the entry refuses by classified reason, never by echoing argv", () => 
   });
 
   it("refuses every relative path, not only the ledger's", () => {
-    for (const flag of ["--accounts-file", "--write-bearer"]) {
+    for (const flag of ["--accounts-file", "--write-bearer", "--tool-servers"]) {
       const outcome = parseArgv(["--ledger", "/tmp/l.sqlite3", flag, "relative/thing"]);
       expect({ flag, outcome }).toEqual({
         flag,
         outcome: { ok: false, reason: "PATH_NOT_ABSOLUTE", exit: EXIT_PATH },
       });
     }
+  });
+
+  it("carries the tool document path through, so the door is reachable in production", () => {
+    // V2-B4b stage 3C. Without this the option exists only in tests, and a
+    // door no operator can configure is not the door the ruling accepted.
+    const outcome = parseArgv([
+      "--ledger", "/tmp/l.sqlite3",
+      "--tool-servers", "/tmp/tool-servers.json",
+    ]);
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.options.toolServersPath).toBe("/tmp/tool-servers.json");
   });
 
   it("refuses a port that is not a number, and one out of range", () => {

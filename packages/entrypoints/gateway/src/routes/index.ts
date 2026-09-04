@@ -1,5 +1,6 @@
 import {
   API_CONTRACT_VERSION,
+  MAX_TOOL_CALLS,
   API_ROUTES,
   EventPageResponse,
   EventsQuery,
@@ -41,6 +42,11 @@ import { randomUUID } from "node:crypto";
 import { countTasks, countWorkers, recentEventsForTask, recentEventsForWorker } from "../aggregates/index.js";
 import { ApiRouteError, classifyUnexpectedError, sendApiError } from "../errors/index.js";
 import type { LedgerSource } from "../ledger-source/index.js";
+import {
+  buildToolCallPage,
+  executeToolCall,
+  loadToolServers,
+} from "../tool-calls/index.js";
 import {
   initiativeDetail,
   portfolio,
@@ -332,6 +338,7 @@ export function registerRoutes(
   accountsFilePath?: string,
   writeBearerPath?: string,
   now?: () => string,
+  toolServersPath?: string,
 ): void {
   // The instant seam. Absent means the real clock, which is what production
   // passes and what every route below used directly until this packet.
@@ -341,6 +348,10 @@ export function registerRoutes(
   // batch; loading here means the process authorizes against the credential
   // it started with, and a rotation is a restart.
   const bearer = loadBearerGuard(writeBearerPath);
+  // Loaded once, beside the bearer and for the same reason: a document re-read
+  // per request would let a file edited mid-flight change the answer between
+  // two calls of one batch. A rotation is a restart.
+  const toolServers = loadToolServers(toolServersPath);
 
   registerGet(app, API_ROUTES.health, (request) => {
     assertEmptyQuery(queryOf(request));
@@ -897,6 +908,43 @@ export function registerRoutes(
           head: true,
         },
         sequence: outcome.sequence,
+      });
+    },
+    bearer,
+  );
+
+  // V2-B4b stage 3C: the tool-call door. Registered through the same guarded
+  // registrar as the other two writes, so the bearer is inherited structurally
+  // rather than remembered -- and so nothing about the tool document is
+  // learnable before the bearer check has passed.
+  registerGetAndPost(
+    app,
+    API_ROUTES.taskToolCalls,
+    (request) => {
+      const taskId = parseTaskIdParam(paramsOf(request)["taskId"] ?? "");
+      const { ledger } = requireOpen(source);
+      if (ledger.getTask(taskId) === null) {
+        throw new ApiRouteError("NOT_FOUND", "no task with that id was found");
+      }
+      const query = queryOf(request);
+      const rawCursor = query["cursor"];
+      const rawLimit = query["limit"];
+      const cursor = typeof rawCursor === "string" ? rawCursor : undefined;
+      const limit = rawLimit === undefined ? MAX_TOOL_CALLS : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > MAX_TOOL_CALLS) {
+        throw new ApiRouteError("BAD_REQUEST", "the limit is out of range", "limit");
+      }
+      return buildToolCallPage(ledger, taskId, cursor, limit);
+    },
+    async (request) => {
+      const taskId = parseTaskIdParam(paramsOf(request)["taskId"] ?? "");
+      assertEmptyQuery(queryOf(request));
+      const { ledger } = requireOpen(source);
+      return await executeToolCall({
+        ledger,
+        servers: toolServers,
+        taskId,
+        body: request.body,
       });
     },
     bearer,

@@ -171,7 +171,13 @@ describe("the stream route is a read, and does not collide with the paged one (V
     // list a reviewer glances at to answer "what can mutate?", and it did not
     // move.
     expect(isWriteRoute("eventStream")).toBe(false);
-    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
+    // The table moved at V2-B4b stage 3C, and not here: `taskToolCalls` is the
+    // third entry, added by the tool-call door. The stream still adds nothing.
+    expect([...API_WRITE_ROUTES]).toEqual([
+      "initiativeRoadmap",
+      "accountActions",
+      "taskToolCalls",
+    ]);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
   });
 

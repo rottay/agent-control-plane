@@ -6,14 +6,17 @@ call it makes and every call it refuses.
 
 ## Scope
 
-A live execution session is the scope of the plane's authority to call a tool,
+A live execution scope is the scope of the plane's authority to call a tool,
 the allowlist is the boundary of it, and the receipt is the record of it.
+Today that scope is an explicit **open tool operation**; it becomes a harness
+session when a true in-execution caller exists.
 
-**The daemon does not compose this port yet.** There is no `DaemonOptions.tools`,
-no drill and no unwind resource: nothing in this repository calls
-`createToolProtocolPort` outside this package's own suites. That composition is
-stage 3, and until it lands this package is a library with a proof, not a leg of
-the running plane.
+**The composer is a door, not the daemon** (V2-B4b stage 3C). There is still no
+`DaemonOptions.tools`, no drill and no unwind resource, and there deliberately
+is no daemon tool policy: the plane calls a tool because an operator asked it
+to, over an authenticated route, and never because a walk decided to. The one
+composition site is `src/operation/index.ts` — inside this package, and no
+longer only in its suites — and the caller is the gateway's tool-call route.
 
 Nothing here is adopted into real operation. Adoption is a single explicit
 decision that happens after P8 certification and a separate P9 authorization.
@@ -163,8 +166,13 @@ join and the receipt live.
 | `TOOL_MCP_PROTOCOL_VERSION` | the revision this client was built against |
 | `TOOL_MCP_CLIENT_NAME` | what the plane calls itself in `initialize` |
 | `admitToolServer` | the only producer of an admitted server |
+| `admitToolServers` | a whole operator document, admitted all or nothing |
 | `AdmittedToolServer` | a server the plane has decided it may talk to |
 | `ToolAdmissionOutcome` | admitted, or refused field-exactly |
+| `ToolDocumentOutcome` | the document's verdict, or the first refusal and where |
+| `openToolOperation` | the one composition site for the protocol port |
+| `ToolOperationScope` | one open operation: its id, its call, its close |
+| `ToolOperationInput` | the scope id and the servers it may reach |
 | `ToolCallReceipt` | the bounded record of one call |
 | `ToolCallOutcomeName` | `COMPLETED` or `REFUSED` |
 | `SessionLiveness` | the liveness predicate, read and never pushed |

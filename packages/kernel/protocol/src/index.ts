@@ -41,6 +41,7 @@ export {
   initiativeRoadmapContentPath,
   initiativeRoadmapPath,
   taskPath,
+  toolCallsPath,
   isWriteRoute,
   workerPath,
 } from "./routes/index.js";
@@ -119,6 +120,16 @@ export {
   AccountActionWriteResponse,
   AccountActionsResponse,
   MAX_ACCOUNT_ACTIONS,
+  // V2-B4b stage 3C: the explicit tool call, as a wire contract. The request
+  // schema is exported because two doors parse it -- the API's POST body and
+  // the CLI's request document are the same bytes, which is the equivalence
+  // claim rather than a convenience.
+  MAX_TOOL_CALLS,
+  ToolCallExecuteRequest,
+  ToolCallExecuteResponse,
+  ToolCallPageResponse,
+  ToolCallRow,
+  ToolCallsQuery,
   AccountDto,
   AccountStatusDto,
   AccountsResponse,

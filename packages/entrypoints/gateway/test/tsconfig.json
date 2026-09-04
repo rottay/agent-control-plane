@@ -17,6 +17,8 @@
   "references": [
     { "path": "../../../domains/accounts" }, { "path": "../../../kernel/protocol" },
     { "path": "../../../persistence/ledger" },
+    { "path": "../../../domains/runtime" },
+    { "path": "../../../edges/tools" },
     { "path": "../../cli" },
     { "path": "../../console" }
   ]

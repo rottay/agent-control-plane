@@ -298,14 +298,17 @@ describe("usage", () => {
     expect(result.exitCode).toBe(EXIT_OK);
     expect(json(result)).toEqual({
       // Moved 0.1.0 → 0.2.0 by P8-8A's additive initiative routes, and on to
-      // 0.5.0 as P8-8D and P8-8E-pre added routes. Moved again to 0.9.0 at
-      // V2-B3a, for the reason only 0.3.0 ever had before it: not a new field
-      // on an old shape, but a change in what the API *is* — one route now
-      // answers with a connection that stays open and expects to be resumed by
-      // header. Asserted as a literal on purpose: the CLI's job here is to
-      // report the number a reader can pin against, and comparing it to the
-      // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.9.0",
+      // 0.5.0 as P8-8D and P8-8E-pre added routes. Moved to 0.9.0 at V2-B3a,
+      // for the reason only 0.3.0 ever had before it: not a new field on an old
+      // shape, but a change in what the API *is* — one route now answers with a
+      // connection that stays open and expects to be resumed by header. Moved
+      // again to 0.10.0 at V2-B4b stage 3C, on that same reason for the third
+      // time: one write route now makes the server start a child process and
+      // speak a protocol to it. Asserted as a literal on purpose: the CLI's job
+      // here is to report the number a reader can pin against, and comparing it
+      // to the constant it prints would assert only that the CLI can echo
+      // itself.
+      apiContractVersion: "0.10.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });

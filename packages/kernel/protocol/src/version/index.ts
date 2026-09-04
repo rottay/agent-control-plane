@@ -47,13 +47,29 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * drops. That is not a new field on an old shape, and a version number exists
  * to say so.
  *
- * The write surface did not move: `API_WRITE_ROUTES` is still exactly two, and
- * `API_ALLOWED_METHODS` is still exactly `["GET"]`. `LEDGER_CONTRACT_VERSION`
- * does not move either — the stream carries the events the ledger already
- * recorded, in the projection the read routes already serve, so nothing about
- * recorded history changed.
+ * The write surface did not move: `API_WRITE_ROUTES` was still exactly two at
+ * that release, and `API_ALLOWED_METHODS` is still exactly `["GET"]`.
+ * `LEDGER_CONTRACT_VERSION` does not move either — the stream carries the
+ * events the ledger already recorded, in the projection the read routes already
+ * serve, so nothing about recorded history changed.
+ *
+ * `0.9.0` → `0.10.0` at V2-B4b stage 3C: the explicit tool call gets a door.
+ * Additive in shape — one new route, five new schemas, one new error code, and
+ * every read a pinned reader made before still answers identically — and the
+ * minor moves for the third time on the reason `0.3.0` and `0.9.0` moved:
+ * **what this API *is* changed again.** A reader at `0.9.0` was right that every
+ * write here records a decision the caller had already made, and that nothing
+ * this process serves starts another one. At `0.10.0` one write route makes
+ * this process spawn a child, speak a protocol to it, and reap it before the
+ * response returns. That is a different kind of authority to hold, not a new
+ * field on an old shape, and a version number exists to say so.
+ *
+ * `API_WRITE_ROUTES` moves two → three with it, which is the visible half of
+ * the same fact. `LEDGER_CONTRACT_VERSION` does not move: the row this route
+ * appends is `TOOL_CALL_RECORDED`, which the ledger contract has carried since
+ * stage 2 — the door is what was missing, not the shape.
  */
-export const API_CONTRACT_VERSION = "0.9.0" as const;
+export const API_CONTRACT_VERSION = "0.10.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

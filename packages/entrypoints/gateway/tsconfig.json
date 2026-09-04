@@ -10,6 +10,8 @@
     { "path": "../../domains/accounts" }, { "path": "../../kernel/protocol" },
     { "path": "../../persistence/ledger" },
     { "path": "../../domains/observation" },
+    { "path": "../../domains/runtime" },
+    { "path": "../../edges/tools" },
     { "path": "../cli" },
     { "path": "../console" }
   ]

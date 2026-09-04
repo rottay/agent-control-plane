@@ -64,8 +64,11 @@ Three properties, each mechanical:
   the hashes compared with `timingSafeEqual`, so neither the bytes nor the
   *length* leaks through timing. Hashing first is what makes the operands
   equal-length, which `timingSafeEqual` requires.
-- **Two write routes, both named.** `API_WRITE_ROUTES` is a separate frozen
-  table, so "what can mutate?" has one short answer that grows visibly.
+- **Every write route is named.** `API_WRITE_ROUTES` is a separate frozen
+  table, so "what can mutate?" has one short answer that grows visibly. The
+  claim is deliberately count-free: the table is the authority on how many
+  there are, and a number repeated here would be a second one that could go
+  stale without any check noticing.
 
 > Anchor: `packages/entrypoints/gateway/src/bearer/index.ts` — `timingSafeEqual`
 > Anchor: `packages/entrypoints/gateway/src/bearer/index.ts` — `Fail-closed`

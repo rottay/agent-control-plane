@@ -67,6 +67,9 @@ import {
   StreamQuery,
   taskPath,
   workerPath,
+  ToolCallExecuteRequest,
+  ToolCallExecuteResponse,
+  ToolCallRow,
 } from "../../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -352,9 +355,14 @@ describe("routes", () => {
   it("answers reads only", () => {
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     // P8-8D-pre: the read plane's method list did not move when the first
-    // write route arrived. The exception lives in its own frozen table, so
-    // this assertion still describes every one of the nine reads.
-    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
+    // write route arrived, and it has not moved since. The exceptions live in
+    // their own frozen table, which is the one that grows -- three entries as
+    // of V2-B4b stage 3C, the newest being the tool-call door.
+    expect([...API_WRITE_ROUTES]).toEqual([
+      "initiativeRoadmap",
+      "accountActions",
+      "taskToolCalls",
+    ]);
     expect([...API_WRITE_METHODS]).toEqual(["GET", "POST"]);
     expect(Object.isFrozen(API_WRITE_ROUTES)).toBe(true);
     expect(isWriteRoute("initiativeRoadmap")).toBe(true);
@@ -1969,5 +1977,77 @@ describe("the stream's refusal code", () => {
     for (const code of ["BAD_REQUEST", "INTERNAL", "LEDGER_UNAVAILABLE"]) {
       expect(API_ERROR_CODES.filter((declared) => declared === code)).toHaveLength(1);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The explicit tool call (V2-B4b stage 3C)
+// ---------------------------------------------------------------------------
+
+describe("the tool call's wire contract", () => {
+  const TASK = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
+  function request(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      taskId: TASK,
+      attempt: 1,
+      submittedAt: "2026-09-03T12:00:00.000Z",
+      submissionDigest: "a".repeat(64),
+      operationIndex: 0,
+      callIndex: 0,
+      accountId: "acct-primary",
+      identity: "claude/opus/implementer/01",
+      serverId: "docs",
+      toolName: "docs.search",
+      arguments: { q: "acp" },
+      ...overrides,
+    };
+  }
+
+  it("accepts a well-formed request", () => {
+    expect(ToolCallExecuteRequest.safeParse(request()).success).toBe(true);
+  });
+
+  it("bounds exactly what the operation's first four prechecks bound", () => {
+    // Each of these would otherwise reach `runToolCall` and be refused by a
+    // throw, which the door cannot turn into anything but a 500. Refusing them
+    // here is what makes each a 400 that names its field.
+    expect(ToolCallExecuteRequest.safeParse(request({ toolName: "rm -rf /" })).success).toBe(false);
+    expect(ToolCallExecuteRequest.safeParse(request({ serverId: "" })).success).toBe(false);
+    expect(ToolCallExecuteRequest.safeParse(request({ accountId: "acct primary" })).success).toBe(false);
+    expect(ToolCallExecuteRequest.safeParse(request({ identity: "not-an-identity" })).success).toBe(false);
+    expect(ToolCallExecuteRequest.safeParse(request({ operationIndex: -1 })).success).toBe(false);
+    expect(ToolCallExecuteRequest.safeParse(request({ callIndex: 1.5 })).success).toBe(false);
+    expect(ToolCallExecuteRequest.safeParse(request({ attempt: 0 })).success).toBe(false);
+    expect(ToolCallExecuteRequest.safeParse(request({ attempt: 10_001 })).success).toBe(false);
+    expect(ToolCallExecuteRequest.safeParse(request({ submittedAt: "yesterday" })).success).toBe(false);
+  });
+
+  it("takes an optional causal link, and refuses one that is not an event id", () => {
+    expect(ToolCallExecuteRequest.safeParse(request({ causedBy: null })).success).toBe(true);
+    expect(ToolCallExecuteRequest.safeParse(request({ causedBy: TASK })).success).toBe(true);
+    expect(ToolCallExecuteRequest.safeParse(request({ causedBy: "not-a-uuid" })).success).toBe(false);
+    // Whether the event exists is the door's to check: it needs a ledger.
+  });
+
+  it("refuses an unknown member, so the two doors cannot drift apart", () => {
+    expect(ToolCallExecuteRequest.safeParse(request({ extra: 1 })).success).toBe(false);
+  });
+
+  it("gives the GET row model no content member, because none was ever durable", () => {
+    const keys = Object.keys(ToolCallRow.shape);
+    expect(keys).not.toContain("content");
+    expect(keys).toContain("argumentBytes");
+    expect(keys).toContain("causedBy");
+  });
+
+  it("carries content only on the execute response", () => {
+    expect(Object.keys(ToolCallExecuteResponse.shape)).toContain("content");
+  });
+
+  it("names the twelfth error code, and the version that came with it", () => {
+    expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
+    expect(API_ERROR_CODES).toHaveLength(12);
+    expect(API_CONTRACT_VERSION).toBe("0.10.0");
   });
 });

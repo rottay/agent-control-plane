@@ -889,7 +889,11 @@ describe("the served surface matches the frozen route table", () => {
     // Unconfigured, so a 200 carrying UNAVAILABLE — a handler's answer, not a
     // router's.
     expect((await app.inject({ method: "GET", url: "/api/v1/accounts" })).statusCode).toBe(200);
-    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
+    expect([...API_WRITE_ROUTES]).toEqual([
+      "initiativeRoadmap",
+      "accountActions",
+      "taskToolCalls",
+    ]);
     await app.close();
   });
 
@@ -910,7 +914,11 @@ describe("the served surface matches the frozen route table", () => {
       // router's answer and never reaches the guard.
       expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
     }
-    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
+    expect([...API_WRITE_ROUTES]).toEqual([
+      "initiativeRoadmap",
+      "accountActions",
+      "taskToolCalls",
+    ]);
     await app.close();
   });
 
@@ -998,7 +1006,11 @@ describe("the served surface matches the frozen route table", () => {
       expect(ApiError.parse(response.json()).error.code).toBe("METHOD_NOT_ALLOWED");
     }
     // And the stream did not become the plane's third write.
-    expect([...API_WRITE_ROUTES]).toEqual(["initiativeRoadmap", "accountActions"]);
+    expect([...API_WRITE_ROUTES]).toEqual([
+      "initiativeRoadmap",
+      "accountActions",
+      "taskToolCalls",
+    ]);
     await app.close();
   });
 });

@@ -48,6 +48,7 @@ const USAGE = [
   "  --ledger <path>          required; the SQLite ledger this process reads",
   "  --accounts-file <path>   optional; the owner accounts file",
   "  --write-bearer <path>    optional; the write bearer token file",
+  "  --tool-servers <path>    optional; the admitted tool server document",
   "  --port <n>               optional; 0 asks the OS for a free port",
   "",
   "  Every path must be absolute. The server binds " + SERVER_BIND_HOST + " only.",
@@ -57,6 +58,7 @@ export interface ParsedArgv {
   readonly ledgerPath: string;
   readonly accountsFilePath?: string | undefined;
   readonly writeBearerPath?: string | undefined;
+  readonly toolServersPath?: string | undefined;
   readonly port?: number | undefined;
 }
 
@@ -68,6 +70,7 @@ const PATH_FLAGS = new Map<string, keyof ParsedArgv>([
   ["--ledger", "ledgerPath"],
   ["--accounts-file", "accountsFilePath"],
   ["--write-bearer", "writeBearerPath"],
+  ["--tool-servers", "toolServersPath"],
 ]);
 
 /**
@@ -128,6 +131,7 @@ export function parseArgv(argv: readonly string[]): ArgvOutcome {
       ledgerPath,
       accountsFilePath: values.get("accountsFilePath"),
       writeBearerPath: values.get("writeBearerPath"),
+      toolServersPath: values.get("toolServersPath"),
       port,
     },
   };

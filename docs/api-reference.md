@@ -20,7 +20,7 @@ cursors and redaction. This document is the readable form of the same table.
   to an unversioned path is talking to something the contract did not
   describe, and should fail rather than guess.
 - **Methods.** `API_ALLOWED_METHODS` is `["GET"]` and describes the read plane.
-  The two routes that also accept a write are named in a separate frozen table,
+  The routes that also accept a write are named in a separate frozen table,
   `API_WRITE_ROUTES`, and are marked `GET, POST` below.
 - **Parameters** are validated before they are encoded. A traversal segment, a
   query string or a raw path produces a thrown validation error rather than a
@@ -54,10 +54,11 @@ cursors and redaction. This document is the readable form of the same table.
 | `accounts` | GET | `/api/v1/accounts` | — | none | `AccountsResponse` |
 | `accountActions` | GET, POST | `/api/v1/accounts/:accountId/actions` | `accountId` (bounded label) | none | `AccountActionsResponse` / `AccountActionWriteResponse` |
 | `eventStream` | GET | `/api/v1/events/stream` | — | `StreamQuery` | `StreamFrame` (Server-Sent Events) |
+| `taskToolCalls` | GET, POST | `/api/v1/tasks/:taskId/tool-calls` | `taskId` (uuid) | `ToolCallsQuery` | `ToolCallPageResponse` / `ToolCallExecuteResponse` |
 
-## The two writes
+## The writes
 
-Both are registered through the same guarded registrar, so the local bearer
+All are registered through the same guarded registrar, so the local bearer
 check is structural rather than remembered. With no token configured, a write
 answers `403` — an unconfigured door is shut, never open. `SECURITY.md` records
 the mechanism and its anchors.
@@ -66,6 +67,7 @@ the mechanism and its anchors.
 | --- | --- | --- |
 | `initiativeRoadmap` | `RoadmapVersionWriteRequest` | a roadmap version, content-addressed; the event carries the digest and the bytes live in the artifact store |
 | `accountActions` | `AccountActionRequest` | an account action, with the refusal vocabulary the accounts domain defines |
+| `taskToolCalls` | `ToolCallExecuteRequest` | one explicit tool call, and whatever it did: this is the only route that starts a child process, and a refused call is a `200` with a recorded row rather than an error |
 
 A write that is refused answers with a classified refusal rather than a bare
 failure: `AccountActionRefusalDto` names which rule refused it.
@@ -75,7 +77,7 @@ failure: `AccountActionRefusalDto` names which rule refused it.
 `eventStream` is the only route that answers with a connection rather than a
 body. It is still a **read** — registered through a twin of the read registrar
 that reuses the same 405 set, so `API_ALLOWED_METHODS` is still `["GET"]` and
-`API_WRITE_ROUTES` is still the two routes above.
+it added nothing to `API_WRITE_ROUTES`.
 
 | Property | Value |
 | --- | --- |

@@ -340,6 +340,30 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("headSequence", "LEDGER"),
       bind("reason", "LIVENESS", "why this process's handle cannot serve the anchor; never a fact in the ledger"),
     ]),
+    /**
+     * The task's recorded tool calls (V2-B4b stage 3C).
+     *
+     * The bound fields are the **GET row model's**, which is the projection
+     * parity is about: `ToolCallRow` is a fold of one `TOOL_CALL_RECORDED`
+     * event, so every member below is ledger-derived and a CLI folding the same
+     * rows reaches the same values.
+     *
+     * `content` is deliberately **absent from this table**, and the absence is
+     * the point rather than an omission. It is not a field of the row model at
+     * all: the recorder never wrote it, so no client can fold it out of the
+     * ledger and there is nothing for parity to compare. It exists only on the
+     * POST response, where it travels once to the caller who made the call and
+     * is never recorded. A binding here would claim a durable fact that does
+     * not exist.
+     */
+    taskToolCalls: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("taskId", "LEDGER"),
+      bind("items", "LEDGER"),
+      bind("count", "LEDGER"),
+      bind("nextCursor", "LEDGER"),
+    ]),
   });
 
 /** Every route the contract covers, matching the frozen route table exactly. */

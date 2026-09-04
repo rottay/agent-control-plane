@@ -42,6 +42,14 @@ export interface BuildServerOptions {
    */
   readonly writeBearerPath?: string | undefined;
   /**
+   * The operator's tool document (V2-B4b stage 3C).
+   *
+   * Optional, and its absence is a configured state rather than a defect: a
+   * server started without one answers `TOOL_SERVERS_UNCONFIGURED` on the
+   * tool-call write and serves every other route exactly as before.
+   */
+  readonly toolServersPath?: string | undefined;
+  /**
    * The instant supplier the accounts read uses, when a caller wants to pin it
    * (P8-8G causal).
    *
@@ -159,6 +167,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     options.accountsFilePath,
     options.writeBearerPath,
     options.now,
+    options.toolServersPath,
   );
   return app;
 }

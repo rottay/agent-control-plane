@@ -58,9 +58,15 @@ export const API_ROUTES = Object.freeze({
   // prefix, and deliberately a **sibling** of `events` rather than a mode of
   // it: the two answer the same rows with different liveness contracts, and a
   // `?live=1` on the paged route would have made one path sometimes return a
-  // body that ends and sometimes one that does not. It reads; the write table
-  // below is unchanged at exactly two.
+  // body that ends and sometimes one that does not. It reads, and left the
+  // write table below untouched.
   eventStream: "/api/v1/events/stream",
+  // V2-B4b stage 3C: the plane's third write door, and the first that makes
+  // this process start a child and speak a protocol to it. GET reads a task's
+  // recorded tool calls; POST executes one explicit call through the shared
+  // operation. Registered through the same guarded registrar as the other two,
+  // so the bearer is inherited structurally rather than remembered.
+  taskToolCalls: "/api/v1/tasks/:taskId/tool-calls",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -98,16 +104,24 @@ export type ApiAllowedMethod = (typeof API_ALLOWED_METHODS)[number];
  * disagree about a path: the pattern always comes from `API_ROUTES`.
  */
 /**
- * The write routes, frozen — now two (P8-8G packet 2).
+ * The write routes, frozen — now three (V2-B4b stage 3C).
  *
  * The table grows **visibly**, which is the point of keeping it separate from
  * `API_ALLOWED_METHODS`: a reader asking "what can mutate?" still gets a short
  * answer they can read in one glance, and adding to it is an edit that shows
  * up in review rather than a method quietly appearing on a route.
+ *
+ * The third is not like the first two, and the difference is worth stating
+ * where the table is read. `initiativeRoadmap` and `accountActions` record a
+ * decision the caller had already made; `taskToolCalls` makes this process
+ * start a child and speak a protocol to it. That is why the API contract
+ * version moves with it, and why the route is the only place in this plane
+ * where process-start authority exists at all.
  */
 export const API_WRITE_ROUTES = Object.freeze([
   "initiativeRoadmap",
   "accountActions",
+  "taskToolCalls",
 ] as const);
 export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 
@@ -196,4 +210,15 @@ export function initiativeAgentsPath(initiativeId: string): string {
 /** Build the content path for a single initiative's roadmap. */
 export function initiativeRoadmapContentPath(initiativeId: string): string {
   return initiativeRoadmapPath(initiativeId) + "/content";
+}
+
+/**
+ * Build the tool-calls path for a single task.
+ *
+ * Built through `taskPath`, so the identifier is validated and encoded by the
+ * same rule every other task-scoped path uses: one validator, not a second one
+ * that could drift from it.
+ */
+export function toolCallsPath(taskId: string): string {
+  return taskPath(taskId) + "/tool-calls";
 }

@@ -275,6 +275,12 @@ importers:
       '@acp/protocol':
         specifier: workspace:*
         version: link:../../kernel/protocol
+      '@acp/runtime':
+        specifier: workspace:*
+        version: link:../../domains/runtime
+      '@acp/tools':
+        specifier: workspace:*
+        version: link:../../edges/tools
       fastify:
         specifier: 'catalog:'
         version: 5.12.1

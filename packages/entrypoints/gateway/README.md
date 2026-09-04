@@ -26,19 +26,20 @@ plainly that authentication on the read plane is deliberately out of scope.
 `SERVER_DEFAULT_PORT` is `7517`. The port is not a law; a caller may choose
 another. The bind address is.
 
-## Reads are free; the two writes are guarded
+## Reads are free; every write is guarded
 
 Every route was a read through P8-8C, and `API_ALLOWED_METHODS` still says
-`["GET"]` because that describes the read plane, which did not change. Two
-routes now also accept a write, and they are named in a separate frozen table,
+`["GET"]` because that describes the read plane, which did not change. The
+routes that also accept a write are named in a separate frozen table,
 `API_WRITE_ROUTES`:
 
 | Write route | Method | What it records |
 | --- | --- | --- |
 | `initiativeRoadmap` | `POST /api/v1/initiatives/:initiativeId/roadmap` | a roadmap version |
 | `accountActions` | `POST /api/v1/accounts/:accountId/actions` | an account action |
+| `taskToolCalls` | `POST /api/v1/tasks/:taskId/tool-calls` | one explicit tool call — the only route that starts a child process |
 
-Both are registered through the same guarded registrar, so the bearer check is
+All are registered through the same guarded registrar, so the bearer check is
 **structural rather than remembered**: a future write route registered through
 that registrar is guarded because of where it is registered, and a contributor
 cannot forget the guard because there is nowhere to forget it from.

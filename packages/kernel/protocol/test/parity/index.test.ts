@@ -36,6 +36,7 @@ import {
   InitiativeTimelineResponse,
   RoadmapContentResponse,
   StreamFrame,
+  ToolCallPageResponse,
 } from "../../src/schemas/index.js";
 
 describe("the contract covers every frozen route", () => {
@@ -133,6 +134,10 @@ describe("the binding table matches the schemas it claims to bind", () => {
     // is the union of its arms' keys, which is the rule `accounts` established
     // and which `shapeKeys` below already resolves.
     eventStream: StreamFrame,
+    // V2-B4b stage 3C. The bound surface is the GET page, which is the
+    // projection parity is about; the POST response is a write receipt no
+    // client renders, exactly as the roadmap write's is.
+    taskToolCalls: ToolCallPageResponse,
   };
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {

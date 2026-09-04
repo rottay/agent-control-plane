@@ -14,6 +14,7 @@ import {
   TaskState,
   WORKER_IDENTITY_PATTERN,
   WORKER_ROLES,
+  BoundedIdentifier,
   WorkerIdentityString,
   WorkerRole,
   findCredentialViolations,
@@ -221,6 +222,15 @@ export const API_ERROR_CODES = [
   // operator's mistake in a caller's language.
   "AUTH_REQUIRED",
   "WRITE_BEARER_UNCONFIGURED",
+  // V2-B4b stage 3C: the tool-call door was started without a tool document,
+  // so it has no admitted server to reach. An operator problem like
+  // `WRITE_BEARER_UNCONFIGURED`, and told apart from it for the same reason
+  // that one is told apart from `AUTH_REQUIRED` — but deliberately NOT its
+  // 403. Tool servers are not on the authentication ladder: by the time this
+  // answer is reachable the bearer has already passed, so the caller is
+  // authorized and the capability is simply absent. That is the shape
+  // `LEDGER_UNAVAILABLE` and `STREAM_CAPACITY` already carry, and it is 503.
+  "TOOL_SERVERS_UNCONFIGURED",
   // V2-B3a: the stream's connection ceiling. A visible one-line widening of a
   // closed list, which is this repository's convention for a genuinely new
   // refusal — and it is genuinely new: every code above it describes something
@@ -1150,21 +1160,22 @@ export type StreamChannel = z.infer<typeof StreamChannel>;
  * is behaviourally empty now**.
  *
  * The accurate claim is about individual event types rather than channels.
- * These ten still have no producer outside a library or a test:
+ * These nine still have no producer outside a library or a test:
  * `LEASE_ACQUIRED`, `LEASE_REVOKED`, `WRITE_SET_VIOLATION_DETECTED`,
  * `COMMIT_AUTHORIZED`, `ACCOUNT_SWITCH_STARTED`, `ACCOUNT_SWITCH_COMPLETED`,
- * `AUTH_REQUIRED_RAISED`, `QUOTA_WARNING`, `TOKEN_RESERVATION_RECORDED` and
- * `TOOL_CALL_RECORDED`. Each is owed to a named packet, and none is emitted to
- * make a channel look busy. The map is over the vocabulary, not over what
- * happens to be emitted, so it carries every type either way.
+ * `AUTH_REQUIRED_RAISED`, `QUOTA_WARNING` and `TOKEN_RESERVATION_RECORDED`.
+ * Each is owed to a named packet, and none is emitted to make a channel look
+ * busy. The map is over the vocabulary, not over what happens to be emitted,
+ * so it carries every type either way.
  *
- * `TOOL_CALL_RECORDED` is the newest of the ten and the one with a dated debt:
- * V2-B4b stage 2 gave it a contract, a channel, a recorder in `@acp/runtime`
- * and a suite, deliberately without a production caller — the daemon does not
- * compose a tool plane yet. Stage 3 is the packet that owes it one, and stage 3
- * must take this list back from ten to nine when it lands. A list left at ten
- * after that would be a false claim in a comment this repository reads as
- * load-bearing.
+ * `TOOL_CALL_RECORDED` **left this list in V2-B4b stage 3C**, which is the
+ * packet stage 2 named as owing it a producer. Stage 2 gave it a contract, a
+ * channel, a recorder in `@acp/runtime` and a suite, deliberately without a
+ * production caller; stage 3B built the operation, and stage 3C put a door in
+ * front of it. `taskToolCalls` POST is that producer: a real request appends a
+ * real row. The debt is discharged, and the count above moved with it rather
+ * than being left at ten, which would have been a false claim in a comment this
+ * repository reads as load-bearing.
  *
  * ADR 0017 makes the older claim and is deliberately left alone: it is a dated
  * record and its claim was true of what it recorded. This comment describes
@@ -1949,3 +1960,151 @@ export const RoadmapContentResponse = z
   })
   .superRefine(attachGuards);
 export type RoadmapContentResponse = z.infer<typeof RoadmapContentResponse>;
+
+// ---------------------------------------------------------------------------
+// The explicit tool call (V2-B4b stage 3C)
+// ---------------------------------------------------------------------------
+
+/**
+ * The ceiling on one page of recorded tool calls.
+ *
+ * The same shape every other collection here carries: a bound the server can
+ * assert rather than a convention a caller is trusted to respect.
+ */
+export const MAX_TOOL_CALLS = 500;
+
+/**
+ * What a caller sends to execute one explicit tool call.
+ *
+ * **This schema is the equivalence claim.** It is the POST body of
+ * `taskToolCalls` and, byte for byte, the CLI's `--request` document in the
+ * packet after this one. Two doors that parse the same schema cannot drift into
+ * accepting different requests, which is the property the parity proof rests
+ * on — so the schema lives here, in the contract both doors depend on, rather
+ * than in either of them.
+ *
+ * **Every bound here is one of the operation's own prechecks, moved forward.**
+ * `runToolCall` refuses a request outside these bounds by throwing, and a throw
+ * from inside the operation reaches a caller as a 500 that blames the wrong
+ * party. Parsing first turns each of those into a 400 that names the field —
+ * so prechecks 1 to 4 (the bounded names, the identity, both indices, and the
+ * invocation's own attempt and instant) are closed by construction before the
+ * operation is entered at all.
+ *
+ * `causedBy` is optional and, when present, must name an event that already
+ * exists **in this same task**. The event contract permits cross-task causation
+ * in general; this route narrows it deliberately, because a tool call caused by
+ * another task's event is a claim no reader of this task's trail could resolve.
+ * The existence check needs a ledger and therefore lives at the door, not here.
+ */
+export const ToolCallExecuteRequest = z
+  .strictObject({
+    taskId: Uuid,
+    attempt: z.number().int().positive().max(10_000),
+    submittedAt: Timestamp,
+    submissionDigest: Sha256Hex,
+    operationIndex: z.number().int().nonnegative().max(1_000_000),
+    callIndex: z.number().int().nonnegative().max(1_000_000),
+    accountId: BoundedIdentifier,
+    identity: WorkerIdentityString,
+    serverId: BoundedIdentifier,
+    toolName: BoundedIdentifier,
+    arguments: z.record(z.string().max(120), z.unknown()),
+    causedBy: Uuid.nullable().optional(),
+  })
+  .superRefine(attachGuards);
+export type ToolCallExecuteRequest = z.infer<typeof ToolCallExecuteRequest>;
+
+/**
+ * What the door answers when a request became an operation.
+ *
+ * A refusal is **not** an error here. `outcome: "REFUSED"` is a 200, because
+ * the call became an operation and a durable row exists for it; 4xx is reserved
+ * for requests that never became one. That is the response half of the
+ * operation's own invariant.
+ *
+ * `content` is the one field that reaches the caller and nowhere else — never a
+ * ledger row, never a stream frame, never a log line. It is empty on a refusal
+ * and empty on a replay, and the replay case is not a policy: the content was
+ * never durable, so there is nothing to return.
+ *
+ * `sequence` is the door's to project, not the operation's. The runtime's
+ * `LedgerPort` exposes no sequence and the event contract has no such field, so
+ * the operation cannot answer one; the door holds the real ledger and looks it
+ * up by the `eventId` the operation returns.
+ */
+export const ToolCallExecuteResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    replayed: z.boolean(),
+    outcome: z.enum(["COMPLETED", "REFUSED"]),
+    /** A refusal vocabulary word, or null when the call completed. */
+    refusal: z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/).nullable(),
+    /** The refused field's path. Null on a completion and on every replay. */
+    at: z.string().min(1).max(120).nullable(),
+    serverId: BoundedIdentifier,
+    toolName: BoundedIdentifier,
+    transport: z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/),
+    accountId: BoundedIdentifier,
+    argumentBytes: Count,
+    resultBytes: Count,
+    contentBlocks: Count,
+    content: z.array(z.string()),
+    sequence: Sequence,
+    eventId: Uuid,
+    transitionId: z.string().min(1).max(120),
+  })
+  .superRefine(attachGuards);
+export type ToolCallExecuteResponse = z.infer<typeof ToolCallExecuteResponse>;
+
+/**
+ * One recorded tool call, as the GET renders it.
+ *
+ * The nine durable payload scalars, plus the coordinates that name the row.
+ * There is **no content member and no argument member**, and their absence is
+ * structural rather than a filter the reader has to trust: the recorder never
+ * wrote them, so this shape has nothing to omit.
+ */
+export const ToolCallRow = z
+  .strictObject({
+    sequence: Sequence,
+    eventId: Uuid,
+    transitionId: z.string().min(1).max(120),
+    occurredAt: Timestamp,
+    emittedBy: WorkerIdentityString,
+    causedBy: Uuid.nullable(),
+    accountId: BoundedIdentifier,
+    serverId: BoundedIdentifier,
+    toolName: BoundedIdentifier,
+    transport: z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/),
+    outcome: z.enum(["COMPLETED", "REFUSED"]),
+    refusal: z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/).nullable(),
+    argumentBytes: Count,
+    resultBytes: Count,
+    contentBlocks: Count,
+  })
+  .superRefine(attachGuards);
+export type ToolCallRow = z.infer<typeof ToolCallRow>;
+
+/** One task's recorded tool calls, oldest first, paged by ledger sequence. */
+export const ToolCallPageResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    taskId: Uuid,
+    items: z.array(ToolCallRow).max(MAX_TOOL_CALLS),
+    count: Count,
+    nextCursor: z.string().min(1).max(120).nullable(),
+  })
+  .superRefine(attachGuards);
+export type ToolCallPageResponse = z.infer<typeof ToolCallPageResponse>;
+
+/** The GET's query: a sequence cursor and a bound, both optional. */
+export const ToolCallsQuery = z
+  .strictObject({
+    cursor: z.string().min(1).max(120).optional(),
+    limit: z.number().int().min(1).max(MAX_TOOL_CALLS).optional(),
+  })
+  .superRefine(attachGuards);
+export type ToolCallsQuery = z.infer<typeof ToolCallsQuery>;

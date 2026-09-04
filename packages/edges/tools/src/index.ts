@@ -37,10 +37,20 @@ export type {
   ToolWriteRole,
 } from "./contract/index.js";
 
-export { admitToolServer } from "./admission/index.js";
-export type { AdmittedToolServer, ToolAdmissionOutcome } from "./admission/index.js";
+export { admitToolServer, admitToolServers } from "./admission/index.js";
+export type {
+  AdmittedToolServer,
+  ToolAdmissionOutcome,
+  ToolDocumentOutcome,
+} from "./admission/index.js";
 
 export type { ToolCallOutcomeName, ToolCallReceipt } from "./receipt/index.js";
+
+// V2-B4b stage 3C: the operation scope. The one composition site for the
+// protocol port outside this package's own suites, and the seam where "ok
+// agrees with the receipt" is enforced.
+export { openToolOperation } from "./operation/index.js";
+export type { ToolOperationInput, ToolOperationScope } from "./operation/index.js";
 
 export { createToolProtocolPort } from "./port/index.js";
 export type {

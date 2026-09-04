@@ -62,6 +62,14 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   // does not implement and has no intention of implementing.
   STREAM_CAPACITY: 503,
   LEDGER_UNAVAILABLE: 503,
+  // 503, beside both of those, and deliberately not 403 (V2-B4b stage 3C).
+  // `WRITE_BEARER_UNCONFIGURED` earns its 403 by escaping the authentication
+  // ladder — there is no better header to retry with. This code is not on that
+  // ladder at all: it is only reachable *after* the bearer has passed, so the
+  // caller is already authorized and sent nothing wrong. What is missing is a
+  // capability this process was started without, which is exactly what
+  // `LEDGER_UNAVAILABLE` means one line above.
+  TOOL_SERVERS_UNCONFIGURED: 503,
   LEDGER_INTEGRITY: 500,
   INTERNAL: 500,
 };
