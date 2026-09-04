@@ -377,6 +377,54 @@ services. Unifying the two is owed work and is deliberately not this packet's.
 workflows. The SDK always accepted both; the narrowing was this repository's,
 made when an object was the only thing there was to host.
 
+### Settling a classified failure inside the journal (V2-B7R)
+
+The handler now catches a classified step failure, appends one terminal event
+inside its own journal entry, and re-throws. Four conditions hold it, and each
+was proved against a real `restate-server` at the pinned 1.7.7 **before** the
+design was built on it — no repository code had ever caught a `TerminalError`,
+so the SDK's shipped typings were documentary evidence, not evidence from this
+system.
+
+**C1 — the settlement is its own named journal entry.** `ctx.run("settle/failed",
+…)`, never a bare call in the catch and never inside the run that failed. A
+settlement outside the journal is invisible to replay; one inside the failed run
+would ride an entry the journal has recorded as a failure.
+
+**C2 — the catch wraps the plan loop and nothing before it.** This is the
+determinism argument, and it is exact. The loop's branch is replay-stable
+*because the inner failure is journaled*: on replay the failed entry re-throws at
+the same journal position, so the catch fires at the same position and the settle
+entry lands at the same index. `reconcile()` and `assertInvocationContinuity` run
+outside any `ctx.run`, so their outcomes are **not** journaled — a branch taken
+from them would be recomputed live on replay and the journal order would stop
+being a function of the journal. They must also not settle on principle.
+
+**C3 — exactly-once is the ledger's, not the journal's.** The SDK names a small
+window in which an action may re-run if a crash lands between a successful run
+and its result becoming durable. The settlement therefore tolerates
+at-least-once execution: it builds one event under one fixed transition id, so
+the second append is an exact replay that inserts nothing. The journal makes the
+settlement *reachable*; the ledger key makes it *singular*. There is deliberately
+no second mechanism.
+
+**C4 — the original `TerminalError` is re-thrown.** The invocation must still
+fail terminally so Restate does not retry the walk.
+
+**How the classification survives `fatal()`.** `fatal()` converts every step
+failure into a `TerminalError`, which erases the error's class — so the decision
+is taken while the original error is still in hand and carried forward as
+metadata on that `TerminalError`. Metadata rather than the message, and that
+distinction is the privacy law: the message is the underlying error's own text
+and this lane propagates it to the ingress caller, while what the **ledger** is
+told is a classified code derived from the error's type. Metadata was measured to
+survive a real `SIGKILL` and redelivery byte-identically before being relied on.
+
+**A pre-existing boundary this packet does not widen.** `fatal()` has always put
+`error.message` on the `TerminalError`, and Restate returns it to the ingress
+caller. That is unchanged here and is not made worse; the ledger payload is
+clean, and the ingress surface is a separate question with its own packet.
+
 ## Adoption criterion, stated so it can fail
 
 RESTATE is adopted only if D1 passes 3/3, D2–D5 pass, and the head digest after

@@ -1,6 +1,6 @@
 import { CONTROL_PLANE_EVENT_TYPES, EXCEPTIONAL_STATES, TERMINAL_STATES } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
-import { openLedger } from "@acp/ledger";
+import { LedgerError, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -10,11 +10,20 @@ import { operationForStep } from "../../src/core/events/index.js";
 import { INTENT_STEP, READ_ONLY_PLAN, planStep } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep, assertInvocationContinuity, currentState } from "../../src/core/step-executor/index.js";
 import type { BeatContext, EffectPort } from "../../src/core/step-executor/index.js";
-import { SupervisorError } from "../../src/errors/index.js";
+import {
+  LifecyclePlanError,
+  PostconditionUnknownError,
+  ReconciliationError,
+  SupervisorError,
+  ToyBoundaryError,
+} from "../../src/errors/index.js";
+import { ExecutionEffectError } from "../../src/execution-effects/index.js";
 import {
   FAILURE_REASONS,
+  FAILURE_REFUSALS,
   FAILURE_TRANSITION_ID,
   FAILURE_VERDICTS,
+  classifyFailure,
   failurePrecheck,
   settleFailure,
 } from "../../src/failure/index.js";
@@ -336,7 +345,9 @@ describe("N4/N5: the failure payload is a digest and a closed reason", () => {
 
   it("keeps the verdict and reason vocabularies closed", () => {
     expect([...FAILURE_VERDICTS].sort()).toEqual(["FAILED", "POSTCONDITION_UNKNOWN", "TASK_TERMINAL"]);
-    expect([...FAILURE_REASONS]).toEqual(["BOUND_EXHAUSTED"]);
+    // One member per trigger that earned it: B7T's bounded convergence guard,
+    // and B7R's classified step failure. A reason is never added in advance.
+    expect([...FAILURE_REASONS]).toEqual(["BOUND_EXHAUSTED", "EXECUTION_FAILED"]);
   });
 });
 
@@ -352,5 +363,76 @@ describe("N8: this packet introduced no state and no event type", () => {
     expect(CONTROL_PLANE_EVENT_TYPES).toContain("TASK_FAILED");
     expect(EXCEPTIONAL_STATES).toContain("FAILED");
     expect(TERMINAL_STATES).toContain("FAILED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B7R: the classification table, as data and as a decision
+// ---------------------------------------------------------------------------
+
+/**
+ * One decision module, shared by both drivers.
+ *
+ * The table below is the packet's central law made into a test: what a caught
+ * error entitles the log to say. Its default is refusal, so an error nobody
+ * classified settles nothing — a terminal event is a claim that the task ended,
+ * and a claim made from an unclassified error is a guess.
+ */
+describe("classifyFailure (V2-B7R)", () => {
+  const REFUSED: readonly [string, unknown, string][] = [
+    // The packet's central law: an effect may have happened unrecorded.
+    ["PostconditionUnknownError", new PostconditionUnknownError("op", "unknown"), "POSTCONDITION_UNKNOWN"],
+    // The prologue's zero-delta law.
+    ["ReconciliationError", new ReconciliationError("refused"), "RECONCILIATION"],
+    // The task's identity is in question.
+    ["SupervisorError", new SupervisorError("continuity"), "CONTINUITY"],
+    // Raised before a ledger is open; there is no task to settle.
+    ["ToyBoundaryError", new ToyBoundaryError("outside"), "BOUNDARY"],
+    // On an already terminal task this is the correct refusal of a re-walk.
+    ["LifecyclePlanError", new LifecyclePlanError("no step"), "PLAN"],
+    // A claim built on the thing that just failed.
+    ["LedgerError", new LedgerError("LEDGER_QUERY", "refusing"), "LEDGER"],
+    // Fail closed: anything unrecognised.
+    ["a bare Error", new Error("something"), "UNCLASSIFIED"],
+    ["a thrown string", "not an error", "UNCLASSIFIED"],
+    ["null", null, "UNCLASSIFIED"],
+  ];
+
+  it("refuses to settle every error that is not a classified step failure", () => {
+    for (const [label, error, refusal] of REFUSED) {
+      const decision = classifyFailure(error);
+      expect({ label, settle: decision.settle }).toEqual({ label, settle: false });
+      expect({ label, refusal: decision.settle ? null : decision.refusal }).toEqual({ label, refusal });
+      expect(FAILURE_REFUSALS).toContain(refusal);
+    }
+  });
+
+  it("settles a classified step failure, under a reason from the closed list", () => {
+    for (const refusal of ["ROUTE_INVALID", "TRANSPORT_UNAVAILABLE", "CAPABILITY_UNSUPPORTED", "REATTACH_UNAVAILABLE"] as const) {
+      const decision = classifyFailure(new ExecutionEffectError(refusal, "route.accountId"));
+      expect(decision.settle).toBe(true);
+      if (decision.settle) {
+        expect(decision.reason).toBe("EXECUTION_FAILED");
+        expect(FAILURE_REASONS).toContain(decision.reason);
+      }
+    }
+  });
+
+  it("never returns a decision carrying a message", () => {
+    // L-B7R-3 from the decision's side: whatever the error said, the decision
+    // carries a classified word and nothing else.
+    const noisy = new ExecutionEffectError("ROUTE_INVALID", "route.accountId");
+    noisy.message = "boom at /Users/someone/secret with sk-canary-4242";
+    const serialized = JSON.stringify(classifyFailure(noisy));
+    expect(serialized).not.toContain("/Users/");
+    expect(serialized).not.toContain("sk-canary-4242");
+    expect(serialized).toBe(JSON.stringify({ settle: true, reason: "EXECUTION_FAILED" }));
+  });
+
+  it("keeps the refusal vocabulary closed and sorted", () => {
+    expect([...FAILURE_REFUSALS]).toEqual([...FAILURE_REFUSALS].sort());
+    expect([...FAILURE_REFUSALS]).toEqual([
+      "BOUNDARY", "CONTINUITY", "LEDGER", "PLAN", "POSTCONDITION_UNKNOWN", "RECONCILIATION", "UNCLASSIFIED",
+    ]);
   });
 });

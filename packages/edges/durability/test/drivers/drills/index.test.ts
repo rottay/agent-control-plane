@@ -292,6 +292,8 @@ function startChild(
   faultPoint: string | null,
   pauseAt: string | null = null,
   effect: "TOY" | "EXECUTION" = "TOY",
+  /** V2-B7R: make the INTENT effect fail the way a port classifies a failure. */
+  failEffect = false,
 ): Promise<ChildProcess> {
   const config = JSON.stringify({
     scenarioId,
@@ -304,6 +306,7 @@ function startChild(
     pauseAt,
     port: RUNTIME_SERVICE_PORT,
     effect,
+    failEffect,
   });
   return new Promise<ChildProcess>((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [CHILD_ENTRY, config], {
@@ -618,6 +621,16 @@ async function waitForCheckpoint(ledger: Ledger, taskId: string, deadlineMs = 90
   const started = Date.now();
   while (Date.now() - started < deadlineMs) {
     if (ledger.getTask(taskId)?.currentState === "CHECKPOINTED") return true;
+    await delay(200);
+  }
+  return false;
+}
+
+/** The settlement's own arrival, polled like the checkpoint beside it (V2-B7R). */
+async function waitForTerminalFailure(ledger: Ledger, taskId: string, deadlineMs = 90_000): Promise<boolean> {
+  const started = Date.now();
+  while (Date.now() - started < deadlineMs) {
+    if (ledger.getTask(taskId)?.currentState === "FAILED") return true;
     await delay(200);
   }
   return false;
@@ -3655,4 +3668,93 @@ describe("the durable gate delivers signals", () => {
     // It did not quietly delegate to the other driver, and asking cost nothing.
     expect(ledger.status().eventCount).toBe(0);
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-B7R: a classified failure settles, across real kills and real redelivery
+// ---------------------------------------------------------------------------
+
+/**
+ * The drills that prove the design rather than describe it.
+ *
+ * A real `restate-server`, a real endpoint child, a real `SIGKILL` inside each
+ * of the two windows a settlement has, and real redelivery. What is asserted is
+ * the property the whole packet rests on: **exactly one `TASK_FAILED`**, however
+ * the process dies.
+ *
+ * The SDK's own contract names the window K1 lives in — an action may re-run if
+ * a failure lands between a successful run and its result becoming durable — so
+ * the settlement must tolerate at-least-once execution. It does, because the
+ * ledger key makes the second append an exact replay. The journal makes the
+ * settlement REACHABLE; the ledger key makes it SINGULAR.
+ */
+const B7R_WINDOWS = ["BEFORE_SETTLE", "AFTER_SETTLE_APPEND"] as const;
+
+describe("V2-B7R: settling a classified failure survives a real kill", () => {
+  for (const [index, window] of B7R_WINDOWS.entries()) {
+    it("K" + String(index + 1) + " kill in the " + window + " window settles exactly once", async () => {
+      ensureChildBuilt();
+      const id = "b7r-" + window.toLowerCase().replace(/_/g, "-");
+      const root = scenario(id);
+      const taskId = "b7cb7cb7-b7cb-4b7c-8b7c-b7cb7cb7cb0" + String(index);
+      const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "a".repeat(64));
+      const ledger = track(openLedger(scenarioLedgerPath(root)));
+      const server = trackServer(await startServer(root));
+
+      // The effect fails the way a port classifies a failure, and the child dies
+      // inside the settlement window under test.
+      const faulty = await startChild(id, invocation, window, null, "TOY", true);
+      await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
+
+      const submission = submitAdvance(server.ingressUrl, invocation, 120_000).catch(() => null);
+      const died = await waitForExit(faulty);
+      expect(died.signal).toBe("SIGKILL");
+
+      // Redelivery, to a child that no longer faults but still fails the effect.
+      await startChild(id, invocation, null, null, "TOY", true);
+      await submission;
+
+      // The invocation must end terminally, so the walk is not retried forever.
+      const settled = await waitForTerminalFailure(ledger, taskId);
+      expect(settled).toBe(true);
+
+      // K1/K2 — exactly one terminal, whichever window the process died in.
+      const failures = ledger.listEvents({ limit: 200 }).events.filter((r) => r.event.type === "TASK_FAILED");
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.event.toState).toBe("FAILED");
+      expect(failures[0]?.event.payload["reason"]).toBe("EXECUTION_FAILED");
+      expect(ledger.getTask(taskId)?.currentState).toBe("FAILED");
+
+      // No duplicate key anywhere: the ledger key is the exactly-once mechanism.
+      const keys = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.idempotencyKey);
+      expect(keys.length - new Set(keys).size).toBe(0);
+
+      // N4 on the wire: the classification travelled, the message did not.
+      const serialized = ledger.listEvents({ limit: 200 }).events.map((r) => r.canonicalJson).join("\n");
+      for (const forbidden of ["ROUTE_INVALID", "route.accountId", "/Users/", "credentialRef"]) {
+        expect({ forbidden, present: serialized.includes(forbidden) }).toEqual({ forbidden, present: false });
+      }
+
+      // K5 — integrity survives, and the projection rebuilds identically.
+      expect(ledger.verifyIntegrity().problems).toEqual([]);
+      const liveTask = ledger.getTask(taskId);
+      ledger.rebuildReadModel();
+      expect(JSON.stringify(ledger.getTask(taskId))).toBe(JSON.stringify(liveTask));
+      expect(ledger.verifyIntegrity().ok).toBe(true);
+
+      process.stdout.write(
+        "RECEIPT " +
+          JSON.stringify({
+            drill: "B7R-SETTLE",
+            window,
+            killedSignal: died.signal,
+            terminals: failures.length,
+            duplicateKeys: 0,
+            reason: failures[0]?.event.payload["reason"],
+            integrityOk: ledger.verifyIntegrity().ok,
+          }) +
+          "\n",
+      );
+    }, 240_000);
+  }
 });

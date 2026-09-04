@@ -17,7 +17,7 @@ import {
   scenarioLedgerPath,
 } from "@acp/runtime";
 import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
-import { RESTATE_ADMIN_URL, createExecutionEffects } from "@acp/runtime";
+import { ExecutionEffectError, RESTATE_ADMIN_URL, createExecutionEffects } from "@acp/runtime";
 import {
   RestateDriver,
   createAcpGateWorkflow,
@@ -69,6 +69,21 @@ const FAULT_POINTS: readonly string[] = ["AFTER_INTENT", "AFTER_EFFECT", "AFTER_
  * `AFTER_INTENT` — a fault drill that quietly measured the wrong window.
  */
 const CANCEL_FAULT_POINTS: readonly string[] = ["BEFORE_SETTLEMENT"];
+
+/**
+ * Where the ENDPOINT role can fault inside a FAILURE settlement (V2-B7R).
+ *
+ * Their own list, for the reason the cancel list already gives: `matches()`
+ * treats an unrecognised name as the intent beat, so a settle point added to
+ * `FAULT_POINTS` would silently become a second spelling of `AFTER_INTENT` and
+ * the drill would measure the wrong window. `matches()` below names both
+ * explicitly, before that fallback can reach them.
+ *
+ * `BEFORE_SETTLE` is the window in which nothing has been appended yet.
+ * `AFTER_SETTLE_APPEND` is the SDK's own named re-run window: the ledger row
+ * exists and the journal entry that records it does not.
+ */
+const SETTLE_FAULT_POINTS: readonly string[] = ["BEFORE_SETTLE", "AFTER_SETTLE_APPEND"];
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 export interface RestateChildConfig {
@@ -80,6 +95,14 @@ export interface RestateChildConfig {
   /** The packet's initiative. Required in the JSON, never defaulted here. */
   readonly initiativeId: string;
   readonly faultPoint: string | null;
+  /**
+   * Make the INTENT effect fail the way a port classifies a failure (V2-B7R).
+   *
+   * Off by default and absent from every landed drill's config, so nothing that
+   * ran before this packet changes shape. A drill that wants a settlement turns
+   * it on and gets the one error the classification actually settles.
+   */
+  readonly failEffect: boolean;
   /**
    * Beat at which to pause and announce, for the server-kill drill.
    *
@@ -232,6 +255,10 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   if (typeof initiativeId !== "string" || initiativeId.length === 0) {
     throw new SupervisorError("child config requires an explicit initiativeId");
   }
+  const rawFailEffect = value["failEffect"] ?? false;
+  if (typeof rawFailEffect !== "boolean") {
+    throw new SupervisorError("failEffect must be a boolean when present");
+  }
   const rawFault = value["faultPoint"] ?? null;
   const faultPoint = typeof rawFault === "string" ? rawFault : null;
   const rawPause = value["pauseAt"] ?? null;
@@ -260,7 +287,8 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   // settlement no endpoint runs. Admitting either for either role would let a
   // drill ask for a fault that can never fire and read the resulting green as
   // evidence.
-  const allowedFaults = role === "CANCEL" ? CANCEL_FAULT_POINTS : FAULT_POINTS;
+  const allowedFaults =
+    role === "CANCEL" ? CANCEL_FAULT_POINTS : [...FAULT_POINTS, ...SETTLE_FAULT_POINTS];
   if (faultPoint !== null && !allowedFaults.includes(faultPoint)) {
     throw new SupervisorError("faultPoint must be null or a fault point this role can reach");
   }
@@ -303,6 +331,7 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
     commitPolicy: commitPolicy.data,
     initiativeId,
     faultPoint,
+    failEffect: rawFailEffect,
     pauseAt,
     port: rawPort,
     effect,
@@ -507,6 +536,12 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
           })
         : {
             apply: (operation) => {
+              // V2-B7R: a classified step failure, injected. The port is the one
+              // thing that classifies a failure in production, so the drill
+              // makes the port produce exactly the error it would produce.
+              if (config.failEffect) {
+                return Promise.reject(new ExecutionEffectError("ROUTE_INVALID", "route.accountId"));
+              }
               applyEffect(scenarioRoot, operation);
               return Promise.resolve();
             },
@@ -528,11 +563,16 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
     // would quietly become a no-op.
     const intentBeat = "AFTER_INTENT_" + String(INTENT_STEP.index);
     const matches = (wanted: string): boolean =>
-      wanted === "AFTER_EFFECT"
-        ? point === "AFTER_EFFECT"
-        : wanted === "AFTER_OUTCOME"
-          ? point === "AFTER_OUTCOME"
-          : point === intentBeat;
+      // V2-B7R: the settlement windows are named BEFORE the fallback, or the
+      // fallback would alias them to the intent beat and the drill would kill
+      // in a window it did not mean.
+      SETTLE_FAULT_POINTS.includes(wanted)
+        ? point === wanted
+        : wanted === "AFTER_EFFECT"
+          ? point === "AFTER_EFFECT"
+          : wanted === "AFTER_OUTCOME"
+            ? point === "AFTER_OUTCOME"
+            : point === intentBeat;
 
     if (config.faultPoint !== null && matches(config.faultPoint)) {
       process.kill(process.pid, "SIGKILL");

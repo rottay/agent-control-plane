@@ -16,6 +16,7 @@ import { buildEvent, operationForStep } from "../../../src/core/events/index.js"
 import { applyEffect, probeEffect } from "../../../src/toy/repository/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, READ_ONLY_PLAN } from "../../../src/core/lifecycle/index.js";
 import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
+import { ExecutionEffectError } from "../../../src/execution-effects/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -1357,5 +1358,106 @@ describe("terminal settlement (V2-B7T)", () => {
     expect(types).not.toContain("TASK_FAILED");
     expect(types).toContain("RUN_STARTED");
     expect(ledger.getTask(TASK_IDS[1])?.currentState).toBe("RUNNING");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B7R: a classified step failure settles on this driver too
+// ---------------------------------------------------------------------------
+
+/**
+ * The symmetry half of D-B7R-1 = β.
+ *
+ * A Restate-only settlement would have made Restate settle a classified step
+ * failure where SQLite does not — creating exactly the driver divergence the B7
+ * wave exists to close. Both lanes ask `classifyFailure` the same question, so
+ * the only way they can answer differently is if one of them stops calling it,
+ * and the fence laws hold both call sites.
+ */
+function failingEffects(root: ScenarioRoot, failure: Error): EffectPort {
+  return {
+    apply: () => Promise.reject(failure),
+    probe: (operation) => Promise.resolve(probeEffect(root, operation)),
+  };
+}
+
+describe("classified step failure settles (V2-B7R)", () => {
+  it("P1: appends exactly one TASK_FAILED and re-throws the original error", async () => {
+    const root = scenario("b7r-sqlite-settles");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const inv = invocationFor(TASK_IDS[2]);
+    const failure = new ExecutionEffectError("ROUTE_INVALID", "route.accountId");
+
+    const thrown = await new SqliteSupervisor({
+      ledger,
+      invocation: inv,
+      effects: failingEffects(root, failure),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "NO_COMMIT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: TEST_ROUTE,
+    }).runToCheckpoint().then(() => null, (error: unknown) => error);
+
+    // C4 — the ORIGINAL error, not a settlement-shaped replacement.
+    expect(thrown).toBe(failure);
+
+    const failures = ledger.listEvents({ taskId: TASK_IDS[2], limit: 200 }).events.filter((e) => e.event.type === "TASK_FAILED");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.event.toState).toBe("FAILED");
+    expect(failures[0]?.event.fromState).toBe("RUNNING");
+    expect(failures[0]?.event.payload["reason"]).toBe("EXECUTION_FAILED");
+    expect(Object.keys(failures[0]?.event.payload ?? {}).sort()).toEqual(["reason", "submissionDigest"]);
+    expect(ledger.getTask(TASK_IDS[2])?.currentState).toBe("FAILED");
+  });
+
+  it("N1: POSTCONDITION_UNKNOWN settles nothing here either", async () => {
+    const root = scenario("b7r-sqlite-unknown");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const inv = invocationFor(TASK_IDS[3]);
+
+    await expect(
+      new SqliteSupervisor({
+        ledger,
+        invocation: inv,
+        effects: failingEffects(root, new PostconditionUnknownError("op", "unknown")),
+        emittedBy: EMITTED_BY,
+        commitPolicy: "NO_COMMIT",
+        initiativeId: TEST_INITIATIVE_ID,
+        route: TEST_ROUTE,
+      }).runToCheckpoint(),
+    ).rejects.toThrow(PostconditionUnknownError);
+
+    const types = ledger.listEvents({ taskId: TASK_IDS[3], limit: 200 }).events.map((e) => e.event.type);
+    expect(types).not.toContain("TASK_FAILED");
+    expect(types).toContain("RUN_STARTED");
+    expect(ledger.getTask(TASK_IDS[3])?.currentState).toBe("RUNNING");
+  });
+
+  it("P4: a continuity failure in the prologue settles nothing, with zero delta", async () => {
+    // C2 on this lane: `assertInvocationContinuity` runs before the try, so a
+    // disputed identity produces no settlement and no delta at all.
+    const root = scenario("b7r-sqlite-prologue");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const inv = invocationFor(TASK_IDS[4]);
+
+    // A first walk establishes step 0 under one submission...
+    await new SqliteSupervisor({
+      ledger, invocation: inv, effects: toyEffects(root), emittedBy: EMITTED_BY,
+      commitPolicy: "NO_COMMIT", initiativeId: TEST_INITIATIVE_ID, route: TEST_ROUTE,
+    }).runToCheckpoint();
+    const before = ledger.status();
+
+    // ...and a different submission under the same coordinates is refused.
+    const impostor = { ...inv, submissionDigest: "f".repeat(64) };
+    await expect(
+      new SqliteSupervisor({
+        ledger, invocation: impostor, effects: toyEffects(root), emittedBy: EMITTED_BY,
+        commitPolicy: "NO_COMMIT", initiativeId: TEST_INITIATIVE_ID, route: TEST_ROUTE,
+      }).runToCheckpoint(),
+    ).rejects.toThrow(SupervisorError);
+
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    expect(ledger.listEvents({ limit: 200 }).events.map((e) => e.event.type)).not.toContain("TASK_FAILED");
   });
 });

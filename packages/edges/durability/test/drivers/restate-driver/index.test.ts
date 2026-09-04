@@ -1,6 +1,12 @@
 import { DriverCapabilities } from "@acp/contracts";
 import type { DriverOutcome } from "@acp/contracts";
-import { driverCapabilityMismatches } from "@acp/runtime";
+import {
+  ExecutionEffectError,
+  PostconditionUnknownError,
+  SqliteSupervisor,
+  driverCapabilityMismatches,
+} from "@acp/runtime";
+import { TerminalError } from "@restatedev/restate-sdk";
 import { CONTRACT_VERSION, ReconciliationReport, findCredentialViolations } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
@@ -1804,5 +1810,218 @@ describe("the durable gate makes SIGNAL real without touching AcpTask (V2-B2-5)"
     // @ts-expect-error the gate is handed no ledger, and may not ask for one.
     const noLedger: unknown = dependencies.ledger;
     expect(noLedger).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B7R: a classified failure settles, journaled, without a false terminal
+// ---------------------------------------------------------------------------
+
+/**
+ * The handler driven directly through `AdvanceContext`, which is what that seam
+ * exists for: the settlement's journal position and its exactly-one-ness are
+ * properties of the handler, and asserting them here needs no server.
+ *
+ * The real-server behaviour these rest on was measured before the design was
+ * written — a `TerminalError` thrown inside `ctx.run` is caught by the handler,
+ * a subsequent `ctx.run` is accepted and journaled, and after a real `SIGKILL`
+ * the failed entry replays as a failure without re-executing while the metadata
+ * riding it is byte-identical. The report records that spike.
+ */
+
+/** A beat whose INTENT effect fails the way a port classifies a failure. */
+function failingBeat(
+  root: ScenarioRoot,
+  ledger: Ledger,
+  failure: Error,
+): (invocation: DurableInvocation) => BeatContext {
+  return (candidate: DurableInvocation): BeatContext => ({
+    ledger,
+    effects: {
+      apply: () => Promise.reject(failure),
+      probe: (operation) => Promise.resolve(probeEffect(root, operation)),
+    },
+    invocation: candidate,
+    emittedBy: EMITTED_BY,
+    plan: LIFECYCLE_PLAN,
+    route: TEST_ROUTE,
+    initiativeId: TEST_INITIATIVE_ID,
+  });
+}
+
+describe("V2-B7R: a classified step failure settles", () => {
+  it("P1/P3: appends one TASK_FAILED inside a single settle/failed journal entry", async () => {
+    const { ledger, root, invocation } = open("b7r-settles", "4b7a0000-4040-4404-8404-404040400001");
+    const beat = failingBeat(root, ledger, new ExecutionEffectError("ROUTE_INVALID", "route.accountId"));
+    const { ctx, runs } = fakeContext(null);
+
+    await expect(
+      advanceHandler({ beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger }, ctx, invocation),
+    ).rejects.toThrow(TerminalError);
+
+    // C1 — the settlement is its own named journal entry, exactly once...
+    expect(runs.filter((name) => name === "settle/failed")).toHaveLength(1);
+    // ...and it lands AFTER the entry that failed, never inside it.
+    const failedAt = runs.findIndex((name) => name.startsWith("effect/"));
+    expect(failedAt).toBeGreaterThanOrEqual(0);
+    expect(runs.indexOf("settle/failed")).toBeGreaterThan(failedAt);
+    // Nothing is journaled after the settlement: the handler re-throws.
+    expect(runs[runs.length - 1]).toBe("settle/failed");
+
+    // P1 — exactly one terminal, from the state the ledger reported.
+    const failures = ledger.listEvents({ limit: 200 }).events.filter((r) => r.event.type === "TASK_FAILED");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.event.toState).toBe("FAILED");
+    expect(failures[0]?.event.fromState).toBe("RUNNING");
+    expect(ledger.getTask(invocation.taskId)?.currentState).toBe("FAILED");
+  });
+
+  it("P2/C4: the original terminal error still propagates, so Restate does not retry the walk", async () => {
+    const { ledger, root, invocation } = open("b7r-rethrows", "4b7a0000-4040-4404-8404-404040400002");
+    const beat = failingBeat(root, ledger, new ExecutionEffectError("ROUTE_INVALID", "route.accountId"));
+    const { ctx } = fakeContext(null);
+
+    const thrown = await advanceHandler(
+      { beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger },
+      ctx,
+      invocation,
+    ).then(() => null, (error: unknown) => error);
+
+    // A terminal error, so Restate stops rather than grinding the walk again.
+    expect(thrown).toBeInstanceOf(TerminalError);
+    // And it is the SAME failure, not a settlement-shaped replacement.
+    expect((thrown as Error).message).toContain("ROUTE_INVALID");
+  });
+
+  it("N4: the appended payload carries a classified code and never the error's message", async () => {
+    // The message is the sharp edge: `fatal()` puts `error.message` on the
+    // TerminalError, and this lane propagates that to the ingress caller. What
+    // the LEDGER is told must be a code derived from the error's type.
+    const { ledger, root, invocation } = open("b7r-privacy", "4b7a0000-4040-4404-8404-404040400003");
+    const planted = new ExecutionEffectError("ROUTE_INVALID", "route.accountId");
+    planted.message = "boom at /Users/someone/secret path with sk-canary-do-not-emit-4242";
+    const beat = failingBeat(root, ledger, planted);
+    const { ctx } = fakeContext(null);
+
+    await expect(
+      advanceHandler({ beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger }, ctx, invocation),
+    ).rejects.toThrow(TerminalError);
+
+    const serialized = ledger.listEvents({ limit: 200 }).events.map((r) => r.canonicalJson).join("\n");
+    expect(serialized.length).toBeGreaterThan(0);
+    for (const forbidden of ["/Users/", "sk-canary-do-not-emit-4242", "boom at", "credentialRef", "authProfileRef"]) {
+      expect({ forbidden, present: serialized.includes(forbidden) }).toEqual({ forbidden, present: false });
+    }
+    const failure = ledger.listEvents({ limit: 200 }).events.find((r) => r.event.type === "TASK_FAILED");
+    expect(Object.keys(failure?.event.payload ?? {}).sort()).toEqual(["reason", "submissionDigest"]);
+    expect(failure?.event.payload["reason"]).toBe("EXECUTION_FAILED");
+  });
+
+  it("N1: POSTCONDITION_UNKNOWN settles nothing and leaves the intent open", async () => {
+    // The packet's central law. An effect may have happened and gone
+    // unrecorded, so a terminal claim over it is the one claim ADR 0004 §3
+    // exists to prevent.
+    const { ledger, root, invocation } = open("b7r-unknown", "4b7a0000-4040-4404-8404-404040400004");
+    const beat = failingBeat(root, ledger, new PostconditionUnknownError("op-1", "the postcondition could not be established"));
+    const { ctx, runs } = fakeContext(null);
+
+    await expect(
+      advanceHandler({ beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger }, ctx, invocation),
+    ).rejects.toThrow(TerminalError);
+
+    expect(runs).not.toContain("settle/failed");
+    const types = ledger.listEvents({ limit: 200 }).events.map((r) => r.event.type);
+    expect(types).not.toContain("TASK_FAILED");
+    // The intent stays open for an operator.
+    expect(types).toContain("RUN_STARTED");
+    expect(ledger.getTask(invocation.taskId)?.currentState).toBe("RUNNING");
+  });
+
+  it("P4: a non-resumable prologue settles nothing, with zero ledger delta", async () => {
+    // C2 asserted from the outside: the catch does not wrap `reconcile`, so a
+    // reconciliation refusal produces no settlement and no delta at all.
+    const { ledger, invocation, beat } = open("b7r-prologue", "4b7a0000-4040-4404-8404-404040400005");
+    appendPlanStep(beat(invocation), LIFECYCLE_PLAN[0]!);
+    const before = ledger.status();
+    const { ctx, runs } = fakeContext({ lastAppliedSequence: 99, lastAppliedEventSha256: "b".repeat(64) });
+
+    await expect(
+      advanceHandler({ beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger }, ctx, invocation),
+    ).rejects.toThrow();
+
+    expect(runs).not.toContain("settle/failed");
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    expect(ledger.listEvents({ limit: 200 }).events.map((r) => r.event.type)).not.toContain("TASK_FAILED");
+  });
+
+  it("P6: a settled task refuses a second walk and does not settle twice", async () => {
+    const { ledger, root, invocation } = open("b7r-second-walk", "4b7a0000-4040-4404-8404-404040400006");
+    const beat = failingBeat(root, ledger, new ExecutionEffectError("ROUTE_INVALID", "route.accountId"));
+    const first = fakeContext(null);
+    await expect(
+      advanceHandler({ beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger }, first.ctx, invocation),
+    ).rejects.toThrow(TerminalError);
+    const after = ledger.status();
+
+    const second = fakeContext(null);
+    await expect(
+      advanceHandler({ beat, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger }, second.ctx, invocation),
+    ).rejects.toThrow();
+
+    // Exactly one terminal, ever, and the ledger did not move on the re-walk.
+    expect(ledger.listEvents({ limit: 200 }).events.filter((r) => r.event.type === "TASK_FAILED")).toHaveLength(1);
+    expect(ledger.status().eventCount).toBe(after.eventCount);
+    expect(ledger.status().headEventSha256).toBe(after.headEventSha256);
+  });
+});
+
+describe("P7: both drivers settle a classified failure identically", () => {
+  it("produces the same terminal event, compared as canonical bytes", async () => {
+    // The whole content of D-B7R-1 = β, asserted rather than argued. The two
+    // lanes are given the same invocation, the same route, the same initiative
+    // and the same classified failure; what the ledger ends up holding must be
+    // the same event, byte for byte, or "the two drivers walk the same plan"
+    // has stopped being true at the one moment it matters most.
+    const failure = () => new ExecutionEffectError("ROUTE_INVALID", "route.accountId");
+    const TASK = "4b7a0000-4040-4404-8404-404040400007";
+
+    // Lane A — the Restate handler.
+    const a = open("b7r-symmetry-restate", TASK);
+    await expect(
+      advanceHandler(
+        { beat: failingBeat(a.root, a.ledger, failure()), commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", initiativeId: TEST_INITIATIVE_ID, ledger: a.ledger },
+        fakeContext(null).ctx,
+        a.invocation,
+      ),
+    ).rejects.toThrow(TerminalError);
+
+    // Lane B — the SQLite supervisor, on its own ledger, same invocation.
+    const b = open("b7r-symmetry-sqlite", TASK);
+    await expect(
+      new SqliteSupervisor({
+        ledger: b.ledger,
+        invocation: b.invocation,
+        effects: { apply: () => Promise.reject(failure()), probe: (op) => Promise.resolve(probeEffect(b.root, op)) },
+        emittedBy: EMITTED_BY,
+        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+        initiativeId: TEST_INITIATIVE_ID,
+        route: TEST_ROUTE,
+      }).runToCheckpoint(),
+    ).rejects.toThrow(ExecutionEffectError);
+
+    const terminalOf = (ledger: Ledger) =>
+      ledger.listEvents({ limit: 200 }).events.find((r) => r.event.type === "TASK_FAILED");
+    const fromA = terminalOf(a.ledger);
+    const fromB = terminalOf(b.ledger);
+    expect(fromA).toBeDefined();
+    expect(fromB).toBeDefined();
+
+    // Same event, byte for byte: same type, state, transition id, payload and
+    // idempotency key, because both were built by the one shared module.
+    expect(fromB?.canonicalJson).toBe(fromA?.canonicalJson);
+    expect(fromA?.event.transitionId).toBe("failed");
+    expect(fromA?.event.toState).toBe("FAILED");
+    expect(fromA?.event.payload["reason"]).toBe("EXECUTION_FAILED");
   });
 });

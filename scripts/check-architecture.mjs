@@ -4263,6 +4263,45 @@ const V2B7T_WRITE_SET = [
 ];
 
 /**
+ * V2-B7R: a classified failure settles on both drivers.
+ *
+ * **D-B7R-1 = β, symmetric.** A Restate-only settlement would have made the
+ * Restate lane settle a classified step failure where the SQLite lane does not,
+ * which CREATES the driver divergence the B7 wave exists to close. Both lanes
+ * therefore ask one shared `classifyFailure`, and P7 compares the terminal event
+ * they produce as canonical bytes.
+ *
+ * **The premise gate came before the code.** No repository code caught a
+ * `TerminalError` before this packet, so §1's design rested on the SDK's shipped
+ * typings alone. It was proved first against a real `restate-server` at the
+ * pinned 1.7.7, in ephemeral `/tmp` artifacts: a `TerminalError` thrown inside
+ * `ctx.run` is caught by the handler, a subsequent `ctx.run` is accepted and
+ * journaled, a real `SIGKILL` and redelivery replays the failed entry as a
+ * failure WITHOUT re-executing it, and the re-throw still ends the invocation
+ * terminally. The metadata the classification rides was proved to survive the
+ * same replay byte-identically.
+ *
+ * All twelve paths are used. The drill child gains a failure-injection knob and
+ * two settlement fault points — extending B2-4b's `CANCEL_FAULT_POINTS` shape
+ * rather than inventing a second one — so the kill windows are driven with a
+ * real `SIGKILL` against a real server rather than simulated.
+ */
+const V2B7R_WRITE_SET = [
+  "packages/domains/runtime/src/failure/index.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0004-durability-and-supervisor.md",
+  "docs/architecture/0005-restate-driver-and-adoption.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4641,6 +4680,7 @@ const WRITE_SET = [
   ...V2B3B_WRITE_SET,
   ...V2B7S_WRITE_SET,
   ...V2B7T_WRITE_SET,
+  ...V2B7R_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5412,6 +5452,24 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the two token ceilings agree",
     scope: "runtime/src/usage/index.ts and observation/src/rollups/index.ts",
+  },
+  // V2-B7R. Four new path-shaped surfaces, so four new rows: the register and
+  // the `requireScope` call sites both move 43 → 47.
+  {
+    law: "the settlement is journaled",
+    scope: "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  },
+  {
+    law: "the catch does not wrap the prologue",
+    scope: "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  },
+  {
+    law: "the settlement classifies and never carries a message",
+    scope: "packages/domains/runtime/src/failure/index.ts",
+  },
+  {
+    law: "the original error is re-thrown",
+    scope: "restate-driver/index.ts and sqlite-supervisor/index.ts",
   },
   { law: "no module spawns for plutil", scope: "packages/entrypoints/daemon/src/launchd/**" },
   { law: "the packaged entry reads no environment", scope: "packages/entrypoints/daemon/src/bin/**" },
@@ -9137,6 +9195,126 @@ if (tracked.status === 0) {
       );
     }
   }
+
+  // --- L-B7R-1..2: the settlement is journaled, and the catch is bounded ----
+  //
+  // Both read the Restate driver, and both are C1 and C2 made mechanical rather
+  // than remembered. A settlement appended outside the journal is invisible to
+  // replay; a catch reaching back over `reconcile` or
+  // `assertInvocationContinuity` would branch on outcomes that are NOT
+  // journaled, so the journal order would stop being a function of the journal
+  // — and it would settle failures whose whole law is zero delta.
+  const RESTATE_SETTLE_HOME = "packages/edges/durability/src/drivers/restate-driver/index.ts";
+  {
+    const source = stripComments(readIfPresent(RESTATE_SETTLE_HOME) ?? "");
+    requireScope("the settlement is journaled", source.length === 0 ? 0 : 1);
+    const runAt = source.indexOf("ctx.run(SETTLE_RUN_NAME");
+    const settleAt = source.indexOf("settleFailure(");
+    if (!/const SETTLE_RUN_NAME = "[^"]+";/.test(source)) {
+      fail(RESTATE_SETTLE_HOME + " no longer names the settlement's journal entry with a fixed literal");
+    } else if (runAt === -1) {
+      fail(
+        RESTATE_SETTLE_HOME +
+          " no longer appends the settlement inside a named ctx.run; a settlement outside the journal" +
+          " is invisible to replay",
+      );
+    } else if (settleAt === -1 || settleAt < runAt) {
+      fail(RESTATE_SETTLE_HOME + " settles outside the journal entry that is supposed to carry it");
+    } else {
+      notes.push("the Restate settlement is one named journal entry, in " + RESTATE_SETTLE_HOME);
+    }
+  }
+  {
+    const source = stripComments(readIfPresent(RESTATE_SETTLE_HOME) ?? "");
+    requireScope("the catch does not wrap the prologue", source.length === 0 ? 0 : 1);
+    const reconcileAt = source.indexOf("await reconcile({");
+    const continuityAt = source.indexOf("assertInvocationContinuity(context)");
+    // Anchored on the PLAN LOOP, not on the settle run. The nearest `try {`
+    // before the settle run is one of the loop's own inner runs, so anchoring
+    // there measured nothing — proved by a fixture that moved the try back over
+    // the prologue and did not fail. The try that matters is the one the loop
+    // opens inside, and it must open after the prologue has already run.
+    const loopAt = source.indexOf("for (const step of plan) {");
+    const settleCatchAt = loopAt === -1 ? -1 : source.lastIndexOf("try {", loopAt);
+    if (loopAt === -1) {
+      fail(RESTATE_SETTLE_HOME + " no longer walks the plan loop this law is scoped around");
+    } else if (reconcileAt === -1 || continuityAt === -1) {
+      fail(RESTATE_SETTLE_HOME + " no longer runs the prologue this law is scoped around");
+    } else if (settleCatchAt === -1 || settleCatchAt < continuityAt || settleCatchAt < reconcileAt) {
+      fail(
+        RESTATE_SETTLE_HOME +
+          " opens the settling catch before the prologue; a reconciliation refusal and a continuity" +
+          " failure must produce zero delta and no terminal, and a branch taken from an unjournaled" +
+          " outcome would make the journal order non-deterministic",
+      );
+    } else {
+      notes.push("the settling catch opens after the prologue, in " + RESTATE_SETTLE_HOME);
+    }
+  }
+
+  // --- L-B7R-3: the settlement classifies and never carries a message ------
+  //
+  // `fatal()` puts `error.message` on the TerminalError, and that message may
+  // name a path, a provider's output or a credential. What the LEDGER is told
+  // must be a classified code derived from the error's TYPE, so the module that
+  // builds the payload may not name a message at all.
+  const FAILURE_HOME = "packages/domains/runtime/src/failure/index.ts";
+  {
+    const source = stripComments(readIfPresent(FAILURE_HOME) ?? "");
+    requireScope("the settlement classifies and never carries a message", source.length === 0 ? 0 : 1);
+    const forbidden = ["error.message", "String(error)", ".stack"].filter((name) => source.includes(name));
+    if (!source.includes("export function classifyFailure(")) {
+      fail(FAILURE_HOME + " no longer declares the shared failure classification both drivers ask");
+    } else if (!source.includes("payload: { submissionDigest: invocation.submissionDigest, reason }")) {
+      fail(
+        FAILURE_HOME +
+          " no longer builds the settlement payload from a digest and a classified reason alone",
+      );
+    } else if (forbidden.length > 0) {
+      fail(
+        FAILURE_HOME +
+          " names " +
+          forbidden.join(", ") +
+          "; a settlement payload carries a code derived from the error type, never the error's own text",
+      );
+    } else {
+      notes.push("the settlement payload is a digest and a classified reason, in " + FAILURE_HOME);
+    }
+  }
+
+  // --- L-B7R-4: the original error is re-thrown ----------------------------
+  //
+  // C4, on both lanes. A catch that returned would convert a failed packet into
+  // a successful one, and on the Restate lane it would also stop the invocation
+  // failing terminally, so Restate would go back to retrying the walk.
+  const RETHROW_HOMES = [
+    RESTATE_SETTLE_HOME,
+    "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  ];
+  {
+    requireScope("the original error is re-thrown", RETHROW_HOMES.length);
+    let rethrows = 0;
+    for (const home of RETHROW_HOMES) {
+      const source = stripComments(readIfPresent(home) ?? "");
+      const settleAt = source.indexOf("settleFailure(");
+      if (settleAt === -1) {
+        fail(home + " no longer settles, so the re-throw this law protects has nothing to guard");
+        continue;
+      }
+      // The window between the settlement and the end of the catch that holds
+      // it. A `throw` must be in it, or the failure is being swallowed.
+      const window = source.slice(settleAt, settleAt + 900);
+      if (/throw error;/.test(window)) rethrows += 1;
+      else {
+        fail(
+          home +
+            " settles without re-throwing the original error; a failed packet would be reported as a" +
+            " successful one",
+        );
+      }
+    }
+    notes.push(rethrows + " settling call sites re-throw the original error");
+  }
 }
 
 // --- 18. P2E: the template is inert, and adoption is impossible from here ---
@@ -10622,6 +10800,11 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "failurePrecheck",
   "settleFailure",
   "usageTransitionId",
+  // V2-B7R: the shared failure classification, asked by both drivers.
+  "FAILURE_REFUSALS",
+  "FailureDecision",
+  "FailureRefusal",
+  "classifyFailure",
 ];
 
 /**

@@ -304,6 +304,45 @@ deliberate follow-up rather than an omission.
 Neither gap blocks the production wiring this section lands. Both are named so
 the certification tranche inherits work rather than a claim.
 
+### A classified failure settles, on both lanes (V2-B7R)
+
+B7T settled one trigger — the SQLite supervisor's bounded convergence guard —
+and deferred "the Restate `fatal` path" to B7-R. Measured, that framing was
+wrong in a way that changed the packet: the Restate handler has **no** analogue
+of the bound, because it walks a fixed traversal that always terminates. The
+real hole was a different trigger, and it was open on **both** lanes: a
+classified step failure settled on neither.
+
+So B7-R settles that trigger symmetrically (D-B7R-1 = β). A Restate-only
+settlement would have made Restate settle where SQLite does not — it would have
+**created** the driver divergence the B7 wave exists to close, not closed it.
+
+**One decision module, asked by both drivers.** `classifyFailure` answers what a
+caught error entitles the log to say, and its default is refusal: an error
+nobody classified settles nothing, because a terminal event is a claim that the
+task ended and a claim made from an unclassified error is a guess. Only a
+classified `ExecutionEffectError` settles today, under `EXECUTION_FAILED`.
+
+**What never settles, and each for its own reason.**
+`PostconditionUnknownError` — an effect may have happened unrecorded, which is
+§3's own claim. A reconciliation refusal — the prologue's law is zero delta. A
+continuity failure — the task's identity is in question, so a terminal claim
+would be a claim about the wrong task. A `LedgerError` — settling on a ledger
+failure is a claim built on the thing that just failed. A `ToyBoundaryError` —
+raised before a ledger is open, so there is no task. A `LifecyclePlanError` —
+on an already-terminal task it is the *correct* refusal of a re-walk, and
+settling would be a second terminal claim; settling it where it is genuinely a
+failure is owed to a later packet.
+
+**The probe discipline is unchanged and load-bearing.** `settleFailure` already
+probes an open intent and refuses on `UNKNOWN`, so the design table's "probe
+first" row needs no branch of its own — the case reaches the probe by the route
+that already exists.
+
+**The original error is always re-thrown.** A catch that returned would convert
+a failed packet into a successful one, and on the Restate lane it would stop the
+invocation failing terminally, so Restate would go back to retrying the walk.
+
 ### What this section does not settle: the Restate lane
 
 **`TASK_FAILED` settlement here is SQLite-only, and the divergence is recorded

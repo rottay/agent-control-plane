@@ -29,7 +29,7 @@ import {
 } from "../../core/step-executor/index.js";
 import type { BeatContext, BeatResult, EffectPort } from "../../core/step-executor/index.js";
 import { SupervisorError } from "../../errors/index.js";
-import { settleFailure } from "../../failure/index.js";
+import { classifyFailure, settleFailure } from "../../failure/index.js";
 
 /**
  * The SQLite supervisor: a single process walking the shared plan.
@@ -316,18 +316,38 @@ export class SqliteSupervisor implements OrchestrationDriver {
     const context = this.#beat(this.#invocation);
     assertInvocationContinuity(context);
 
-    // The bound comes from the plan this run walks, never from the writer plan:
-    // a shorter plan must not be given a longer plan's budget to spin in.
-    for (let guard = 0; guard <= this.#plan.length + 1; guard += 1) {
-      const current = executorCurrentState(context);
-      if (current === PLAN_TERMINAL_STATE) {
-        return { finalState: current, appended, replayed };
-      }
+    // V2-B7R. The catch opens HERE, after `assertInvocationContinuity`, and not
+    // before it. The prologue is different in kind: a continuity failure puts
+    // the task's identity in question and a reconciliation refusal's whole law
+    // is "fails closed with zero delta", so neither may settle. Wrapping them
+    // would settle a failure about a task this walk may not be walking.
+    try {
+      // The bound comes from the plan this run walks, never from the writer plan:
+      // a shorter plan must not be given a longer plan's budget to spin in.
+      for (let guard = 0; guard <= this.#plan.length + 1; guard += 1) {
+        const current = executorCurrentState(context);
+        if (current === PLAN_TERMINAL_STATE) {
+          return { finalState: current, appended, replayed };
+        }
 
-      const step = executorNextStep(context, current);
-      const outcome = await this.#executeStep(context, step);
-      if (outcome.inserted) appended += 1;
-      else replayed += 1;
+        const step = executorNextStep(context, current);
+        const outcome = await this.#executeStep(context, step);
+        if (outcome.inserted) appended += 1;
+        else replayed += 1;
+      }
+    } catch (error: unknown) {
+      // A classified step failure settles, and everything else propagates
+      // untouched. `classifyFailure` is the shared decision — the Restate driver
+      // asks the same function the same question — so the two lanes cannot
+      // answer it differently.
+      const decision = classifyFailure(error);
+      if (decision.settle) {
+        await settleFailure(context, decision.reason);
+      }
+      // The original error, always. A catch that returned would turn a failed
+      // packet into a successful one, and a catch that re-wrapped would lose the
+      // classification the caller above still needs.
+      throw error;
     }
 
     // V2-B7T. The bound is exhausted, so this walk will not converge. Settle

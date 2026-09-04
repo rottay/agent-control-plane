@@ -18,6 +18,9 @@ import type {
 } from "@restatedev/restate-sdk";
 
 import {
+  FAILURE_REASONS,
+  classifyFailure,
+  settleFailure,
   DATA_ROOT_DRILLS,
   RESTATE_HANDLER_ADVANCE,
   RESTATE_HANDLER_READ_CACHE,
@@ -34,7 +37,7 @@ import {
   planFor,
   settleCancellation,
 } from "@acp/runtime";
-import type { BeatContext, DurableInvocation, OrchestrationDriver } from "@acp/runtime";
+import type { BeatContext, DurableInvocation, FailureReason, OrchestrationDriver } from "@acp/runtime";
 
 import { attachAdvance, cancelAdvance, resolveGate, sendAdvanceDelayed } from "../../submit/index.js";
 import {
@@ -284,11 +287,57 @@ interface ObjectState {
   readonly [RESTATE_STATE_KEY_CACHE]: RestateCacheState;
 }
 
+/**
+ * The metadata key the classification travels under (V2-B7R).
+ *
+ * Metadata rather than the message, and this is the whole of L-B7R-3: the
+ * message is the underlying error's own text and may name a path, a provider's
+ * output or a credential — this lane already propagates it to the ingress
+ * caller, which is a pre-existing boundary this packet does not widen. What the
+ * LEDGER is told must be a classified code derived from the error's TYPE, and
+ * the only way that code reaches the catch is here.
+ *
+ * Measured on a real server at the pinned 1.7.7 before being relied on: a
+ * `TerminalError`'s metadata is journaled with the failure and is byte-identical
+ * in the catch after a real `SIGKILL` and redelivery. So the classification is
+ * as deterministic as the journal entry it rides.
+ */
+const FAILURE_REASON_METADATA_KEY = "acpFailureReason";
+
+/** The one journal entry a settlement is ever written under. */
+const SETTLE_RUN_NAME = "settle/failed";
+
 function fatal(error: unknown): never {
   // Fail-closed classifications must stop Restate retrying. Grinding against an
   // unobservable effect forever is worse than stopping with a reason.
   const message = error instanceof Error ? error.message : "the handler failed";
-  throw new TerminalError(message);
+  // V2-B7R. The class is about to be erased by the conversion to a
+  // `TerminalError`, so the decision is taken HERE, while the original error is
+  // still in hand, and carried forward as a classified word. `classifyFailure`
+  // is the shared decision the SQLite lane asks too, so neither driver can
+  // answer "does this settle?" differently from the other.
+  const decision = classifyFailure(error);
+  throw new TerminalError(
+    message,
+    decision.settle ? { metadata: { [FAILURE_REASON_METADATA_KEY]: decision.reason } } : {},
+  );
+}
+
+/**
+ * The reason a caught error entitles the log to settle under, or null.
+ *
+ * Fail-closed twice over: metadata that is absent, malformed, or names anything
+ * outside the contract's own closed list yields null and settles nothing. A
+ * settlement can therefore only happen for a decision `classifyFailure` actually
+ * took, never for one a message happened to look like.
+ */
+function settleableReason(error: unknown): FailureReason | null {
+  if (!(error instanceof TerminalError)) return null;
+  const carried = error.metadata?.[FAILURE_REASON_METADATA_KEY];
+  if (carried === undefined) return null;
+  return (FAILURE_REASONS as readonly string[]).includes(carried)
+    ? (carried as FailureReason)
+    : null;
 }
 
 /**
@@ -348,49 +397,98 @@ export async function advanceHandler(
     fatal(error);
   }
 
-  // A FIXED walk from index 0. No branch reads unjournaled ledger state, so the
-  // journal entry order is identical on every replay; idempotent appends make
-  // the already-done steps free.
-  for (const step of plan) {
-    if (step.beat === "OUTCOME") continue;
+  // V2-B7R. The try opens HERE and not one line earlier, and the boundary is
+  // the determinism argument rather than a preference.
+  //
+  // `reconcile()` and `assertInvocationContinuity` above run OUTSIDE any
+  // `ctx.run`, so their outcomes are not journaled and a branch taken from them
+  // would be recomputed live on every replay — the journal order would stop
+  // being a function of the journal. The loop is different: its inner failure IS
+  // journaled, so on replay the failed entry re-throws at the same position, the
+  // catch fires at the same position, and the settle entry lands at the same
+  // index. Measured on a real server before being relied on.
+  //
+  // They must also not settle on principle. A reconciliation refusal's whole law
+  // is "fails closed with zero delta", and a continuity failure puts the task's
+  // identity in question — a terminal claim there would be a claim about the
+  // wrong task.
+  try {
+    // A FIXED walk from index 0. No branch reads unjournaled ledger state, so the
+    // journal entry order is identical on every replay; idempotent appends make
+    // the already-done steps free.
+    for (const step of plan) {
+      if (step.beat === "OUTCOME") continue;
 
-    await ctx.run("step/" + step.transitionId + "/" + String(step.index), () => {
-      try {
-        const result = appendPlanStep(context, step);
-        return { inserted: result.inserted, sequence: dependencies.ledger.status().headSequence };
-      } catch (error: unknown) {
-        return fatal(error);
-      }
-    });
-    await dependencies.__onBeat?.("AFTER_INTENT_" + String(step.index), invocation.taskId);
-
-    if (step.beat === "INTENT") {
-      await ctx.run("effect/" + step.transitionId + "/" + String(step.index), async () => {
+      await ctx.run("step/" + step.transitionId + "/" + String(step.index), () => {
         try {
-          await applyIntentEffect(context, step);
-          return { applied: true };
+          const result = appendPlanStep(context, step);
+          return { inserted: result.inserted, sequence: dependencies.ledger.status().headSequence };
         } catch (error: unknown) {
           return fatal(error);
         }
       });
-      await dependencies.__onBeat?.("AFTER_EFFECT", invocation.taskId);
+      await dependencies.__onBeat?.("AFTER_INTENT_" + String(step.index), invocation.taskId);
 
-      const outcome = plan[step.index + 1];
-      if (outcome?.beat === "OUTCOME") {
-        await ctx.run("outcome/" + outcome.transitionId + "/" + String(outcome.index), async () => {
+      if (step.beat === "INTENT") {
+        await ctx.run("effect/" + step.transitionId + "/" + String(step.index), async () => {
           try {
-            const result = await closeIntent(context);
-            return {
-              inserted: result.inserted,
-              sequence: dependencies.ledger.status().headSequence,
-            };
+            await applyIntentEffect(context, step);
+            return { applied: true };
           } catch (error: unknown) {
             return fatal(error);
           }
         });
-        await dependencies.__onBeat?.("AFTER_OUTCOME", invocation.taskId);
+        await dependencies.__onBeat?.("AFTER_EFFECT", invocation.taskId);
+
+        const outcome = plan[step.index + 1];
+        if (outcome?.beat === "OUTCOME") {
+          await ctx.run("outcome/" + outcome.transitionId + "/" + String(outcome.index), async () => {
+            try {
+              const result = await closeIntent(context);
+              return {
+                inserted: result.inserted,
+                sequence: dependencies.ledger.status().headSequence,
+              };
+            } catch (error: unknown) {
+              return fatal(error);
+            }
+          });
+          await dependencies.__onBeat?.("AFTER_OUTCOME", invocation.taskId);
+        }
       }
     }
+  } catch (error: unknown) {
+    // C1 — the settlement is its own named journal entry, never a bare call in
+    // the catch and never inside the run that failed. An append outside the
+    // journal is invisible to replay; one inside the failed run rides an entry
+    // the journal has recorded as a failure.
+    //
+    // C3 — exactly-once is the LEDGER's, not the journal's. The SDK names a
+    // small window in which an action may re-run before its result is durable,
+    // so this run must tolerate at-least-once execution; it does, because
+    // `settleFailure` builds one event under one fixed transition id and the
+    // second append is an exact replay that inserts nothing.
+    const reason = settleableReason(error);
+    if (reason !== null) {
+      // The two windows a crash can land in, announced on the existing seam
+      // rather than through a second mechanism. `__onBeat` is not journaled and
+      // is not a `ctx.run`, so announcing here changes no journal position; the
+      // drills use it to put a real SIGKILL inside each window.
+      await dependencies.__onBeat?.("BEFORE_SETTLE", invocation.taskId);
+      await ctx.run(SETTLE_RUN_NAME, async () => {
+        const settlement = await settleFailure(context, reason);
+        // Inside the run and after the append: the SDK's own named window, where
+        // the ledger row exists and the journal entry is not yet durable. A
+        // crash here re-executes this action on redelivery, and the ledger key
+        // is what makes the second append an exact replay rather than a row.
+        await dependencies.__onBeat?.("AFTER_SETTLE_APPEND", invocation.taskId);
+        return { verdict: settlement.verdict, settled: settlement.failed !== null };
+      });
+    }
+    // C4 — the original terminal error, always. The invocation must still fail
+    // terminally so Restate does not retry the walk, and a catch that returned
+    // would turn a failed packet into a successful one.
+    throw error;
   }
 
   // The cache is written only after the appends succeeded, and only from values

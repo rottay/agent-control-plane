@@ -1,4 +1,5 @@
 import { CONTRACT_VERSION, ControlPlaneEvent, TERMINAL_STATES } from "@acp/contracts";
+import { LedgerError } from "@acp/ledger";
 import type { ControlPlaneEvent as ParsedControlPlaneEvent, TaskState } from "@acp/contracts";
 
 import { deriveEventCoordinate } from "../core/coordinates/index.js";
@@ -6,7 +7,14 @@ import { operationForStep } from "../core/events/index.js";
 import { INTENT_STEP, OUTCOME_STEP } from "../core/lifecycle/index.js";
 import { appendPlanStep, currentState } from "../core/step-executor/index.js";
 import type { BeatContext } from "../core/step-executor/index.js";
-import { SupervisorError } from "../errors/index.js";
+import {
+  LifecyclePlanError,
+  PostconditionUnknownError,
+  ReconciliationError,
+  SupervisorError,
+  ToyBoundaryError,
+} from "../errors/index.js";
+import { ExecutionEffectError } from "../execution-effects/index.js";
 
 /**
  * Failure, as a ledger settlement (V2-B7T).
@@ -68,8 +76,100 @@ export const FAILURE_TRANSITION_ID = "failed";
  * payload therefore carries a classified code and can never carry provider
  * output, a transcript or an exception string from a lower layer.
  */
-export const FAILURE_REASONS = ["BOUND_EXHAUSTED"] as const;
+export const FAILURE_REASONS = ["BOUND_EXHAUSTED", "EXECUTION_FAILED"] as const;
 export type FailureReason = (typeof FAILURE_REASONS)[number];
+
+/**
+ * Why a failure was **not** settled. Closed, and never part of a payload.
+ *
+ * These are decision words, not ledger words: they name what
+ * `classifyFailure` concluded so a caller and a drill can say why nothing was
+ * appended. Nothing here reaches an event — the payload carries a
+ * `FailureReason` and a digest, and only when the decision was to settle.
+ */
+export const FAILURE_REFUSALS = [
+  "BOUNDARY",
+  "CONTINUITY",
+  "LEDGER",
+  "PLAN",
+  "POSTCONDITION_UNKNOWN",
+  "RECONCILIATION",
+  "UNCLASSIFIED",
+] as const;
+export type FailureRefusal = (typeof FAILURE_REFUSALS)[number];
+
+/**
+ * What a caught error entitles the log to say.
+ *
+ * A discriminated pair rather than a boolean plus a nullable reason: a decision
+ * to settle always carries the classified code it will settle under, and a
+ * decision not to always carries why. Neither can be spelled without the other.
+ */
+export type FailureDecision =
+  | { readonly settle: true; readonly reason: FailureReason }
+  | { readonly settle: false; readonly refusal: FailureRefusal };
+
+/**
+ * Classify a caught error into what may be claimed about it (V2-B7R).
+ *
+ * **One decision module, shared by both drivers**, for the reason ADR 0005
+ * gives for one core and two drivers: a second driver that learned to settle
+ * would write this policy a second time, and the two copies would drift on
+ * exactly the case that matters — the one where settling would be a lie.
+ *
+ * **The default is refusal.** An error this function does not recognise is
+ * `UNCLASSIFIED` and settles nothing. That direction is deliberate: a terminal
+ * event is a claim that the task ended, and a claim made from an error nobody
+ * classified is a guess. New settling cases are added with the drill that earns
+ * them, never by widening a default.
+ *
+ * The refusals, each for its own reason and none of them incidental:
+ *
+ * - `PostconditionUnknownError` — **never.** An effect may have happened and
+ *   gone unrecorded; a terminal claim over it is the one claim ADR 0004 §3
+ *   exists to prevent, and `cancellation/index.ts` already refuses it by name.
+ * - `ReconciliationError` — never. It is raised in the prologue, whose whole law
+ *   is "fails closed with zero delta". Settling would write the delta the law
+ *   forbids.
+ * - `SupervisorError` — never. It is raised when the task's identity or
+ *   continuity is in question, and a terminal claim on a task whose continuity
+ *   is disputed is a claim about the wrong task.
+ * - `ToyBoundaryError` — never. It is raised before a ledger is opened, so there
+ *   is no task to settle.
+ * - `LedgerError` — never. If the ledger is refusing appends, the settlement
+ *   append will not land either; settling on a ledger failure is a claim built
+ *   on the thing that just failed.
+ * - `LifecyclePlanError` — never, and this one is a deferral rather than a
+ *   verdict. The plan has no step out of the current state, which on an already
+ *   terminal task is the *correct* refusal of a re-walk; settling would be a
+ *   second terminal claim. Settling it where it is genuinely a failure needs its
+ *   own evidence and is owed to a later packet.
+ *
+ * And the one that settles: `ExecutionEffectError`. The port classified the
+ * failure itself — a refused start, or a stream that ended in `error` — so the
+ * work either never ran or ran and failed, and the log is entitled to say so.
+ *
+ * **The "probe first" row of the design table is not a third disposition.**
+ * `settleFailure` already probes an open intent unconditionally and refuses on
+ * `UNKNOWN`, so the case where a stream stopped without a terminal
+ * (`TRANSPORT_UNAVAILABLE` at `events.terminal`) reaches the probe by that route
+ * and needs no branch of its own here. A second mechanism for one row would be
+ * a second place for the discipline to drift.
+ */
+export function classifyFailure(error: unknown): FailureDecision {
+  // Order matters only where the hierarchy overlaps: every class below extends
+  // `RuntimeError`, so the specific ones are tested before anything broader.
+  if (error instanceof PostconditionUnknownError) {
+    return { settle: false, refusal: "POSTCONDITION_UNKNOWN" };
+  }
+  if (error instanceof ReconciliationError) return { settle: false, refusal: "RECONCILIATION" };
+  if (error instanceof SupervisorError) return { settle: false, refusal: "CONTINUITY" };
+  if (error instanceof ToyBoundaryError) return { settle: false, refusal: "BOUNDARY" };
+  if (error instanceof LifecyclePlanError) return { settle: false, refusal: "PLAN" };
+  if (error instanceof LedgerError) return { settle: false, refusal: "LEDGER" };
+  if (error instanceof ExecutionEffectError) return { settle: true, reason: "EXECUTION_FAILED" };
+  return { settle: false, refusal: "UNCLASSIFIED" };
+}
 
 /**
  * What the settlement concluded. Closed and sorted, like every other verdict
