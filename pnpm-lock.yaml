@@ -158,6 +158,16 @@ importers:
         specifier: 3.2.4
         version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
 
+  packages/edges/tools:
+    dependencies:
+      '@acp/contracts':
+        specifier: workspace:*
+        version: link:../../kernel/contracts
+    devDependencies:
+      vitest:
+        specifier: 3.2.4
+        version: 3.2.4(@types/node@22.19.2)(jsdom@29.1.1)(lightningcss@1.33.0)
+
   packages/entrypoints/cli:
     dependencies:
       '@acp/accounts':

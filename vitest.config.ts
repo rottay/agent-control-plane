@@ -278,6 +278,25 @@ export default defineConfig({
       },
       {
         test: {
+          // The tool edge spawns MCP stdio servers but binds no port, and each
+          // connection gets its own child under a disposable directory the
+          // test that made it removes, so nothing is shared across files and
+          // the project joins the default parallel group (groupOrder 0) beside
+          // providers. `assertReservedPortsFree` is unaffected and must stay
+          // unaffected: a tools fixture that bound a pinned port would break
+          // the daemon project from another group.
+          name: 'tools',
+          root: './packages/edges/tools',
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+        },
+        resolve: { alias: workspaceSourceAliases },
+      },
+      {
+        test: {
           // Reads only. It opens no socket, binds no port and spawns no child,
           // so it stays in the default parallel group (groupOrder 0) beside the
           // other hermetic projects rather than joining the serialized

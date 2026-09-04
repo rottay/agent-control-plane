@@ -436,7 +436,7 @@ describe("the expired-literal table catches the fragments V2-B6-fence armed", ()
   });
 });
 
-describe("the five barrel pin laws parse through one helper (V2-B6-fence)", () => {
+describe("the six barrel pin laws parse through one helper (V2-B6-fence)", () => {
   const FENCE_SOURCE = readFileSync(join(REAL_REPO, "scripts", "check-architecture.mjs"), "utf8");
 
   /**
@@ -515,17 +515,24 @@ describe("the five barrel pin laws parse through one helper (V2-B6-fence)", () =
     expect(real(BARREL).has("type B")).toBe(false);
   });
 
-  it("routes exactly the five equality-pinned barrels through it, and no others", () => {
-    // The wiring half. Reverting any one of the five to the inline idiom makes
+  it("routes exactly the six equality-pinned barrels through it, and no others", () => {
+    // The wiring half. Reverting any one of the six to the inline idiom makes
     // this fail, which is what stops the cleanup from silently coming undone.
     const routed = [...FENCE_SOURCE.matchAll(/=\s*barrelExportNames\((\w+)\)/g)].map((m) => m[1]);
     expect(routed.sort()).toEqual(
-      ["accountsIndex", "adaptersIndex", "durabilityBarrel", "observationIndex", "runtimeBarrel"].sort(),
+      [
+        "accountsIndex",
+        "adaptersIndex",
+        "durabilityBarrel",
+        "observationIndex",
+        "runtimeBarrel",
+        "toolsIndex",
+      ].sort(),
     );
 
     // And the two block-idiom sites that remain are the two the map excluded:
     // the daemon law, which also parses direct declarations, and the helper's
-    // own body. Neither is one of the five.
+    // own body. Neither is one of the six.
     const inlineSites = [...FENCE_SOURCE.matchAll(/matchAll\(\/export\\s/g)].length;
     expect(inlineSites).toBe(2);
   });

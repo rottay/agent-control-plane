@@ -90,7 +90,7 @@ const PACKAGE_STRATA = Object.freeze({
   kernel: ["contracts", "protocol"],
   persistence: ["ledger"],
   domains: ["runtime", "accounts", "observation"],
-  edges: ["providers", "durability"],
+  edges: ["providers", "durability", "tools"],
   entrypoints: ["daemon", "gateway", "cli", "console"],
 });
 
@@ -4348,6 +4348,72 @@ const V2B4A_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b stage 1: the tool protocol edge.
+ *
+ * A new public package, `@acp/tools`, and the two repository-level
+ * registrations plus the fence registrations a new package costs. **Twenty
+ * novel paths and five edits to existing ones.** One of the five is
+ * `pnpm-lock.yaml`, which moves by exactly one workspace importer: a new member
+ * has to be linked, and a lockfile that did not move would mean the member was
+ * not.
+ *
+ * The fifth edit, `scripts/architecture/roots.test.mjs`, arrived by measurement
+ * rather than from the brief, and it arrived as a STOP. That test pins the
+ * routed set of equality-pinned barrels, and `TOOLS_PUBLIC_EXPORTS` is a sixth;
+ * the brief authorized twenty-four paths, so the writer stopped and proposed
+ * the addition instead of making it. Both ways of staying inside twenty-four
+ * were refused as dishonest: routing the tools barrel through a
+ * differently-shaped expression would slip past the wiring regex and leave the
+ * law claiming five barrels while six are pinned, and reverting the tools pin
+ * to the inline idiom would reintroduce the `type B` parsing bug that helper
+ * exists to prevent. The DT then authorized exactly the three mechanical
+ * updates, and a fourth comment-only sweep after that.
+ *
+ * **Stage 1 only, and the boundary is the point.** The daemon is not composed
+ * here: no `DaemonOptions.tools`, no drill, no unwind resource, and therefore
+ * no law about a production daemon owning a tool plane. Nor is a receipt
+ * persisted: no event type, no channel, no ledger append, no SSE projection.
+ * Both are owed, both are named in the package README as not-yet-claimed, and
+ * both are later stages with write-sets of their own. A packet that reached
+ * for either would have had to touch contracts, protocol, runtime or the
+ * daemon — none of which is authorized here, and a path beyond this list is a
+ * stop rather than a judgement call, as the roots test above demonstrates.
+ *
+ * `PROVIDERS_PUBLIC_EXPORTS` stays 87 and `CONTRACTS_SCHEMA_EXPORTS` stays 98.
+ * If either moves, this packet touched a barrel that is not in its write-set.
+ */
+const V2B4B_WRITE_SET = [
+  "packages/edges/tools/package.json",
+  "packages/edges/tools/tsconfig.json",
+  "packages/edges/tools/test/tsconfig.json",
+  "packages/edges/tools/README.md",
+  "packages/edges/tools/src/index.ts",
+  "packages/edges/tools/src/contract/index.ts",
+  "packages/edges/tools/src/admission/index.ts",
+  "packages/edges/tools/src/jsonrpc/index.ts",
+  "packages/edges/tools/src/client/index.ts",
+  "packages/edges/tools/src/stdio/index.ts",
+  "packages/edges/tools/src/receipt/index.ts",
+  "packages/edges/tools/src/port/index.ts",
+  "packages/edges/tools/test/testing/index.ts",
+  "packages/edges/tools/test/contract/index.test.ts",
+  "packages/edges/tools/test/admission/index.test.ts",
+  "packages/edges/tools/test/jsonrpc/index.test.ts",
+  "packages/edges/tools/test/client/index.test.ts",
+  "packages/edges/tools/test/stdio/index.test.ts",
+  "packages/edges/tools/test/receipt/index.test.ts",
+  "packages/edges/tools/test/port/index.test.ts",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+  "pnpm-lock.yaml",
+  // The twenty-fifth, DT-authorized after the writer reported it as a stop.
+  // Legal under the cumulative union through four earlier phase lists; named
+  // here so the packet's own record accounts for every staged path.
+  "scripts/architecture/roots.test.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4728,6 +4794,7 @@ const WRITE_SET = [
   ...V2B7T_WRITE_SET,
   ...V2B7R_WRITE_SET,
   ...V2B4A_WRITE_SET,
+  ...V2B4B_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5535,7 +5602,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the ledger package imports only what it is allowed", scope: "packages/persistence/ledger/{src,test}/**" },
   { law: "the protocol package imports only what it is allowed", scope: "packages/kernel/protocol/{src,test}/**" },
   { law: "the cli package imports only what it is allowed", scope: "packages/entrypoints/cli/{src,test}/**" },
-  { law: "package READMEs match the surface they claim", scope: "README_SURFACE_CLAIMS (5 registered sections)" },
+  { law: "package READMEs match the surface they claim", scope: "README_SURFACE_CLAIMS (6 registered sections)" },
   // V2-B3a. Two new path-shaped surfaces, so two new rows: the register and the
   // `requireScope` call sites both move 34 → 36, and the count law after this
   // list is what would have failed had only one side been edited.
@@ -5572,6 +5639,33 @@ const PATH_SCOPED_LAWS = [
   {
     law: "no leg forgets the reattach refusal",
     scope: "packages/edges/providers/src/execution-port/index.ts",
+  },
+  // V2-B4b stage 1. Six new path-shaped surfaces, so six new rows: the register
+  // and the `requireScope` call sites both move 50 → 56, and the count law
+  // after this list is what would have failed had only one side been edited.
+  {
+    law: "the tool edge keeps one spawn authority and reaches no network",
+    scope: "packages/edges/tools/{src,test}/**",
+  },
+  {
+    law: "the tool edge keeps one admission authority",
+    scope: "packages/edges/tools/src/**",
+  },
+  {
+    law: "the tool edge's import surface is exact",
+    scope: "packages/edges/tools/{src,test}/**",
+  },
+  {
+    law: "the tool edge reads no clock and one environment",
+    scope: "packages/edges/tools/src/**",
+  },
+  {
+    law: "the tool receipt is bounded by shape",
+    scope: "packages/edges/tools/src/receipt/index.ts",
+  },
+  {
+    law: "tool write authority is a closed role subset",
+    scope: "packages/edges/tools/src/{contract,port}/index.ts",
   },
 ];
 
@@ -6482,6 +6576,33 @@ const P1B_DEPENDENCY_LAW = [
     dependencies: ["@acp/contracts"],
     devDependencies: ["vitest"],
     forbidden: ["@acp/ledger", "better-sqlite3", "node:sqlite", "@acp/protocol"],
+  },
+  {
+    manifest: "packages/edges/tools/package.json",
+    // V2-B4b stage 1. One runtime dependency, and the MCP client under it is
+    // hand-rolled rather than taken from an SDK — the same choice this
+    // repository already made twice for provider wire protocols. Adopting an
+    // MCP SDK later is an owner-level decision with its own install-script
+    // audit and catalog pin; it is not something a writer reaches for while
+    // wiring a server, and this exact set is what makes that true.
+    //
+    // `@acp/providers` is forbidden by name even though the two edges do
+    // similar-looking work: this package re-implements the binary admission
+    // rather than importing `admitBinary`, precisely so that a tool edge does
+    // not acquire a dependency on the provider edge's internals. Borrowing
+    // twenty lines is cheaper than the coupling, and this line is what keeps
+    // the cheaper option from quietly becoming the other one.
+    dependencies: ["@acp/contracts"],
+    devDependencies: ["vitest"],
+    forbidden: [
+      "@acp/ledger",
+      "@acp/runtime",
+      "@acp/durability",
+      "@acp/providers",
+      "@acp/protocol",
+      "better-sqlite3",
+      "node:sqlite",
+    ],
   },
 ];
 
@@ -10165,6 +10286,10 @@ const TOPOLOGY_ACTIVE_TREES = [
   // built from modules that already satisfied this law inside runtime — so it
   // activates in the same commit that creates it, as every cohort has.
   "durability",
+  // V2-B4b stage 1: same reasoning, and the same commit. A package created
+  // folder/index throughout has nothing to migrate, so activating it later
+  // would only buy a window in which the law did not apply to it.
+  "tools",
 ];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
@@ -10360,6 +10485,11 @@ const TEST_TREE_SCANNED_PREFIXES = [
   "packages/persistence/ledger/test/",
   "packages/kernel/protocol/test/",
   "packages/entrypoints/cli/test/",
+  // V2-B4b stage 1: the tool edge arrives with per-package purity laws of its
+  // own (L-B4B-1, -4 and -5 below), so its test tree is inside the scan from
+  // the commit that creates it. Leaving it out is the exact failure this list
+  // exists to catch: the allowlists would simply stop applying, silently.
+  "packages/edges/tools/test/",
 ];
 
 /**
@@ -10662,6 +10792,9 @@ const TEST_ONLY_DOMAINS = {
   ],
   providers: [
     { domain: "testing", why: "the fake-provider harness the provider suites share" },
+  ],
+  tools: [
+    { domain: "testing", why: "the fake MCP server and scripted peer the tool suites share" },
   ],
 };
 
@@ -12353,6 +12486,466 @@ if (pinSource === null) {
   }
 }
 
+// --- 21b. V2-B4b stage 1: the tool protocol edge -----------------------------
+//
+// Six path-scoped laws over one new package, each with a non-zero scope. The
+// package's whole claim is that the plane can call a tool without acquiring an
+// authority it should not have — no network, no second spawner, no clock, no
+// ledger, no credential — and every one of those is a property a reviewer
+// would otherwise have to re-derive by reading. These are that reading, made
+// mechanical.
+
+const TOOLS_ALLOWED_PACKAGES = new Set(["@acp/contracts"]);
+const TOOLS_ALLOWED_BUILTINS = new Set(["node:fs", "node:path", "node:string_decoder"]);
+const TOOLS_TEST_ONLY_IMPORTS = new Set(["vitest", "node:os"]);
+
+/**
+ * No network, anywhere in this package, by any route.
+ *
+ * The builtin list is the provider edge's, inherited verbatim because the
+ * reason is inherited verbatim. What is NOT inherited is the assumption that
+ * banning builtins is sufficient: `fetch` is a global in this runtime, so a
+ * law that forbade `node:http` while leaving `fetch(` unmentioned would ban
+ * nothing a determined edit could not route around. Both halves are asserted.
+ *
+ * DNS is closed by neither of them. It is closed by the admission's hostname
+ * literals: a name is resolved by the network stack, importing nothing, which
+ * is why L-B4B-2 refuses `localhost` rather than trusting this list.
+ */
+const TOOLS_FORBIDDEN_BUILTINS = [
+  "node:net",
+  "node:http",
+  "node:https",
+  "node:tls",
+  "node:dgram",
+  "node:dns",
+  "node:cluster",
+  "node:worker_threads",
+];
+
+/** Exactly one file spawns, and it is the transport. */
+const TOOLS_SPAWN_SITE = "packages/edges/tools/src/stdio/index.ts";
+/** Exactly one file decides what may be talked to, and what loopback means. */
+const TOOLS_ADMISSION_SITE = "packages/edges/tools/src/admission/index.ts";
+const TOOLS_RECEIPT_SITE = "packages/edges/tools/src/receipt/index.ts";
+const TOOLS_CONTRACT_SITE = "packages/edges/tools/src/contract/index.ts";
+const TOOLS_PORT_SITE = "packages/edges/tools/src/port/index.ts";
+
+/** Never appended to, never named, in any form. */
+const TOOLS_FORBIDDEN_PACKAGE_NAMES = [
+  "@acp/ledger",
+  "@acp/runtime",
+  "@acp/durability",
+  "@acp/providers",
+  "@acp/protocol",
+];
+
+/**
+ * The receipt, pinned member by member, in declaration order.
+ *
+ * This is how "no tool arguments in the record" is enforced rather than
+ * promised. A field for an argument, a result, a content block or a credential
+ * cannot be added without moving this pin, and moving it is a deliberate act a
+ * reviewer sees. The forbidden-name list below is the second half of the same
+ * idea and is matched by exact equality: `argumentBytes` is a count and is
+ * fine, `arguments` is a payload and is not, and a substring scan could not
+ * tell them apart.
+ */
+const TOOLS_RECEIPT_SHAPE = {
+  ToolCallReceipt: [
+    "sessionId",
+    "serverId",
+    "toolName",
+    "transport",
+    "identity",
+    "outcome",
+    "refusal",
+    "argumentBytes",
+    "resultBytes",
+    "contentBlocks",
+  ],
+};
+
+const TOOLS_RECEIPT_FORBIDDEN_MEMBERS = [
+  "arguments",
+  "result",
+  "content",
+  "text",
+  "prompt",
+  "transcript",
+  "token",
+  "secret",
+  "key",
+  "env",
+];
+
+/**
+ * The roles that may drive a writing tool, pinned as a set rather than as a
+ * comparison.
+ *
+ * `WORKER_ROLES` holds five names; `AGENTS.md` puts `reviewer` and
+ * `consultant` under structural read-only and the verifier is by construction
+ * not the writer. A predicate written as `role !== "reviewer"` would leave the
+ * other two driving a writing tool, and would keep doing so the day a sixth
+ * role is added. The law asserts three things: the pinned set, that it is a
+ * strict subset of `WORKER_ROLES` read out of the contracts source, and that
+ * the port decides by calling the membership predicate rather than by
+ * comparing against a role literal.
+ */
+const TOOLS_WRITE_ROLES = ["implementer"];
+
+/** The closed public surface, pinned by equality in both directions. */
+const TOOLS_PUBLIC_EXPORTS = [
+  "TOOL_TRANSPORT_KINDS",
+  "ToolTransportKind",
+  "TOOL_REFUSALS",
+  "ToolRefusal",
+  "TOOL_WRITE_ROLES",
+  "ToolWriteRole",
+  "holdsToolWriteAuthority",
+  "ToolAllowlistEntry",
+  "ToolServerDescriptor",
+  "ToolCallRequest",
+  "TOOL_ARGUMENTS_BYTES_MAX",
+  "TOOL_RESULT_BYTES_MAX",
+  "TOOL_FRAME_BYTES_MAX",
+  "TOOL_CONTENT_STRING_MAX",
+  "TOOL_CALL_TIMEOUT_MS",
+  "TOOL_SERVER_LIFETIME_MS",
+  "TOOL_SERVER_ENV_KEYS",
+  "TOOL_MCP_PROTOCOL_VERSION",
+  "TOOL_MCP_CLIENT_NAME",
+  "admitToolServer",
+  "AdmittedToolServer",
+  "ToolAdmissionOutcome",
+  "ToolCallReceipt",
+  "ToolCallOutcomeName",
+  "SessionLiveness",
+  "ToolProtocolPortInput",
+  "ToolCallOutcome",
+  "ToolListingOutcome",
+  "ToolProtocolPort",
+  "createToolProtocolPort",
+];
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const declared = new Set(present);
+  for (const relativePath of WRITE_SET) {
+    if (inAnyArea(relativePath, "tools", ["src", "test"], PACKAGE_STRATA) && relativePath.endsWith(".ts")) {
+      declared.add(relativePath);
+    }
+  }
+  const sources = [...declared]
+    .filter((relativePath) => inAnyArea(relativePath, "tools", ["src", "test"], PACKAGE_STRATA))
+    .filter((relativePath) => relativePath.endsWith(".ts"))
+    .sort();
+  // Under `src/`, not merely "not a .test.ts file": the shared fake server at
+  // `test/testing/index.ts` is a test fixture that carries neither suffix, and
+  // the admission and determinism laws below are about production authority.
+  const productionSources = sources.filter((relativePath) =>
+    inArea(relativePath, "tools", "src", PACKAGE_STRATA),
+  );
+
+  // L-B4B-1 — one spawn authority, and no network by import or by global.
+  let transportChecked = 0;
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    transportChecked += 1;
+    const code = stripComments(content);
+
+    for (const name of importSpecifiers(content)) {
+      if (TOOLS_FORBIDDEN_BUILTINS.includes(name)) {
+        fail(relativePath + " imports " + name + "; the tool edge reaches no network");
+      }
+    }
+    if (importSpecifiers(content).includes("node:child_process") && relativePath !== TOOLS_SPAWN_SITE) {
+      fail(relativePath + " imports node:child_process; only " + TOOLS_SPAWN_SITE + " may");
+    }
+    // `fetch` is a global here, so the builtin ban above is not sufficient on
+    // its own. Nothing in this package may reach for it, tests included.
+    if (/(^|[^A-Za-z0-9_$.])fetch\s*\(/.test(code)) {
+      fail(relativePath + " calls fetch(; the tool edge reaches no network");
+    }
+  }
+  for (const relativePath of [TOOLS_SPAWN_SITE]) {
+    const content = readIfPresent(relativePath);
+    if (content === null) {
+      fail(TOOLS_SPAWN_SITE + " is missing; the tool edge must keep exactly one spawn authority");
+      continue;
+    }
+    const code = stripComments(content);
+    if (!importSpecifiers(content).includes("node:child_process")) {
+      fail(relativePath + " no longer spawns; the spawn authority would be a law over nothing");
+    }
+    // `shell:` would hand argv to a shell; `...process.env` would inherit the
+    // ambient environment the allowlist was built to replace; `maxBuffer` is
+    // an exec-only option `spawn` ignores, so requiring it would enforce a
+    // dead argument while the real bound went unimplemented.
+    for (const banned of ["shell:", "...process.env", "maxBuffer"]) {
+      if (code.includes(banned)) {
+        fail(relativePath + " names " + banned + "; the tool spawn authority forbids it");
+      }
+    }
+    for (const required of ["stdio:", "timeout:", "killSignal:"]) {
+      if (!code.includes(required)) {
+        fail(relativePath + " omits " + required + "; spawn options are explicit, never default");
+      }
+    }
+  }
+  requireScope("the tool edge keeps one spawn authority and reaches no network", transportChecked);
+
+  // L-B4B-2 — one admission authority, and the remote refusal is a parsed URL.
+  let admissionChecked = 0;
+  for (const relativePath of productionSources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    admissionChecked += 1;
+    const code = stripComments(content);
+    for (const literal of ['"127.0.0.1"', '"::1"']) {
+      if (code.includes(literal) && relativePath !== TOOLS_ADMISSION_SITE) {
+        fail(
+          relativePath +
+            " names " +
+            literal +
+            "; only " +
+            TOOLS_ADMISSION_SITE +
+            " decides what loopback means",
+        );
+      }
+    }
+    if (code.includes("new URL(") && relativePath !== TOOLS_ADMISSION_SITE) {
+      fail(relativePath + " parses a URL; only " + TOOLS_ADMISSION_SITE + " may");
+    }
+    if (importSpecifiers(content).includes("node:fs") && relativePath !== TOOLS_ADMISSION_SITE) {
+      fail(relativePath + " reads the filesystem; only " + TOOLS_ADMISSION_SITE + " admits a command");
+    }
+  }
+  {
+    const admission = readIfPresent(TOOLS_ADMISSION_SITE);
+    if (admission === null) {
+      fail(TOOLS_ADMISSION_SITE + " is missing; the tool edge must keep one admission authority");
+    } else {
+      const code = stripComments(admission);
+      // Refusing the *presence* of a url would make a conformant loopback
+      // descriptor unrepresentable, so the later stage that admits one would
+      // have to delete this leg rather than widen it — and nothing here would
+      // ever have parsed a URL. The refusal must be a parsed hostname, and the
+      // literals it compares against must be addresses, never names.
+      if (!code.includes("new URL(")) {
+        fail(TOOLS_ADMISSION_SITE + " no longer parses a URL; the remote refusal would be a field check");
+      }
+      for (const literal of ['"127.0.0.1"', '"::1"']) {
+        if (!code.includes(literal)) {
+          fail(TOOLS_ADMISSION_SITE + " no longer names " + literal + "; loopback must be an address, never a name");
+        }
+      }
+      if (code.includes('"localhost"')) {
+        fail(TOOLS_ADMISSION_SITE + ' admits "localhost"; resolving a name means DNS, and a name is not an address');
+      }
+      if (!code.includes("TRANSPORT_REFUSED")) {
+        fail(TOOLS_ADMISSION_SITE + " no longer refuses a transport; the remote refusal has no producer");
+      }
+    }
+  }
+  requireScope("the tool edge keeps one admission authority", admissionChecked);
+
+  // L-B4B-4 — the tool edge appends nothing, and its imports are exact.
+  let importChecked = 0;
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    importChecked += 1;
+    const isTest = relativePath.endsWith(".test.ts") || relativePath.includes("/test/");
+    const code = stripComments(content);
+
+    for (const name of importSpecifiers(content)) {
+      const relative = name.startsWith("./") || name.startsWith("../");
+      const spawnHere = name === "node:child_process" && relativePath === TOOLS_SPAWN_SITE;
+      const allowed =
+        relative ||
+        TOOLS_ALLOWED_PACKAGES.has(name) ||
+        TOOLS_ALLOWED_BUILTINS.has(name) ||
+        spawnHere ||
+        (isTest && TOOLS_TEST_ONLY_IMPORTS.has(name));
+      if (!allowed) {
+        fail(relativePath + " imports " + name + ", which the tool edge may not use");
+      }
+    }
+    for (const name of TOOLS_FORBIDDEN_PACKAGE_NAMES) {
+      if (code.includes(name)) {
+        fail(relativePath + " names " + name + "; the tool edge appends nothing and depends on one package");
+      }
+    }
+  }
+  requireScope("the tool edge's import surface is exact", importChecked);
+
+  // L-B4B-5 — no ambient nondeterminism, and one reader of the environment.
+  let determinismChecked = 0;
+  for (const relativePath of productionSources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    determinismChecked += 1;
+    const code = stripComments(content);
+    // This is what makes a receipt assertable by equality and a request id a
+    // counter rather than a UUID.
+    for (const banned of ["Date.now(", "new Date(", "Math.random(", "crypto.randomUUID("]) {
+      if (code.includes(banned)) {
+        fail(relativePath + " names " + banned + "; nothing in the tool edge reads a clock or a random source");
+      }
+    }
+    if (code.includes("process.env") && relativePath !== TOOLS_ADMISSION_SITE) {
+      fail(relativePath + " reads process.env; only " + TOOLS_ADMISSION_SITE + " builds an environment");
+    }
+  }
+  requireScope("the tool edge reads no clock and one environment", determinismChecked);
+}
+
+// L-B4B-3 — the receipt shape, pinned member by member.
+{
+  requireScope("the tool receipt is bounded by shape", Object.keys(TOOLS_RECEIPT_SHAPE).length);
+  const source = readIfPresent(TOOLS_RECEIPT_SITE);
+  if (source === null) {
+    fail(TOOLS_RECEIPT_SITE + " is missing; the receipt shape is pinned against it");
+  } else {
+    for (const [name, expected] of Object.entries(TOOLS_RECEIPT_SHAPE)) {
+      const actual = interfaceMembers(source, name);
+      if (actual === null) {
+        fail(TOOLS_RECEIPT_SITE + " no longer declares " + name + ", which the receipt pin reads");
+        continue;
+      }
+      if (actual.join(",") !== expected.join(",")) {
+        fail(
+          TOOLS_RECEIPT_SITE +
+            " " +
+            name +
+            " must be exactly [" +
+            expected.join(", ") +
+            "], found: [" +
+            actual.join(", ") +
+            "]",
+        );
+      }
+      // Exact equality, never a substring scan: `argumentBytes` is a count and
+      // is fine, `arguments` is a payload and is not.
+      for (const member of actual) {
+        if (TOOLS_RECEIPT_FORBIDDEN_MEMBERS.includes(member)) {
+          fail(
+            TOOLS_RECEIPT_SITE +
+              " " +
+              name +
+              " declares a member named " +
+              member +
+              "; a receipt carries counts, never payloads",
+          );
+        }
+      }
+    }
+    notes.push("the tool call receipt is bounded and payload-free by shape, pinned member by member");
+  }
+}
+
+// L-B4B-6 — write authority is a closed subset, decided by membership.
+{
+  requireScope("tool write authority is a closed role subset", 2);
+  const contractSource = readIfPresent(TOOLS_CONTRACT_SITE);
+  const portSource = readIfPresent(TOOLS_PORT_SITE);
+  const rolesSource = readIfPresent("packages/kernel/contracts/src/schemas/worker-identity/index.ts");
+  if (contractSource === null || portSource === null || rolesSource === null) {
+    fail("the tool write-authority law cannot read the contract, the port and WORKER_ROLES");
+  } else {
+    const declaration = stripComments(contractSource).match(
+      /export const TOOL_WRITE_ROLES\s*=\s*\[([^\]]*)\]/,
+    );
+    if (declaration === null) {
+      fail(TOOLS_CONTRACT_SITE + " no longer declares TOOL_WRITE_ROLES, which the write-authority law pins");
+    } else {
+      const actual = [...(declaration[1] ?? "").matchAll(/"([a-z]+)"/g)].map((match) => match[1]);
+      if (actual.join(",") !== TOOLS_WRITE_ROLES.join(",")) {
+        fail(
+          TOOLS_CONTRACT_SITE +
+            " TOOL_WRITE_ROLES must be exactly [" +
+            TOOLS_WRITE_ROLES.join(", ") +
+            "], found: [" +
+            actual.join(", ") +
+            "]",
+        );
+      }
+      // A strict subset, read out of the contracts source rather than restated
+      // here: a role allowlist that drifted to name something WORKER_ROLES no
+      // longer has would be a law over a vocabulary that moved underneath it.
+      const workerRoles = [
+        ...(stripComments(rolesSource).match(/export const WORKER_ROLES\s*=\s*\[([^\]]*)\]/)?.[1] ?? "")
+          .matchAll(/"([a-z]+)"/g),
+      ].map((match) => match[1]);
+      if (workerRoles.length === 0) {
+        fail("WORKER_ROLES could not be read; the tool write-authority subset law would pass vacuously");
+      }
+      for (const role of actual) {
+        if (!workerRoles.includes(role)) {
+          fail("TOOL_WRITE_ROLES names " + role + ", which is not a WORKER_ROLES member");
+        }
+      }
+      if (actual.length >= workerRoles.length) {
+        fail("TOOL_WRITE_ROLES is not a strict subset of WORKER_ROLES; it would grant every role");
+      }
+    }
+    // The decision has to be a membership test. A single-role comparison is
+    // the failure this law exists for: it is correct today and silently wrong
+    // the day a sixth role arrives.
+    const portCode = stripComments(portSource);
+    if (!portCode.includes("holdsToolWriteAuthority(")) {
+      fail(TOOLS_PORT_SITE + " no longer calls holdsToolWriteAuthority(; the write decision must be a membership test");
+    }
+    for (const role of ["reviewer", "consultant", "verifier", "coordinator", "implementer"]) {
+      if (portCode.includes('"' + role + '"')) {
+        fail(
+          TOOLS_PORT_SITE +
+            ' compares against the role literal "' +
+            role +
+            '"; the write decision is membership in TOOL_WRITE_ROLES, not a comparison',
+        );
+      }
+    }
+    notes.push(
+      "tool write authority is " +
+        TOOLS_WRITE_ROLES.length +
+        " of the control plane's roles, a closed subset decided by membership",
+    );
+  }
+}
+
+// The closed barrel, pinned by equality in both directions.
+{
+  const toolsIndex = readIfPresent("packages/edges/tools/src/index.ts");
+  if (toolsIndex !== null) {
+    if (/export\s*\*\s*from/.test(toolsIndex)) {
+      fail("packages/edges/tools/src/index.ts uses `export *`, which cannot stay closed");
+    }
+    // The transports and the codec are not public surface. A transport on the
+    // barrel is eventually opened by somebody outside the port, and the port is
+    // where the allowlist, the liveness join and the receipt live.
+    for (const withheld of ["openToolStdioConnection", "createToolClient", "createToolFrameReader"]) {
+      if (stripComments(toolsIndex).includes(withheld)) {
+        fail("packages/edges/tools/src/index.ts exports " + withheld + "; it is not public surface");
+      }
+    }
+    const exported = barrelExportNames(toolsIndex);
+    for (const name of exported) {
+      if (!TOOLS_PUBLIC_EXPORTS.includes(name)) {
+        fail("packages/edges/tools exports " + name + ", which is outside its closed surface");
+      }
+    }
+    for (const name of TOOLS_PUBLIC_EXPORTS) {
+      if (!exported.has(name)) {
+        fail("packages/edges/tools no longer exports the pinned name " + name);
+      }
+    }
+    notes.push(exported.size + " tool edge exports, pinned by equality");
+  }
+}
+
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
 //
 // Four laws, and one thing they have in common: each is the durable form of a
@@ -12500,6 +13093,17 @@ const README_SURFACE_CLAIMS = [
     section: "## Three transports",
     complete: false,
     surface: () => new Set(PROVIDERS_PUBLIC_EXPORTS),
+  },
+  {
+    // V2-B4b stage 1. `complete: true`, so the law runs both directions: a
+    // name the barrel does not carry fails, and a barrel name the table omits
+    // fails too. The second direction is the one a documentation gate usually
+    // lacks, and it is the reason this README cannot go stale the next time an
+    // export lands.
+    readme: "packages/edges/tools/README.md",
+    section: "## Public surface",
+    complete: true,
+    surface: () => new Set(TOOLS_PUBLIC_EXPORTS),
   },
 ];
 

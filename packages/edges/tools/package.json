@@ -1,0 +1,27 @@
+{
+  "name": "@acp/tools",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The tool protocol edge for the Agent Control Plane. One MCP stdio client the plane operates itself, behind a two-level allowlist, returning a bounded receipt for every call.",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@acp/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
+  }
+}
