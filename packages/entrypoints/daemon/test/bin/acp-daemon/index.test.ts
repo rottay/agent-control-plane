@@ -119,6 +119,8 @@ function validConfig(): Record<string, unknown> {
       route: execution.route,
     }),
     initiativeId: CONFIG_INITIATIVE_ID,
+    // V2 concurrency C4, DT Option B: every config declares what it may write.
+    envelope: envelopeFor(taskId, CONFIG_INITIATIVE_ID),
     holdOpen: false,
     checkPorts: false,
     execution,
@@ -413,6 +415,62 @@ function refusalOf(document: unknown): string {
   }
 }
 
+describe("the singular form declares what it may write (DT Option B)", () => {
+  it("admits a config carrying a well-formed envelope, and echoes it exactly", () => {
+    const parsed = parseDaemonChildConfig(validConfig());
+    expect(parsed.envelope.taskId).toBe(parsed.taskId);
+    expect(parsed.envelope.initiativeId).toBe(parsed.initiativeId);
+    expect(parsed.walks).toBeNull();
+  });
+
+  it("refuses a config with no envelope at all", () => {
+    // The bypass Option B exists to close: a production path with no declared
+    // write-set is a path conformance cannot judge, so there is no default and
+    // nothing is derived.
+    const without: Record<string, unknown> = { ...validConfig() };
+    delete without["envelope"];
+    expect(refusalOf(without)).toContain("config.envelope");
+  });
+
+  it("refuses an envelope that is not the whole contract", () => {
+    const partial = { ...validConfig(), envelope: { taskId: randomUUID() } };
+    expect(refusalOf(partial)).toContain("config.envelope");
+  });
+
+  it("refuses an envelope whose taskId disagrees with the config", () => {
+    const base = validConfig();
+    const moved = {
+      ...base,
+      envelope: envelopeFor(randomUUID(), CONFIG_INITIATIVE_ID),
+    };
+    const message = refusalOf(moved);
+    expect(message).toContain("config.taskId");
+    expect(message).toContain("disagrees");
+    // No value is echoed: an envelope carries objectives and paths.
+    expect(message).not.toContain(base["taskId"] as string);
+  });
+
+  it("refuses an envelope whose initiativeId disagrees with the config", () => {
+    const base = validConfig();
+    const moved = {
+      ...base,
+      envelope: envelopeFor(base["taskId"] as string, "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a09"),
+    };
+    expect(refusalOf(moved)).toContain("config.initiativeId");
+  });
+
+  it("echoes no value in any of these refusals", () => {
+    const base = validConfig();
+    const without: Record<string, unknown> = { ...base };
+    delete without["envelope"];
+    for (const document of [without, { ...base, envelope: {} }]) {
+      const message = refusalOf(document);
+      expect(message).not.toContain(base["taskId"] as string);
+      expect(message).not.toContain(CONFIG_INITIATIVE_ID);
+    }
+  });
+});
+
 describe("the envelope door admits many walks, or refuses precisely", () => {
   it("accepts two well-formed walks", () => {
     const parsed = parseDaemonChildConfig(walksConfig([walkEntry(), walkEntry()]));
@@ -691,6 +749,7 @@ describe("A2: an elected route survives the door", () => {
       submittedAt: B7S_SUBMITTED_AT,
       submissionDigest: composed.submissionDigest,
       initiativeId: B7S_INITIATIVE,
+      envelope: envelopeFor(B7S_TASK, B7S_INITIATIVE),
       holdOpen: false,
       checkPorts: false,
       execution: {

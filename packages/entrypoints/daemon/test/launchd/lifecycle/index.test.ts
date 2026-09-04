@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -24,6 +25,63 @@ import { writeLaunchAgentAt } from "../../../src/launchd/render/index.js";
 import type { LaunchAgentValues } from "../../../src/launchd/render/index.js";
 import { canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
+import { CONTRACT_VERSION } from "@acp/contracts";
+
+/**
+ * Make a fixture directory an actual worktree.
+ *
+ * A "worktree" that is not a git repository is not a worktree, and since V2
+ * concurrency C4 the walk observes the one it writes into. Everything the
+ * fixture already wrote is committed, so the only changes the observer can see
+ * are the walk's own — which is what makes a conformant drill conformant and a
+ * violating one violating.
+ *
+ * A temporary directory, never this repository (stop 3).
+ */
+function initWorktree(directory: string): void {
+  const git = (...args: string[]): void => {
+    spawnSync("/usr/bin/git", args, { cwd: directory, encoding: "utf8" });
+  };
+  git("init", "--quiet");
+  git("config", "user.email", "drill@example.invalid");
+  git("config", "user.name", "drill");
+  git("add", "-A");
+  git("commit", "--allow-empty", "-q", "-m", "fixture base");
+}
+
+
+/**
+ * The packet's envelope, required on every daemon config since V2 concurrency
+ * C4 (DT Option B): a production path with no declared write-set is a path
+ * write-set conformance cannot judge, and this drill reaches the daemon through
+ * the same config door production does.
+ */
+function envelopeFor(taskId: string, initiativeId: string): Record<string, unknown> {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    taskId,
+    initiativeId,
+    title: "a drill packet",
+    objective: "walk the plan",
+    classification: "MECHANICAL",
+    issuedBy: "claude/opus/implementer/01",
+    issuedAt: "2026-08-27T18:46:07.000Z",
+    authority: [],
+    readSet: [],
+    writeSet: ["src/**"],
+    conflictKeys: [],
+    allowedCommands: [],
+    forbiddenActions: [],
+    output: { kind: "DIFF", description: "a patch" },
+    validation: { commands: [], independentVerifierRequired: false },
+    eligibility: { roles: ["implementer"], providers: null, requiredCapabilities: [] },
+    budget: { maxTokens: 1_000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 10 },
+    visualEvidenceRequired: false,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    checkpointPolicy: { onEveryAtomicStep: false, maxStepsWithoutCheckpoint: 5 },
+  };
+}
+
 
 /**
  * One real launchd lifecycle, and nothing that survives it.
@@ -162,13 +220,25 @@ afterAll(() => {
  * adapter parses. It proves the wiring under launchd and nothing about any
  * provider; every capability stays UNKNOWN by law.
  */
+/**
+ * The observed worktree is its **own** directory, not the agent root.
+ *
+ * The agent root holds the plist, `daemon.json` and `err.log` — files the
+ * daemon itself writes while it runs. Since V2 concurrency C4 the walk observes
+ * the worktree it writes into, so a root serving as both would observe the
+ * daemon's own log as an untracked path outside the declared write-set and
+ * refuse its own start. In production those are different directories; here
+ * they are too.
+ */
 function executionConfigIn(root: string): DaemonExecutionConfig {
   const lines = [
     JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
     JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 1234 } } }),
     JSON.stringify({ type: "result", subtype: "turn_completed" }),
   ];
-  const binary = join(root, "fake-provider");
+  const worktree = join(root, "worktree");
+  mkdirSync(worktree, { recursive: true, mode: 0o700 });
+  const binary = join(worktree, "fake-provider");
   writeFileSync(
     binary,
     "#!" + realpathSync(process.execPath) + "\n" +
@@ -177,6 +247,7 @@ function executionConfigIn(root: string): DaemonExecutionConfig {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
+  initWorktree(worktree);
   return {
     route: {
       provider: "claude",
@@ -188,8 +259,8 @@ function executionConfigIn(root: string): DaemonExecutionConfig {
     },
     binding: {
       binary,
-      configRoot: root,
-      workdir: root,
+      configRoot: worktree,
+      workdir: worktree,
       limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
     },
   };
@@ -241,6 +312,7 @@ function stageAgent(): Staged {
             route: execution.route,
           }),
           initiativeId,
+          envelope: envelopeFor(taskId, initiativeId),
           execution,
         };
       })(),

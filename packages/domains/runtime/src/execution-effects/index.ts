@@ -89,6 +89,30 @@ export interface ExecutionEffectsInput {
    * (L-B7T-2) that asserts the production daemon passes one — not by hope.
    */
   readonly recordUsage?: UsageSink | undefined;
+  /**
+   * Write-set conformance, checked after the effect and before the marker
+   * (V2 concurrency C4).
+   *
+   * Injected as a function for the same reason `recordUsage` is: this module
+   * still opens no ledger, spawns nothing and reads no worktree. The daemon
+   * closes over the observer, the lease, the envelope's declared write-set and
+   * the ledger — all already in scope at each construction site — and hands the
+   * closure in.
+   *
+   * **Optional in the type, mandatory in production.** The drill children build
+   * this port without one and must keep compiling; what makes the optionality
+   * safe is `L-C-4c`, which asserts that *every* `createExecutionEffects` call
+   * in the daemon passes a gate. Under DT Option B there is no production path
+   * without one, and that is a fence check rather than a promise.
+   *
+   * **Synchronous, and a throw is terminal.** It runs in the same window as the
+   * usage sink and for the same reason: a resumed walk that finds a verified
+   * marker never re-enters `apply`, so a gate after the marker would be
+   * unreachable on exactly the window it covers. A gate that throws leaves no
+   * marker — but the gate is expected to have *recorded and revoked first*, so
+   * the throw settles the walk rather than inviting a retry.
+   */
+  readonly checkConformance?: ConformanceGate | undefined;
 }
 
 /**
@@ -115,6 +139,20 @@ export interface UsageSample {
  * silently dropped spend.
  */
 export type UsageSink = (sample: UsageSample) => void;
+
+/**
+ * The write-set conformance gate, as the walk calls it.
+ *
+ * It receives the operation's own plan index so the caller can derive a
+ * coordinate without a clock or a counter, exactly as `usageTransitionId`
+ * does for spend.
+ *
+ * It returns nothing. A conformant worktree is silence; a violation is a throw,
+ * after the caller has recorded the violation and revoked the lease. This
+ * module never decides what conformance means and never touches a worktree —
+ * it decides only *when* the question is asked.
+ */
+export type ConformanceGate = (operationIndex: number) => void;
 
 /**
  * The execution could not be carried to completion.
@@ -376,6 +414,14 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
           });
         }
       }
+
+      // Before the marker, and after the spend: a violation must not leave a
+      // marker behind, because a marker is what makes the step un-re-runnable
+      // and this walk is about to be settled rather than resumed. The gate
+      // records and revokes before it throws, so what reaches here is a throw
+      // whose evidence is already durable.
+      const checkConformance = input.checkConformance;
+      if (checkConformance !== undefined) checkConformance(operation.operationIndex);
 
       writeMarker(target, {
         operationId: operation.operationId,

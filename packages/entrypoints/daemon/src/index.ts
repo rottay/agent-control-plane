@@ -18,7 +18,8 @@
  * P2D is not P2 completion, and it is no product adoption.
  */
 
-import type { ModelExecutionPort } from "@acp/contracts";
+import type { Lease, ModelExecutionPort, TaskEnvelope } from "@acp/contracts";
+import { CONTRACT_VERSION } from "@acp/contracts";
 import type { Ledger, LeaseStore } from "@acp/ledger";
 import { openLeaseStore, openLedger } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
@@ -35,9 +36,11 @@ import {
   createExecutionPort,
   kimiAdapter,
 } from "@acp/providers";
-import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import type { DurableInvocation, LedgerPort, ScenarioRoot } from "@acp/runtime";
 import {
+  checkWriteSetConformance,
   createExecutionEffects,
+  deriveEventCoordinate,
   recordTokenObservation,
   resolveScenarioRoot,
   scenarioLedgerPath,
@@ -45,6 +48,7 @@ import {
 } from "@acp/runtime";
 
 import { createArbiter, leaseStorePath } from "./arbiter/index.js";
+import { createGitObserver, observeWorktree } from "./git-observer/index.js";
 import { WALK_CONCURRENCY_MAX, admitWalks, runAdmitted } from "./scheduler/index.js";
 import type { ScheduledWalk, SchedulerPorts, WalkOutcome } from "./scheduler/index.js";
 import type { Arbiter, ArbiterRenewal, LeaseHold } from "./arbiter/index.js";
@@ -162,6 +166,22 @@ export interface DaemonOptions {
    * assumed one would re-hide exactly the binding this packet made visible.
    */
   readonly execution: DaemonExecutionConfig;
+  /**
+   * The packet's envelope, and this path's authority for what it may write
+   * (V2 concurrency C4, DT Option B).
+   *
+   * **Required, not optional.** The walks form has carried an envelope since
+   * C3; the singular form did not, and a path with no declared write-set is a
+   * path write-set conformance cannot judge — which is the bypass this packet
+   * exists to close. Required in the **type** rather than only at the door, so
+   * the compiler and not a runtime refusal is what finds a caller that forgot.
+   *
+   * Not a bare `writeSet: string[]`: that would be a second declaration of what
+   * a `TaskEnvelope` already declares, which is the second-registry antipattern
+   * this programme refuses everywhere else. Authoritative means the contract
+   * type.
+   */
+  readonly envelope: TaskEnvelope;
   /**
    * Many walks inside this one plane (V2 concurrency C3).
    *
@@ -586,6 +606,22 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
             emittedBy: options.emittedBy,
           });
         },
+        // V2 concurrency C4, DT Option B. The legacy singular path is gated
+        // exactly as the scheduler path is: same builder, same five steps, its
+        // own envelope's declared write-set. A production path without this is
+        // the bypass the ruling forbids.
+        checkConformance: conformanceGateFor({
+          ledger: openedLedger,
+          invocation,
+          worktreePath: options.execution.binding.workdir,
+          declaredWriteSet: options.envelope.writeSet,
+          lease: hold.lease,
+          emittedBy: options.emittedBy,
+          onViolation: () => {
+            hold.release("WRITE_SET_VIOLATION_DETECTED");
+            heldArbiter.flush();
+          },
+        }),
       });
 
       if (options.mode === "SQLITE_SUPERVISOR") {
@@ -796,8 +832,9 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         run: async (walk) => {
           const held = ledgers.get(walk.spec.taskId);
           const harness = sharedHarness;
-          if (held === undefined || harness === null) {
-            throw new StartupError("a walk was run before its ledger and harness existed");
+          const heldLease = holds.get(walk.spec.taskId);
+          if (held === undefined || harness === null || heldLease === undefined) {
+            throw new StartupError("a walk was run before its ledger, lease and harness existed");
           }
           const walkRoot: ScenarioRoot = resolveScenarioRoot(walk.spec.scenarioId);
           const { route } = walk.spec.execution;
@@ -821,6 +858,21 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
                 emittedBy: walk.spec.emittedBy,
               });
             },
+            // The same gate, per walk: this walk's envelope, this walk's lease,
+            // this walk's admitted worktree. One law, two call sites.
+            checkConformance: conformanceGateFor({
+              ledger: held.ledger,
+              invocation: held.invocation,
+              worktreePath: walk.worktreePath,
+              declaredWriteSet: walk.envelope.writeSet,
+              lease: heldLease.hold.lease,
+              emittedBy: walk.spec.emittedBy,
+              onViolation: () => {
+                stopBeat(walk.spec.taskId);
+                heldLease.hold.release("WRITE_SET_VIOLATION_DETECTED");
+                heldLease.arbiter.flush();
+              },
+            }),
           });
           const result = await runSqliteMode({
             ledger: held.ledger,
@@ -999,6 +1051,125 @@ const CLI_ADAPTERS: Readonly<Record<string, ProviderAdapter>> = Object.freeze({
  * the daemon inside its unwind, classified by the adapter's code and never by
  * the path.
  */
+/**
+ * Build one walk's write-set conformance gate.
+ *
+ * One function, two call sites — the legacy singular seam and the scheduler's
+ * per-walk seam — because under DT Option B they are symmetric: each has an
+ * authoritative envelope, a held lease and an admitted worktree, so each gets
+ * the same five steps. Gating one and not the other would be the bypass the
+ * ruling forbids, and `L-C-4c` fails on it.
+ *
+ * The five steps, in this order and for these reasons:
+ *
+ * 1. **Observe.** Read-only, through the one git authority.
+ * 2. **An observation that cannot be taken is not a pass.** A failed read
+ *    throws `OBSERVATION_FAILED` and appends nothing: silence about a worktree
+ *    is not evidence about a worktree.
+ * 3. **Record, then revoke.** The verdict's own events are appended first —
+ *    `WRITE_SET_VIOLATION_DETECTED`, then `LEASE_REVOKED`. A revocation whose
+ *    cause has no event is a lease that vanished for no recorded reason.
+ * 4. **Quarantine the task**, with a `TASK_STATE_CHANGED` to the verdict's own
+ *    `recommendedTaskState`. This is the step that makes the violation *stick*:
+ *    `SUSPECT_WORKTREE` is a terminal state, so the ledger — the authority —
+ *    records the quarantine and a restart reconciles a task that will not
+ *    resume. Without it the walk stops but the task stays resumable, and the
+ *    next start re-runs the provider, re-writes outside the set and re-violates,
+ *    indefinitely. The recommendation is **read from the verdict**, never
+ *    restated here: `checkWriteSetConformance` decides what a violation means.
+ * 5. **Release the hold**, so the worktree is not stranded by a walk that is
+ *    about to stop.
+ * 6. **Throw**, so the walk stops here rather than continuing to a checkpoint.
+ *
+ * **Nothing else.** No clean, no restore, no checkout, no stash, no staging,
+ * no unlink. The offending bytes stay exactly where the packet put them,
+ * because the evidence of what happened is worth more than a tidy directory —
+ * and `L-C-4b` asserts this closure contains no way to change one.
+ *
+ * Coordinates are derived from the operation index, so a retry of the same
+ * operation appends nothing new.
+ */
+function conformanceGateFor(input: {
+  readonly ledger: LedgerPort;
+  readonly invocation: DurableInvocation;
+  readonly worktreePath: string;
+  readonly declaredWriteSet: readonly string[];
+  readonly lease: Lease;
+  readonly emittedBy: string;
+  readonly onViolation: () => void;
+  /**
+   * Structural, not the named `ConformanceGate`.
+   *
+   * The type is exported from `execution-effects` and deliberately **not**
+   * re-exported through the runtime barrel: that barrel's names are pinned by
+   * equality in its own mirrored suite, and moving the pin would be a
+   * seventeenth path. The shape is identical, the assignment is checked, and
+   * nothing is lost but a name this file never needed to say.
+   */
+}): (operationIndex: number) => void {
+  const observer = createGitObserver(input.worktreePath);
+  return (operationIndex: number): void => {
+    const seen = observeWorktree(observer, input.worktreePath);
+    if (!seen.ok) {
+      throw new StartupError("OBSERVATION_FAILED: the worktree could not be observed");
+    }
+    const verdict = checkWriteSetConformance({
+      declaredWriteSet: input.declaredWriteSet,
+      observation: seen.observation,
+      lease: input.lease,
+    });
+    if (!verdict.ok) {
+      throw new StartupError("OBSERVATION_FAILED: " + verdict.reason);
+    }
+    if (verdict.conformant) return;
+
+    const task = input.ledger.getTask(input.invocation.taskId);
+    if (task !== null) {
+      let index = 0;
+      const append = (
+        type: string,
+        payload: Readonly<Record<string, string>>,
+        toState: string,
+      ): void => {
+        const transitionId = "conformance." + String(operationIndex) + "." + String(index);
+        index += 1;
+        const coordinate = deriveEventCoordinate(input.invocation, transitionId, 0);
+        input.ledger.append({
+          contractVersion: CONTRACT_VERSION,
+          eventId: coordinate.eventId,
+          taskId: input.invocation.taskId,
+          attempt: input.invocation.attempt,
+          transitionId,
+          idempotencyKey: coordinate.idempotencyKey,
+          type,
+          fromState: task.currentState,
+          toState,
+          emittedBy: input.emittedBy,
+          occurredAt: coordinate.occurredAt,
+          recordedAt: coordinate.recordedAt,
+          correlationId: input.invocation.invocationId,
+          causationId: null,
+          payload,
+        });
+      };
+
+      // The finding and the revocation ride the task's thread without moving
+      // it: they say what happened, not what the task now is.
+      for (const event of verdict.events) append(event.type, event.payload, task.currentState);
+
+      // And then the task is quarantined. `SUSPECT_WORKTREE` is terminal, so
+      // this is what stops a violated walk from being resumed and re-run — the
+      // difference between a walk that stopped and a task that is finished.
+      const quarantine = verdict.recommendedTaskState;
+      if (quarantine !== null && quarantine !== task.currentState) {
+        append("TASK_STATE_CHANGED", { taskId: input.invocation.taskId, toState: quarantine }, quarantine);
+      }
+    }
+    input.onViolation();
+    throw new StartupError("WRITE_SET_VIOLATION_DETECTED: the walk wrote outside its declared set");
+  };
+}
+
 function executionPortFor(
   execution: DaemonExecutionConfig,
   taskId: string,

@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -23,6 +23,29 @@ import { canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
 import { createPsInspector } from "../../../src/identity-probe/index.js";
 import { recoverStaleLock } from "../../../src/singleton/index.js";
 import { logFilePath, resolveDaemonRoot } from "../../../src/paths/index.js";
+
+/**
+ * Make a fixture directory an actual worktree.
+ *
+ * A "worktree" that is not a git repository is not a worktree, and since V2
+ * concurrency C4 the walk observes the one it writes into. Everything the
+ * fixture already wrote is committed, so the only changes the observer can see
+ * are the walk's own — which is what makes a conformant drill conformant and a
+ * violating one violating.
+ *
+ * A temporary directory, never this repository (stop 3).
+ */
+function initWorktree(directory: string): void {
+  const git = (...args: string[]): void => {
+    spawnSync("/usr/bin/git", args, { cwd: directory, encoding: "utf8" });
+  };
+  git("init", "--quiet");
+  git("config", "user.email", "drill@example.invalid");
+  git("config", "user.name", "drill");
+  git("add", "-A");
+  git("commit", "--allow-empty", "-q", "-m", "fixture base");
+}
+
 
 /**
  * The fenced lease, drilled against real daemon processes (V2 concurrency C2).
@@ -62,6 +85,7 @@ function fakeProviderRoot(): string {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
+  initWorktree(created);
   return created;
 }
 
@@ -126,6 +150,7 @@ function worktree(): string {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
+  initWorktree(created);
   worktrees.push(created);
   return created;
 }
@@ -170,6 +195,7 @@ function configFor(
       submittedAt: SUBMITTED_AT,
       submissionDigest: digestFor(taskId),
       initiativeId: DRILL_INITIATIVE_ID,
+      envelope: envelopeFor(taskId, ["a/one.ts"], DRILL_INITIATIVE_ID),
       holdOpen: false,
       checkPorts: false,
       execution: {
@@ -226,6 +252,12 @@ function startHeldOpen(config: string): { child: ChildProcess; ready: Promise<vo
     stdio: ["ignore", "pipe", "pipe"],
     cwd: PACKAGE_ROOT,
   });
+  // A child killed mid-write can emit an EPIPE on its own pipes after close.
+  // Listened for rather than left unhandled: an unhandled one fails the whole
+  // project without failing a single test, which is a verdict nobody can act on.
+  child.on("error", () => undefined);
+  child.stdout?.on("error", () => undefined);
+  child.stderr?.on("error", () => undefined);
   const ready = new Promise<void>((resolvePromise, rejectPromise) => {
     let buffer = "";
     let stderr = "";
@@ -269,36 +301,71 @@ function waitForLog(logPath: string, from: number, marker: string, deadlineMs: n
 }
 
 /**
- * Wait for this daemon's unwind, and return the tail that contains it.
+ * Wait for **this run's** unwind, and return the tail that contains it.
  *
- * Anchored on the **last** `harness.reaped` rather than on a byte offset taken
- * before the run. The daemon log is shared across every drill in this file and
- * is bounded and rotated, so an offset into it stops meaning anything the
- * moment a rotation happens — which is how this drill reported two releases,
- * then one, then none. The last reap is this shutdown's, and what follows it is
+ * Two anchors, and both are needed.
+ *
+ * `from` is the log's length captured immediately before this daemon started,
+ * so the search cannot see another suite's daemon. The log is shared by every
+ * drill in the `daemon` project, and a previous daemon's last lines can flush
+ * *after* this one has written its own — which made a bare "last
+ * `harness.reaped`" anchor point at a stale reap with nothing after it, and
+ * failed this drill roughly one project run in two while it passed every time
+ * the file was run alone.
+ *
+ * Within that window the search is still anchored on the **last**
+ * `harness.reaped`, because this daemon reaps once and everything after it is
  * this shutdown.
  *
- * The child writes those lines as it exits, so the wait is also what keeps the
+ * The log is bounded and rotated, so an offset can outlive its file: a length
+ * shorter than `from` means a rotation happened and the whole current file is
+ * this run's. Handled rather than assumed away — the alternative is an offset
+ * that silently points past the end and a wait that can never succeed.
+ *
+ * The child writes these lines as it exits, so the wait is also what keeps the
  * read from racing the flush.
  */
-function waitForUnwind(logPath: string, releases: number, deadlineMs: number): Promise<string> {
+function waitForUnwind(
+  logPath: string,
+  from: number,
+  releases: number,
+  deadlineMs: number,
+): Promise<string> {
   return new Promise<string>((resolvePromise, rejectPromise) => {
     const started = Date.now();
     const poll = setInterval(() => {
       const whole = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
-      const at = whole.lastIndexOf('"harness.reaped"');
+      const window = whole.length < from ? whole : whole.slice(from);
+      const at = window.lastIndexOf('"harness.reaped"');
       if (at >= 0) {
-        const tail = whole.slice(at);
+        const tail = window.slice(at);
         if (tail.split('"lease.released"').length - 1 >= releases) {
           clearInterval(poll);
-          resolvePromise(whole.slice(Math.max(0, at - 200)));
+          resolvePromise(window.slice(Math.max(0, at - 200)));
           return;
         }
       }
       if (Date.now() - started > deadlineMs) {
         clearInterval(poll);
+        // Self-describing: a bare "never logged" cannot tell a missing log from
+        // a missing unwind, and those have different causes.
+        const exists = existsSync(logPath);
         rejectPromise(
-          new Error("the daemon never logged a reap followed by " + String(releases) + " releases"),
+          new Error(
+            "the daemon never logged a reap followed by " +
+              String(releases) +
+              " releases (log exists: " +
+              String(exists) +
+              ", window bytes: " +
+              String(window.length) +
+              ", from: " +
+              String(from) +
+              ", reaps in window: " +
+              String(window.split('"harness.reaped"').length - 1) +
+              ", releases in window: " +
+              String(window.split('"lease.released"').length - 1) +
+              ")",
+          ),
         );
       }
     }, 100);
@@ -556,6 +623,7 @@ function barrierWorktree(mine: string, theirs: string, gate: string): string {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
+  initWorktree(created);
   worktrees.push(created);
   return created;
 }
@@ -581,6 +649,7 @@ function heldWorktree(name: string, gate: string): string {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
+  initWorktree(created);
   worktrees.push(created);
   return created;
 }
@@ -624,11 +693,15 @@ function waitForFile(path: string, deadlineMs: number): Promise<void> {
 
 const C3_ENVELOPE_INITIATIVE = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a04";
 
-function envelopeFor(taskId: string, writeSet: readonly string[]): Record<string, unknown> {
+function envelopeFor(
+  taskId: string,
+  writeSet: readonly string[],
+  initiativeId: string = C3_ENVELOPE_INITIATIVE,
+): Record<string, unknown> {
   return {
     contractVersion: LEDGER_ACCOUNT_CONTRACT_VERSION,
     taskId,
-    initiativeId: C3_ENVELOPE_INITIATIVE,
+    initiativeId,
     title: "a walk",
     objective: "walk the plan",
     classification: "MECHANICAL",
@@ -654,8 +727,9 @@ function walkEntryFor(
   scenarioId: string,
   workdir: string,
   writeSet: readonly string[],
+  fixedTaskId?: string,
 ): { entry: Record<string, unknown>; taskId: string } {
-  const taskId = randomUUID();
+  const taskId = fixedTaskId ?? randomUUID();
   const execution = {
     route: DRILL_ROUTE,
     binding: {
@@ -687,13 +761,60 @@ function walkEntryFor(
   };
 }
 
-function walksConfig(entries: readonly unknown[], mode = "SQLITE_SUPERVISOR"): string {
+/**
+ * The legacy singular form, with its own envelope (DT Option B).
+ *
+ * The same walk, expressed the other way, so every case below can be run twice
+ * and the two seams compared rather than assumed symmetric.
+ */
+function singularConfig(
+  scenarioId: string,
+  workdir: string,
+  taskId: string,
+  writeSet: readonly string[],
+): string {
+  const execution = {
+    route: DRILL_ROUTE,
+    binding: {
+      binary: join(workdir, "fake-provider"),
+      configRoot: workdir,
+      workdir,
+      limits: { timeoutMs: 90_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+    },
+  };
+  return JSON.stringify({
+    mode: "SQLITE_SUPERVISOR",
+    scenarioId,
+    emittedBy: EMITTED_BY,
+    taskId,
+    attempt: 1,
+    submittedAt: SUBMITTED_AT,
+    submissionDigest: canonicalSubmissionDigest({
+      taskId,
+      attempt: 1,
+      submittedAt: SUBMITTED_AT,
+      initiativeId: C3_ENVELOPE_INITIATIVE,
+      route: DRILL_ROUTE,
+    }),
+    initiativeId: C3_ENVELOPE_INITIATIVE,
+    envelope: envelopeFor(taskId, writeSet),
+    holdOpen: false,
+    checkPorts: false,
+    execution,
+  });
+}
+
+function walksConfig(
+  entries: readonly unknown[],
+  mode = "SQLITE_SUPERVISOR",
+  holdOpen = false,
+): string {
   return JSON.stringify({
     mode,
     scenarioId: "c3-plane",
     emittedBy: EMITTED_BY,
     initiativeId: C3_ENVELOPE_INITIATIVE,
-    holdOpen: false,
+    holdOpen,
     checkPorts: false,
     walks: entries,
   });
@@ -805,7 +926,21 @@ describe("under N walks, each lease is its own", () => {
       const logPath = logFilePath(resolveDaemonRoot());
       const sizeBefore = existsSync(logPath) ? readFileSync(logPath, "utf8").length : 0;
 
-      const { child } = startHeldOpen(walksConfig([a.entry, b.entry]));
+      // **This is the one drill that never awaits readiness, and it must say
+      // so.** A multi-walk daemon announces readiness only after `runAdmitted`
+      // returns, and these providers are held open deliberately — so readiness
+      // does not arrive until the test itself releases them in the `finally`.
+      // The drill waits on the providers' own pid files instead.
+      //
+      // `ready` therefore has no awaiter, and it carries a `close` rejection.
+      // When the `finally`'s SIGTERM closes the child before the announce wins
+      // the race, that rejection has nobody to catch it and Vitest fails the
+      // whole project — every test passing — on one run in two. Bound and
+      // swallowed **here**, at the only site that discards it. The two callers
+      // that `await ready` keep their readiness failures exactly as they are:
+      // `startHeldOpen` is byte-unchanged, so nothing about their promise moves.
+      const { child, ready } = startHeldOpen(walksConfig([a.entry, b.entry]));
+      void ready.catch(() => undefined);
       try {
         // Both providers are alive; both leases are held at fence 1.
         await waitForFile(join(gate, "doomed.pid"), 30_000);
@@ -816,9 +951,14 @@ describe("under N walks, each lease is its own", () => {
         // A successor takes exactly one of the two worktrees.
         reclaimFrom(doomed);
 
-        const slice = await waitForLog(logPath, sizeBefore, '"lease.lost"', 90_000);
-        // The loser was reaped, by name, and the sibling was not touched.
-        expect(slice).toContain('"walk.reaped"');
+        // Wait for the *reap*, not the loss: the interrupt resolves
+        // asynchronously after `lease.lost` is written, so reading the log the
+        // instant the loss appears races that resolution.
+        const slice = await waitForLog(logPath, sizeBefore, '"walk.reaped"', 90_000);
+        // The loser was reaped, by name and in order, and the sibling's own
+        // children were not touched — `closeAll` would have taken both.
+        expect(slice.indexOf('"lease.lost"')).toBeGreaterThanOrEqual(0);
+        expect(slice.indexOf('"walk.reaped"')).toBeGreaterThan(slice.indexOf('"lease.lost"'));
         expect(slice).not.toContain('"harness.reaped"');
 
         // The sibling kept beating: its fence moved past the grant's, which
@@ -914,13 +1054,25 @@ describe("under N walks, each lease is its own", () => {
       const a = walkEntryFor(scenario("c3-unwind-a"), first, ["a/one.ts"]);
       const b = walkEntryFor(scenario("c3-unwind-b"), second, ["b/two.ts"]);
       const logPath = logFilePath(resolveDaemonRoot());
+      // Captured before the daemon starts, so the wait below cannot be
+      // satisfied — or defeated — by another suite's daemon in the shared log.
+      const sizeBefore = existsSync(logPath) ? readFileSync(logPath, "utf8").length : 0;
 
-      const { child, ready } = startHeldOpen(walksConfig([a.entry, b.entry]));
+      // **`holdOpen: true`, and it is the whole meaning of "graceful".** A
+      // daemon started with `holdOpen: false` announces readiness and then
+      // drains itself, installing **no signal handlers** — so a SIGTERM into it
+      // is delivered by default action and kills the process mid-drain, after
+      // `draining` and before the unwind can reap or release. That is not a
+      // graceful stop, and this drill was measuring one process's race against
+      // its own shutdown: green when the unwind happened to finish first, red
+      // under load. Held open, the signal is handled, and the unwind is the one
+      // the assertion is about.
+      const { child, ready } = startHeldOpen(walksConfig([a.entry, b.entry], "SQLITE_SUPERVISOR", true));
       await ready;
       child.kill("SIGTERM");
       await closed(child);
 
-      const slice = await waitForUnwind(logPath, 1, 30_000);
+      const slice = await waitForUnwind(logPath, sizeBefore, 1, 30_000);
       const reaped = slice.indexOf('"harness.reaped"');
       const releases = [...slice.matchAll(/"lease\.released"/g)].map((match) => match.index);
 
@@ -943,6 +1095,241 @@ describe("under N walks, each lease is its own", () => {
     },
     180_000,
   );
+});
+
+// ---------------------------------------------------------------------------
+// V2 concurrency C4: write-set conformance, on BOTH execution paths
+// ---------------------------------------------------------------------------
+
+/**
+ * A worktree whose provider writes one file, named by the caller.
+ *
+ * Whether that file is inside the declared write-set is what separates a
+ * conformant walk from a violating one, so the drills below build the same
+ * fixture twice and change only the declaration.
+ */
+function writingWorktree(fileName: string): string {
+  const created = realpathSync(mkdtempSync(join(tmpdir(), "acp-c4-wt-")));
+  writeFileSync(
+    join(created, "fake-provider"),
+    "#!/usr/bin/env node\n" +
+      "require('node:fs').writeFileSync(require('node:path').join(" +
+      JSON.stringify(created) + ", " + JSON.stringify(fileName) + "), 'written by the walk');\n" +
+      "process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\\n');\n" +
+      "process.exit(0);\n",
+    { mode: 0o700 },
+  );
+  initWorktree(created);
+  worktrees.push(created);
+  return created;
+}
+
+function conformanceEvents(scenarioId: string): { type: string; payload: Record<string, unknown> }[] {
+  const path = scenarioLedgerPath(resolveScenarioRoot(scenarioId));
+  if (!existsSync(path)) return [];
+  const ledger = openLedger(path, { readOnly: true });
+  try {
+    return ledger
+      .listEvents({ limit: 500 })
+      .events
+      // Only the gate's own events. A completed walk also revokes its lease on
+      // the way out (cause `RELEASED`), and counting that as a conformance
+      // finding would make every clean walk look like a violation. The gate's
+      // coordinates are derived from `conformance.<operationIndex>.<n>`, so the
+      // transition id is what separates them — not the type.
+      .filter((record) => record.event.transitionId.startsWith("conformance."))
+      .map((record) => ({ type: record.event.type, payload: record.event.payload }));
+  } finally {
+    ledger.close();
+  }
+}
+
+/** Every event type in a scenario's ledger, in order. */
+function allEvents(scenarioId: string): string[] {
+  const path = scenarioLedgerPath(resolveScenarioRoot(scenarioId));
+  if (!existsSync(path)) return [];
+  const ledger = openLedger(path, { readOnly: true });
+  try {
+    return ledger.listEvents({ limit: 500 }).events.map((record) => record.event.type);
+  } finally {
+    ledger.close();
+  }
+}
+
+function taskStateOf(scenarioId: string, taskId: string): string | null {
+  const path = scenarioLedgerPath(resolveScenarioRoot(scenarioId));
+  if (!existsSync(path)) return null;
+  const ledger = openLedger(path, { readOnly: true });
+  try {
+    return ledger.getTask(taskId)?.currentState ?? null;
+  } finally {
+    ledger.close();
+  }
+}
+
+function gitStatusOf(worktree: string): string {
+  return spawnSync("/usr/bin/git", ["status", "--porcelain=v1"], {
+    cwd: worktree,
+    encoding: "utf8",
+  }).stdout;
+}
+
+describe("both execution paths enforce the declared write-set", () => {
+  /**
+   * The singular form and the walks form, the same case each time.
+   *
+   * This is the packet's centre and the drill that would have failed under
+   * Option A: a daemon started on the **legacy singular** form runs the gate,
+   * asserted by observing the events rather than by reading the code.
+   */
+  for (const seam of ["singular", "scheduler"] as const) {
+    it("refuses a walk that writes outside its set, on the " + seam + " path", async () => {
+      const id = scenario("c4-violation-" + seam);
+      const workdir = writingWorktree("outside.txt");
+      const taskId = randomUUID();
+
+      // The scheduler seam needs **two** walks: a single-walk config folds to
+      // the singular path by design (C3), so a one-walk "scheduler" case would
+      // quietly re-test the seam it is meant to contrast with.
+      const ran = await runDaemon(
+        seam === "singular"
+          ? singularConfig(id, workdir, taskId, ["declared-only.txt"])
+          : walksConfig([
+              walkEntryFor(id, workdir, ["declared-only.txt"], taskId).entry,
+              walkEntryFor(scenario("c4-sibling"), writingWorktree("declared.txt"), ["declared.txt"]).entry,
+            ]),
+      );
+      void ran;
+
+      // Recorded, then revoked — in that order. A revocation whose cause has no
+      // event is a lease that vanished for no recorded reason.
+      const events = conformanceEvents(id);
+      expect(events.map((event) => event.type)).toEqual([
+        "WRITE_SET_VIOLATION_DETECTED",
+        "LEASE_REVOKED",
+        "TASK_STATE_CHANGED",
+      ]);
+      expect(events[0]?.payload["firstPathOutsideSet"]).toBe("outside.txt");
+      expect(events[2]?.payload["toState"]).toBe("SUSPECT_WORKTREE");
+
+      // **Quarantined, not merely stopped.** `SUSPECT_WORKTREE` is terminal, so
+      // the ledger records that this task is finished rather than resumable —
+      // which is what stops the next start from re-running the provider and
+      // violating again. A walk that only stopped would look identical here.
+      expect(taskStateOf(id, taskId)).toBe("SUSPECT_WORKTREE");
+      expect(events.map((event) => event.type)).toContain("TASK_STATE_CHANGED");
+
+      // The lease went back: a violating walk must not strand a worktree.
+      expect(leaseRow(workdir)?.leaseId).toBeNull();
+
+      // **Nothing was cleaned.** The offending file is still there with the
+      // bytes the walk wrote, and git still sees it. This is the whole of
+      // "sin limpiar": the evidence of what happened outlives the walk.
+      expect(existsSync(join(workdir, "outside.txt"))).toBe(true);
+      expect(readFileSync(join(workdir, "outside.txt"), "utf8")).toBe("written by the walk");
+      expect(gitStatusOf(workdir)).toContain("outside.txt");
+    });
+
+    it("lets a conformant walk finish in silence, on the " + seam + " path", async () => {
+      const id = scenario("c4-conformant-" + seam);
+      const workdir = writingWorktree("declared.txt");
+      const taskId = randomUUID();
+
+      const ran = await runDaemon(
+        seam === "singular"
+          ? singularConfig(id, workdir, taskId, ["declared.txt"])
+          : walksConfig([
+              walkEntryFor(id, workdir, ["declared.txt"], taskId).entry,
+              walkEntryFor(scenario("c4-sibling-ok"), writingWorktree("declared.txt"), ["declared.txt"]).entry,
+            ]),
+      );
+      expect(ran.code).toBe(0);
+      // Neither event appended: conformance is silence, not a receipt.
+      expect(conformanceEvents(id)).toEqual([]);
+      expect(taskStateOf(id, taskId)).toBe("CHECKPOINTED");
+    });
+  }
+
+  it("fails closed when the worktree cannot be observed", async () => {
+    const id = scenario("c4-unobservable");
+    // A worktree that is not a repository. An observation that cannot be taken
+    // is not a pass: the walk stops and records no conformance either way.
+    const created = realpathSync(mkdtempSync(join(tmpdir(), "acp-c4-bare-")));
+    worktrees.push(created);
+    writeFileSync(
+      join(created, "fake-provider"),
+      "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\\n');\nprocess.exit(0);\n",
+      { mode: 0o700 },
+    );
+    const taskId = randomUUID();
+    const ran = await runDaemon(singularConfig(id, created, taskId, ["anything.txt"]));
+    expect(ran.code).not.toBe(0);
+    expect(ran.stderr + ran.stdout).toContain("OBSERVATION_FAILED");
+    expect(conformanceEvents(id)).toEqual([]);
+  });
+
+  it("keeps a violation to its own walk under concurrency", async () => {
+    const idA = scenario("c4-concurrent-violator");
+    const idB = scenario("c4-concurrent-clean");
+    const violating = writingWorktree("outside.txt");
+    const clean = writingWorktree("declared.txt");
+    const a = walkEntryFor(idA, violating, ["declared-only.txt"]);
+    const b = walkEntryFor(idB, clean, ["declared.txt"]);
+
+    await runDaemon(walksConfig([a.entry, b.entry]));
+
+    // The violator settles and loses its lease.
+    expect(conformanceEvents(idA).map((event) => event.type)).toEqual([
+      "WRITE_SET_VIOLATION_DETECTED",
+      "LEASE_REVOKED",
+      "TASK_STATE_CHANGED",
+    ]);
+    expect(taskStateOf(idA, a.taskId)).toBe("SUSPECT_WORKTREE");
+    expect(leaseRow(violating)?.leaseId).toBeNull();
+
+    // Its sibling completed untouched, and its ledger carries neither event.
+    expect(conformanceEvents(idB)).toEqual([]);
+    expect(taskStateOf(idB, b.taskId)).toBe("CHECKPOINTED");
+    expect(leaseRow(clean)?.leaseId).toBeNull();
+    expect(leaseRow(clean)?.fence).toBe(1);
+  });
+
+  it("quarantines rather than retrying: a restart re-executes nothing", async () => {
+    const id = scenario("c4-idempotent");
+    const workdir = writingWorktree("outside.txt");
+    const taskId = randomUUID();
+    const config = singularConfig(id, workdir, taskId, ["declared-only.txt"]);
+
+    await runDaemon(config);
+    const first = conformanceEvents(id);
+    const firstTrail = allEvents(id);
+    expect(taskStateOf(id, taskId)).toBe("SUSPECT_WORKTREE");
+    // The offending file is the walk's own evidence; remove it so a second
+    // execution would be visible as its reappearance.
+    rmSync(join(workdir, "outside.txt"));
+
+    await runDaemon(config);
+
+    // **The walk did not run again**, which is the property quarantine buys.
+    // Derived coordinates alone would only prove the conformance events did not
+    // double; what proves the task is finished rather than resumable is that
+    // there is no second `RUN_STARTED`, no second violation, and the provider
+    // never re-wrote the file it was stopped for writing.
+    const after = allEvents(id);
+    expect(after.filter((type) => type === "RUN_STARTED").length).toBe(
+      firstTrail.filter((type) => type === "RUN_STARTED").length,
+    );
+    expect(conformanceEvents(id)).toEqual(first);
+    expect(taskStateOf(id, taskId)).toBe("SUSPECT_WORKTREE");
+    expect(existsSync(join(workdir, "outside.txt"))).toBe(false);
+
+    // The only events the restart added are the daemon's own lease lifecycle:
+    // it takes the worktree, finds a task it may not resume, and gives it back.
+    // Reported precisely rather than asserted away — a bare "the ledger did not
+    // grow" would have been false, and false in a way that hides the fact that
+    // a lease is still taken on every start.
+    expect(after.slice(firstTrail.length)).toEqual(["LEASE_ACQUIRED", "LEASE_REVOKED"]);
+  });
 });
 
 describe("the store fails closed", () => {

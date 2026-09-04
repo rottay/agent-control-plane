@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import type { TaskEnvelope } from "@acp/contracts";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,6 +37,63 @@ import { afterEach, describe, expect, it } from "vitest";
 import { canonicalSubmission, canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
 import { startDaemon, stopDaemon } from "../../../src/index.js";
+
+/**
+ * Make a fixture directory an actual worktree.
+ *
+ * A "worktree" that is not a git repository is not a worktree, and since V2
+ * concurrency C4 the walk observes the one it writes into. Everything the
+ * fixture already wrote is committed, so the only changes the observer can see
+ * are the walk's own — which is what makes a conformant drill conformant and a
+ * violating one violating.
+ *
+ * A temporary directory, never this repository (stop 3).
+ */
+function initWorktree(directory: string): void {
+  const git = (...args: string[]): void => {
+    spawnSync("/usr/bin/git", args, { cwd: directory, encoding: "utf8" });
+  };
+  git("init", "--quiet");
+  git("config", "user.email", "drill@example.invalid");
+  git("config", "user.name", "drill");
+  git("add", "-A");
+  git("commit", "--allow-empty", "-q", "-m", "fixture base");
+}
+
+
+/**
+ * The packet's envelope, required on every daemon since V2 concurrency C4.
+ *
+ * A drill declares a write-set wide enough for what its fake provider actually
+ * touches: the point of the gate is that a walk writing outside its declaration
+ * is caught, so a drill that is not testing that must declare honestly.
+ */
+function envelopeFor(taskId: string, initiativeId: string, writeSet: readonly string[] = ["src/**"]): TaskEnvelope {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    taskId,
+    initiativeId,
+    title: "a drill packet",
+    objective: "walk the plan",
+    classification: "MECHANICAL",
+    issuedBy: EMITTED_BY,
+    issuedAt: SUBMITTED_AT,
+    authority: [],
+    readSet: [],
+    writeSet: [...writeSet],
+    conflictKeys: [],
+    allowedCommands: [],
+    forbiddenActions: [],
+    output: { kind: "DIFF", description: "a patch" },
+    validation: { commands: [], independentVerifierRequired: false },
+    eligibility: { roles: ["implementer"], providers: null, requiredCapabilities: [] },
+    budget: { maxTokens: 1_000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 10 },
+    visualEvidenceRequired: false,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    checkpointPolicy: { onEveryAtomicStep: false, maxStepsWithoutCheckpoint: 5 },
+  } as unknown as TaskEnvelope;
+}
+
 
 /**
  * The conformance fixture for the execution-port substitution (V2-B1b, C4).
@@ -108,6 +167,7 @@ function drillRoot(): string {
   const created = mkdtempSync(join(TMP_ROOT, "acp-b1b-execution-"));
   chmodSync(created, 0o700);
   temporaries.push(created);
+  initWorktree(created);
   return created;
 }
 
@@ -1611,6 +1671,7 @@ function fakeProviderBinary(
     { mode: 0o700 },
   );
   temporaries.push(root);
+  initWorktree(root);
   return { binary, root, pidFile };
 }
 
@@ -1636,6 +1697,10 @@ function b4aExecutionConfig(binary: string, root: string): DaemonExecutionConfig
 function b4aOptions(scenarioId: string, execution: DaemonExecutionConfig): Parameters<typeof startDaemon>[0] {
   const taskId = randomUUID();
   return {
+    // Declared honestly: this drill's provider writes its own pid file into the
+    // worktree, so the envelope says so. A drill that under-declares is a drill
+    // the gate correctly refuses.
+    envelope: envelopeFor(taskId, INITIATIVE_ID, ["child.pid"]),
     mode: "SQLITE_SUPERVISOR" as const,
     scenarioId,
     emittedBy: EMITTED_BY,

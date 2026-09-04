@@ -87,6 +87,13 @@ export interface DaemonChildConfig {
   /** The execution the walk performs. Required; there is no toy default (V2-B1b). */
   readonly execution: DaemonExecutionConfig;
   /**
+   * The packet's envelope, and the singular form's write-set authority
+   * (V2 concurrency C4, DT Option B). Required, exactly as `walks[].envelope`
+   * has been since C3 — a production path with no declared write-set is a path
+   * conformance cannot judge.
+   */
+  readonly envelope: TaskEnvelope;
+  /**
    * Many walks inside one plane (V2 concurrency C3), or null for the one-walk
    * form this door has always accepted.
    *
@@ -382,6 +389,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
       holdOpen: holdOpenValue,
       checkPorts: checkPortsValue,
       execution: first.spec.execution,
+      envelope: first.envelope,
       walks,
     };
   }
@@ -451,6 +459,23 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
     );
   }
 
+  // V2 concurrency C4, DT Option B. The same three checks C3 applies to every
+  // `walks[]` entry, applied to the singular form — the same parser, not a
+  // second envelope validator. The whole contract, then the two agreements that
+  // make the envelope describe the walk that actually runs: without them a
+  // config could declare one packet's write-set and run another's, and every
+  // gate downstream would be correct about the wrong thing.
+  const singularEnvelope = TaskEnvelope.safeParse(value["envelope"]);
+  if (!singularEnvelope.success) {
+    throw new ModeError("config.envelope must satisfy the TaskEnvelope contract");
+  }
+  if (singularEnvelope.data.taskId !== taskId) {
+    throw new ModeError("config.taskId disagrees with the envelope it carries");
+  }
+  if (singularEnvelope.data.initiativeId !== initiativeId) {
+    throw new ModeError("config.initiativeId disagrees with the envelope it carries");
+  }
+
   return {
     mode,
     scenarioId,
@@ -463,6 +488,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
     holdOpen,
     checkPorts,
     execution,
+    envelope: singularEnvelope.data,
     walks: null,
   };
 }
@@ -480,6 +506,7 @@ export async function runDaemonChild(config: DaemonChildConfig): Promise<number>
     initiativeId: config.initiativeId,
     checkPorts: config.checkPorts,
     execution: config.execution,
+    envelope: config.envelope,
     // Undefined, not null: the option is additive, and a caller that never
     // heard of C3 must produce exactly the object it always produced.
     ...(config.walks === null ? {} : { walks: config.walks }),

@@ -23,6 +23,63 @@ import {
 import { canonicalSubmissionDigest } from "../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig } from "../../src/daemon-child/index.js";
 import { portIsFree } from "../../src/lifecycle/index.js";
+import { CONTRACT_VERSION } from "@acp/contracts";
+
+/**
+ * Make a fixture directory an actual worktree.
+ *
+ * A "worktree" that is not a git repository is not a worktree, and since V2
+ * concurrency C4 the walk observes the one it writes into. Everything the
+ * fixture already wrote is committed, so the only changes the observer can see
+ * are the walk's own — which is what makes a conformant drill conformant and a
+ * violating one violating.
+ *
+ * A temporary directory, never this repository (stop 3).
+ */
+function initWorktree(directory: string): void {
+  const git = (...args: string[]): void => {
+    spawnSync("/usr/bin/git", args, { cwd: directory, encoding: "utf8" });
+  };
+  git("init", "--quiet");
+  git("config", "user.email", "drill@example.invalid");
+  git("config", "user.name", "drill");
+  git("add", "-A");
+  git("commit", "--allow-empty", "-q", "-m", "fixture base");
+}
+
+
+/**
+ * The packet's envelope, required on every daemon config since V2 concurrency
+ * C4 (DT Option B): a production path with no declared write-set is a path
+ * write-set conformance cannot judge, and this drill reaches the daemon through
+ * the same config door production does.
+ */
+function envelopeFor(taskId: string, initiativeId: string): Record<string, unknown> {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    taskId,
+    initiativeId,
+    title: "a drill packet",
+    objective: "walk the plan",
+    classification: "MECHANICAL",
+    issuedBy: EMITTED_BY,
+    issuedAt: SUBMITTED_AT,
+    authority: [],
+    readSet: [],
+    writeSet: ["src/**"],
+    conflictKeys: [],
+    allowedCommands: [],
+    forbiddenActions: [],
+    output: { kind: "DIFF", description: "a patch" },
+    validation: { commands: [], independentVerifierRequired: false },
+    eligibility: { roles: ["implementer"], providers: null, requiredCapabilities: [] },
+    budget: { maxTokens: 1_000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 10 },
+    visualEvidenceRequired: false,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    checkpointPolicy: { onEveryAtomicStep: false, maxStepsWithoutCheckpoint: 5 },
+  };
+}
+
 
 /**
  * The runtime fallback gate. (P8-6.)
@@ -147,6 +204,7 @@ function executionConfig(): DaemonExecutionConfig {
         "process.exit(0);\n",
       { mode: 0o700 },
     );
+    initWorktree(created);
     executionRoot = created;
   }
   return {
@@ -242,6 +300,7 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
         route: executionConfig().route,
       }),
       initiativeId: GATE_INITIATIVE_ID,
+      envelope: envelopeFor(taskId, GATE_INITIATIVE_ID),
       holdOpen: false,
       // The landed drills' own idiom: SQLITE_SUPERVISOR binds nothing, so the
       // precheck inside the daemon is not what this gate is drilling. The

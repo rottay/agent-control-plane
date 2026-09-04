@@ -5031,6 +5031,79 @@ const V2C3_WRITE_SET = [
 ];
 
 /**
+ * V2 concurrency C4 — write-set conformance, and one law for both paths.
+ *
+ * The last of C1 → C2 → C3 → C4, and the one that finally uses what the others
+ * built: C1 arbitrates, C2 fences a lease, C3 runs several walks, and this
+ * packet asks — after every atomic step — *did this walk write only what it
+ * declared?*
+ *
+ * **DT Option B, and it is what makes the packet coherent.** The singular
+ * daemon path gains a **required** `TaskEnvelope`, so it has an authoritative
+ * declared write-set, and the gate then applies to **both** execution seams
+ * under one law rather than one seam with a declared gap. Not a bare
+ * `writeSet: string[]`: that would be a second declaration of what the contract
+ * already declares. Required in the **type**, so the compiler finds a caller
+ * that forgot — which is exactly how the two production-shaped test files the
+ * original write-set missed were found.
+ *
+ * **The observer can only read, and that is structural.** The verb is checked
+ * against `GIT_READ_VERBS` before anything is spawned, and `L-C-4a` asserts the
+ * mutating words are absent from the file: a mutation must be unrepresentable,
+ * not merely unused. `L-C-4b` asserts neither conformance closure can write,
+ * unlink, rename or remove — because the plane's answer to a violation is to
+ * record it and stop, never to tidy the worktree. The evidence of what a packet
+ * did is worth more than a clean directory.
+ *
+ * **An observation that cannot be taken is not a pass.** A failed status
+ * refuses; a `rev-parse` failure reads as an unborn HEAD **only** because the
+ * status that preceded it proved the repository readable; an unreadable file
+ * refuses rather than digesting the empty string. Each of those, taken the
+ * other way, is a fabricated observation — a broken repository reported as a
+ * pristine one.
+ *
+ * `L-C-4c` is the Option B law: the gate precedes the marker in
+ * `execution-effects`, **and every `createExecutionEffects` call in the daemon
+ * passes one**. That is what makes "no production path bypasses" mechanical
+ * rather than a review promise.
+ *
+ * **A violation quarantines the task, and that is what makes it stick.** After
+ * recording the finding and the revocation, the gate appends a
+ * `TASK_STATE_CHANGED` to the verdict's own `recommendedTaskState` —
+ * `SUSPECT_WORKTREE`, which is terminal. Without it a violated walk stops but
+ * its task stays resumable, so the next start re-runs the provider, re-writes
+ * outside the declared set and re-violates, indefinitely. The recommendation is
+ * read from `checkWriteSetConformance`, never restated here.
+ *
+ * **Fifteen paths, two novel**, and `RUNTIME_PUBLIC_EXPORTS` does **not** move:
+ * `ConformanceGate` is exported from `execution-effects` and deliberately kept
+ * off the runtime barrel, whose names are pinned by equality in its own
+ * mirrored suite — moving that pin would open a seventeenth path. The daemon
+ * types the closure structurally instead. `SPAWN_ALLOWED_FILES` 3 → **4**, the
+ * protocol no-producer list **seven → six** (`WRITE_SET_VIOLATION_DETECTED`
+ * gains its first production producer), and `PATH_SCOPED_LAWS` 75 → **78**. The
+ * observer adds no `stack.push`: `spawnSync` leaks nothing, so there is no
+ * resource to unwind.
+ */
+const V2C4_WRITE_SET = [
+  "packages/entrypoints/daemon/src/git-observer/index.ts",
+  "packages/entrypoints/daemon/test/git-observer/index.test.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0024-write-set-conformance.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5423,6 +5496,7 @@ const WRITE_SET = [
   ...V2C1_WRITE_SET,
   ...V2C2_WRITE_SET,
   ...V2C3_WRITE_SET,
+  ...V2C4_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6400,6 +6474,20 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the multi-walk unwind reaps before it releases",
     scope: "packages/entrypoints/daemon/src/index.ts",
+  },
+  // V2 concurrency C4. Three new path-shaped surfaces, so three new rows: the
+  // register and the `requireScope` call sites both move 75 -> 78.
+  {
+    law: "one git authority, and it can only read",
+    scope: "packages/entrypoints/daemon/src/**",
+  },
+  {
+    law: "a violation never cleans",
+    scope: "packages/entrypoints/daemon/src/**",
+  },
+  {
+    law: "the gate runs before the marker, at every seam",
+    scope: "runtime/src/execution-effects and daemon/src/index.ts",
   },
 ];
 
@@ -8538,6 +8626,7 @@ const SPAWN_ALLOWED_FILES = new Map([
   ["packages/edges/durability/src/server-handle/index.ts", "the pinned Restate server"],
   ["packages/entrypoints/daemon/src/identity-probe/index.ts", "reading process identity via /bin/ps"],
   ["packages/edges/providers/src/process/spawn/index.ts", "the single provider spawn authority"],
+  ["packages/entrypoints/daemon/src/git-observer/index.ts", "the single git read authority"],
 ]);
 
 // Anything that could listen, connect or fan out. None of these belongs in a
@@ -14883,6 +14972,178 @@ const DAEMON_CHILD_DOOR = "packages/entrypoints/daemon/src/daemon-child/index.ts
   }
   requireScope("the multi-walk unwind reaps before it releases", unwindScanned);
   notes.push("the multi-walk harness is pushed after every lease, so the reverse unwind reaps before it releases");
+}
+
+// --- 21e. write-set conformance (V2 concurrency C4) -------------------------
+
+const DAEMON_GIT_SITE = "packages/entrypoints/daemon/src/git-observer/index.ts";
+const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/index.ts";
+
+// L-C-4a -- one git authority, and it can only read.
+//
+// A mutation must be **unrepresentable**, not merely unused. The verb is
+// checked against `GIT_READ_VERBS` before anything is spawned, so a denied verb
+// never reaches the process boundary; and the mutating words are absent from
+// the file, so there is no branch that could carry one. This matters most at
+// the moment it is used: a write-set violation is discovered *by* this observer,
+// and the module that could tidy the evidence away does not exist.
+{
+  let gitScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const namers = [];
+    for (const relativePath of present) {
+      if (!relativePath.startsWith("packages/entrypoints/daemon/src/")) continue;
+      if (!relativePath.endsWith(".ts")) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      gitScanned += 1;
+      if (stripComments(content).includes("/usr/bin/git")) namers.push(relativePath);
+    }
+    if (namers.join(", ") !== DAEMON_GIT_SITE) {
+      fail(
+        "git is invoked from [" +
+          namers.join(", ") +
+          "]; exactly one module may read a worktree, and it is " +
+          DAEMON_GIT_SITE,
+      );
+    }
+  }
+  const observer = readIfPresent(DAEMON_GIT_SITE);
+  if (observer === null) {
+    fail(DAEMON_GIT_SITE + " is missing; the git read authority would stand over nothing");
+  } else {
+    const code = stripComments(observer);
+    // The allowlist is the contract's own closed set, not a list restated here.
+    if (!code.includes("GIT_READ_VERBS")) {
+      fail(DAEMON_GIT_SITE + " no longer checks its verb against GIT_READ_VERBS");
+    }
+    for (const forbidden of [
+      '"commit"', '"checkout"', '"restore"', '"clean"', '"stash"', '"reset"',
+      '"add"', '"push"', '"rm"', '"mv"', '"merge"', '"rebase"', '"--force"',
+    ]) {
+      if (code.includes(forbidden)) {
+        fail(
+          DAEMON_GIT_SITE +
+            " names the mutating verb " +
+            forbidden +
+            "; a mutation must be unrepresentable here, not merely unused",
+        );
+      }
+    }
+    if (!code.includes("shell: false")) {
+      fail(DAEMON_GIT_SITE + " no longer spawns with shell: false");
+    }
+  }
+  requireScope("one git authority, and it can only read", gitScanned);
+  notes.push("one daemon module invokes git, it checks its verb against the contract's closed set, and it names no mutating verb");
+}
+
+// L-C-4b -- a violation never cleans.
+//
+// The plane's answer to a write-set violation is to record it and stop. The
+// worktree is left exactly as it was found, because the evidence of what a
+// packet did is worth more than a tidy directory -- and no recovery this plane
+// offers is allowed to destroy it. Asserted over the conformance closure, which
+// is where a well-meaning "just reset it" would land.
+{
+  let cleanScanned = 0;
+  const composition = readIfPresent(DAEMON_COMPOSITION_SITE);
+  if (composition === null) {
+    fail(DAEMON_COMPOSITION_SITE + " is missing; the no-clean law would stand over nothing");
+  } else {
+    cleanScanned += 1;
+    const code = stripComments(composition);
+    const from = code.indexOf("function conformanceGateFor");
+    const to = code.indexOf("function executionPortFor");
+    if (from < 0 || to < 0 || to < from) {
+      fail(DAEMON_COMPOSITION_SITE + " no longer carries a conformance closure the no-clean law can read");
+    } else {
+      const closure = code.slice(from, to);
+      for (const forbidden of [
+        "writeFileSync", "unlinkSync", "rmSync", "renameSync", "rmdirSync",
+        "mkdirSync", "truncateSync", "appendFileSync", "spawnSync", "execFile",
+      ]) {
+        if (closure.includes(forbidden)) {
+          fail(
+            DAEMON_COMPOSITION_SITE +
+              "'s conformance closure names " +
+              forbidden +
+              "; a violation is recorded and stopped, never cleaned, restored, checked out or staged",
+          );
+        }
+      }
+      // It must actually do the two things it exists for.
+      if (!closure.includes("checkWriteSetConformance")) {
+        fail(DAEMON_COMPOSITION_SITE + "'s conformance closure no longer checks conformance");
+      }
+      if (!closure.includes("observeWorktree")) {
+        fail(DAEMON_COMPOSITION_SITE + "'s conformance closure no longer observes the worktree");
+      }
+    }
+  }
+  requireScope("a violation never cleans", cleanScanned);
+  notes.push("the conformance closure observes and records, and cannot write, unlink, rename or remove");
+}
+
+// L-C-4c -- the gate runs before the marker, at every seam.
+//
+// Two halves, and the second is the Option B half. In `execution-effects` the
+// gate must precede `writeMarker`: a resumed walk that finds a verified marker
+// never re-enters `apply`, so a gate after the marker is unreachable on exactly
+// the window it covers. And in the daemon **every** `createExecutionEffects`
+// call must pass a `checkConformance` -- which is what makes "no production
+// path bypasses declared write-set conformance" a check rather than a promise.
+{
+  let gateScanned = 0;
+  const effects = readIfPresent(RUNTIME_EFFECTS_SITE);
+  if (effects === null) {
+    fail(RUNTIME_EFFECTS_SITE + " is missing; the conformance seam would stand over nothing");
+  } else {
+    gateScanned += 1;
+    const code = stripComments(effects);
+    const gate = code.indexOf("checkConformance(");
+    // The call, not the declaration: `function writeMarker(target: string...`
+    // appears earlier in the file and would make the comparison meaningless.
+    const marker = code.indexOf("writeMarker(target, {");
+    if (gate < 0) {
+      fail(RUNTIME_EFFECTS_SITE + " no longer calls the conformance gate");
+    } else if (marker < 0) {
+      fail(RUNTIME_EFFECTS_SITE + " no longer writes an evidence marker");
+    } else if (gate > marker) {
+      fail(
+        RUNTIME_EFFECTS_SITE +
+          " runs the conformance gate after the evidence marker; a resumed walk never re-enters" +
+          " apply, so a gate after the marker is unreachable on the window it covers",
+      );
+    }
+  }
+  const composition = readIfPresent(DAEMON_COMPOSITION_SITE);
+  if (composition === null) {
+    fail(DAEMON_COMPOSITION_SITE + " is missing; the both-seams law cannot be checked");
+  } else {
+    gateScanned += 1;
+    const code = stripComments(composition);
+    const seams = [...code.matchAll(/createExecutionEffects\(\{/g)].map((match) => match.index ?? -1);
+    if (seams.length === 0) {
+      fail(DAEMON_COMPOSITION_SITE + " builds no execution effects; the walk would perform nothing");
+    }
+    for (const at of seams) {
+      // The literal each call site passes, bounded by the next one.
+      const next = seams.find((other) => other > at);
+      const literal = code.slice(at, next === undefined ? code.length : next);
+      if (!literal.includes("checkConformance:")) {
+        fail(
+          DAEMON_COMPOSITION_SITE +
+            " builds execution effects without a conformance gate; under DT Option B no production" +
+            " path may bypass declared write-set conformance, and both seams carry an authoritative" +
+            " envelope precisely so neither has to",
+        );
+      }
+    }
+  }
+  requireScope("the gate runs before the marker, at every seam", gateScanned);
+  notes.push("the conformance gate precedes the evidence marker, and every daemon execution seam passes one");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
