@@ -1160,10 +1160,13 @@ export type StreamChannel = z.infer<typeof StreamChannel>;
  * is behaviourally empty now**.
  *
  * The accurate claim is about individual event types rather than channels.
- * These nine still have no producer outside a library or a test:
- * `LEASE_ACQUIRED`, `LEASE_REVOKED`, `WRITE_SET_VIOLATION_DETECTED`,
- * `COMMIT_AUTHORIZED`, `ACCOUNT_SWITCH_STARTED`, `ACCOUNT_SWITCH_COMPLETED`,
+ * These seven still have no producer outside a library or a test:
+ * `WRITE_SET_VIOLATION_DETECTED`, `COMMIT_AUTHORIZED`,
+ * `ACCOUNT_SWITCH_STARTED`, `ACCOUNT_SWITCH_COMPLETED`,
  * `AUTH_REQUIRED_RAISED`, `QUOTA_WARNING` and `TOKEN_RESERVATION_RECORDED`.
+ * `LEASE_ACQUIRED` and `LEASE_REVOKED` left this list in V2 concurrency C2:
+ * the daemon's arbiter is their first production producer, writing one of each
+ * per grant and per reclaim.
  * Each is owed to a named packet, and none is emitted to make a channel look
  * busy. The map is over the vocabulary, not over what happens to be emitted,
  * so it carries every type either way.

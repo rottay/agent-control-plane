@@ -278,7 +278,14 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
       // all be usage events sitting in that window.
       const trail = ledger.listEvents({ limit: 20 }).events.map((record) => record.event.type);
       const planTypes = LIFECYCLE_PLAN.map((step) => step.eventType);
-      expect(trail.filter((type) => type !== "TOKEN_USAGE_RECORDED")).toEqual(planTypes);
+      // Riders on the task's thread: recorded against the walk, never steps of
+      // it. Usage arrived with V2-B7T and the two lease events with V2
+      // concurrency C2, when the daemon began holding a fenced lease over the
+      // worktree it writes into. The plan itself has not moved, and this
+      // comparison is still exact — which is the point of naming the riders
+      // rather than loosening the assertion to a subset check.
+      const RIDERS = ["TOKEN_USAGE_RECORDED", "LEASE_ACQUIRED", "LEASE_REVOKED"];
+      expect(trail.filter((type) => !RIDERS.includes(type))).toEqual(planTypes);
       expect(trail.filter((type) => type === "TOKEN_USAGE_RECORDED").length).toBeGreaterThan(0);
 
       const usageAt = trail.indexOf("TOKEN_USAGE_RECORDED");

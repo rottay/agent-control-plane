@@ -54,3 +54,26 @@ export const DRAIN_DEADLINE_MS = 30_000;
 
 /** How long a port must be observed free before the daemon will claim it. */
 export const PORT_PRECHECK_TIMEOUT_MS = 2_000;
+
+/**
+ * The worktree arbitration store (V2 concurrency C2), inside the owned root.
+ *
+ * A name and not a path: C1's `openLeaseStore` defaults nothing, and the path
+ * is composed from the resolved daemon root by `leaseStorePath`. A
+ * caller-supplied location would be a second store, and two stores are two
+ * answers to *may I write here*.
+ */
+export const LEASE_STORE_NAME = "leases.sqlite";
+
+/**
+ * How long a grant is good for, and how often it is renewed.
+ *
+ * The interval is a third of the ttl so **two consecutive missed renewals still
+ * precede expiry**: a single slow beat must not hand the worktree to a
+ * successor while this walk is still writing into it. The ttl in turn bounds
+ * how long a worktree stays unclaimable after a holder dies without releasing —
+ * that is the cost of the shortcut being a shortcut, and the death probe is
+ * what usually pays it instead.
+ */
+export const LEASE_TTL_MS = 90_000;
+export const LEASE_RENEW_INTERVAL_MS = LEASE_TTL_MS / 3;

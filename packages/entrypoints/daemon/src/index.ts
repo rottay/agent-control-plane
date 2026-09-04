@@ -19,8 +19,8 @@
  */
 
 import type { ModelExecutionPort } from "@acp/contracts";
-import type { Ledger } from "@acp/ledger";
-import { openLedger } from "@acp/ledger";
+import type { Ledger, LeaseStore } from "@acp/ledger";
+import { openLeaseStore, openLedger } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
 import type { AgentHarness, CliBinding, ProviderAdapter } from "@acp/providers";
 import {
@@ -43,7 +43,13 @@ import {
   usageTransitionId,
 } from "@acp/runtime";
 
-import { DRAIN_DEADLINE_MS } from "./constants/index.js";
+import { createArbiter, leaseStorePath } from "./arbiter/index.js";
+import type { Arbiter, ArbiterRenewal, LeaseHold } from "./arbiter/index.js";
+import {
+  DRAIN_DEADLINE_MS,
+  LEASE_RENEW_INTERVAL_MS,
+  LEASE_TTL_MS,
+} from "./constants/index.js";
 import type { DaemonExecutionConfig } from "./daemon-child/index.js";
 import type { DaemonErrorCode } from "./errors/index.js";
 import { ModeError, StartupError } from "./errors/index.js";
@@ -53,7 +59,7 @@ import type { DaemonMode, Resource, UnwindOutcome } from "./lifecycle/index.js";
 import { UnwindStack, assertReservedPortsFree, classify, isDaemonMode } from "./lifecycle/index.js";
 import { createLogger } from "./log/index.js";
 import type { DaemonRoot } from "./paths/index.js";
-import { existingDaemonRoot, resolveDaemonRoot } from "./paths/index.js";
+import { existingDaemonRoot, redactPath, resolveDaemonRoot } from "./paths/index.js";
 import { runSqliteMode } from "./mode-sqlite/index.js";
 import { startRestateMode, superviseRestate } from "./mode-restate/index.js";
 import { acquireSingleton, recoverStaleLock, releaseSingleton } from "./singleton/index.js";
@@ -242,6 +248,10 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
 
   let identity: RecordedIdentity;
   let ledger: Ledger | null = null;
+  let leaseStore: LeaseStore | null = null;
+  let arbiter: Arbiter | null = null;
+  let renewal: NodeJS.Timeout | null = null;
+  let reapChildren: (() => Promise<readonly string[]>) | null = null;
   let serverPid: number | null = null;
   let terminal: Promise<string> | null = null;
 
@@ -326,6 +336,143 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
     // admitted through `ResolvedRoute`; nothing re-resolves it.
     const { route } = options.execution;
 
+    // S3a (V2 concurrency C2). One daemon holds one fenced lease on the
+    // worktree it is about to write into, in BOTH modes and before either one
+    // starts. Nothing here reads `options.mode`: `SERIALIZED_PER_TASK` is per
+    // task key, so two tasks writing one worktree are two keys, and neither
+    // driver has ever offered worktree exclusivity.
+    //
+    // Pushed BEFORE the harness, and the order is the packet. The stack
+    // unwinds in reverse, so children are reaped before the lease they were
+    // writing under is released; pushed after, the worktree would be handed to
+    // a successor while this daemon's provider children were still writing into
+    // it — on every clean shutdown, invisibly, and passing any drill that only
+    // checks that a release happened. L-C-2b pins it by source order.
+    leaseStore = openLeaseStore(leaseStorePath(root));
+    const openedLeaseStore = leaseStore;
+    stack.push({
+      name: "lease-store",
+      release: (): Promise<string | null> => {
+        try {
+          openedLeaseStore.close();
+          return Promise.resolve(null);
+        } catch (error: unknown) {
+          return Promise.resolve(classify(error));
+        }
+      },
+    });
+
+    arbiter = createArbiter({
+      store: openedLeaseStore,
+      ledger: openedLedger,
+      invocation,
+      worktreePath: options.execution.binding.workdir,
+      holder: options.emittedBy,
+      identity,
+      inspector,
+      ttlMs: LEASE_TTL_MS,
+      now: clock,
+    });
+    const acquisition = await arbiter.acquire();
+    if (!acquisition.ok) {
+      // Refused. The walk never starts, and the refusal is the pure rule's own
+      // word at the pure rule's own field — not a sentence invented here.
+      logger.log("error", "lease.refused", "STARTUP", {
+        reason: acquisition.reason,
+        at: acquisition.at,
+      });
+      throw new StartupError(
+        "another writer holds this worktree: " + acquisition.reason + " at " + acquisition.at,
+      );
+    }
+    const hold: LeaseHold = acquisition.hold;
+    const heldArbiter = arbiter;
+    stack.push({
+      name: "lease",
+      release: (): Promise<string | null> => {
+        try {
+          // Stop renewing before releasing, so a beat cannot re-extend a lease
+          // this daemon has just given up.
+          if (renewal !== null) {
+            clearInterval(renewal);
+            renewal = null;
+          }
+          hold.release("RELEASED");
+          heldArbiter.flush();
+          // Logged so the order is observable at runtime and not only in the
+          // source: `harness.reaped` must already be in the log above this
+          // line, because the children were writing under this lease.
+          logger.log("info", "lease.released", null, { fence: hold.fence });
+          return Promise.resolve(null);
+        } catch (error: unknown) {
+          return Promise.resolve(classify(error));
+        }
+      },
+    });
+    logger.log("info", "lease.acquired", null, {
+      worktreePath: redactPath(hold.lease.worktreePath),
+      fence: hold.fence,
+    });
+
+    /**
+     * The lease is gone: stop beating, and take the children with it.
+     *
+     * Reaping is the abort. It is not a second lifecycle mechanism bolted on
+     * beside the unwind: killing the provider children makes the in-flight
+     * effect fail, and the walk then settles through the classified-failure
+     * path V2-B7R already owns. Logging alone would leave this daemon writing
+     * into a worktree its successor now holds, which is the exact overlap the
+     * fence exists to end.
+     *
+     * `closeAll` drains its own registry, so the unwind's later call reaps
+     * nothing and costs a no-op — the cleanup order is unchanged and the close
+     * stays idempotent.
+     */
+    const abortOnLostLease = (code: DaemonErrorCode, reason: string): void => {
+      if (renewal !== null) {
+        clearInterval(renewal);
+        renewal = null;
+      }
+      logger.log("error", "lease.lost", code, { fence: hold.fence, reason });
+      const reap = reapChildren;
+      if (reap === null) return;
+      void reap().then(
+        (reaped) => {
+          logger.log("info", "harness.reaped", null, { sessions: reaped.length });
+        },
+        (error: unknown) => {
+          logger.log("error", "harness.reap.failed", "SHUTDOWN", { reason: classify(error) });
+        },
+      );
+    };
+
+    // The heartbeat re-reads the fence. A moved fence is a lost lease, and the
+    // walk is aborted rather than allowed to keep writing beside its successor.
+    renewal = setInterval(() => {
+      // The beat runs on the timer queue, outside every try in this function.
+      // An exception here would end the process without unwinding -- children
+      // orphaned and the lease held until its TTL -- so a throwing beat is
+      // treated as a lost lease, which is the conservative reading: this
+      // daemon can no longer prove it still holds the worktree.
+      let outcome: ArbiterRenewal;
+      try {
+        outcome = hold.renew();
+      } catch (error: unknown) {
+        // A fixed daemon code with the classified cause in the payload: the
+        // code vocabulary is closed, and `classify` returns whatever the thrown
+        // object called itself.
+        abortOnLostLease("SUPERVISION", classify(error));
+        return;
+      }
+      if (outcome.lost) {
+        abortOnLostLease("STARTUP", "LEASE_FENCE_LOST");
+      } else if (!outcome.ok) {
+        logger.log("warn", "lease.renewal.refused", null, { reason: outcome.reason });
+      }
+    }, LEASE_RENEW_INTERVAL_MS);
+    // Never a reason for the process to stay alive: the walk decides that.
+    renewal.unref();
+
     // V2-B4a. The daemon owns the provider children it spawns, and owning them
     // is what makes the unwind able to reap them.
     //
@@ -338,6 +485,10 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
     // ADR 0010 said abandoning an iteration is not cancellation, and this is
     // where that sentence stops being a leak.
     const harness = createAgentHarness();
+    // Bound here rather than passed in: the harness cannot exist before the
+    // lease is pushed (that order is L-C-2b), so the heartbeat reaches it
+    // through this reference instead of the pushes being swapped to suit it.
+    reapChildren = (): Promise<readonly string[]> => harness.closeAll();
     stack.push({
       name: "agent-harness",
       release: async (): Promise<string | null> => {

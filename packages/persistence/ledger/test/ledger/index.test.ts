@@ -1442,7 +1442,7 @@ describe("status refuses an unexpected projection name", () => {
 // ---------------------------------------------------------------------------
 
 const PACKAGE_ROOT = fileURLToPath(new URL("../..", import.meta.url));
-const REPO_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL("../../../../..", import.meta.url));
 const WORKER_ENTRY = join(
   PACKAGE_ROOT,
   "dist-test",
@@ -1512,6 +1512,18 @@ function runWorker(databasePath: string, eventJson: string): Promise<WorkerOutco
     });
   });
 }
+
+describe("the test tree's own paths", () => {
+  it("resolves REPO_ROOT to a repository root, not to packages/", () => {
+    // V2 concurrency C2, carry-in K1. This expression was one `../` short and
+    // resolved to `packages/`, so `ensureWorkerBuilt`'s tsc lookup could not
+    // resolve -- dormant only while `dist-test/` exists, which `pnpm check`
+    // guarantees and `pnpm test` alone does not. Asserted rather than declared,
+    // because a fix nobody exercises is a claim.
+    expect(existsSync(join(REPO_ROOT, "package.json"))).toBe(true);
+    expect(existsSync(join(REPO_ROOT, "pnpm-workspace.yaml"))).toBe(true);
+  });
+});
 
 describe("cross-process concurrency", () => {
   it("inserts an exact replay once when four separate processes race", async () => {

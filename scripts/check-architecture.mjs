@@ -4896,6 +4896,71 @@ const V2C1_WRITE_SET = [
 ];
 
 /**
+ * V2 concurrency C2 — one daemon holds one fenced lease.
+ *
+ * C1 built the substrate; this packet is the first thing that holds one. The
+ * daemon is the only component importing both `@acp/runtime` (the pure lease
+ * rules) and `@acp/ledger` (the arbitrating store), and the only consumer, so
+ * the composition lives there rather than behind a port invented for two
+ * participants.
+ *
+ * **The push order is the packet.** The lease resource is pushed BEFORE the
+ * agent harness, so the stack — which unwinds in reverse — reaps the provider
+ * children *before* the worktree is released. Pushed after, every clean
+ * shutdown would hand the worktree to a successor while this daemon's children
+ * were still writing into it: invisible, and passing any drill that only checks
+ * that a release happened. **L-C-2b** pins it by source order, and the drill
+ * observes it at runtime in the daemon's own log — with the pushes inverted,
+ * `lease.released` precedes `harness.reaped` and the drill fails.
+ *
+ * **The fence is what bounds overlap.** A TTL alone bounds nothing: a stalled
+ * holder wakes believing it still holds the worktree. Every grant bumps the
+ * fence and every renewal re-reads it, so a lost lease is *noticed* within one
+ * renewal interval and ends in a classified abort rather than in two writers.
+ *
+ * **Canonical instants, at the producer.** The store compares `expires_at <= ?`
+ * as SQLite TEXT — lexical bytes — while the runtime compares parsed instants
+ * and the contract's `Timestamp` permits offsets. Two spellings of one instant
+ * sort differently in both directions: an offset form sorts earlier (a live
+ * lease swept), a missing-millis form sorts later (an expired lease left held).
+ * The arbiter canonicalises at all four seams and refuses a non-instant. This
+ * is deliberately **not** a fence law: a scan for `toISOString()` would pass on
+ * a file that also formats an instant some other way, and the property is about
+ * values reaching the store — which the suite's agreement table measures
+ * directly, row by row.
+ *
+ * Eleven paths, three novel. `packages/kernel/protocol/src/schemas/index.ts` moves
+ * because `LEASE_ACQUIRED` and `LEASE_REVOKED` gain their first production
+ * producer: the no-producer list goes **nine → seven**.
+ * `packages/persistence/ledger/test/ledger/index.test.ts` is a **quarantined
+ * hygiene line**, declared non-causal: one `../` at the older suite's
+ * `REPO_ROOT`, which resolved to `packages/` and broke `ensureWorkerBuilt`
+ * whenever `dist-test/` was absent.
+ *
+ * The eleventh path is the consequence of the sixth, and was authorized after
+ * being measured rather than assumed: `daemon/test/fallback/index.test.ts`
+ * compares the walk's trail against `LIFECYCLE_PLAN` **exactly**, filtering out
+ * the riders that record against a walk instead of stepping it. `LEASE_ACQUIRED`
+ * and `LEASE_REVOKED` are the second such pair — `TOKEN_USAGE_RECORDED` was the
+ * first, at V2-B7T, and widened this same line. One assertion moves; the
+ * comparison stays exact rather than being loosened to a subset check, so a plan
+ * event that went missing would still fail it. `PATH_SCOPED_LAWS` 68 → **71**.
+ */
+const V2C2_WRITE_SET = [
+  "packages/entrypoints/daemon/src/arbiter/index.ts",
+  "packages/entrypoints/daemon/test/arbiter/index.test.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/constants/index.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0022-the-fenced-lease.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5286,6 +5351,7 @@ const WRITE_SET = [
   ...V2B4B_S40_WRITE_SET,
   ...V2B4B_S41_WRITE_SET,
   ...V2C1_WRITE_SET,
+  ...V2C2_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6227,6 +6293,22 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the arbitration store names no driver, no engine and no capability",
     scope: "packages/persistence/ledger/src/lease-store/index.ts",
+  },
+  // V2 concurrency C2. Three new path-shaped surfaces, so three new rows: the
+  // register and the `requireScope` call sites both move 68 -> 71, and
+  // `assertPathScopedInventory` fails and prints both numbers if only one side
+  // of this edit lands.
+  {
+    law: "the production daemon holds a fenced lease before it walks",
+    scope: "packages/entrypoints/daemon/src/index.ts",
+  },
+  {
+    law: "children are reaped before the lease is released",
+    scope: "packages/entrypoints/daemon/src/index.ts",
+  },
+  {
+    law: "no driver property substitutes for the lease",
+    scope: "packages/entrypoints/daemon/src/**",
   },
 ];
 
@@ -14364,6 +14446,136 @@ if (tracked.status === 0) {
   }
   requireScope("the arbitration store names no driver, no engine and no capability", capabilityScanned);
   notes.push("the arbitration store reads no clock and names no driver, engine or capability property");
+}
+
+// --- 21c. the fenced lease (V2 concurrency C2) ------------------------------
+//
+// C1 proved a store can arbitrate. These three prove the daemon actually uses
+// it, in the one order that is safe, without letting a durability engine stand
+// in for it.
+
+const DAEMON_COMPOSITION_SITE = "packages/entrypoints/daemon/src/index.ts";
+
+// L-C-2a -- the production daemon holds a fenced lease before it walks.
+//
+// A lease nothing acquires is a primitive, not a guarantee. This asserts the
+// composition exists at the one site that runs in production: the store is
+// opened from the derived path, the lease is acquired, its release is
+// registered on the unwind stack, and it is renewed.
+{
+  let compositionScanned = 0;
+  const composition = readIfPresent(DAEMON_COMPOSITION_SITE);
+  if (composition === null) {
+    fail(DAEMON_COMPOSITION_SITE + " is missing; the lease laws would stand over nothing");
+  } else {
+    compositionScanned += 1;
+    const code = stripComments(composition);
+    for (const required of [
+      ["openLeaseStore(", "the daemon no longer opens the arbitration store"],
+      ["leaseStorePath(", "the lease store path is no longer derived from the owned root"],
+      ["createArbiter(", "the daemon no longer composes the lease rules with the store"],
+      [".acquire()", "the daemon no longer acquires a lease"],
+      ['name: "lease"', "the lease release is no longer registered on the unwind stack"],
+      ["LEASE_RENEW_INTERVAL_MS", "the daemon no longer renews, so a lease can expire under a running walk"],
+    ]) {
+      const [needle, why] = required;
+      if (!code.includes(needle)) fail(DAEMON_COMPOSITION_SITE + ": " + why);
+    }
+    // Acquired before the walk, not after it. Both mode entry points must come
+    // later in the file than the acquisition that authorizes them.
+    const acquired = code.indexOf(".acquire()");
+    for (const mode of ["runSqliteMode(", "startRestateMode("]) {
+      const at = code.indexOf(mode);
+      if (at >= 0 && at < acquired) {
+        fail(
+          DAEMON_COMPOSITION_SITE +
+            " starts " +
+            mode +
+            " before it acquires the worktree lease; a refused acquisition must stop the walk" +
+            " from starting, not interrupt one already running",
+        );
+      }
+    }
+  }
+  requireScope("the production daemon holds a fenced lease before it walks", compositionScanned);
+  notes.push("the production daemon opens the store, acquires a fenced lease before either mode, and renews it");
+}
+
+// L-C-2b -- children are reaped before the lease is released.
+//
+// The stack unwinds in reverse, so "pushed after X" means "unwinds before X".
+// The lease must therefore be pushed BEFORE the agent harness. Inverted, every
+// clean shutdown frees the worktree while this daemon's provider children are
+// still writing into it -- and a drill that only checks a release happened
+// passes. This is the law that would have caught the inverted instruction.
+{
+  let orderScanned = 0;
+  const composition = readIfPresent(DAEMON_COMPOSITION_SITE);
+  if (composition === null) {
+    fail(DAEMON_COMPOSITION_SITE + " is missing; the unwind order cannot be checked");
+  } else {
+    orderScanned += 1;
+    const code = stripComments(composition);
+    const lease = code.indexOf('name: "lease"');
+    const harness = code.indexOf('name: "agent-harness"');
+    if (lease < 0 || harness < 0) {
+      fail(
+        DAEMON_COMPOSITION_SITE +
+          " no longer registers both the lease and the agent harness on the unwind stack",
+      );
+    } else if (lease > harness) {
+      fail(
+        DAEMON_COMPOSITION_SITE +
+          " pushes the lease resource AFTER the agent harness; the stack unwinds in reverse, so" +
+          " the worktree would be released while this daemon's provider children were still" +
+          " writing into it -- on every clean shutdown, and invisibly",
+      );
+    }
+  }
+  requireScope("children are reaped before the lease is released", orderScanned);
+  notes.push("the lease resource is pushed before the harness, so children are reaped before the worktree is freed");
+}
+
+// L-C-2c -- no driver property substitutes for the lease.
+//
+// `SERIALIZED_PER_TASK` is per *task key*: two tasks writing one worktree are
+// two keys and run concurrently, so neither driver has ever offered worktree
+// exclusivity. The lease is mandatory in both modes, and no daemon source may
+// make acquiring one depend on which engine is running.
+{
+  let leaseScopeScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!relativePath.startsWith("packages/entrypoints/daemon/src/")) continue;
+      if (!relativePath.endsWith(".ts")) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      leaseScopeScanned += 1;
+      const code = stripComments(content);
+      if (!code.includes("acquire()") && !code.includes("createArbiter(")) continue;
+      for (const forbidden of ["options.mode", "RESTATE_MODE", "SERIALIZED_PER_TASK", "DRIVER_CAPABILITY_PROPERTIES"]) {
+        // The acquisition region only. `options.mode` is read elsewhere in the
+        // composition for status and logging, which is not a condition on the
+        // lease; what is forbidden is reading it between composing the arbiter
+        // and acquiring.
+        const from = code.indexOf("createArbiter(");
+        const to = code.indexOf(".acquire()");
+        if (from < 0 || to < 0 || to < from) continue;
+        if (code.slice(from, to).includes(forbidden)) {
+          fail(
+            relativePath +
+              " conditions the lease acquisition on " +
+              forbidden +
+              "; SERIALIZED_PER_TASK is per task key and gives nothing per worktree, so the lease" +
+              " is mandatory in both modes",
+          );
+        }
+      }
+    }
+  }
+  requireScope("no driver property substitutes for the lease", leaseScopeScanned);
+  notes.push("no daemon source conditions the lease acquisition on a mode, an engine or a driver capability");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
