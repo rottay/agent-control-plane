@@ -22,6 +22,8 @@ import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "../../src/claude/index.js
 import { CODEX_APP_SERVER_PROTOCOL, codexAdapter } from "../../src/codex/index.js";
 import { KIMI_ACP_PROTOCOL, kimiAdapter } from "../../src/kimi/index.js";
 import type { LocalBinding, LocalChatChunk } from "../../src/local/index.js";
+import type { AgentHarness } from "../../src/harness/index.js";
+import { createAgentHarness } from "../../src/harness/index.js";
 import { fakeApiClient, fakeLocalClient, scriptedAdapter } from "../testing/index.js";
 import type { FakeScript } from "../testing/index.js";
 
@@ -817,5 +819,304 @@ describe("what this transport can and cannot say", () => {
       latencyMs: null,
       classifiedError: "TRANSPORT_UNAVAILABLE",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B4a: the owned session lifecycle
+// ---------------------------------------------------------------------------
+
+/**
+ * A binding for the lifetime drills, scripted exactly like the fixture's.
+ *
+ * **No timer, anywhere.** These drills need a *session* that is still live
+ * after its stream is abandoned, and that does not require a running child:
+ * abandoning an iteration never calls `finish()`, so nothing closes the
+ * session, and the entry stays live whether the child has exited or not. The
+ * pump keeps filling the queue regardless of consumers, so a reattached stream
+ * drains the remainder that the abandoned one never took. Every assertion
+ * below is on an event that was actually delivered or a state the harness
+ * actually holds — never on elapsed time (stop condition 5).
+ *
+ * `lingerMs` appears in exactly one drill, A4, where the subject *is* a
+ * running child: an interrupt that walks the signal ladder needs something to
+ * signal, and that drill never drains a stream to completion.
+ */
+function lifetimeBinding(extra: Partial<FakeScript> = {}): CliBinding {
+  const root = drillRoot();
+  const script: FakeScript = { lines: CLAUDE_LINES, exitCode: 0, ...extra };
+  return {
+    adapter: scriptedAdapter(claudeAdapter, script),
+    binary: NODE,
+    configRoot: root as AdmittedConfigRoot,
+    workdir: root as AdmittedWorkdir,
+    limits: limits(),
+  };
+}
+
+/** A port over one CLI binding, with a harness the test can read. */
+function ownedPort(extra: Partial<FakeScript> = {}): {
+  readonly port: ModelExecutionPort;
+  readonly harness: AgentHarness;
+} {
+  const harness = createAgentHarness();
+  const port = createExecutionPort({
+    bindings: new Map([["acct-primary", lifetimeBinding(extra)]]),
+    harness,
+  });
+  return { port, harness };
+}
+
+/**
+ * Take `count` events, then abandon the stream the way a caller does.
+ *
+ * `.return()` on the iterator is what a `break` out of a `for await` compiles
+ * to, so this reproduces abandonment exactly rather than approximating it.
+ */
+async function takeThenAbandon(
+  session: { events(): AsyncIterable<ExecutionEvent> },
+  count: number,
+): Promise<readonly ExecutionEvent[]> {
+  const iterator = session.events()[Symbol.asyncIterator]();
+  const taken: ExecutionEvent[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const step = await iterator.next();
+    if (step.done === true) break;
+    taken.push(step.value);
+  }
+  await iterator.return?.();
+  return taken;
+}
+
+async function collect(session: { events(): AsyncIterable<ExecutionEvent> }): Promise<readonly ExecutionEvent[]> {
+  const events: ExecutionEvent[] = [];
+  for await (const event of session.events()) events.push(event);
+  return events;
+}
+
+describe("the owned session lifecycle", () => {
+  // A1, A2.
+  it("rejoins a live execution without spawning a second child, losing nothing and repeating nothing", async () => {
+    const { port, harness } = ownedPort();
+    const first = await port.start(route(), request());
+    if (!first.ok) throw new Error("expected a session, got " + first.refusal);
+
+    const taken = await takeThenAbandon(first, 1);
+    expect(taken.map((event) => event.kind)).toEqual(["started"]);
+    const pidWhileAbandoned = harness.live()[0]?.pid;
+    expect(harness.live()).toHaveLength(1);
+
+    const rejoined = await port.start(route(), request({ reattach: first.sessionId }));
+    if (!rejoined.ok) throw new Error("expected a rejoin, got " + rejoined.refusal + " at " + rejoined.at);
+    expect(rejoined.sessionId).toBe(first.sessionId);
+    expect(rejoined.route).toEqual(route());
+
+    const rest = await collect(rejoined);
+    // The falsifiable form of "no second spawn": a fresh child always emits
+    // `started` first, so a second one anywhere in the union would show here.
+    expect(rest.filter((event) => event.kind === "started")).toEqual([]);
+    const union = [...taken, ...rest];
+    expect(union.filter((event) => event.kind === "started")).toHaveLength(1);
+    // A2: the union is the scenario, in order, once each.
+    expect(union.map((event) => event.kind)).toEqual(["started", "usage", "state", "completed"]);
+    // Same process throughout, and it is gone once the rejoined stream ended.
+    expect(pidWhileAbandoned).toBe(harness.live()[0]?.pid ?? pidWhileAbandoned);
+    expect(harness.live()).toEqual([]);
+  });
+
+  // A3.
+  it("carries the execution's last step into a reattached stream's completion", async () => {
+    const { port } = ownedPort();
+    const first = await port.start(route(), request());
+    if (!first.ok) throw new Error("expected a session");
+
+    // Take the `usage` event on the first stream, so the second never sees one.
+    const taken = await takeThenAbandon(first, 2);
+    expect(taken.map((event) => event.kind)).toEqual(["started", "usage"]);
+    const reported = taken.find((event) => event.kind === "usage");
+    if (reported?.kind !== "usage") throw new Error("expected a usage event");
+
+    const rejoined = await port.start(route(), request({ reattach: first.sessionId }));
+    if (!rejoined.ok) throw new Error("expected a rejoin");
+    const rest = await collect(rejoined);
+
+    expect(rest.filter((event) => event.kind === "usage")).toEqual([]);
+    const terminal = rest[rest.length - 1];
+    // Seeded from the entry, not from this generator: a per-stream counter
+    // would report 0 and make the contract's reconciliation sentence false.
+    expect(terminal).toEqual({ kind: "completed", stepIndex: reported.stepIndex });
+  });
+
+  // A4.
+  it("interrupts a child whose stream was abandoned, walking the ladder and releasing it", async () => {
+    // The one drill with a running child, and the one use of `lingerMs`: an
+    // interrupt that has to walk the ladder needs something alive to signal.
+    const { port, harness } = ownedPort({ ignoreSigint: true, lingerMs: 30_000 });
+    const started = await port.start(route(), request());
+    if (!started.ok) throw new Error("expected a session");
+    await takeThenAbandon(started, 1);
+
+    expect(harness.live()).toHaveLength(1);
+    // Before B4a this call was a silent no-op: the abandoned session had
+    // already been deleted from the port's registry, so the child ran on with
+    // nothing able to name it.
+    await port.interrupt(started.sessionId);
+    expect(harness.live()).toEqual([]);
+  });
+
+  // A5.
+  it("ends the entry with the session, not with the stream", async () => {
+    const { port, harness } = ownedPort();
+
+    const completed = await port.start(route(), request());
+    if (!completed.ok) throw new Error("expected a session");
+    await collect(completed);
+    // Drained to its terminal: the session closed, so the entry is gone.
+    expect(harness.live()).toEqual([]);
+
+    const abandoned = await port.start(route({ accountId: "acct-primary" }), request({ attempt: 2 }));
+    if (!abandoned.ok) throw new Error("expected a session");
+    await takeThenAbandon(abandoned, 1);
+    // Abandoned: the stream is over and the session is not, so the entry
+    // stays — live, named, reattachable and reapable.
+    expect(harness.live()).toHaveLength(1);
+    expect(harness.live()[0]?.sessionId).toBe(abandoned.sessionId);
+
+    await harness.closeAll();
+  });
+
+  // N2.
+  it("refuses a rejoin whose route differs in any single field", async () => {
+    const cases: readonly Partial<ResolvedRoute>[] = [
+      { provider: "codex" },
+      { model: "sonnet" },
+      { accountId: "acct-other" },
+      { transportKind: "API_KEY" },
+      { capabilityPolicyVersion: "p8-9" },
+      { resolvedAt: "2026-08-31T00:00:00.000Z" },
+    ];
+    for (const override of cases) {
+      const { port, harness } = ownedPort();
+      const started = await port.start(route(), request());
+      if (!started.ok) throw new Error("expected a session");
+      await takeThenAbandon(started, 1);
+
+      const outcome = await port.start(route(override), request({ reattach: started.sessionId }));
+      expect({ override, outcome }).toEqual({
+        override,
+        outcome: { ok: false, refusal: "REATTACH_UNAVAILABLE", at: "request.reattach" },
+      });
+      await harness.closeAll();
+    }
+  });
+
+  // N3.
+  it("refuses a rejoin under a different identity, in both directions", async () => {
+    for (const [held, asking] of [
+      [IDENTITY, REVIEWER],
+      [REVIEWER, IDENTITY],
+    ] as const) {
+      const { port, harness } = ownedPort();
+      const started = await port.start(route(), request({ identity: held }));
+      if (!started.ok) throw new Error("expected a session, got " + started.refusal);
+      await takeThenAbandon(started, 1);
+
+      const outcome = await port.start(route(), request({ identity: asking, reattach: started.sessionId }));
+      expect(outcome).toEqual({ ok: false, refusal: "REATTACH_UNAVAILABLE", at: "request.reattach" });
+      await harness.closeAll();
+    }
+  });
+
+  // N4.
+  it("refuses a rejoin onto a stream somebody is already draining", async () => {
+    const { port, harness } = ownedPort();
+    const started = await port.start(route(), request());
+    if (!started.ok) throw new Error("expected a session");
+
+    const iterator = started.events()[Symbol.asyncIterator]();
+    await iterator.next();
+    // Still attached: one queue, one reader. The port will not fan a single
+    // queue out to two consumers, and does not pretend it can.
+    const outcome = await port.start(route(), request({ reattach: started.sessionId }));
+    expect(outcome).toEqual({ ok: false, refusal: "REATTACH_UNAVAILABLE", at: "request.reattach" });
+
+    await iterator.return?.();
+    await harness.closeAll();
+  });
+
+  // N5.
+  it("refuses a rejoin naming an execution that is not the caller's own", async () => {
+    const { port, harness } = ownedPort();
+    const started = await port.start(route(), request());
+    if (!started.ok) throw new Error("expected a session");
+    await takeThenAbandon(started, 1);
+
+    // A live name, but not the one this request derives. The port holds no
+    // authority to hand out another task's child.
+    const outcome = await port.start(route(), request({ attempt: 7, reattach: started.sessionId }));
+    expect(outcome).toEqual({ ok: false, refusal: "REATTACH_UNAVAILABLE", at: "request.reattach" });
+    expect(harness.live()).toHaveLength(1);
+    await harness.closeAll();
+  });
+
+  // N6.
+  it("refuses a plain start that names an execution already in flight, and spawns nothing", async () => {
+    const { port, harness } = ownedPort();
+    const started = await port.start(route(), request());
+    if (!started.ok) throw new Error("expected a session");
+    await takeThenAbandon(started, 1);
+    const pid = harness.live()[0]?.pid;
+
+    const outcome = await port.start(route(), request());
+    expect(outcome).toEqual({ ok: false, refusal: "EXECUTION_IN_FLIGHT", at: "request.reattach" });
+    // The proof the refusal neither spawned nor overwrote: one entry, same pid.
+    expect(harness.live()).toHaveLength(1);
+    expect(harness.live()[0]?.pid).toBe(pid);
+
+    await harness.closeAll();
+  });
+
+  // N7, the local leg and the built-without-transport precedence.
+  it("refuses a reattach on the local leg, and before noticing the transport is absent", async () => {
+    const withLocal = await localPort().start(localRoute(), request({ reattach: "yesterday" }));
+    expect(withLocal).toEqual({ ok: false, refusal: "REATTACH_UNAVAILABLE", at: "request.reattach" });
+
+    // Built with the CLI leg only: the reattach refusal still precedes the
+    // TRANSPORT_UNAVAILABLE it would otherwise answer with, which is the
+    // precedence the removed global check used to guarantee.
+    const cliOnly = portFor({ "acct-primary": binding(claudeAdapter, CLAUDE_LINES) });
+    for (const kind of ["API_KEY", "LOCAL_OR_SELF_HOSTED"] as const) {
+      const outcome = await cliOnly.start(
+        route({ transportKind: kind, provider: "openai" }),
+        request({ reattach: "yesterday" }),
+      );
+      expect({ kind, outcome }).toEqual({
+        kind,
+        outcome: { ok: false, refusal: "REATTACH_UNAVAILABLE", at: "request.reattach" },
+      });
+    }
+  });
+
+  // N9, the vacuity guard.
+  it("still refuses a rejoin when the port was built without an injected harness", async () => {
+    // The port builds a private harness, so the lifetime law holds; what the
+    // caller gives up is the ability to observe or reap it. If this passed for
+    // the same reason the acceptance tests do, those tests would be measuring
+    // the fake provider rather than the harness.
+    const port = createExecutionPort({
+      bindings: new Map([["acct-primary", lifetimeBinding()]]),
+    });
+    const started = await port.start(route(), request());
+    if (!started.ok) throw new Error("expected a session");
+    await takeThenAbandon(started, 1);
+
+    const stale = await port.start(route(), request({ reattach: "execution-from-yesterday" }));
+    expect(stale).toEqual({ ok: false, refusal: "REATTACH_UNAVAILABLE", at: "request.reattach" });
+    // And the private harness is holding the child, which is why a plain start
+    // is refused rather than doubling it.
+    const doubled = await port.start(route(), request());
+    expect(doubled).toEqual({ ok: false, refusal: "EXECUTION_IN_FLIGHT", at: "request.reattach" });
+
+    await port.interrupt(started.sessionId);
   });
 });

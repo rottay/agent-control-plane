@@ -21,6 +21,8 @@ import type { ApiKeyBinding } from "../api-key/index.js";
 import { API_TRANSPORT_KIND, admitApiRoute, apiExecutionEvents } from "../api-key/index.js";
 import type { LocalBinding } from "../local/index.js";
 import { LOCAL_TRANSPORT_KIND, admitLocalRoute, localExecutionEvents } from "../local/index.js";
+import type { AgentHarness, HarnessEntry } from "../harness/index.js";
+import { createAgentHarness } from "../harness/index.js";
 import type { AdapterSession } from "../session/index.js";
 import { startSession } from "../session/index.js";
 
@@ -55,6 +57,28 @@ import { startSession } from "../session/index.js";
  * CLI one, never substitutes a provider, and never starts a fresh execution
  * when a caller asked to reattach. Each of those would be a silent success in
  * a place where the caller believes something else happened.
+ *
+ * **A live execution is owned, and owning it makes two answers possible that
+ * were not (V2-B4a).** The CLI leg registers every child it spawns with an
+ * `AgentHarness` under the durable execution name, and the entry outlives the
+ * *stream* — so a caller that stops reading no longer strands a running child
+ * that nothing can name, interrupt or reap. On that foundation the leg can
+ * grant a reattach that rejoins the live session with no second spawn, and
+ * must refuse a plain start that names an execution already in flight
+ * (`EXECUTION_IN_FLIGHT`). Both are refusals of the same silence: one caller
+ * believing it reattached when it started fresh, another believing it started
+ * fresh when it reattached.
+ *
+ * **What is still refused, and will be until a durable boundary exists.**
+ * Reattach is *live and in-process only*. A provider child does outlive the
+ * daemon on POSIX, but its pipes do not: `spawnAdmitted` gives the child's
+ * stdio to this process, so a new process cannot re-open the stream, cannot
+ * re-derive the `ParseCursor`, and cannot recover what was emitted in between.
+ * The one "resume" the adapters have is `claude --resume`, which is a fresh
+ * spawn — precisely the second execution this boundary exists to prevent —
+ * and `RESUME` is `UNKNOWN` under the capability law, so no drill here could
+ * confirm it. Cross-process reattach therefore stays `REATTACH_UNAVAILABLE`,
+ * and ADR 0019 names what would have to exist first.
  *
  * **Where the admitted values come from.** The binary, the configuration root,
  * the working directory and the session budgets are *not* fields of
@@ -123,6 +147,21 @@ export interface ExecutionPortInput {
    * not that it has one nobody has configured yet.
    */
   readonly localBindings?: ReadonlyMap<string, LocalBinding>;
+  /**
+   * The owned session lifecycle (V2-B4a).
+   *
+   * Optional for the same reason and with the same safeguard as
+   * `recordUsage?` on `ExecutionEffectsInput`: every existing construction
+   * site — the two drill children, the daemon suites, this package's own —
+   * keeps compiling untouched, and the optionality is made safe by a fence law
+   * (L-B4A-2) asserting the production daemon passes one, not by hope.
+   *
+   * Absent is not "no lifecycle". The port builds a private harness and
+   * behaves exactly as it does with an injected one; what the caller gives up
+   * is the ability to reap the children at its own unwind, which is precisely
+   * what the daemon needs and a test usually does not.
+   */
+  readonly harness?: AgentHarness | undefined;
 }
 
 /** The subscription-CLI transport kind, served over the session machinery. */
@@ -265,11 +304,24 @@ function errorEvent(detail: string): ExecutionEvent {
  */
 class StreamFailure extends Error {}
 
+/**
+ * `seed` is the last step the **execution** reported before this stream
+ * existed (V2-B4a).
+ *
+ * A per-generator counter starting at zero was right while a stream and an
+ * execution were the same thing. They are not any more: a reattached stream
+ * drains the rest of an execution whose earlier steps were delivered to an
+ * abandoned one, and a `completed` carrying `0` would make the contract's "the
+ * last step the transport reported, for reconciliation against usage" false on
+ * exactly the path this packet adds. The CLI leg passes the entry's running
+ * value; the API and local legs pass nothing, because neither can reattach.
+ */
 async function* terminated(
   inner: AsyncIterable<ExecutionEvent>,
   finish: () => Promise<string | null>,
+  seed = 0,
 ): AsyncIterable<ExecutionEvent> {
-  let lastStepIndex = 0;
+  let lastStepIndex = seed;
   try {
     for await (const event of inner) {
       if (event.kind === "usage") lastStepIndex = event.stepIndex;
@@ -295,18 +347,30 @@ async function* terminated(
 /**
  * Build the execution port.
  *
- * The returned object is the whole surface: the CLI sessions it starts are
- * held only so `interrupt` can find them, and each is forgotten as soon as its
- * stream ends.
+ * The returned object is the whole surface. The CLI sessions it starts are
+ * owned by an `AgentHarness` under their durable execution name, and the
+ * entry's lifetime is the **session's**, not the stream's: it is released when
+ * the session reaches `CLOSED` or `FAILED`, so a stream that is abandoned
+ * leaves a child that is still named, still rejoinable through `reattach`,
+ * still reachable by `interrupt`, and still reaped by the owner's `closeAll`
+ * at unwind. A plain start naming a live execution is refused rather than
+ * doubling it.
  */
 export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPort {
   const bindings = input.bindings;
   const apiBindings = input.apiBindings;
   const localBindings = input.localBindings;
-  const live = new Map<string, AdapterSession>();
+  // The one live-session registry (L-B4A-1). The port holds no second map of
+  // its own: two registries are two answers to "is this child still ours", and
+  // the answer that loses is the one holding a process nobody reaps.
+  const harness = input.harness ?? createAgentHarness();
 
   /** The CLI leg's mapping. Throws on anything it cannot express. */
-  async function* cliEvents(session: AdapterSession, route: ResolvedRoute): AsyncIterable<ExecutionEvent> {
+  async function* cliEvents(
+    session: AdapterSession,
+    route: ResolvedRoute,
+    entry: HarnessEntry,
+  ): AsyncIterable<ExecutionEvent> {
     for await (const normalized of session.events()) {
       const mapped = toExecutionEvent(normalized, route);
       if (mapped.kind === "SILENT") continue;
@@ -318,31 +382,55 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
         // malformed event into the control plane's evidence.
         throw new StreamFailure(normalized.name + " failed the contract at " + firstPath(parsed.error));
       }
+      // The execution's running step, kept on the entry rather than in this
+      // generator, so a stream that reattaches later can seed itself from what
+      // the execution already reported instead of from zero.
+      if (parsed.data.kind === "usage") entry.lastStepIndex = parsed.data.stepIndex;
       yield parsed.data;
     }
   }
 
+  /**
+   * Drain one CLI session, under the lifetime law (V2-B4a).
+   *
+   * The change from B1b is which object's death ends the registry entry. It
+   * used to be this generator's: the `finally` deleted the session by name,
+   * so a caller that stopped reading left a running provider child nothing
+   * could name, interrupt or reap. ADR 0010 already said abandoning the
+   * iteration is not cancellation; deleting the only handle to the child was
+   * the operational consequence of pretending otherwise.
+   *
+   * Now the entry's lifetime is the **session's**. The `finally` records only
+   * that nobody is draining any more; the entry is released when the session
+   * actually reaches a terminal state, which is what `finish` observes. An
+   * abandoned stream therefore leaves an entry that is live, named,
+   * reattachable and interruptible — and `closeAll` reaps it at unwind, so the
+   * invisible leak is not traded for a visible one.
+   */
   async function* cliStream(
     session: AdapterSession,
     route: ResolvedRoute,
     sessionId: string,
+    entry: HarnessEntry,
   ): AsyncIterable<ExecutionEvent> {
     const finish = async (): Promise<string | null> => {
       if (session.state === "FAILED") {
         // The session tore its own child down; wait for that to finish before
         // reporting, so a caller that stops reading here is not racing a kill.
         await session.settled();
+        harness.release(sessionId);
         return "session failed: " + (session.health().classifiedError ?? "UNCLASSIFIED");
       }
       await session.close();
+      harness.release(sessionId);
       return null;
     };
     try {
-      yield* terminated(cliEvents(session, route), finish);
+      yield* terminated(cliEvents(session, route, entry), finish, entry.lastStepIndex);
     } finally {
-      // However the stream ended — completed, failed, or abandoned by a caller
-      // that stopped reading — the session stops being interruptible by name.
-      live.delete(sessionId);
+      // Only that this stream is over. Whether the *session* is over is
+      // `finish`'s question, and an abandoned iteration never asks it.
+      entry.attached = false;
     }
   }
 
@@ -366,15 +454,17 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
       const admitted = parsedRoute.data;
       const asked = parsedRequest.data;
 
-      if (asked.reattach !== null) {
-        // Neither landed transport can rejoin. Refusing is the contract's
-        // stated law; starting a fresh execution while the caller believes it
-        // reattached is the one failure this boundary must never produce, and
-        // it is checked before the transports so no transport can forget it.
-        return refuse("REATTACH_UNAVAILABLE", "request.reattach");
-      }
-
       const sessionId = executionSessionId(asked.taskId, asked.attempt, admitted.accountId);
+
+      // V2-B4a moved the reattach decision from here into each leg. It used to
+      // be one global refusal before the dispatch, which was right while no
+      // transport could rejoin anything. One now can, and a check that is
+      // global cannot say "this leg can, that leg cannot" without becoming a
+      // second dispatch. Each branch below therefore states its own refusal as
+      // its first statement, and L-B4A-3 counts the three so a fourth leg
+      // cannot be added that quietly forgets one. The observable precedence is
+      // unchanged: the API and local legs still refuse a reattach before they
+      // notice they have no binding at all.
 
       // Dispatched with a switch rather than a chain of `if`s so the
       // exhaustiveness is the compiler's to check. The alternative the auditor
@@ -386,6 +476,10 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
       // compiling, so it cannot fall through to a CLI spawn unnoticed.
       switch (admitted.transportKind) {
         case API_TRANSPORT_KIND: {
+        // First statement of the block, before the binding is even consulted:
+        // this transport cannot rejoin an execution, whatever else is true of
+        // the route.
+        if (asked.reattach !== null) return refuse("REATTACH_UNAVAILABLE", "request.reattach");
         if (apiBindings === undefined) {
           // Law 6, as a refusal rather than a promise: this port was built
           // without the API transport, so it does not have one. Nothing about
@@ -418,6 +512,9 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
         }
 
         case LOCAL_TRANSPORT_KIND: {
+        // The API leg's refusal, for the same reason: a local or self-hosted
+        // server hands back no handle this port could rejoin.
+        if (asked.reattach !== null) return refuse("REATTACH_UNAVAILABLE", "request.reattach");
         if (localBindings === undefined) {
           // The same law-6 refusal as the API leg, for the same reason: this
           // port was built without the local transport, so it does not have
@@ -462,6 +559,61 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
         }
       }
 
+      // The CLI leg's own reattach decision, and the only grant in the port.
+      //
+      // Every condition below is a way the rejoin would hand a caller a child
+      // that is not the one it asked for. They share **one** `at` string, on
+      // purpose: the distinctions are ours, not the caller's, and a caller
+      // that could tell "wrong identity" from "already attached" could branch
+      // on a difference it has no lawful action for. What it can act on is
+      // that this execution is not rejoinable, which is what it is told.
+      const held = harness.lookup(sessionId);
+      if (asked.reattach !== null) {
+        const rejoinable =
+          // A caller may not name another task's execution: the port holds no
+          // authority to hand out somebody else's child.
+          asked.reattach === sessionId &&
+          held !== null &&
+          // One queue, one reader. `Session.events()` shifts from a single
+          // queue and a second concurrent reader starves the first, so a
+          // second drain is refused rather than fanned out.
+          !held.attached &&
+          held.identity === asked.identity &&
+          held.route.provider === admitted.provider &&
+          held.route.model === admitted.model &&
+          held.route.accountId === admitted.accountId &&
+          held.route.transportKind === admitted.transportKind &&
+          held.route.capabilityPolicyVersion === admitted.capabilityPolicyVersion &&
+          held.route.resolvedAt === admitted.resolvedAt;
+        if (!rejoinable) return refuse("REATTACH_UNAVAILABLE", "request.reattach");
+
+        // Granted. No binding lookup and no `startSession`: the child was
+        // admitted when it was spawned, and requiring the binding again would
+        // let a binding removed since orphan a live child. The route returned
+        // is the entry's — the one the child is actually running — never the
+        // caller's copy of it.
+        const entry = held;
+        return Object.freeze({
+          ok: true as const,
+          sessionId,
+          route: entry.route,
+          events: (): AsyncIterable<ExecutionEvent> => {
+            entry.attached = true;
+            return cliStream(entry.session, entry.route, sessionId, entry);
+          },
+        });
+      }
+
+      if (held !== null) {
+        // The mirror of the silent restart, and refused for the same reason.
+        // Spawning a second child under one name would double the execution
+        // and lose the first; handing back the live one would be a silent
+        // rejoin the caller never asked for. `at` names `request.reattach`
+        // because that is the field that was wrong: it was null when it needed
+        // to name the execution already in flight.
+        return refuse("EXECUTION_IN_FLIGHT", "request.reattach");
+      }
+
       const binding = bindings.get(admitted.accountId);
       if (binding === undefined) return refuse("TRANSPORT_UNAVAILABLE", "route.accountId");
       if (binding.adapter.provider !== admitted.provider) {
@@ -491,21 +643,35 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
         return refuse("TRANSPORT_UNAVAILABLE", "startSession/" + code);
       }
 
-      live.set(sessionId, session);
+      harness.register(sessionId, { session, route: admitted, identity: asked.identity });
+      const registered = harness.lookup(sessionId);
+      if (registered === null) {
+        // Unreachable: a session is `STARTING` the moment `startSession`
+        // returns, and only `CLOSED`/`FAILED` read as absent. Typed as a
+        // refusal rather than a non-null assertion, so a future lifetime rule
+        // that made a fresh registration invisible would surface as a
+        // classified answer instead of a crash mid-stream.
+        return refuse("TRANSPORT_UNAVAILABLE", "harness.register");
+      }
+      const entry = registered;
       return Object.freeze({
         ok: true as const,
         sessionId,
         route: admitted,
-        events: (): AsyncIterable<ExecutionEvent> => cliStream(session, admitted, sessionId),
+        events: (): AsyncIterable<ExecutionEvent> => {
+          entry.attached = true;
+          return cliStream(session, admitted, sessionId, entry);
+        },
       });
     },
 
     async interrupt(sessionId: string): Promise<void> {
-      const session = live.get(sessionId);
+      // Delegated whole to the harness, which is the one registry (L-B4A-1).
       // Idempotent, and structurally incapable of touching a foreign process:
-      // the port can only interrupt a session it started and still holds.
-      if (session === undefined) return;
-      await session.interrupt();
+      // it can only reach a session this port started and still owns — and
+      // now it reaches one whose stream was abandoned, which is exactly the
+      // child that used to become unnameable.
+      await harness.interrupt(sessionId);
     },
 
     // Read-only by construction: this probe never spawns, so there is nothing

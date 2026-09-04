@@ -55,6 +55,21 @@ export const CLI_SUBSCRIPTION_PROVIDERS = ["claude", "codex", "kimi"] as const;
  */
 export const EXECUTION_REFUSALS = [
   "CAPABILITY_UNSUPPORTED",
+  /**
+   * A plain start named an execution that is already running.
+   *
+   * Added by V2-B4a, when a boundary first became able to hold a live session
+   * by name. Before it, the case could not arise: the port forgot a session
+   * the moment its stream ended, so a second start under the same name found
+   * nothing and spawned. Now it finds a child, and none of the other four
+   * names is true of what happened — the transport is available, the route is
+   * valid, no capability is missing. The alternatives to a refusal are to
+   * spawn a second child under one name, or to hand back the live one as if a
+   * fresh execution had begun; the first is the duplication this vocabulary
+   * exists to prevent, and the second is the silent rejoin that mirrors the
+   * silent restart law 3 already forbids.
+   */
+  "EXECUTION_IN_FLIGHT",
   "REATTACH_UNAVAILABLE",
   "ROUTE_INVALID",
   "TRANSPORT_UNAVAILABLE",
@@ -237,10 +252,15 @@ export interface ExecutionSession {
  *    `ExecutionEvent`, identical in shape whichever transport produced it, so
  *    the control plane's routing, evidence and recovery never learn a
  *    transport's dialect.
- * 3. **Reattachment is explicit or refused.** `request.reattach` either
- *    rejoins that execution or produces `REATTACH_UNAVAILABLE`. Starting fresh
- *    while a caller believes it reattached is the one failure this boundary
- *    must never produce silently.
+ * 3. **Reattachment is explicit or refused, and so is its mirror.**
+ *    `request.reattach` either rejoins that execution or produces
+ *    `REATTACH_UNAVAILABLE`. Starting fresh while a caller believes it
+ *    reattached is the one failure this boundary must never produce silently
+ *    — and the mirror is equally forbidden: a plain start naming an execution
+ *    already in flight produces `EXECUTION_IN_FLIGHT`, never a second child
+ *    under one name and never the live one handed back as though it were new.
+ *    A transport that cannot hold a live execution by name cannot reach the
+ *    second case; one that can must refuse it.
  * 4. **The port holds no authority.** Routing, role selection, account and
  *    quota policy, leases, conflict detection, checkpoints and evidence stay
  *    with the control plane. A transport adapter is a mouth, not a mind.

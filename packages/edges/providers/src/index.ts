@@ -103,6 +103,14 @@ export { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "./ses
 // `createExecutionPort` because it now builds a port that serves more than
 // one transport: a factory named for one of them would invite the second (and
 // now third) factory that the design explicitly refused.
+// V2-B4a: the owned session lifecycle. Exactly two names — the type a caller
+// holds and the factory that builds one. `HarnessEntry` and
+// `HarnessRegistration` stay behind the boundary: a caller outside this
+// package has no business holding a session handle, and the port is the only
+// thing that moves an entry's mutable fields.
+export type { AgentHarness } from "./harness/index.js";
+export { createAgentHarness } from "./harness/index.js";
+
 export type { CliBinding, ExecutionPortInput } from "./execution-port/index.js";
 export {
   CLI_TRANSPORT_KIND,

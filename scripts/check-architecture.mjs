@@ -4302,6 +4302,52 @@ const V2B7R_WRITE_SET = [
 ];
 
 /**
+ * V2-B4a: the owned session lifecycle.
+ *
+ * **The narrowing is the packet.** B4's product sentence, read widely, would
+ * include reattach across a daemon restart, and two facts in the source
+ * falsify that: `spawnAdmitted` gives the child's stdio to the spawning
+ * process, so a new daemon cannot re-open the stream or re-derive the
+ * `ParseCursor`; and the only "resume" the adapters have is `claude --resume`,
+ * a fresh spawn whose `RESUME` capability is `UNKNOWN` under a law that
+ * refuses `subject: "FAKE"` evidence. So B4a lands *live in-process reattach
+ * and an owned session lifetime*, and the port keeps refusing the reattach it
+ * cannot honor. ADR 0019 records the boundary and what would have to exist
+ * first to move it.
+ *
+ * **No new kernel port.** `AgentHarnessPort`'s only agreeing party today is
+ * the daemon, which already depends on `@acp/providers`; a contracts port
+ * whose sole consumer sits one stratum away is the speculative surface the
+ * barrel-diet razor refuses. The type is `AgentHarness`, at the edge where its
+ * consumers are.
+ *
+ * The one contract change is a fifth refusal. Once a boundary can hold a live
+ * execution by name, a plain start naming one has three possible answers —
+ * spawn a second child under one name, hand back the live one as if it were
+ * fresh, or refuse — and none of the four existing names is true of the case.
+ * A vocabulary that cannot say what happened forces a lie.
+ *
+ * Thirteen paths, four of them novel. `docs/ROADMAP.md` is untouched, as in
+ * every V2-B packet since B1c, and ADR 0010 is amended in the index and in
+ * 0019 rather than edited: the corpus is append-only.
+ */
+const V2B4A_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/edges/providers/src/harness/index.ts",
+  "packages/edges/providers/test/harness/index.test.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/src/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0019-the-owned-session-lifecycle.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4681,6 +4727,7 @@ const WRITE_SET = [
   ...V2B7S_WRITE_SET,
   ...V2B7T_WRITE_SET,
   ...V2B7R_WRITE_SET,
+  ...V2B4A_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5510,6 +5557,21 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the console opens the stream in one module",
     scope: "packages/entrypoints/console/src/**",
+  },
+  // V2-B4a. Three new path-shaped surfaces, so three new rows: the register
+  // and the `requireScope` call sites both move 47 → 50, and the count law
+  // after this list is what would have failed had only one side been edited.
+  {
+    law: "one lifetime owner",
+    scope: "packages/edges/providers/src/execution-port/index.ts",
+  },
+  {
+    law: "the production daemon owns a harness",
+    scope: "packages/entrypoints/daemon/src/index.ts",
+  },
+  {
+    law: "no leg forgets the reattach refusal",
+    scope: "packages/edges/providers/src/execution-port/index.ts",
   },
 ];
 
@@ -9315,6 +9377,117 @@ if (tracked.status === 0) {
     }
     notes.push(rethrows + " settling call sites re-throw the original error");
   }
+
+  // --- L-B4A-1: one lifetime owner (V2-B4a) --------------------------------
+  //
+  // The port used to hold its own `Map` of live sessions and delete from it in
+  // the stream's `finally`, which is how an abandoned iteration left a running
+  // child that nothing could name. The registry moved to `src/harness`, and
+  // this keeps it moved: two registries are two answers to "is this child
+  // still ours", and the answer that loses is the one holding a process nobody
+  // reaps.
+  //
+  // Scanned for the shapes rather than for the word "Map": the port may
+  // legitimately hold other maps (bindings are two of them), so the law names
+  // the session-keyed registry and the delete that used to end a lifetime.
+  const PORT_HOME = "packages/edges/providers/src/execution-port/index.ts";
+  const HARNESS_HOME = "packages/edges/providers/src/harness/index.ts";
+  {
+    const portSource = stripComments(readIfPresent(PORT_HOME) ?? "");
+    requireScope("one lifetime owner", portSource.length === 0 ? 0 : 1);
+    if (portSource.length === 0) {
+      fail(PORT_HOME + " is missing; the execution port is a required module");
+    } else {
+      for (const banned of ["new Map<string, AdapterSession>", "live.delete("]) {
+        if (portSource.includes(banned)) {
+          fail(
+            PORT_HOME +
+              " holds " +
+              banned +
+              "; the live-session registry belongs to " +
+              HARNESS_HOME +
+              " alone, and a second one is a second answer to whether a child is still ours",
+          );
+        }
+      }
+      if (!portSource.includes("harness.register(")) {
+        fail(PORT_HOME + " no longer registers the sessions it starts; a spawned child would be unowned");
+      }
+      const harnessSource = stripComments(readIfPresent(HARNESS_HOME) ?? "");
+      if (!harnessSource.includes("entries.delete(")) {
+        fail(HARNESS_HOME + " no longer releases entries, so nothing ends a session's lifetime");
+      }
+      notes.push("one live-session registry, in " + HARNESS_HOME + "; the port holds none of its own");
+    }
+  }
+
+  // --- L-B4A-2: the production daemon owns a harness (V2-B4a) --------------
+  //
+  // L-B7T-2's shape, for the identical optional-field risk. `harness?` on
+  // `ExecutionPortInput` is what keeps the two drill children and four daemon
+  // suites compiling untouched; this is what stops that optionality becoming
+  // the structurally-live-behaviourally-empty defect the B7 wave was convened
+  // to fix. The production root must build one, hand it to the port, AND push
+  // a release resource — the third is the one that makes an abandoned child
+  // get reaped rather than merely named.
+  const HARNESS_OWNER = "packages/entrypoints/daemon/src/index.ts";
+  {
+    const source = stripComments(readIfPresent(HARNESS_OWNER) ?? "");
+    requireScope("the production daemon owns a harness", source.length === 0 ? 0 : 1);
+    const buildAt = source.indexOf("createAgentHarness(");
+    const portAt = source.indexOf("createExecutionPort(");
+    if (buildAt === -1) {
+      fail(
+        HARNESS_OWNER +
+          " does not build an agent harness; the daemon would spawn provider children it cannot reap",
+      );
+    } else if (portAt === -1) {
+      fail(HARNESS_OWNER + " no longer builds the execution port this law is scoped to");
+    } else if (!/createExecutionPort\(\{[^}]*harness[^}]*\}\)/.test(source)) {
+      fail(
+        HARNESS_OWNER +
+          " builds the execution port without passing its harness; the port would own the children" +
+          " privately and the daemon's unwind would reap nothing",
+      );
+    } else if (!source.includes('name: "agent-harness"')) {
+      fail(
+        HARNESS_OWNER +
+          " pushes no agent-harness resource onto the unwind stack; a child left running by an" +
+          " abandoned stream would outlive the daemon",
+      );
+    } else if (!source.includes("closeAll()")) {
+      fail(HARNESS_OWNER + " registers an agent-harness resource whose release does not reap anything");
+    } else {
+      notes.push("the production daemon builds a harness, passes it, and reaps it at unwind");
+    }
+  }
+
+  // --- L-B4A-3: no leg forgets the refusal (V2-B4a) ------------------------
+  //
+  // The reattach refusal used to be one global check before the transport
+  // dispatch, which no leg could forget because no leg owned it. One leg can
+  // now honor a reattach, so the check had to move into the legs — and a
+  // per-leg rule is exactly the kind a fourth leg is added without. The count
+  // is asserted at three, so adding a transport without its own refusal moves
+  // the number and fails here.
+  {
+    const source = stripComments(readIfPresent(PORT_HOME) ?? "");
+    requireScope("no leg forgets the reattach refusal", source.length === 0 ? 0 : 1);
+    const refusals = [
+      ...source.matchAll(/refuse\("REATTACH_UNAVAILABLE",\s*"request\.reattach"\)/g),
+    ].length;
+    if (refusals !== 3) {
+      fail(
+        PORT_HOME +
+          " states the reattach refusal " +
+          refusals +
+          " time(s) at request.reattach; each of the three transport legs owns exactly one, and a leg" +
+          " without one would silently start a fresh execution where a caller asked to rejoin",
+      );
+    } else {
+      notes.push("all three transport legs state their own reattach refusal, field-exact");
+    }
+  }
 }
 
 // --- 18. P2E: the template is inert, and adoption is impossible from here ---
@@ -11485,6 +11658,12 @@ const PROVIDERS_PUBLIC_EXPORTS = [
   "descriptorEnablesWrites",
   "isReadOnlyIdentity",
   "startSession",
+  // V2-B4a: the owned session lifecycle. Two names, and deliberately only two.
+  // `HarnessEntry` and `HarnessRegistration` are the port's vocabulary for
+  // moving an entry's mutable fields, and a caller outside this package that
+  // could hold a session handle could interrupt a child the port owns.
+  "AgentHarness",
+  "createAgentHarness",
   // P8-2/P8-3/P8-4: the execution port. The admitted values arrive per account
   // through `CliBinding`, so the contract's request stays transport-neutral.
   // P8-3 renamed the factory and the session-id helper: one factory now builds

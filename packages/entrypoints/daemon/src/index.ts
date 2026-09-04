@@ -22,7 +22,7 @@ import type { ModelExecutionPort } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import { openLedger } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
-import type { CliBinding, ProviderAdapter } from "@acp/providers";
+import type { AgentHarness, CliBinding, ProviderAdapter } from "@acp/providers";
 import {
   AdapterError,
   admitBinary,
@@ -30,6 +30,7 @@ import {
   admitWorkdir,
   claudeAdapter,
   codexAdapter,
+  createAgentHarness,
   createExecutionPort,
   kimiAdapter,
 } from "@acp/providers";
@@ -325,8 +326,33 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
     // admitted through `ResolvedRoute`; nothing re-resolves it.
     const { route } = options.execution;
 
+    // V2-B4a. The daemon owns the provider children it spawns, and owning them
+    // is what makes the unwind able to reap them.
+    //
+    // Pushed AFTER the ledger and BEFORE the effect port exists, and the order
+    // is load-bearing in both directions. The stack unwinds in reverse, so
+    // children are reaped before the ledger they report into is closed; and
+    // registering the resource before any port can spawn means there is no
+    // window in which a child exists that the unwind would not find. Before
+    // this, an abandoned stream left a running child nothing could name --
+    // ADR 0010 said abandoning an iteration is not cancellation, and this is
+    // where that sentence stops being a leak.
+    const harness = createAgentHarness();
+    stack.push({
+      name: "agent-harness",
+      release: async (): Promise<string | null> => {
+        try {
+          const reaped = await harness.closeAll();
+          logger.log("info", "harness.reaped", null, { sessions: reaped.length });
+          return null;
+        } catch (error: unknown) {
+          return classify(error);
+        }
+      },
+    });
+
     const effects = createExecutionEffects({
-      port: executionPortFor(options.execution, options.taskId),
+      port: executionPortFor(options.execution, options.taskId, harness),
       route,
       request: {
         taskId: options.taskId,
@@ -528,7 +554,11 @@ const CLI_ADAPTERS: Readonly<Record<string, ProviderAdapter>> = Object.freeze({
  * the daemon inside its unwind, classified by the adapter's code and never by
  * the path.
  */
-function executionPortFor(execution: DaemonExecutionConfig, taskId: string): ModelExecutionPort {
+function executionPortFor(
+  execution: DaemonExecutionConfig,
+  taskId: string,
+  harness: AgentHarness,
+): ModelExecutionPort {
   const { route, binding } = execution;
   const bindings = new Map<string, CliBinding>();
   const adapter = route.transportKind === "CLI_SUBSCRIPTION" ? CLI_ADAPTERS[route.provider] : undefined;
@@ -547,7 +577,11 @@ function executionPortFor(execution: DaemonExecutionConfig, taskId: string): Mod
       throw new StartupError("the execution binding was refused: " + code);
     }
   }
-  return createExecutionPort({ bindings });
+  // The harness is the caller's, not the port's own (V2-B4a). A port that
+  // built its own would still hold the children correctly; what the daemon
+  // would lose is the ability to reap them at its unwind, which is the whole
+  // point of owning them.
+  return createExecutionPort({ bindings, harness });
 }
 
 /** The lock is released last, because everything else was acquired under it. */

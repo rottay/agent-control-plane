@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,7 +33,8 @@ import type { DurableInvocation, ScenarioRoot, UsageSample } from "@acp/runtime"
 import { afterEach, describe, expect, it } from "vitest";
 
 import { canonicalSubmission, canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
-import type { DaemonSubmission } from "../../../src/daemon-child/index.js";
+import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
+import { startDaemon, stopDaemon } from "../../../src/index.js";
 
 /**
  * The conformance fixture for the execution-port substitution (V2-B1b, C4).
@@ -1564,5 +1566,157 @@ describe("V2-B7T: the walk records what it spends", () => {
     const withoutSink = await walk("b7t-no-sink", cliPort(), resolvedCliRoute());
     expect(withoutSink.types).not.toContain("TOKEN_USAGE_RECORDED");
     expect(withoutSink.state).toBe("CHECKPOINTED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B4a, A8: the production daemon reaps the children it owns
+// ---------------------------------------------------------------------------
+
+/** One fixed initiative for the B4a drill, in the shape every drill uses. */
+const B4A_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7b01";
+
+/**
+ * A real provider binary, because the daemon admits a path rather than an
+ * adapter.
+ *
+ * The scripted-adapter trick the rest of this file uses cannot reach
+ * `startDaemon`: the production composition root builds its port from the
+ * shipped `claudeAdapter` and the configuration's binary, so proving the
+ * production seam means putting a real executable on disk and letting the
+ * daemon admit it.
+ *
+ * The child writes its own pid before anything else. That is what makes "the
+ * child is gone" checkable without scanning, matching a pattern or guessing:
+ * the process announces itself, exactly as `ProcessHandle` only ever signals
+ * a pid it created.
+ */
+function fakeProviderBinary(
+  lines: readonly string[],
+  options: { readonly linger: boolean },
+): { readonly binary: string; readonly root: string; readonly pidFile: string } {
+  const root = mkdtempSync(join(TMP_ROOT, "acp-b4a-provider-"));
+  chmodSync(root, 0o700);
+  const pidFile = join(root, "child.pid");
+  const binary = join(root, "fake-provider");
+  writeFileSync(
+    binary,
+    "#!" + realpathSync(process.execPath) + "\n" +
+      "require('node:fs').writeFileSync(" + JSON.stringify(pidFile) + ", String(process.pid));\n" +
+      "const lines = " + JSON.stringify([...lines]) + ";\n" +
+      "for (const line of lines) process.stdout.write(line + \"\\n\");\n" +
+      (options.linger
+        ? "setInterval(() => {}, 1000);\n"
+        : "process.exit(0);\n"),
+    { mode: 0o700 },
+  );
+  temporaries.push(root);
+  return { binary, root, pidFile };
+}
+
+function b4aExecutionConfig(binary: string, root: string): DaemonExecutionConfig {
+  return {
+    route: {
+      provider: "claude",
+      model: "opus",
+      accountId: "acct-b4a-drill",
+      transportKind: "CLI_SUBSCRIPTION",
+      capabilityPolicyVersion: "2026-09-03.1",
+      resolvedAt: RESOLVED_AT,
+    },
+    binding: {
+      binary,
+      configRoot: root,
+      workdir: root,
+      limits: { timeoutMs: 10_000, outputBudgetBytes: 64 * 1024, interruptGraceMs: 120, termGraceMs: 120 },
+    },
+  };
+}
+
+function b4aOptions(scenarioId: string, execution: DaemonExecutionConfig): Parameters<typeof startDaemon>[0] {
+  const taskId = randomUUID();
+  return {
+    mode: "SQLITE_SUPERVISOR" as const,
+    scenarioId,
+    emittedBy: EMITTED_BY,
+    taskId,
+    attempt: 1,
+    submittedAt: SUBMITTED_AT,
+    submissionDigest: canonicalSubmissionDigest({
+      taskId,
+      attempt: 1,
+      submittedAt: SUBMITTED_AT,
+      initiativeId: B4A_INITIATIVE_ID,
+      route: execution.route,
+    }),
+    initiativeId: B4A_INITIATIVE_ID,
+    checkPorts: false,
+    execution,
+  };
+}
+
+/**
+ * A scenario **id**, registered for cleanup.
+ *
+ * `scenario()` above resolves the id to a root, which is what every other
+ * drill in this file wants. `startDaemon` takes the id and resolves it itself
+ * — a caller cannot name a directory (D5) — so this returns the raw name.
+ */
+function b4aScenarioId(name: string): string {
+  scenarios.push(name);
+  return name;
+}
+
+/** Is this pid still a live process? Asked only of a pid the child announced. */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe("the production daemon owns and reaps its provider children (V2-B4a)", () => {
+  it("registers the harness in the unwind, and stopDaemon releases it after the ledger's children", async () => {
+    const { binary, root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const run = await startDaemon(b4aOptions(b4aScenarioId("b4a-unwind"), b4aExecutionConfig(binary, root)));
+
+    const stopped = await stopDaemon(run);
+    expect(stopped.stopped).toBe(true);
+    expect(stopped.outcome.failures).toEqual([]);
+    // L-B4A-2, observed rather than asserted about: the production root really
+    // does register a harness resource, and the real unwind really does
+    // release it.
+    expect(stopped.outcome.released).toContain("agent-harness");
+    // Reverse order: children are reaped before the ledger they report into is
+    // closed. The stack unwinds in reverse, so the harness must appear AFTER
+    // the ledger in the released list to have been released BEFORE it.
+    expect(stopped.outcome.released.indexOf("agent-harness")).toBeLessThan(
+      stopped.outcome.released.indexOf("ledger"),
+    );
+  });
+
+  it("reaps a child the walk left running, so an abandoned execution does not outlive the daemon", async () => {
+    // A `started` the contract cannot express: the parser accepts any
+    // non-empty model, `ExecutionEvent` bounds `resolvedModel` at 120, and the
+    // payload shaping bounds strings at 200 — so this survives normalization
+    // and fails the contract, which ends the stream through the failure path
+    // that never closes the session. The child is left running, which before
+    // B4a meant running forever with nothing able to name it.
+    const unexpressible: readonly string[] = [
+      JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
+    ];
+    const { binary, root, pidFile } = fakeProviderBinary(unexpressible, { linger: true });
+
+    await expect(
+      startDaemon(b4aOptions(b4aScenarioId("b4a-reap"), b4aExecutionConfig(binary, root))),
+    ).rejects.toThrow();
+
+    // The child announced itself, so this is the pid the daemon spawned and
+    // not one this test went looking for.
+    const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
+    expect(Number.isInteger(pid)).toBe(true);
+    expect(isAlive(pid)).toBe(false);
   });
 });

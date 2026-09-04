@@ -1,4 +1,4 @@
-import { CONTROL_PLANE_EVENT_TYPES, EXCEPTIONAL_STATES, TERMINAL_STATES } from "@acp/contracts";
+import { CONTROL_PLANE_EVENT_TYPES, EXCEPTIONAL_STATES, EXECUTION_REFUSALS, TERMINAL_STATES } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { LedgerError, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
@@ -408,7 +408,13 @@ describe("classifyFailure (V2-B7R)", () => {
   });
 
   it("settles a classified step failure, under a reason from the closed list", () => {
-    for (const refusal of ["ROUTE_INVALID", "TRANSPORT_UNAVAILABLE", "CAPABILITY_UNSUPPORTED", "REATTACH_UNAVAILABLE"] as const) {
+    // Total over the vocabulary, not over a hand-written copy of it (V2-B4a).
+    // The list used to be four names typed out here, which was exactly right
+    // until a fifth arrived — and then it would have kept passing while
+    // saying nothing about `EXECUTION_IN_FLIGHT`. A negative left enumerating
+    // a retired vocabulary passes for the wrong reason.
+    expect(EXECUTION_REFUSALS.length).toBeGreaterThan(0);
+    for (const refusal of EXECUTION_REFUSALS) {
       const decision = classifyFailure(new ExecutionEffectError(refusal, "route.accountId"));
       expect(decision.settle).toBe(true);
       if (decision.settle) {

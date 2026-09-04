@@ -1414,8 +1414,12 @@ describe("transport kinds and the CLI provider vocabulary", () => {
   it("closes the refusal vocabulary, sorted and deduplicated", () => {
     expect([...EXECUTION_REFUSALS]).toEqual([...EXECUTION_REFUSALS].sort());
     expect(new Set(EXECUTION_REFUSALS).size).toBe(EXECUTION_REFUSALS.length);
+    // Rewritten sorted by V2-B4a rather than appended to: the sortedness
+    // assertion above is only worth anything if the pin it guards is itself
+    // written in the order it claims. `EXECUTION_IN_FLIGHT` lands second.
     expect([...EXECUTION_REFUSALS]).toEqual([
       "CAPABILITY_UNSUPPORTED",
+      "EXECUTION_IN_FLIGHT",
       "REATTACH_UNAVAILABLE",
       "ROUTE_INVALID",
       "TRANSPORT_UNAVAILABLE",

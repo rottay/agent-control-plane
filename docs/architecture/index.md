@@ -25,7 +25,7 @@ new records from `_template.md`, which carries the required fields.
 | 0007 | [Inert launchd template](0007-launchd-template-and-p2-closure.md) | accepted |
 | 0008 | [Packaged entry, config-file contract, and one launchd lifecycle](0008-packaged-entry-and-launchd-lifecycle.md) | accepted |
 | 0009 | [Shadow observation boundary, metric mapping, and the STOP law](0009-shadow-observation-boundary.md) | accepted |
-| 0010 | [The provider adapter boundary](0010-provider-adapter-boundary.md) | accepted |
+| 0010 | [The provider adapter boundary](0010-provider-adapter-boundary.md) | accepted, amended by 0019 |
 | 0011 | [The accounts registry and shadow routing](0011-accounts-registry-shadow-routing.md) | accepted |
 | 0012 | [Structural normalization: one topology, mirrored trees](0012-structural-normalization.md) | accepted |
 | 0013 | [The plane's first write route](0013-the-first-write-route.md) | accepted |
@@ -34,6 +34,7 @@ new records from `_template.md`, which carries the required fields.
 | 0016 | [A driver declares what it cannot do, and the declaration is checked](0016-driver-capability-declaration.md) | accepted |
 | 0017 | [The ledger sequence is the stream, and the only cursor](0017-the-stream-boundary.md) | accepted |
 | 0018 | [The submission path elects the route, and the walk still does not](0018-the-submission-path.md) | accepted |
+| 0019 | [The owned session lifecycle](0019-the-owned-session-lifecycle.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is
