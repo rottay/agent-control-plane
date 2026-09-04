@@ -1,7 +1,8 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
-import { LedgerError, openLedger } from "@acp/ledger";
+import { LedgerError, openLedger, openToolClaimStore, toolClaimStorePath } from "@acp/ledger";
+import type { ToolClaimDecision } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import {
   API_CONTRACT_VERSION,
@@ -10,7 +11,13 @@ import {
   ToolCallExecuteResponse,
 } from "@acp/protocol";
 import type { ApiErrorCode } from "@acp/protocol";
-import { deriveInvocation, runToolCall, toolOperationScopeId } from "@acp/runtime";
+import {
+  ToolClaimHeldError,
+  deriveInvocation,
+  runToolCall,
+  toolOperationScopeId,
+} from "@acp/runtime";
+import type { ToolClaimPort } from "@acp/runtime";
 import { admitToolServers, openToolOperation } from "@acp/tools";
 
 /**
@@ -71,42 +78,43 @@ import { admitToolServers, openToolOperation } from "@acp/tools";
  * is one loopback-local file, opened twice by one process, and the window is
  * stated here rather than left for a reader to find.
  *
- * ## Replay is serialized by nothing across processes, and this door is where
- * ## an operator is most likely to meet that
+ * ## Replay is arbitrated by the claim store, and this door contends on it
+ * ## exactly as the gateway does
  *
- * `runToolCall` spends a coordinate by appending *after* the tool has answered,
- * so two callers that reach it together for one coordinate both find the key
- * unspent and both run a real effect. The API door closed that **within one
- * gateway process** with an in-flight registry; its own header says the
- * guarantee stops at the process boundary.
+ * Stage 3C's version of this section said the opposite, and said it accurately
+ * for the code it described: `runToolCall` spent a coordinate by appending
+ * *after* the tool had answered, so two callers that reached it together both
+ * found the key unspent and both ran a real effect. Two overlapping
+ * `acp tool-call` invocations — exactly what a script that retries on a timeout
+ * produces — spawned two children for one row. That section ended by naming
+ * what would close it: "a lock the **ledger itself arbitrates**, so that both
+ * doors and every process contend on one authority rather than on per-process
+ * memory. That is a later packet's, it must name both doors."
  *
- * This door carries no registry at all, and could not usefully carry one: every
- * `acp tool-call` is a new process that exits when the call is done. So two
- * cases are open, and both are worth naming here rather than leaving to a
- * reader:
+ * V2 X1b is that packet, and it names both doors. The authority is `tool_claim`,
+ * a `BEGIN IMMEDIATE` compare-and-set in a SQLite database beside the ledger,
+ * derived from the ledger path through `toolClaimStorePath` and through nothing
+ * else. This door and the API door take it through the same operation; neither
+ * carries a lock of its own, and this file still holds no registry, because it
+ * no longer needs one.
  *
- * - **CLI against CLI.** Two invocations for one coordinate, overlapping —
- *   which is exactly what a script that retries on a timeout produces — spawn
- *   two children. Drilled: both exit zero, both report `replayed: false`, two
- *   children run, and the ledger holds one row, because the second append
- *   carried identical bytes and was absorbed as an exact replay. Run
- *   sequentially, the same pair behaves correctly: one child, one row, and the
- *   second answers `replayed: true`.
- * - **CLI against the gateway.** The gateway's registry is a `Map` in the
- *   gateway's memory. It cannot see a CLI process, and the CLI cannot see it.
+ * - **CLI against CLI.** Two overlapping invocations for one coordinate: one
+ *   takes the claim and runs, and the other is refused `CLAIM_HELD` before a
+ *   child exists — one child, one row, and the loser told to read the receipt
+ *   rather than retry. Run sequentially, the same pair behaves as before: one
+ *   child, one row, and the second answers `replayed: true`.
+ * - **CLI against the gateway.** The same, and by the same mechanism: the
+ *   contention is in a file both processes open, not in either one's memory.
  *
- * What this does *not* mean: a second effect is never a second **row**. The
- * ledger's idempotency key still admits exactly one row per coordinate, so
- * history stays truthful; what is lost is the guarantee that the tool ran once.
- * For a read-only tool that is a wasted call, and for a writing one it is the
- * thing an operator needs to know before scripting a retry.
- *
- * Closing it needs a lock the **ledger itself arbitrates**, so that both doors
- * and every process contend on one authority rather than on per-process memory.
- * That is a later packet's, it must name both doors, and it is deliberately not
- * invented here: a lock in this file would serialize this door against itself
- * and nothing else, which is the shape of guarantee that reads as safety
- * without being it.
+ * **What is guaranteed, exactly, and what is not.** Exactly-once receipt, and
+ * exactly-once *effect* per coordinate across OS processes — **except** across a
+ * claimant crash in the window between the tool answering and the receipt
+ * landing. There, the plane cannot know whether the effect happened, so the
+ * coordinate is not re-run and not reported as done: the next caller promotes it
+ * to a `POSTCONDITION_UNKNOWN` receipt and it is spent. That exception is not a
+ * rounding error to be dropped from the sentence; a reader who takes away an
+ * unqualified "exactly-once" has taken away something this plane does not
+ * provide.
  */
 
 /**
@@ -291,6 +299,11 @@ export async function runToolCallVerb(input: ToolCallVerbInput): Promise<ToolCal
   }
 
   const ledger = openForWrite(input.databasePath);
+  // V2 X1b. Derived from the resolved database through the one producer, never
+  // composed here (L-X1-7): the gateway derives the same path from the same
+  // ledger, which is what makes the two doors arbitrate over one file rather
+  // than over two that look alike.
+  const claimStore = openToolClaimStore(toolClaimStorePath(input.databasePath));
   try {
     const task = ledger.getTask(request.taskId);
     if (task === null) {
@@ -339,17 +352,41 @@ export async function runToolCallVerb(input: ToolCallVerbInput): Promise<ToolCal
     let result;
     let sequence;
     try {
-      result = await runToolCall(ledger, scope, {
-        invocation,
-        operationIndex: request.operationIndex,
-        callIndex: request.callIndex,
-        accountId: request.accountId,
-        identity: request.identity,
-        serverId: request.serverId,
-        toolName: request.toolName,
-        arguments: request.arguments,
-        ...(request.causedBy === undefined ? {} : { causedBy: request.causedBy }),
-      });
+      // Adapted at the door, as the gateway's is: the runtime's port is
+      // structural and names no ledger type, so the concrete store meets it
+      // here, with the one cast in view.
+      const claims: ToolClaimPort = {
+        transact: (coordinateKey, decide) =>
+          claimStore.transact(coordinateKey, (current) => decide(current) as ToolClaimDecision),
+        now: (): string => new Date().toISOString(),
+      };
+      try {
+        result = await runToolCall(ledger, scope, claims, {
+          invocation,
+          operationIndex: request.operationIndex,
+          callIndex: request.callIndex,
+          accountId: request.accountId,
+          identity: request.identity,
+          serverId: request.serverId,
+          toolName: request.toolName,
+          arguments: request.arguments,
+          ...(request.causedBy === undefined ? {} : { causedBy: request.causedBy }),
+        });
+      } catch (error) {
+        // Caught by class, exactly as the API door catches it, so both doors
+        // answer a lost race from the same fact rather than from two
+        // independently maintained readings of a message. The verb names the
+        // reason; `fromToolCallError` decides the exit code, so the table stays
+        // in one place.
+        if (error instanceof ToolClaimHeldError) {
+          throw new ToolCallRefused(
+            "CLAIM_HELD",
+            "another caller holds this tool coordinate; read the recorded call rather than retrying",
+            null,
+          );
+        }
+        throw error;
+      }
 
       // Projected the way the API door projects it, and for the same reason:
       // the operation's ledger port exposes no sequence, so the door that holds
@@ -393,5 +430,6 @@ export async function runToolCallVerb(input: ToolCallVerbInput): Promise<ToolCal
     };
   } finally {
     ledger.close();
+    claimStore.close();
   }
 }

@@ -2047,7 +2047,19 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version that came with it", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_ERROR_CODES).toHaveLength(12);
-    expect(API_CONTRACT_VERSION).toBe("0.10.0");
+    expect(API_CONTRACT_VERSION).toBe("0.11.0");
+  });
+
+  it("names the thirteenth error code, and the version that came with it", () => {
+    // V2 X1b. A client can branch on a code, so a code a reader at `0.10.0` has
+    // never seen is a shape it did not know about — the rule this file's own
+    // version docblock states, and the one `WRITE_REFUSED`, `STREAM_CAPACITY`
+    // and `TOOL_SERVERS_UNCONFIGURED` each set. Hence a minor, not a patch.
+    expect(API_ERROR_CODES).toContain("CLAIM_HELD");
+    expect(API_ERROR_CODES).toHaveLength(13);
+    expect(API_CONTRACT_VERSION).toBe("0.11.0");
+    // The door surface is unchanged: X1b adds a way for an existing route to
+    // refuse, not a new route.
+    expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
   });
 });

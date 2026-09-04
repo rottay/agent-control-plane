@@ -11,7 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { openLedger } from "@acp/ledger";
+import { openToolClaimStore, openLedger, toolClaimStorePath } from "@acp/ledger";
+import { deriveEventCoordinate, deriveInvocation, toolCallTransitionId } from "@acp/runtime";
 import {
   ApiError,
   LEDGER_CONTRACT_VERSION,
@@ -175,6 +176,8 @@ interface Harness {
   readonly pidLog: string;
   readonly discoveredEventId: string;
   readonly otherTaskEventId: string;
+  /** V2 X1b: so a drill can take the claim the way another process would. */
+  readonly ledgerPath: string;
 }
 
 function harness(
@@ -208,7 +211,56 @@ function harness(
     pidLog,
     discoveredEventId: String(discovered["eventId"]),
     otherTaskEventId: String(other["eventId"]),
+    ledgerPath,
   };
+}
+
+/**
+ * The durable coordinate a request for `taskId` lands on.
+ *
+ * Derived exactly as the operation derives it, from the same three inputs, so a
+ * drill cannot go vacuous by pinning a key the plane stopped using.
+ */
+function coordinateKeyFor(taskId: string, callIndex = 0): string {
+  return deriveEventCoordinate(
+    deriveInvocation(taskId, 1, SUBMITTED_AT, DIGEST),
+    toolCallTransitionId(0, callIndex),
+    0,
+  ).idempotencyKey;
+}
+
+/**
+ * Take a coordinate the way a different operating-system process would.
+ *
+ * This is the honest simulation available in one process: the arbitration lives
+ * in a file, so a claim written straight into that file is indistinguishable
+ * — to the door under test — from one written by a CLI or a second gateway. The
+ * cross-process claim is drilled against real processes in `@acp/ledger`; what
+ * these cases prove is what *this door* does when it loses.
+ */
+function claimHeldBy(ledgerPath: string, taskId: string, holder: string, expiresAt: string): void {
+  const store = openToolClaimStore(toolClaimStorePath(ledgerPath));
+  try {
+    store.transact(coordinateKeyFor(taskId), () => ({
+      verb: "TAKE",
+      row: {
+        claimId: randomUUID(),
+        holder,
+        claimedAt: "2026-09-04T05:00:00.000Z",
+        expiresAt,
+        taskId,
+        attempt: 1,
+        transitionId: toolCallTransitionId(0, 0),
+        submittedAt: SUBMITTED_AT,
+        accountId: ACCOUNT,
+        serverId: "docs",
+        toolName: "docs.search",
+        argumentBytes: 64,
+      },
+    }));
+  } finally {
+    store.close();
+  }
 }
 
 const url = (taskId: string): string => "/api/v1/tasks/" + taskId + "/tool-calls";
@@ -252,7 +304,7 @@ describe("the door executes one explicit tool call and records it", () => {
     expect(payload.refusal).toBeNull();
     expect(payload.at).toBeNull();
     expect(payload.content).toEqual(["the answer"]);
-    expect(payload.apiContractVersion).toBe("0.10.0");
+    expect(payload.apiContractVersion).toBe("0.11.0");
     // The door projects `sequence`; the operation cannot answer one.
     expect(typeof payload.sequence).toBe("number");
     expect(payload.transitionId).toBe("tool.0.0");
@@ -630,6 +682,129 @@ describe("two callers, one coordinate", () => {
     });
     // Still 503 for the same reason, but reached rather than hung.
     expect(second.statusCode).toBe(503);
+    await h.app.close();
+  });
+});
+
+/**
+ * The other half of "two callers, one coordinate" — the half stage 3C could
+ * not close (V2 X1b).
+ *
+ * The cases above are two callers *this process serves*, and the `IN_FLIGHT`
+ * map handles them by making the second wait and then replay. It is a `Map` in
+ * this process's memory, so it never saw a CLI process or a second gateway, and
+ * both of those could previously run the same tool for the same coordinate.
+ *
+ * `tool_claim` is the authority that closes it, and these cases drill this
+ * door's side of it: what a loser is told, what it is not told, and that it
+ * loses *before* a child exists rather than after.
+ */
+describe("a coordinate another process holds", () => {
+  it("answers 409 CLAIM_HELD, and starts no child", async () => {
+    const h = harness();
+    // Unexpired: a live claimant, by the only test this plane has.
+    claimHeldBy(h.ledgerPath, h.taskId, "claude/sonnet/implementer/07", "2200-01-01T00:00:00.000Z");
+
+    const response = await h.app.inject({
+      method: "POST",
+      url: url(h.taskId),
+      headers: AUTH,
+      payload: body({ taskId: h.taskId }),
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(ApiError.parse(response.json()).error.code).toBe("CLAIM_HELD");
+    // The point of arbitrating before the effect: no second tool ever ran.
+    expect(pids(h.dir)).toHaveLength(0);
+
+    // And no row, because the request never became an operation.
+    const page = ToolCallPageResponse.parse(
+      (await h.app.inject({ method: "GET", url: url(h.taskId) })).json(),
+    );
+    expect(page.count).toBe(0);
+    await h.app.close();
+  });
+
+  it("tells a loser that it lost, and not who beat it", async () => {
+    const h = harness();
+    const holder = "claude/sonnet/implementer/07";
+    claimHeldBy(h.ledgerPath, h.taskId, holder, "2200-01-01T00:00:00.000Z");
+
+    const response = await h.app.inject({
+      method: "POST",
+      url: url(h.taskId),
+      headers: AUTH,
+      payload: body({ taskId: h.taskId }),
+    });
+
+    const serialized = response.body;
+    expect(serialized).not.toContain(holder);
+    expect(serialized).not.toContain(coordinateKeyFor(h.taskId));
+    expect(serialized).not.toContain(h.ledgerPath);
+    expect(serialized).not.toContain(SENTINEL);
+    // What it does say is the one thing a loser needs to act on.
+    expect(ApiError.parse(response.json()).error.message).toContain("read the recorded call");
+    await h.app.close();
+  });
+
+  it("is 409 rather than WRITE_REFUSED, whose hint is the opposite", async () => {
+    const h = harness();
+    claimHeldBy(h.ledgerPath, h.taskId, "claude/sonnet/implementer/07", "2200-01-01T00:00:00.000Z");
+
+    const response = await h.app.inject({
+      method: "POST",
+      url: url(h.taskId),
+      headers: AUTH,
+      payload: body({ taskId: h.taskId }),
+    });
+
+    // Both are conflicts and both are 409, so the status alone cannot carry the
+    // difference — which is exactly why the code is distinct. `WRITE_REFUSED`
+    // is documented as worth retrying against a fresh head; retrying this one
+    // risks a second real tool effect.
+    expect(response.statusCode).toBe(409);
+    expect(ApiError.parse(response.json()).error.code).not.toBe("WRITE_REFUSED");
+    await h.app.close();
+  });
+
+  it("runs the tool when the holder's claim has expired and it left no window open", async () => {
+    const h = harness();
+    // CLAIMED and expired: the dead holder never reached the tool, so this is
+    // an ordinary reclaim and the caller walks it normally. Non-vacuous against
+    // the case above, which differs only in the expiry.
+    claimHeldBy(h.ledgerPath, h.taskId, "claude/sonnet/implementer/07", "2000-01-01T00:00:00.000Z");
+
+    const response = await h.app.inject({
+      method: "POST",
+      url: url(h.taskId),
+      headers: AUTH,
+      payload: body({ taskId: h.taskId }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const payload = ToolCallExecuteResponse.parse(response.json());
+    expect(payload.replayed).toBe(false);
+    expect(payload.content).toEqual(["the answer"]);
+    expect(pids(h.dir)).toHaveLength(1);
+    await h.app.close();
+  });
+
+  it("does not refuse a different coordinate, which is what makes the refusal specific", async () => {
+    const h = harness();
+    claimHeldBy(h.ledgerPath, h.taskId, "claude/sonnet/implementer/07", "2200-01-01T00:00:00.000Z");
+
+    // Same task, second call index: a different coordinate, and therefore a
+    // different claim. A door that refused everything would pass the first case
+    // in this block and fail here.
+    const response = await h.app.inject({
+      method: "POST",
+      url: url(h.taskId),
+      headers: AUTH,
+      payload: body({ taskId: h.taskId, callIndex: 1 }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(ToolCallExecuteResponse.parse(response.json()).replayed).toBe(false);
     await h.app.close();
   });
 });

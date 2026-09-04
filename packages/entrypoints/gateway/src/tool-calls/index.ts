@@ -1,7 +1,9 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
-import { openLedger } from "@acp/ledger";
+import { openLedger, openToolClaimStore, toolClaimStorePath } from "@acp/ledger";
+import type { ToolClaimDecision } from "@acp/ledger";
+import type { ToolClaimPort } from "@acp/runtime";
 import type { Ledger } from "@acp/ledger";
 import { API_CONTRACT_VERSION, LEDGER_CONTRACT_VERSION } from "@acp/protocol";
 import {
@@ -10,6 +12,7 @@ import {
   ToolCallPageResponse,
 } from "@acp/protocol";
 import {
+  ToolClaimHeldError,
   deriveInvocation,
   runToolCall,
   toolCallTransitionId,
@@ -47,11 +50,15 @@ import { ApiRouteError } from "../errors/index.js";
  * | 7 the task exists | `getTask` null ⇒ 404 |
  * | 8 the attempt bound | ⇒ 409 |
  * | 9 the replay read | internal to the operation |
+ * | 10 the claim | not closable here — it is decided in another process's database, so it is caught below and answered `409 CLAIM_HELD` |
  *
  * After that a `SupervisorError` reaching the classifier is a defect, and 500
  * with no detail is the right answer to a defect. No classifier case is added:
  * mapping supervisor throws to `BAD_REQUEST` would blame callers for our bugs
- * and risk an internal message reaching a body.
+ * and risk an internal message reaching a body. The claim refusal is the one
+ * exception and it is not an exception to that rule but an application of it —
+ * it is caught **by class** at the call site, not classified by message, and it
+ * describes the caller's situation rather than our defect.
  *
  * **A refusal is not an error.** `TOOL_NOT_ALLOWED`, `IDENTITY_FORBIDS_WRITE`,
  * `ARGUMENTS_UNBOUNDED`, `RESULT_UNSAFE`, `PROTOCOL_VIOLATION`,
@@ -64,27 +71,31 @@ import { ApiRouteError } from "../errors/index.js";
  * A replay returns none, and that is a fact about what was stored rather than a
  * filter applied here.
  *
- * **Two callers, one coordinate: serialized here, and only here.** The
- * operation's replay read and its append are not one atomic step — it reads the
- * idempotency key, finds nothing, calls the tool, and appends afterwards — so
- * two requests in flight together for one coordinate would both find nothing
- * and both run a real effect. Sequentially the coordinate is spent and the
- * second replays; concurrently it is not yet spent when the second looks. This
- * door is the first place in the plane where two callers can reach the
- * operation at once, so it is where the gap is closed: {@link IN_FLIGHT} holds
- * the running execution per durable coordinate, and a second request for a key
- * already in flight waits for it to settle and then takes the ordinary path,
- * which by then finds the row and replays. It is not told the first caller's
- * outcome — only that the coordinate is no longer in flight — because a waiter
- * that inherited a result would be reporting a call it did not make.
+ * **Two callers, one coordinate: arbitrated in the claim store, not here.**
+ * Stage 3C closed the same-process case with {@link IN_FLIGHT} and said plainly
+ * that two gateway processes over one ledger could still both find the
+ * coordinate unspent and both run the tool, "which needs a lock the ledger
+ * itself arbitrates, which is a later packet's". V2 X1b is that packet. The
+ * authority is now `tool_claim`, a `BEGIN IMMEDIATE` compare-and-set beside the
+ * ledger that every caller in every process passes through, and the operation
+ * takes it before a tool port is reachable on any path.
  *
- * **That guarantee is per gateway process, and no wider.** It is a `Map` in
- * this process's memory, so it serializes the callers this process serves and
- * nothing else. Two gateway processes over one ledger can still both find the
- * coordinate unspent and both run the tool; closing that needs a lock the
- * ledger itself arbitrates, which is a later packet's and is deliberately not
- * invented here. Stated rather than left for a reader to discover: this is a
- * bound on the claim, not an oversight in it.
+ * **{@link IN_FLIGHT} is demoted, not deleted, and the demotion is the point.**
+ * It no longer closes a gap; the claim does. What it still does is keep this
+ * door's same-process answer *courteous*: without it, a second concurrent
+ * request for one coordinate would lose the claim and take a `409 CLAIM_HELD`,
+ * where waiting a moment lets it replay the winner's row and answer `200`. That
+ * is a nicety for callers this process serves, and nothing rests on it — delete
+ * the map and the plane is still exactly-once per coordinate, with one more
+ * `409` in it. Which is the correct relationship between an optimisation and an
+ * invariant, and the reverse of what stage 3C had.
+ *
+ * **A lost race is a `409`, not a `500`.** {@link ToolClaimHeldError} is the
+ * operation's named refusal for it and is classified below by type, never by
+ * matching its message. It is the one `SupervisorError` this door expects: the
+ * request never became an operation, so no row exists to answer with, and
+ * `CLAIM_HELD` tells the caller to read the receipt rather than retry — which is
+ * exactly why it is not `WRITE_REFUSED`, whose documented hint is the opposite.
  */
 
 /**
@@ -333,20 +344,53 @@ async function runOneCall(input: OneCall): Promise<ToolCallExecuteResponse> {
   // opens its own, uses it, and closes it. Never held between requests and
   // never reachable from the read path.
   const writable = openLedger(ledger.path);
+  // V2 X1b. The claim store is derived from the ledger this request already
+  // holds, through the one producer — never composed here, because two doors
+  // that each built the path could disagree by a directory and two claim stores
+  // over one ledger is no mutual exclusion at all while looking exactly like it
+  // (L-X1-7). Short-lived beside the writable handle and closed in the same
+  // `finally`, for the same reason: never held between requests.
+  const claimStore = openToolClaimStore(toolClaimStorePath(ledger.path));
+  //
+  // Adapted explicitly rather than passed through. The runtime's port is
+  // structural — it declares the shape it needs and names no ledger type — so
+  // the concrete store meets it here, at the door that owns both. One cast, at
+  // the seam, in view: the verdict's `TAKE` row is `Record<string, unknown>` on
+  // the port and `ToolClaimGrant` in the store, and the store validates every
+  // field of it before writing.
+  const claims: ToolClaimPort = {
+    transact: (coordinateKey, decide) =>
+      claimStore.transact(coordinateKey, (current) => decide(current) as ToolClaimDecision),
+    now: (): string => new Date().toISOString(),
+  };
   let result;
   let sequence;
   try {
-    result = await runToolCall(writable, scope, {
-      invocation,
-      operationIndex: request.operationIndex,
-      callIndex: request.callIndex,
-      accountId: request.accountId,
-      identity: request.identity,
-      serverId: request.serverId,
-      toolName: request.toolName,
-      arguments: request.arguments,
-      ...(request.causedBy === undefined ? {} : { causedBy: request.causedBy }),
-    });
+    try {
+      result = await runToolCall(writable, scope, claims, {
+        invocation,
+        operationIndex: request.operationIndex,
+        callIndex: request.callIndex,
+        accountId: request.accountId,
+        identity: request.identity,
+        serverId: request.serverId,
+        toolName: request.toolName,
+        arguments: request.arguments,
+        ...(request.causedBy === undefined ? {} : { causedBy: request.causedBy }),
+      });
+    } catch (error) {
+      // By class. A `409` here is the arbitration reporting that it worked, and
+      // the message says the one thing a loser needs: the winner is recording
+      // the receipt, so read it. No coordinate, no holder identity and no path
+      // reaches the body — a loser learns that it lost, not who beat it.
+      if (error instanceof ToolClaimHeldError) {
+        throw new ApiRouteError(
+          "CLAIM_HELD",
+          "another caller holds this tool coordinate; read the recorded call rather than retrying",
+        );
+      }
+      throw error;
+    }
 
     // `sequence` is the door's to project. The operation cannot answer one —
     // its ledger port exposes neither a sequence nor a record carrying it —
@@ -367,6 +411,7 @@ async function runOneCall(input: OneCall): Promise<ToolCallExecuteResponse> {
     // this handler returns whatever it is going to return.
     await scope.close();
     writable.close();
+    claimStore.close();
   }
 
   return ToolCallExecuteResponse.parse({

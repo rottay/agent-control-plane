@@ -47,6 +47,14 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   METHOD_NOT_ALLOWED: 405,
   CONTRACT_VERSION_MISMATCH: 409,
   WRITE_REFUSED: 409,
+  // 409, beside the other two conflicts (V2 X1b). Another operating-system
+  // process holds this durable tool coordinate: nothing was wrong with the
+  // request, and the plane is not overloaded, so neither 400 nor 503 says what
+  // happened. It is deliberately **not** WRITE_REFUSED, whose documented hint is
+  // "worth retrying against a fresh head" — this caller should do the opposite
+  // and read the receipt the winner is about to land, because retrying risks a
+  // second real tool effect.
+  CLAIM_HELD: 409,
   // 401: a credential is required and was not presented, or was wrong.
   AUTH_REQUIRED: 401,
   // 403, not 401: no credential would work, because this process holds none.

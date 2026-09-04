@@ -241,6 +241,18 @@ export const API_ERROR_CODES = [
   "STREAM_CAPACITY",
   "LEDGER_UNAVAILABLE",
   "LEDGER_INTEGRITY",
+  /**
+   * V2 X1b: the cross-process claim loser.
+   *
+   * A coherent request that arrived while another operating-system process held
+   * the same durable tool coordinate. Distinct from `WRITE_REFUSED` on purpose:
+   * that one's documented hint is "worth retrying against a fresh head", and
+   * this one's is the opposite — the winner will land the receipt, so the caller
+   * should **read** it rather than retry and risk a second real effect.
+   * Distinct from `BAD_REQUEST` because nothing was wrong with the request, and
+   * from a 503 because the plane is not overloaded.
+   */
+  "CLAIM_HELD",
   "INTERNAL",
 ] as const;
 

@@ -139,3 +139,46 @@ before they encode. Do not build these paths by string concatenation.
 `ApiError` with a code from `API_ERROR_CODES`. `health` is the contract's named
 non-ledger exception: it answers even when the ledger cannot be opened, which
 is what makes it useful for deciding whether the ledger can be opened.
+
+### The three conflicts, and why they are three
+
+`409` is answered by three codes, and a client that treats them alike will do
+the wrong thing with at least one of them.
+
+| Code | What happened | What the caller should do |
+| --- | --- | --- |
+| `CONTRACT_VERSION_MISMATCH` | the request names a contract this build does not speak | upgrade one side; do not retry |
+| `WRITE_REFUSED` | the write lost to a concurrent one | worth retrying against a fresh head |
+| `CLAIM_HELD` | another operating-system process holds this durable tool coordinate | **read** the recorded call; do not retry |
+
+`CLAIM_HELD` is the one that most looks retryable and most is not. Nothing was
+wrong with the request and the plane is not overloaded — so it is neither a
+`400` nor a `503` — but the winner of the race is about to record the receipt
+for that coordinate, and a caller that retries risks a **second real tool
+effect** rather than a second row. Poll `taskToolCalls` for the coordinate
+instead; the receipt is the answer.
+
+The refusal names no coordinate, no holder and no path. A loser learns that it
+lost, not who beat it.
+
+### The tool-call guarantee, stated exactly
+
+`taskToolCalls` is the only route that starts a child process, so it is the
+only one where "how many times did this happen" is a question about the world
+rather than about the ledger. Since V2 X1b it is arbitrated by a claim beside
+the ledger that every caller in every process passes through:
+
+- the **receipt** is exactly-once per coordinate, canonical;
+- the **effect** is exactly-once per coordinate across operating-system
+  processes, **except** across a claimant crash in the window between the tool
+  answering and the receipt landing.
+
+In that exception the plane cannot know whether the effect happened, so the
+coordinate is neither re-run nor reported as done: the next caller promotes it
+to a receipt with `outcome: "REFUSED"` and `refusal: "POSTCONDITION_UNKNOWN"`,
+and the coordinate is spent. Read that as "this may or may not have run, and
+nothing will run it again".
+
+The exception is not a rounding error to be dropped from the sentence. A reader
+who takes away an unqualified "exactly once" has taken away something this
+plane does not provide.

@@ -12,12 +12,20 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 
-import { openLedger } from "@acp/ledger";
+import { openToolClaimStore, openLedger, toolClaimStorePath } from "@acp/ledger";
+import { deriveEventCoordinate, deriveInvocation, toolCallTransitionId } from "@acp/runtime";
 import { LEDGER_CONTRACT_VERSION } from "@acp/protocol";
 import { admitToolServers } from "@acp/tools";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { EXIT_NOT_FOUND, EXIT_OK, EXIT_UNAVAILABLE, EXIT_USAGE, run } from "../../src/cli/index.js";
+import {
+  EXIT_CLAIM_HELD,
+  EXIT_NOT_FOUND,
+  EXIT_OK,
+  EXIT_UNAVAILABLE,
+  EXIT_USAGE,
+  run,
+} from "../../src/cli/index.js";
 import type { CliIo } from "../../src/cli/index.js";
 
 /**
@@ -250,7 +258,7 @@ describe("the verb executes one tool call and records it", () => {
     expect(document["replayed"]).toBe(false);
     expect(document["content"]).toEqual(["the answer"]);
     expect(typeof document["sequence"]).toBe("number");
-    expect(document["apiContractVersion"]).toBe("0.10.0");
+    expect(document["apiContractVersion"]).toBe("0.11.0");
 
     const observed = pids(f.pidLog);
     expect(observed.length).toBeGreaterThan(0);
@@ -633,5 +641,106 @@ describe("the door's own checks, driven rather than assumed", () => {
     expect(envelope(result).error.code).toBe("WRITE_REFUSED");
     expect(pids(f.pidLog)).toHaveLength(0);
     expect(eventCount(f.databasePath)).toBe(before);
+  });
+});
+
+
+/**
+ * The claim, at the door most likely to meet it (V2 X1b).
+ *
+ * Every `acp tool-call` is a new process that exits when the call is done, so
+ * this door never had — and could not usefully have had — a registry of its
+ * own. Before this packet two overlapping invocations for one coordinate, which
+ * is exactly what a script that retries on a timeout produces, spawned two
+ * children for one row.
+ *
+ * The claim is a file, so a claim written straight into it is indistinguishable
+ * — to the verb under test — from one written by a second CLI or by the
+ * gateway. What is proven here is what *this door* does when it loses, and in
+ * particular that it says so with a code a retry wrapper can branch on.
+ */
+describe("a coordinate another process holds", () => {
+  const holdClaim = (f: Fixture, expiresAt: string, holder = "claude/sonnet/implementer/07"): void => {
+    const store = openToolClaimStore(toolClaimStorePath(f.databasePath));
+    try {
+      store.transact(
+        deriveEventCoordinate(
+          deriveInvocation(f.taskId, 1, FIXED_NOW, "a".repeat(64)),
+          toolCallTransitionId(0, 0),
+          0,
+        ).idempotencyKey,
+        () => ({
+          verb: "TAKE",
+          row: {
+            claimId: randomUUID(),
+            holder,
+            claimedAt: "2026-09-04T05:00:00.000Z",
+            expiresAt,
+            taskId: f.taskId,
+            attempt: 1,
+            transitionId: toolCallTransitionId(0, 0),
+            submittedAt: FIXED_NOW,
+            accountId: "acct-primary",
+            serverId: "docs",
+            toolName: "docs.search",
+            argumentBytes: 64,
+          },
+        }),
+      );
+    } finally {
+      store.close();
+    }
+  };
+
+  it("exits 7, spawns nothing and records nothing", async () => {
+    const f = fixture();
+    holdClaim(f, "2200-01-01T00:00:00.000Z");
+
+    const result = await call(f, requestFile(f.dir, { taskId: f.taskId }), "json");
+
+    // Its own code, and that is the whole point of it. A `2` would tell the one
+    // script most likely to meet this — a wrapper retrying on a timeout — "you
+    // asked wrongly", and retrying is the single response that must not follow.
+    expect(result.exitCode).toBe(EXIT_CLAIM_HELD);
+    expect(result.exitCode).toBe(7);
+    expect(result.exitCode).not.toBe(EXIT_USAGE);
+    expect(envelope(result).error.code).toBe("CLAIM_HELD");
+    expect(pids(f.pidLog)).toHaveLength(0);
+    expect(eventCount(f.databasePath)).toBe(1);
+  });
+
+  it("tells a loser that it lost, and not who beat it", async () => {
+    const f = fixture();
+    const holder = "claude/sonnet/implementer/07";
+    holdClaim(f, "2200-01-01T00:00:00.000Z", holder);
+
+    const result = await call(f, requestFile(f.dir, { taskId: f.taskId }), "json");
+
+    expect(result.stderr).not.toContain(holder);
+    expect(result.stderr).not.toContain(SENTINEL);
+    expect(result.stderr).not.toContain(f.databasePath);
+    expect(result.stdout).toBe("");
+  });
+
+  it("walks normally once the holder's claim has expired", async () => {
+    const f = fixture();
+    // Non-vacuous against the case above: the only difference is the expiry,
+    // and a door that refused on the presence of any claim would fail here.
+    holdClaim(f, "2000-01-01T00:00:00.000Z");
+
+    const result = await call(f, requestFile(f.dir, { taskId: f.taskId }));
+
+    expect(result.exitCode).toBe(EXIT_OK);
+    expect(pids(f.pidLog)).toHaveLength(1);
+  });
+
+  it("leaves the claim store beside the ledger, derived and not composed", async () => {
+    const f = fixture();
+    await call(f, requestFile(f.dir, { taskId: f.taskId }));
+
+    // The two doors arbitrate over one file only if both derive its path from
+    // the ledger through the one producer. This is the observable half of that:
+    // the verb created exactly the file `toolClaimStorePath` names.
+    expect(existsSync(toolClaimStorePath(f.databasePath))).toBe(true);
   });
 });

@@ -96,6 +96,17 @@ export const EXIT_INTERNAL = 1;
 export const EXIT_NOT_FOUND = 4;
 export const EXIT_UNAVAILABLE = 5;
 export const EXIT_INTEGRITY = 6;
+/**
+ * Another caller holds this tool coordinate (V2 X1b).
+ *
+ * Its own code for the reason the docblock above gives, applied to the case the
+ * table did not yet have. Without it a lost race falls to `EXIT_USAGE`, and the
+ * one script most likely to meet this — a wrapper that retries `acp tool-call`
+ * on a timeout — would read "you asked wrongly" and retry, which is the single
+ * response that must not follow. A `2` says fix the arguments; a `7` says the
+ * winner is recording the receipt, so read it.
+ */
+export const EXIT_CLAIM_HELD = 7;
 
 /** The ledger schema version this build is compiled against. */
 export const LEDGER_SCHEMA_VERSION: number = LEDGER_MIGRATIONS.reduce(
@@ -378,6 +389,11 @@ function fromToolCallError(error: unknown): CliFailure {
       return failure(EXIT_UNAVAILABLE, error.code, error.message, error.at);
     case "INTERNAL":
       return failure(EXIT_INTERNAL, "INTERNAL", error.message, error.at);
+    case "CLAIM_HELD":
+      // Not a usage error, and the distinction is the whole reason this code
+      // exists: nothing about the invocation was wrong, and repeating it is the
+      // one action that is certainly not the remedy.
+      return failure(EXIT_CLAIM_HELD, "CLAIM_HELD", error.message, error.at);
     default:
       // Everything else is a document that never became a request.
       return failure(EXIT_USAGE, error.code, error.message, error.at);

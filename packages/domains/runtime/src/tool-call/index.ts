@@ -1,7 +1,8 @@
-import { BOUNDED_IDENTIFIER, ControlPlaneEvent, parseWorkerIdentity } from "@acp/contracts";
+import { BOUNDED_IDENTIFIER, ControlPlaneEvent, parseWorkerIdentity, utf8ByteLength } from "@acp/contracts";
 
 import type { DurableInvocation } from "../contracts/index.js";
-import { deriveEventCoordinate } from "../core/coordinates/index.js";
+import { deriveEventCoordinate, deterministicUuid } from "../core/coordinates/index.js";
+import { deriveInvocation } from "../submission/index.js";
 import type { LedgerPort } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
 import { recordToolCall, toolCallTransitionId } from "../tool-receipt/index.js";
@@ -175,6 +176,117 @@ export interface ToolCallPort {
  * call's position within the operation. A counter in mutable state would
  * satisfy the type and break the property.
  */
+/**
+ * How long a claim on a coordinate is good for — V2 X1b.
+ *
+ * Derived, not guessed. A tool call is hard-bounded by the tool edge's own
+ * `TOOL_CALL_TIMEOUT_MS` (30_000 at the time of writing), so a claimant that is
+ * still alive cannot still be running after that bound plus the time it takes to
+ * append a receipt. The margin is that append plus a generous allowance for a
+ * loaded machine.
+ *
+ * **Restated rather than imported, and that is a fence fact.**
+ * `RUNTIME_ALLOWED_PACKAGES` is the closed set `{@acp/accounts, @acp/contracts,
+ * @acp/ledger}`, so this stratum cannot reach `@acp/tools`. Two numbers in two
+ * homes is the cost; the alternative is a dependency edge added for one integer,
+ * which is the trade this repository has refused before. If the tool edge's
+ * bound moves, this must move with it — which is why the derivation is written
+ * out rather than the sum being written down.
+ */
+export const TOOL_CALL_BOUND_MS = 30_000;
+export const TOOL_CLAIM_MARGIN_MS = 30_000;
+export const TOOL_CLAIM_TTL_MS = TOOL_CALL_BOUND_MS + TOOL_CLAIM_MARGIN_MS;
+
+/** The word a poisoned coordinate settles under. Shape-bounded, not enumerated. */
+export const TOOL_POSTCONDITION_UNKNOWN = "POSTCONDITION_UNKNOWN" as const;
+
+/** The word a cross-process loser is refused with. */
+export const TOOL_CLAIM_HELD = "CLAIM_HELD" as const;
+
+/**
+ * A live claimant holds this coordinate, so this caller never became one.
+ *
+ * A named class rather than a message a door matches on. Both doors must tell a
+ * lost race apart from a defect — one is the arbitration working and answers
+ * `409`, the other is ours and answers `500` — and a substring test over an
+ * error message is a coupling that survives exactly until someone improves the
+ * sentence. It extends {@link SupervisorError} because it *is* one: the request
+ * never became an operation, no row exists, and no child was spawned.
+ *
+ * Its own module rather than `errors/index.ts`, as `ExecutionEffectError` is:
+ * the failure belongs to this operation, and the constant it names is here.
+ */
+export class ToolClaimHeldError extends SupervisorError {
+  readonly refusal = TOOL_CLAIM_HELD;
+
+  constructor() {
+    super(
+      "another process holds this tool coordinate; the winner will record the" +
+        " receipt, so this caller must read it rather than run the tool again" +
+        " (" +
+        TOOL_CLAIM_HELD +
+        ")",
+    );
+    this.name = "ToolClaimHeldError";
+  }
+}
+
+/**
+ * The claim seam — V2 X1b.
+ *
+ * Structural, like `LedgerPort` beside it: the runtime declares the shape it
+ * needs and `@acp/ledger`'s `ToolClaimStore` satisfies it, so this stratum owes
+ * nothing to that module's exact types and a test can supply a fake without one.
+ *
+ * `now` lives on the port rather than in `ToolCallExecution` because a clock is
+ * a capability, not a coordinate: putting it here keeps `runToolCall` at three
+ * parameters and keeps every instant injected, which is what lets an expiry
+ * boundary be drilled without sleeping.
+ */
+export interface ToolClaimRecord {
+  readonly coordinateKey: string;
+  readonly state: string;
+  readonly expiresAt: string | null;
+  /**
+   * The identity that took the coordinate.
+   *
+   * Load-bearing, and not merely informational. `emittedBy` is a **durable
+   * field of the receipt**, so a recoverer that signed a poison with its own
+   * identity would build different canonical bytes under the same idempotency
+   * key — and the second recoverer's append would take an idempotency conflict
+   * rather than the exact replay this design depends on. The original holder is
+   * on the claim precisely so the receipt can be rebuilt from the claim.
+   *
+   * `string | null` because the store types it so: a row exists in states where
+   * no holder is set. An `IN_FLIGHT` row cannot be one of them, and the poison
+   * path refuses rather than substituting itself if it ever is.
+   */
+  readonly holder: string | null;
+  readonly taskId: string;
+  readonly attempt: number;
+  readonly transitionId: string;
+  readonly submittedAt: string;
+  readonly accountId: string;
+  readonly serverId: string;
+  readonly toolName: string;
+  readonly argumentBytes: number;
+}
+
+export type ToolClaimVerdict =
+  | { readonly verb: "TAKE"; readonly row: Record<string, unknown> }
+  | { readonly verb: "MARK_IN_FLIGHT"; readonly at: string }
+  | { readonly verb: "SETTLE"; readonly at: string }
+  | { readonly verb: "REFUSE"; readonly reason: string };
+
+export interface ToolClaimPort {
+  readonly transact: (
+    coordinateKey: string,
+    decide: (current: ToolClaimRecord | null) => ToolClaimVerdict,
+  ) => { readonly verb: string; readonly reason?: string; readonly row?: ToolClaimRecord | null };
+  /** Injected, so expiry is decided with a clock a test can move. */
+  readonly now: () => string;
+}
+
 export interface ToolCallExecution {
   readonly invocation: DurableInvocation;
   readonly operationIndex: number;
@@ -360,6 +472,126 @@ function asRecord(value: unknown, what: string): Record<string, unknown> {
  * authority on what was recorded, and a request that disagrees with it is
  * exactly the case where trusting the request would be wrong.
  */
+/**
+ * The recovery record, written at claim time by whoever takes the coordinate.
+ *
+ * Everything a poison receipt needs, so a recoverer rebuilds identical bytes
+ * from the claim rather than from itself — the idempotency key is built from the
+ * coordinate alone, but the event body carries the submission instant, the
+ * account, the server, the tool and the byte count.
+ */
+function claimRowFor(
+  execution: ToolCallExecution,
+  coordinate: { readonly idempotencyKey: string },
+  claimedAt: string,
+  expiresAt: string,
+  argumentBytes: number,
+): Record<string, unknown> {
+  return {
+    // Keyed by the **coordinate**, not by the task. `claim_id` carries a
+    // repository-wide partial UNIQUE index, and two different coordinates of one
+    // attempt can be claimed inside the same millisecond -- a task-keyed
+    // derivation would then mint one id twice and the second claim would die on
+    // a constraint that has nothing to say about the race it is reporting.
+    claimId: deterministicUuid("tool-claim/" + coordinate.idempotencyKey + "/" + claimedAt),
+    holder: execution.identity,
+    claimedAt,
+    expiresAt,
+    taskId: execution.invocation.taskId,
+    attempt: execution.invocation.attempt,
+    transitionId: toolCallTransitionId(execution.operationIndex, execution.callIndex),
+    submittedAt: execution.invocation.submittedAt,
+    accountId: execution.accountId,
+    serverId: execution.serverId,
+    toolName: execution.toolName,
+    argumentBytes,
+  };
+}
+
+/**
+ * Promote a poisoned claim into a receipt, from the claim's own bytes.
+ *
+ * The coordinate is spent either way: the tool may have run and the plane cannot
+ * tell, so it settles fail-closed under `POSTCONDITION_UNKNOWN` and is never
+ * re-run. Two independent recoverers build the same event from the same claim,
+ * so the second appends an exact replay rather than taking a conflict.
+ */
+function recordPoison(
+  ledger: LedgerPort,
+  claim: ToolClaimRecord,
+  ownDigest: string,
+): ToolCallOperationResult {
+  // **Why the recoverer's own digest is safe here**, which is the one line a
+  // reader will want. `invocationId` is `deterministicUuid("invocation/" +
+  // taskId + "/" + attempt)` — taskId and attempt only, both stored on the
+  // claim. `occurredAt` and `recordedAt` come from `submittedAt`, also stored.
+  // `submissionDigest` reaches **no field of the event**, so two recoverers with
+  // different digests build byte-identical rows from the same claim, and the
+  // second append is an exact replay rather than a conflict. Measured, not
+  // assumed: the event's fields are enumerated in `recordToolCall`.
+  const invocation: DurableInvocation = deriveInvocation(
+    claim.taskId,
+    claim.attempt,
+    claim.submittedAt,
+    ownDigest,
+  );
+  // Signed by the **original holder**, never by whoever is recovering. Both
+  // `emittedBy` and the causation id are durable fields of the receipt, so a
+  // recoverer that supplied its own would build different bytes under one key
+  // and the second recoverer would take an idempotency conflict instead of the
+  // exact replay F8 depends on.
+  //
+  // The causation is pinned to `null` rather than stored on the claim, and that
+  // is a decision rather than an omission: causation records what *this* caller
+  // was caused by, and a poison is not caused by the recoverer's request. It is
+  // the plane closing a coordinate whose original cause it cannot know from
+  // here. `null` is both honest and identical for every recoverer.
+  if (claim.holder === null) {
+    throw new SupervisorError(
+      "the poisoned coordinate carries no holder; the receipt cannot be signed as the original" +
+        " claimant would have signed it, and the coordinate must not be re-run",
+    );
+  }
+  const facts: ToolCallFacts = {
+    serverId: claim.serverId,
+    toolName: claim.toolName,
+    // The transport is genuinely unknown: nothing in this process opened one.
+    // `UNRESOLVED` is the word the tool edge already spells for exactly that,
+    // and it reaches the row through the recorder's shape bound, not through a
+    // vocabulary this stratum names.
+    transport: "UNRESOLVED",
+    outcome: "REFUSED",
+    refusal: TOOL_POSTCONDITION_UNKNOWN,
+    argumentBytes: claim.argumentBytes,
+    resultBytes: 0,
+    contentBlocks: 0,
+  };
+  const result = recordToolCall(ledger, {
+    invocation,
+    accountId: claim.accountId,
+    facts,
+    transitionId: claim.transitionId,
+    emittedBy: claim.holder,
+    causedBy: null,
+  });
+  return Object.freeze({
+    replayed: false,
+    outcome: facts.outcome,
+    refusal: facts.refusal,
+    at: null,
+    serverId: facts.serverId,
+    toolName: facts.toolName,
+    transport: facts.transport,
+    accountId: claim.accountId,
+    argumentBytes: facts.argumentBytes,
+    resultBytes: facts.resultBytes,
+    contentBlocks: facts.contentBlocks,
+    content: Object.freeze([]),
+    eventId: result.event.eventId,
+    transitionId: claim.transitionId,
+  });
+}
+
 function replayRecordedRow(canonicalJson: string): ToolCallOperationResult {
   const parsed: unknown = JSON.parse(canonicalJson);
   const event = asRecord(parsed, "event");
@@ -402,6 +634,7 @@ function replayRecordedRow(canonicalJson: string): ToolCallOperationResult {
 export async function runToolCall(
   ledger: LedgerPort,
   scope: ToolCallPort,
+  claims: ToolClaimPort,
   execution: ToolCallExecution,
 ): Promise<ToolCallOperationResult> {
   const { invocation, operationIndex, callIndex, accountId, identity } = execution;
@@ -470,33 +703,150 @@ export async function runToolCall(
   const recorded = ledger.getEventByIdempotencyKey(coordinate.idempotencyKey);
   if (recorded !== null) return replayRecordedRow(recorded.canonicalJson);
 
-  const outcome = await scope.callTool({
-    sessionId: expectedScopeId,
-    serverId: execution.serverId,
-    toolName: execution.toolName,
-    identity,
-    arguments: execution.arguments,
+  // 10. The claim (V2 X1b). Step 9 read the receipt; this step decides whether
+  //     this process may produce one. The order is the contract: reading the
+  //     receipt first is what makes a crash between the append and the settle
+  //     benign — the claim still says IN_FLIGHT, but the receipt exists, so a
+  //     later caller replays above and never reaches here.
+  //
+  //     The transaction **commits before the port is called**. No SQLite write
+  //     lock is held across an external process — L-X1-6 asserts it.
+  const claimKey = coordinate.idempotencyKey;
+  const argumentBytes = utf8ByteLength(JSON.stringify(execution.arguments));
+  const claimedAt = claims.now();
+  const expiresAt = new Date(Date.parse(claimedAt) + TOOL_CLAIM_TTL_MS).toISOString();
+
+  const verdict = claims.transact(claimKey, (current) => {
+    if (current === null) {
+      return { verb: "TAKE", row: claimRowFor(execution, coordinate, claimedAt, expiresAt, argumentBytes) };
+    }
+    // Expiry is judged here, by the caller, because the store holds no clock.
+    const expired = current.expiresAt !== null && Date.parse(current.expiresAt) <= Date.parse(claimedAt);
+    if (current.state === "CLAIMED" && expired) {
+      // No effect was attempted by the dead holder, so this is an ordinary
+      // reclaim and the walk proceeds normally.
+      return { verb: "TAKE", row: claimRowFor(execution, coordinate, claimedAt, expiresAt, argumentBytes) };
+    }
+    if (current.state === "IN_FLIGHT" && expired) {
+      // The dangerous case: the tool may have answered and the receipt may not
+      // have landed. Nobody may re-run it, and nobody may pretend it completed.
+      // The coordinate is **not** spent inside this transaction: the receipt is
+      // appended first, below, and the settle follows it. Spending it here would
+      // put a window between "the store says spent" and "the ledger says why" in
+      // which an append failure loses the evidence permanently.
+      return { verb: "REFUSE", reason: TOOL_POSTCONDITION_UNKNOWN };
+    }
+    return { verb: "REFUSE", reason: TOOL_CLAIM_HELD };
   });
 
-  // Every outcome is recorded, refusals included. `facts` flows in whole
-  // because `ToolCallFacts` is structural; `recordToolCall` still writes its
-  // payload field by field, which is what keeps a real receipt's `sessionId`
-  // and `identity` out of the durable row.
-  const facts = outcome.receipt;
-  const result = recordToolCall(ledger, {
-    invocation,
-    accountId,
-    facts,
-    transitionId,
-    emittedBy: identity,
-    causedBy: execution.causedBy ?? null,
-  });
+  if (verdict.reason === TOOL_POSTCONDITION_UNKNOWN) {
+    // 11. The poison, promoted into the ledger and only then spent.
+    //
+    //     Rebuilt from the **claim the store handed back** and never from this
+    //     process: the idempotency key is built from the coordinate alone, but
+    //     the event body carries the submission instant, the account, the
+    //     server, the tool and the byte count — so a recoverer that substituted
+    //     its own values would build one key from different bytes and the second
+    //     append would conflict rather than replay.
+    //
+    //     Two recoverers may reach this together. That is the intended shape,
+    //     not a race to be excluded: both rebuild the same bytes, so the first
+    //     appends and the second replays exactly (F8). What must never happen is
+    //     a re-run of the tool, and neither of them can, because the coordinate
+    //     never returns to `CLAIMED`.
+    const claim = verdict.row ?? null;
+    if (claim === null) {
+      throw new SupervisorError(
+        "the claim store reported a poisoned coordinate without returning the" +
+          " claim; the receipt cannot be rebuilt and the coordinate must not be re-run",
+      );
+    }
+    const poisoned = recordPoison(ledger, claim, invocation.submissionDigest);
+    // Bookkeeping, after the evidence. A throw here means another recoverer
+    // settled it first, which is the same answer arrived at twice.
+    try {
+      claims.transact(claimKey, () => ({ verb: "SETTLE", at: claims.now() }));
+    } catch {
+      /* the receipt is the record; who settled the claim is not */
+    }
+    return poisoned;
+  }
+
+  if (verdict.verb !== "TAKE") {
+    // A loser never became an operation: no row, no spawn. The module's own
+    // headline invariant, applied across processes rather than within one.
+    throw new ToolClaimHeldError();
+  }
+
+  // The window opens here and only here.
+  claims.transact(claimKey, () => ({ verb: "MARK_IN_FLIGHT", at: claims.now() }));
+
+  // Hoisted so the `finally` below can settle the claim without the result
+  // falling out of scope. The settle is bookkeeping; the receipt is the record.
+  let recordedResult: ReturnType<typeof recordToolCall>;
+  let recordedFacts: ToolCallFacts;
+  // Read by the `finally` below, which the two above cannot be: they are
+  // definitely assigned only where control reaches the end of the `try`.
+  let receiptLanded = false;
+  let refusedAt: string | null = null;
+  let content: ToolCallOperationResult["content"] = Object.freeze([]);
+  try {
+    const outcome = await scope.callTool({
+      sessionId: expectedScopeId,
+      serverId: execution.serverId,
+      toolName: execution.toolName,
+      identity,
+      arguments: execution.arguments,
+    });
+
+    // Every outcome is recorded, refusals included. `facts` flows in whole
+    // because `ToolCallFacts` is structural; `recordToolCall` still writes its
+    // payload field by field, which is what keeps a real receipt's `sessionId`
+    // and `identity` out of the durable row.
+    const facts = outcome.receipt;
+    recordedFacts = facts;
+    content = outcome.ok ? outcome.content : Object.freeze([]);
+    recordedResult = recordToolCall(ledger, {
+      invocation,
+      accountId,
+      facts,
+      transitionId,
+      emittedBy: identity,
+      causedBy: execution.causedBy ?? null,
+    });
+    receiptLanded = true;
+    refusedAt = outcome.ok ? null : outcome.at;
+  } finally {
+    // **Settled only against a receipt, and this is the load-bearing half of
+    // the `finally`.** Settling unconditionally would spend the coordinate on
+    // the one path where the effect may have run and left no row — the port
+    // threw, or the append did — and a spent coordinate with no receipt is
+    // exactly the unaudited effect this plane exists to refuse. Leaving the
+    // claim `IN_FLIGHT` instead hands that case to expiry, which classifies it
+    // `POSTCONDITION_UNKNOWN` and writes the receipt saying so.
+    //
+    // On the ordinary path the receipt is already durable, so a throw here is
+    // harmless and F4 covers the crash that skips it — the next caller reads
+    // the receipt at step 9 and replays.
+    if (receiptLanded) {
+      try {
+        claims.transact(claimKey, () => ({ verb: "SETTLE", at: claims.now() }));
+      } catch {
+        /* the receipt is the record; the claim expiring is not a loss */
+      }
+    }
+  }
+  // Definitely assigned: the `try` above assigns both before it completes, and
+  // the `finally` neither assigns nor swallows, so the only way past this point
+  // is through a recorded receipt.
+  const result = recordedResult;
+  const facts = recordedFacts;
 
   return Object.freeze({
     replayed: false,
     outcome: facts.outcome,
     refusal: facts.refusal,
-    at: outcome.ok ? null : outcome.at,
+    at: refusedAt,
     serverId: facts.serverId,
     toolName: facts.toolName,
     transport: facts.transport,
@@ -504,7 +854,7 @@ export async function runToolCall(
     argumentBytes: facts.argumentBytes,
     resultBytes: facts.resultBytes,
     contentBlocks: facts.contentBlocks,
-    content: outcome.ok ? outcome.content : Object.freeze([]),
+    content,
     eventId: result.event.eventId,
     transitionId,
   });

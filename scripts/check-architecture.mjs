@@ -5158,6 +5158,116 @@ const V2X1A_WRITE_SET = [
 ];
 
 /**
+ * V2 X1b — cross-process arbitration of the tool effect.
+ *
+ * **The adoption packet ADR 0025 deferred.** X1a landed `tool_claim` and
+ * adopted it nowhere: the store was inert and the plane's semantics were
+ * unchanged. This packet makes both doors take a claim before a tool port is
+ * reachable on any path, which is the half that changes what the plane
+ * guarantees.
+ *
+ * **What moves, and to what.** From an exactly-once *receipt* over an
+ * at-least-once *effect*, to an exactly-once receipt and an exactly-once effect
+ * per coordinate across operating-system processes — **except** across a
+ * claimant crash in the window between the tool answering and the receipt
+ * landing, where the coordinate settles fail-closed as `POSTCONDITION_UNKNOWN`
+ * and is never re-run. The exception is not a rounding error to be dropped from
+ * the sentence, and ADR 0025's prohibition stands unchanged and now applies to
+ * live code: **no unqualified "exactly once", anywhere.**
+ *
+ * **Both doors, which ADR 0025 required by name.** The CLI verb and the API
+ * route each open the claim store from the ledger they already hold, through
+ * `toolClaimStorePath` and through nothing else, and each adapts it to the
+ * runtime's structural `ToolClaimPort` at the door. Neither carries a lock of
+ * its own. The gateway's `IN_FLIGHT` map is **demoted, not deleted**: it no
+ * longer closes a gap, it spares callers this one process serves a `409` they
+ * would otherwise take and could answer by replaying. Delete it and the plane
+ * is still exactly-once per coordinate with one more `409` in it, which is the
+ * correct relationship between an optimisation and an invariant.
+ *
+ * **The order inside the operation is the contract.** The receipt is read
+ * first, then the claim is taken, then the window is opened, then the tool is
+ * called, then the receipt is appended, and only then is the claim settled.
+ * Reading the receipt first is what makes a crash between the append and the
+ * settle benign: the claim still says `IN_FLIGHT`, but the receipt exists, so a
+ * later caller replays and never reaches the claim at all. Settling **only**
+ * against a landed receipt is the load-bearing half of the `finally`: settling
+ * unconditionally would spend a coordinate on the one path where the effect may
+ * have run and left no row, which is precisely the unaudited effect this plane
+ * exists to refuse.
+ *
+ * **The claim transaction commits before the port is called.** No SQLite write
+ * lock is held across an external process; `L-X1-6` asserts it rather than
+ * trusting the shape to survive an edit.
+ *
+ * **A loser is told to read, not to retry.** `CLAIM_HELD` is the thirteenth
+ * `API_ERROR_CODES` member and moves `API_CONTRACT_VERSION` `0.10.0` →
+ * **`0.11.0`** — minor and not patch, on this file's own rule and on the
+ * precedent `WRITE_REFUSED`, `STREAM_CAPACITY` and `TOOL_SERVERS_UNCONFIGURED`
+ * each set: a client branches on a code, so a code a `0.10.0` reader has never
+ * seen is a shape it did not know about. `API_ROUTES` and `API_WRITE_ROUTES` do
+ * **not** move: this adds a way for an existing door to refuse, not a door. At
+ * the API it is `409`, beside the other two conflicts and deliberately not
+ * `WRITE_REFUSED`, whose documented hint — "worth retrying against a fresh
+ * head" — is the exact opposite of what a claim loser should do. At the CLI it
+ * is `EXIT_CLAIM_HELD` = **7**, its own code because a lost race falling to
+ * `EXIT_USAGE` would tell the one script most likely to meet it — a wrapper
+ * that retries on a timeout — "you asked wrongly", and retrying is the single
+ * response that must not follow.
+ *
+ * **Twenty-three authorized, twenty-two touched, one novel** (ADR 0026).
+ * Twenty-two were authorized at issue and one authorized path went unused; the
+ * ceiling is a bound, not a quota. `packages/entrypoints/cli/src/index.ts` is
+ * **amendment X1b-A1**, granted after the fact and for a reason worth
+ * recording: `EXIT_CLAIM_HELD` has to be on the public CLI barrel, because a
+ * caller that scripts this CLI branches on the number, and a number it cannot
+ * import is a number it will hardcode. The six exit codes beside it are on the
+ * barrel for exactly that reason, and a seventh that was not would be a magic
+ * literal by omission.
+ *
+ * The counts. `CONTROL_PLANE_EVENT_TYPES` stays
+ * at **24** and `TOOL_REFUSALS` is untouched: the poison is a
+ * `TOOL_CALL_RECORDED` receipt carrying a shape-bounded refusal word, not a new
+ * event type and not a new enumerated refusal. `RUNTIME_PUBLIC_EXPORTS` 198 →
+ * **206** — eight of the nine new names, because `TOOL_CALL_BOUND_MS` stays off
+ * the barrel: it is this module's restatement of the tool edge's own
+ * `TOOL_CALL_TIMEOUT_MS`, restated because `RUNTIME_ALLOWED_PACKAGES` forbids
+ * the import, and publishing it would offer importers a second authority for a
+ * number `@acp/tools` owns. `PATH_SCOPED_LAWS` 82 → **86**.
+ *
+ * **No secret, prompt, tool argument or result content reaches a claim or a
+ * durable error surface.** The claim row carries coordinates, identities, an
+ * instant and a byte *count*; `L-X1-8` pins that member list by equality so a
+ * later field cannot smuggle a payload in. The refusal bodies name no
+ * coordinate, no holder and no path: a loser learns that it lost, not who beat
+ * it.
+ */
+const V2X1B_WRITE_SET = [
+  "packages/domains/runtime/src/tool-call/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/tool-call/index.test.ts",
+  "packages/entrypoints/cli/src/tool-call/index.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/index.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/src/tool-calls/index.ts",
+  "packages/entrypoints/gateway/src/errors/index.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/persistence/ledger/src/tool-claim-store/index.ts",
+  "packages/persistence/ledger/test/tool-claim-store/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/api-reference.md",
+  "docs/architecture/0025-the-tool-coordinate-claim.md",
+  "docs/architecture/0026-cross-process-tool-effect-arbitration.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5552,6 +5662,7 @@ const WRITE_SET = [
   ...V2C3_WRITE_SET,
   ...V2C4_WRITE_SET,
   ...V2X1A_WRITE_SET,
+  ...V2X1B_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6561,6 +6672,24 @@ const PATH_SCOPED_LAWS = [
   {
     law: "each store in this package migrates under its own name",
     scope: "packages/persistence/ledger/src/**",
+  },
+  // V2 X1b. Four new path-shaped surfaces, so four new rows: the register and
+  // the `requireScope` call sites both move 82 -> 86.
+  {
+    law: "both doors take a claim, and neither reaches the tool port without one",
+    scope: "packages/entrypoints/{cli,gateway}/src/** (the two tool-call doors)",
+  },
+  {
+    law: "no claim transaction is open across the external effect",
+    scope: "packages/domains/runtime/src/tool-call/index.ts",
+  },
+  {
+    law: "neither door composes the claim path; both derive it",
+    scope: "packages/*/*/src/** (every tracked source file)",
+  },
+  {
+    law: "the claim row is bounded, and carries no argument or content",
+    scope: "packages/domains/runtime/src/tool-call/index.ts",
   },
 ];
 
@@ -12059,6 +12188,26 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "deriveInvocation",
   "runToolCall",
   "toolOperationScopeId",
+  // V2 X1b: the claim seam, its vocabulary and its derived ttl. Appended to the
+  // tool-call group rather than sorted into the head of the list, because this
+  // pin mirrors the barrel section by section and a name's position here is
+  // where a reader will look for it in `runtime/src/index.ts`.
+  //
+  // `ToolClaimPort` is structural, like `ToolCallPort` above it, so this
+  // stratum still names `@acp/ledger` nowhere. `TOOL_CALL_BOUND_MS` is
+  // deliberately absent: it is the module's restatement of the tool edge's
+  // `TOOL_CALL_TIMEOUT_MS` — restated because `RUNTIME_ALLOWED_PACKAGES`
+  // forbids the import — and publishing it would offer importers a second
+  // authority for a number `@acp/tools` owns. It stops at the module boundary;
+  // the derived answer crosses.
+  "TOOL_CLAIM_HELD",
+  "TOOL_CLAIM_MARGIN_MS",
+  "TOOL_CLAIM_TTL_MS",
+  "TOOL_POSTCONDITION_UNKNOWN",
+  "ToolClaimHeldError",
+  "ToolClaimPort",
+  "ToolClaimRecord",
+  "ToolClaimVerdict",
 ];
 
 /**
@@ -15390,6 +15539,282 @@ const TOOL_CLAIM_SITE = "packages/persistence/ledger/src/tool-claim-store/index.
   }
   requireScope("each store in this package migrates under its own name", migrationScanned);
   notes.push("the ledger, the lease store and the claim store each migrate under their own table name");
+}
+
+// --- 21g. adoption of the tool-coordinate claim (V2 X1b) --------------------
+//
+// X1a landed the store and adopted it nowhere. These four laws are what make
+// the adoption checkable rather than described: that both doors take a claim,
+// that no write lock is held across the external effect, that neither door
+// invents the path, and that the claim row cannot grow a payload.
+//
+// ADR 0025 required the adoption to "name both doors". A law that inspected one
+// door would be satisfied by a plane in which the other still raced, so every
+// law below that is about a door is written over the *set* of doors and fails
+// if that set is not exactly the two.
+
+const TOOL_CALL_OPERATION_SITE = "packages/domains/runtime/src/tool-call/index.ts";
+const TOOL_CALL_DOORS = [
+  "packages/entrypoints/cli/src/tool-call/index.ts",
+  "packages/entrypoints/gateway/src/tool-calls/index.ts",
+];
+
+/**
+ * Every `claims.transact(` region in a source, as [start, end] offsets.
+ *
+ * String-aware for the same reason L-X1-1's walk is: an argument literal can
+ * carry an unbalanced parenthesis and a naive depth count would then close the
+ * region in the wrong place, which is the failure mode that reads as a passing
+ * law.
+ */
+function claimTransactRegions(code) {
+  const regions = [];
+  const needle = "claims.transact(";
+  for (let at = code.indexOf(needle); at !== -1; at = code.indexOf(needle, at + 1)) {
+    let depth = 0;
+    let quote = null;
+    let cursor = at + needle.length - 1;
+    for (; cursor < code.length; cursor += 1) {
+      const character = code[cursor];
+      if (quote !== null) {
+        if (character === "\\") cursor += 1;
+        else if (character === quote) quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'" || character === "`") {
+        quote = character;
+        continue;
+      }
+      if (character === "(") depth += 1;
+      else if (character === ")") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    regions.push([at, cursor]);
+  }
+  return regions;
+}
+
+// L-X1-5 -- both doors take a claim, and neither reaches the tool port without
+// one.
+//
+// The adoption's whole content. A door that called `runToolCall` without a
+// claim port would compile — the parameter is structural — and would race
+// exactly as stage 3C did, while every other law here still passed. So the law
+// is written the other way round: every source that reaches the operation must
+// also open the claim store, and the set of such sources must be exactly the
+// two doors ADR 0025 named. A third door added later fails this, which is the
+// case a hand-maintained list of two would miss.
+{
+  let doorsScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const callers = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!relativePath.endsWith(".ts")) continue;
+      if (relativePath === TOOL_CALL_OPERATION_SITE) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      doorsScanned += 1;
+      if (stripComments(content).includes("runToolCall(")) callers.push(relativePath);
+    }
+    if (callers.join(", ") !== TOOL_CALL_DOORS.join(", ")) {
+      fail(
+        "the tool operation is reached from [" +
+          callers.join(", ") +
+          "]; exactly two doors may reach it, and they are " +
+          TOOL_CALL_DOORS.join(" and "),
+      );
+    }
+    for (const door of TOOL_CALL_DOORS) {
+      const source = readIfPresent(door);
+      if (source === null) {
+        fail(door + " is missing; the adoption laws would stand over nothing");
+        continue;
+      }
+      const code = stripComments(source);
+      if (!code.includes("openToolClaimStore(")) {
+        fail(
+          door +
+            " reaches the tool operation without opening the claim store; a door that takes no claim" +
+            " races every other process exactly as it did before this packet",
+        );
+      }
+      if (!code.includes("ToolClaimHeldError")) {
+        fail(
+          door +
+            " never names ToolClaimHeldError; a lost race would reach the classifier as an unrecognised" +
+            " supervisor throw and be answered as our defect rather than as the arbitration working",
+        );
+      }
+    }
+  }
+  requireScope("both doors take a claim, and neither reaches the tool port without one", doorsScanned);
+  notes.push("both tool-call doors open the claim store and both name the refusal, and there is no third");
+}
+
+// L-X1-6 -- no claim transaction is open across the external effect.
+//
+// The claim is a `BEGIN IMMEDIATE` compare-and-set: it holds SQLite's write
+// lock for its duration. A tool call is an external process bounded at 30
+// seconds. Holding the first across the second would serialize every unrelated
+// coordinate in the plane behind one tool, and would turn a slow tool into a
+// stalled control plane -- so the transaction commits and only then is the port
+// called. The shape is easy to lose in a later edit that moves one line inside
+// a callback, which is why it is asserted rather than trusted.
+{
+  let effectScanned = 0;
+  const source = readIfPresent(TOOL_CALL_OPERATION_SITE);
+  if (source === null) {
+    fail(TOOL_CALL_OPERATION_SITE + " is missing; the claim-window law would stand over nothing");
+  } else {
+    effectScanned += 1;
+    const code = stripComments(source);
+    const regions = claimTransactRegions(code);
+    if (regions.length === 0) {
+      fail(
+        TOOL_CALL_OPERATION_SITE +
+          " opens no claim transaction; the operation would reach the tool port without arbitrating" +
+          " the coordinate at all",
+      );
+    }
+    for (const [start, end] of regions) {
+      const region = code.slice(start, end);
+      for (const forbidden of ["await ", "callTool("]) {
+        if (region.includes(forbidden)) {
+          fail(
+            TOOL_CALL_OPERATION_SITE +
+              " holds a claim transaction across " +
+              forbidden.trim() +
+              "; the write lock must be released before the external effect, or one slow tool stalls" +
+              " every coordinate in the plane",
+          );
+        }
+      }
+    }
+  }
+  requireScope("no claim transaction is open across the external effect", effectScanned);
+  notes.push("no tool-claim transaction is held across the tool port");
+}
+
+// L-X1-7 -- neither door composes the claim path; both derive it.
+//
+// L-X1-3 already says the filename has one producer. This says the consumers
+// actually go through it. The failure it excludes is the quiet one: two doors
+// that each built a path that looked right but differed by a directory would
+// open two claim stores over one ledger, which is no mutual exclusion at all
+// while presenting exactly as mutual exclusion -- green tests, green fence, and
+// two tools running for one coordinate.
+{
+  let derivedScanned = 0;
+  for (const door of TOOL_CALL_DOORS) {
+    const source = readIfPresent(door);
+    if (source === null) {
+      fail(door + " is missing; the path-derivation law would stand over nothing");
+      continue;
+    }
+    derivedScanned += 1;
+    const code = stripComments(source);
+    if (!code.includes("toolClaimStorePath(")) {
+      fail(
+        door +
+          " opens a claim store without deriving its path through toolClaimStorePath; two doors that each" +
+          " composed a path could disagree by a directory and arbitrate over nothing",
+      );
+    }
+    if (/\.sqlite/.test(code)) {
+      fail(door + " names a database filename; the path has one producer and this door is not it");
+    }
+  }
+  requireScope("neither door composes the claim path; both derive it", derivedScanned);
+  notes.push("both doors derive the claim-store path from the ledger, and neither names a filename");
+}
+
+// L-X1-8 -- the claim row is bounded, and carries no argument or content.
+//
+// The claim is durable and it is written at claim time by whoever takes the
+// coordinate, so it is a surface a payload could reach without ever passing
+// through the recorder's own shape bound. It carries coordinates, identities,
+// an instant and a byte *count* -- never the argument the count measures and
+// never a result block. Pinned by equality in both directions, so a
+// thirteenth member cannot be added silently and a member cannot be dropped
+// while the prose above still promises it.
+{
+  let rowScanned = 0;
+  const CLAIM_ROW_MEMBERS = [
+    "claimId",
+    "holder",
+    "claimedAt",
+    "expiresAt",
+    "taskId",
+    "attempt",
+    "transitionId",
+    "submittedAt",
+    "accountId",
+    "serverId",
+    "toolName",
+    "argumentBytes",
+  ];
+  const source = readIfPresent(TOOL_CALL_OPERATION_SITE);
+  if (source === null) {
+    fail(TOOL_CALL_OPERATION_SITE + " is missing; the claim-row law would stand over nothing");
+  } else {
+    const code = stripComments(source);
+    const at = code.indexOf("function claimRowFor(");
+    if (at === -1) {
+      fail(
+        TOOL_CALL_OPERATION_SITE +
+          " no longer builds the claim row in claimRowFor; the recovery record has no single producer" +
+          " and its members cannot be pinned",
+      );
+    } else {
+      rowScanned += 1;
+      const opens = code.indexOf("return {", at);
+      const closes = code.indexOf("\n  };", opens);
+      const body = opens === -1 || closes === -1 ? "" : code.slice(opens, closes);
+      // Shorthand counts. `claimedAt,` and `claimedAt: claimedAt,` put the same
+      // member on the same durable row, and a law that only saw the second
+      // would report a missing field that is plainly there — and, worse, would
+      // let a shorthand-written payload member through unnoticed.
+      const members = [...body.matchAll(/^\s{4}([A-Za-z_$][\w$]*)\s*[,:]/gm)].map((match) => match[1]);
+      if (members.length === 0) {
+        fail(TOOL_CALL_OPERATION_SITE + ": the claim row enumerates nothing; the law would pass vacuously");
+      }
+      for (const member of members) {
+        if (!CLAIM_ROW_MEMBERS.includes(member)) {
+          fail(
+            TOOL_CALL_OPERATION_SITE +
+              " writes " +
+              member +
+              " onto the claim; the recovery record is pinned, and a new member is how an argument or a" +
+              " result block reaches a durable surface without passing the recorder's shape bound",
+          );
+        }
+      }
+      for (const member of CLAIM_ROW_MEMBERS) {
+        if (!members.includes(member)) {
+          fail(
+            TOOL_CALL_OPERATION_SITE +
+              " no longer writes " +
+              member +
+              " onto the claim; a recoverer rebuilds the receipt from these bytes, so a missing member" +
+              " is a poison receipt that cannot be built identically twice",
+          );
+        }
+      }
+      if (/\bexecution\.arguments\b/.test(body) || /\bcontent\b/.test(body)) {
+        fail(
+          TOOL_CALL_OPERATION_SITE +
+            " puts an argument or result content on the claim; the claim carries a byte count, never the" +
+            " bytes it counts",
+        );
+      }
+    }
+  }
+  requireScope("the claim row is bounded, and carries no argument or content", rowScanned);
+  notes.push("the tool claim carries 12 pinned members, a byte count among them and no payload");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------

@@ -68,8 +68,20 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * the same fact. `LEDGER_CONTRACT_VERSION` does not move: the row this route
  * appends is `TOOL_CALL_RECORDED`, which the ledger contract has carried since
  * stage 2 — the door is what was missing, not the shape.
+ *
+ * `0.10.0` → `0.11.0` at V2 X1b: one new error code, `CLAIM_HELD`. Minor and
+ * not patch, on the rule stated at the top of this file and on the precedent
+ * `WRITE_REFUSED`, `STREAM_CAPACITY` and `TOOL_SERVERS_UNCONFIGURED` each set: a
+ * client can branch on a code, so a code a reader at `0.10.0` has never seen is
+ * a shape it did not know about.
+ *
+ * The route surface is **unchanged** — `API_ROUTES` and `API_WRITE_ROUTES` do
+ * not move, because X1b adds a way for an existing door to refuse, not a new
+ * door. What changed is that a tool call can now lose a race to a different
+ * operating-system process and be told so, rather than both processes running
+ * the tool and the ledger absorbing the second receipt.
  */
-export const API_CONTRACT_VERSION = "0.10.0" as const;
+export const API_CONTRACT_VERSION = "0.11.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

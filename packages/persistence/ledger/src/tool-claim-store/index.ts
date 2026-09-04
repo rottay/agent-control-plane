@@ -505,6 +505,18 @@ export function openToolClaimStore(
 
       if (decision.verb === "TAKE") {
         const grant = requireGrant(decision.row);
+        // Terminal means terminal, for every caller. The reclaim branch below
+        // rewrites the holder columns in place and clears `settled_at`, so
+        // without this guard a `TAKE` on a settled row would re-open a spent
+        // coordinate — against this store's own "one way, never back", and by
+        // the one verb that was not checking it. Unreachable from a caller that
+        // reads the receipt first, which is why it went unnoticed; but the
+        // authority should not depend on its callers remembering the order.
+        //
+        // A state, not an expiry: no clock is consulted and none is needed.
+        if (current !== null && current.state === "SETTLED") {
+          throw new LedgerQueryError("a settled coordinate is spent and cannot be reclaimed");
+        }
         if (current === null) {
           db.prepare(
             "INSERT INTO tool_claim (coordinate_key, state, claim_id, holder, claimed_at," +

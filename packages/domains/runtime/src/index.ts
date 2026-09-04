@@ -325,9 +325,32 @@ export type {
 // and the ledger row, and it is the operation only -- no route, no CLI verb, no
 // process start. `ToolCallPort` is structural exactly as `EffectPort` is, so
 // this package still never names `@acp/tools`.
-export { runToolCall, toolOperationScopeId } from "./tool-call/index.js";
+//
+// V2 X1b adds the claim seam beside it, on the same terms: `ToolClaimPort` is
+// structural too, so the operation contends on an authority it never names the
+// implementation of.
+//
+// `TOOL_CALL_BOUND_MS` is deliberately **not** here. It is this module's
+// restatement of the tool edge's own `TOOL_CALL_TIMEOUT_MS`, restated because
+// `RUNTIME_ALLOWED_PACKAGES` forbids the import, and a barrel that published it
+// would offer importers a second authority for a number `@acp/tools` owns. It
+// stays exported from the module, where the derivation and its test live, and
+// stops at the package boundary. What crosses is the derived answer,
+// `TOOL_CLAIM_TTL_MS`, and the margin this module does own.
+export {
+  TOOL_CLAIM_HELD,
+  TOOL_CLAIM_MARGIN_MS,
+  TOOL_CLAIM_TTL_MS,
+  TOOL_POSTCONDITION_UNKNOWN,
+  ToolClaimHeldError,
+  runToolCall,
+  toolOperationScopeId,
+} from "./tool-call/index.js";
 export type {
   ToolCallExecution,
   ToolCallOperationResult,
   ToolCallPort,
+  ToolClaimPort,
+  ToolClaimRecord,
+  ToolClaimVerdict,
 } from "./tool-call/index.js";

@@ -19,6 +19,10 @@ export {
   EXIT_NOT_FOUND,
   EXIT_UNAVAILABLE,
   EXIT_INTEGRITY,
+  // V2 X1b. A lost claim is a seventh answer, and it is on the barrel for the
+  // same reason the six above it are: a caller that scripts this CLI branches
+  // on the number, and a number it cannot import is a number it will hardcode.
+  EXIT_CLAIM_HELD,
   LEDGER_SCHEMA_VERSION,
   run,
 } from "./cli/index.js";

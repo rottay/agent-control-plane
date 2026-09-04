@@ -30,7 +30,7 @@ import {
   hasObservationPrivacyViolation,
 } from "@acp/protocol";
 import type { ApiRouteName } from "@acp/protocol";
-import { openLedger } from "@acp/ledger";
+import { openToolClaimStore, openLedger, toolClaimStorePath } from "@acp/ledger";
 import { TOOL_ARGUMENTS_BYTES_MAX } from "@acp/tools";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -51,6 +51,9 @@ import {
 // the first that reaches a door rather than a projection.
 import { runToolCallVerb } from "@acp/cli/tool-call-door";
 import { uiRowModel } from "@acp/console/row-model";
+// V2 X1b: the coordinate a request lands on, derived exactly as the operation
+// derives it. Values, not a copy of the derivation.
+import { deriveEventCoordinate, deriveInvocation, toolCallTransitionId } from "@acp/runtime";
 
 import { buildServer } from "../../src/build-server/index.js";
 import { startServer } from "../../src/start/index.js";
@@ -915,6 +918,54 @@ async function cliDoor(
   return result.document as unknown as Record<string, unknown>;
 }
 
+/**
+ * The coordinate a `toolRequest()` lands on, derived as the operation derives
+ * it rather than written out, so these cases cannot go vacuous by pinning a key
+ * the plane stopped using.
+ */
+function coordinateOf(taskId: string, callIndex = 0): string {
+  return deriveEventCoordinate(
+    deriveInvocation(taskId, 1, TOOL_SUBMITTED_AT, TOOL_DIGEST),
+    toolCallTransitionId(0, callIndex),
+    0,
+  ).idempotencyKey;
+}
+
+/**
+ * Hold the coordinate the way another operating-system process would.
+ *
+ * The arbitration lives in a file, so a claim written straight into that file is
+ * indistinguishable — to either door — from one written by a second gateway or a
+ * second CLI. The cross-process race itself is drilled against eight real
+ * processes in `@acp/ledger`; what these cases need is a *deterministic* loser,
+ * so that "both doors consult the claim" is asserted rather than raced for.
+ */
+function holdCoordinate(ledgerPath: string, holder = "claude/sonnet/implementer/07"): void {
+  const store = openToolClaimStore(toolClaimStorePath(ledgerPath));
+  try {
+    store.transact(coordinateOf(TOOL_TASK), () => ({
+      verb: "TAKE",
+      row: {
+        claimId: randomUUID(),
+        holder,
+        claimedAt: "2026-09-04T05:00:00.000Z",
+        // Far future: a live claimant, by the only test this plane has.
+        expiresAt: "2200-01-01T00:00:00.000Z",
+        taskId: TOOL_TASK,
+        attempt: 1,
+        transitionId: toolCallTransitionId(0, 0),
+        submittedAt: TOOL_SUBMITTED_AT,
+        accountId: TOOL_ACCOUNT,
+        serverId: "docs",
+        toolName: "docs.search",
+        argumentBytes: 64,
+      },
+    }));
+  } finally {
+    store.close();
+  }
+}
+
 function pidsIn(pidLog: string): readonly number[] {
   return readFileSync(pidLog, "utf8")
     .split("\n")
@@ -1171,5 +1222,167 @@ describe("the doors refuse alike, and neither records the argument (V2-B4b stage
     // The timeline item projects key names and a byte size, structurally.
     expect(rendered).toContain("argumentBytes");
     expect(hasObservationPrivacyViolation(body)).toBe(false);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// V2 X1b — the two doors contend on one authority, not on two memories
+// ---------------------------------------------------------------------------
+
+/**
+ * The claim, proved where it has to be proved: with both doors present.
+ *
+ * Stage 3E proved a coordinate spent by one door replays at the other —
+ * *sequentially*. That was the strongest claim available then, and it left the
+ * concurrent case open in the direction that mattered: two callers that reached
+ * the operation together both found the coordinate unspent, and the CLI door
+ * could not close it even in principle, because every `acp tool-call` is a new
+ * process.
+ *
+ * These cases run the two doors **at the same coordinate at the same time**.
+ * The arbitration they contend on is a file derived from the ledger, so the
+ * property under test is exactly the one that was missing: one effect, whichever
+ * door wins, and a loser that is told to read rather than to retry.
+ *
+ * The eight-process drill for the store itself lives in `@acp/ledger`. What is
+ * proved here is that the two doors reach that store, and reach the same one.
+ */
+
+/** The API door, raw: this block is about the answers that are not `200`. */
+async function apiDoorRaw(
+  ledgerPath: string,
+  fixture: DoorFixture,
+  request: Record<string, unknown>,
+): Promise<{ readonly status: number; readonly code: string | null; readonly body: string }> {
+  const app = buildServer({
+    ledgerPath,
+    writeBearerPath: fixture.bearerPath,
+    toolServersPath: fixture.toolServersPath,
+  });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: toolCallsPath(String(request["taskId"])),
+      headers: { authorization: "Bearer " + TOOL_BEARER },
+      payload: request,
+    });
+    const failure: { error?: { code?: string } } = response.json();
+    const code = response.statusCode === 200 ? null : (failure.error?.code ?? null);
+    return { status: response.statusCode, code, body: response.body };
+  } finally {
+    await app.close();
+  }
+}
+
+/** The CLI door, raw: a refusal is a throw here, not a document. */
+async function cliDoorRaw(
+  ledgerPath: string,
+  fixture: DoorFixture,
+  request: Record<string, unknown>,
+  name = "race.json",
+): Promise<{ readonly ok: boolean; readonly code: string | null; readonly text: string }> {
+  const requestPath = join(fixture.dir, name);
+  writeFileSync(requestPath, JSON.stringify(request), "utf8");
+  chmodSync(requestPath, 0o600);
+  try {
+    await runToolCallVerb({
+      databasePath: ledgerPath,
+      requestPath,
+      toolServersPath: fixture.toolServersPath,
+    });
+    return { ok: true, code: null, text: "" };
+  } catch (error: unknown) {
+    const refusal = error as { code?: string; message?: string };
+    return { ok: false, code: refusal.code ?? null, text: String(refusal.message ?? error) };
+  }
+}
+
+describe("the two doors contend on one claim (V2 X1b)", () => {
+  it("runs one tool for one coordinate when both doors start together", async () => {
+    const fixture = doorFixture();
+    const ledgerPath = seedForExecution();
+
+    // Started together on purpose. Sequentially the coordinate is spent before
+    // the second door looks, and the stage 3E replay cases already cover that;
+    // it is the overlap that used to produce two children for one row.
+    const [api, cli] = await Promise.all([
+      apiDoorRaw(ledgerPath, fixture, toolRequest()),
+      cliDoorRaw(ledgerPath, fixture, toolRequest()),
+    ]);
+
+    // The invariant, stated over both possible interleavings rather than over
+    // the one this machine happened to produce: the loser either replayed the
+    // winner's row or was refused the claim — never ran a second tool.
+    expect(pidsIn(fixture.pidLog).length).toBe(1);
+    expect(rowCount(ledgerPath)).toBe(1);
+
+    const apiWon = api.status === 200;
+    const cliWon = cli.ok;
+    expect(apiWon || cliWon).toBe(true);
+    if (!apiWon) expect(api.code).toBe("CLAIM_HELD");
+    if (!cliWon) expect(cli.code).toBe("CLAIM_HELD");
+  });
+
+  it("refuses the CLI a coordinate the API is holding, and vice versa", async () => {
+    // Deterministic rather than timing-dependent, and asserted in both
+    // directions: an implementation in which only one door consulted the claim
+    // would pass one of these and fail the other.
+    const forCli = doorFixture();
+    const cliLedger = seedForExecution();
+    holdCoordinate(cliLedger);
+    const cli = await cliDoorRaw(cliLedger, forCli, toolRequest());
+    expect(cli.ok).toBe(false);
+    expect(cli.code).toBe("CLAIM_HELD");
+    expect(pidsIn(forCli.pidLog)).toHaveLength(0);
+    expect(rowCount(cliLedger)).toBe(0);
+
+    const forApi = doorFixture();
+    const apiLedger = seedForExecution();
+    holdCoordinate(apiLedger);
+    const api = await apiDoorRaw(apiLedger, forApi, toolRequest());
+    expect(api.status).toBe(409);
+    expect(api.code).toBe("CLAIM_HELD");
+    expect(pidsIn(forApi.pidLog)).toHaveLength(0);
+    expect(rowCount(apiLedger)).toBe(0);
+  });
+
+  it("gives the same refusal code at both doors, and leaks nothing at either", async () => {
+    const holder = "claude/sonnet/implementer/07";
+    const forCli = doorFixture();
+    const cliLedger = seedForExecution();
+    holdCoordinate(cliLedger, holder);
+    const cli = await cliDoorRaw(cliLedger, forCli, toolRequest());
+
+    const forApi = doorFixture();
+    const apiLedger = seedForExecution();
+    holdCoordinate(apiLedger, holder);
+    const api = await apiDoorRaw(apiLedger, forApi, toolRequest());
+
+    // Parity is the point of this file: one fact, one code, both doors.
+    expect(cli.code).toBe(api.code);
+    for (const surface of [cli.text, api.body]) {
+      expect(surface).not.toContain(holder);
+      expect(surface).not.toContain(TOOL_SENTINEL);
+      expect(surface).not.toContain(cliLedger);
+      expect(surface).not.toContain(apiLedger);
+    }
+  });
+
+  it("arbitrates over one file, which is what makes the two doors one plane", async () => {
+    const fixture = doorFixture();
+    const ledgerPath = seedForExecution();
+
+    // The CLI walks the coordinate; the claim it leaves behind is the one the
+    // API then reads. If the doors composed their paths separately this would
+    // still pass every test above and fail here — two stores over one ledger is
+    // no mutual exclusion at all, while presenting exactly as one.
+    await cliDoor(ledgerPath, fixture, toolRequest());
+    const store = openToolClaimStore(toolClaimStorePath(ledgerPath));
+    try {
+      expect(store.read(coordinateOf(TOOL_TASK))?.state).toBe("SETTLED");
+    } finally {
+      store.close();
+    }
   });
 });

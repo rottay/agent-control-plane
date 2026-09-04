@@ -1,6 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
@@ -216,6 +218,16 @@ describe("S4 — the three states are one-way", () => {
       LedgerQueryError,
     );
     expect(store.read(KEY)?.state).toBe("SETTLED");
+
+    // And not by the back door either. `TAKE` is the one verb that rewrites the
+    // row in place, so before V2 X1b it could re-open a spent coordinate and
+    // clear its `settled_at` — terminality enforced for two verbs out of three.
+    const before = store.read(KEY);
+    expect(
+      caught(() => store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }))),
+    ).toBeInstanceOf(LedgerQueryError);
+    expect(store.read(KEY)).toEqual(before);
+    expect(store.read(KEY)?.settledAt).toBe(T1);
   });
 
   it("refuses to advance a coordinate nobody claimed", () => {
@@ -389,3 +401,152 @@ function codeOfModule(): string {
   );
   return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
+
+
+// ---------------------------------------------------------------------------
+// S11 — the arbitration holds across operating-system processes (V2 X1b)
+// ---------------------------------------------------------------------------
+
+const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const REPO_ROOT = join(PACKAGE_ROOT, "..", "..", "..");
+const COMPILED_STORE = join(PACKAGE_ROOT, "dist-test", "src", "tool-claim-store", "index.js");
+
+/**
+ * A child process cannot use the vitest alias that points `@acp/contracts` at
+ * its TypeScript source, so what a child runs is the **compiled** store. The
+ * test tree's own `tsconfig.json` emits it into `dist-test/`, never into the
+ * published `dist/`. The build is normally already there, because `pnpm check`
+ * typechecks before it tests; this only pays for a build when these tests are
+ * run on their own.
+ *
+ * The same shape the lease store uses for the same reason, and carried as its
+ * own copy for the same one: the entry path differs, and a shared helper would
+ * need a registered test-only domain of its own for forty lines.
+ */
+function ensureCompiledStore(): void {
+  if (existsSync(COMPILED_STORE)) return;
+  const result = spawnSync(
+    process.execPath,
+    [
+      join(REPO_ROOT, "node_modules", "typescript", "bin", "tsc"),
+      "--build",
+      join(PACKAGE_ROOT, "test", "tsconfig.json"),
+    ],
+    { encoding: "utf8", cwd: REPO_ROOT },
+  );
+  if (result.status !== 0 || !existsSync(COMPILED_STORE)) {
+    throw new Error(
+      "could not build the ledger test tree for the cross-process test: " + result.stdout + result.stderr,
+    );
+  }
+}
+
+interface ClaimantOutcome {
+  readonly verb: string | null;
+  readonly holder: string;
+  readonly errorName: string | null;
+}
+
+/**
+ * One real claimant, in its own operating-system process.
+ *
+ * It runs the *caller's* half of the protocol, which is the half that matters:
+ * see no row, take it; see a row, refuse. Every process runs identical logic,
+ * so if two of them could both observe `current === null` two would both
+ * report `TAKE` — which is precisely the failure `BEGIN IMMEDIATE` exists to
+ * prevent, and precisely what an in-process fake can never falsify.
+ */
+function claimant(storePath: string, holder: string, at: string): Promise<ClaimantOutcome> {
+  const script = [
+    "const { openToolClaimStore } = await import(" + JSON.stringify(pathToFileURL(COMPILED_STORE).href) + ");",
+    "const store = openToolClaimStore(" + JSON.stringify(storePath) + ");",
+    "let verb = null; let errorName = null;",
+    "try {",
+    "  const verdict = store.transact(" + JSON.stringify(KEY) + ", (current) =>",
+    "    current === null",
+    "      ? { verb: 'TAKE', row: {",
+    "          claimId: 'c' + " + JSON.stringify(holder) + ".length.toString().padStart(8, '0')",
+    "            + '-1111-4111-8111-' + Math.random().toString(16).slice(2, 14).padEnd(12, '0'),",
+    "          holder: " + JSON.stringify(holder) + ",",
+    "          claimedAt: " + JSON.stringify(at) + ",",
+    "          expiresAt: " + JSON.stringify(T2) + ",",
+    "          taskId: '11111111-2222-4333-8444-555555555555',",
+    "          attempt: 1, transitionId: 'tool.call.0',",
+    "          submittedAt: " + JSON.stringify(at) + ", accountId: 'acct-x1b',",
+    "          serverId: 'docs', toolName: 'docs.search', argumentBytes: 42 } }",
+    "      : { verb: 'REFUSE', reason: 'CLAIM_HELD' });",
+    "  verb = verdict.verb;",
+    "} catch (error) { errorName = error?.name ?? 'Error'; }",
+    "store.close();",
+    "process.stdout.write(JSON.stringify({ verb, holder: " + JSON.stringify(holder) + ", errorName }));",
+  ].join("\n");
+
+  return new Promise<ClaimantOutcome>((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: REPO_ROOT });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString()));
+    child.stderr.on("data", (chunk: Buffer) => (err += chunk.toString()));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0 || out === "") {
+        reject(new Error("claimant " + holder + " exited " + String(code) + ": " + err));
+        return;
+      }
+      resolve(JSON.parse(out) as ClaimantOutcome);
+    });
+  });
+}
+
+describe("S11 — one coordinate, many processes, one winner", () => {
+  it("grants the coordinate to exactly one of eight real processes", { timeout: 60_000 }, async () => {
+    ensureCompiledStore();
+    const path = join(temporaryDirectory(), "tool-claims.sqlite");
+    // Migrated once, here, so the children contend over the claim rather than
+    // over the schema — and so a failure names the race and not the migration.
+    open(path).close();
+
+    const holders = Array.from({ length: 8 }, (_, index) => "claude/opus/implementer/" + String(index + 1));
+    const outcomes = await Promise.all(holders.map((holder) => claimant(path, holder, T0)));
+
+    // The claim this whole packet rests on, and the only place it is made
+    // against real operating-system processes rather than against a fake.
+    const winners = outcomes.filter((outcome) => outcome.verb === "TAKE");
+    expect(winners).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.verb === "REFUSE")).toHaveLength(7);
+    // No claimant died: a lock contention that surfaced as SQLITE_BUSY would be
+    // a refusal the plane never asked for, and would make the count above pass
+    // for the wrong reason.
+    expect(outcomes.filter((outcome) => outcome.errorName !== null)).toEqual([]);
+
+    // And the file agrees with the processes: one row, held by the winner.
+    const store = open(path);
+    const row = store.read(KEY);
+    expect(row?.state).toBe("CLAIMED");
+    expect(row?.holder).toBe(winners[0]?.holder);
+  });
+
+  it("refuses every process a coordinate already settled, with no reclaim", async () => {
+    ensureCompiledStore();
+    const path = join(temporaryDirectory(), "tool-claims.sqlite");
+    const seed = open(path);
+    seed.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+    seed.transact(KEY, () => ({ verb: "MARK_IN_FLIGHT", at: T1 }));
+    seed.transact(KEY, () => ({ verb: "SETTLE", at: T1 }));
+    seed.close();
+
+    const outcomes = await Promise.all(
+      ["claude/opus/implementer/01", "claude/sonnet/implementer/07"].map((holder) =>
+        claimant(path, holder, T2),
+      ),
+    );
+
+    // Terminal means terminal, and it means it to a process that never saw the
+    // settle happen. Non-vacuous against the case above, which differs only in
+    // the state the coordinate was left in.
+    expect(outcomes.every((outcome) => outcome.verb === "REFUSE")).toBe(true);
+    const store = open(path);
+    expect(store.read(KEY)?.state).toBe("SETTLED");
+    expect(store.read(KEY)?.settledAt).toBe(T1);
+  });
+});

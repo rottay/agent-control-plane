@@ -1,7 +1,11 @@
 # ADR 0025 — The tool-coordinate claim: one coordinate, one effect, and the window that stays open
 
 - Status: accepted (V2 X1a, recorded 2026-09-04). Supersedes: none.
-  Superseded-by: none.
+  Superseded-by: none. Adopted by: ADR 0026, which is where "nothing changes
+  until X1b" below stops being true — the store is no longer inert, and the
+  semantics this record describes as *permitted once X1b adopts it* are the
+  semantics the plane now has. The decision recorded here is unchanged and is
+  not superseded; only its adoption status moved.
 
 ## Context
 
