@@ -2,10 +2,12 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ResolvedRoute } from "@acp/contracts";
+import { ResolvedRoute, TaskEnvelope } from "@acp/contracts";
 import { canonicalSubmission, canonicalSubmissionDigest } from "@acp/runtime";
 
 import { ModeError } from "../errors/index.js";
+import { WALK_CONCURRENCY_MAX } from "../scheduler/index.js";
+import type { ScheduledWalk } from "../scheduler/index.js";
 import { isDaemonMode } from "../lifecycle/index.js";
 import type { DaemonMode } from "../lifecycle/index.js";
 import { installSignalHandlers } from "../signals/index.js";
@@ -84,6 +86,17 @@ export interface DaemonChildConfig {
   readonly checkPorts: boolean;
   /** The execution the walk performs. Required; there is no toy default (V2-B1b). */
   readonly execution: DaemonExecutionConfig;
+  /**
+   * Many walks inside one plane (V2 concurrency C3), or null for the one-walk
+   * form this door has always accepted.
+   *
+   * The two forms are **exclusive in the JSON**: a config carrying `walks` must
+   * not also carry the singular coordinates, because a config that says both
+   * has two answers to "what runs here" and nothing decides between them. When
+   * `walks` is present the singular fields above are the **first walk's**, so
+   * the one-walk case is literally the same config either way.
+   */
+  readonly walks: readonly ScheduledWalk[] | null;
 }
 
 /**
@@ -201,12 +214,178 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
 }
 
 /** Validate the child's configuration. Nothing is read from the environment. */
+/**
+ * The envelope door (V2 concurrency C3).
+ *
+ * Ten checks, each naming a reason word and a field path and **never echoing a
+ * value** — an envelope carries objectives and paths, and a refusal that
+ * printed one would put a packet's contents in a log line.
+ *
+ * Two of them are the ones a writer omits, and they are the reason this door
+ * exists rather than a `length` check: an entry whose envelope declares one
+ * `taskId` (or `initiativeId`) while the entry runs another would have the
+ * conflict graph deciding over a set that does not describe what runs. Every
+ * later gate would then be correct about the wrong thing.
+ *
+ * The duplicate-id check is here deliberately too. `checkAdmission` is
+ * fail-closed over a corrupt admitted set — `compatible` is false whatever the
+ * candidate looks like — so catching it at the door gives the operator the
+ * accurate error instead of an unexplained blanket refusal much later.
+ */
+function parseWalks(raw: unknown, mode: DaemonMode): readonly ScheduledWalk[] {
+  if (!Array.isArray(raw)) throw new ModeError("config.walks must be an array");
+  const walks: ScheduledWalk[] = [];
+  const seen = new Set<string>();
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const at = "config.walks[" + String(index) + "]";
+    const entry: unknown = raw[index];
+    if (typeof entry !== "object" || entry === null) throw new ModeError(at + " must be an object");
+    const value = entry as Record<string, unknown>;
+
+    // The whole contract, not a subset: a partially checked envelope is one the
+    // graph will read fields from that nobody validated.
+    const envelope = TaskEnvelope.safeParse(value["envelope"]);
+    if (!envelope.success) throw new ModeError(at + ".envelope must satisfy the TaskEnvelope contract");
+
+    const taskId = value["taskId"];
+    const attempt = value["attempt"];
+    const submittedAt = value["submittedAt"];
+    const submissionDigest = value["submissionDigest"];
+    const initiativeId = value["initiativeId"];
+    const scenarioId = value["scenarioId"];
+    const emittedBy = value["emittedBy"];
+
+    if (typeof scenarioId !== "string" || scenarioId.length === 0) {
+      throw new ModeError(at + ".scenarioId must be a string");
+    }
+    if (typeof emittedBy !== "string" || emittedBy.length === 0) {
+      throw new ModeError(at + ".emittedBy must be a string");
+    }
+    if (typeof taskId !== "string") throw new ModeError(at + ".taskId must be a string");
+    if (typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 1) {
+      throw new ModeError(at + ".attempt must be a positive integer");
+    }
+    if (typeof submittedAt !== "string") throw new ModeError(at + ".submittedAt must be a string");
+    if (typeof initiativeId !== "string" || !UUID.test(initiativeId)) {
+      throw new ModeError(at + ".initiativeId must be a uuid");
+    }
+    if (typeof submissionDigest !== "string" || !SHA256_HEX.test(submissionDigest)) {
+      throw new ModeError(at + ".submissionDigest must be 64 lowercase hex characters");
+    }
+
+    // The envelope must describe the walk that runs. Without these two the
+    // graph decides over a set that does not.
+    if (envelope.data.taskId !== taskId) {
+      throw new ModeError(at + ".taskId disagrees with the envelope it carries");
+    }
+    if (envelope.data.initiativeId !== initiativeId) {
+      throw new ModeError(at + ".initiativeId disagrees with the envelope it carries");
+    }
+
+    const execution = parseExecutionSection(value["execution"]);
+    if (!isAbsolute(execution.binding.workdir)) {
+      throw new ModeError(at + ".execution.binding.workdir must be absolute");
+    }
+
+    // The same producer, per walk. No second spelling of the preimage.
+    const expected = canonicalSubmissionDigest({
+      taskId,
+      attempt,
+      submittedAt,
+      initiativeId,
+      route: execution.route,
+    });
+    if (submissionDigest !== expected) {
+      throw new ModeError(
+        at + ".submissionDigest is not the digest of the submission this walk declares",
+      );
+    }
+
+    if (seen.has(taskId)) throw new ModeError("config.walks carries a duplicate taskId");
+    seen.add(taskId);
+
+    walks.push({
+      envelope: envelope.data,
+      worktreePath: execution.binding.workdir,
+      spec: {
+        scenarioId,
+        taskId,
+        attempt,
+        submittedAt,
+        submissionDigest,
+        initiativeId,
+        emittedBy,
+        execution,
+      },
+    });
+  }
+
+  if (walks.length === 0) throw new ModeError("config.walks must carry at least one walk");
+  if (walks.length > WALK_CONCURRENCY_MAX) {
+    throw new ModeError(
+      "config.walks exceeds the concurrency this plane admits (" + String(WALK_CONCURRENCY_MAX) + ")",
+    );
+  }
+  // The capability, refused at the door as well as in `startDaemon`.
+  if (mode === "RESTATE" && walks.length > 1) {
+    throw new ModeError(
+      "config.mode RESTATE supports exactly one walk; N walks would route N task keys" +
+        " through one walk's endpoint and call the result concurrency",
+    );
+  }
+  return walks;
+}
+
 export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   if (typeof raw !== "object" || raw === null) {
     throw new ModeError("child config must be an object");
   }
   const value = raw as Record<string, unknown>;
   const mode = value["mode"];
+  if (!isDaemonMode(mode)) throw new ModeError("mode must be an explicit daemon mode");
+
+  // V2 concurrency C3. Exactly one of the two forms. Both is refused because a
+  // config that states its coordinates twice has two answers to what runs here,
+  // and nothing in the daemon decides between them.
+  if (value["walks"] !== undefined) {
+    for (const singular of ["taskId", "attempt", "submittedAt", "submissionDigest", "execution"]) {
+      if (value[singular] !== undefined) {
+        throw new ModeError("config.walks and the singular walk fields are exclusive");
+      }
+    }
+    const walks = parseWalks(value["walks"], mode);
+    const first = walks[0];
+    if (first === undefined) throw new ModeError("config.walks must carry at least one walk");
+    const scenarioId = value["scenarioId"];
+    const emittedBy = value["emittedBy"];
+    if (typeof scenarioId !== "string" && scenarioId !== undefined) {
+      throw new ModeError("scenarioId must be a string");
+    }
+    if (typeof emittedBy !== "string" && emittedBy !== undefined) {
+      throw new ModeError("emittedBy must be a string");
+    }
+    const holdOpenValue = value["holdOpen"] ?? true;
+    const checkPortsValue = value["checkPorts"] ?? true;
+    if (typeof holdOpenValue !== "boolean") throw new ModeError("holdOpen must be a boolean");
+    if (typeof checkPortsValue !== "boolean") throw new ModeError("checkPorts must be a boolean");
+    return {
+      mode,
+      // The first walk's, so the one-walk case is the same config either way.
+      scenarioId: typeof scenarioId === "string" ? scenarioId : first.spec.scenarioId,
+      emittedBy: typeof emittedBy === "string" ? emittedBy : first.spec.emittedBy,
+      taskId: first.spec.taskId,
+      attempt: first.spec.attempt,
+      submittedAt: first.spec.submittedAt,
+      submissionDigest: first.spec.submissionDigest,
+      initiativeId: first.spec.initiativeId,
+      holdOpen: holdOpenValue,
+      checkPorts: checkPortsValue,
+      execution: first.spec.execution,
+      walks,
+    };
+  }
+
   const scenarioId = value["scenarioId"];
   const emittedBy = value["emittedBy"];
   const taskId = value["taskId"];
@@ -284,6 +463,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
     holdOpen,
     checkPorts,
     execution,
+    walks: null,
   };
 }
 
@@ -300,6 +480,9 @@ export async function runDaemonChild(config: DaemonChildConfig): Promise<number>
     initiativeId: config.initiativeId,
     checkPorts: config.checkPorts,
     execution: config.execution,
+    // Undefined, not null: the option is additive, and a caller that never
+    // heard of C3 must produce exactly the object it always produced.
+    ...(config.walks === null ? {} : { walks: config.walks }),
   });
 
   const announce = (): void => {

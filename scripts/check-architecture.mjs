@@ -4961,6 +4961,76 @@ const V2C2_WRITE_SET = [
 ];
 
 /**
+ * V2 concurrency C3 — many walks, one plane.
+ *
+ * C1 built the store, C2 made one daemon hold one fenced lease. This packet
+ * lets one daemon hold several, and all of its difficulty is in **which order
+ * the two gates are asked**.
+ *
+ * **Two gates, one order.** The conflict graph decides whether an envelope is
+ * compatible with the ones already admitted; the lease decides whether anybody
+ * else holds the worktree. `conflict-graph/index.ts` stated the order before
+ * anything implemented it — *"the graph first, then acquire, then write"* — and
+ * the scheduler is that sentence. A lease taken before the graph refuses claims
+ * a worktree for a walk that will never run, so on a refusal the arbiter is
+ * **never called at all**: **L-C-3a** pins it by source order and the suite
+ * asserts it by call count.
+ *
+ * **Restate is capped at one walk, and says so.** Its endpoint hosts one task
+ * object closed over one walk's ledger, effects and route on a fixed port;
+ * feeding it N walks would route N task keys through one walk's machinery and
+ * call the result concurrency. So `RESTATE` with more than one walk **refuses
+ * to start** — at the config door *and* in `startDaemon`, because
+ * `DaemonOptions` can be built by hand — rather than silently running the
+ * first. That is the shape the drivers already use for `SERIALIZED_PER_TASK`: a
+ * capability declared at the value it actually has. **L-C-3b** is what keeps it
+ * true as the code moves, and it is the law a later packet is likeliest to
+ * break by "just letting Restate through".
+ *
+ * **One harness serves N walks.** `executionSessionId` is
+ * `taskId/attempt/accountId`, unique per walk, so one `closeAll()` reaps
+ * everything. N harnesses would give the unwind N reapers in an order nothing
+ * specifies. The push order is C2's, extended: each walk's ledger, then its
+ * lease, and the shared harness **last**, so the reverse unwind still reaps
+ * every child before any worktree is handed back — L-C-2b's two pinned sites
+ * are untouched and remain first in source.
+ *
+ * Nine paths, three novel. No event type gains a first producer, so the
+ * protocol no-producer list stays at **seven**; no capability property moves;
+ * `mode-restate/index.ts` and `mode-sqlite/index.ts` are untouched, which is
+ * what a cap rather than an approximation buys.
+ *
+ * **Under N every acquired walk beats, and a lost lease reaps only its own
+ * session.** A shared harness makes `closeAll` the wrong answer to one walk's
+ * lost lease — it would kill the siblings' providers too — so the loss path
+ * interrupts one session by `executionSessionId(taskId, attempt, accountId)`.
+ * **L-C-3c** slices the multi-walk region and checks it on its own, because the
+ * presence check it replaces was satisfiable from the single-walk branch while
+ * the multi-walk branch renewed nothing.
+ *
+ * **The unwind order holds under N, and is pinned twice.** L-C-2b compares the
+ * *first* `name: "lease"` with the *first* `name: "agent-harness"`, which says
+ * nothing about a second, later pair; **L-C-3d** compares the *last* of each and
+ * requires the shared harness to be pushed after `admitWalks(`, which is where
+ * every walk's lease has already been pushed. One precision the record carries:
+ * the release that actually reaches the store happens at **walk completion** in
+ * `ports.release`, before any unwind — safe because the provider session tears
+ * its child down before `run` settles — and the unwind's release is the
+ * idempotent second one. `PATH_SCOPED_LAWS` 71 → **75**.
+ */
+const V2C3_WRITE_SET = [
+  "packages/entrypoints/daemon/src/scheduler/index.ts",
+  "packages/entrypoints/daemon/test/scheduler/index.test.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0023-many-walks-one-plane.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5352,6 +5422,7 @@ const WRITE_SET = [
   ...V2B4B_S41_WRITE_SET,
   ...V2C1_WRITE_SET,
   ...V2C2_WRITE_SET,
+  ...V2C3_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6309,6 +6380,26 @@ const PATH_SCOPED_LAWS = [
   {
     law: "no driver property substitutes for the lease",
     scope: "packages/entrypoints/daemon/src/**",
+  },
+  // V2 concurrency C3. Two new path-shaped surfaces, so two new rows: the
+  // register and the `requireScope` call sites both move 71 -> 73.
+  {
+    law: "the graph is asked before the lease",
+    scope: "packages/entrypoints/daemon/src/scheduler/index.ts",
+  },
+  {
+    law: "N walks are refused where they cannot be honoured",
+    scope: "packages/entrypoints/daemon/src/**",
+  },
+  // V2 concurrency C3 corrections. Two more path-shaped surfaces, so two more
+  // rows: the register and the `requireScope` call sites both move 73 -> 75.
+  {
+    law: "every acquired walk beats, and a lost lease reaps only its own session",
+    scope: "packages/entrypoints/daemon/src/index.ts (the multi-walk region)",
+  },
+  {
+    law: "the multi-walk unwind reaps before it releases",
+    scope: "packages/entrypoints/daemon/src/index.ts",
   },
 ];
 
@@ -14576,6 +14667,222 @@ const DAEMON_COMPOSITION_SITE = "packages/entrypoints/daemon/src/index.ts";
   }
   requireScope("no driver property substitutes for the lease", leaseScopeScanned);
   notes.push("no daemon source conditions the lease acquisition on a mode, an engine or a driver capability");
+}
+
+// --- 21d. many walks, one plane (V2 concurrency C3) -------------------------
+
+const DAEMON_SCHEDULER_SITE = "packages/entrypoints/daemon/src/scheduler/index.ts";
+const DAEMON_CHILD_DOOR = "packages/entrypoints/daemon/src/daemon-child/index.ts";
+
+// L-C-3a -- the graph is asked before the lease.
+//
+// `conflict-graph/index.ts` stated the order before anything implemented it:
+// the graph first, then acquire, then write. A lease taken before the graph
+// refuses claims a worktree for a walk that will never run, and nothing later
+// notices -- the walk simply never happens and the worktree is held. Pinned by
+// source order, and the suite asserts the arbiter's call count is zero on a
+// graph refusal, which is what makes the order a fact rather than a comment.
+{
+  let orderScanned = 0;
+  const scheduler = readIfPresent(DAEMON_SCHEDULER_SITE);
+  if (scheduler === null) {
+    fail(DAEMON_SCHEDULER_SITE + " is missing; the admission-order law would stand over nothing");
+  } else {
+    orderScanned += 1;
+    const code = stripComments(scheduler);
+    const graph = code.indexOf("checkAdmission(");
+    const lease = code.indexOf("ports.acquire(");
+    if (graph < 0) {
+      fail(DAEMON_SCHEDULER_SITE + " no longer asks the conflict graph; a walk would run on the lease alone");
+    } else if (lease < 0) {
+      fail(DAEMON_SCHEDULER_SITE + " no longer takes a lease; a walk would run on the graph alone");
+    } else if (graph > lease) {
+      fail(
+        DAEMON_SCHEDULER_SITE +
+          " acquires the lease before it asks the graph; a lease taken for a walk the graph then" +
+          " refuses claims a worktree nothing will ever use, and no later gate notices",
+      );
+    }
+    // The scheduler is the only daemon module that may reach the lease on a
+    // scheduled walk's behalf. A second caller would be a second order.
+    if (tracked.status === 0) {
+      const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+      for (const relativePath of present) {
+        if (!relativePath.startsWith("packages/entrypoints/daemon/src/")) continue;
+        if (!relativePath.endsWith(".ts")) continue;
+        if (relativePath === DAEMON_SCHEDULER_SITE) continue;
+        const content = readIfPresent(relativePath);
+        if (content === null) continue;
+        if (stripComments(content).includes("ports.acquire(")) {
+          fail(
+            relativePath +
+              " reaches a scheduled walk's lease outside the scheduler; the admission order lives in" +
+              " one place or it lives nowhere",
+          );
+        }
+      }
+    }
+  }
+  requireScope("the graph is asked before the lease", orderScanned);
+  notes.push("the scheduler asks the conflict graph before it takes a lease, and it is the only caller that takes one");
+}
+
+// L-C-3b -- N walks are refused where they cannot be honoured.
+//
+// The Restate endpoint hosts one task object closed over one walk's ledger,
+// effects and route on a fixed port. N walks there would be one walk wearing N
+// task ids -- and it would pass any test that only counted walks. So the cap is
+// declared and refused at BOTH doors: the config door for configs that arrive
+// as JSON, and `startDaemon` because `DaemonOptions` can be built by hand.
+//
+// This is the law a later packet is likeliest to break by letting Restate
+// through "just for now".
+{
+  let capScanned = 0;
+  for (const site of ["packages/entrypoints/daemon/src/index.ts", DAEMON_CHILD_DOOR]) {
+    const source = readIfPresent(site);
+    if (source === null) {
+      fail(site + " is missing; the Restate walk cap cannot be checked");
+      continue;
+    }
+    capScanned += 1;
+    const code = stripComments(source);
+    // Each door must name the mode and refuse more than one walk beside it.
+    if (!/RESTATE/.test(code)) {
+      fail(site + " no longer names RESTATE; the one-walk capability is declared at both doors");
+    }
+    if (!/length\s*>\s*1/.test(code)) {
+      fail(
+        site +
+          " no longer refuses more than one walk; RESTATE supports exactly one, and a plane handed" +
+          " more must refuse to start rather than silently run the first",
+      );
+    }
+  }
+  // And nothing may hand a multi-walk set to the Restate mode entry point.
+  const composition = readIfPresent("packages/entrypoints/daemon/src/index.ts");
+  if (composition !== null) {
+    const code = stripComments(composition);
+    const at = code.indexOf("startRestateMode(");
+    if (at >= 0) {
+      const call = code.slice(at, at + 800);
+      if (call.includes("walks")) {
+        fail(
+          "packages/entrypoints/daemon/src/index.ts passes walks to startRestateMode; the Restate" +
+            " endpoint is closed over one walk's ledger, effects and route",
+        );
+      }
+    }
+  }
+  requireScope("N walks are refused where they cannot be honoured", capScanned);
+  notes.push("RESTATE declares a one-walk capability and both doors refuse more, rather than running the first");
+}
+
+// L-C-3c -- every acquired walk beats, and a lost lease reaps only its own
+// session.
+//
+// The law exists because the presence check it replaces could be satisfied from
+// the wrong branch. `LEASE_RENEW_INTERVAL_MS` appearing *somewhere* in the file
+// is true while the single-walk branch beats and the multi-walk branch does
+// not -- which is exactly the state this correction repairs, and it passed the
+// fence. So the region is sliced and checked on its own.
+//
+// Without a beat under N, C2's fenced lease degrades to a plain TTL at the one
+// moment several tasks run at once: a walk longer than the ttl expires while it
+// runs, a successor lawfully takes the worktree, and the running walk never
+// re-reads the fence.
+//
+// And the reap must be **targeted**. The harness is shared across N walks, so
+// `closeAll` in a loss path answers one walk's lost lease by killing its
+// siblings' providers.
+{
+  let beatScanned = 0;
+  const composition = readIfPresent(DAEMON_COMPOSITION_SITE);
+  if (composition === null) {
+    fail(DAEMON_COMPOSITION_SITE + " is missing; the multi-walk heartbeat law would stand over nothing");
+  } else {
+    beatScanned += 1;
+    const code = stripComments(composition);
+    // The multi-walk region: from the per-walk beat registry to the point the
+    // admitted walks start running.
+    const from = code.indexOf("const beats = new Map");
+    const to = code.indexOf("runAdmitted(");
+    // The loss path on its own, which is where `closeAll` would be wrong.
+    const lossFrom = code.indexOf("const abortWalk = ");
+    const lossTo = code.indexOf("const ports: SchedulerPorts");
+    if (from < 0 || to < 0 || to < from) {
+      fail(DAEMON_COMPOSITION_SITE + " no longer carries a multi-walk region the heartbeat law can read");
+    } else {
+      const region = code.slice(from, to);
+      for (const required of [
+        ["LEASE_RENEW_INTERVAL_MS", "the multi-walk region starts no renewal timer, so N leases expire under running walks"],
+        [".renew()", "the multi-walk region never renews a hold, so a moved fence is never noticed"],
+        ["executionSessionId(", "the multi-walk region cannot name one walk's session, so it cannot reap only that walk"],
+        [".interrupt(", "the multi-walk region no longer interrupts a single session on a lost lease"],
+      ]) {
+        const [needle, why] = required;
+        if (!region.includes(needle)) fail(DAEMON_COMPOSITION_SITE + ": " + why);
+      }
+    }
+    if (lossFrom < 0 || lossTo < 0 || lossTo < lossFrom) {
+      fail(DAEMON_COMPOSITION_SITE + " no longer carries a multi-walk loss path the reap law can read");
+    } else {
+      const loss = code.slice(lossFrom, lossTo);
+      if (!loss.includes(".interrupt(")) {
+        fail(DAEMON_COMPOSITION_SITE + "'s lost-lease path no longer interrupts the losing walk's session");
+      }
+      if (loss.includes("closeAll(")) {
+        fail(
+          DAEMON_COMPOSITION_SITE +
+            " reaps with closeAll on a lost lease; the harness is shared across N walks, so that" +
+            " answers one walk's lost lease by killing its siblings' providers",
+        );
+      }
+    }
+  }
+  requireScope("every acquired walk beats, and a lost lease reaps only its own session", beatScanned);
+  notes.push("every acquired walk under N renews its lease, and a lost lease interrupts only that walk's session");
+}
+
+// L-C-3d -- the multi-walk unwind reaps before it releases.
+//
+// L-C-2b pins the single-walk pair by comparing the FIRST occurrence of each
+// name. Under N the multi-walk pair is a second, later pair, and the first-of-
+// each comparison says nothing about it. This compares the LAST of each, and
+// requires the shared harness to be pushed after admission -- which is where
+// every walk's lease has been pushed.
+{
+  let unwindScanned = 0;
+  const composition = readIfPresent(DAEMON_COMPOSITION_SITE);
+  if (composition === null) {
+    fail(DAEMON_COMPOSITION_SITE + " is missing; the multi-walk unwind order cannot be checked");
+  } else {
+    unwindScanned += 1;
+    const code = stripComments(composition);
+    const lastLease = code.lastIndexOf('name: "lease"');
+    const lastHarness = code.lastIndexOf('name: "agent-harness"');
+    const admit = code.indexOf("admitWalks(");
+    if (lastLease < 0 || lastHarness < 0) {
+      fail(DAEMON_COMPOSITION_SITE + " no longer registers both a lease and the agent harness");
+    } else if (lastLease > lastHarness) {
+      fail(
+        DAEMON_COMPOSITION_SITE +
+          " pushes a lease after the shared harness; the stack unwinds in reverse, so a worktree" +
+          " would be handed back while this daemon's provider children were still being reaped",
+      );
+    }
+    if (admit < 0) {
+      fail(DAEMON_COMPOSITION_SITE + " no longer admits walks; the multi-walk region is gone");
+    } else if (lastHarness < admit) {
+      fail(
+        DAEMON_COMPOSITION_SITE +
+          " pushes the shared harness before admission; every walk's lease is pushed during" +
+          " admission, so a harness pushed first unwinds last and releases before it reaps",
+      );
+    }
+  }
+  requireScope("the multi-walk unwind reaps before it releases", unwindScanned);
+  notes.push("the multi-walk harness is pushed after every lease, so the reverse unwind reaps before it releases");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------

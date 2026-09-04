@@ -329,6 +329,186 @@ describe("the submission digest binds the route (V2-B1c, stage 2)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// V2 concurrency C3: the envelope door
+// ---------------------------------------------------------------------------
+
+/**
+ * One negative per row of the ten-check table, plus the two positives.
+ *
+ * Every refusal names a reason word and a field path and **echoes no value** —
+ * an envelope carries objectives, paths and commands, and a refusal that
+ * printed one would put a packet's contents in a log line the operator then
+ * pastes somewhere.
+ */
+function envelopeFor(taskId: string, initiativeId: string, writeSet: readonly string[] = []): Record<string, unknown> {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    taskId,
+    initiativeId,
+    title: "a walk",
+    objective: "walk the plan",
+    classification: "MECHANICAL",
+    issuedBy: "claude/opus/implementer/01",
+    issuedAt: SUBMITTED_AT,
+    authority: [],
+    readSet: [],
+    writeSet: writeSet.length > 0 ? [...writeSet] : ["src/walk.ts"],
+    conflictKeys: [],
+    allowedCommands: [],
+    forbiddenActions: [],
+    output: { kind: "DIFF", description: "a patch" },
+    validation: { commands: [], independentVerifierRequired: false },
+    eligibility: { roles: ["implementer"], providers: null, requiredCapabilities: [] },
+    budget: { maxTokens: 1_000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 10 },
+    visualEvidenceRequired: false,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    checkpointPolicy: { onEveryAtomicStep: false, maxStepsWithoutCheckpoint: 5 },
+  };
+}
+
+function walkEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const taskId = (overrides["taskId"] as string | undefined) ?? randomUUID();
+  const initiativeId = (overrides["initiativeId"] as string | undefined) ?? CONFIG_INITIATIVE_ID;
+  const execution = (overrides["execution"] as DaemonExecutionConfig | undefined) ?? validExecution();
+  return {
+    scenarioId: "c3-walk",
+    emittedBy: "claude/opus/implementer/01",
+    taskId,
+    attempt: 1,
+    submittedAt: SUBMITTED_AT,
+    submissionDigest: canonicalSubmissionDigest({
+      taskId,
+      attempt: 1,
+      submittedAt: SUBMITTED_AT,
+      initiativeId,
+      route: execution.route,
+    }),
+    initiativeId,
+    envelope: envelopeFor(taskId, initiativeId),
+    execution,
+    ...overrides,
+  };
+}
+
+function walksConfig(walks: readonly unknown[], overrides: Record<string, unknown> = {}): unknown {
+  return {
+    mode: "SQLITE_SUPERVISOR",
+    scenarioId: "c3",
+    emittedBy: "claude/opus/implementer/01",
+    initiativeId: CONFIG_INITIATIVE_ID,
+    holdOpen: false,
+    checkPorts: false,
+    walks,
+    ...overrides,
+  };
+}
+
+/** The message, with no value from the config echoed into it. */
+function refusalOf(document: unknown): string {
+  try {
+    parseDaemonChildConfig(document);
+    return "";
+  } catch (error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+describe("the envelope door admits many walks, or refuses precisely", () => {
+  it("accepts two well-formed walks", () => {
+    const parsed = parseDaemonChildConfig(walksConfig([walkEntry(), walkEntry()]));
+    expect(parsed.walks).toHaveLength(2);
+    // The singular fields are the first walk's, so the one-walk case is the
+    // same config either way.
+    expect(parsed.taskId).toBe(parsed.walks?.[0]?.spec.taskId);
+  });
+
+  it("refuses an entry that is not an object (check 1)", () => {
+    expect(refusalOf(walksConfig(["not-an-object"]))).toContain("config.walks[0]");
+  });
+
+  it("refuses an envelope that is not the whole contract (check 2)", () => {
+    const broken = walkEntry();
+    broken["envelope"] = { taskId: broken["taskId"] };
+    expect(refusalOf(walksConfig([broken]))).toContain("config.walks[0].envelope");
+  });
+
+  it("refuses an envelope whose taskId disagrees with its entry (check 3)", () => {
+    // The check a writer omits. Without it a walk declares one task in its
+    // envelope and runs another, and the graph decides over a set that does not
+    // describe what runs.
+    const entry = walkEntry();
+    entry["envelope"] = envelopeFor(randomUUID(), CONFIG_INITIATIVE_ID);
+    const message = refusalOf(walksConfig([entry]));
+    expect(message).toContain("config.walks[0].taskId");
+    expect(message).toContain("disagrees");
+    expect(message).not.toContain(entry["taskId"] as string);
+  });
+
+  it("refuses an envelope whose initiativeId disagrees with its entry (check 4)", () => {
+    const other = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a09";
+    const entry = walkEntry();
+    entry["envelope"] = envelopeFor(entry["taskId"] as string, other);
+    expect(refusalOf(walksConfig([entry]))).toContain("config.walks[0].initiativeId");
+  });
+
+  it("refuses a walk whose digest is not its own submission's (check 5)", () => {
+    const entry = walkEntry();
+    entry["attempt"] = 2;
+    const message = refusalOf(walksConfig([entry]));
+    expect(message).toContain("config.walks[0].submissionDigest");
+    expect(message).not.toContain(entry["submissionDigest"] as string);
+  });
+
+  it("refuses a walk with no absolute workdir (check 6)", () => {
+    const execution = validExecution();
+    const relative = {
+      ...execution,
+      binding: { ...execution.binding, workdir: "relative/path" },
+    } as unknown as DaemonExecutionConfig;
+    expect(refusalOf(walksConfig([walkEntry({ execution: relative })]))).toContain("workdir");
+  });
+
+  it("refuses a duplicate taskId across entries (check 7)", () => {
+    // Caught here deliberately: `checkAdmission` is fail-closed over a corrupt
+    // admitted set, so the operator would otherwise meet an unexplained blanket
+    // refusal much later.
+    const first = walkEntry();
+    const second = walkEntry({ taskId: first["taskId"] as string });
+    const message = refusalOf(walksConfig([first, second]));
+    expect(message).toContain("config.walks");
+    expect(message).toContain("duplicate");
+  });
+
+  it("refuses an empty set and one beyond the cap (check 8)", () => {
+    expect(refusalOf(walksConfig([]))).toContain("at least one walk");
+    const many = [walkEntry(), walkEntry(), walkEntry(), walkEntry(), walkEntry()];
+    expect(refusalOf(walksConfig(many))).toContain("concurrency this plane admits");
+  });
+
+  it("refuses RESTATE with more than one walk, naming the mode (check 9)", () => {
+    // The capability-truth negative. One endpoint, one task object closed over
+    // one walk's ledger, effects and route: N walks there would be one walk
+    // wearing N task ids.
+    const message = refusalOf(walksConfig([walkEntry(), walkEntry()], { mode: "RESTATE" }));
+    expect(message).toContain("RESTATE");
+    expect(message).toContain("exactly one walk");
+    // And one walk in RESTATE is accepted, unchanged.
+    expect(parseDaemonChildConfig(walksConfig([walkEntry()], { mode: "RESTATE" })).walks).toHaveLength(1);
+  });
+
+  it("refuses a config that states both forms (check 10)", () => {
+    const both = walksConfig([walkEntry()]) as Record<string, unknown>;
+    both["taskId"] = randomUUID();
+    expect(refusalOf(both)).toContain("exclusive");
+  });
+
+  it("leaves the singular form untouched", () => {
+    // The form every existing caller uses still parses, and now says so.
+    expect(parseDaemonChildConfig(validConfig()).walks).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // V2-B7S: the elected route, at the door it has to survive
 // ---------------------------------------------------------------------------
 

@@ -38,6 +38,7 @@ new records from `_template.md`, which carries the required fields.
 | 0020 | [The explicit tool operation](0020-the-explicit-tool-operation.md) | accepted |
 | 0021 | [Worktree arbitration](0021-worktree-arbitration.md) | accepted |
 | 0022 | [The fenced lease](0022-the-fenced-lease.md) | accepted |
+| 0023 | [Many walks, one plane](0023-many-walks-one-plane.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

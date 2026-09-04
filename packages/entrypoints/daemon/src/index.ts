@@ -29,6 +29,7 @@ import {
   admitConfigRoot,
   admitWorkdir,
   claudeAdapter,
+  executionSessionId,
   codexAdapter,
   createAgentHarness,
   createExecutionPort,
@@ -44,6 +45,8 @@ import {
 } from "@acp/runtime";
 
 import { createArbiter, leaseStorePath } from "./arbiter/index.js";
+import { WALK_CONCURRENCY_MAX, admitWalks, runAdmitted } from "./scheduler/index.js";
+import type { ScheduledWalk, SchedulerPorts, WalkOutcome } from "./scheduler/index.js";
 import type { Arbiter, ArbiterRenewal, LeaseHold } from "./arbiter/index.js";
 import {
   DRAIN_DEADLINE_MS,
@@ -159,6 +162,23 @@ export interface DaemonOptions {
    * assumed one would re-hide exactly the binding this packet made visible.
    */
   readonly execution: DaemonExecutionConfig;
+  /**
+   * Many walks inside this one plane (V2 concurrency C3).
+   *
+   * Optional and additive, the third use of the `harness?` / `recordUsage?`
+   * precedent: every existing caller passes the singular fields and keeps
+   * compiling. When present, the singular fields are not the walk — each entry
+   * carries its own scenario, task, initiative, envelope and worktree, and the
+   * scheduler admits them through the graph and then the lease.
+   *
+   * `RESTATE` accepts exactly one. That is a declared capability, not an
+   * omission: its endpoint hosts one task object closed over one walk's ledger,
+   * effects and route on a fixed port, so N walks there would be one walk
+   * wearing N task ids. A `RESTATE` daemon handed more than one **refuses to
+   * start** rather than quietly running the first, and `L-C-3b` keeps that true
+   * as the code moves.
+   */
+  readonly walks?: readonly ScheduledWalk[] | undefined;
 }
 
 export interface StopResult {
@@ -252,6 +272,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
   let arbiter: Arbiter | null = null;
   let renewal: NodeJS.Timeout | null = null;
   let reapChildren: (() => Promise<readonly string[]>) | null = null;
+  const ledgers = new Map<string, { ledger: Ledger; invocation: DurableInvocation }>();
+  let walkOutcomes: readonly WalkOutcome[] = [];
   let serverPid: number | null = null;
   let terminal: Promise<string> | null = null;
 
@@ -300,295 +322,567 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
     // failure rather than a quiet move to another port.
     if (options.checkPorts !== false) await assertReservedPortsFree();
 
-    // S3.
-    const scenarioRoot: ScenarioRoot = resolveScenarioRoot(options.scenarioId);
-    ledger = openLedger(scenarioLedgerPath(scenarioRoot));
-    const openedLedger = ledger;
-    stack.push({
-      name: "ledger",
-      release: (): Promise<string | null> => {
-        try {
-          openedLedger.close();
-          return Promise.resolve(null);
-        } catch (error: unknown) {
-          return Promise.resolve(classify(error));
-        }
-      },
-    });
-    publish("LEDGER_OPEN", null);
-
-    const invocation: DurableInvocation = deriveInvocation(
-      options.taskId,
-      options.attempt,
-      options.submittedAt,
-      options.submissionDigest,
-    );
-
-    // S3b (V2-B1b, stage 2): the effect the walk performs. The port is built
-    // from the resolved route the config carries and the one admitted CLI
-    // binding; the request is derived from the invocation and the emitter,
-    // never from new config (D5). Both modes receive this same port, and a
-    // refused admission stops here, inside the unwind, classified by code.
-    // One binding, read twice (V2-B1c). The effect port executes this route
-    // and the walk records this route; destructuring once here is what makes
-    // "the route recorded is the route executed" true by construction rather
-    // than by two call sites agreeing. It is the value the config door already
-    // admitted through `ResolvedRoute`; nothing re-resolves it.
-    const { route } = options.execution;
-
-    // S3a (V2 concurrency C2). One daemon holds one fenced lease on the
-    // worktree it is about to write into, in BOTH modes and before either one
-    // starts. Nothing here reads `options.mode`: `SERIALIZED_PER_TASK` is per
-    // task key, so two tasks writing one worktree are two keys, and neither
-    // driver has ever offered worktree exclusivity.
+    // V2 concurrency C3. Many walks, or one — decided here, once.
     //
-    // Pushed BEFORE the harness, and the order is the packet. The stack
-    // unwinds in reverse, so children are reaped before the lease they were
-    // writing under is released; pushed after, the worktree would be handed to
-    // a successor while this daemon's provider children were still writing into
-    // it — on every clean shutdown, invisibly, and passing any drill that only
-    // checks that a release happened. L-C-2b pins it by source order.
-    leaseStore = openLeaseStore(leaseStorePath(root));
-    const openedLeaseStore = leaseStore;
-    stack.push({
-      name: "lease-store",
-      release: (): Promise<string | null> => {
-        try {
-          openedLeaseStore.close();
-          return Promise.resolve(null);
-        } catch (error: unknown) {
-          return Promise.resolve(classify(error));
-        }
-      },
-    });
-
-    arbiter = createArbiter({
-      store: openedLeaseStore,
-      ledger: openedLedger,
-      invocation,
-      worktreePath: options.execution.binding.workdir,
-      holder: options.emittedBy,
-      identity,
-      inspector,
-      ttlMs: LEASE_TTL_MS,
-      now: clock,
-    });
-    const acquisition = await arbiter.acquire();
-    if (!acquisition.ok) {
-      // Refused. The walk never starts, and the refusal is the pure rule's own
-      // word at the pure rule's own field — not a sentence invented here.
-      logger.log("error", "lease.refused", "STARTUP", {
-        reason: acquisition.reason,
-        at: acquisition.at,
-      });
-      throw new StartupError(
-        "another writer holds this worktree: " + acquisition.reason + " at " + acquisition.at,
-      );
+    // `RESTATE` accepts exactly one walk and refuses more, in `startDaemon` as
+    // well as at the config door: `DaemonOptions` can be built by hand, so the
+    // door alone is not the guard. A single walk in either mode runs the path
+    // that has always run, so Restate mode is byte-identical to today.
+    const scheduled = options.walks ?? null;
+    if (scheduled !== null) {
+      if (scheduled.length === 0) {
+        throw new StartupError("walks was supplied with no walk in it");
+      }
+      if (scheduled.length > WALK_CONCURRENCY_MAX) {
+        throw new StartupError(
+          "walks exceeds the concurrency this plane admits (" + String(WALK_CONCURRENCY_MAX) + ")",
+        );
+      }
+      if (options.mode === "RESTATE" && scheduled.length > 1) {
+        // Declared, not approximated. The endpoint hosts one task object closed
+        // over one walk's ledger, effects and route; feeding it N walks would
+        // route N task keys through one walk's machinery and call the result
+        // concurrency.
+        throw new ModeError(
+          "RESTATE supports exactly one walk; this plane was handed " +
+            String(scheduled.length) +
+            " and refuses to start rather than silently run the first",
+        );
+      }
     }
-    const hold: LeaseHold = acquisition.hold;
-    const heldArbiter = arbiter;
-    stack.push({
-      name: "lease",
-      release: (): Promise<string | null> => {
-        try {
-          // Stop renewing before releasing, so a beat cannot re-extend a lease
-          // this daemon has just given up.
-          if (renewal !== null) {
-            clearInterval(renewal);
-            renewal = null;
+
+    if (scheduled === null || scheduled.length === 1) {
+      // S3.
+      const scenarioRoot: ScenarioRoot = resolveScenarioRoot(options.scenarioId);
+      ledger = openLedger(scenarioLedgerPath(scenarioRoot));
+      const openedLedger = ledger;
+      stack.push({
+        name: "ledger",
+        release: (): Promise<string | null> => {
+          try {
+            openedLedger.close();
+            return Promise.resolve(null);
+          } catch (error: unknown) {
+            return Promise.resolve(classify(error));
           }
-          hold.release("RELEASED");
-          heldArbiter.flush();
-          // Logged so the order is observable at runtime and not only in the
-          // source: `harness.reaped` must already be in the log above this
-          // line, because the children were writing under this lease.
-          logger.log("info", "lease.released", null, { fence: hold.fence });
-          return Promise.resolve(null);
-        } catch (error: unknown) {
-          return Promise.resolve(classify(error));
-        }
-      },
-    });
-    logger.log("info", "lease.acquired", null, {
-      worktreePath: redactPath(hold.lease.worktreePath),
-      fence: hold.fence,
-    });
+        },
+      });
+      publish("LEDGER_OPEN", null);
 
-    /**
-     * The lease is gone: stop beating, and take the children with it.
-     *
-     * Reaping is the abort. It is not a second lifecycle mechanism bolted on
-     * beside the unwind: killing the provider children makes the in-flight
-     * effect fail, and the walk then settles through the classified-failure
-     * path V2-B7R already owns. Logging alone would leave this daemon writing
-     * into a worktree its successor now holds, which is the exact overlap the
-     * fence exists to end.
-     *
-     * `closeAll` drains its own registry, so the unwind's later call reaps
-     * nothing and costs a no-op — the cleanup order is unchanged and the close
-     * stays idempotent.
-     */
-    const abortOnLostLease = (code: DaemonErrorCode, reason: string): void => {
-      if (renewal !== null) {
-        clearInterval(renewal);
-        renewal = null;
-      }
-      logger.log("error", "lease.lost", code, { fence: hold.fence, reason });
-      const reap = reapChildren;
-      if (reap === null) return;
-      void reap().then(
-        (reaped) => {
-          logger.log("info", "harness.reaped", null, { sessions: reaped.length });
-        },
-        (error: unknown) => {
-          logger.log("error", "harness.reap.failed", "SHUTDOWN", { reason: classify(error) });
-        },
+      const invocation: DurableInvocation = deriveInvocation(
+        options.taskId,
+        options.attempt,
+        options.submittedAt,
+        options.submissionDigest,
       );
-    };
 
-    // The heartbeat re-reads the fence. A moved fence is a lost lease, and the
-    // walk is aborted rather than allowed to keep writing beside its successor.
-    renewal = setInterval(() => {
-      // The beat runs on the timer queue, outside every try in this function.
-      // An exception here would end the process without unwinding -- children
-      // orphaned and the lease held until its TTL -- so a throwing beat is
-      // treated as a lost lease, which is the conservative reading: this
-      // daemon can no longer prove it still holds the worktree.
-      let outcome: ArbiterRenewal;
-      try {
-        outcome = hold.renew();
-      } catch (error: unknown) {
-        // A fixed daemon code with the classified cause in the payload: the
-        // code vocabulary is closed, and `classify` returns whatever the thrown
-        // object called itself.
-        abortOnLostLease("SUPERVISION", classify(error));
-        return;
-      }
-      if (outcome.lost) {
-        abortOnLostLease("STARTUP", "LEASE_FENCE_LOST");
-      } else if (!outcome.ok) {
-        logger.log("warn", "lease.renewal.refused", null, { reason: outcome.reason });
-      }
-    }, LEASE_RENEW_INTERVAL_MS);
-    // Never a reason for the process to stay alive: the walk decides that.
-    renewal.unref();
+      // S3b (V2-B1b, stage 2): the effect the walk performs. The port is built
+      // from the resolved route the config carries and the one admitted CLI
+      // binding; the request is derived from the invocation and the emitter,
+      // never from new config (D5). Both modes receive this same port, and a
+      // refused admission stops here, inside the unwind, classified by code.
+      // One binding, read twice (V2-B1c). The effect port executes this route
+      // and the walk records this route; destructuring once here is what makes
+      // "the route recorded is the route executed" true by construction rather
+      // than by two call sites agreeing. It is the value the config door already
+      // admitted through `ResolvedRoute`; nothing re-resolves it.
+      const { route } = options.execution;
 
-    // V2-B4a. The daemon owns the provider children it spawns, and owning them
-    // is what makes the unwind able to reap them.
-    //
-    // Pushed AFTER the ledger and BEFORE the effect port exists, and the order
-    // is load-bearing in both directions. The stack unwinds in reverse, so
-    // children are reaped before the ledger they report into is closed; and
-    // registering the resource before any port can spawn means there is no
-    // window in which a child exists that the unwind would not find. Before
-    // this, an abandoned stream left a running child nothing could name --
-    // ADR 0010 said abandoning an iteration is not cancellation, and this is
-    // where that sentence stops being a leak.
-    const harness = createAgentHarness();
-    // Bound here rather than passed in: the harness cannot exist before the
-    // lease is pushed (that order is L-C-2b), so the heartbeat reaches it
-    // through this reference instead of the pushes being swapped to suit it.
-    reapChildren = (): Promise<readonly string[]> => harness.closeAll();
-    stack.push({
-      name: "agent-harness",
-      release: async (): Promise<string | null> => {
-        try {
-          const reaped = await harness.closeAll();
-          logger.log("info", "harness.reaped", null, { sessions: reaped.length });
-          return null;
-        } catch (error: unknown) {
-          return classify(error);
-        }
-      },
-    });
-
-    const effects = createExecutionEffects({
-      port: executionPortFor(options.execution, options.taskId, harness),
-      route,
-      request: {
-        taskId: options.taskId,
-        attempt: options.attempt,
-        identity: options.emittedBy,
-        reattach: null,
-      },
-      scenarioRoot,
-      // V2-B7T. The port has always reported what it spent and the walk has
-      // always thrown the trail away. This closure is where spend becomes a
-      // ledger fact: one `TOKEN_USAGE_RECORDED` per trail `usage` entry, under
-      // a name derived from the operation and the step so a resumed attempt
-      // replays rather than double-counts.
+      // S3a (V2 concurrency C2). One daemon holds one fenced lease on the
+      // worktree it is about to write into, in BOTH modes and before either one
+      // starts. Nothing here reads `options.mode`: `SERIALIZED_PER_TASK` is per
+      // task key, so two tasks writing one worktree are two keys, and neither
+      // driver has ever offered worktree exclusivity.
       //
-      // A closure and not a new dependency: `openedLedger`, `invocation`,
-      // `route` and `options.emittedBy` are all already in scope here, so
-      // `execution-effects` still imports no ledger and the runtime still owes
-      // nothing new to anyone. Attribution is the elected account's, read from
-      // the same `route` the port executes — the value the config door already
-      // admitted, never a second reading of it.
-      recordUsage: (sample) => {
-        recordTokenObservation(openedLedger, {
-          invocation,
-          kind: "USAGE",
-          accountId: route.accountId,
-          tokens: sample.tokensUsed,
-          transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
-          emittedBy: options.emittedBy,
-        });
-      },
-    });
+      // Pushed BEFORE the harness, and the order is the packet. The stack
+      // unwinds in reverse, so children are reaped before the lease they were
+      // writing under is released; pushed after, the worktree would be handed to
+      // a successor while this daemon's provider children were still writing into
+      // it — on every clean shutdown, invisibly, and passing any drill that only
+      // checks that a release happened. L-C-2b pins it by source order.
+      leaseStore = openLeaseStore(leaseStorePath(root));
+      const openedLeaseStore = leaseStore;
+      stack.push({
+        name: "lease-store",
+        release: (): Promise<string | null> => {
+          try {
+            openedLeaseStore.close();
+            return Promise.resolve(null);
+          } catch (error: unknown) {
+            return Promise.resolve(classify(error));
+          }
+        },
+      });
 
-    if (options.mode === "SQLITE_SUPERVISOR") {
-      // S8. No S4-S7: this mode binds nothing and spawns nothing of its own.
-      const result = await runSqliteMode({
+      arbiter = createArbiter({
+        store: openedLeaseStore,
         ledger: openedLedger,
         invocation,
-        effects,
-        emittedBy: options.emittedBy,
-        // Today's behaviour, said out loud. The daemon supervises packets that
-        // may commit locally under a receipt; a read-only packet is a policy
-        // this process has never been asked to run, and when it is, the policy
-        // will arrive with the packet rather than be assumed here.
-        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
-        initiativeId: options.initiativeId,
-        route,
+        worktreePath: options.execution.binding.workdir,
+        holder: options.emittedBy,
+        identity,
+        inspector,
+        ttlMs: LEASE_TTL_MS,
+        now: clock,
       });
+      const acquisition = await arbiter.acquire();
+      if (!acquisition.ok) {
+        // Refused. The walk never starts, and the refusal is the pure rule's own
+        // word at the pure rule's own field — not a sentence invented here.
+        logger.log("error", "lease.refused", "STARTUP", {
+          reason: acquisition.reason,
+          at: acquisition.at,
+        });
+        throw new StartupError(
+          "another writer holds this worktree: " + acquisition.reason + " at " + acquisition.at,
+        );
+      }
+      const hold: LeaseHold = acquisition.hold;
+      const heldArbiter = arbiter;
+      stack.push({
+        name: "lease",
+        release: (): Promise<string | null> => {
+          try {
+            // Stop renewing before releasing, so a beat cannot re-extend a lease
+            // this daemon has just given up.
+            if (renewal !== null) {
+              clearInterval(renewal);
+              renewal = null;
+            }
+            hold.release("RELEASED");
+            heldArbiter.flush();
+            // Logged so the order is observable at runtime and not only in the
+            // source: `harness.reaped` must already be in the log above this
+            // line, because the children were writing under this lease.
+            logger.log("info", "lease.released", null, { fence: hold.fence });
+            return Promise.resolve(null);
+          } catch (error: unknown) {
+            return Promise.resolve(classify(error));
+          }
+        },
+      });
+      logger.log("info", "lease.acquired", null, {
+        worktreePath: redactPath(hold.lease.worktreePath),
+        fence: hold.fence,
+      });
+
+      /**
+       * The lease is gone: stop beating, and take the children with it.
+       *
+       * Reaping is the abort. It is not a second lifecycle mechanism bolted on
+       * beside the unwind: killing the provider children makes the in-flight
+       * effect fail, and the walk then settles through the classified-failure
+       * path V2-B7R already owns. Logging alone would leave this daemon writing
+       * into a worktree its successor now holds, which is the exact overlap the
+       * fence exists to end.
+       *
+       * `closeAll` drains its own registry, so the unwind's later call reaps
+       * nothing and costs a no-op — the cleanup order is unchanged and the close
+       * stays idempotent.
+       */
+      const abortOnLostLease = (code: DaemonErrorCode, reason: string): void => {
+        if (renewal !== null) {
+          clearInterval(renewal);
+          renewal = null;
+        }
+        logger.log("error", "lease.lost", code, { fence: hold.fence, reason });
+        const reap = reapChildren;
+        if (reap === null) return;
+        void reap().then(
+          (reaped) => {
+            logger.log("info", "harness.reaped", null, { sessions: reaped.length });
+          },
+          (error: unknown) => {
+            logger.log("error", "harness.reap.failed", "SHUTDOWN", { reason: classify(error) });
+          },
+        );
+      };
+
+      // The heartbeat re-reads the fence. A moved fence is a lost lease, and the
+      // walk is aborted rather than allowed to keep writing beside its successor.
+      renewal = setInterval(() => {
+        // The beat runs on the timer queue, outside every try in this function.
+        // An exception here would end the process without unwinding -- children
+        // orphaned and the lease held until its TTL -- so a throwing beat is
+        // treated as a lost lease, which is the conservative reading: this
+        // daemon can no longer prove it still holds the worktree.
+        let outcome: ArbiterRenewal;
+        try {
+          outcome = hold.renew();
+        } catch (error: unknown) {
+          // A fixed daemon code with the classified cause in the payload: the
+          // code vocabulary is closed, and `classify` returns whatever the thrown
+          // object called itself.
+          abortOnLostLease("SUPERVISION", classify(error));
+          return;
+        }
+        if (outcome.lost) {
+          abortOnLostLease("STARTUP", "LEASE_FENCE_LOST");
+        } else if (!outcome.ok) {
+          logger.log("warn", "lease.renewal.refused", null, { reason: outcome.reason });
+        }
+      }, LEASE_RENEW_INTERVAL_MS);
+      // Never a reason for the process to stay alive: the walk decides that.
+      renewal.unref();
+
+      // V2-B4a. The daemon owns the provider children it spawns, and owning them
+      // is what makes the unwind able to reap them.
+      //
+      // Pushed AFTER the ledger and BEFORE the effect port exists, and the order
+      // is load-bearing in both directions. The stack unwinds in reverse, so
+      // children are reaped before the ledger they report into is closed; and
+      // registering the resource before any port can spawn means there is no
+      // window in which a child exists that the unwind would not find. Before
+      // this, an abandoned stream left a running child nothing could name --
+      // ADR 0010 said abandoning an iteration is not cancellation, and this is
+      // where that sentence stops being a leak.
+      const harness = createAgentHarness();
+      // Bound here rather than passed in: the harness cannot exist before the
+      // lease is pushed (that order is L-C-2b), so the heartbeat reaches it
+      // through this reference instead of the pushes being swapped to suit it.
+      reapChildren = (): Promise<readonly string[]> => harness.closeAll();
+      stack.push({
+        name: "agent-harness",
+        release: async (): Promise<string | null> => {
+          try {
+            const reaped = await harness.closeAll();
+            logger.log("info", "harness.reaped", null, { sessions: reaped.length });
+            return null;
+          } catch (error: unknown) {
+            return classify(error);
+          }
+        },
+      });
+
+      const effects = createExecutionEffects({
+        port: executionPortFor(options.execution, options.taskId, harness),
+        route,
+        request: {
+          taskId: options.taskId,
+          attempt: options.attempt,
+          identity: options.emittedBy,
+          reattach: null,
+        },
+        scenarioRoot,
+        // V2-B7T. The port has always reported what it spent and the walk has
+        // always thrown the trail away. This closure is where spend becomes a
+        // ledger fact: one `TOKEN_USAGE_RECORDED` per trail `usage` entry, under
+        // a name derived from the operation and the step so a resumed attempt
+        // replays rather than double-counts.
+        //
+        // A closure and not a new dependency: `openedLedger`, `invocation`,
+        // `route` and `options.emittedBy` are all already in scope here, so
+        // `execution-effects` still imports no ledger and the runtime still owes
+        // nothing new to anyone. Attribution is the elected account's, read from
+        // the same `route` the port executes — the value the config door already
+        // admitted, never a second reading of it.
+        recordUsage: (sample) => {
+          recordTokenObservation(openedLedger, {
+            invocation,
+            kind: "USAGE",
+            accountId: route.accountId,
+            tokens: sample.tokensUsed,
+            transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+            emittedBy: options.emittedBy,
+          });
+        },
+      });
+
+      if (options.mode === "SQLITE_SUPERVISOR") {
+        // S8. No S4-S7: this mode binds nothing and spawns nothing of its own.
+        const result = await runSqliteMode({
+          ledger: openedLedger,
+          invocation,
+          effects,
+          emittedBy: options.emittedBy,
+          // Today's behaviour, said out loud. The daemon supervises packets that
+          // may commit locally under a receipt; a read-only packet is a policy
+          // this process has never been asked to run, and when it is, the policy
+          // will arrive with the packet rather than be assumed here.
+          commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+          initiativeId: options.initiativeId,
+          route,
+        });
+        publish("RECONCILED", null);
+        publish("READY", null);
+        logger.log("info", "ready", null, { mode: options.mode, verdict: result.verdict });
+        publish("SUPERVISING", null);
+        logger.log("info", "supervised", null, { finalState: result.finalState });
+      } else {
+        const handles = await startRestateMode({
+          ledger: openedLedger,
+          invocation,
+          scenarioRoot,
+          emittedBy: options.emittedBy,
+          // The same explicit policy as the SQLite site above, for the same
+          // reason: one place a reader can find it, and no default anywhere.
+          commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+          initiativeId: options.initiativeId,
+          effects,
+          route,
+          stack,
+          onPhase: (phase, pid) => {
+            // Published where it happens, in the order it happens. Deferring
+            // SERVER_UP until this call returned made the recorded sequence
+            // disagree with the actual one.
+            if (pid !== undefined) serverPid = pid;
+            publish(phase, null);
+          },
+        });
+        serverPid = handles.server.pid;
+        publish("READY", null);
+        logger.log("info", "ready", null, { mode: options.mode, verdict: handles.verdict });
+
+        // From here an unexpected death is terminal, never a restart.
+        terminal = handles.server.exited.then((exit) =>
+          exit.reason === "UNEXPECTED_EXIT" ? "UNEXPECTED_EXIT" : exit.reason,
+        );
+
+        await superviseRestate(handles.server, invocation);
+        publish("SUPERVISING", null);
+        logger.log("info", "supervised", null, { mode: options.mode });
+      }
+    } else {
+      // S3 (V2 concurrency C3): many walks, one plane.
+      //
+      // One singleton, one lease store and one harness; N ledgers and N leases.
+      // The push order is C2's, extended: each walk's ledger then its lease, and
+      // the shared harness **last**, so the reverse unwind reaps every child
+      // before any worktree is handed back. One harness and not N: N would give
+      // the unwind N reapers in an order nothing specifies.
+      leaseStore = openLeaseStore(leaseStorePath(root));
+      const openedLeaseStore = leaseStore;
+      stack.push({
+        name: "lease-store",
+        release: (): Promise<string | null> => {
+          try {
+            openedLeaseStore.close();
+            return Promise.resolve(null);
+          } catch (error: unknown) {
+            return Promise.resolve(classify(error));
+          }
+        },
+      });
+
+      const holds = new Map<string, { hold: LeaseHold; arbiter: Arbiter }>();
+      const beats = new Map<string, NodeJS.Timeout>();
+      let sharedHarness: AgentHarness | null = null;
+
+      /** Stop one walk's heartbeat. Idempotent; an absent walk is not an error. */
+      const stopBeat = (taskId: string): void => {
+        const beat = beats.get(taskId);
+        if (beat === undefined) return;
+        clearInterval(beat);
+        beats.delete(taskId);
+      };
+
+      /**
+       * This walk lost its worktree: stop beating and reap **only its child**.
+       *
+       * `interrupt` and not `closeAll`. Under N walks the shared harness holds
+       * every walk's session, so `closeAll` would answer one walk's lost lease
+       * by killing its siblings' providers — a correct abort for the loser and
+       * an unexplained death for everyone else. `interrupt` walks one session's
+       * own signal ladder against the one pid its handle created, so the blast
+       * radius is the walk that actually lost.
+       *
+       * The killed child makes this walk's effect fail, and the walk then
+       * settles through the classified-failure path the scheduler already owns
+       * — the same mechanism C2 uses, narrowed to one session.
+       */
+      const abortWalk = (walk: ScheduledWalk, code: DaemonErrorCode, reason: string): void => {
+        const { taskId, attempt, execution } = walk.spec;
+        stopBeat(taskId);
+        logger.log("error", "lease.lost", code, { taskId, reason });
+        const harness = sharedHarness;
+        if (harness === null) return;
+        void harness
+          .interrupt(executionSessionId(taskId, attempt, execution.route.accountId))
+          .then(
+            () => {
+              logger.log("info", "walk.reaped", null, { taskId });
+            },
+            (error: unknown) => {
+              logger.log("error", "walk.reap.failed", "SHUTDOWN", { reason: classify(error) });
+            },
+          );
+      };
+
+      const ports: SchedulerPorts = {
+        acquire: async (walk) => {
+          const walkRoot: ScenarioRoot = resolveScenarioRoot(walk.spec.scenarioId);
+          const walkLedger = openLedger(scenarioLedgerPath(walkRoot));
+          stack.push({
+            name: "ledger",
+            release: (): Promise<string | null> => {
+              try {
+                walkLedger.close();
+                return Promise.resolve(null);
+              } catch (error: unknown) {
+                return Promise.resolve(classify(error));
+              }
+            },
+          });
+          const walkInvocation = deriveInvocation(
+            walk.spec.taskId,
+            walk.spec.attempt,
+            walk.spec.submittedAt,
+            walk.spec.submissionDigest,
+          );
+          const walkArbiter = createArbiter({
+            store: openedLeaseStore,
+            ledger: walkLedger,
+            invocation: walkInvocation,
+            worktreePath: walk.worktreePath,
+            holder: walk.spec.emittedBy,
+            identity,
+            inspector,
+            ttlMs: LEASE_TTL_MS,
+            now: clock,
+          });
+          const acquisition = await walkArbiter.acquire();
+          if (!acquisition.ok) {
+            logger.log("error", "lease.refused", "STARTUP", {
+              reason: acquisition.reason,
+              at: acquisition.at,
+            });
+            return { ok: false, reason: acquisition.reason, at: acquisition.at };
+          }
+          const hold = acquisition.hold;
+          holds.set(walk.spec.taskId, { hold, arbiter: walkArbiter });
+          ledgers.set(walk.spec.taskId, { ledger: walkLedger, invocation: walkInvocation });
+          stack.push({
+            name: "lease",
+            release: (): Promise<string | null> => {
+              try {
+                // Stop this walk's beat before giving its lease back, so a beat
+                // cannot re-extend a lease that has just been released.
+                stopBeat(walk.spec.taskId);
+                hold.release("RELEASED");
+                walkArbiter.flush();
+                logger.log("info", "lease.released", null, { fence: hold.fence });
+                return Promise.resolve(null);
+              } catch (error: unknown) {
+                return Promise.resolve(classify(error));
+              }
+            },
+          });
+
+          // Every acquired walk beats. Without this the fenced lease degrades
+          // to a plain TTL exactly when several tasks run at once: a walk
+          // longer than the ttl expires while it runs, a successor lawfully
+          // takes the worktree, and the running walk never finds out.
+          const beat = setInterval(() => {
+            let outcome: ArbiterRenewal;
+            try {
+              outcome = hold.renew();
+            } catch (error: unknown) {
+              abortWalk(walk, "SUPERVISION", classify(error));
+              return;
+            }
+            if (outcome.lost) {
+              abortWalk(walk, "STARTUP", "LEASE_FENCE_LOST");
+            } else if (!outcome.ok) {
+              logger.log("warn", "lease.renewal.refused", null, {
+                taskId: walk.spec.taskId,
+                reason: outcome.reason,
+              });
+            }
+          }, LEASE_RENEW_INTERVAL_MS);
+          beat.unref();
+          beats.set(walk.spec.taskId, beat);
+          return { ok: true, reason: "GRANTED", at: "walk.worktreePath" };
+        },
+        run: async (walk) => {
+          const held = ledgers.get(walk.spec.taskId);
+          const harness = sharedHarness;
+          if (held === undefined || harness === null) {
+            throw new StartupError("a walk was run before its ledger and harness existed");
+          }
+          const walkRoot: ScenarioRoot = resolveScenarioRoot(walk.spec.scenarioId);
+          const { route } = walk.spec.execution;
+          const effects = createExecutionEffects({
+            port: executionPortFor(walk.spec.execution, walk.spec.taskId, harness),
+            route,
+            request: {
+              taskId: walk.spec.taskId,
+              attempt: walk.spec.attempt,
+              identity: walk.spec.emittedBy,
+              reattach: null,
+            },
+            scenarioRoot: walkRoot,
+            recordUsage: (sample) => {
+              recordTokenObservation(held.ledger, {
+                invocation: held.invocation,
+                kind: "USAGE",
+                accountId: route.accountId,
+                tokens: sample.tokensUsed,
+                transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+                emittedBy: walk.spec.emittedBy,
+              });
+            },
+          });
+          const result = await runSqliteMode({
+            ledger: held.ledger,
+            invocation: held.invocation,
+            effects,
+            emittedBy: walk.spec.emittedBy,
+            commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+            initiativeId: walk.spec.initiativeId,
+            route,
+          });
+          return result.finalState;
+        },
+        release: (walk, cause) => {
+          const held = holds.get(walk.spec.taskId);
+          if (held === undefined) return;
+          stopBeat(walk.spec.taskId);
+          held.hold.release(cause);
+          held.arbiter.flush();
+        },
+      };
+
+      // Both gates, in order, for every walk — before any child can exist.
+      const admission = await admitWalks(scheduled, ports);
+      publish("LEDGER_OPEN", null);
+
+      // The harness is pushed AFTER every lease, so the reverse unwind reaps
+      // before it releases; and it is created before any walk runs, so there is
+      // no window in which a child exists that the unwind would not find.
+      const harness = createAgentHarness();
+      sharedHarness = harness;
+      reapChildren = (): Promise<readonly string[]> => harness.closeAll();
+      stack.push({
+        name: "agent-harness",
+        release: async (): Promise<string | null> => {
+          try {
+            const reaped = await harness.closeAll();
+            logger.log("info", "harness.reaped", null, { sessions: reaped.length });
+            return null;
+          } catch (error: unknown) {
+            return classify(error);
+          }
+        },
+      });
+
+      const ran = await runAdmitted(admission.admitted, ports);
+      walkOutcomes = [...admission.refused, ...ran];
+      for (const outcome of walkOutcomes) {
+        if (outcome.ok) {
+          logger.log("info", "walk.settled", null, { taskId: outcome.taskId, finalState: outcome.finalState });
+        } else {
+          logger.log("error", "walk.refused", "STARTUP", {
+            taskId: outcome.taskId,
+            refusal: outcome.refusal,
+            reason: outcome.reason,
+            at: outcome.at,
+          });
+        }
+      }
       publish("RECONCILED", null);
       publish("READY", null);
-      logger.log("info", "ready", null, { mode: options.mode, verdict: result.verdict });
+      logger.log("info", "ready", null, { mode: options.mode, walks: walkOutcomes.length });
       publish("SUPERVISING", null);
-      logger.log("info", "supervised", null, { finalState: result.finalState });
-    } else {
-      const handles = await startRestateMode({
-        ledger: openedLedger,
-        invocation,
-        scenarioRoot,
-        emittedBy: options.emittedBy,
-        // The same explicit policy as the SQLite site above, for the same
-        // reason: one place a reader can find it, and no default anywhere.
-        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
-        initiativeId: options.initiativeId,
-        effects,
-        route,
-        stack,
-        onPhase: (phase, pid) => {
-          // Published where it happens, in the order it happens. Deferring
-          // SERVER_UP until this call returned made the recorded sequence
-          // disagree with the actual one.
-          if (pid !== undefined) serverPid = pid;
-          publish(phase, null);
-        },
-      });
-      serverPid = handles.server.pid;
-      publish("READY", null);
-      logger.log("info", "ready", null, { mode: options.mode, verdict: handles.verdict });
-
-      // From here an unexpected death is terminal, never a restart.
-      terminal = handles.server.exited.then((exit) =>
-        exit.reason === "UNEXPECTED_EXIT" ? "UNEXPECTED_EXIT" : exit.reason,
-      );
-
-      await superviseRestate(handles.server, invocation);
-      publish("SUPERVISING", null);
-      logger.log("info", "supervised", null, { mode: options.mode });
     }
   } catch (error: unknown) {
     const code = classify(error);
