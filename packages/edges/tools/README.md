@@ -54,35 +54,66 @@ which takes a direct dependency on this package once stage 3 lands. Nothing
 depends on it today. When a domain takes it by injection, that is the trigger
 to move the type.
 
-## One transport, and it is the one that is implemented
+## Two transports, and each one is implemented
 
-`TOOL_TRANSPORT_KINDS` is exactly `["STDIO"]`.
+`TOOL_TRANSPORT_KINDS` is exactly `["STDIO", "HTTP_LOOPBACK"]`.
 
 MCP defines two standard transports: **stdio** — newline-delimited JSON-RPC on
-a spawned child's stdin/stdout — and **Streamable HTTP**. This package
-implements the first and only the first. A one-member union reads oddly beside
-a union that could hold two, and that is deliberate: a member nothing can
-produce is a vocabulary entry pretending to be a guarantee.
+a spawned child's stdin/stdout — and **Streamable HTTP**. This package now
+implements both, and the union grew only when the second one existed: a member
+nothing can produce is a vocabulary entry pretending to be a guarantee, so
+stage 1 held it at one member and said the second would "arrive with the
+transport rather than before it". It did. Every member has an admission that
+can emit it and a connection that can speak it, and the suite asserts that
+rather than the README claiming it.
 
-A loopback Streamable HTTP leg is later work, gated on its own protocol record.
-Until it lands, a URL-bearing descriptor is representable input and is
-**refused** — never made unrepresentable by a narrow type, because a refusal
-that is a fact about a TypeScript declaration is not a fact about running code.
-The refusal parses the URL and judges it field by field (`protocol`,
-`credentials`, `hostname`, `port`), so the mechanism the later stage widens
-already exists and is already exercised. `localhost` is refused with everything
-else: resolving a name means DNS, and a name that resolves on-box today is a
-remote server tomorrow.
+**`HTTP_LOOPBACK` says its own bound.** The leg reaches `127.0.0.1` and `::1`
+and nothing else, over plaintext, on one endpoint. A URL is judged field by
+field at admission — `protocol`, `credentials`, `hostname`, `port` — and every
+one of those refusals predates this leg and still fires. `localhost` is refused
+with everything else: resolving a name means DNS, and a name that resolves
+on-box today is a remote server tomorrow. `https:` is refused too, because a
+loopback TLS endpoint needs a trust decision this package cannot make honestly.
+
+The admitted URL is stored exactly as the descriptor wrote it and used verbatim:
+one endpoint serves every method, so there is nothing to join and nothing to
+construct. The transport is the only file in this package permitted to name
+`fetch`, it uses the platform global rather than a socket library — `node:net`,
+`node:http`, `node:https` and `node:tls` stay banned in every file including
+that one — and it can carry no credential of any shape. The architecture fence
+asserts each of those by name.
 
 ## What conformance is claimed
 
-**None that was measured against a third party.** The client is hand-rolled
-against the published protocol — this repository already hand-rolls two
+**None that was measured against a third party, and none against protocol bytes
+on disk.** The client is hand-rolled — this repository already hand-rolls two
 provider wire protocols the same way, and this package adds no dependency
-either — and it is drilled against a fake MCP server this repository owns. No
-handshake with a real third-party MCP server has been performed here, and none
-is claimed. `TOOL_MCP_PROTOCOL_VERSION` records the revision the client speaks;
-it records what was built against, not what was interoperated with.
+either — and it is drilled against fakes this repository owns: a spawned fake
+server for stdio, and a scripted responder substituted for the platform `fetch`
+for the loopback leg.
+
+`MCP_PROTOCOL_RECORD` is the machine-readable half of this section, and the
+fence asserts the two cannot disagree. Read together:
+
+- **The revision was cited, not vendored.** `SPEC_MANIFEST_DIGEST` is `NONE`
+  because no protocol bytes were placed on disk, so there is nothing to digest
+  and the client's constants are asserted against no manifest.
+  `SPEC_CITATION` names the revision, the specification URL and the retrieval
+  date instead. This leg is therefore built against a **cited** revision rather
+  than against reviewed bytes, and that is the weaker of the two footings the
+  plan defines.
+- **No socket was ever opened.** `SOCKET_EXERCISED` is `NONE`: the drills
+  substitute `globalThis.fetch`. `LIVE_CONFORMANCE` is `NONE`: no third-party
+  server is contacted anywhere in this repository.
+- **Every unimplemented facility is a refusal or an absence, not a gap.** The
+  server-initiated stream is never opened, resumption is not implemented,
+  batching is refused, no `origin` header is sent, redirects are refused rather
+  than followed, `nextCursor` is not followed and `isError` is not interpreted.
+  Each has a field in the record and a drill behind it.
+
+`TOOL_MCP_PROTOCOL_VERSION` records the revision the client speaks and now also
+compares: `initialize` refuses a server that agrees a different revision, or
+none. It records what was built against, not what was interoperated with.
 
 ## Credentials are unrepresentable, by shape
 
@@ -114,9 +145,15 @@ admission can emit it, and no connection can be opened on it. Naming a real
 transport on those paths would be a receipt asserting a fact about a server that
 does not exist, which is exactly what the receipt was built to make impossible.
 
-**Persisting a receipt into the ledger, and projecting it through the event
-stream, are not done here and are not claimed here.** This stage returns the
-receipt to its caller and stops.
+**A receipt is persisted and projected, and neither is done here.** Since V2-B4b
+stage 2 `@acp/runtime`'s recorder writes one to the ledger as nine named
+scalars, and since stage 3C it does so through a production door — both of them,
+after stage 3D. The event stream projects a `TOOL_CALL_RECORDED` row as its
+payload **key names** and a byte size, never a value. What this package does is
+unchanged by any of that: it returns the receipt to its caller and stops. The
+distinction is worth keeping precisely because the persistence exists now — this
+package owns the receipt's shape and its bounds, and owns nothing about where it
+is later written or how it is later read.
 
 ## Names are bounded by one grammar, and it is not this package's
 
@@ -176,6 +213,11 @@ join and the receipt live.
 | `TOOL_CALL_TIMEOUT_MS` | how long one call may stay unanswered |
 | `TOOL_SERVER_LIFETIME_MS` | the child's hard backstop |
 | `TOOL_SERVER_ENV_KEYS` | the whole environment a tool server child receives |
+| `TOOL_HTTP_REQUEST_TIMEOUT_MS` | how long one loopback request may stay unanswered |
+| `TOOL_HTTP_STREAM_BYTES_MAX` | the most bytes one response body may carry |
+| `TOOL_HTTP_STREAM_EVENTS_MAX` | the most events one response may carry |
+| `TOOL_HTTP_CLOSE_TIMEOUT_MS` | how long a best-effort session teardown may take |
+| `MCP_PROTOCOL_RECORD` | what this client implements of the revision it names |
 | `TOOL_MCP_PROTOCOL_VERSION` | the revision this client was built against |
 | `TOOL_MCP_CLIENT_NAME` | what the plane calls itself in `initialize` |
 | `admitToolServer` | the only producer of an admitted server |

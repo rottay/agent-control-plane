@@ -37,14 +37,47 @@ import { TOOL_SERVER_ENV_KEYS, TOOL_TRANSPORT_KINDS } from "../contract/index.js
  * on it is already a decision: the command was admitted, the environment was
  * built from the allowlist, the tool list is non-empty and free of duplicates.
  */
-export interface AdmittedToolServer {
+interface AdmittedToolServerBase {
   readonly serverId: string;
   readonly kind: ToolTransportKind;
+  readonly allowlist: readonly ToolAllowlistEntry[];
+}
+
+/**
+ * A spawned server: a command, its arguments, and the three-variable
+ * environment it will be given.
+ *
+ * Exported for **one sibling module and no further**: `src/stdio/index.ts`
+ * spawns from it and needs the narrowed shape, because the union it used to
+ * take no longer carries `command`. It is deliberately **not** re-exported from
+ * the package barrel — a type a sibling imports costs no public surface, and
+ * the day an outside consumer needs to narrow is the day it earns a barrel row.
+ * The loopback sibling below is exported on the same terms and for the same
+ * one reader: `src/http-loopback/index.ts`. Neither reaches the barrel.
+ */
+export interface AdmittedStdioToolServer extends AdmittedToolServerBase {
+  readonly kind: "STDIO";
   readonly command: string;
   readonly args: readonly string[];
   readonly env: Readonly<Record<string, string>>;
-  readonly allowlist: readonly ToolAllowlistEntry[];
 }
+
+/**
+ * A loopback server: one endpoint, stored exactly as the descriptor wrote it.
+ *
+ * No `command`, no `args`, and **no `env`** — there is no child, so the
+ * environment allowlist is not read at all on this branch. The URL is the
+ * descriptor's own string, kept verbatim after `classifyUrl` proved it parses:
+ * Streamable HTTP uses one endpoint for every method, so there is no path to
+ * join and nothing to construct, which is what keeps `new URL(` confined to
+ * this file.
+ */
+export interface AdmittedHttpLoopbackToolServer extends AdmittedToolServerBase {
+  readonly kind: "HTTP_LOOPBACK";
+  readonly url: string;
+}
+
+export type AdmittedToolServer = AdmittedStdioToolServer | AdmittedHttpLoopbackToolServer;
 
 export type ToolAdmissionOutcome =
   | { readonly ok: true; readonly server: AdmittedToolServer }
@@ -78,35 +111,51 @@ function refuse(refusal: ToolRefusal, at: string): ToolAdmissionOutcome {
  * only. That is also why no `node:dns` ban would be sufficient on its own —
  * a name is resolved by the network stack, importing nothing.
  */
-function refuseUrl(raw: string): ToolAdmissionOutcome {
+type UrlClassification =
+  | { readonly ok: true; readonly url: string }
+  | { readonly ok: false; readonly refusal: ToolRefusal; readonly at: string };
+
+/**
+ * Judge a URL field by field, and say which way it went.
+ *
+ * A classifier since V2-B4b S4-1, and read in opposite directions by its two
+ * consumers: a STDIO descriptor carrying a URL is refused whatever the verdict,
+ * because it is a remote server that lied about its transport; an
+ * HTTP_LOOPBACK descriptor is admitted on `ok: true`. Every field-exact refusal
+ * below is unchanged, which is why the admission suite's table does not move.
+ */
+function classifyUrl(raw: string): UrlClassification {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return refuse("TRANSPORT_REFUSED", "descriptor.url");
+    return { ok: false, refusal: "TRANSPORT_REFUSED", at: "descriptor.url" };
   }
+  // `https:` stays refused, and the reason is worth writing down: a loopback
+  // TLS endpoint needs a trust decision this package cannot make honestly, and
+  // plaintext to a literal loopback address on this host is what the
+  // restriction authorised.
   if (url.protocol !== "http:") {
-    return refuse("TRANSPORT_REFUSED", "descriptor.url.protocol");
+    return { ok: false, refusal: "TRANSPORT_REFUSED", at: "descriptor.url.protocol" };
   }
   if (url.username !== "" || url.password !== "") {
-    return refuse("TRANSPORT_REFUSED", "descriptor.url.credentials");
+    return { ok: false, refusal: "TRANSPORT_REFUSED", at: "descriptor.url.credentials" };
   }
   // `URL` brackets an IPv6 host; compare against the literal it wraps.
   const hostname = url.hostname.replace(/^\[(.*)\]$/, "$1");
   if (!TOOL_LOOPBACK_HOSTS.includes(hostname)) {
-    return refuse("TRANSPORT_REFUSED", "descriptor.url.hostname");
+    return { ok: false, refusal: "TRANSPORT_REFUSED", at: "descriptor.url.hostname" };
   }
   const port = Number(url.port);
   if (url.port === "" || !Number.isInteger(port) || port < 1 || port > 65_535) {
-    return refuse("TRANSPORT_REFUSED", "descriptor.url.port");
+    return { ok: false, refusal: "TRANSPORT_REFUSED", at: "descriptor.url.port" };
   }
-  // A well-formed loopback URL, and still refused: no transport in
-  // `TOOL_TRANSPORT_KINDS` carries one. This is the honest shape of "not yet"
-  // — the parse happened, every field was judged, and the descriptor is
-  // refused for the reason that is actually true, rather than for a
-  // manufactured one. The stage that adds the transport widens the union and
-  // returns this leg's server; it deletes nothing above.
-  return refuse("TRANSPORT_REFUSED", "descriptor.url");
+  // A well-formed loopback URL. Stage 1 refused one here because no transport
+  // carried it and said in as many words that "the stage that adds the
+  // transport widens the union and returns this leg's server; it deletes
+  // nothing above". This is that stage: nothing above was deleted, and the
+  // verdict is now returned rather than refused.
+  return { ok: true, url: raw };
 }
 
 /**
@@ -164,18 +213,51 @@ export function admitToolServer(descriptor: ToolServerDescriptor): ToolAdmission
     return refuse("TRANSPORT_REFUSED", "descriptor.transport");
   }
 
-  // A descriptor that claims STDIO and carries a URL is a remote server that
-  // lied about its transport. It is judged as a URL — parsed, field by field —
-  // rather than dismissed for having the field at all.
-  if (descriptor.url !== undefined) {
+  // V2-B4b S4-1. The two legs part here, and the allowlist below is shared:
+  // the whole substance of the loopback packet is that everything after this
+  // branch is transport-independent.
+  const isLoopback = descriptor.transport === "HTTP_LOOPBACK";
+  // Captured where each is proved, rather than re-asserted at the return. A
+  // value narrowed in one branch is not narrowed at the bottom of a function,
+  // and a cast there would be re-stating a check instead of carrying it.
+  let admittedUrl = "";
+  let admittedCommand = "";
+
+  if (isLoopback) {
+    // A descriptor asking to spawn AND to connect is refused, never
+    // disambiguated: guessing which half the operator meant is how a config
+    // that says two things becomes a child nobody asked for.
+    if (descriptor.command !== undefined) {
+      return refuse("SERVER_NOT_ADMITTED", "descriptor.command");
+    }
+    if (descriptor.args !== undefined) {
+      return refuse("SERVER_NOT_ADMITTED", "descriptor.args");
+    }
     if (typeof descriptor.url !== "string") {
       return refuse("TRANSPORT_REFUSED", "descriptor.url");
     }
-    return refuseUrl(descriptor.url);
-  }
+    const classified = classifyUrl(descriptor.url);
+    if (!classified.ok) return refuse(classified.refusal, classified.at);
+    admittedUrl = classified.url;
+  } else {
+    // A descriptor that claims STDIO and carries a URL is a remote server that
+    // lied about its transport. It is judged as a URL — parsed, field by field
+    // — rather than dismissed for having the field at all, and it stays refused
+    // whether or not the URL turns out to be loopback.
+    if (descriptor.url !== undefined) {
+      if (typeof descriptor.url !== "string") {
+        return refuse("TRANSPORT_REFUSED", "descriptor.url");
+      }
+      const classified = classifyUrl(descriptor.url);
+      return classified.ok
+        ? refuse("TRANSPORT_REFUSED", "descriptor.url")
+        : refuse(classified.refusal, classified.at);
+    }
 
-  if (typeof descriptor.command !== "string" || !admitCommand(descriptor.command)) {
-    return refuse("SERVER_NOT_ADMITTED", "descriptor.command");
+    if (typeof descriptor.command !== "string" || !admitCommand(descriptor.command)) {
+      return refuse("SERVER_NOT_ADMITTED", "descriptor.command");
+    }
+    admittedCommand = descriptor.command;
   }
 
   // Read back through `unknown` before validating. The declared type says
@@ -225,12 +307,26 @@ export function admitToolServer(descriptor: ToolServerDescriptor): ToolAdmission
     allowlist.push(Object.freeze({ name, writes }));
   }
 
+  if (isLoopback) {
+    return {
+      ok: true,
+      server: Object.freeze({
+        serverId: descriptor.serverId,
+        kind: "HTTP_LOOPBACK",
+        // The descriptor's own string, verbatim. Nothing is normalized: a URL
+        // this package rewrote would be a URL the operator did not review.
+        url: admittedUrl,
+        allowlist: Object.freeze(allowlist),
+      }),
+    };
+  }
+
   return {
     ok: true,
     server: Object.freeze({
       serverId: descriptor.serverId,
       kind: "STDIO",
-      command: descriptor.command,
+      command: admittedCommand,
       args: Object.freeze(args.map(String)),
       env: buildToolServerEnv(),
       allowlist: Object.freeze(allowlist),

@@ -170,3 +170,21 @@ describe("the widened transport member survives every path (V2-B4b S4-0)", () =>
     expect(toolReceipt(input)).toEqual(toolReceipt(input));
   });
 });
+
+describe("the loopback transport is a receipt member like any other (V2-B4b S4-1)", () => {
+  it("keeps the same ten members and survives the redaction pass", () => {
+    const receipt = toolReceipt({ ...base, transport: "HTTP_LOOPBACK" });
+    expect(Object.keys(receipt).sort()).toEqual(MEMBERS);
+    expect(receipt.transport).toBe("HTTP_LOOPBACK");
+
+    const redacted = toolReceipt({
+      ...base,
+      transport: "HTTP_LOOPBACK",
+      toolName: "sk-ant-api03-" + "A".repeat(32),
+    });
+    expect(redacted.refusal).toBe("RESULT_UNSAFE");
+    // Preserved through the passthrough, exactly as the unresolved word is.
+    expect(redacted.transport).toBe("HTTP_LOOPBACK");
+    expect(Object.keys(redacted).sort()).toEqual(MEMBERS);
+  });
+});

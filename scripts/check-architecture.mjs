@@ -4781,6 +4781,67 @@ const V2B4B_S40_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b S4-1 — the loopback Streamable HTTP leg, and the close of Stage 4.
+ *
+ * The second transport, and **one transport rather than one capability**: the
+ * two-level allowlist, the write-role subset, the ceilings, the privacy guard,
+ * the receipt and the redaction law are reused unchanged. The whole substance
+ * of the packet is that they are transport-independent, and the port suite's
+ * parity table is where that stops being prose.
+ *
+ * It also closes a vacuity live since stage 1. The admission's parsed-URL
+ * refusal has never had an admitted sibling, and its own comment said "the
+ * stage that adds the transport widens the union and returns this leg's server;
+ * it deletes nothing above". Nothing above was deleted.
+ *
+ * **Built under the citation gate, and the record says so.** The revision was
+ * cited rather than vendored, so `SPEC_MANIFEST_DIGEST` reads `NONE`, no
+ * constant is asserted against bytes, and the README carries the uncited
+ * qualifier beside its conformance claim. L-B4B-16 is what keeps those two in
+ * step; a record full of `NONE` beside a README reading as though bytes were
+ * reviewed is the overclaim the protocol gate exists to prevent.
+ *
+ * **No socket is opened anywhere, including in the drills.** They substitute
+ * `globalThis.fetch`. That is a ruling with three measured reasons — the
+ * builtin bans would have to be weakened otherwise, undici `fetch` is recorded
+ * twice in this repository as intermittent against loopback inside a Vitest
+ * worker, and the swap is the house precedent — and the limitation is recorded
+ * as `SOCKET_EXERCISED: "NONE"` rather than hidden.
+ *
+ * `packages/edges/tools/src/stdio/index.ts` is in this write-set by **owner
+ * authorization**, not by drift: the discriminated `AdmittedToolServer` the
+ * packet requires removes `command` from the shared shape, so the spawn site
+ * needs the narrowed arm. Two lines, and the arm is exported to one sibling
+ * rather than to the barrel, so no public surface moves for it.
+ *
+ * `TOOLS_PUBLIC_EXPORTS` moves 37 → **42** with the README table in both
+ * directions; `PATH_SCOPED_LAWS` 63 → **65** for L-B4B-15 and L-B4B-16;
+ * L-B4B-1 gains a second named authority and `TOOLS_FORBIDDEN_BUILTINS` is
+ * untouched, which is the proof the leg uses the platform global rather than a
+ * socket library. No refusal word is added: `TRANSPORT_REFUSED` and
+ * `PROTOCOL_VIOLATION` already carry every case.
+ */
+const V2B4B_S41_WRITE_SET = [
+  "packages/edges/tools/src/contract/index.ts",
+  "packages/edges/tools/src/admission/index.ts",
+  "packages/edges/tools/src/http-loopback/index.ts",
+  "packages/edges/tools/src/port/index.ts",
+  "packages/edges/tools/src/client/index.ts",
+  "packages/edges/tools/src/stdio/index.ts",
+  "packages/edges/tools/src/index.ts",
+  "packages/edges/tools/README.md",
+  "packages/edges/tools/test/http-loopback/index.test.ts",
+  "packages/edges/tools/test/testing/index.ts",
+  "packages/edges/tools/test/contract/index.test.ts",
+  "packages/edges/tools/test/admission/index.test.ts",
+  "packages/edges/tools/test/port/index.test.ts",
+  "packages/edges/tools/test/client/index.test.ts",
+  "packages/edges/tools/test/receipt/index.test.ts",
+  "packages/edges/tools/test/stdio/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5169,6 +5230,7 @@ const WRITE_SET = [
   ...V2B4B_S3D_WRITE_SET,
   ...V2B4B_S3E_WRITE_SET,
   ...V2B4B_S40_WRITE_SET,
+  ...V2B4B_S41_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6084,6 +6146,16 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the receipt's transport is resolved, never asserted",
     scope: "the tool edge's contract, receipt and port sites",
+  },
+  // V2-B4b S4-1. One network authority, bounded; and a capability record that
+  // cannot drift from the prose beside it.
+  {
+    law: "the tool edge's one fetch site carries no credential and invents no target",
+    scope: "packages/edges/tools/src/http-loopback/index.ts",
+  },
+  {
+    law: "the protocol record and the tools README cannot disagree",
+    scope: "the tool edge's contract site and README",
   },
 ];
 
@@ -13008,6 +13080,7 @@ const TOOLS_FORBIDDEN_BUILTINS = [
 
 /** Exactly one file spawns, and it is the transport. */
 const TOOLS_SPAWN_SITE = "packages/edges/tools/src/stdio/index.ts";
+const TOOLS_HTTP_SITE = "packages/edges/tools/src/http-loopback/index.ts";
 /** Exactly one file decides what may be talked to, and what loopback means. */
 const TOOLS_ADMISSION_SITE = "packages/edges/tools/src/admission/index.ts";
 const TOOLS_RECEIPT_SITE = "packages/edges/tools/src/receipt/index.ts";
@@ -13096,6 +13169,12 @@ const TOOLS_PUBLIC_EXPORTS = [
   "TOOL_ARGUMENTS_BYTES_MAX",
   "TOOL_RESULT_BYTES_MAX",
   "TOOL_FRAME_BYTES_MAX",
+  // V2-B4b S4-1: the loopback leg's four ceilings and its capability record.
+  "TOOL_HTTP_CLOSE_TIMEOUT_MS",
+  "TOOL_HTTP_REQUEST_TIMEOUT_MS",
+  "TOOL_HTTP_STREAM_BYTES_MAX",
+  "TOOL_HTTP_STREAM_EVENTS_MAX",
+  "MCP_PROTOCOL_RECORD",
   "TOOL_CONTENT_STRING_MAX",
   "TOOL_CALL_TIMEOUT_MS",
   "TOOL_SERVER_LIFETIME_MS",
@@ -13157,9 +13236,14 @@ if (tracked.status === 0) {
       fail(relativePath + " imports node:child_process; only " + TOOLS_SPAWN_SITE + " may");
     }
     // `fetch` is a global here, so the builtin ban above is not sufficient on
-    // its own. Nothing in this package may reach for it, tests included.
-    if (/(^|[^A-Za-z0-9_$.])fetch\s*\(/.test(code)) {
-      fail(relativePath + " calls fetch(; the tool edge reaches no network");
+    // its own. V2-B4b S4-1 confines it to one file by exact path — the
+    // `TOOLS_SPAWN_SITE` idiom applied to a second authority — rather than
+    // lifting the ban: everywhere else in this package, tests included, still
+    // reaches no network. `TOOLS_FORBIDDEN_BUILTINS` is unchanged and applies to
+    // the new file too, which is the proof the transport uses the platform
+    // global rather than a socket library.
+    if (relativePath !== TOOLS_HTTP_SITE && /(^|[^A-Za-z0-9_$.])fetch\s*\(/.test(code)) {
+      fail(relativePath + " calls fetch(; only " + TOOLS_HTTP_SITE + " may");
     }
   }
   for (const relativePath of [TOOLS_SPAWN_SITE]) {
@@ -13817,7 +13901,12 @@ if (tracked.status === 0) {
   } else {
     transportScanned += 1;
     const code = stripComments(portSource);
-    if (/transport:\s*"/.test(code)) {
+    // Every quote JavaScript has, not only the double one. The narrow class was
+    // a hole the S4-0 post-audit named: a single-quoted or backtick literal
+    // spells the same defect and the law would not have seen it. The comment is
+    // narrowed with the class -- what is refused is a *typed* transport, in any
+    // quoting.
+    if (/transport:\s*["'\x60]/.test(code)) {
       fail(
         TOOLS_PORT_SITE +
           " writes a transport as a string literal; the receipt's transport is resolved from" +
@@ -13868,6 +13957,130 @@ if (tracked.status === 0) {
   notes.push(
     "the tool receipt resolves its transport from the admitted map, and the unresolved word is not a transport kind",
   );
+}
+
+// L-B4B-15 -- the one fetch site is bounded.
+//
+// L-B4B-1 says where the network authority lives; this says what it may do
+// there. An exception that licensed a file to reach the network without
+// bounding what it sends would be a wider grant than the one that was made.
+{
+  let httpScanned = 0;
+  const httpSource = readIfPresent(TOOLS_HTTP_SITE);
+  if (httpSource === null) {
+    fail(TOOLS_HTTP_SITE + " is missing; the fetch exception would license a file that does not exist");
+  } else {
+    httpScanned += 1;
+    const code = stripComments(httpSource);
+
+    // The exception must license something. A site that no longer fetches is an
+    // exception standing over nothing.
+    if (!/(^|[^A-Za-z0-9_$.])fetch\s*\(/.test(code)) {
+      fail(TOOLS_HTTP_SITE + " no longer calls fetch(; the network exception licenses nothing");
+    }
+
+    // The target can only have come from the admitted server. No literal, and
+    // nothing that could assemble one.
+    for (const literal of ["http://", "https://", "127.0.0.1", "::1", "localhost"]) {
+      if (code.includes(literal)) {
+        fail(
+          TOOLS_HTTP_SITE +
+            " contains the URL literal " +
+            literal +
+            "; the endpoint may only be the admitted string, and a transport that can name a" +
+            " target can name a different one",
+        );
+      }
+    }
+    if (code.includes("new URL(")) {
+      fail(TOOLS_HTTP_SITE + " parses a URL; parsing belongs to the admission, and one endpoint serves every method");
+    }
+
+    // The bounds that make the leg refusable rather than open-ended.
+    if (!code.includes('redirect: "manual"')) {
+      fail(TOOLS_HTTP_SITE + " no longer sets redirect: \"manual\"; a followed redirect is an escape nobody sees");
+    }
+    if (!code.includes("TRANSPORT_REFUSED")) {
+      fail(TOOLS_HTTP_SITE + " no longer refuses a redirect as TRANSPORT_REFUSED");
+    }
+    if (!code.includes("AbortSignal.timeout(")) {
+      fail(TOOLS_HTTP_SITE + " no longer bounds a request in time");
+    }
+
+    // Nothing that could carry a credential, and nothing that could install a
+    // proxy. Node's global fetch ignores HTTP_PROXY unless a dispatcher is
+    // installed; nothing here installs one, and this is what keeps that true.
+    for (const forbidden of [
+      "authorization",
+      "Authorization",
+      "cookie",
+      "proxy-authorization",
+      "Bearer",
+      "credentials:",
+      "dispatcher",
+      "process.env",
+    ]) {
+      if (code.includes(forbidden)) {
+        fail(
+          TOOLS_HTTP_SITE +
+            " names " +
+            forbidden +
+            "; this leg carries no credential and installs no dispatcher, and there is no" +
+            " descriptor field that could supply one",
+        );
+      }
+    }
+  }
+  requireScope("the tool edge's one fetch site carries no credential and invents no target", httpScanned);
+  notes.push("the tool edge's single fetch site names no target, carries no credential and bounds every request");
+}
+
+// L-B4B-16 -- the capability record and the README cannot disagree.
+//
+// Prose drifts from a record silently, and a record full of NONE beside a
+// README claiming conformance is the exact failure the protocol gate exists to
+// prevent. So the two are compared rather than trusted.
+{
+  let recordScanned = 0;
+  const contractForRecord = readIfPresent(TOOLS_CONTRACT_SITE);
+  const toolsReadme = readIfPresent("packages/edges/tools/README.md");
+  if (contractForRecord === null || toolsReadme === null) {
+    fail("the tool edge's contract site or README is missing; the protocol record cannot be checked");
+  } else {
+    recordScanned += 2;
+    const code = stripComments(contractForRecord);
+    const start = code.indexOf("MCP_PROTOCOL_RECORD");
+    const record = start < 0 ? "" : code.slice(start, code.indexOf("} as const);", start));
+    if (record === "") {
+      fail(TOOLS_CONTRACT_SITE + " no longer declares MCP_PROTOCOL_RECORD");
+    } else {
+      // No key may be empty. A blank value is the shape a reader mistakes for
+      // "not applicable" when it means "nobody filled this in".
+      if (/:\s*""/.test(record)) {
+        fail("MCP_PROTOCOL_RECORD carries an empty value; every key names a fact or the literal NONE/UNKNOWN");
+      }
+      // While the no-socket ruling holds, both of these are NONE, and the
+      // README must not claim otherwise.
+      for (const field of ["LIVE_CONFORMANCE", "SOCKET_EXERCISED"]) {
+        if (!new RegExp(field + ':\\s*"NONE"').test(record)) {
+          fail("MCP_PROTOCOL_RECORD." + field + " must read NONE while no socket is exercised");
+        }
+      }
+      // The citation gate: with no bytes on disk there is nothing to digest,
+      // and the README must carry the uncited qualifier beside the claim.
+      if (/SPEC_MANIFEST_DIGEST:\s*"NONE"/.test(record)) {
+        if (!toolsReadme.includes("cited, not vendored")) {
+          fail(
+            "packages/edges/tools/README.md claims conformance without the uncited qualifier while" +
+              " MCP_PROTOCOL_RECORD.SPEC_MANIFEST_DIGEST is NONE; a record of NONE beside a README" +
+              " that reads as though bytes were reviewed is the overclaim the protocol gate exists to prevent",
+          );
+        }
+      }
+    }
+  }
+  requireScope("the protocol record and the tools README cannot disagree", recordScanned);
+  notes.push("the tool edge's protocol record and its README agree on what was cited, exercised and claimed");
 }
 
 // The closed barrel, pinned by equality in both directions.

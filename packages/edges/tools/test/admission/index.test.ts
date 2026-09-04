@@ -39,6 +39,9 @@ describe("a stdio descriptor is admitted, and its environment is built not inher
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.server.kind).toBe("STDIO");
+    // Narrowed on the union V2-B4b S4-1 introduced: `command` belongs to the
+    // stdio arm, and the loopback arm deliberately has none.
+    if (outcome.server.kind !== "STDIO") return;
     expect(outcome.server.command).toBe(command);
     expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false }]);
   });
@@ -48,6 +51,7 @@ describe("a stdio descriptor is admitted, and its environment is built not inher
     const outcome = admitToolServer(stdio());
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
+    if (outcome.server.kind !== "STDIO") return;
     const keys = Object.keys(outcome.server.env);
     for (const key of keys) expect(TOOL_SERVER_ENV_KEYS).toContain(key);
     expect(keys).not.toContain("ACP_TOOLS_LEAK_CANARY");
@@ -259,5 +263,104 @@ describe("a credential cannot be described at all", () => {
       "kind",
       "serverId",
     ]);
+  });
+});
+
+describe("the loopback leg is admitted, and the refusal finally has a sibling (V2-B4b S4-1)", () => {
+  function loopback(overrides: Record<string, unknown> = {}): ToolServerDescriptor {
+    return {
+      serverId: "docs",
+      transport: "HTTP_LOOPBACK",
+      url: "http://127.0.0.1:9000/mcp",
+      tools: [{ name: "docs.search", writes: false }],
+      ...overrides,
+    } as unknown as ToolServerDescriptor;
+  }
+
+  it("admits a loopback endpoint and keeps its URL byte for byte", () => {
+    const outcome = admitToolServer(loopback());
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.server.kind).toBe("HTTP_LOOPBACK");
+    if (outcome.server.kind !== "HTTP_LOOPBACK") return;
+    // Verbatim. A URL this package rewrote would be a URL the operator never
+    // reviewed, and there is nothing to construct: one endpoint serves every
+    // method.
+    expect(outcome.server.url).toBe("http://127.0.0.1:9000/mcp");
+    // No child, so no spawn fields and -- the one worth asserting -- no
+    // environment was built at all on this branch.
+    expect("command" in outcome.server).toBe(false);
+    expect("args" in outcome.server).toBe(false);
+    expect("env" in outcome.server).toBe(false);
+  });
+
+  it("admits the bracketed IPv6 loopback, brackets intact", () => {
+    const outcome = admitToolServer(loopback({ url: "http://[::1]:9000/mcp" }));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok || outcome.server.kind !== "HTTP_LOOPBACK") return;
+    expect(outcome.server.url).toBe("http://[::1]:9000/mcp");
+  });
+
+  it("refuses every endpoint that is not plaintext loopback, field-exactly", () => {
+    const cases: readonly (readonly [string, unknown, string])[] = [
+      ["tls", loopback({ url: "https://127.0.0.1:9000/mcp" }), "descriptor.url.protocol"],
+      ["credentials", loopback({ url: "http://user:pw@127.0.0.1:9000/mcp" }), "descriptor.url.credentials"],
+      ["routable", loopback({ url: "http://10.0.0.5:9000/mcp" }), "descriptor.url.hostname"],
+      // A name, not a literal: resolving it means DNS, and a name that resolves
+      // on-box today is a remote server tomorrow.
+      ["name", loopback({ url: "http://localhost:9000/mcp" }), "descriptor.url.hostname"],
+      ["no port", loopback({ url: "http://127.0.0.1/mcp" }), "descriptor.url.port"],
+      ["port zero", loopback({ url: "http://127.0.0.1:0/mcp" }), "descriptor.url.port"],
+      // Refused at `descriptor.url`, not `.port`: the WHATWG parser rejects a
+      // port above 65535 outright, so the parse fails before the port check is
+      // reached. Pre-existing behaviour, asserted as it is rather than as the
+      // field name might suggest.
+      ["port too high", loopback({ url: "http://127.0.0.1:70000/mcp" }), "descriptor.url"],
+      ["no url", { serverId: "docs", transport: "HTTP_LOOPBACK", tools: [{ name: "docs.search", writes: false }] }, "descriptor.url"],
+    ];
+    for (const [label, descriptor, at] of cases) {
+      const outcome = admitToolServer(descriptor as ToolServerDescriptor);
+      expect({ label, ok: outcome.ok }).toEqual({ label, ok: false });
+      if (outcome.ok) continue;
+      expect({ label, refusal: outcome.refusal, at: outcome.at }).toEqual({
+        label,
+        refusal: "TRANSPORT_REFUSED",
+        at,
+      });
+    }
+  });
+
+  it("refuses a descriptor that asks to spawn and to connect, never disambiguating", () => {
+    const withCommand = admitToolServer(loopback({ command }));
+    expect(withCommand.ok).toBe(false);
+    if (!withCommand.ok) {
+      expect({ refusal: withCommand.refusal, at: withCommand.at }).toEqual({
+        refusal: "SERVER_NOT_ADMITTED",
+        at: "descriptor.command",
+      });
+    }
+    const withArgs = admitToolServer(loopback({ args: ["--x"] }));
+    expect(withArgs.ok).toBe(false);
+    if (!withArgs.ok) expect(withArgs.at).toBe("descriptor.args");
+  });
+
+  it("still refuses a stdio descriptor carrying a well-formed loopback url", () => {
+    // Unchanged by the new leg, and the reason the union widens without
+    // deleting a negative: a STDIO descriptor with a url is a remote server
+    // that lied about its transport, loopback or not.
+    const outcome = admitToolServer({
+      serverId: "docs",
+      transport: "STDIO",
+      command,
+      url: "http://127.0.0.1:9000/mcp",
+      tools: [{ name: "docs.search", writes: false }],
+    });
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect({ refusal: outcome.refusal, at: outcome.at }).toEqual({
+        refusal: "TRANSPORT_REFUSED",
+        at: "descriptor.url",
+      });
+    }
   });
 });

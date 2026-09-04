@@ -182,6 +182,15 @@ export function createToolClient(connection: ToolTransportConnection): ToolClien
     if (typeof result !== "object" || result === null || Array.isArray(result)) {
       return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
     }
+    // V2-B4b S4-1. The revision the server agreed, compared rather than
+    // assumed. Over stdio this was a fidelity gap; over HTTP it is a
+    // contradiction, because the client asserts a revision in a header on every
+    // single request while never having agreed one. Applied to **both**
+    // transports: a check that fired on one only would be a parity break.
+    const agreed = (result as Record<string, unknown>)["protocolVersion"];
+    if (typeof agreed !== "string" || agreed !== TOOL_MCP_PROTOCOL_VERSION) {
+      return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
+    }
     const info = (result as Record<string, unknown>)["serverInfo"];
     if (typeof info !== "object" || info === null || Array.isArray(info)) {
       return refused("PROTOCOL_VIOLATION", AT_RESPONSE);

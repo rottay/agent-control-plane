@@ -10,18 +10,29 @@ import {
   TOOL_REFUSALS,
   TOOL_RESULT_BYTES_MAX,
   TOOL_SERVER_ENV_KEYS,
+  TOOL_HTTP_CLOSE_TIMEOUT_MS,
+  TOOL_HTTP_REQUEST_TIMEOUT_MS,
+  TOOL_HTTP_STREAM_BYTES_MAX,
+  TOOL_HTTP_STREAM_EVENTS_MAX,
+  TOOL_MCP_PROTOCOL_VERSION,
+  MCP_PROTOCOL_RECORD,
   TOOL_TRANSPORT_KINDS,
   TOOL_TRANSPORT_UNRESOLVED,
   TOOL_WRITE_ROLES,
   holdsToolWriteAuthority,
 } from "../../src/contract/index.js";
+import { realpathSync } from "node:fs";
+
 import { admitToolServer } from "../../src/admission/index.js";
 
 describe("the tool vocabulary is closed and honest", () => {
-  it("names exactly one transport, and it is the one that is implemented", () => {
-    // A second member nothing can produce would be the vacuity this repository
-    // refuses elsewhere. The member arrives with the transport.
-    expect([...TOOL_TRANSPORT_KINDS]).toEqual(["STDIO"]);
+  it("names two transports, and each has a producer", () => {
+    // Stage 1 held this at one member and promised the second would "arrive
+    // with the transport rather than before it". V2-B4b S4-1 kept that promise:
+    // both members are emittable by an admission and speakable by a connection,
+    // which is what keeps the union from being the vacuity this repository
+    // refuses. The producers are asserted below, not assumed.
+    expect([...TOOL_TRANSPORT_KINDS]).toEqual(["STDIO", "HTTP_LOOPBACK"]);
   });
 
   it("keeps the refusals sorted, distinct and non-empty", () => {
@@ -96,5 +107,76 @@ describe("the unresolved word is a receipt coordinate, not a transport (V2-B4b S
       refusal: "TRANSPORT_REFUSED",
       at: "descriptor.transport",
     });
+  });
+});
+
+describe("the loopback leg's vocabulary and its capability record (V2-B4b S4-1)", () => {
+  it("gives every transport member an admission that can emit it", () => {
+    // The anti-vacuity assertion, driven rather than argued: a kind no
+    // admission can produce is a union entry pretending to be a capability.
+    // `process.execPath` is this run's own node: absolute, existing, owned by
+    // this uid and not group-writable, which is what `admitCommand` requires.
+    const stdioOutcome = admitToolServer({
+      serverId: "docs",
+      transport: "STDIO",
+      command: realpathSync(process.execPath),
+      tools: [{ name: "docs.search", writes: false }],
+    });
+    const loopbackOutcome = admitToolServer({
+      serverId: "docs",
+      transport: "HTTP_LOOPBACK",
+      url: "http://127.0.0.1:9000/mcp",
+      tools: [{ name: "docs.search", writes: false }],
+    });
+    const emitted = [stdioOutcome, loopbackOutcome]
+      .filter((outcome) => outcome.ok)
+      .map((outcome) => outcome.server.kind);
+    expect(emitted.sort()).toEqual([...TOOL_TRANSPORT_KINDS].sort());
+  });
+
+  it("keeps the unresolved word out of the union", () => {
+    expect((TOOL_TRANSPORT_KINDS as readonly string[]).includes(TOOL_TRANSPORT_UNRESOLVED)).toBe(
+      false,
+    );
+  });
+
+  it("orders the ceilings so a frame the reader accepts is never cut off beneath it", () => {
+    expect(TOOL_FRAME_BYTES_MAX).toBeLessThanOrEqual(TOOL_HTTP_STREAM_BYTES_MAX);
+    for (const ceiling of [
+      TOOL_HTTP_REQUEST_TIMEOUT_MS,
+      TOOL_HTTP_STREAM_BYTES_MAX,
+      TOOL_HTTP_STREAM_EVENTS_MAX,
+      TOOL_HTTP_CLOSE_TIMEOUT_MS,
+    ]) {
+      expect(Number.isInteger(ceiling)).toBe(true);
+      expect(ceiling).toBeGreaterThan(0);
+    }
+  });
+
+  it("carries a concrete fact or an explicit UNKNOWN/NONE in every record key", () => {
+    // The rule that makes the record a capability model rather than decoration:
+    // no key absent, no value empty. A field that reads NONE corresponds to a
+    // refusal or an absence in the code, never to a guess.
+    // Read back through `unknown` so the check is about the runtime object
+    // rather than about the literal type the freeze happens to give it: a
+    // comparison the compiler can settle proves nothing about the value.
+    const entries = Object.entries(MCP_PROTOCOL_RECORD as Readonly<Record<string, unknown>>);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [key, value] of entries) {
+      const empty = typeof value !== "string" || value.trim().length === 0;
+      expect({ key, empty }).toEqual({ key, empty: false });
+    }
+  });
+
+  it("records the citation gate honestly: no bytes, so no digest", () => {
+    // Built under the citation gate rather than the vendoring gate. There are
+    // no bytes on disk, so there is nothing to digest and nothing to assert the
+    // constants against -- and the record says exactly that rather than
+    // carrying a checksum of something nothing read.
+    expect(MCP_PROTOCOL_RECORD.SPEC_MANIFEST_DIGEST).toBe("NONE");
+    expect(MCP_PROTOCOL_RECORD.SPEC_CITATION).toContain("2025-06-18");
+    expect(MCP_PROTOCOL_RECORD.LIVE_CONFORMANCE).toBe("NONE");
+    expect(MCP_PROTOCOL_RECORD.SOCKET_EXERCISED).toBe("NONE");
+    expect(MCP_PROTOCOL_RECORD.REVISION).toBe(TOOL_MCP_PROTOCOL_VERSION);
   });
 });

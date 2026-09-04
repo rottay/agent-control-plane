@@ -21,7 +21,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
-import type { AdmittedToolServer } from "../admission/index.js";
+import type { AdmittedStdioToolServer } from "../admission/index.js";
 import type { ToolTransportConnection } from "../client/index.js";
 import { TOOL_SERVER_LIFETIME_MS } from "../contract/index.js";
 
@@ -40,7 +40,7 @@ export interface ToolStdioConnection extends ToolTransportConnection {
  * observes the child die; production takes the default.
  */
 export function openToolStdioConnection(
-  server: AdmittedToolServer,
+  server: AdmittedStdioToolServer,
   lifetimeMs: number = TOOL_SERVER_LIFETIME_MS,
 ): ToolStdioConnection {
   let child: ChildProcessWithoutNullStreams;

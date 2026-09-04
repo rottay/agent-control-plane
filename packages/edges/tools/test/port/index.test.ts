@@ -16,9 +16,14 @@ import {
   readToolCallLog,
   removeToolFixtureDir,
   writeFakeToolServer,
+  initializeBody,
+  jsonRpcBody,
+  scriptFetch,
 } from "../testing/index.js";
+import type { ScriptedFetch } from "../testing/index.js";
 
 const IMPLEMENTER = "claude/opus/implementer/01" as WorkerIdentityString;
+const REVIEWER = "claude/opus/reviewer/01" as WorkerIdentityString;
 const SESSION = "task-1/1/acct-1";
 
 const ALLOWLIST = [
@@ -432,6 +437,242 @@ describe("the acceptance measures the port, not the fake's good manners", () => 
       await silentPort.closeAll();
     } finally {
       removeToolFixtureDir(silentDir);
+    }
+  });
+});
+
+describe("both transports obey one set of rules (V2-B4b S4-1)", () => {
+  /**
+   * The packet's substance, as a table.
+   *
+   * Everything the port decides is transport-independent: the per-server tool
+   * allowlist, the write-role subset, the ceilings, the privacy guard and the
+   * receipt. This drives the same behaviours over a spawned child and a
+   * loopback endpoint and asserts the outcomes are identical — the only
+   * permitted differences being the receipt's `transport` and the presence of a
+   * pid. Prose could claim that; this is what makes it checkable.
+   */
+  const LOOPBACK_URL = "http://127.0.0.1:9100/mcp";
+  let scripted: ScriptedFetch | null = null;
+
+  afterEach(() => {
+    scripted?.restore();
+    scripted = null;
+  });
+
+  function loopbackServer(): AdmittedToolServer {
+    const outcome = admitToolServer({
+      serverId: "docs",
+      transport: "HTTP_LOOPBACK",
+      url: LOOPBACK_URL,
+      tools: ALLOWLIST,
+    });
+    if (!outcome.ok) throw new Error("loopback fixture was not admitted: " + outcome.at);
+    return outcome.server;
+  }
+
+  /** A peer that completes `initialize` and then answers every call. */
+  function answerEveryCall(): void {
+    let id = 0;
+    scripted = scriptFetch((body: string) => {
+      id += 1;
+      const parsed = JSON.parse(body) as { method?: string; id?: number };
+      if (parsed.method === "initialize") {
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: initializeBody(parsed.id ?? id),
+        };
+      }
+      if (parsed.method === "notifications/initialized") return { status: 202 };
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: jsonRpcBody(parsed.id ?? id, {
+          content: [{ type: "text", text: "the answer" }],
+        }),
+      };
+    });
+  }
+
+  function loopbackPort(): ToolProtocolPort {
+    return createToolProtocolPort({
+      servers: [loopbackServer()],
+      liveness: { isLive: (sessionId) => live.has(sessionId) },
+    });
+  }
+
+  it("refuses a tool nobody allowed on both legs, upstream of the wire", async () => {
+    answerEveryCall();
+    const loopback = loopbackPort();
+    try {
+      const overHttp = await loopback.callTool({
+        sessionId: SESSION,
+        serverId: "docs",
+        toolName: "shell.exec",
+        identity: IMPLEMENTER,
+        arguments: {},
+      });
+      const overStdio = await call({ toolName: "shell.exec" });
+
+      expect(overHttp.ok).toBe(false);
+      expect(overStdio.ok).toBe(false);
+      if (overHttp.ok || overStdio.ok) return;
+      expect({ refusal: overHttp.refusal, at: overHttp.at }).toEqual({
+        refusal: overStdio.refusal,
+        at: overStdio.at,
+      });
+      // Upstream of the wire on both: nothing was asked and nothing spawned.
+      expect(scripted?.calls()).toEqual([]);
+      expect(childPids()).toEqual([]);
+      // The only permitted difference.
+      expect(overHttp.receipt.transport).toBe("HTTP_LOOPBACK");
+      expect(overStdio.receipt.transport).toBe("STDIO");
+    } finally {
+      await loopback.closeAll();
+    }
+  });
+
+  it("applies the write-role subset identically on both legs", async () => {
+    answerEveryCall();
+    const loopback = loopbackPort();
+    try {
+      const overHttp = await loopback.callTool({
+        sessionId: SESSION,
+        serverId: "docs",
+        toolName: "docs.write",
+        identity: REVIEWER,
+        arguments: {},
+      });
+      const overStdio = await call({ toolName: "docs.write", identity: REVIEWER });
+      expect(overHttp.ok).toBe(false);
+      expect(overStdio.ok).toBe(false);
+      if (overHttp.ok || overStdio.ok) return;
+      expect({ refusal: overHttp.refusal, at: overHttp.at }).toEqual({
+        refusal: overStdio.refusal,
+        at: overStdio.at,
+      });
+      expect(overHttp.refusal).toBe("IDENTITY_FORBIDS_WRITE");
+    } finally {
+      await loopback.closeAll();
+    }
+  });
+
+  it("applies the argument ceiling identically on both legs", async () => {
+    answerEveryCall();
+    const loopback = loopbackPort();
+    try {
+      const oversized = { blob: "z".repeat(TOOL_ARGUMENTS_BYTES_MAX + 100) };
+      const overHttp = await loopback.callTool({
+        sessionId: SESSION,
+        serverId: "docs",
+        toolName: "docs.search",
+        identity: IMPLEMENTER,
+        arguments: oversized,
+      });
+      const overStdio = await call({ arguments: oversized });
+      expect(overHttp.ok).toBe(false);
+      expect(overStdio.ok).toBe(false);
+      if (overHttp.ok || overStdio.ok) return;
+      expect({ refusal: overHttp.refusal, at: overHttp.at }).toEqual({
+        refusal: overStdio.refusal,
+        at: overStdio.at,
+      });
+      expect(scripted?.calls()).toEqual([]);
+    } finally {
+      await loopback.closeAll();
+    }
+  });
+
+  it("refuses a dead session and an unadmitted server identically on both legs", async () => {
+    answerEveryCall();
+    const loopback = loopbackPort();
+    try {
+      live.delete(SESSION);
+      const dead = await loopback.callTool({
+        sessionId: SESSION,
+        serverId: "docs",
+        toolName: "docs.search",
+        identity: IMPLEMENTER,
+        arguments: {},
+      });
+      expect(dead.ok).toBe(false);
+      if (!dead.ok) expect(dead.refusal).toBe("SESSION_NOT_LIVE");
+      // The admitted server's transport is nameable even here: the map was
+      // read, and nothing was contacted.
+      expect(dead.receipt.transport).toBe("HTTP_LOOPBACK");
+      expect(scripted?.calls()).toEqual([]);
+
+      live.add(SESSION);
+      const absent = await loopback.callTool({
+        sessionId: SESSION,
+        serverId: "absent",
+        toolName: "docs.search",
+        identity: IMPLEMENTER,
+        arguments: {},
+      });
+      expect(absent.ok).toBe(false);
+      if (!absent.ok) expect(absent.refusal).toBe("SERVER_NOT_ADMITTED");
+      // S4-0's word, and it appears here and nowhere else on this leg.
+      expect(absent.receipt.transport).toBe(TOOL_TRANSPORT_UNRESOLVED);
+    } finally {
+      await loopback.closeAll();
+    }
+  });
+
+  it("completes over the loopback leg with the receipt's ten members", async () => {
+    answerEveryCall();
+    const loopback = loopbackPort();
+    try {
+      const outcome = await loopback.callTool({
+        sessionId: SESSION,
+        serverId: "docs",
+        toolName: "docs.search",
+        identity: IMPLEMENTER,
+        arguments: { q: "acp" },
+      });
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.content).toEqual(["the answer"]);
+      expect(outcome.receipt.transport).toBe("HTTP_LOOPBACK");
+      expect(outcome.receipt.outcome).toBe("COMPLETED");
+      expect(Object.keys(outcome.receipt)).toHaveLength(10);
+      // No child was started for this leg: there is no process to reap.
+      expect(childPids()).toEqual([]);
+    } finally {
+      await loopback.closeAll();
+    }
+  });
+
+  it("keeps a stdio and a loopback server on separate connection keys in one session", async () => {
+    answerEveryCall();
+    const both = createToolProtocolPort({
+      servers: [server, { ...loopbackServer(), serverId: "notes" } as AdmittedToolServer],
+      liveness: { isLive: (sessionId) => live.has(sessionId) },
+    });
+    try {
+      const overStdio = await both.callTool({
+        sessionId: SESSION,
+        serverId: "docs",
+        toolName: "docs.search",
+        identity: IMPLEMENTER,
+        arguments: { q: "acp" },
+      });
+      const overHttp = await both.callTool({
+        sessionId: SESSION,
+        serverId: "notes",
+        toolName: "docs.search",
+        identity: IMPLEMENTER,
+        arguments: { q: "acp" },
+      });
+      expect(overStdio.ok).toBe(true);
+      expect(overHttp.ok).toBe(true);
+      expect(overStdio.receipt.transport).toBe("STDIO");
+      expect(overHttp.receipt.transport).toBe("HTTP_LOOPBACK");
+    } finally {
+      // Both are reaped, and the stdio child by pid.
+      const reaped = await both.closeAll();
+      expect(reaped.length).toBeGreaterThan(0);
     }
   });
 });

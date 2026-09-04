@@ -10,22 +10,27 @@
 import type { WorkerIdentityString, WorkerRole } from "@acp/contracts";
 
 /**
- * The transports this package speaks. Exactly one, and it is honest.
+ * The transports this package speaks. Exactly two, and each is honest.
  *
  * MCP defines two standard transports: **stdio** — newline-delimited JSON-RPC
- * on a spawned child's stdin/stdout — and **Streamable HTTP**. This stage
- * implements the first and only the first. A one-member union reads oddly
- * beside a union that could hold two, and that is the point: a second member
- * nothing can produce is exactly the vacuity this repository refuses
- * elsewhere, so the member arrives with the transport rather than before it.
+ * on a spawned child's stdin/stdout — and **Streamable HTTP**. Stage 1 shipped
+ * the first alone and promised that "the member arrives with the transport
+ * rather than before it": a member nothing can produce is the vacuity this
+ * repository refuses, so the union stayed at one until the second leg existed.
  *
- * A loopback Streamable HTTP leg is a later stage's work, gated on its own
- * protocol record and on the parsed-URL admission this stage already builds
- * (see `admission/index.ts`). Until that lands, a URL-bearing descriptor is
- * representable input and is refused — never unrepresentable, which would make
- * the refusal a fact about a TypeScript type rather than about running code.
+ * **V2-B4b S4-1 keeps that promise.** `HTTP_LOOPBACK` arrives with its
+ * transport (`src/http-loopback/index.ts`), its admitted leg (the parsed-URL
+ * branch `admission/index.ts` has carried since stage 1, whose refusal finally
+ * has an admitted sibling), and its drills. Every member of this union has an
+ * admission that can emit it and a connection that can speak it.
+ *
+ * The name is `HTTP_LOOPBACK` rather than `STREAMABLE_HTTP`, `HTTP` or
+ * `LOOPBACK` deliberately: those three are pinned as **refused** transport
+ * strings by the admission suite, and the union widens by adding a member
+ * without deleting a negative. It also says the bound in the name — this leg
+ * reaches `127.0.0.1` and `::1` and nothing else.
  */
-export const TOOL_TRANSPORT_KINDS = ["STDIO"] as const;
+export const TOOL_TRANSPORT_KINDS = ["STDIO", "HTTP_LOOPBACK"] as const;
 export type ToolTransportKind = (typeof TOOL_TRANSPORT_KINDS)[number];
 
 /**
@@ -173,6 +178,78 @@ export const TOOL_MCP_PROTOCOL_VERSION = "2025-06-18";
 
 /** What the plane calls itself when it introduces itself to a server. */
 export const TOOL_MCP_CLIENT_NAME = "acp-tools";
+
+// ---------------------------------------------------------------------------
+// The loopback Streamable HTTP leg (V2-B4b S4-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long one request may stay unanswered before it is abandoned.
+ *
+ * Matches the stdio call timeout in intent rather than in number: a transport
+ * that could hang forever would make every ceiling below it decorative.
+ */
+export const TOOL_HTTP_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * The most bytes one response body may carry, streamed or not.
+ *
+ * Counted **as they are decoded** and aborted at the boundary, never after —
+ * the same law `createToolFrameReader` holds for stdio, where the bound is on
+ * the unterminated buffer rather than only on completed frames. It sits at or
+ * above {@link TOOL_FRAME_BYTES_MAX} so a frame the reader would accept is
+ * never cut off by the transport beneath it.
+ */
+export const TOOL_HTTP_STREAM_BYTES_MAX = 524_288;
+
+/** The most server-sent events one response may carry before it is refused. */
+export const TOOL_HTTP_STREAM_EVENTS_MAX = 64;
+
+/**
+ * How long a best-effort session teardown may take.
+ *
+ * Short on purpose: `close()` must not be able to hold a caller open, and a
+ * teardown that fails is not an error — the session is being abandoned either
+ * way.
+ */
+export const TOOL_HTTP_CLOSE_TIMEOUT_MS = 2_000;
+
+/**
+ * What this client actually implements of the MCP revision it names.
+ *
+ * In the `CODEX_PROTOCOL_RECORD` idiom, and for the same reason: a capability
+ * claim a reader cannot check is decoration. **Every field that reads
+ * `UNKNOWN` or `NONE` corresponds to a refusal or an absence in the code, never
+ * to a guess** — and the fence asserts that this record and the README cannot
+ * disagree.
+ *
+ * `SPEC_MANIFEST_DIGEST` is `NONE` because this leg was built under the
+ * citation gate rather than the vendoring gate: the revision was cited, its
+ * bytes were not placed on disk, so there is nothing to digest and nothing to
+ * assert the constants against. That is the honest reading of what was
+ * authorized, and it is why the README carries the uncited qualifier beside it.
+ */
+export const MCP_PROTOCOL_RECORD = Object.freeze({
+  REVISION: TOOL_MCP_PROTOCOL_VERSION,
+  TRANSPORT: "streamable-http",
+  /** No bytes were vendored, so there is nothing to digest. */
+  SPEC_MANIFEST_DIGEST: "NONE",
+  SPEC_CITATION: "2025-06-18; modelcontextprotocol.io/specification/2025-06-18; retrieved 2026-09-04",
+  /** No third-party server is contacted anywhere in this repository. */
+  LIVE_CONFORMANCE: "NONE",
+  /** The drills substitute the platform fetch; no socket is opened. */
+  SOCKET_EXERCISED: "NONE",
+  VERSION_NEGOTIATION: "checked",
+  SESSION_HEADER: "mcp-session-id, echoed when issued",
+  SERVER_INITIATED_STREAM: "NOT_OPENED",
+  RESUMPTION: "NONE",
+  BATCHING: "REFUSED",
+  ORIGIN_HEADER: "NOT_SENT",
+  REDIRECTS: "manual; 3xx refused as TRANSPORT_REFUSED",
+  LIST_PAGINATION: "UNFOLLOWED",
+  IS_ERROR_RESULT: "UNHANDLED",
+  CONTENT_BLOCKS: "text only; every other kind refused",
+} as const);
 
 /**
  * A tool call, as the plane's own caller states it.

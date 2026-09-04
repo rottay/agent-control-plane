@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { admitToolServer } from "../../src/admission/index.js";
-import type { AdmittedToolServer } from "../../src/admission/index.js";
+import type { AdmittedStdioToolServer } from "../../src/admission/index.js";
 import { createToolClient } from "../../src/client/index.js";
 import { TOOL_SERVER_ENV_KEYS } from "../../src/contract/index.js";
 import type { FakeToolServerScript } from "../testing/index.js";
@@ -32,7 +32,7 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-function admit(script: FakeToolServerScript): AdmittedToolServer {
+function admit(script: FakeToolServerScript): AdmittedStdioToolServer {
   const fake = writeFakeToolServer(dir, script);
   const outcome = admitToolServer({
     serverId: "docs",
@@ -42,6 +42,7 @@ function admit(script: FakeToolServerScript): AdmittedToolServer {
     tools: [{ name: "docs.search", writes: false }],
   });
   if (!outcome.ok) throw new Error("fixture server was not admitted: " + outcome.at);
+  if (outcome.server.kind !== "STDIO") throw new Error("fixture server is not a stdio server");
   return outcome.server;
 }
 

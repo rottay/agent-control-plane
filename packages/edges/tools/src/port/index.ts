@@ -23,7 +23,7 @@
 import { parseWorkerIdentity } from "@acp/contracts";
 
 import type { AdmittedToolServer } from "../admission/index.js";
-import type { ToolClient } from "../client/index.js";
+import type { ToolClient, ToolTransportConnection } from "../client/index.js";
 import { createToolClient } from "../client/index.js";
 import type { ToolAllowlistEntry, ToolCallRequest, ToolRefusal } from "../contract/index.js";
 import {
@@ -35,7 +35,8 @@ import {
 import { toolFrameBytes } from "../jsonrpc/index.js";
 import type { ToolCallReceipt } from "../receipt/index.js";
 import { toolReceipt, toolResultIsUnsafe } from "../receipt/index.js";
-import type { ToolStdioConnection } from "../stdio/index.js";
+import type { ToolHttpLoopbackConnection } from "../http-loopback/index.js";
+import { openToolHttpLoopbackConnection } from "../http-loopback/index.js";
 import { openToolStdioConnection } from "../stdio/index.js";
 
 /**
@@ -78,8 +79,28 @@ export interface ToolProtocolPort {
 
 interface Connection {
   readonly sessionId: string;
-  readonly transport: ToolStdioConnection;
+  /**
+   * Widened to the shared seam at V2-B4b S4-1, because a session may now hold a
+   * spawned child or a loopback endpoint. **`pid` is stdio-only and is not
+   * hoisted here**: a shared type carrying a pid would make every reaper claim
+   * a child exists, and one of the two transports has none.
+   */
+  readonly transport: ToolTransportConnection;
   readonly client: ToolClient;
+}
+
+/**
+ * The out-of-band refusal a loopback connection recorded, or null.
+ *
+ * Structural rather than a `kind` check: the port holds the shared seam, and
+ * asking whether the object can answer is what keeps the stdio leg — which
+ * cannot — from needing a branch of its own.
+ */
+function transportRefusalOf(
+  transport: ToolTransportConnection,
+): { readonly refusal: ToolRefusal; readonly at: string } | null {
+  const carrier = transport as Partial<ToolHttpLoopbackConnection>;
+  return typeof carrier.transportRefusal === "function" ? carrier.transportRefusal() : null;
 }
 
 /** One execution's tool server never serves another's. */
@@ -119,7 +140,12 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
     const key = connectionKey(sessionId, server.serverId);
     const existing = connections.get(key);
     if (existing !== undefined) return existing;
-    const transport = openToolStdioConnection(server, lifetimeMs);
+    // The one place the two legs are chosen between. Narrowed on the existing
+    // `kind` member, so the union does the work and no cast appears.
+    const transport =
+      server.kind === "STDIO"
+        ? openToolStdioConnection(server, lifetimeMs)
+        : openToolHttpLoopbackConnection(server);
     const connection: Connection = { sessionId, transport, client: createToolClient(transport) };
     connections.set(key, connection);
     return connection;
@@ -252,9 +278,17 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
         // connection goes with the refusal and the child is reaped. A result
         // this plane merely declines to carry is a different case: that peer
         // is still speaking the protocol, and its connection survives.
-        if (called.refusal === "PROTOCOL_VIOLATION") {
+        // The loopback leg carries its transport-level refusal out of band,
+        // because its `write` is synchronous and returns void: a redirect
+        // refused at the transport would otherwise reach the client only as a
+        // generic timeout, half a minute later and with the wrong reason. Where
+        // one was recorded it is preferred, so `TRANSPORT_REFUSED` at the
+        // redirect field path reaches the receipt with full fidelity.
+        const carried = transportRefusalOf(connection.transport);
+        if (called.refusal === "PROTOCOL_VIOLATION" || carried !== null) {
           await drop(connectionKey(request.sessionId, request.serverId));
         }
+        if (carried !== null) return refuse(carried.refusal, carried.at);
         return refuse(called.refusal, called.at);
       }
 

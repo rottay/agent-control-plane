@@ -10,6 +10,7 @@ import {
   TOOL_RESULT_BYTES_MAX,
 } from "../../src/contract/index.js";
 import {
+  INITIALIZE_NO_VERSION,
   createScriptedToolConnection,
   initializeResult,
   requestIdOf,
@@ -301,4 +302,41 @@ describe("closing releases the transport once", () => {
     });
     expect(connection.closes()).toBe(1);
   });
+});
+
+describe("the agreed revision is compared, not assumed (V2-B4b S4-1)", () => {
+  /**
+   * Applied to both transports, and that is the point.
+   *
+   * Over stdio this was a fidelity gap: the client asserted a revision in
+   * `initialize` and never read the one that came back. Over HTTP it is a
+   * contradiction, because the same revision is asserted in a header on every
+   * single request. A check that fired on one transport only would be a parity
+   * break, so it lives in the shared client.
+   */
+  const CASES: readonly (readonly [string, unknown])[] = [
+    ["a different revision", "2024-11-05"],
+    ["a non-string revision", 20250618],
+    ["no revision at all", INITIALIZE_NO_VERSION],
+  ];
+
+  for (const [label, version] of CASES) {
+    it("refuses " + label, async () => {
+      const { connection, client } = connected();
+      const pending = client.listTools();
+      const frame = connection.written()[0];
+      if (frame === undefined) throw new Error("no initialize frame");
+      connection.emit(resultFrame(requestIdOf(frame), initializeResult("fake-mcp", version)));
+      await flush();
+      const outcome = await pending;
+
+      expect({ label, ok: outcome.ok }).toEqual({ label, ok: false });
+      if (outcome.ok) return;
+      expect({ label, refusal: outcome.refusal, at: outcome.at }).toEqual({
+        label,
+        refusal: "PROTOCOL_VIOLATION",
+        at: "server.response",
+      });
+    });
+  }
 });

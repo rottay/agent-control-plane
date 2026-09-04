@@ -243,10 +243,106 @@ export function resultFrame(id: number, result: unknown): string {
 }
 
 /** The `initialize` result every handshake needs. */
-export function initializeResult(name = "fake-mcp"): unknown {
+/** Passed as the version to script a server that returns none at all. */
+export const INITIALIZE_NO_VERSION = Symbol("no protocolVersion");
+
+export function initializeResult(name = "fake-mcp", protocolVersion: unknown = "2025-06-18"): unknown {
+  // The version is overridable so the negative V2-B4b S4-1 adds can drive a
+  // server that agrees a different revision, or none at all. Absence is a
+  // sentinel rather than `undefined`, which would silently take the default.
   return {
-    protocolVersion: "2025-06-18",
+    ...(protocolVersion === INITIALIZE_NO_VERSION ? {} : { protocolVersion }),
     capabilities: { tools: {} },
     serverInfo: { name, version: "0.0.0" },
   };
+}
+
+// ---------------------------------------------------------------------------
+// The scripted loopback peer (V2-B4b S4-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * One scripted answer to one request.
+ *
+ * `headers` are lower-cased on the way in, as `Headers` does, so a script and
+ * an assertion cannot disagree about case.
+ */
+export interface ScriptedHttpAnswer {
+  readonly status: number;
+  readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * A whole body, or a stream that delivers one in pieces.
+   *
+   * The stream form exists so a suite can assert *how much of a body arrived*
+   * rather than only what the transport decided about it: a ceiling applied
+   * after the whole body is read refuses exactly like one applied at the
+   * boundary, and only the pull count tells them apart.
+   */
+  readonly body?: string | ReadableStream<Uint8Array>;
+}
+
+export interface ScriptedFetch {
+  /** Every request this peer was handed, in order, for assertion. */
+  readonly calls: () => readonly { readonly url: string; readonly init: RequestInit }[];
+  readonly restore: () => void;
+}
+
+/**
+ * Substitute `globalThis.fetch` with a scripted peer.
+ *
+ * **No socket, no bound port**, and that is a ruling rather than a convenience.
+ * Three measured reasons: `node:http`/`node:net` are banned across this
+ * package's `src` *and* `test`, and would have to be weakened to do it any
+ * other way; this repository has twice recorded that undici `fetch` is
+ * intermittent against loopback inside a Vitest worker, so a green run would
+ * prove less than it looked like; and the swap is the house precedent the
+ * durability drills already use.
+ *
+ * The limitation is recorded rather than hidden: `MCP_PROTOCOL_RECORD` reads
+ * `SOCKET_EXERCISED: "NONE"` and `LIVE_CONFORMANCE: "NONE"`, and the README
+ * says so beside them.
+ *
+ * Not exported from the package barrel — the suites reach it by relative path,
+ * because a fake on a public surface is eventually mistaken for evidence.
+ */
+export function scriptFetch(
+  answers: readonly ScriptedHttpAnswer[] | ((request: string) => ScriptedHttpAnswer),
+): ScriptedFetch {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const original = globalThis.fetch;
+  let index = 0;
+
+  globalThis.fetch = ((input: unknown, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === "string" ? input : String(input);
+    calls.push({ url, init: init ?? {} });
+    const body = typeof init?.body === "string" ? init.body : "";
+    const answer =
+      typeof answers === "function"
+        ? answers(body)
+        : (answers[index++] ?? { status: 500 });
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(answer.headers ?? {})) headers.set(name, value);
+    return Promise.resolve(new Response(answer.body ?? null, { status: answer.status, headers }));
+  }) as typeof globalThis.fetch;
+
+  return {
+    calls: () => calls,
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+}
+
+/** One JSON-RPC response frame, as a server would answer it. */
+export function jsonRpcBody(id: number, result: unknown): string {
+  return JSON.stringify({ jsonrpc: "2.0", id, result });
+}
+
+/** The `initialize` result a conformant peer returns. */
+export function initializeBody(id: number, version = "2025-06-18"): string {
+  return jsonRpcBody(id, {
+    protocolVersion: version,
+    capabilities: { tools: {} },
+    serverInfo: { name: "scripted-peer", version: "0.0.0" },
+  });
 }
