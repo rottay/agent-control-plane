@@ -61,6 +61,8 @@ before-and-after comparison meaningless.
 | `RestateDriver` | the driver, satisfying the domain's port |
 | `RestateDriverOptions` | type: how a driver is constructed |
 | `createAcpTaskObject` | the Virtual Object factory |
+| `createAcpGateWorkflow` | the durable gate's workflow factory |
+| `GateDependencies` | type: the gate factory's parameter — one optional drill seam |
 | `ObjectDependencies` | type: what the Virtual Object is handed |
 | `reconcile` | the pure reconciliation step |
 | `ReconcileInput` | type: what reconciliation reads |
@@ -87,6 +89,35 @@ before-and-after comparison meaningless.
 `startServer` and `ServerHandle` are absent from that list on purpose: they
 carry the raw child process and the absolute data root, which the drills need
 and no consumer should have.
+
+`GateDependencies` is present, and the reason is worth stating because the
+first draft of this table left it out. It is `createAcpGateWorkflow`'s own
+parameter type, so a barrel that exported the factory without it would export a
+function the package root cannot describe — a consumer writing a wrapper would
+have to re-declare the shape by hand or deep-import, and the pin would be
+asserting a set that does not match what the package offers. Its one member,
+`__onGate`, is an optional announcement seam for the drills, exactly like
+`__onBeat`; it carries no fact, because the gate holds no ledger and appends
+nothing. Publishing the type does not make a production endpoint's use of the
+seam legal — the fence asserts that the daemon calls the factory with no
+argument at all.
+
+## Two services, both servable
+
+The edge hosts a Virtual Object and a workflow, and both factories are on the
+surface. `AcpTask` walks the plan; `AcpGate` holds the durable promise that
+makes `SIGNAL` real without the object ever blocking. An endpoint that
+registered only the first would answer a gate release with "no such service",
+which is what a `SUPPORTED` capability must not mean.
+
+`registerDeployment` posts `force: false`, and that does not mean what it looks
+like: measured against the pinned server, registering a URI the data root
+already knows answers `200` with the deployment already held and runs **no
+discovery**, whether the service set behind that URI is identical or different.
+So a caller must not read a successful registration as proof that the engine
+will route to what it just started — it has to read the reply, which enumerates
+the services, and check. The daemon does exactly that and fails closed; see
+`docs/architecture/0027-the-production-gate.md`.
 
 ## The pinned server
 

@@ -42,6 +42,7 @@ new records from `_template.md`, which carries the required fields.
 | 0024 | [Write-set conformance](0024-write-set-conformance.md) | accepted |
 | 0025 | [The tool-coordinate claim](0025-the-tool-coordinate-claim.md) | accepted |
 | 0026 | [Both doors take the claim](0026-cross-process-tool-effect-arbitration.md) | accepted |
+| 0027 | [The production endpoint hosts every service the driver declares](0027-the-production-gate.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

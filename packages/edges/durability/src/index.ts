@@ -23,8 +23,47 @@
  * the before/after comparison meaningless.
  */
 
-export { RESTATE_MODE, RestateDriver, createAcpTaskObject, reconcile } from "./drivers/restate-driver/index.js";
-export type { ObjectDependencies, ReconcileInput } from "./drivers/restate-driver/index.js";
+/**
+ * The two services this edge hosts, and both are on the surface (V2-B2-5G).
+ *
+ * `createAcpGateWorkflow` joins `createAcpTaskObject` because the gate had a
+ * driver verb, a contract, a capability declaration and drills, and no way for
+ * an assembled consumer to serve it: the factory was reachable only from this
+ * package's own drill child, so `RestateDriver.signal` was `SUPPORTED` against
+ * a service the daemon's endpoint did not host. A capability that only a
+ * fixture can honour is the defect V2 exists to correct, and closing it means
+ * the factory has to leave the package.
+ *
+ * `GateDependencies` joins it because it is the factory's own parameter type,
+ * and an exported function may not reach the package root carrying a type the
+ * root cannot name. The first draft of this packet held it back and was
+ * corrected: hiding a type that is already structurally reachable through
+ * `createAcpGateWorkflow`'s signature does not narrow the surface, it only
+ * makes the surface undeclarable — a consumer writing a wrapper would have to
+ * re-declare the shape by hand or deep-import, and the barrel pin would be
+ * asserting a set that does not describe what the package actually offers.
+ *
+ * What the type is stays exactly what it was, and is worth saying plainly
+ * rather than dressing up: its one member, `__onGate`, is an announcement seam
+ * that exists for the drills for the same reason `__onBeat` does, so a drill
+ * can proceed on a handshake rather than on elapsed time. It is optional, it
+ * carries no fact — the gate holds no ledger and appends nothing — and the
+ * production endpoint calls the factory with no argument at all, which
+ * `L-B25G-1` asserts by shape. Publishing the type does not make hanging a
+ * callback on a production gate legal; it makes the signature honest.
+ */
+export {
+  RESTATE_MODE,
+  RestateDriver,
+  createAcpGateWorkflow,
+  createAcpTaskObject,
+  reconcile,
+} from "./drivers/restate-driver/index.js";
+export type {
+  GateDependencies,
+  ObjectDependencies,
+  ReconcileInput,
+} from "./drivers/restate-driver/index.js";
 
 export { startEndpoint } from "./drivers/restate-endpoint/index.js";
 export type { EndpointHandle, StartEndpointOptions } from "./drivers/restate-endpoint/index.js";

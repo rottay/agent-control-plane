@@ -4,6 +4,7 @@ import type { EndpointHandle, SafeServerHandle } from "@acp/durability";
 import type { BeatContext, DurableInvocation, EffectPort, ScenarioRoot } from "@acp/runtime";
 import {
   attachAdvance,
+  createAcpGateWorkflow,
   createAcpTaskObject,
   readCacheThroughHandler,
   reconcile,
@@ -112,6 +113,47 @@ export function beatFor(
 }
 
 /**
+ * Every service this mode hosts, by the name the engine registers it under.
+ *
+ * A literal beside the `startEndpoint` call rather than something derived from
+ * it, because the SDK's service definitions do not expose their names as a
+ * readable list and a derivation that guessed would be a check that could
+ * quietly stop checking. `L-B25G-1` asserts that this set and the services
+ * actually registered below stay in step, which is what keeps a literal honest.
+ */
+const REGISTERED_SERVICES: readonly string[] = ["AcpTask", "AcpGate"];
+
+/**
+ * The service names in a deployment reply, or nothing at all.
+ *
+ * A body that is not a deployment yields an EMPTY set rather than a thrown
+ * parse error, and that is deliberate: the caller treats an empty set as "none
+ * of the required services are served" and fails closed, so an unreadable reply
+ * and a wrong reply take the same path. A parse that threw would take a
+ * different one, and the difference would be a way to reach readiness on a
+ * reply nobody could read.
+ */
+function servedServiceNames(body: string): ReadonlySet<string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return new Set<string>();
+  }
+  if (typeof parsed !== "object" || parsed === null) return new Set<string>();
+  const services = (parsed as Record<string, unknown>)["services"];
+  if (!Array.isArray(services)) return new Set<string>();
+
+  const names = new Set<string>();
+  for (const service of services) {
+    if (typeof service !== "object" || service === null) continue;
+    const name = (service as Record<string, unknown>)["name"];
+    if (typeof name === "string") names.add(name);
+  }
+  return names;
+}
+
+/**
  * Start Restate, in order, pushing each resource as it is acquired.
  *
  * Returns once reconciliation has agreed with the ledger. Readiness belongs to
@@ -133,7 +175,25 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
   input.stack.push(serverResource(server));
   input.onPhase("SERVER_UP", server.pid);
 
-  // S6.
+  // S6. Two services, and the second one is what this packet adds.
+  //
+  // `AcpGate` is hosted beside `AcpTask`, never inside it, for the reason the
+  // gate is a workflow at all: waiting inside the exclusive object handler
+  // would hold the task key for the whole wait, so `advance` for that task
+  // would queue behind an unresolved gate and the per-task serialization
+  // V2-B2-3 certified would be indistinguishable from a deadlock.
+  //
+  // Until now this endpoint registered only the object, so the daemon served a
+  // plane on which `RestateDriver.signal` was declared `SUPPORTED` and the
+  // ingress answered a release with "no such service". The capability was
+  // honoured by the drills' own child and by nothing an operator could start,
+  // which is a capability declaration running ahead of the assembled system.
+  // Registering it here is the whole packet; see
+  // `docs/architecture/0027-the-production-gate.md`.
+  //
+  // No argument, deliberately. The factory's only parameter is the drills'
+  // `__onGate` announcement seam, and a production endpoint that passed one
+  // would be a production endpoint carrying a test hook.
   const endpoint = await startEndpoint({
     services: [
       createAcpTaskObject({
@@ -142,17 +202,58 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
         initiativeId: input.initiativeId,
         ledger: input.ledger,
       }),
+      createAcpGateWorkflow(),
     ],
     port: RUNTIME_SERVICE_PORT,
   });
   input.stack.push(endpointResource(endpoint));
   input.onPhase("ENDPOINT_UP");
 
-  // S7.
+  // S7, in two acts, and the second one is not optional.
+  //
+  // **Act 1: register.** `registerDeployment` posts `force: false`. A refused
+  // registration is a refused startup, as it always was.
   const registration = await registerDeployment(server.adminUrl, RUNTIME_SERVICE_URL);
   if (!registration.ok) {
     throw new StartupError(
       "the deployment was refused with status " + String(registration.status),
+    );
+  }
+
+  // **Act 2: verify that the engine will actually route to what was just
+  // started.** This exists because `force: false` was measured rather than
+  // assumed, and it does not do what its name suggests.
+  //
+  // Against a data root that already holds a registration for this URI, the
+  // pinned server answers `200` with the deployment it ALREADY HAD and runs no
+  // discovery — whether the service set behind the URI is identical or
+  // different. So act 1 succeeding proves only that a registration exists, not
+  // that it describes this endpoint. A root registered by a build that served
+  // one service keeps serving one service, and without this act the daemon
+  // would reach readiness declaring `SIGNAL: "SUPPORTED"` over an ingress that
+  // answers a gate release with "no such service" — which is precisely the
+  // defect this packet exists to close, resurrected by a stale root.
+  //
+  // The reply body is the engine's own account of what it will route, so it is
+  // read rather than trusted. Every service this mode hosts must appear in it
+  // or the daemon fails closed here, before readiness, before reconciliation
+  // and before anything is submitted. Fail-closed and not `force: true`:
+  // overwriting a registration whose service list this process has not compared
+  // is the same class of untruth in the other direction, and the operator who
+  // meant to do it can do it deliberately.
+  //
+  // The refusal names the missing service and the status, never the body: a
+  // router's text is engine output and may carry an engine invocation id.
+  const served = servedServiceNames(registration.body);
+  const missing = REGISTERED_SERVICES.filter((name) => !served.has(name));
+  if (missing.length > 0) {
+    throw new StartupError(
+      "the engine's deployment for this endpoint does not serve " +
+        missing.join(", ") +
+        "; registration answered " +
+        String(registration.status) +
+        " without rediscovering, so this data root still carries an older" +
+        " service set and the capabilities this driver declares would not hold",
     );
   }
   input.onPhase("DEPLOYMENT_REGISTERED");

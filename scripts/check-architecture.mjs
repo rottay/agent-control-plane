@@ -5268,6 +5268,77 @@ const V2X1B_WRITE_SET = [
 ];
 
 /**
+ * V2-B2-5G — the durable gate becomes reachable from the production endpoint.
+ *
+ * **What was wrong, stated as a fact rather than as a risk.** V2-B2-5 landed
+ * the gate whole: a dedicated `AcpGate` workflow, a named durable promise, a
+ * `resolve` handler that never holds the key it releases, a `signal` verb on
+ * `RestateDriver`, `SIGNAL: "SUPPORTED"` in the capability declaration, and six
+ * drills against the pinned server. Every one of those drills registered the
+ * gate through `packages/edges/durability/src/drivers/restate-child/index.ts`,
+ * which is this repository's DRILL child. `startRestateMode` — the one endpoint
+ * an operator can actually start — registered `createAcpTaskObject` and nothing
+ * else, and the factory was not even on the durability barrel, so the daemon
+ * could not have registered it without a deep import the daemon law forbids.
+ *
+ * So the plane declared a capability that its assembled form could not honour:
+ * a release through the daemon's ingress reached no such service. That is the
+ * exact defect V2 exists to correct — a library with fixtures and no assembled
+ * consumer — and it is why this packet is a packet rather than a line.
+ *
+ * **What it does, and stops at.** The factory joins the barrel; the daemon's
+ * endpoint hosts it beside the object, with no argument, so no test seam
+ * crosses into a production endpoint; `L-B25G-1` asserts that registration by
+ * shape rather than by trusting it; and a daemon-level drill suite measures the
+ * five properties through the endpoint `startRestateMode` starts. Nothing about
+ * the gate's own semantics moves: `restate-driver/index.ts`, `submit/index.ts`,
+ * the contracts and the six durability drills are untouched, and this packet
+ * could not have widened them without touching a path outside its write-set.
+ *
+ * **The registration hazard was measured, and it is CLOSED here rather than
+ * recorded.** The brief predicted that `force: false` would make a restart on an
+ * existing data root fail closed with `409`. It does not. Measured against the
+ * pinned server, a re-registration of a URI the root already knows answers
+ * `200` with the deployment already held and runs no discovery — whether the
+ * service set behind that URI is identical or NARROWER. So registering proves
+ * that a registration exists, not that it describes the endpoint that just
+ * started, and a root registered by an older, narrower build would leave this
+ * daemon declaring `SIGNAL: "SUPPORTED"` over an ingress with no gate on it.
+ *
+ * S7 therefore has a second act: it reads the reply, compares it against
+ * `REGISTERED_SERVICES`, fails closed on anything the engine will not route,
+ * and announces `DEPLOYMENT_REGISTERED` only afterwards. `L-B25G-2` pins all
+ * four of those properties including the ordering, `L-B25G-1` pins the literal
+ * against the services actually hosted, and the lifecycle drill both measures
+ * the engine behaviour that makes the act necessary and starts a daemon on a
+ * root carrying a narrower registration to watch it refuse. No `force: true`,
+ * and no migration: no production data root exists at this HEAD, because P9 is
+ * unauthorized and every root this repository writes is a disposable scenario
+ * root.
+ *
+ * **Two novel paths, five already owned.** `DURABILITY_PUBLIC_EXPORTS` moves
+ * 26 → **28** — the factory and its parameter type, not the factory alone;
+ * the first draft moved it to 27 and the pre-audit corrected it, because an
+ * exported function whose parameter type the root cannot name leaves this pin
+ * describing a surface the package does not have. `PATH_SCOPED_LAWS` 86 → **88**,
+ * for `L-B25G-1` and `L-B25G-2`; those are the only pinned
+ * integers this packet touches. `DAEMON_ALLOWED_PACKAGES` does not move — the
+ * daemon already depends on `@acp/durability` — the SDK is still named by
+ * import in one package only, `RUNTIME_PUBLIC_EXPORTS` stays 206, and the
+ * capability declarations are byte-identical: this packet makes an existing
+ * `SUPPORTED` true of the assembled system rather than declaring a new one.
+ */
+const V2B25G_WRITE_SET = [
+  "packages/edges/durability/src/index.ts",
+  "packages/edges/durability/README.md",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/test/drills/lifecycle/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0027-the-production-gate.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5663,6 +5734,7 @@ const WRITE_SET = [
   ...V2C4_WRITE_SET,
   ...V2X1A_WRITE_SET,
   ...V2X1B_WRITE_SET,
+  ...V2B25G_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6400,6 +6472,20 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the durable gate releases without holding the key it releases",
     scope: "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  },
+  // V2-B2-5G. The gate shape law above proves the gate is built correctly and
+  // cannot prove anybody serves it; this is the second half, over the one
+  // endpoint an operator can start.
+  {
+    law: "the production endpoint hosts both services",
+    scope: "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  },
+  // V2-B2-5G, L-B25G-2. Hosting a service and being routable to it are
+  // different claims, because `force: false` reports success without
+  // rediscovering; this is the second one, over the same file.
+  {
+    law: "the registration is verified against what the endpoint hosts",
+    scope: "packages/entrypoints/daemon/src/mode-restate/index.ts",
   },
   {
     law: "the ledger and the event builder never reach for the router",
@@ -9412,6 +9498,264 @@ if (tracked.status === 0) {
     }
   }
 
+
+  // V2-B2-5G: the production endpoint hosts BOTH services.
+  //
+  // The gate shape law above proves the gate is built correctly. It cannot
+  // prove anybody serves it, and for one release cycle nobody did: the drill
+  // child registered `AcpGate`, `startRestateMode` registered only `AcpTask`,
+  // and the plane shipped `SIGNAL: "SUPPORTED"` over an ingress that answered a
+  // release with "no such service". A capability is what a caller may rely on,
+  // so a declaration the assembled system cannot honour is worse than an
+  // `UNSUPPORTED` one — it is wrong in the direction a caller acts on.
+  //
+  // The drill in `test/drills/lifecycle/index.test.ts` measures this against a
+  // real server and would catch the regression. This law is the cheap half of
+  // the same claim, and it is here because the expensive half costs four
+  // minutes of wall clock and a verified binary: a reader editing the service
+  // list learns immediately, rather than at the end of the drill suite.
+  //
+  // Driven case by case with the negatives written out, exactly as the gate
+  // shape law is: a predicate checked only against source that already
+  // satisfies it would pass just as happily if it checked nothing.
+  {
+    const ENDPOINT_HOME = "packages/entrypoints/daemon/src/mode-restate/index.ts";
+
+    /** Each factory this endpoint may host, and the name the engine registers it under. */
+    const SERVICE_FACTORIES = [
+      ["createAcpTaskObject", "AcpTask"],
+      ["createAcpGateWorkflow", "AcpGate"],
+    ];
+
+    /** Every way the production endpoint stops serving both services. Empty is conformance. */
+    const endpointViolations = (source) => {
+      const problems = [];
+      const call = source.match(/startEndpoint\(\{[\s\S]*?\n {2}\}\);/);
+      if (call === null) {
+        problems.push("the mode starts no endpoint");
+        return problems;
+      }
+      const body = call[0];
+      if (!/createAcpTaskObject\(/.test(body)) {
+        problems.push("the endpoint does not host the task object");
+      }
+      if (!/createAcpGateWorkflow\(/.test(body)) {
+        problems.push("the endpoint does not host the durable gate");
+      }
+      // No argument, ever. The factory's only parameter is the drills'
+      // `__onGate` announcement seam, so a production endpoint that passed one
+      // would be a production endpoint carrying a test hook.
+      if (/createAcpGateWorkflow\(\s*[^)\s]/.test(body)) {
+        problems.push("the endpoint hands the gate a dependency; the only one there is is a test seam");
+      }
+
+      // And the literal S7 verifies against must name exactly what is hosted,
+      // in both directions. `REGISTERED_SERVICES` is a hand-written list beside
+      // the call — the SDK's service definitions do not expose their names as a
+      // readable list, so a derivation would have to guess — and a hand-written
+      // list is exactly the kind of thing that stops matching. A name the
+      // endpoint does not host would make S7 refuse every startup; a hosted
+      // service the list omits would let the very divergence S7 exists to catch
+      // through unnoticed.
+      const declared = source.match(/const REGISTERED_SERVICES: readonly string\[\] = \[([^\]]*)\]/);
+      const named = new Set(
+        declared === null
+          ? []
+          : [...(declared[1] ?? "").matchAll(/"([A-Za-z][A-Za-z0-9]*)"/g)].map((match) => match[1]),
+      );
+      if (declared === null) {
+        problems.push("the mode declares no REGISTERED_SERVICES for S7 to verify against");
+      } else {
+        for (const [factory, engineName] of SERVICE_FACTORIES) {
+          const hosted = new RegExp(factory + "\\(").test(body);
+          if (named.has(engineName) && !hosted) {
+            problems.push("REGISTERED_SERVICES names " + engineName + ", which this endpoint does not host");
+          }
+          if (hosted && !named.has(engineName)) {
+            problems.push("this endpoint hosts " + engineName + ", which REGISTERED_SERVICES does not name");
+          }
+        }
+      }
+      return problems;
+    };
+
+    const real = readIfPresent(ENDPOINT_HOME);
+    const REAL = real === null ? "" : stripComments(real);
+
+    const NO_GATE = REAL.replace("      createAcpGateWorkflow(),\n", "");
+    const NO_OBJECT = REAL.replace(/ {6}createAcpTaskObject\(\{[\s\S]*?\n {6}\}\),\n/, "");
+    const SEAMED = REAL.replace(
+      "createAcpGateWorkflow()",
+      "createAcpGateWorkflow({ __onGate: () => Promise.resolve() })",
+    );
+    const DROPPED_NAME = REAL.replace(
+      'const REGISTERED_SERVICES: readonly string[] = ["AcpTask", "AcpGate"];',
+      'const REGISTERED_SERVICES: readonly string[] = ["AcpTask"];',
+    );
+
+    const ENDPOINT_CASES = [
+      { name: "the real mode source", source: REAL, expect: [] },
+      {
+        name: "an endpoint that dropped the gate",
+        source: NO_GATE,
+        expect: [
+          "the endpoint does not host the durable gate",
+          "REGISTERED_SERVICES names AcpGate, which this endpoint does not host",
+        ],
+      },
+      {
+        name: "an endpoint that dropped the task object",
+        source: NO_OBJECT,
+        expect: [
+          "the endpoint does not host the task object",
+          "REGISTERED_SERVICES names AcpTask, which this endpoint does not host",
+        ],
+      },
+      {
+        name: "an endpoint that handed the gate a test seam",
+        source: SEAMED,
+        expect: ["the endpoint hands the gate a dependency; the only one there is is a test seam"],
+      },
+      {
+        name: "a literal that stopped naming a hosted service",
+        source: DROPPED_NAME,
+        expect: ["this endpoint hosts AcpGate, which REGISTERED_SERVICES does not name"],
+      },
+    ];
+
+    requireScope("the production endpoint hosts both services", ENDPOINT_CASES.length);
+    if (real === null) {
+      fail(ENDPOINT_HOME + " is missing; it is the one endpoint an operator can start");
+    } else {
+      for (const probe of ENDPOINT_CASES) {
+        const observed = endpointViolations(probe.source);
+        if (JSON.stringify(observed) !== JSON.stringify(probe.expect)) {
+          fail(
+            "the production endpoint law disagreed on " +
+              probe.name +
+              ": expected [" +
+              probe.expect.join(" | ") +
+              "] but observed [" +
+              observed.join(" | ") +
+              "]",
+          );
+        }
+      }
+      notes.push(
+        "the production endpoint hosts AcpTask and AcpGate, hands the gate no dependency, and names" +
+          " exactly what it hosts for S7 to verify against (" +
+          ENDPOINT_CASES.length +
+          " driven cases, 4 of them negative)",
+      );
+    }
+  }
+
+  // V2-B2-5G, L-B25G-2: registering is not the same as being routable, and S7
+  // must prove the second.
+  //
+  // `force: false` was measured rather than assumed and it does not do what its
+  // name suggests. Against a data root that already holds a registration for
+  // this URI, the pinned server answers `200` with the deployment it ALREADY
+  // HAD and runs no discovery — whether the service set behind the URI is
+  // identical or different. So a successful registration proves that a
+  // registration exists, not that it describes the endpoint that just started.
+  //
+  // The hazard that follows is the one this whole packet exists to close,
+  // resurrected: a root registered by a build serving one service keeps serving
+  // one service, and a daemon that reached readiness on it would declare
+  // `SIGNAL: "SUPPORTED"` over an ingress that answers a gate release with "no
+  // such service".
+  //
+  // The invariant is therefore CLOSED here rather than recorded as owed work:
+  // the mode reads the reply, compares it against the services it hosts, fails
+  // closed on any that are missing, and announces `DEPLOYMENT_REGISTERED` only
+  // after that comparison. The ordering is part of the law and not decoration —
+  // a phase published before the check would tell a status reader the
+  // deployment was good while the daemon was still deciding.
+  //
+  // Driven case by case with the negatives written out, as its sibling is.
+  {
+    const VERIFY_HOME = "packages/entrypoints/daemon/src/mode-restate/index.ts";
+
+    /** Every way S7 stops proving routability. Empty is conformance. */
+    const verifyViolations = (source) => {
+      const problems = [];
+      if (!/const served = servedServiceNames\(registration\.body\);/.test(source)) {
+        problems.push("the registration reply is not read");
+      }
+      if (!/const missing = REGISTERED_SERVICES\.filter\(/.test(source)) {
+        problems.push("the reply is not compared against the services this mode hosts");
+      }
+      if (!/if \(missing\.length > 0\) \{\s*throw new StartupError\(/.test(source)) {
+        problems.push("a missing service does not fail closed");
+      }
+      const comparedAt = source.indexOf("const missing = REGISTERED_SERVICES");
+      const announcedAt = source.indexOf('input.onPhase("DEPLOYMENT_REGISTERED")');
+      if (comparedAt === -1 || announcedAt === -1 || announcedAt < comparedAt) {
+        problems.push("the deployment phase is announced before the registration is verified");
+      }
+      return problems;
+    };
+
+    const realVerify = readIfPresent(VERIFY_HOME);
+    const VERIFY_REAL = realVerify === null ? "" : stripComments(realVerify);
+
+    const NO_READ = VERIFY_REAL.replace(
+      "const served = servedServiceNames(registration.body);\n",
+      "",
+    );
+    const NO_FAIL = VERIFY_REAL.replace("if (missing.length > 0) {", "if (missing.length < 0) {");
+    const EARLY_PHASE = VERIFY_REAL.replace(
+      "  const served = servedServiceNames(registration.body);",
+      '  input.onPhase("DEPLOYMENT_REGISTERED");\n  const served = servedServiceNames(registration.body);',
+    );
+
+    const VERIFY_CASES = [
+      { name: "the real mode source", source: VERIFY_REAL, expect: [] },
+      {
+        name: "a mode that never reads the reply",
+        source: NO_READ,
+        expect: ["the registration reply is not read"],
+      },
+      {
+        name: "a mode that finds a missing service and carries on",
+        source: NO_FAIL,
+        expect: ["a missing service does not fail closed"],
+      },
+      {
+        name: "a mode that announces the phase before it verifies",
+        source: EARLY_PHASE,
+        expect: ["the deployment phase is announced before the registration is verified"],
+      },
+    ];
+
+    requireScope("the registration is verified against what the endpoint hosts", VERIFY_CASES.length);
+    if (realVerify === null) {
+      fail(VERIFY_HOME + " is missing; it is where the deployment is registered");
+    } else {
+      for (const probe of VERIFY_CASES) {
+        const observed = verifyViolations(probe.source);
+        if (JSON.stringify(observed) !== JSON.stringify(probe.expect)) {
+          fail(
+            "the registration verification law disagreed on " +
+              probe.name +
+              ": expected [" +
+              probe.expect.join(" | ") +
+              "] but observed [" +
+              observed.join(" | ") +
+              "]",
+          );
+        }
+      }
+      notes.push(
+        "S7 reads the deployment reply, fails closed on a service the engine will not route," +
+          " and announces the phase only after (" +
+          VERIFY_CASES.length +
+          " driven cases, 3 of them negative)",
+      );
+    }
+  }
+
   // V2-B2-4a, widened by V2-B2-4b: no engine-minted invocation id may leave
   // the durability edge.
   //
@@ -12245,6 +12589,17 @@ const DURABILITY_PUBLIC_EXPORTS = [
   "StartEndpointOptions",
   "SubmitResult",
   "createAcpTaskObject",
+  // V2-B2-5G: the gate's factory, so an assembled endpoint can host the
+  // service `RestateDriver.signal` declares `SUPPORTED`, and the factory's own
+  // parameter type beside it. `GateDependencies` is here on the pre-audit's
+  // correction, and the correction is right: an exported function whose
+  // parameter type the package root cannot name has a surface this pin cannot
+  // describe, and a consumer writing a wrapper would have to re-declare the
+  // shape by hand or deep-import. Publishing it grants nothing -- the one
+  // member is the drills' optional `__onGate` seam, and `L-B25G-1` below
+  // asserts by shape that the production endpoint passes no argument at all.
+  "GateDependencies",
+  "createAcpGateWorkflow",
   "deriveInvocation",
   "readCacheThroughHandler",
   "reconcile",
