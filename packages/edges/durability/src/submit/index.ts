@@ -2,7 +2,6 @@ import {
   RESTATE_HANDLER_ADVANCE,
   RESTATE_HANDLER_READ_CACHE,
   RESTATE_OBJECT_NAME,
-  deterministicUuid,
 } from "@acp/runtime";
 import type { DurableInvocation } from "@acp/runtime";
 
@@ -25,21 +24,17 @@ import type { GatePayload, RestateCacheState } from "../contracts/index.js";
  * rather than minting a new one, which is what makes a retry a replay.
  */
 
-/** Derive the invocation identity. Pure, and stable across restarts. */
-export function deriveInvocation(
-  taskId: string,
-  attempt: number,
-  submittedAt: string,
-  submissionDigest: string,
-): DurableInvocation {
-  return {
-    taskId,
-    attempt,
-    invocationId: deterministicUuid("invocation/" + taskId + "/" + String(attempt)),
-    submittedAt,
-    submissionDigest,
-  };
-}
+/**
+ * Derive the invocation identity. Pure, and stable across restarts.
+ *
+ * Declared in `@acp/runtime`'s submission module since V2-B4b stage 3B and
+ * re-exported here, for the reason `canonicalSubmission` is re-exported from
+ * `daemon-child`: the explicit tool operation needs the same derivation, and a
+ * domain that had to reach an edge for it would invert the dependency. A
+ * re-export, never a second declaration — every consumer that reaches for the
+ * name through this module keeps resolving unchanged.
+ */
+export { deriveInvocation } from "@acp/runtime";
 
 function assertLoopback(url: string): URL {
   const parsed = new URL(url);

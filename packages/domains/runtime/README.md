@@ -116,6 +116,28 @@ rather than aspirational. `RUNNING` is the one ambiguous state, because both the
 intent and its outcome land there; the tie is broken by asking the ledger
 whether the outcome event exists, which is evidence rather than memory.
 
+**V2-B4b stage 3B adds the explicit tool-call operation**, and it is the
+operation only: `runToolCall` joins a structural calling scope, the stage 2
+receipt and the ledger row, and there is no door here — no route, no CLI verb,
+no process start, and no import of the package that owns the tool vocabulary.
+Its contract is an ordering invariant: a throw means the request never became an
+operation, so no row was appended and nothing was spawned, while a return means
+it did become one and a row always exists. Nine checks — the bounded names, the
+worker identity, both indices, the invocation's own attempt and `submittedAt`,
+the causal link, the scope's own id, the task, the attempt bound, and the replay
+read — run before the scope is reachable, and after it every outcome is
+recorded, refusals as much as successes. The list is derived from one rule
+rather than collected: every caller-supplied value the recorder would hand to
+the event contract is bounded here, because a refusal that arrives from the
+recorder arrives after the call already happened, which is a real effect with no
+row. The three that judge the invocation and the cause use the contract's own
+field schemas rather than a restatement of them, so a precheck cannot drift from
+the parse it stands in front of. Replay is decided by the durable
+coordinate alone: a spent `(taskId, attempt, transitionId)` returns the recorded
+row without calling anything, which is why a repeat can never become a second
+real effect. The call's content reaches the caller and never a ledger row, so a
+replay returns none — it was never durable to begin with.
+
 ## The laws frozen here
 
 ### Authority

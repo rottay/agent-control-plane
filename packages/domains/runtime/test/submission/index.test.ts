@@ -38,6 +38,7 @@ import {
   canonicalSubmission,
   canonicalSubmissionDigest,
   composeSubmission,
+  deriveInvocation,
 } from "../../src/submission/index.js";
 import type { DaemonSubmission, SubmissionCoordinates } from "../../src/submission/index.js";
 
@@ -614,5 +615,55 @@ describe("the composed digest is the digest of the composed submission", () => {
     expect(composed.submission.attempt).toBe(1);
     expect(composed.submission.submittedAt).toBe(SUBMITTED_AT);
     expect(composed.submission.initiativeId).toBe(INITIATIVE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The invocation identity, relocated (V2-B4b stage 3B)
+// ---------------------------------------------------------------------------
+
+/**
+ * The non-semantic move drill, in the register of the `canonicalSubmission`
+ * precedent above.
+ *
+ * `deriveInvocation` was declared in `@acp/durability`'s submission module and
+ * is declared here now, so that the explicit tool operation can derive the same
+ * identity without a domain depending on an edge. The claim under test is that
+ * the move changed the declaration's address and nothing else.
+ *
+ * The invocation ids are **literals lifted from before the move**, not
+ * re-derivations. That is the whole point: asserting against a fresh call to
+ * the function that was moved would pass no matter what the move did to it. A
+ * mismatch here means the derivation changed, and the repair is to stop, not to
+ * adjust the literal.
+ */
+describe("the invocation identity survived its relocation byte for byte", () => {
+  const MOVED_TASK = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+
+  it("derives the pinned invocation id for attempt 1", () => {
+    const invocation = deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64));
+    expect(invocation.invocationId).toBe("3cea5666-4abb-5bdf-8089-3f961124f281");
+  });
+
+  it("derives the pinned invocation id for attempt 2", () => {
+    const invocation = deriveInvocation(MOVED_TASK, 2, SUBMITTED_AT, "a".repeat(64));
+    expect(invocation.invocationId).toBe("f84a47b0-6163-51b2-bc7a-888142ed7116");
+  });
+
+  it("passes the caller's four coordinates through unchanged", () => {
+    const digest = "c".repeat(64);
+    const invocation = deriveInvocation(MOVED_TASK, 2, SUBMITTED_AT, digest);
+    expect(invocation.taskId).toBe(MOVED_TASK);
+    expect(invocation.attempt).toBe(2);
+    expect(invocation.submittedAt).toBe(SUBMITTED_AT);
+    expect(invocation.submissionDigest).toBe(digest);
+  });
+
+  it("depends on the task and the attempt, and on nothing else", () => {
+    const one = deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64));
+    const again = deriveInvocation(MOVED_TASK, 1, "2026-01-01T00:00:00.000Z", "b".repeat(64));
+    // Same identity under a different instant and a different digest: what
+    // makes a resubmission after a crash a replay rather than a second run.
+    expect(again.invocationId).toBe(one.invocationId);
   });
 });

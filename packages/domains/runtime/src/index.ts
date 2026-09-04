@@ -275,6 +275,7 @@ export {
   canonicalSubmission,
   canonicalSubmissionDigest,
   composeSubmission,
+  deriveInvocation,
 } from "./submission/index.js";
 export type {
   DaemonSubmission,
@@ -319,3 +320,14 @@ export type {
   ToolCallObservation,
   ToolCallRecordResult,
 } from "./tool-receipt/index.js";
+
+// V2-B4b stage 3B: the explicit tool operation. It joins the scope, the receipt
+// and the ledger row, and it is the operation only -- no route, no CLI verb, no
+// process start. `ToolCallPort` is structural exactly as `EffectPort` is, so
+// this package still never names `@acp/tools`.
+export { runToolCall, toolOperationScopeId } from "./tool-call/index.js";
+export type {
+  ToolCallExecution,
+  ToolCallOperationResult,
+  ToolCallPort,
+} from "./tool-call/index.js";

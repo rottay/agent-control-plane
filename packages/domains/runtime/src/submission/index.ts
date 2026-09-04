@@ -3,6 +3,9 @@ import type { PolicyRegistry, PolicyRouteRequest } from "@acp/accounts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { canonicalJsonStringify, sha256Hex } from "@acp/ledger";
 
+import type { DurableInvocation } from "../contracts/index.js";
+import { deterministicUuid } from "../core/coordinates/index.js";
+
 /**
  * The submission path: where a route is elected, and what binds it (V2-B7S).
  *
@@ -108,6 +111,42 @@ export function canonicalSubmission(submission: DaemonSubmission): string {
 /** The digest of the canonical preimage. One producer, one algorithm. */
 export function canonicalSubmissionDigest(submission: DaemonSubmission): string {
   return sha256Hex(canonicalSubmission(submission));
+}
+
+// ---------------------------------------------------------------------------
+// Durable identity
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the invocation identity. Pure, and stable across restarts.
+ *
+ * **The producer moved; the derivation did not** (V2-B4b stage 3B). This was
+ * declared in `@acp/durability`'s submission module, which re-exports it now,
+ * for the reason `canonicalSubmission` above is re-exported from the daemon:
+ * the explicit tool operation needs the same identity, and a domain that had to
+ * depend on an edge to derive its own coordinates would invert the dependency.
+ * The bytes are unchanged — same preimage, same `deterministicUuid` — and the
+ * relocation is drilled as non-semantic against invocation-id literals lifted
+ * from before the move, exactly as the `canonicalSubmission` move was.
+ *
+ * L1 still holds and still lives at the door that submits: the invocation id
+ * and the submitted instant are derived ONCE, before ingress, and the same
+ * value is sent as the idempotency key, which is what makes a retry a replay
+ * rather than a second run.
+ */
+export function deriveInvocation(
+  taskId: string,
+  attempt: number,
+  submittedAt: string,
+  submissionDigest: string,
+): DurableInvocation {
+  return {
+    taskId,
+    attempt,
+    invocationId: deterministicUuid("invocation/" + taskId + "/" + String(attempt)),
+    submittedAt,
+    submissionDigest,
+  };
 }
 
 // ---------------------------------------------------------------------------

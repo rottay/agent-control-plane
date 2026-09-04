@@ -4519,6 +4519,54 @@ const V2B4B_S3A_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b stage 3B — the explicit tool-call operation, and nothing that opens it.
+ *
+ * Stage 2 could record that a tool ran; nothing joined a scope, the receipt and
+ * the ledger row, and `recordToolCall` had no callers at all. This packet is
+ * that join and stops there. **No door**: no route, no CLI verb, no HTTP
+ * handler, no process start, no protocol version move. Those are the packets
+ * after it, and the reason they are separate is that a door is where authority
+ * is granted — bundling one with the operation it opens would put both behind a
+ * single review.
+ *
+ * **The runtime still does not name `@acp/tools`.** `ToolCallPort` is
+ * structural, exactly as `EffectPort` is, so the seam costs no package edge and
+ * `RUNTIME_ALLOWED_PACKAGES` stays the closed set it was. That is checked by a
+ * law that already exists rather than by one added here.
+ *
+ * **`deriveInvocation` changes address, not bytes.** It is declared in the
+ * runtime's submission module now — the tool operation needs the same identity
+ * derivation, and a domain that had to depend on an edge to derive its own
+ * coordinates would invert the dependency. The re-export is placed **where the
+ * declaration was**, in `durability/src/submit/index.ts`, and not in the
+ * durability barrel: `drivers/restate-child/index.ts` and the drills suite both
+ * reach for the name through that module directly, and a barrel-only re-export
+ * would have broken two files this packet is not allowed to touch. So the
+ * durability side is one file, `DURABILITY_PUBLIC_EXPORTS` stays 26 with its
+ * README row intact, and the daemon's two imports resolve unchanged. The
+ * duplication gate matches only `export <kind> NAME` declarations under a
+ * package's own `src` tree, so a re-export registers nothing and no
+ * `DUPLICATION_ADJUDICATED` entry is needed or permitted.
+ *
+ * `RUNTIME_PUBLIC_EXPORTS` moves 192 → 198 and is the only pinned integer this
+ * packet touches. `PATH_SCOPED_LAWS` stays 57 — no new path-scoped law is
+ * registered — and `CONTRACTS_SCHEMA_EXPORTS` 100, `TOOLS_PUBLIC_EXPORTS` 30,
+ * `CONTROL_PLANE_EVENT_TYPES` 24, `TOOLS_RECEIPT_SHAPE`, the nine payload keys,
+ * `API_CONTRACT_VERSION` 0.9.0 and the protocol no-producer list at ten all
+ * stay exactly where stage 3A left them.
+ */
+const V2B4B_S3B_WRITE_SET = [
+  "packages/domains/runtime/src/tool-call/index.ts",
+  "packages/domains/runtime/src/submission/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/edges/durability/src/submit/index.ts",
+  "packages/domains/runtime/test/tool-call/index.test.ts",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "packages/domains/runtime/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4902,6 +4950,7 @@ const WRITE_SET = [
   ...V2B4B_WRITE_SET,
   ...V2B4B_S2_WRITE_SET,
   ...V2B4B_S3A_WRITE_SET,
+  ...V2B4B_S3B_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -11237,6 +11286,14 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "ToolCallRecordResult",
   "recordToolCall",
   "toolCallTransitionId",
+  // V2-B4b stage 3B: the explicit tool operation, and the invocation identity
+  // that moved here from the durability edge so a domain need not depend on one.
+  "ToolCallExecution",
+  "ToolCallOperationResult",
+  "ToolCallPort",
+  "deriveInvocation",
+  "runToolCall",
+  "toolOperationScopeId",
 ];
 
 /**
