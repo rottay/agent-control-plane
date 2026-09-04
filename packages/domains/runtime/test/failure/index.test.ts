@@ -357,7 +357,7 @@ describe("N4/N5: the failure payload is a digest and a closed reason", () => {
 
 describe("N8: this packet introduced no state and no event type", () => {
   it("leaves the contract's two closed lists exactly where they were", () => {
-    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(23);
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(24);
     expect(EXCEPTIONAL_STATES).toHaveLength(8);
     // The two names this packet leans on were already there.
     expect(CONTROL_PLANE_EVENT_TYPES).toContain("TASK_FAILED");
