@@ -5104,6 +5104,60 @@ const V2C4_WRITE_SET = [
 ];
 
 /**
+ * V2 X1a — the tool-coordinate claim store.
+ *
+ * **Inert substrate, exactly the shape C1 landed before C2 adopted it.** Nothing
+ * calls this store yet; X1b is the packet that makes both doors take a claim.
+ * This one changes no behaviour, which is why it can land alone and be green
+ * alone.
+ *
+ * **What it closes, when it is adopted.** `runToolCall` reads the receipt for a
+ * coordinate, awaits an external process, then appends. Two processes can both
+ * read "no receipt", both spawn, and both append — the ledger absorbs the
+ * second, so the plane records **one row for two effects**. The proven semantic
+ * today is an exactly-once *receipt* over an at-least-once *effect*.
+ *
+ * **Both halves of the mechanism, again.** `coordinate_key` as PRIMARY KEY
+ * prevents two *records*; `BEGIN IMMEDIATE` prevents two *decisions*. `L-X1-1`
+ * asserts the second, because the key will not catch a decision moved outside
+ * the transaction — the same law C1 needed for the same reason.
+ *
+ * **The row is a recovery record, not only a lock.** A poison receipt must be
+ * byte-identical whoever writes it, and the idempotency key is built from
+ * `(taskId, attempt, transitionId)` alone while the event body carries the
+ * submission instant, the account, the emitter, the server, the tool and the
+ * byte count. So the claim stores those at claim time and a recoverer rebuilds
+ * from the claim, never from itself.
+ *
+ * **Three stored states, and POISON is not a fourth.** `CLAIMED → IN_FLIGHT →
+ * SETTLED`, one way. A poison is what a *caller* does on finding an expired
+ * `IN_FLIGHT`: append the receipt, then `SETTLE`.
+ *
+ * **The residual window is stated, not closed.** If the claim file is destroyed
+ * while a coordinate sits `IN_FLIGHT` and before any caller promoted that claim
+ * into a receipt, that coordinate becomes re-runnable. Narrow, because the first
+ * recoverer promotes the poison into the ledger — but open, and neither this
+ * fence, the module, the README nor ADR 0025 may describe it as closed. **No
+ * unqualified "exactly once" anywhere.**
+ *
+ * Six paths, two novel — the README carries a truthful paragraph rather than a
+ * pinned surface row, because the ledger's `README_SURFACE_CLAIMS` entry is
+ * scoped `only: (name) => name.endsWith("Error")` and this packet adds no error
+ * type. `PATH_SCOPED_LAWS` 78 → **82**. No contracts, protocol or event-type
+ * change; `TOOL_REFUSALS` and `CONTROL_PLANE_EVENT_TYPES` are untouched, and the
+ * ledger's own migration list does not move: this store carries its own.
+ */
+const V2X1A_WRITE_SET = [
+  "packages/persistence/ledger/src/tool-claim-store/index.ts",
+  "packages/persistence/ledger/test/tool-claim-store/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0025-the-tool-coordinate-claim.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5497,6 +5551,7 @@ const WRITE_SET = [
   ...V2C2_WRITE_SET,
   ...V2C3_WRITE_SET,
   ...V2C4_WRITE_SET,
+  ...V2X1A_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6488,6 +6543,24 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the gate runs before the marker, at every seam",
     scope: "runtime/src/execution-effects and daemon/src/index.ts",
+  },
+  // V2 X1a. Four new path-shaped surfaces, so four new rows: the register and
+  // the `requireScope` call sites both move 78 -> 82.
+  {
+    law: "every claim mutation is immediate",
+    scope: "packages/persistence/ledger/src/tool-claim-store/index.ts",
+  },
+  {
+    law: "the claim store deletes nothing and reads no clock",
+    scope: "packages/persistence/ledger/src/tool-claim-store/index.ts",
+  },
+  {
+    law: "the claim-store path has exactly one producer",
+    scope: "packages/*/*/src/** (every tracked source file)",
+  },
+  {
+    law: "each store in this package migrates under its own name",
+    scope: "packages/persistence/ledger/src/**",
   },
 ];
 
@@ -15144,6 +15217,179 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
   }
   requireScope("the gate runs before the marker, at every seam", gateScanned);
   notes.push("the conformance gate precedes the evidence marker, and every daemon execution seam passes one");
+}
+
+// --- 21f. the tool-coordinate claim store (V2 X1a) --------------------------
+
+const TOOL_CLAIM_SITE = "packages/persistence/ledger/src/tool-claim-store/index.ts";
+
+// L-X1-1 -- every claim mutation is immediate.
+//
+// The PRIMARY KEY prevents two records; `BEGIN IMMEDIATE` prevents two
+// decisions. Only the second stops a coordinate being claimed twice, and the
+// key will not catch a decision moved outside the transaction -- which is
+// exactly the mistake C1 needed `L-C-1b` for. The region walk is string-aware
+// because the SQL literals carry unbalanced parentheses of their own.
+{
+  let claimScanned = 0;
+  const source = readIfPresent(TOOL_CLAIM_SITE);
+  if (source === null) {
+    fail(TOOL_CLAIM_SITE + " is missing; the claim-store laws would stand over nothing");
+  } else {
+    claimScanned += 1;
+    const code = stripComments(source);
+    const regions = [];
+    for (let at = code.indexOf("db.transaction("); at !== -1; at = code.indexOf("db.transaction(", at + 1)) {
+      let depth = 0;
+      let quote = null;
+      let cursor = at + "db.transaction".length;
+      for (; cursor < code.length; cursor += 1) {
+        const character = code[cursor];
+        if (quote !== null) {
+          if (character === "\\") cursor += 1;
+          else if (character === quote) quote = null;
+          continue;
+        }
+        if (character === '"' || character === "'" || character === "`") {
+          quote = character;
+          continue;
+        }
+        if (character === "(") depth += 1;
+        else if (character === ")") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      regions.push([at, cursor]);
+    }
+    if (regions.length === 0) {
+      fail(TOOL_CLAIM_SITE + " opens no transaction; the read, the decision and the write must be one unit");
+    }
+    if (!code.includes(".immediate(")) {
+      fail(
+        TOOL_CLAIM_SITE +
+          " never takes the write lock at BEGIN; a deferred transaction discovers the conflict at" +
+          " first write, which is after two processes have already both decided",
+      );
+    }
+    for (const match of code.matchAll(/\b(INSERT|UPDATE)\s+(?:INTO\s+)?[a-z_]+/g)) {
+      const at = match.index ?? 0;
+      if (!regions.some(([start, end]) => at > start && at < end)) {
+        fail(
+          TOOL_CLAIM_SITE +
+            " mutates outside a transaction (" +
+            match[0] +
+            "); the PRIMARY KEY prevents two records and only BEGIN IMMEDIATE prevents two decisions",
+        );
+      }
+    }
+  }
+  requireScope("every claim mutation is immediate", claimScanned);
+  notes.push("every tool-claim mutation sits inside an immediate transaction");
+}
+
+// L-X1-2 -- the claim store deletes nothing and reads no clock.
+//
+// A claim is created once and never removed, so a coordinate's history cannot
+// be erased by the thing that arbitrates it. And every instant is the caller's:
+// a substrate that read a clock could not be drilled at an expiry boundary
+// without sleeping, and expiry is the one judgement this store must not make.
+{
+  let purityScanned = 0;
+  const source = readIfPresent(TOOL_CLAIM_SITE);
+  if (source === null) {
+    fail(TOOL_CLAIM_SITE + " is missing; the purity law would stand over nothing");
+  } else {
+    purityScanned += 1;
+    const code = stripComments(source);
+    if (/\bDELETE\b/.test(code)) {
+      fail(
+        TOOL_CLAIM_SITE +
+          " contains a DELETE; a claim is created once and never removed, so a spent coordinate" +
+          " cannot be quietly made re-runnable by the module that arbitrates it",
+      );
+    }
+    for (const forbidden of ["Date.now(", "new Date(", "process.env", "process.hrtime"]) {
+      if (code.includes(forbidden)) {
+        fail(
+          TOOL_CLAIM_SITE +
+            " reads " +
+            forbidden +
+            "; every instant is supplied by the caller, and expiry is the caller's judgement",
+        );
+      }
+    }
+  }
+  requireScope("the claim store deletes nothing and reads no clock", purityScanned);
+  notes.push("the tool-claim store deletes nothing and reads no clock");
+}
+
+// L-X1-3 -- the claim-store path has exactly one producer.
+//
+// Two doors that each composed the path themselves could disagree by a
+// directory, and two claim stores over one ledger is no mutual exclusion at all
+// -- while looking exactly like mutual exclusion. So the filename lives in one
+// place and every caller derives from it.
+{
+  let pathScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const namers = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!relativePath.endsWith(".ts")) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      pathScanned += 1;
+      if (stripComments(content).includes("tool-claims.sqlite")) namers.push(relativePath);
+    }
+    if (namers.join(", ") !== TOOL_CLAIM_SITE) {
+      fail(
+        "the claim-store filename is composed by [" +
+          namers.join(", ") +
+          "]; exactly one module may produce it, and it is " +
+          TOOL_CLAIM_SITE,
+      );
+    }
+  }
+  requireScope("the claim-store path has exactly one producer", pathScanned);
+  notes.push("one module composes the tool-claim store path, and no other source file names it");
+}
+
+// L-X1-4 -- each store in this package migrates under its own name.
+//
+// The ledger, the worktree arbiter and the claim store are three databases in
+// one package. A shared migration-table name is how a file opened by the wrong
+// module looks migrated when it is not -- so the three names are distinct, and
+// that is checked rather than remembered.
+{
+  let migrationScanned = 0;
+  const names = new Map([
+    ["packages/persistence/ledger/src/migrations/index.ts", "schema_migrations"],
+    ["packages/persistence/ledger/src/lease-store/index.ts", "lease_schema_migrations"],
+    [TOOL_CLAIM_SITE, "tool_claim_schema_migrations"],
+  ]);
+  const seen = new Set();
+  for (const [site, table] of names) {
+    const source = readIfPresent(site);
+    if (source === null) {
+      fail(site + " is missing; the migration-name law would stand over nothing");
+      continue;
+    }
+    migrationScanned += 1;
+    if (!stripComments(source).includes(table)) {
+      fail(site + " no longer declares its own migration table " + table);
+    }
+    if (seen.has(table)) {
+      fail("two stores in this package migrate under the name " + table);
+    }
+    seen.add(table);
+  }
+  if (seen.size !== names.size) {
+    fail("the three stores in this package do not carry three distinct migration table names");
+  }
+  requireScope("each store in this package migrates under its own name", migrationScanned);
+  notes.push("the ledger, the lease store and the claim store each migrate under their own table name");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------

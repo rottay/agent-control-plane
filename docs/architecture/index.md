@@ -40,6 +40,7 @@ new records from `_template.md`, which carries the required fields.
 | 0022 | [The fenced lease](0022-the-fenced-lease.md) | accepted |
 | 0023 | [Many walks, one plane](0023-many-walks-one-plane.md) | accepted |
 | 0024 | [Write-set conformance](0024-write-set-conformance.md) | accepted |
+| 0025 | [The tool-coordinate claim](0025-the-tool-coordinate-claim.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

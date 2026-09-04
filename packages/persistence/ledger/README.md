@@ -152,6 +152,43 @@ The concurrency tests spawn real child processes. Two handles in one event loop
 would prove nothing, because `better-sqlite3` is synchronous and the calls would
 simply run in sequence with the file lock never contended.
 
+## The tool-coordinate claim store
+
+A third database beside the ledger, answering a third question. The ledger
+answers *what happened*; the worktree arbiter answers *may I write here, now*;
+this one answers *may I run this tool call, now*.
+
+It exists because `runToolCall` reads a coordinate's receipt, awaits an external
+process, then appends — so two processes can both read "no receipt", both spawn
+the tool, and both append. The ledger absorbs the second as an exact replay, and
+the plane ends up with **one row for two effects**. What the plane guarantees
+today is an exactly-once *receipt* over an at-least-once *effect*.
+
+`openToolClaimStore` gives one row per coordinate, arbitrated by `BEGIN
+IMMEDIATE`: the `coordinate_key` primary key prevents two records, and the
+immediate transaction prevents two decisions. Both halves are needed. States run
+`CLAIMED → IN_FLIGHT → SETTLED`, one way; a poison is not a fourth state but a
+caller appending a `POSTCONDITION_UNKNOWN` receipt and then settling. The row
+also carries everything such a receipt needs, written at claim time, so any
+recoverer rebuilds identical bytes from the claim rather than from itself.
+
+It reads no clock: every instant is the caller's argument, so expiry is decided
+where the policy is. It deletes nothing, probes no process, and composes exactly
+one path — `toolClaimStorePath`, derived from the ledger's own.
+
+**Nothing calls it yet.** This is substrate, landed alone and adopted later, the
+way the worktree arbiter was.
+
+**What it will permit us to say, and what it will not.** Once adopted: an
+exactly-once receipt, and an exactly-once effect per coordinate across processes
+**except** across a claimant crash in the window between the tool answering and
+the receipt landing, where the coordinate settles fail-closed and is never
+re-run. Never an unqualified "exactly once". If the claim database is destroyed
+while a coordinate is in flight and before any caller has promoted that claim
+into a receipt, that coordinate becomes re-runnable — narrow, because the first
+recoverer promotes the poison into the ledger, but open. ADR 0025 records why
+closing it would mean one database for two questions.
+
 ## The artifact store
 
 The Checkpoint law says a record carries **digests and references**, never

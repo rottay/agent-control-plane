@@ -73,6 +73,28 @@ export type { Migration } from "./migrations/index.js";
  */
 export { openLeaseStore } from "./lease-store/index.js";
 
+/**
+ * V2 X1a: the tool-coordinate claim store.
+ *
+ * A third database beside the ledger and the lease store, answering a third
+ * question: *may I run this tool call, now?* Exported from this package for the
+ * reason the lease store is — `better-sqlite3` is fenced here by equality — and
+ * **inert**: nothing calls it yet, exactly as C1's store landed before C2 took
+ * it. `toolClaimStorePath` is the single producer of its path, so two doors
+ * cannot end up arbitrating over two different files.
+ */
+export { TOOL_CLAIM_STATES, openToolClaimStore, toolClaimStorePath } from "./tool-claim-store/index.js";
+
+export type {
+  OpenToolClaimStoreOptions,
+  ToolClaimDecision,
+  ToolClaimGrant,
+  ToolClaimOutcome,
+  ToolClaimRow,
+  ToolClaimState,
+  ToolClaimStore,
+} from "./tool-claim-store/index.js";
+
 export type {
   LeaseDecision,
   LeaseGrant,
