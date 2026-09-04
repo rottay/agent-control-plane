@@ -36,6 +36,7 @@ new records from `_template.md`, which carries the required fields.
 | 0018 | [The submission path elects the route, and the walk still does not](0018-the-submission-path.md) | accepted |
 | 0019 | [The owned session lifecycle](0019-the-owned-session-lifecycle.md) | accepted |
 | 0020 | [The explicit tool operation](0020-the-explicit-tool-operation.md) | accepted |
+| 0021 | [Worktree arbitration](0021-worktree-arbitration.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

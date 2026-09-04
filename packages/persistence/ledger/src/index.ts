@@ -63,6 +63,25 @@ export type { LedgerErrorCode, LedgerValidationIssue } from "./errors/index.js";
 
 export type { Migration } from "./migrations/index.js";
 
+/**
+ * V2 concurrency C1: the worktree arbitration store.
+ *
+ * A separate database from the ledger, answering the one question history
+ * cannot: *may I write here, now?* Exported from this package because
+ * `better-sqlite3` is fenced to it by equality, not because arbitration is a
+ * ledger concern -- the store holds no history and is rebuildable.
+ */
+export { openLeaseStore } from "./lease-store/index.js";
+
+export type {
+  LeaseDecision,
+  LeaseGrant,
+  LeaseStoreOutcome,
+  LeaseRow,
+  LeaseStore,
+  OpenLeaseStoreOptions,
+} from "./lease-store/index.js";
+
 export {
   ROADMAP_VERSION_REFUSALS,
   decideRoadmapVersion,

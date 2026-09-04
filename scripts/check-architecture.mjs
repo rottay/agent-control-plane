@@ -4842,6 +4842,60 @@ const V2B4B_S41_WRITE_SET = [
 ];
 
 /**
+ * V2 concurrency C1 — the worktree arbitration store.
+ *
+ * The first packet of C1 → C2 → C3 → C4, and the one that answers a question
+ * the ledger structurally cannot. *What happened?* is history, and ADR 0001
+ * makes the append-only ledger its only authority. *May I write here, now?* is
+ * mutual exclusion: reading the last lease event and then acting on it is a
+ * check-then-write, and two processes both pass the check. This packet adds the
+ * lock, and deliberately nothing else — no daemon holds it (C2), no walk is
+ * scheduled against it (C3), no write-set is enforced by it (C4).
+ *
+ * **It is the same object `acquireSingleton` already uses**, scaled from one
+ * daemon per checkout to one writer per worktree: arbitration is done by
+ * something outside the deciding process, because a decision made inside one
+ * cannot exclude another process making the same decision at the same instant.
+ *
+ * **Both halves of the mechanism are load-bearing, and only one of them is
+ * obvious.** `worktree_path` as PRIMARY KEY prevents two *records*;
+ * `BEGIN IMMEDIATE` prevents two *decisions*. That distinction was measured
+ * rather than asserted: with the transaction removed, a race for a *fresh*
+ * worktree still granted exactly once — the key caught it — and a race for an
+ * *existing, released* record granted **twice**. A drill that only ever raced
+ * on an empty table would have passed against a store with no arbitration in
+ * it at all, so both races ship.
+ *
+ * **The record is never deleted**, and L-C-1b asserts that mechanically. Release
+ * clears the holder columns and keeps `fence`, because C2's abort test is "has
+ * the fence moved since I was granted?" — and a `DELETE` would restart the
+ * counter on the next grant, letting a stale holder read its own old value as
+ * current.
+ *
+ * **No driver gained a capability.** `DRIVER_CAPABILITY_PROPERTIES` stays
+ * `["SERIALIZED_PER_TASK"]`, SQLite mode stays `UNSUPPORTED`, and Restate's
+ * `SUPPORTED` still says nothing about worktrees: it serializes per *task key*,
+ * and two tasks writing one worktree are two keys. So the lease is mandatory in
+ * both modes, and L-C-1c makes it impossible for the file that provides
+ * arbitration to so much as name an engine.
+ *
+ * Seven paths, three novel. No error class is added — an unopenable or
+ * unmigratable store is honestly `LedgerOpenError` / `LedgerMigrationError`,
+ * and everything a caller must act on is a refusal *value*, not an exception —
+ * so the ledger README's thirteen-class claim does not move.
+ * `PATH_SCOPED_LAWS` 65 → **68**.
+ */
+const V2C1_WRITE_SET = [
+  "packages/persistence/ledger/src/lease-store/index.ts",
+  "packages/persistence/ledger/test/lease-store/index.test.ts",
+  "packages/persistence/ledger/test/lease-race-worker/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0021-worktree-arbitration.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5231,6 +5285,7 @@ const WRITE_SET = [
   ...V2B4B_S3E_WRITE_SET,
   ...V2B4B_S40_WRITE_SET,
   ...V2B4B_S41_WRITE_SET,
+  ...V2C1_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6156,6 +6211,22 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the protocol record and the tools README cannot disagree",
     scope: "the tool edge's contract site and README",
+  },
+  // V2 concurrency C1. Three new path-shaped surfaces, so three new rows: the
+  // register and the `requireScope` call sites both move 65 -> 68, and
+  // `assertPathScopedInventory` fails and prints both numbers if only one side
+  // of this edit lands.
+  {
+    law: "one arbitration store, and only it names the lease table",
+    scope: "packages/*/*/src/** (every tracked source file)",
+  },
+  {
+    law: "every arbitration mutation is immediate, and none is a delete",
+    scope: "packages/persistence/ledger/src/lease-store/index.ts",
+  },
+  {
+    law: "the arbitration store names no driver, no engine and no capability",
+    scope: "packages/persistence/ledger/src/lease-store/index.ts",
   },
 ];
 
@@ -11314,6 +11385,7 @@ const TEST_ONLY_DOMAINS = {
   ],
   ledger: [
     { domain: "concurrent-writer-worker", why: "a spawned-fixture entry point, run as a child process" },
+    { domain: "lease-race-worker", why: "a spawned-fixture entry point that races for the worktree lease" },
   ],
   providers: [
     { domain: "testing", why: "the fake-provider harness the provider suites share" },
@@ -14111,6 +14183,187 @@ if (tracked.status === 0) {
     }
     notes.push(exported.size + " tool edge exports, pinned by equality");
   }
+}
+
+// --- 21b. the worktree arbitration store (V2 concurrency C1) ----------------
+//
+// Three laws over one new module. What they have in common is that each pins a
+// property whose absence would be silent: a second store answers "may I write"
+// twice and nothing complains; a mutation outside the transaction passes every
+// acquisition test that races on an empty table; and a driver name inside this
+// file would make "SQLite gained arbitration" look sourced.
+
+const LEASE_STORE_SITE = "packages/persistence/ledger/src/lease-store/index.ts";
+
+// L-C-1a -- one arbitration store, and only it names the lease table.
+//
+// Two stores are two answers to *may I write here*, and the second one is
+// always the one nobody remembers. The table name is the marker because it is
+// what a second implementation would have to repeat.
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  let storeScanned = 0;
+  const namers = [];
+  for (const relativePath of present) {
+    if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+    if (!relativePath.endsWith(".ts")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    storeScanned += 1;
+    if (stripComments(content).includes("worktree_lease")) namers.push(relativePath);
+  }
+  if (namers.join(", ") !== LEASE_STORE_SITE) {
+    fail(
+      "the lease table is named by [" +
+        namers.join(", ") +
+        "]; exactly one module may arbitrate worktree access, and it is " +
+        LEASE_STORE_SITE,
+    );
+  }
+  requireScope("one arbitration store, and only it names the lease table", storeScanned);
+  notes.push("one arbitration store names the worktree lease table, and no other source file does");
+}
+
+// L-C-1b -- every arbitration mutation is immediate, and none is a delete.
+//
+// This is the law that would have caught the design defect the C1 brief found
+// in its own map: a DDL whose release deleted the row resets `fence` on the
+// next grant, and C2's abort test is "has the fence moved since I was
+// granted?" -- so a stale holder would read its own old value as current and
+// conclude it still holds the lease.
+//
+// The immediacy half is checked structurally rather than by keyword adjacency:
+// the mutation must sit inside a balanced `db.transaction(...)` region. A
+// mutation outside one still passes every acquisition drill that races on an
+// empty table, because the PRIMARY KEY catches that case -- it prevents two
+// records, not two decisions.
+{
+  let mutationScanned = 0;
+  const storeSource = readIfPresent(LEASE_STORE_SITE);
+  if (storeSource === null) {
+    fail(LEASE_STORE_SITE + " is missing; the arbitration laws would stand over nothing");
+  } else {
+    mutationScanned += 1;
+    const code = stripComments(storeSource);
+
+    // The record is never deleted, so the fence is monotonic across a
+    // release/re-acquire cycle. Asserted over the whole module rather than over
+    // one table name: there is no delete here at all.
+    if (/\bDELETE\b/.test(code)) {
+      fail(
+        LEASE_STORE_SITE +
+          " contains a DELETE; the arbitration record is cleared and never removed, because a" +
+          " deleted record restarts `fence` at its initial value and a stale holder then reads" +
+          " its own old fence as current",
+      );
+    }
+
+    // Balanced regions of `db.transaction(`, string-aware: the SQL literals
+    // carry unbalanced parentheses of their own, so a naive counter would
+    // close a region in the middle of an INSERT column list.
+    const regions = [];
+    for (let at = code.indexOf("db.transaction("); at !== -1; at = code.indexOf("db.transaction(", at + 1)) {
+      let depth = 0;
+      let quote = null;
+      let cursor = at + "db.transaction".length;
+      for (; cursor < code.length; cursor += 1) {
+        const character = code[cursor];
+        if (quote !== null) {
+          if (character === "\\") cursor += 1;
+          else if (character === quote) quote = null;
+          continue;
+        }
+        if (character === '"' || character === "'" || character === "`") {
+          quote = character;
+          continue;
+        }
+        if (character === "(") depth += 1;
+        else if (character === ")") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      regions.push([at, cursor]);
+    }
+    if (regions.length === 0) {
+      fail(LEASE_STORE_SITE + " opens no transaction; the read, the decision and the write must be one unit");
+    }
+    if (!code.includes(".immediate(")) {
+      fail(
+        LEASE_STORE_SITE +
+          " never takes the write lock at BEGIN; a deferred transaction discovers the conflict at" +
+          " first write, which is after two processes have already both decided",
+      );
+    }
+
+    for (const match of code.matchAll(/\b(INSERT|UPDATE)\s+(?:INTO\s+)?[a-z_]+/g)) {
+      const at = match.index ?? 0;
+      const inside = regions.some(([start, end]) => at > start && at < end);
+      if (!inside) {
+        fail(
+          LEASE_STORE_SITE +
+            " mutates outside a transaction (" +
+            match[0] +
+            "); every write must sit inside a .transaction(...).immediate(), because the PRIMARY KEY" +
+            " prevents two records and only BEGIN IMMEDIATE prevents two decisions",
+        );
+      }
+    }
+  }
+  requireScope("every arbitration mutation is immediate, and none is a delete", mutationScanned);
+  notes.push("every arbitration mutation sits inside an immediate transaction, and the record is never deleted");
+}
+
+// L-C-1c -- the arbitration store names no driver, no engine and no capability.
+//
+// The mechanical half of "no false SQLite parity". Arbitration is not a
+// durability-engine property: `SERIALIZED_PER_TASK` is per *task key*, so two
+// tasks writing one worktree are two keys and run concurrently. The lease is
+// therefore mandatory in both modes, and the file that provides exclusion may
+// not imply an engine already did. Checked over code rather than prose --
+// the module's docblock says exactly why the property does not apply, and
+// explaining an absence is not claiming a presence.
+{
+  let capabilityScanned = 0;
+  const storeSource = readIfPresent(LEASE_STORE_SITE);
+  if (storeSource === null) {
+    fail(LEASE_STORE_SITE + " is missing; the no-capability law would stand over nothing");
+  } else {
+    capabilityScanned += 1;
+    const code = stripComments(storeSource);
+    for (const forbidden of [
+      "SERIALIZED_PER_TASK",
+      "DRIVER_CAPABILITY_PROPERTIES",
+      "RESTATE_MODE",
+      "@acp/runtime",
+      "@acp/durability",
+    ]) {
+      if (code.includes(forbidden)) {
+        fail(
+          LEASE_STORE_SITE +
+            " names " +
+            forbidden +
+            "; arbitration is not a driver property, and a store that reads one would let" +
+            " \"Restate serializes, so this path needs no lease\" look sourced",
+        );
+      }
+    }
+    // A substrate that read a clock could not be drilled at an expiry boundary
+    // without sleeping, and a drill that sleeps passes on a slow machine for
+    // the wrong reason.
+    for (const forbidden of ["Date.now(", "new Date(", "process.env", "process.kill", "process.pid"]) {
+      if (code.includes(forbidden)) {
+        fail(
+          LEASE_STORE_SITE +
+            " reads " +
+            forbidden +
+            "; every clock, environment and process fact is supplied by the caller",
+        );
+      }
+    }
+  }
+  requireScope("the arbitration store names no driver, no engine and no capability", capabilityScanned);
+  notes.push("the arbitration store reads no clock and names no driver, engine or capability property");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
