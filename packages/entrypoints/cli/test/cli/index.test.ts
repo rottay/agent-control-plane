@@ -36,6 +36,7 @@ import {
   WorkerPageResponse,
 } from "@acp/protocol";
 import { openLedger } from "@acp/ledger";
+import { ToolCallExecuteRequest } from "@acp/protocol";
 import {
   DEFAULT_ROUTING_CONFIG,
   EVIDENCE_ABSENT,
@@ -93,7 +94,7 @@ interface Invocation {
   readonly stderr: string;
 }
 
-function invoke(argv: readonly string[]): Invocation {
+async function invoke(argv: readonly string[]): Promise<Invocation> {
   let stdout = "";
   let stderr = "";
   const io: CliIo = {
@@ -105,7 +106,7 @@ function invoke(argv: readonly string[]): Invocation {
     },
     now: () => FIXED_NOW,
   };
-  const exitCode = run(argv, io);
+  const exitCode = await run(argv, io);
   return { exitCode, stdout, stderr };
 }
 
@@ -275,10 +276,15 @@ function tamperWithStoredDigest(path: string): void {
 // ---------------------------------------------------------------------------
 
 describe("usage", () => {
-  it("prints help on --help and exits zero", () => {
-    const result = invoke(["--help"]);
+  it("prints help on --help and exits zero", async () => {
+    const result = await invoke(["--help"]);
     expect(result.exitCode).toBe(EXIT_OK);
-    expect(result.stdout).toContain("acp - Agent Control Plane observation CLI (read-only)");
+    expect(result.stdout).toContain("acp - Agent Control Plane observation CLI");
+    // V2-B4b stage 3D narrowed the banner rather than dropping the claim: the
+    // read posture is still stated, and the one exception is named where a
+    // reader meets it.
+    expect(result.stdout).toContain("every read verb opens the ledger query-only");
+    expect(result.stdout).toContain("tool-call writes one receipt");
     for (const command of [
       "overview",
       "tasks",
@@ -288,13 +294,15 @@ describe("usage", () => {
       "events",
       "status",
       "integrity",
+      "tool-calls",
+      "tool-call",
     ]) {
       expect(result.stdout).toContain(command);
     }
   });
 
-  it("reports both contract versions and the schema version", () => {
-    const result = invoke(["--version", "--format", "json"]);
+  it("reports both contract versions and the schema version", async () => {
+    const result = await invoke(["--version", "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_OK);
     expect(json(result)).toEqual({
       // Moved 0.1.0 → 0.2.0 by P8-8A's additive initiative routes, and on to
@@ -314,47 +322,47 @@ describe("usage", () => {
     });
   });
 
-  it("requires a command", () => {
-    const result = invoke([]);
+  it("requires a command", async () => {
+    const result = await invoke([]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("a command is required");
   });
 
-  it("rejects an unknown command without echoing arbitrary bytes", () => {
-    const result = invoke(["over view", "--database", emptyLedger()]);
+  it("rejects an unknown command without echoing arbitrary bytes", async () => {
+    const result = await invoke(["over view", "--database", emptyLedger()]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("unknown command: over?view?");
     expect(result.stderr).not.toContain("");
   });
 
-  it("requires --database and never guesses one", () => {
-    const result = invoke(["status", "--format", "json"]);
+  it("requires --database and never guesses one", async () => {
+    const result = await invoke(["status", "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(errorJson(result).error.code).toBe("BAD_REQUEST");
     expect(result.stderr).toContain("--database is required");
   });
 
-  it("rejects an unsupported format", () => {
-    const result = invoke(["status", "--database", emptyLedger(), "--format", "yaml"]);
+  it("rejects an unsupported format", async () => {
+    const result = await invoke(["status", "--database", emptyLedger(), "--format", "yaml"]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("--format must be human or json");
   });
 
-  it("rejects an option a command does not accept", () => {
-    const result = invoke(["status", "--database", emptyLedger(), "--state", "READY"]);
+  it("rejects an option a command does not accept", async () => {
+    const result = await invoke(["status", "--database", emptyLedger(), "--state", "READY"]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("not accepted by acp status");
     expect(result.stderr).toContain("--state");
   });
 
-  it("rejects a positional argument a command does not take", () => {
-    const result = invoke(["tasks", "extra", "--database", emptyLedger()]);
+  it("rejects a positional argument a command does not take", async () => {
+    const result = await invoke(["tasks", "extra", "--database", emptyLedger()]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("takes no positional argument");
   });
 
-  it("rejects an unparseable argument vector", () => {
-    const result = invoke(["--not-an-option"]);
+  it("rejects an unparseable argument vector", async () => {
+    const result = await invoke(["--not-an-option"]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("the arguments could not be parsed");
   });
@@ -365,21 +373,21 @@ describe("usage", () => {
 // ---------------------------------------------------------------------------
 
 describe("read-only posture", () => {
-  it("opens the ledger query-only", () => {
+  it("opens the ledger query-only", async () => {
     const { path } = populatedLedger();
     const status = LedgerStatusResponse.parse(
-      json(invoke(["status", "--database", path, "--format", "json"])),
+      json(await invoke(["status", "--database", path, "--format", "json"])),
     );
     expect(status.readOnly).toBe(true);
     expect(status.pragmas.queryOnly).toBe(true);
   });
 
-  it("leaves the ledger file untouched after every command", () => {
+  it("leaves the ledger file untouched after every command", async () => {
     const { path, finishedTask } = populatedLedger();
     const before = statSync(path);
 
     for (const argv of everyCommand(finishedTask)) {
-      const result = invoke([...argv, "--database", path, "--format", "json"]);
+      const result = await invoke([...argv, "--database", path, "--format", "json"]);
       expect(result.exitCode).toBe(EXIT_OK);
     }
 
@@ -388,8 +396,8 @@ describe("read-only posture", () => {
     expect(after.mtimeMs).toBe(before.mtimeMs);
   });
 
-  it("refuses to open a ledger that does not exist", () => {
-    const result = invoke(["status", "--database", absentLedgerPath(), "--format", "json"]);
+  it("refuses to open a ledger that does not exist", async () => {
+    const result = await invoke(["status", "--database", absentLedgerPath(), "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_UNAVAILABLE);
     expect(errorJson(result).error.code).toBe("LEDGER_UNAVAILABLE");
   });
@@ -400,13 +408,13 @@ describe("read-only posture", () => {
 // ---------------------------------------------------------------------------
 
 describe("leaks", () => {
-  it("never prints the ledger path in either format", () => {
+  it("never prints the ledger path in either format", async () => {
     const { path, finishedTask } = populatedLedger();
     const directory = dirname(path);
 
     for (const format of ["human", "json"]) {
       for (const argv of everyCommand(finishedTask)) {
-        const result = invoke([...argv, "--database", path, "--format", format]);
+        const result = await invoke([...argv, "--database", path, "--format", format]);
         const output = result.stdout + result.stderr;
         expect(output).not.toContain(path);
         expect(output).not.toContain(directory);
@@ -414,20 +422,20 @@ describe("leaks", () => {
     }
   });
 
-  it("names a ledger by digest and bare label only", () => {
+  it("names a ledger by digest and bare label only", async () => {
     const { path } = populatedLedger();
     const status = LedgerStatusResponse.parse(
-      json(invoke(["status", "--database", path, "--format", "json"])),
+      json(await invoke(["status", "--database", path, "--format", "json"])),
     );
     expect(status.database.label).toBe("control-plane.sqlite");
     expect(status.database.pathRedacted).toBe(true);
     expect(status.database.id).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("publishes payload key names and sizes but never payload values", () => {
+  it("publishes payload key names and sizes but never payload values", async () => {
     const { path, finishedTask } = populatedLedger();
     const page = EventPageResponse.parse(
-      json(invoke(["events", "--task", finishedTask, "--database", path, "--format", "json"])),
+      json(await invoke(["events", "--task", finishedTask, "--database", path, "--format", "json"])),
     );
     const cancelled = page.items.find((item) => item.type === "TASK_CANCELLED");
     expect(cancelled).toBeDefined();
@@ -436,9 +444,9 @@ describe("leaks", () => {
     expect(JSON.stringify(page)).not.toContain("superseded");
   });
 
-  it("does not forward a lower layer message into an error envelope", () => {
+  it("does not forward a lower layer message into an error envelope", async () => {
     const missing = absentLedgerPath();
-    const result = invoke(["integrity", "--database", missing, "--format", "json"]);
+    const result = await invoke(["integrity", "--database", missing, "--format", "json"]);
     const envelope = errorJson(result);
     expect(envelope.error.message).toBe("the ledger could not be opened");
     expect(envelope.error.detail).toBe("LEDGER_OPEN");
@@ -451,8 +459,8 @@ describe("leaks", () => {
 // ---------------------------------------------------------------------------
 
 describe("overview", () => {
-  it("reports EMPTY for a migrated ledger with no events", () => {
-    const result = invoke(["overview", "--database", emptyLedger(), "--format", "json"]);
+  it("reports EMPTY for a migrated ledger with no events", async () => {
+    const result = await invoke(["overview", "--database", emptyLedger(), "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_OK);
     const overview = OverviewResponse.parse(json(result));
     expect(overview.state).toBe("EMPTY");
@@ -468,10 +476,10 @@ describe("overview", () => {
     });
   });
 
-  it("reports ACTIVE with counts that agree with the projections", () => {
+  it("reports ACTIVE with counts that agree with the projections", async () => {
     const { path } = populatedLedger();
     const overview = OverviewResponse.parse(
-      json(invoke(["overview", "--database", path, "--format", "json"])),
+      json(await invoke(["overview", "--database", path, "--format", "json"])),
     );
     expect(overview.state).toBe("ACTIVE");
     expect(overview.ledger?.eventCount).toBe(4);
@@ -491,10 +499,10 @@ describe("overview", () => {
     });
   });
 
-  it("can skip the integrity check and then publishes no verdict", () => {
+  it("can skip the integrity check and then publishes no verdict", async () => {
     const { path } = populatedLedger();
     const overview = OverviewResponse.parse(
-      json(invoke(["overview", "--database", path, "--skip-integrity", "--format", "json"])),
+      json(await invoke(["overview", "--database", path, "--skip-integrity", "--format", "json"])),
     );
     expect(overview.integrity).toEqual({
       checked: false,
@@ -504,9 +512,9 @@ describe("overview", () => {
     });
   });
 
-  it("distinguishes an unreadable ledger from an empty one", () => {
+  it("distinguishes an unreadable ledger from an empty one", async () => {
     const missing = absentLedgerPath();
-    const result = invoke(["overview", "--database", missing, "--format", "json"]);
+    const result = await invoke(["overview", "--database", missing, "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_UNAVAILABLE);
     const overview = OverviewResponse.parse(json(result));
     expect(overview.state).toBe("UNAVAILABLE");
@@ -516,9 +524,9 @@ describe("overview", () => {
     expect(result.stdout).not.toContain(missing);
   });
 
-  it("renders a human overview rather than a JSON document", () => {
+  it("renders a human overview rather than a JSON document", async () => {
     const { path } = populatedLedger();
-    const result = invoke(["overview", "--database", path]);
+    const result = await invoke(["overview", "--database", path]);
     expect(result.exitCode).toBe(EXIT_OK);
     expect(result.stdout).toContain("state");
     expect(result.stdout).toContain("ACTIVE");
@@ -532,10 +540,10 @@ describe("overview", () => {
 // ---------------------------------------------------------------------------
 
 describe("tasks", () => {
-  it("lists every task", () => {
+  it("lists every task", async () => {
     const { path } = populatedLedger();
     const page = TaskPageResponse.parse(
-      json(invoke(["tasks", "--database", path, "--format", "json"])),
+      json(await invoke(["tasks", "--database", path, "--format", "json"])),
     );
     expect(page.items).toHaveLength(2);
     expect(page.page.returned).toBe(2);
@@ -543,18 +551,18 @@ describe("tasks", () => {
     expect(page.page.nextCursor).toBeNull();
   });
 
-  it("filters by state", () => {
+  it("filters by state", async () => {
     const { path, openTask } = populatedLedger();
     const page = TaskPageResponse.parse(
-      json(invoke(["tasks", "--state", "DISCOVERED", "--database", path, "--format", "json"])),
+      json(await invoke(["tasks", "--state", "DISCOVERED", "--database", path, "--format", "json"])),
     );
     expect(page.items.map((task) => task.taskId)).toEqual([openTask]);
   });
 
-  it("paginates with an opaque cursor", () => {
+  it("paginates with an opaque cursor", async () => {
     const { path } = populatedLedger();
     const first = TaskPageResponse.parse(
-      json(invoke(["tasks", "--limit", "1", "--database", path, "--format", "json"])),
+      json(await invoke(["tasks", "--limit", "1", "--database", path, "--format", "json"])),
     );
     expect(first.items).toHaveLength(1);
     expect(first.page.hasMore).toBe(true);
@@ -562,7 +570,7 @@ describe("tasks", () => {
 
     const second = TaskPageResponse.parse(
       json(
-        invoke([
+        await invoke([
           "tasks",
           "--limit",
           "1",
@@ -580,30 +588,30 @@ describe("tasks", () => {
     expect(second.page.hasMore).toBe(false);
   });
 
-  it("rejects a filter the API contract would reject", () => {
+  it("rejects a filter the API contract would reject", async () => {
     const { path } = populatedLedger();
 
-    const badState = invoke(["tasks", "--state", "NOT_A_STATE", "--database", path]);
+    const badState = await invoke(["tasks", "--state", "NOT_A_STATE", "--database", path]);
     expect(badState.exitCode).toBe(EXIT_USAGE);
     expect(badState.stderr).toContain("filters are not valid");
 
     // Number() would accept this. The contract's decimal grammar does not.
-    const hexLimit = invoke(["tasks", "--limit", "0x10", "--database", path]);
+    const hexLimit = await invoke(["tasks", "--limit", "0x10", "--database", path]);
     expect(hexLimit.exitCode).toBe(EXIT_USAGE);
 
-    const tooLarge = invoke(["tasks", "--limit", "5000", "--database", path]);
+    const tooLarge = await invoke(["tasks", "--limit", "5000", "--database", path]);
     expect(tooLarge.exitCode).toBe(EXIT_USAGE);
 
-    const badCursor = invoke(["tasks", "--cursor", "not-a-uuid", "--database", path]);
+    const badCursor = await invoke(["tasks", "--cursor", "not-a-uuid", "--database", path]);
     expect(badCursor.exitCode).toBe(EXIT_USAGE);
   });
 });
 
 describe("task", () => {
-  it("returns one task with its most recent events, newest first", () => {
+  it("returns one task with its most recent events, newest first", async () => {
     const { path, finishedTask } = populatedLedger();
     const response = TaskDetailResponse.parse(
-      json(invoke(["task", finishedTask, "--database", path, "--format", "json"])),
+      json(await invoke(["task", finishedTask, "--database", path, "--format", "json"])),
     );
     expect(response.task.taskId).toBe(finishedTask);
     expect(response.task.currentState).toBe("CANCELLED");
@@ -618,23 +626,23 @@ describe("task", () => {
     }
   });
 
-  it("exits NOT_FOUND for an unknown task", () => {
+  it("exits NOT_FOUND for an unknown task", async () => {
     const { path } = populatedLedger();
-    const result = invoke(["task", randomUUID(), "--database", path, "--format", "json"]);
+    const result = await invoke(["task", randomUUID(), "--database", path, "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_NOT_FOUND);
     expect(errorJson(result).error.code).toBe("NOT_FOUND");
   });
 
-  it("rejects a task id that is not a uuid", () => {
+  it("rejects a task id that is not a uuid", async () => {
     const { path } = populatedLedger();
-    const result = invoke(["task", "../../etc/passwd", "--database", path]);
+    const result = await invoke(["task", "../../etc/passwd", "--database", path]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("not a uuid");
   });
 
-  it("requires the positional argument", () => {
+  it("requires the positional argument", async () => {
     const { path } = populatedLedger();
-    const result = invoke(["task", "--database", path]);
+    const result = await invoke(["task", "--database", path]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("requires <task-id>");
   });
@@ -645,48 +653,48 @@ describe("task", () => {
 // ---------------------------------------------------------------------------
 
 describe("workers", () => {
-  it("lists observed identities", () => {
+  it("lists observed identities", async () => {
     const { path } = populatedLedger();
     const page = WorkerPageResponse.parse(
-      json(invoke(["workers", "--database", path, "--format", "json"])),
+      json(await invoke(["workers", "--database", path, "--format", "json"])),
     );
     expect(page.items.map((worker) => worker.identity).sort()).toEqual(
       [COORDINATOR, IMPLEMENTER].sort(),
     );
   });
 
-  it("filters by role and by provider", () => {
+  it("filters by role and by provider", async () => {
     const { path } = populatedLedger();
 
     const byRole = WorkerPageResponse.parse(
-      json(invoke(["workers", "--role", "implementer", "--database", path, "--format", "json"])),
+      json(await invoke(["workers", "--role", "implementer", "--database", path, "--format", "json"])),
     );
     expect(byRole.items.map((worker) => worker.identity)).toEqual([IMPLEMENTER]);
 
     const byProvider = WorkerPageResponse.parse(
-      json(invoke(["workers", "--provider", "kimi", "--database", path, "--format", "json"])),
+      json(await invoke(["workers", "--provider", "kimi", "--database", path, "--format", "json"])),
     );
     expect(byProvider.items).toHaveLength(2);
 
     const noMatch = WorkerPageResponse.parse(
-      json(invoke(["workers", "--provider", "nobody", "--database", path, "--format", "json"])),
+      json(await invoke(["workers", "--provider", "nobody", "--database", path, "--format", "json"])),
     );
     expect(noMatch.items).toHaveLength(0);
     expect(noMatch.page.hasMore).toBe(false);
   });
 
-  it("rejects a role the contract does not know", () => {
+  it("rejects a role the contract does not know", async () => {
     const { path } = populatedLedger();
-    const result = invoke(["workers", "--role", "auditor", "--database", path]);
+    const result = await invoke(["workers", "--role", "auditor", "--database", path]);
     expect(result.exitCode).toBe(EXIT_USAGE);
   });
 });
 
 describe("worker", () => {
-  it("returns one worker with only its own events", () => {
+  it("returns one worker with only its own events", async () => {
     const { path } = populatedLedger();
     const response = WorkerDetailResponse.parse(
-      json(invoke(["worker", COORDINATOR, "--database", path, "--format", "json"])),
+      json(await invoke(["worker", COORDINATOR, "--database", path, "--format", "json"])),
     );
     expect(response.worker.identity).toBe(COORDINATOR);
     expect(response.worker.role).toBe("coordinator");
@@ -697,9 +705,9 @@ describe("worker", () => {
     }
   });
 
-  it("exits NOT_FOUND for an identity that emitted nothing", () => {
+  it("exits NOT_FOUND for an identity that emitted nothing", async () => {
     const { path } = populatedLedger();
-    const result = invoke([
+    const result = await invoke([
       "worker",
       "kimi/k3/reviewer/09",
       "--database",
@@ -711,9 +719,9 @@ describe("worker", () => {
     expect(errorJson(result).error.code).toBe("NOT_FOUND");
   });
 
-  it("rejects a malformed identity", () => {
+  it("rejects a malformed identity", async () => {
     const { path } = populatedLedger();
-    const result = invoke(["worker", "kimi/k3", "--database", path]);
+    const result = await invoke(["worker", "kimi/k3", "--database", path]);
     expect(result.exitCode).toBe(EXIT_USAGE);
     expect(result.stderr).toContain("<provider>/<model>/<role>/<instance>");
   });
@@ -724,47 +732,47 @@ describe("worker", () => {
 // ---------------------------------------------------------------------------
 
 describe("events", () => {
-  it("lists events in sequence order", () => {
+  it("lists events in sequence order", async () => {
     const { path } = populatedLedger();
     const page = EventPageResponse.parse(
-      json(invoke(["events", "--database", path, "--format", "json"])),
+      json(await invoke(["events", "--database", path, "--format", "json"])),
     );
     expect(page.items.map((item) => item.sequence)).toEqual([1, 2, 3, 4]);
   });
 
-  it("filters by task, type, emitter and resulting state", () => {
+  it("filters by task, type, emitter and resulting state", async () => {
     const { path, finishedTask } = populatedLedger();
 
     const byTask = EventPageResponse.parse(
-      json(invoke(["events", "--task", finishedTask, "--database", path, "--format", "json"])),
+      json(await invoke(["events", "--task", finishedTask, "--database", path, "--format", "json"])),
     );
     expect(byTask.items).toHaveLength(3);
 
     const byType = EventPageResponse.parse(
       json(
-        invoke(["events", "--type", "TASK_CLASSIFIED", "--database", path, "--format", "json"]),
+        await invoke(["events", "--type", "TASK_CLASSIFIED", "--database", path, "--format", "json"]),
       ),
     );
     expect(byType.items).toHaveLength(1);
 
     const byEmitter = EventPageResponse.parse(
       json(
-        invoke(["events", "--emitted-by", IMPLEMENTER, "--database", path, "--format", "json"]),
+        await invoke(["events", "--emitted-by", IMPLEMENTER, "--database", path, "--format", "json"]),
       ),
     );
     expect(byEmitter.items).toHaveLength(1);
     expect(byEmitter.items.every((item) => item.emittedBy === IMPLEMENTER)).toBe(true);
 
     const byState = EventPageResponse.parse(
-      json(invoke(["events", "--to-state", "CANCELLED", "--database", path, "--format", "json"])),
+      json(await invoke(["events", "--to-state", "CANCELLED", "--database", path, "--format", "json"])),
     );
     expect(byState.items).toHaveLength(1);
   });
 
-  it("paginates by sequence with a cursor the caller hands back unchanged", () => {
+  it("paginates by sequence with a cursor the caller hands back unchanged", async () => {
     const { path } = populatedLedger();
     const first = EventPageResponse.parse(
-      json(invoke(["events", "--limit", "2", "--database", path, "--format", "json"])),
+      json(await invoke(["events", "--limit", "2", "--database", path, "--format", "json"])),
     );
     expect(first.items.map((item) => item.sequence)).toEqual([1, 2]);
     expect(first.page.hasMore).toBe(true);
@@ -772,7 +780,7 @@ describe("events", () => {
 
     const second = EventPageResponse.parse(
       json(
-        invoke([
+        await invoke([
           "events",
           "--limit",
           "2",
@@ -789,10 +797,10 @@ describe("events", () => {
     expect(second.page.hasMore).toBe(false);
   });
 
-  it("carries the chain position of every event", () => {
+  it("carries the chain position of every event", async () => {
     const { path } = populatedLedger();
     const page = EventPageResponse.parse(
-      json(invoke(["events", "--database", path, "--format", "json"])),
+      json(await invoke(["events", "--database", path, "--format", "json"])),
     );
     for (const [index, item] of page.items.entries()) {
       expect(item.eventSha256).toMatch(/^[0-9a-f]{64}$/);
@@ -808,10 +816,10 @@ describe("events", () => {
 // ---------------------------------------------------------------------------
 
 describe("status", () => {
-  it("reports the head, the pragmas, the migrations and the projections", () => {
+  it("reports the head, the pragmas, the migrations and the projections", async () => {
     const { path } = populatedLedger();
     const status = LedgerStatusResponse.parse(
-      json(invoke(["status", "--database", path, "--format", "json"])),
+      json(await invoke(["status", "--database", path, "--format", "json"])),
     );
     expect(status.eventCount).toBe(4);
     expect(status.headSequence).toBe(4);
@@ -821,9 +829,9 @@ describe("status", () => {
     expect(status.observedAt).toBe(FIXED_NOW);
   });
 
-  it("reports a zero head for an empty ledger", () => {
+  it("reports a zero head for an empty ledger", async () => {
     const status = LedgerStatusResponse.parse(
-      json(invoke(["status", "--database", emptyLedger(), "--format", "json"])),
+      json(await invoke(["status", "--database", emptyLedger(), "--format", "json"])),
     );
     expect(status.eventCount).toBe(0);
     expect(status.headSequence).toBe(0);
@@ -831,9 +839,9 @@ describe("status", () => {
 });
 
 describe("integrity", () => {
-  it("verifies a healthy ledger and exits zero", () => {
+  it("verifies a healthy ledger and exits zero", async () => {
     const { path } = populatedLedger();
-    const result = invoke(["integrity", "--database", path, "--format", "json"]);
+    const result = await invoke(["integrity", "--database", path, "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_OK);
     const report = IntegrityResult.parse(json(result));
     expect(report.ok).toBe(true);
@@ -842,29 +850,29 @@ describe("integrity", () => {
     expect(report.truncated).toBe(false);
   });
 
-  it("renders the verdict in human form", () => {
+  it("renders the verdict in human form", async () => {
     const { path } = populatedLedger();
-    const result = invoke(["integrity", "--database", path]);
+    const result = await invoke(["integrity", "--database", path]);
     expect(result.stdout).toContain("verdict");
     expect(result.stdout).toContain("ok");
   });
 
-  it("exits with the integrity code when the stored chain is broken", () => {
+  it("exits with the integrity code when the stored chain is broken", async () => {
     const { path } = populatedLedger();
     tamperWithStoredDigest(path);
 
-    const result = invoke(["integrity", "--database", path, "--format", "json"]);
+    const result = await invoke(["integrity", "--database", path, "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_INTEGRITY);
     const report = IntegrityResult.parse(json(result));
     expect(report.ok).toBe(false);
     expect(report.problems.length).toBeGreaterThan(0);
   });
 
-  it("reports a tampered ledger as DEGRADED rather than ACTIVE", () => {
+  it("reports a tampered ledger as DEGRADED rather than ACTIVE", async () => {
     const { path } = populatedLedger();
     tamperWithStoredDigest(path);
 
-    const result = invoke(["overview", "--database", path, "--format", "json"]);
+    const result = await invoke(["overview", "--database", path, "--format", "json"]);
     expect(result.exitCode).toBe(EXIT_INTEGRITY);
     const overview = OverviewResponse.parse(json(result));
     expect(overview.state).toBe("DEGRADED");
@@ -1046,7 +1054,7 @@ interface EmittedConfig {
 }
 
 describe("A1 (CLI leg): the elected model follows the policy document", () => {
-  it("elects a different model when only the policy bytes change", () => {
+  it("elects a different model when only the policy bytes change", async () => {
     const dir = b7sStage();
     const accounts = writeAccountsFile(dir, ["opus", "sonnet"]);
     const config = writeConfigDocument(dir);
@@ -1055,7 +1063,7 @@ describe("A1 (CLI leg): the elected model follows the policy document", () => {
 
     const sourceBefore = createHash("sha256").update(readFileSync(SHIPPED_POLICY)).digest("hex");
 
-    const first = invoke(submissionArgv(config, accounts, policy));
+    const first = await invoke(submissionArgv(config, accounts, policy));
     expect(first.exitCode).toBe(EXIT_OK);
     const firstDocument = JSON.parse(first.stdout) as EmittedConfig;
     expect(firstDocument.execution.route.model).toBe("opus");
@@ -1070,7 +1078,7 @@ describe("A1 (CLI leg): the elected model follows the policy document", () => {
     document.models = document.models.filter((entry) => entry.model !== "opus");
     writeFileSync(policy, JSON.stringify(document));
 
-    const second = invoke(submissionArgv(config, accounts, policy));
+    const second = await invoke(submissionArgv(config, accounts, policy));
     expect(second.exitCode).toBe(EXIT_OK);
     const secondDocument = JSON.parse(second.stdout) as EmittedConfig;
 
@@ -1084,12 +1092,12 @@ describe("A1 (CLI leg): the elected model follows the policy document", () => {
     expect(createHash("sha256").update(readFileSync(SHIPPED_POLICY)).digest("hex")).toBe(sourceBefore);
   });
 
-  it("replaces exactly two fields and carries the rest of the document through", () => {
+  it("replaces exactly two fields and carries the rest of the document through", async () => {
     const dir = b7sStage();
     const config = writeConfigDocument(dir);
     const before = JSON.parse(readFileSync(config, "utf8")) as EmittedConfig;
     const emitted = JSON.parse(
-      invoke(submissionArgv(config, writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY)).stdout,
+      (await invoke(submissionArgv(config, writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY))).stdout,
     ) as EmittedConfig;
 
     // Changed: the route and the digest. Nothing else, including a field the
@@ -1104,25 +1112,25 @@ describe("A1 (CLI leg): the elected model follows the policy document", () => {
     expect(Object.keys(emitted).sort()).toEqual(Object.keys(before).sort());
   });
 
-  it("writes nothing: the config it read is byte-identical afterwards", () => {
+  it("writes nothing: the config it read is byte-identical afterwards", async () => {
     const dir = b7sStage();
     const config = writeConfigDocument(dir);
     const accounts = writeAccountsFile(dir, ["opus"]);
     const digestBefore = createHash("sha256").update(readFileSync(config)).digest("hex");
 
-    expect(invoke(submissionArgv(config, accounts, SHIPPED_POLICY)).exitCode).toBe(EXIT_OK);
+    expect((await invoke(submissionArgv(config, accounts, SHIPPED_POLICY))).exitCode).toBe(EXIT_OK);
 
     expect(createHash("sha256").update(readFileSync(config)).digest("hex")).toBe(digestBefore);
   });
 });
 
 describe("A6: CLI and in-process composition agree", () => {
-  it("produces the same digest for the same inputs and the same injected instant", () => {
+  it("produces the same digest for the same inputs and the same injected instant", async () => {
     const dir = b7sStage();
     const accounts = writeAccountsFile(dir, ["opus", "sonnet"]);
     const config = writeConfigDocument(dir);
 
-    const emitted = JSON.parse(invoke(submissionArgv(config, accounts, SHIPPED_POLICY)).stdout) as EmittedConfig;
+    const emitted = JSON.parse((await invoke(submissionArgv(config, accounts, SHIPPED_POLICY))).stdout) as EmittedConfig;
 
     // The same election, composed in process against the same instant the CLI
     // was given. This is CLI/in-process equivalence and nothing wider: there is
@@ -1180,21 +1188,21 @@ describe("A6: CLI and in-process composition agree", () => {
     expect(emitted.execution.route).toEqual(composed.submission.route);
   });
 
-  it("is deterministic: two runs with the same clock are byte-identical (N8)", () => {
+  it("is deterministic: two runs with the same clock are byte-identical (N8)", async () => {
     const dir = b7sStage();
     const accounts = writeAccountsFile(dir, ["opus", "sonnet"]);
     const config = writeConfigDocument(dir);
-    const first = invoke(submissionArgv(config, accounts, SHIPPED_POLICY));
-    const second = invoke(submissionArgv(config, accounts, SHIPPED_POLICY));
+    const first = await invoke(submissionArgv(config, accounts, SHIPPED_POLICY));
+    const second = await invoke(submissionArgv(config, accounts, SHIPPED_POLICY));
     expect(second.stdout).toBe(first.stdout);
     expect(first.stdout).toContain(FIXED_NOW);
   });
 });
 
 describe("N4 and N5: the verb prints no credential and no absolute path from a route", () => {
-  it("prints neither credentialRef nor authProfileRef, by substring", () => {
+  it("prints neither credentialRef nor authProfileRef, by substring", async () => {
     const dir = b7sStage();
-    const invocation = invoke(
+    const invocation = await invoke(
       submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY),
     );
     expect(invocation.exitCode).toBe(EXIT_OK);
@@ -1204,10 +1212,10 @@ describe("N4 and N5: the verb prints no credential and no absolute path from a r
     expect(invocation.stderr).not.toContain(B7S_PROFILE_REF);
   });
 
-  it("puts no absolute path in the elected route, though the binding it carries has them", () => {
+  it("puts no absolute path in the elected route, though the binding it carries has them", async () => {
     const dir = b7sStage();
     const emitted = JSON.parse(
-      invoke(submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY)).stdout,
+      (await invoke(submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY))).stdout,
     ) as EmittedConfig;
 
     // The route: no path, anywhere in it.
@@ -1219,9 +1227,9 @@ describe("N4 and N5: the verb prints no credential and no absolute path from a r
 });
 
 describe("the verb's refusals are closed and name no value", () => {
-  it("refuses a relative path by field name", () => {
+  it("refuses a relative path by field name", async () => {
     const dir = b7sStage();
-    const invocation = invoke([
+    const invocation = await invoke([
       "submission",
       "--config",
       "relative/daemon.json",
@@ -1241,9 +1249,9 @@ describe("the verb's refusals are closed and name no value", () => {
     expect(invocation.stderr).not.toContain("relative/daemon.json");
   });
 
-  it("requires each budget rather than guessing one", () => {
+  it("requires each budget rather than guessing one", async () => {
     const dir = b7sStage();
-    const invocation = invoke([
+    const invocation = await invoke([
       "submission",
       "--config",
       writeConfigDocument(dir),
@@ -1260,9 +1268,9 @@ describe("the verb's refusals are closed and name no value", () => {
     expect(invocation.stderr).toContain("--estimated-tokens is required");
   });
 
-  it("refuses by the landed vocabulary when nothing can be elected (N1)", () => {
+  it("refuses by the landed vocabulary when nothing can be elected (N1)", async () => {
     const dir = b7sStage();
-    const invocation = invoke(
+    const invocation = await invoke(
       submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["haiku"]), SHIPPED_POLICY),
     );
     expect(invocation.exitCode).toBe(EXIT_USAGE);
@@ -1272,8 +1280,8 @@ describe("the verb's refusals are closed and name no value", () => {
 });
 
 describe("N9: the existing verbs did not move", () => {
-  it("still requires --database, with the same code and the same sentence", () => {
-    const invocation = invoke(["overview", "--format", "json"]);
+  it("still requires --database, with the same code and the same sentence", async () => {
+    const invocation = await invoke(["overview", "--format", "json"]);
     expect(invocation.exitCode).toBe(EXIT_USAGE);
     expect(errorJson(invocation).error.code).toBe("BAD_REQUEST");
     expect(errorJson(invocation).error.message).toBe("--database is required");
@@ -1282,34 +1290,195 @@ describe("N9: the existing verbs did not move", () => {
     );
   });
 
-  it("still requires --database for every observation verb", () => {
+  it("still requires --database for every observation verb", async () => {
     for (const verb of ["tasks", "workers", "events", "status", "integrity"]) {
-      const invocation = invoke([verb, "--format", "json"]);
+      const invocation = await invoke([verb, "--format", "json"]);
       expect(invocation.exitCode).toBe(EXIT_USAGE);
       expect(errorJson(invocation).error.message).toBe("--database is required");
     }
   });
 
-  it("still answers overview UNAVAILABLE rather than failing blank without a ledger", () => {
-    const invocation = invoke(["overview", "--database", absentLedgerPath(), "--format", "json"]);
+  it("still answers overview UNAVAILABLE rather than failing blank without a ledger", async () => {
+    const invocation = await invoke(["overview", "--database", absentLedgerPath(), "--format", "json"]);
     expect(invocation.exitCode).toBe(EXIT_UNAVAILABLE);
     const parsed = OverviewResponse.safeParse(json(invocation));
     expect(parsed.success).toBe(true);
     if (parsed.success) expect(parsed.data.state).toBe("UNAVAILABLE");
   });
 
-  it("does not accept the submission flags on an observation verb", () => {
-    const invocation = invoke(["tasks", "--database", absentLedgerPath(), "--config", "/tmp/x.json"]);
+  it("does not accept the submission flags on an observation verb", async () => {
+    const invocation = await invoke(["tasks", "--database", absentLedgerPath(), "--config", "/tmp/x.json"]);
     expect(invocation.exitCode).toBe(EXIT_USAGE);
     expect(invocation.stderr).toContain("not accepted by acp tasks");
   });
 
-  it("does not require --database for the planning verb, which opens no ledger", () => {
+  it("does not require --database for the planning verb, which opens no ledger", async () => {
     const dir = b7sStage();
-    const invocation = invoke(
+    const invocation = await invoke(
       submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY),
     );
     expect(invocation.exitCode).toBe(EXIT_OK);
     expect(invocation.stderr).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The tool-call receipts read, and the narrowed read-only law (V2-B4b stage 3D)
+// ---------------------------------------------------------------------------
+
+describe("the tool-calls read verb", () => {
+  /** A ledger holding one discovered task and two recorded tool calls. */
+  function ledgerWithToolCalls(): { readonly path: string; readonly taskId: string } {
+    const path = disposableLedgerPath();
+    const taskId = randomUUID();
+    const rows = [0, 1].map((callIndex) =>
+      makeEvent({
+        taskId,
+        transitionId: "tool.0." + String(callIndex),
+        type: "TOOL_CALL_RECORDED",
+        // A same-state passthrough: recording that a tool ran does not move the
+        // task's lifecycle, which is what the recorder itself writes.
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        emittedBy: IMPLEMENTER,
+        payload: {
+          accountId: "acct-primary",
+          serverId: "docs",
+          toolName: "docs.search",
+          transport: "STDIO",
+          outcome: "COMPLETED",
+          refusal: null,
+          argumentBytes: 12,
+          resultBytes: 34,
+          contentBlocks: 1,
+        },
+      }),
+    );
+    seed(path, [
+      makeEvent({ taskId, transitionId: "discover", type: "TASK_DISCOVERED", emittedBy: COORDINATOR }),
+      ...rows,
+    ]);
+    return { path, taskId };
+  }
+
+  it("prints the recorded rows with the nine scalars and no content", async () => {
+    const { path, taskId } = ledgerWithToolCalls();
+    const result = await invoke([
+      "tool-calls", "--database", path, "--task", taskId, "--format", "json",
+    ]);
+    expect(result.exitCode).toBe(EXIT_OK);
+    const page = json(result) as { count: number; items: Record<string, unknown>[] };
+    expect(page.count).toBe(2);
+    const first = page.items[0];
+    if (first === undefined) throw new Error("no row");
+    expect(Object.keys(first).sort()).toEqual([
+      "accountId", "argumentBytes", "causedBy", "contentBlocks", "emittedBy", "eventId",
+      "occurredAt", "outcome", "refusal", "resultBytes", "sequence", "serverId",
+      "toolName", "transitionId", "transport",
+    ]);
+    expect("content" in first).toBe(false);
+  });
+
+  it("pages by sequence cursor and offers a cursor only when more exist", async () => {
+    const { path, taskId } = ledgerWithToolCalls();
+    const firstPage = json(
+      await invoke(["tool-calls", "--database", path, "--task", taskId, "--limit", "1", "--format", "json"]),
+    ) as { count: number; nextCursor: string | null };
+    expect(firstPage.count).toBe(1);
+    expect(firstPage.nextCursor).not.toBeNull();
+
+    const secondPage = json(
+      await invoke([
+        "tool-calls", "--database", path, "--task", taskId,
+        "--cursor", String(firstPage.nextCursor), "--format", "json",
+      ]),
+    ) as { count: number; nextCursor: string | null };
+    expect(secondPage.count).toBe(1);
+    expect(secondPage.nextCursor).toBeNull();
+  });
+
+  it("requires a task, and names the verb rather than guessing one", async () => {
+    const { path } = ledgerWithToolCalls();
+    const result = await invoke(["tool-calls", "--database", path, "--format", "json"]);
+    expect(result.exitCode).not.toBe(EXIT_OK);
+    expect(errorJson(result).error.code).toBe("BAD_REQUEST");
+  });
+});
+
+describe("the read-only law, narrowed and asserted rather than claimed", () => {
+  /**
+   * The test that keeps stage 3D's narrowed prose honest.
+   *
+   * The claim is no longer "this package never writes" — it is "every read verb
+   * opens the ledger query-only, and exactly one named verb writes". A claim
+   * about every read verb is checkable by driving every read verb and looking
+   * at the ledger afterwards, which is what this does.
+   */
+  it("leaves the event count and the applied migrations unchanged after every read verb", async () => {
+    const { path, finishedTask, openTask } = populatedLedger();
+    void openTask;
+    const before = openLedger(path, { readOnly: true });
+    const eventsBefore = before.status().eventCount;
+    const migrationsBefore = before.status().migrations.map((entry) => entry.version).sort();
+    before.close();
+
+    const reads: readonly (readonly string[])[] = [
+      ["overview", "--database", path],
+      ["tasks", "--database", path],
+      ["task", finishedTask, "--database", path],
+      ["workers", "--database", path],
+      ["worker", COORDINATOR, "--database", path],
+      ["events", "--database", path],
+      ["status", "--database", path],
+      ["integrity", "--database", path],
+      ["tool-calls", "--database", path, "--task", finishedTask],
+    ];
+    for (const argv of reads) {
+      const result = await invoke([...argv, "--format", "json"]);
+      // Every read must answer; a verb that failed would prove nothing about
+      // whether it writes.
+      expect({ argv: argv[0], exitCode: result.exitCode }).toEqual({
+        argv: argv[0],
+        exitCode: EXIT_OK,
+      });
+    }
+
+    const after = openLedger(path, { readOnly: true });
+    expect(after.status().eventCount).toBe(eventsBefore);
+    expect(after.status().migrations.map((entry) => entry.version).sort()).toEqual(migrationsBefore);
+    after.close();
+  });
+});
+
+describe("one request schema, parsed by both doors", () => {
+  /**
+   * The equivalence claim, at the level Packet D owes it.
+   *
+   * The CLI's `--request` document and the API's POST body are the same bytes
+   * parsed by the same schema. Asserted over one fixture rather than argued:
+   * a CLI-local request type would make the claim untestable, and this is the
+   * assertion that would notice one appearing.
+   */
+  it("accepts one fixture document identically whether it came from a file or a body", () => {
+    const document = {
+      taskId: randomUUID(),
+      attempt: 1,
+      submittedAt: "2026-09-03T12:00:00.000Z",
+      submissionDigest: "a".repeat(64),
+      operationIndex: 0,
+      callIndex: 0,
+      accountId: "acct-primary",
+      identity: IMPLEMENTER,
+      serverId: "docs",
+      toolName: "docs.search",
+      arguments: { q: "acp" },
+    };
+    const fromFile = ToolCallExecuteRequest.safeParse(JSON.parse(JSON.stringify(document)));
+    const fromBody = ToolCallExecuteRequest.safeParse(document);
+    expect(fromFile.success).toBe(true);
+    expect(fromBody.success).toBe(true);
+    if (fromFile.success && fromBody.success) {
+      expect(fromFile.data).toEqual(fromBody.data);
+    }
   });
 });

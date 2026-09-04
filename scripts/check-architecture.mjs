@@ -4639,6 +4639,58 @@ const V2B4B_S3C_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b stage 3D — the CLI door for the explicit tool operation.
+ *
+ * The plane's second door onto the operation stage 3B built, and deliberately
+ * an **independent producer**: the CLI does not speak to the gateway, because
+ * two producers over one ledger is what makes the parity proof evidence rather
+ * than a function agreeing with itself. It parses the same
+ * `ToolCallExecuteRequest` the POST body is parsed by, over the same bytes.
+ *
+ * **The read-only law is narrowed, not dropped.** Every read verb still opens
+ * query-only; exactly one named verb writes. That is the DT's own narrowing,
+ * and L-B4B-11 below makes it mechanical rather than remembered — the prose in
+ * the README and the banner says the same thing, and the law is what keeps them
+ * honest.
+ *
+ * **The verb probes before it writes.** A bare `openLedger(path)` has no
+ * `fileMustExist`, so a mistyped path would leave an empty database behind, and
+ * it applies pending migrations on the way in. The DT granted a short-lived
+ * writable ledger to *execute*, which is not authority to create one or to
+ * migrate one. So the verb stats the path, opens it read-only and closes it,
+ * and only then takes a writable handle; anything the probe throws is refused
+ * through the same function every read verb refuses through, so the words are
+ * identical rather than similar. The cost is a named TOCTOU window between the
+ * two opens, stated in the module header.
+ *
+ * **`run` becomes async, and that is 72 call sites in one suite.** Fully
+ * compiler-guided: once `invoke` returns a promise, every un-awaited site is a
+ * type error under `strict`, so the edit cannot be half-done. The suite's test
+ * count is unchanged at 60 either side of it, and a deliberately broken
+ * expectation was confirmed still to fail — a suite that started passing
+ * vacuously is the specific regression an async rewrite invites.
+ *
+ * `CLI_ALLOWED_PACKAGES` moves 4 → 5 and the CLI dependency row with it;
+ * `PATH_SCOPED_LAWS` 60 → 61 for the law below. No tsconfig moves: the CLI's
+ * references are `{protocol, ledger}` and have not listed `@acp/accounts` or
+ * `@acp/runtime` since V2-B7S added both, and the root build order puts the
+ * tool edge ahead of the CLI. No protocol pin moves — Packet C is closed and
+ * this packet declares no schema of its own.
+ */
+const V2B4B_S3D_WRITE_SET = [
+  "packages/entrypoints/cli/src/tool-call/index.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/index.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/package.json",
+  "packages/entrypoints/cli/README.md",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5024,6 +5076,7 @@ const WRITE_SET = [
   ...V2B4B_S3A_WRITE_SET,
   ...V2B4B_S3B_WRITE_SET,
   ...V2B4B_S3C_WRITE_SET,
+  ...V2B4B_S3D_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5922,6 +5975,12 @@ const PATH_SCOPED_LAWS = [
     law: "tool call content never becomes durable or broadcast",
     scope: "packages/entrypoints/gateway/src/** and packages/kernel/protocol/src/**",
   },
+  // V2-B4b stage 3D. The narrowed read-only law, made mechanical: one writing
+  // verb, and every other open in the package still query-only.
+  {
+    law: "the CLI holds exactly one writable ledger open, in the tool-call verb",
+    scope: "packages/entrypoints/cli/src/**",
+  },
 ];
 
 /**
@@ -6706,7 +6765,16 @@ const P1B_DEPENDENCY_LAW = [
     // that exists in code and not in the graph. Both move together, here and
     // in the lockfile's `importers` block, which is where a workspace edge is
     // actually materialized.
-    dependencies: ["@acp/accounts", "@acp/protocol", "@acp/ledger", "@acp/runtime"],
+    // V2-B4b stage 3D adds `@acp/tools`: the one writing verb composes an
+    // operation scope over it, exactly as the API door does. A workspace edge
+    // the DT authorized by name, not a widening of what the CLI may reach.
+    dependencies: [
+      "@acp/accounts",
+      "@acp/protocol",
+      "@acp/ledger",
+      "@acp/runtime",
+      "@acp/tools",
+    ],
     devDependencies: ["vitest"],
     forbidden: ["better-sqlite3"],
   },
@@ -7750,6 +7818,19 @@ const DUPLICATION_ADJUDICATED = [
     name: "startServer",
     packages: ["packages/edges/durability", "packages/entrypoints/gateway"],
     why: "different servers under one verb — durability's starts the pinned Restate binary child and returns a SafeServerHandle, deliberately internal (the barrel withholds it; only startVerifiedServer leaves); the gateway's starts its HTTP listener and returns a RunningServer on its pinned public surface; the gateway does not depend on durability and neither package imports the other; pre-existing, surfaced by the restored async coverage",
+  },
+  // Surfaced by V2-B4b stage 3D, and the one case in this register where the
+  // duplication is the **point** rather than an accident to be tolerated. The
+  // parity proof this sequence is building compares what two doors independently
+  // fold out of one ledger; a shared implementation would make that comparison a
+  // function agreeing with itself, which is not evidence of anything. Unifying
+  // them is therefore not the repair — it is the failure mode. Neither package
+  // imports the other, and the CLI naming the gateway is a stop in its own
+  // right.
+  {
+    name: "buildToolCallPage",
+    packages: ["packages/entrypoints/cli", "packages/entrypoints/gateway"],
+    why: "two independent producers of one projection, on purpose — the CLI folds TOOL_CALL_RECORDED rows for its own page and the gateway folds them for its GET, and Packet E's equivalence proof compares the two; a shared implementation would collapse the proof into a tautology; neither package imports the other and the CLI importing the gateway is a stop",
   },
 ];
 
@@ -10863,7 +10944,9 @@ const PROTOCOL_TEST_ONLY_IMPORTS = new Set(["vitest", "node:fs", "node:path", "n
 // no ledger and still writes no file, which is why the package's own help text
 // keeps saying it never writes. Nothing here reaches `@acp/daemon`; the
 // producer moved to a domain precisely so it would not have to.
-const CLI_ALLOWED_PACKAGES = new Set(["@acp/accounts", "@acp/ledger", "@acp/protocol", "@acp/runtime"]);
+const CLI_ALLOWED_PACKAGES = new Set(["@acp/accounts", "@acp/ledger", "@acp/protocol", "@acp/runtime",
+  // V2-B4b stage 3D: the tool-call verb composes the operation scope.
+  "@acp/tools"]);
 const CLI_ALLOWED_BUILTINS = new Set([
   "node:crypto",
   "node:fs",
@@ -13465,6 +13548,78 @@ if (tracked.status === 0) {
   requireScope("tool call content never becomes durable or broadcast", contentScanned);
   notes.push(
     "one tool composition site, one door path through runToolCall, and no content on a durable or broadcast surface",
+  );
+}
+
+// L-B4B-11 -- the CLI's narrowed read-only law, made mechanical.
+//
+// The package's own prose says every read verb opens the ledger query-only and
+// exactly one named verb writes. That is a claim about openings, so it is
+// checked over openings: at most one `openLedger(...)` call in the CLI's source
+// tree omits `readOnly`, and it is the one in the tool-call verb.
+//
+// Matched on the whole normalized call, in the manner of `OBSERVATION_OPEN_CALL`
+// above, and NOT by scanning a file for the token `readOnly` somewhere: the
+// tool-call module holds two opens, one of them the read-only probe, so a
+// token scan would happily admit a second writable open sitting beside it.
+const CLI_WRITABLE_OPEN_SITE = "packages/entrypoints/cli/src/tool-call/index.ts";
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  let cliOpensScanned = 0;
+  const writableOpens = [];
+  for (const relativePath of present) {
+    if (!relativePath.startsWith("packages/entrypoints/cli/src/")) continue;
+    if (!relativePath.endsWith(".ts")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    cliOpensScanned += 1;
+    const code = stripComments(content);
+    const parsed = [...code.matchAll(/openLedger\([^()]*(?:\{[^{}]*\})?[^()]*\)/g)];
+    // Fail closed on a call this law cannot read. The matcher above admits no
+    // nested parentheses, so `openLedger(resolve(path))` would match nothing
+    // and vanish from the count rather than be judged by it -- a law that
+    // silently stops seeing its subject is worse than no law. Counting the
+    // bare tokens and comparing is what makes a syntax it cannot parse an
+    // error instead of an absence.
+    const bare = (code.match(/openLedger\(/g) ?? []).length;
+    if (bare !== parsed.length) {
+      fail(
+        relativePath +
+          " contains " +
+          String(bare) +
+          " openLedger( call(s) but this law could parse " +
+          String(parsed.length) +
+          "; a call it cannot read is refused rather than skipped, because a" +
+          " writable open it cannot see is one it cannot forbid",
+      );
+    }
+    for (const match of parsed) {
+      const call = match[0].replace(/\s+/g, " ");
+      // The read-only opens are the ordinary ones; anything else is a write.
+      if (call.includes("readOnly: true")) continue;
+      writableOpens.push({ path: relativePath, call });
+    }
+  }
+
+  const strays = writableOpens.filter((entry) => entry.path !== CLI_WRITABLE_OPEN_SITE);
+  if (strays.length > 0) {
+    fail(
+      "the CLI opens a writable ledger at " +
+        strays.map((entry) => entry.path).join(", ") +
+        "; every verb but the tool call opens query-only, and the one writable open belongs in " +
+        CLI_WRITABLE_OPEN_SITE,
+    );
+  }
+  if (writableOpens.length > 1) {
+    fail(
+      "the CLI holds " +
+        String(writableOpens.length) +
+        " writable ledger opens; the narrowed read-only law admits exactly one",
+    );
+  }
+  requireScope("the CLI holds exactly one writable ledger open, in the tool-call verb", cliOpensScanned);
+  notes.push(
+    "the CLI opens one writable ledger, in the tool-call verb, and every other open is query-only",
   );
 }
 

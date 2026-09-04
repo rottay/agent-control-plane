@@ -182,6 +182,9 @@ importers:
       '@acp/runtime':
         specifier: workspace:*
         version: link:../../domains/runtime
+      '@acp/tools':
+        specifier: workspace:*
+        version: link:../../edges/tools
     devDependencies:
       vitest:
         specifier: 3.2.4

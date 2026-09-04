@@ -37,7 +37,7 @@ import {
   taskPath,
   workerPath,
 } from "@acp/protocol";
-import type { ApiErrorCode } from "@acp/protocol";
+import type { ApiErrorCode, ToolCallPageResponse } from "@acp/protocol";
 import { LEDGER_MIGRATIONS, LedgerError, openLedger } from "@acp/ledger";
 import type { EventQuery, Ledger, TaskQuery, WorkerQuery } from "@acp/ledger";
 import {
@@ -65,12 +65,14 @@ import {
   isOutputFormat,
 } from "../format/index.js";
 import type { OutputFormat } from "../format/index.js";
+import { ToolCallRefused, runToolCallVerb } from "../tool-call/index.js";
 import {
   buildEventPage,
   buildIntegrity,
   buildOverview,
   buildStatus,
   buildTaskDetail,
+  buildToolCallPage,
   buildTaskPage,
   buildUnavailableOverview,
   buildWorkerDetail,
@@ -137,6 +139,8 @@ const OPTIONS = {
   "estimated-tokens": { type: "string" },
   "reserve-tokens": { type: "string" },
   "duration-seconds": { type: "string" },
+  request: { type: "string" },
+  "tool-servers": { type: "string" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean", short: "V" },
 } as const;
@@ -149,6 +153,16 @@ const OPTIONS = {
  * come to disagree about which command was asked for.
  */
 export const SUBMISSION_COMMAND = "submission";
+
+/**
+ * The one writing verb's name, as one literal (V2-B4b stage 3D).
+ *
+ * Named for the reason `SUBMISSION_COMMAND` is: the table declares it and `run`
+ * branches on it, and two spellings of one verb is how a branch and a table
+ * come to disagree. It is also the name the narrowed read-only law points at,
+ * so it is worth having exactly one of.
+ */
+export const TOOL_CALL_COMMAND = "tool-call";
 
 type OptionName = keyof typeof OPTIONS;
 type ParsedValues = Partial<Record<OptionName, string | boolean>>;
@@ -222,6 +236,22 @@ const COMMANDS: readonly CommandSpec[] = [
     options: ["config", "accounts", "policy", "estimated-tokens", "reserve-tokens", "duration-seconds"],
     summary: "re-elect a daemon config's route by policy and print the updated document",
   },
+  // V2-B4b stage 3D. A read over the tool-call receipts this plane records,
+  // and the one verb that writes. The read is an ordinary handler; the write
+  // branches on its own, below the `--database` law and above the read-only
+  // open, and owns the only writable handle in this package.
+  {
+    name: "tool-calls",
+    positional: null,
+    options: ["task", "cursor", "limit"],
+    summary: "list the tool calls recorded against one task",
+  },
+  {
+    name: TOOL_CALL_COMMAND,
+    positional: null,
+    options: ["request", "tool-servers"],
+    summary: "execute one explicit tool call and record what it did",
+  },
 ];
 
 const USAGE = ((): string => {
@@ -235,7 +265,8 @@ const USAGE = ((): string => {
     return "  " + invocation + " ".repeat(width - invocation.length + 2) + command.summary;
   });
   return [
-    "acp - Agent Control Plane observation CLI (read-only)",
+    "acp - Agent Control Plane observation CLI",
+    "  every read verb opens the ledger query-only; " + TOOL_CALL_COMMAND + " writes one receipt",
     "",
     "Usage:",
     "  acp <command> --database <path> [options]",
@@ -325,6 +356,34 @@ function failure(
  * message can quote the value it rejected. Mapping the closed code onto a fixed
  * sentence is what makes the output both deterministic and leak-free.
  */
+/**
+ * Map the tool-call verb's refusal onto this package's exit-code table.
+ *
+ * The verb module names a reason and a field; the exit code is decided here,
+ * where the table lives, so there is one place a code is chosen rather than two
+ * that could drift. A refused **call** never reaches this function: it is a
+ * recorded outcome and exits `EXIT_OK`, the CLI's analogue of the API's 200.
+ */
+function fromToolCallError(error: unknown): CliFailure {
+  // A ledger that cannot be opened or is not migrated refuses through the same
+  // function every read verb refuses through, so this verb's ledger failures
+  // are byte-identical to theirs rather than merely similar.
+  if (error instanceof LedgerError) return fromLedgerError(error);
+  if (!(error instanceof ToolCallRefused)) return fromUnknownError(error);
+  switch (error.code) {
+    case "NOT_FOUND":
+      return failure(EXIT_NOT_FOUND, "NOT_FOUND", error.message, error.at);
+    case "LEDGER_UNAVAILABLE":
+    case "CONTRACT_VERSION_MISMATCH":
+      return failure(EXIT_UNAVAILABLE, error.code, error.message, error.at);
+    case "INTERNAL":
+      return failure(EXIT_INTERNAL, "INTERNAL", error.message, error.at);
+    default:
+      // Everything else is a document that never became a request.
+      return failure(EXIT_USAGE, error.code, error.message, error.at);
+  }
+}
+
 function fromLedgerError(error: LedgerError): CliFailure {
   switch (error.code) {
     case "LEDGER_OPEN":
@@ -561,6 +620,70 @@ function runEvents(context: CommandContext): CommandResult {
   return ok(response, renderEventPage(response));
 }
 
+/**
+ * The human rendering of a tool-call page.
+ *
+ * Declared beside its handler rather than in `format/index.ts`, where every
+ * other renderer lives, for one reason worth stating rather than hiding: that
+ * file is outside this packet's exact write-set, and a convention is not worth
+ * a write-set expansion. It uses no helper from there, so nothing is
+ * duplicated; moving it is a one-line follow-up whenever `format/` is next
+ * open.
+ *
+ * There is no content column, because a recorded row carries none.
+ */
+function renderToolCallPage(response: ToolCallPageResponse): string {
+  if (response.items.length === 0) return "no tool calls recorded for this task\n";
+  const lines = response.items.map(
+    (row) =>
+      String(row.sequence) +
+      "  " +
+      row.outcome +
+      "  " +
+      row.serverId +
+      "/" +
+      row.toolName +
+      "  " +
+      (row.refusal ?? "-") +
+      "  " +
+      String(row.argumentBytes) +
+      "b in / " +
+      String(row.resultBytes) +
+      "b out",
+  );
+  const footer =
+    String(response.count) +
+    " shown" +
+    (response.nextCursor === null ? "" : ", next cursor " + response.nextCursor);
+  return lines.join("\n") + "\n\n" + footer + "\n";
+}
+
+/**
+ * The tool-call receipts recorded against one task (V2-B4b stage 3D).
+ *
+ * An ordinary read: it opens nothing of its own, changes nothing, and is
+ * subject to no new authority. The window is parsed by `EventsQuery`, which
+ * already validates a task id, a decimal sequence cursor and a page limit —
+ * reused rather than restated, because a second query schema in this package
+ * would be a second place the same three filters could drift.
+ */
+function runToolCalls(context: CommandContext): CommandResult {
+  const parsed = parseQuery(EventsQuery, {
+    taskId: stringOption(context.values, "task"),
+    cursor: stringOption(context.values, "cursor"),
+    limit: stringOption(context.values, "limit"),
+  });
+  if (parsed.taskId === undefined) {
+    throw usageFailure("--task is required", "acp tool-calls");
+  }
+  const response = buildToolCallPage(context.ledger, {
+    taskId: parsed.taskId,
+    ...(parsed.cursor === undefined ? {} : { afterSequence: parsed.cursor }),
+    limit: parsed.limit,
+  });
+  return ok(response, renderToolCallPage(response));
+}
+
 function runStatus(context: CommandContext): CommandResult {
   const response = buildStatus(
     context.ledger.status(),
@@ -599,6 +722,7 @@ const HANDLERS: Readonly<Record<string, (context: CommandContext) => CommandResu
   events: runEvents,
   status: runStatus,
   integrity: runIntegrity,
+  "tool-calls": runToolCalls,
 };
 
 // ---------------------------------------------------------------------------
@@ -883,7 +1007,7 @@ function runSubmission(values: ParsedValues, io: CliIo): SubmissionResult {
  * Separated from the entry point so the whole surface can be tested in process,
  * and so importing this module never runs anything and never opens a database.
  */
-export function run(argv: readonly string[], io: CliIo = defaultIo): number {
+export async function run(argv: readonly string[], io: CliIo = defaultIo): Promise<number> {
   let values: ParsedValues;
   let positionals: readonly string[];
 
@@ -984,10 +1108,33 @@ export function run(argv: readonly string[], io: CliIo = defaultIo): number {
     );
   }
 
+  // V2-B4b stage 3D. The one writing verb branches here: below the `--database`
+  // law, because it needs a ledger, and above the read-only open, because it
+  // needs a writable one and owns its own open/close pair. Every verb below
+  // this line still opens query-only, which is what keeps the narrowed law
+  // true rather than merely claimed.
+  if (spec.name === TOOL_CALL_COMMAND) {
+    try {
+      const result = await runToolCallVerb({
+        databasePath,
+        requestPath: stringOption(values, "request") ?? "",
+        toolServersPath: stringOption(values, "tool-servers") ?? "",
+      });
+      // JSON regardless of `--format`, exactly as the submission verb prints.
+      // A human renderer for a tool call would be a second place tool content
+      // gets formatted, and the only safe number of those is one.
+      io.stdout(renderJson(result.document));
+      return EXIT_OK;
+    } catch (error: unknown) {
+      return emitFailure(fromToolCallError(error), format, io);
+    }
+  }
+
   let ledger: Ledger;
   try {
-    // Read-only is the whole posture of this package. It also means SQLite
-    // itself refuses a write, so a bug here cannot become a mutation.
+    // Read-only is the whole posture of every other verb in this package. It
+    // also means SQLite itself refuses a write, so a bug here cannot become a
+    // mutation.
     ledger = openLedger(databasePath, { readOnly: true });
   } catch (error: unknown) {
     const failed =

@@ -37,6 +37,7 @@ import {
   TaskDetailResponse,
   TaskPageResponse,
   TimelineItem,
+  ToolCallPageResponse,
   WorkerDetailResponse,
   WorkerPageResponse,
 } from "@acp/protocol";
@@ -64,6 +65,20 @@ import type {
  * the item was larger than the name list suggests.
  */
 const MAX_TIMELINE_PAYLOAD_KEYS = 64;
+
+/**
+ * What one tool-call page is asked for (V2-B4b stage 3D).
+ *
+ * A task and an optional window. Declared here rather than imported because it
+ * is the CLI's own call shape, not a wire contract: `ToolCallsQuery` is the
+ * HTTP query, and reusing it would tie a local function signature to a
+ * transport it does not speak.
+ */
+export interface ToolCallPageQuery {
+  readonly taskId: string;
+  readonly afterSequence?: number;
+  readonly limit?: number;
+}
 
 /** Ceiling on the problems an integrity result may carry, from the contract. */
 const MAX_INTEGRITY_PROBLEMS = 500;
@@ -232,6 +247,61 @@ export function buildEventPage(ledger: Ledger, query: EventQuery): EventPageResp
       limit,
       returned: page.events.length,
     },
+  });
+}
+
+/**
+ * One task's recorded tool calls, oldest first (V2-B4b stage 3D).
+ *
+ * A fold of `TOOL_CALL_RECORDED` rows, and the CLI half of the parity claim:
+ * this projection and the gateway's are two independent producers over one
+ * ledger, so the equality between them is evidence rather than a shared code
+ * path. It is deliberately *not* imported from the gateway — an entrypoint that
+ * read another entrypoint's projection would prove only that one function
+ * agrees with itself.
+ *
+ * There is no content member to omit: the recorder never wrote one, so the
+ * absence is structural.
+ */
+export function buildToolCallPage(ledger: Ledger, query: ToolCallPageQuery): ToolCallPageResponse {
+  const page = ledger.listEvents({
+    taskId: query.taskId,
+    type: "TOOL_CALL_RECORDED",
+    ...(query.afterSequence === undefined ? {} : { afterSequence: query.afterSequence }),
+    ...(query.limit === undefined ? {} : { limit: query.limit }),
+  });
+
+  const items = page.events.map((row) => {
+    const payload = row.event.payload;
+    return {
+      sequence: row.sequence,
+      eventId: row.eventId,
+      transitionId: row.event.transitionId,
+      occurredAt: row.event.occurredAt,
+      emittedBy: row.event.emittedBy,
+      causedBy: row.event.causationId,
+      accountId: payload["accountId"],
+      serverId: payload["serverId"],
+      toolName: payload["toolName"],
+      transport: payload["transport"],
+      outcome: payload["outcome"],
+      refusal: payload["refusal"],
+      argumentBytes: payload["argumentBytes"],
+      resultBytes: payload["resultBytes"],
+      contentBlocks: payload["contentBlocks"],
+    };
+  });
+
+  return ToolCallPageResponse.parse({
+    apiContractVersion: API_VERSION,
+    ledgerContractVersion: LEDGER_VERSION,
+    taskId: query.taskId,
+    items,
+    count: items.length,
+    // The ledger's own cursor, stringified, for the reason `buildEventPage`
+    // gives: a cursor is opaque, and arithmetic on it makes the pagination
+    // strategy a breaking change.
+    nextCursor: page.hasMore && page.nextCursor !== null ? String(page.nextCursor) : null,
   });
 }
 

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Read-only observation CLI for the Agent Control Plane. Opens the ledger query-only and prints contract-validated documents.",
+  "description": "Observation CLI for the Agent Control Plane. Every read verb opens the ledger query-only; exactly one named verb, tool-call, opens a short-lived writable handle and appends one receipt through the shared operation.",
   "license": "UNLICENSED",
   "exports": {
     ".": {
@@ -26,7 +26,8 @@
     "@acp/accounts": "workspace:*",
     "@acp/protocol": "workspace:*",
     "@acp/ledger": "workspace:*",
-    "@acp/runtime": "workspace:*"
+    "@acp/runtime": "workspace:*",
+    "@acp/tools": "workspace:*"
   },
   "devDependencies": {
     "vitest": "3.2.4"

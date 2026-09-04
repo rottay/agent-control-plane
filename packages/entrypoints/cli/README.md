@@ -1,12 +1,21 @@
 # @acp/cli
 
-The read-only observation CLI of the Agent Control Plane.
+The observation CLI of the Agent Control Plane.
 
-`acp` answers questions about a ledger. It changes nothing, and that is
-structural rather than promised: the ledger is opened with `readOnly: true`,
-which puts SQLite itself into query-only mode, and no code path in this package
-calls `append()` or `rebuildReadModel()`. A CLI that could repair a ledger would
-be a CLI that could rewrite recorded history.
+`acp` answers questions about a ledger. **Every read verb opens it query-only;
+exactly one named verb, `tool-call`, opens a short-lived writable handle and
+appends exactly one receipt through the shared operation.** That narrowing is
+V2-B4b stage 3D's, and it is stated rather than softened: what changed is not
+"this CLI now writes", it is that one named verb does and every other one still
+cannot.
+
+For every verb but that one, the posture is unchanged and structural rather
+than promised: the ledger is opened with `readOnly: true`, which puts SQLite
+itself into query-only mode. Nothing in this package calls `append()` or
+`rebuildReadModel()` — the single receipt is appended by `@acp/runtime`'s
+operation, which is the one authority on what a tool call may be. A CLI that
+could repair a ledger would still be a CLI that could rewrite recorded history,
+and this one cannot.
 
 Scope note. This is the CLI of the P1 observation plane. It observes a ledger
 and nothing else. There is no daemon, no orchestrator, no lease engine, no
@@ -71,12 +80,33 @@ acp integrity --database ./control-plane.sqlite
 search of the working directory. A tool that guesses which ledger it is reading
 is a tool that eventually reads the wrong one and reports confidently about it.
 
-### 2. Read only, structurally
+### 2. Read only for every verb but one, structurally
 
-`openLedger(path, { readOnly: true })` is the only way this package opens a
-ledger. The handle refuses mutation, SQLite refuses mutation, and the append-only
-triggers in the schema refuse mutation. The test suite asserts the file is
-byte-identical after every command has run against it.
+`openLedger(path, { readOnly: true })` is how this package opens a ledger for
+every verb except `tool-call`. The handle refuses mutation, SQLite refuses
+mutation, and the append-only triggers in the schema refuse mutation. The suite
+drives every read verb and asserts the event count and the applied-migration set
+are unchanged afterwards — a claim about every read verb, checked by running
+every read verb.
+
+`tool-call` is the exception the DT granted, and it is bounded three ways. It
+takes the **only** writable open in this package, and the architecture fence
+asserts that mechanically rather than trusting this paragraph. It probes the
+ledger read-only first, so it can neither create a database at a mistyped path
+nor migrate one — it executes, and migrating is not executing. And what it
+appends is one receipt, written by the shared operation rather than by any code
+here.
+
+**One bound it does not have: nothing serializes two runs of it.** A tool call
+spends its coordinate by recording *after* the tool answers, so two overlapping
+invocations for the same coordinate both find it unspent and both run the tool.
+The API door closes that inside one gateway process; a CLI invocation is a new
+process every time and carries no such registry, so **CLI against CLI** — a
+script retrying on a timeout is the likely case — and **CLI against the
+gateway** are both open. The ledger still keeps exactly one row per coordinate,
+so recorded history stays truthful; what is not guaranteed is that the tool ran
+once. Closing it needs a lock the ledger itself arbitrates, covering both doors,
+and that is a later packet.
 
 ### 3. Everything printed is contract-validated
 
