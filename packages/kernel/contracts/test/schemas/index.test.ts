@@ -1360,6 +1360,75 @@ describe("the task stream's usage attribution", () => {
   });
 });
 
+describe("the task stream's tool-call receipts", () => {
+  /** The nine safe scalars, and nothing else. */
+  const RECEIPT_PAYLOAD = {
+    accountId: "acct-a",
+    serverId: "fs-local",
+    toolName: "read_file",
+    transport: "STDIO",
+    outcome: "COMPLETED",
+    refusal: null,
+    argumentBytes: 128,
+    resultBytes: 4_096,
+    contentBlocks: 2,
+  } as const;
+
+  it("declares the receipt type", () => {
+    const types: readonly string[] = CONTROL_PLANE_EVENT_TYPES;
+    expect(types).toContain("TOOL_CALL_RECORDED");
+  });
+
+  it("accepts the nine-key payload as a same-state passthrough", () => {
+    const parsed = ControlPlaneEvent.safeParse(
+      event({
+        type: "TOOL_CALL_RECORDED",
+        fromState: "RUNNING",
+        toState: "RUNNING",
+        payload: RECEIPT_PAYLOAD,
+      }),
+    );
+    expect(parsed.success).toBe(true);
+  });
+
+  it("does not itself close the payload: the nine keys are the producer's law", () => {
+    // Stated as a test rather than as a comment, because the opposite claim is
+    // tempting and would be false. `payload` is `z.record(…, z.unknown())` for
+    // every type in this vocabulary, so a tenth ordinary key parses here. What
+    // keeps it out of the ledger is `@acp/runtime`'s recorder, which builds the
+    // payload field by field and refuses anything outside its grammar.
+    const parsed = ControlPlaneEvent.safeParse(
+      event({
+        type: "TOOL_CALL_RECORDED",
+        fromState: "RUNNING",
+        toState: "RUNNING",
+        payload: { ...RECEIPT_PAYLOAD, durationMs: 12 },
+      }),
+    );
+    expect(parsed.success).toBe(true);
+  });
+
+  it("keeps the credential and transcript guards live for this type", () => {
+    // Both directions, so the acceptance above is not a check that always
+    // passes: what the contract does enforce for a receipt is what it enforces
+    // for every event.
+    for (const leak of [{ apiKey: "sk-live-abcdef" }, { transcript: ["turn one"] }]) {
+      const parsed = ControlPlaneEvent.safeParse(
+        event({
+          type: "TOOL_CALL_RECORDED",
+          fromState: "RUNNING",
+          toState: "RUNNING",
+          payload: { ...RECEIPT_PAYLOAD, ...leak },
+        }),
+      );
+      expect({ leak: Object.keys(leak)[0], ok: parsed.success }).toEqual({
+        leak: Object.keys(leak)[0],
+        ok: false,
+      });
+    }
+  });
+});
+
 describe("TaskEnvelope initiative scoping", () => {
   it("requires an initiativeId", () => {
     const withoutInitiative = Object.fromEntries(

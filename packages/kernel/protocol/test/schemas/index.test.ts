@@ -1802,9 +1802,19 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     for (const channel of Object.values(STREAM_CHANNEL_BY_EVENT_TYPE)) {
       sizes[channel] = (sizes[channel] ?? 0) + 1;
     }
-    expect(sizes).toEqual({ lifecycle: 7, execution: 5, steps: 2, state: 7, progress: 2 });
+    expect(sizes).toEqual({ lifecycle: 7, execution: 6, steps: 2, state: 7, progress: 2 });
     const total = Object.values(sizes).reduce((sum, count) => sum + count, 0);
     expect(total).toBe(CONTROL_PLANE_EVENT_TYPES.length);
+  });
+
+  it("puts the tool-call receipt on execution, by name (V2-B4b stage 2)", () => {
+    // Totality above covers this member by construction, which is exactly why
+    // the choice has to be asserted separately: a type mapped to the wrong
+    // channel satisfies every law in this describe. `execution` is "what it
+    // took to run it" — a slot, an account, a raised hand, and now a tool call.
+    // `steps` is the durable walk's own beats and `progress` is usage
+    // attribution; a receipt is neither.
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.TOOL_CALL_RECORDED).toBe("execution");
   });
 });
 

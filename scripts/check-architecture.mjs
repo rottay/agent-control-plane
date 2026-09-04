@@ -4414,6 +4414,58 @@ const V2B4B_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b stage 2: the durable redacted tool-call receipt.
+ *
+ * Eleven paths, two of them novel. One contract event type, one channel row,
+ * one runtime module, its mirrored suite, three suites that already existed,
+ * and three prose repairs.
+ *
+ * **The seam is the packet.** The receipt is produced in `@acp/tools` and
+ * appended by `@acp/runtime`, and the runtime may not name the tool edge —
+ * `RUNTIME_ALLOWED_PACKAGES` is the closed set `{@acp/accounts, @acp/contracts,
+ * @acp/ledger}`, which already refuses it. So the runtime declares a structural
+ * grammar over primitives rather than restating the transport, refusal or
+ * ceiling vocabularies: those stay in one home, and the duplication gate stays
+ * clear with no `DUPLICATION_ADJUDICATED` entry, which is the intended outcome
+ * rather than a near miss. **No new law, dependency, package, registry or event
+ * type beyond the single one.** `PATH_SCOPED_LAWS` does not move, no
+ * `requireScope` site is added, and no manifest gains an edge.
+ *
+ * **Three prose repairs, and one deliberate non-repair.** Adding a
+ * twenty-fourth event type falsifies three live claims —
+ * `docs/api-reference.md`, `observation/src/baseline/index.ts` and the gateway
+ * stream suite's own header — and each is corrected in place. The protocol's
+ * no-producer list moves from nine types to ten, naming stage 3 as the packet
+ * that owes `TOOL_CALL_RECORDED` a production caller and must take the list
+ * back to nine. `docs/architecture/0017-the-stream-boundary.md` keeps the older
+ * count on purpose: it is a dated record, its claim was true of what it
+ * recorded, and the protocol source already adjudicates that in writing.
+ *
+ * **What stage 2 does not claim.** No daemon composition, no production caller,
+ * and no end-to-end proof that a *real* tool call produces such a row. The SSE
+ * evidence here is over a seeded ledger row, which is enough to prove the
+ * projection drops payload values and not enough to prove anything about a tool
+ * server; the produced half is stage 3's, against the fake MCP server.
+ *
+ * `RUNTIME_PUBLIC_EXPORTS` moves 187 → 192 and is the only pinned integer this
+ * stage touches. `CONTRACTS_SCHEMA_EXPORTS` stays 98 — an array member is not
+ * an export — and `PACKAGE_STRATA` stays 13.
+ */
+const V2B4B_S2_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/control-plane-event/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/domains/runtime/src/tool-receipt/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/domains/runtime/test/tool-receipt/index.test.ts",
+  "packages/entrypoints/gateway/test/stream/index.test.ts",
+  "docs/api-reference.md",
+  "packages/domains/observation/src/baseline/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4795,6 +4847,7 @@ const WRITE_SET = [
   ...V2B7R_WRITE_SET,
   ...V2B4A_WRITE_SET,
   ...V2B4B_WRITE_SET,
+  ...V2B4B_S2_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -11111,6 +11164,14 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "FailureDecision",
   "FailureRefusal",
   "classifyFailure",
+  // V2-B4b stage 2: the durable tool-call receipt. Five names, and none of them
+  // is one of `@acp/tools`' thirty — the seam is a structural grammar, so the
+  // duplication gate stays clear without an adjudication.
+  "ToolCallFacts",
+  "ToolCallObservation",
+  "ToolCallRecordResult",
+  "recordToolCall",
+  "toolCallTransitionId",
 ];
 
 /**

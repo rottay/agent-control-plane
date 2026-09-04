@@ -1116,9 +1116,9 @@ export type EventsQuery = z.infer<typeof EventsQuery>;
 /**
  * The reduced vocabulary a stream reader subscribes in.
  *
- * Five channels over twenty-three event types. The reduction is the point: a
+ * Five channels over twenty-four event types. The reduction is the point: a
  * reader that wants "did anything happen to the lifecycle" should not have to
- * enumerate seven type names and be wrong the day a twenty-fourth is added.
+ * enumerate seven type names and be wrong the day a twenty-fifth is added.
  * The map below is what makes the reduction checkable rather than editorial.
  */
 export const STREAM_CHANNELS = [
@@ -1150,13 +1150,21 @@ export type StreamChannel = z.infer<typeof StreamChannel>;
  * is behaviourally empty now**.
  *
  * The accurate claim is about individual event types rather than channels.
- * These nine still have no producer outside a library or a test:
+ * These ten still have no producer outside a library or a test:
  * `LEASE_ACQUIRED`, `LEASE_REVOKED`, `WRITE_SET_VIOLATION_DETECTED`,
  * `COMMIT_AUTHORIZED`, `ACCOUNT_SWITCH_STARTED`, `ACCOUNT_SWITCH_COMPLETED`,
- * `AUTH_REQUIRED_RAISED`, `QUOTA_WARNING` and `TOKEN_RESERVATION_RECORDED`.
- * Each is owed to a named packet, and none is emitted to make a channel look
- * busy. The map is over the vocabulary, not over what happens to be emitted, so
- * it carries every type either way.
+ * `AUTH_REQUIRED_RAISED`, `QUOTA_WARNING`, `TOKEN_RESERVATION_RECORDED` and
+ * `TOOL_CALL_RECORDED`. Each is owed to a named packet, and none is emitted to
+ * make a channel look busy. The map is over the vocabulary, not over what
+ * happens to be emitted, so it carries every type either way.
+ *
+ * `TOOL_CALL_RECORDED` is the newest of the ten and the one with a dated debt:
+ * V2-B4b stage 2 gave it a contract, a channel, a recorder in `@acp/runtime`
+ * and a suite, deliberately without a production caller — the daemon does not
+ * compose a tool plane yet. Stage 3 is the packet that owes it one, and stage 3
+ * must take this list back from ten to nine when it lands. A list left at ten
+ * after that would be a false claim in a comment this repository reads as
+ * load-bearing.
  *
  * ADR 0017 makes the older claim and is deliberately left alone: it is a dated
  * record and its claim was true of what it recorded. This comment describes
@@ -1179,6 +1187,10 @@ export const STREAM_CHANNEL_BY_EVENT_TYPE: Readonly<
   ACCOUNT_SWITCH_COMPLETED: "execution",
   AUTH_REQUIRED_RAISED: "execution",
   QUOTA_WARNING: "execution",
+  // A tool call is what it took to run it, so it sits with the slot and the
+  // account rather than with the walk's own beats (`steps`) or with usage
+  // attribution (`progress`).
+  TOOL_CALL_RECORDED: "execution",
   // steps — the durable walk's own beats.
   ATOMIC_STEP_COMPLETED: "steps",
   CHECKPOINT_WRITTEN: "steps",

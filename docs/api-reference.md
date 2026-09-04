@@ -99,7 +99,7 @@ reading — rebuilt, or a different file — and receives one `resync` frame wit
 from zero. There is no "too old": the event log is never pruned.
 
 **Channels.** Every frame carries a `channel`, one of `lifecycle`, `execution`,
-`steps`, `state`, `progress`. The mapping from the twenty-three ledger event
+`steps`, `state`, `progress`. The mapping from the twenty-four ledger event
 types onto them is `STREAM_CHANNEL_BY_EVENT_TYPE`, and it is total and
 one-to-one — the fence and the protocol suite both assert it against the
 contract's own vocabulary, so a new event type cannot appear unmapped.

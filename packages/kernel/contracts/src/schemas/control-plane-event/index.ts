@@ -47,6 +47,21 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   "TASK_STATE_CHANGED",
   "TASK_FAILED",
   "TASK_CANCELLED",
+  // The durable tool-call receipt (V2-B4b stage 2). A task fact and a
+  // same-state passthrough, exactly as the two usage types above are: a tool
+  // call is something a run did, not a lifecycle move. The payload is the nine
+  // safe scalars `{accountId, serverId, toolName, transport, outcome, refusal,
+  // argumentBytes, resultBytes, contentBlocks}` — identifiers, screaming-snake
+  // vocabulary words and counts, with no free text, no arguments, no results
+  // and no session id anywhere in it.
+  //
+  // That shape is the **producer's** law, not this contract's: `payload` here
+  // is `z.record(…, z.unknown())` for every type, so what keeps a tenth key
+  // out is `@acp/runtime`'s recorder, which builds the payload field by field
+  // from named members and refuses anything outside the grammar. What this
+  // contract does enforce for it is what it enforces for every event — the
+  // credential and transcript guards, and the payload byte budget.
+  "TOOL_CALL_RECORDED",
 ] as const;
 
 export const ControlPlaneEventType = z.enum(CONTROL_PLANE_EVENT_TYPES);

@@ -40,7 +40,7 @@ import { STREAM_MAX_CONNECTIONS } from "../../src/constants/index.js";
  * function but flakiness.
  *
  * This package may not name `@acp/contracts`, so the channel map's **totality**
- * over the twenty-three ledger types is asserted in the protocol suite, which
+ * over the twenty-four ledger types is asserted in the protocol suite, which
  * may read the vocabulary. What is asserted here is the other half: every
  * channel that reaches the wire is the one the shared map names.
  */
@@ -113,6 +113,15 @@ interface SeedOptions {
   readonly tasks?: number;
   /** Payload keys, so a redaction drill can seed shapes worth refusing. */
   readonly payload?: Record<string, unknown>;
+  /**
+   * The types to cycle through, when a drill is about one type in particular.
+   *
+   * Defaults to `EVENT_TYPES`, which stays exactly as it is: `seed()` defaults
+   * `perTask` to that array's length, so appending a twenty-fourth entry to it
+   * would silently renumber every `headSequence` this file asserts against. A
+   * dedicated seed costs one option and moves nothing.
+   */
+  readonly types?: readonly string[];
 }
 
 interface Seed {
@@ -132,7 +141,8 @@ interface Seed {
  * `toState`.
  */
 function seed(options: SeedOptions = {}): Seed {
-  const perTask = options.perTask ?? EVENT_TYPES.length;
+  const types = options.types ?? EVENT_TYPES;
+  const perTask = options.perTask ?? types.length;
   const taskCount = options.tasks ?? 1;
   const path = temporaryDatabase();
   const ledger = openLedger(path);
@@ -141,7 +151,7 @@ function seed(options: SeedOptions = {}): Seed {
 
   for (let index = 0; index < perTask; index += 1) {
     for (const taskId of taskIds) {
-      const type = EVENT_TYPES[index % EVENT_TYPES.length] ?? "TASK_DISCOVERED";
+      const type = types[index % types.length] ?? "TASK_DISCOVERED";
       const fromState = state.get(taskId) ?? null;
       const toState =
         type === "TASK_STATE_CHANGED"
@@ -819,6 +829,76 @@ describe("redaction is absence, over the wire as well as in the body", () => {
     expect(raw).not.toContain(tmpdir());
     expect(raw).not.toContain("/Users/");
     expect(raw).not.toContain(path);
+  });
+
+  it("projects a tool-call receipt as key names and a size, never a value (S1a)", async () => {
+    // V2-B4b stage 2. The receipt's nine payload keys are safe by construction
+    // — identifiers, screaming-snake vocabulary words and counts — but "safe by
+    // construction" is a claim about the producer. What is asserted here is the
+    // independent half: whatever the payload holds, the wire carries its key
+    // NAMES and its byte size and nothing else, because `timelineItem` never
+    // emits `payload` at all.
+    //
+    // The row is **seeded**, not produced. This proves the projection drops
+    // payload values; it proves nothing about a real tool call, which needs the
+    // daemon and a tool server and belongs to stage 3.
+    const SENTINEL = "sentinel-tool-argument-value";
+    const receipt = {
+      accountId: "acct-a",
+      serverId: SENTINEL,
+      toolName: "read_file",
+      transport: "STDIO",
+      outcome: "COMPLETED",
+      refusal: null,
+      argumentBytes: 128,
+      resultBytes: 4_096,
+      contentBlocks: 2,
+    };
+    const { path } = seed({
+      perTask: 2,
+      types: ["TOOL_CALL_RECORDED"],
+      payload: receipt,
+    });
+    const running = await serve(path);
+    const client = await openStream(running.port, STREAM_PATH, { "last-event-id": "0" });
+    await client.waitUntil(() => client.frames().length >= 2, "the receipts");
+    const frames = parsedFrames(client);
+    const raw = client.raw();
+    client.abort();
+
+    let events = 0;
+    for (const frame of frames) {
+      for (const projection of [frame, canonicalize(frame)]) {
+        expect(hasObservationPrivacyViolation(projection)).toBe(false);
+      }
+      if (frame.kind !== "event") continue;
+      events += 1;
+      expect(frame.channel).toBe(STREAM_CHANNEL_BY_EVENT_TYPE.TOOL_CALL_RECORDED);
+      expect(frame.channel).toBe("execution");
+      expect(Object.keys(frame.item)).not.toContain("payload");
+      expect(frame.item.payloadKeys.slice().sort()).toEqual(Object.keys(receipt).sort());
+      expect(frame.item.payloadByteSize).toBeGreaterThan(0);
+    }
+    expect(events).toBeGreaterThan(0);
+
+    // The concatenated wire bytes, not only the parsed frames.
+    expect(raw).not.toContain(SENTINEL);
+    expect(raw).not.toContain(tmpdir());
+    expect(raw).not.toContain("/Users/");
+    expect(raw).not.toContain(path);
+
+    // S1b — the non-vacuity direction. Without this the assertions above would
+    // pass just as happily against a seed that wrote no sentinel at all: what
+    // they must show is that the projection dropped it, not that it was never
+    // there. It is in the ledger row, read back directly.
+    const stored = openLedger(path, { readOnly: true });
+    try {
+      const page = stored.listEvents({ limit: 10 });
+      const canonical = page.events.map((record) => record.canonicalJson).join("");
+      expect(canonical).toContain(SENTINEL);
+    } finally {
+      stored.close();
+    }
   });
 
   it("is not a vacuous check: the same helper refuses a blanked credential", () => {

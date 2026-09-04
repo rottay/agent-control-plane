@@ -308,3 +308,14 @@ export type {
 } from "./failure/index.js";
 export { USAGE_TOKENS_MAX, usageTransitionId } from "./usage/index.js";
 export type { UsageSample, UsageSink } from "./execution-effects/index.js";
+
+// V2-B4b stage 2: the durable tool-call receipt. The seam between the tool edge
+// and the ledger is a grammar, not a registry -- `@acp/tools` keeps the
+// transport, refusal and ceiling vocabularies, and this stratum never names it.
+// No production caller lands here: the daemon composes a tool plane in stage 3.
+export { recordToolCall, toolCallTransitionId } from "./tool-receipt/index.js";
+export type {
+  ToolCallFacts,
+  ToolCallObservation,
+  ToolCallRecordResult,
+} from "./tool-receipt/index.js";
