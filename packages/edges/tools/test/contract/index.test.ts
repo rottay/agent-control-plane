@@ -11,9 +11,11 @@ import {
   TOOL_RESULT_BYTES_MAX,
   TOOL_SERVER_ENV_KEYS,
   TOOL_TRANSPORT_KINDS,
+  TOOL_TRANSPORT_UNRESOLVED,
   TOOL_WRITE_ROLES,
   holdsToolWriteAuthority,
 } from "../../src/contract/index.js";
+import { admitToolServer } from "../../src/admission/index.js";
 
 describe("the tool vocabulary is closed and honest", () => {
   it("names exactly one transport, and it is the one that is implemented", () => {
@@ -60,5 +62,39 @@ describe("write authority is a closed subset of the control plane roles", () => 
       if (role === "implementer") continue;
       expect(holdsToolWriteAuthority(role)).toBe(false);
     }
+  });
+});
+
+describe("the unresolved word is a receipt coordinate, not a transport (V2-B4b S4-0)", () => {
+  it("is absent from the transport union, which does not move", () => {
+    // The pin above still reads exactly ["STDIO"]; this packet widens no union.
+    // That is the point: a kind an admission could emit but no connection could
+    // speak would be the mirror of the vacuity this repository refuses.
+    expect((TOOL_TRANSPORT_KINDS as readonly string[]).includes(TOOL_TRANSPORT_UNRESOLVED)).toBe(
+      false,
+    );
+  });
+
+  it("matches the recorder's vocabulary grammar, which is why it is a word", () => {
+    // `@acp/runtime`'s recorder calls requireVocabularyWord on `transport` and
+    // refuses a null outright, so a screaming-snake word crosses the stratum
+    // boundary a null could not. The pattern is restated here rather than
+    // imported: that package is forbidden to this one by name, and a
+    // cross-package recordability drill belongs in its own suite.
+    expect(TOOL_TRANSPORT_UNRESOLVED).toMatch(/^[A-Z][A-Z0-9_]{0,39}$/);
+  });
+
+  it("is refused as a declared transport, because it is not one", () => {
+    const outcome = admitToolServer({
+      serverId: "docs",
+      transport: TOOL_TRANSPORT_UNRESOLVED as unknown as "STDIO",
+      command: "/bin/true",
+      tools: [{ name: "docs.search", writes: false }],
+    });
+    expect(outcome).toEqual({
+      ok: false,
+      refusal: "TRANSPORT_REFUSED",
+      at: "descriptor.transport",
+    });
   });
 });

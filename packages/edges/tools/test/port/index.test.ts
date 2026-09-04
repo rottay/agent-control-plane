@@ -4,7 +4,11 @@ import type { WorkerIdentityString } from "@acp/contracts";
 
 import { admitToolServer } from "../../src/admission/index.js";
 import type { AdmittedToolServer } from "../../src/admission/index.js";
-import { TOOL_ARGUMENTS_BYTES_MAX, TOOL_CALL_TIMEOUT_MS } from "../../src/contract/index.js";
+import {
+  TOOL_ARGUMENTS_BYTES_MAX,
+  TOOL_CALL_TIMEOUT_MS,
+  TOOL_TRANSPORT_UNRESOLVED,
+} from "../../src/contract/index.js";
 import { createToolProtocolPort } from "../../src/port/index.js";
 import type { ToolProtocolPort } from "../../src/port/index.js";
 import {
@@ -174,10 +178,31 @@ describe("the refusals fire in order, and upstream of the wire where they can", 
       at: "request.sessionId",
     });
     expect(outcome.receipt.outcome).toBe("REFUSED");
+    // The server was never touched, but it *was* admitted, so the receipt can
+    // name its transport honestly. This is the ordering proof: the map was
+    // read, and no child started.
+    expect(outcome.receipt.transport).toBe("STDIO");
     // Nothing was started and nothing was asked.
     expect(childPids()).toEqual([]);
     expect(readToolCallLog(callLog)).toEqual([]);
     expect(await port.closeAll()).toEqual([]);
+  });
+
+  it("names no transport when the dead session's server was never admitted", async () => {
+    // The load-bearing contrast, and the reason this packet exists. Same
+    // refusal and same field path as the case above; the transport differs,
+    // decided only by whether the admitted map held the id. A receipt that said
+    // STDIO here would be asserting a fact about a server nobody admitted.
+    live.delete(SESSION);
+    const outcome = await call({ serverId: "absent" });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect({ refusal: outcome.refusal, at: outcome.at }).toEqual({
+      refusal: "SESSION_NOT_LIVE",
+      at: "request.sessionId",
+    });
+    expect(outcome.receipt.transport).toBe(TOOL_TRANSPORT_UNRESOLVED);
+    expect(childPids()).toEqual([]);
   });
 
   it("refuses a server that was never admitted", async () => {
@@ -188,6 +213,8 @@ describe("the refusals fire in order, and upstream of the wire where they can", 
       refusal: "SERVER_NOT_ADMITTED",
       at: "request.serverId",
     });
+    // No server was resolved, so there is no transport to name.
+    expect(outcome.receipt.transport).toBe(TOOL_TRANSPORT_UNRESOLVED);
     expect(childPids()).toEqual([]);
   });
 
@@ -201,6 +228,8 @@ describe("the refusals fire in order, and upstream of the wire where they can", 
       refusal: "TOOL_NOT_ALLOWED",
       at: "request.toolName",
     });
+    // The server was admitted, so the receipt names its transport.
+    expect(outcome.receipt.transport).toBe("STDIO");
     expect(readToolCallLog(callLog)).toEqual([]);
     expect(childPids()).toEqual([]);
   });
@@ -215,6 +244,7 @@ describe("the refusals fire in order, and upstream of the wire where they can", 
       refusal: "ARGUMENTS_UNBOUNDED",
       at: "request.arguments",
     });
+    expect(outcome.receipt.transport).toBe("STDIO");
     expect(outcome.receipt.argumentBytes).toBeGreaterThan(TOOL_ARGUMENTS_BYTES_MAX);
     expect(readToolCallLog(callLog)).toEqual([]);
     expect(childPids()).toEqual([]);

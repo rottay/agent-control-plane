@@ -29,6 +29,28 @@ export const TOOL_TRANSPORT_KINDS = ["STDIO"] as const;
 export type ToolTransportKind = (typeof TOOL_TRANSPORT_KINDS)[number];
 
 /**
+ * The transport a receipt names when no server was resolved.
+ *
+ * Deliberately **not** a member of {@link TOOL_TRANSPORT_KINDS}: no admission
+ * can emit it, no connection can speak it, and the union's "every member has a
+ * producer" law stays honest. It is a receipt coordinate, not a transport.
+ *
+ * The port refuses two calls before an admitted server exists — a dead session
+ * whose `serverId` nobody admitted, and a `serverId` nobody admitted at all —
+ * and both still earn a receipt, because a refusal that left no record would
+ * make the allowlist unfalsifiable in operation. Naming a transport there
+ * would be asserting a fact about a server that does not exist, which is the
+ * class of error this receipt was built to make impossible.
+ *
+ * A screaming-snake word rather than `null`, and the reason is downstream:
+ * `@acp/runtime`'s recorder admits any word matching its vocabulary grammar
+ * and refuses a null outright, so the word crosses the stratum boundary the
+ * null could not — with no change to any contract.
+ */
+export const TOOL_TRANSPORT_UNRESOLVED = "UNRESOLVED" as const;
+export type ToolTransportUnresolved = typeof TOOL_TRANSPORT_UNRESOLVED;
+
+/**
  * Every way a tool call can be refused. Closed, sorted, and each member has a
  * producer in this package — a refusal nothing can emit is a vocabulary entry
  * pretending to be a guarantee.

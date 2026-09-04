@@ -105,6 +105,15 @@ A refusal gets a receipt too: the refused calls are the ones an auditor most
 needs to see, and a refusal that left no record would make the allowlist
 unfalsifiable in operation.
 
+**The transport is resolved, never asserted.** A receipt names the admitted
+server's transport wherever one was resolved, and `UNRESOLVED` on the two paths
+that refuse before an admitted server exists — a dead session whose `serverId`
+nobody admitted, and a `serverId` nobody admitted at all. `UNRESOLVED` is not a
+transport this package speaks: it is absent from `TOOL_TRANSPORT_KINDS`, no
+admission can emit it, and no connection can be opened on it. Naming a real
+transport on those paths would be a receipt asserting a fact about a server that
+does not exist, which is exactly what the receipt was built to make impossible.
+
 **Persisting a receipt into the ledger, and projecting it through the event
 stream, are not done here and are not claimed here.** This stage returns the
 receipt to its caller and stops.
@@ -149,7 +158,9 @@ join and the receipt live.
 | Export | Kind |
 | --- | --- |
 | `TOOL_TRANSPORT_KINDS` | the transports this package speaks |
+| `TOOL_TRANSPORT_UNRESOLVED` | the transport a receipt names when no server was resolved |
 | `ToolTransportKind` | its member type |
+| `ToolTransportUnresolved` | its literal type |
 | `TOOL_REFUSALS` | every way a call can be refused |
 | `ToolRefusal` | its member type |
 | `TOOL_WRITE_ROLES` | the closed set of roles that may drive a writing tool |

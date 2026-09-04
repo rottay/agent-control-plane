@@ -4733,6 +4733,54 @@ const V2B4B_S3E_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b S4-0 — the receipt tells the truth about its transport.
+ *
+ * The first of Stage 4's two packets, and a prerequisite rather than a feature:
+ * it adds no capability, opens no socket, needs no owner act and moves no
+ * dependency. What it corrects is a producer that was asserting a fact it did
+ * not have.
+ *
+ * **The defect.** The port wrote `transport: "STDIO"` as a literal into every
+ * receipt it built. Two of its refusals fire **before an admitted server
+ * exists** — a dead session whose `serverId` nobody admitted, and a `serverId`
+ * nobody admitted at all — so both were naming a transport for a server that
+ * was never resolved. Since stage 2 that value reaches a durable ledger row,
+ * and since stage 3C it reaches one through a production door.
+ *
+ * **A word, not a null, and not a wider union.** `@acp/runtime`'s recorder
+ * calls `requireVocabularyWord("transport", …)` unconditionally and refuses a
+ * null outright, while `ToolCallFacts.transport` is deliberately `string` and
+ * the payload is an open record — so a screaming-snake word is recordable today
+ * with **no change to contracts, protocol or runtime**. That is why this packet
+ * is nine paths rather than a contracts migration, and it is why
+ * `TOOL_TRANSPORT_KINDS` stays exactly `["STDIO"]`: widening the union would
+ * make a kind emittable that no connection can speak, which is the mirror of
+ * the vacuity this repository refuses.
+ *
+ * **What it deliberately does not fix.** The ledger is append-only, so rows
+ * already written by the stage 3C and 3D doors keep their false transport for
+ * pre-resolution refusals. This packet corrects the producer, not history; the
+ * tools package does not own ledger history and cannot honestly speak about it.
+ *
+ * `TOOLS_PUBLIC_EXPORTS` moves 35 → **37** and the README's surface table with
+ * it, in both directions. `PATH_SCOPED_LAWS` 62 → **63** for L-B4B-14. Nothing
+ * else moves: not `TOOLS_RECEIPT_SHAPE` (it pins member *names*, not types,
+ * which is the whole reason this is cheap), not `TOOL_REFUSALS`, not any
+ * contracts, protocol or runtime pin.
+ */
+const V2B4B_S40_WRITE_SET = [
+  "packages/edges/tools/src/contract/index.ts",
+  "packages/edges/tools/src/receipt/index.ts",
+  "packages/edges/tools/src/port/index.ts",
+  "packages/edges/tools/src/index.ts",
+  "packages/edges/tools/README.md",
+  "packages/edges/tools/test/contract/index.test.ts",
+  "packages/edges/tools/test/port/index.test.ts",
+  "packages/edges/tools/test/receipt/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5120,6 +5168,7 @@ const WRITE_SET = [
   ...V2B4B_S3C_WRITE_SET,
   ...V2B4B_S3D_WRITE_SET,
   ...V2B4B_S3E_WRITE_SET,
+  ...V2B4B_S40_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -6029,6 +6078,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "exactly two doors reach the tool operation, and neither reaches the port",
     scope: "packages/*/*/src/** outside @acp/runtime",
+  },
+  // V2-B4b S4-0. The receipt's transport is resolved from the admitted map,
+  // never typed as a literal -- which is what makes the defect unrepeatable.
+  {
+    law: "the receipt's transport is resolved, never asserted",
+    scope: "the tool edge's contract, receipt and port sites",
   },
 ];
 
@@ -13025,7 +13080,11 @@ const TOOLS_WRITE_ROLES = ["implementer"];
 /** The closed public surface, pinned by equality in both directions. */
 const TOOLS_PUBLIC_EXPORTS = [
   "TOOL_TRANSPORT_KINDS",
+  // V2-B4b S4-0: a receipt coordinate, not a transport. It lands in a durable
+  // ledger row, so an independent party must agree with its value.
+  "TOOL_TRANSPORT_UNRESOLVED",
   "ToolTransportKind",
+  "ToolTransportUnresolved",
   "TOOL_REFUSALS",
   "ToolRefusal",
   "TOOL_WRITE_ROLES",
@@ -13734,6 +13793,81 @@ if (tracked.status === 0) {
   }
   requireScope("exactly two doors reach the tool operation, and neither reaches the port", doorsScanned);
   notes.push("two doors reach the tool operation, neither reaches the port, and there is no third");
+}
+
+// L-B4B-14 -- the receipt's transport is resolved, never asserted.
+//
+// The defect this closes: the port wrote `transport: "STDIO"` as a literal into
+// every receipt, including the two refusals that fire BEFORE an admitted server
+// exists -- a dead session whose serverId nobody admitted, and a serverId
+// nobody admitted at all. Since stage 2 that value reaches a durable ledger
+// row, and since stage 3C it reaches one through a production door, so the
+// plane was recording a fact about a server that never existed.
+//
+// The law is keyed on the absence of the literal rather than on the presence of
+// the fix, because the literal is the defect's only possible spelling: a
+// coordinate read from the admitted map cannot be typed, and a typed one cannot
+// be read from the map.
+{
+  let transportScanned = 0;
+
+  const portSource = readIfPresent(TOOLS_PORT_SITE);
+  if (portSource === null) {
+    fail(TOOLS_PORT_SITE + " is missing; the receipt's transport cannot be checked");
+  } else {
+    transportScanned += 1;
+    const code = stripComments(portSource);
+    if (/transport:\s*"/.test(code)) {
+      fail(
+        TOOLS_PORT_SITE +
+          " writes a transport as a string literal; the receipt's transport is resolved from" +
+          " the admitted map, because a refusal that fires before a server is resolved has no" +
+          " transport to name and inventing one records a fact about a server that never existed",
+      );
+    }
+  }
+
+  const contractSource = readIfPresent(TOOLS_CONTRACT_SITE);
+  if (contractSource === null) {
+    fail(TOOLS_CONTRACT_SITE + " is missing; the unresolved word has no declaration to pin");
+  } else {
+    transportScanned += 1;
+    const code = stripComments(contractSource);
+    if (!code.includes("TOOL_TRANSPORT_UNRESOLVED")) {
+      fail(TOOLS_CONTRACT_SITE + " no longer declares TOOL_TRANSPORT_UNRESOLVED");
+    }
+    // The word must stay OUT of the transport union: a kind an admission could
+    // emit but no connection could speak is the mirror vacuity this avoids.
+    const kinds = /TOOL_TRANSPORT_KINDS\s*=\s*\[([^\]]*)\]/.exec(code);
+    if (kinds === null) {
+      fail(TOOLS_CONTRACT_SITE + " no longer declares TOOL_TRANSPORT_KINDS as a literal array");
+    } else if (kinds[1].includes("UNRESOLVED")) {
+      fail(
+        "TOOL_TRANSPORT_KINDS names UNRESOLVED; it is a receipt coordinate rather than a" +
+          " transport, and admitting it to the union would make a kind emittable that no" +
+          " connection can speak",
+      );
+    }
+  }
+
+  const receiptSource = readIfPresent(TOOLS_RECEIPT_SITE);
+  if (receiptSource === null) {
+    fail(TOOLS_RECEIPT_SITE + " is missing; the receipt's transport type cannot be checked");
+  } else {
+    transportScanned += 1;
+    if (!stripComments(receiptSource).includes("ToolTransportUnresolved")) {
+      fail(
+        TOOLS_RECEIPT_SITE +
+          " no longer admits ToolTransportUnresolved; the two pre-resolution refusals would" +
+          " have no type to carry their coordinate",
+      );
+    }
+  }
+
+  requireScope("the receipt's transport is resolved, never asserted", transportScanned);
+  notes.push(
+    "the tool receipt resolves its transport from the admitted map, and the unresolved word is not a transport kind",
+  );
 }
 
 // The closed barrel, pinned by equality in both directions.

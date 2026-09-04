@@ -25,6 +25,12 @@
  * most needs to see; a refusal that left no record would make the allowlist
  * unfalsifiable in operation.
  *
+ * - **No transport asserted about a server that was never resolved.** Two
+ *   refusals fire before an admitted server exists, so `transport` widens to
+ *   admit `TOOL_TRANSPORT_UNRESOLVED` beside the transport kinds. It is not a
+ *   transport this package speaks and no admission can emit it; it is what the
+ *   coordinate says when there was nothing to name.
+ *
  * Persisting a receipt into the ledger, and projecting it safely through the
  * event stream, are a later stage's work and are not claimed here. This stage
  * returns the receipt to its caller and stops.
@@ -33,7 +39,11 @@
 import { findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
 import type { WorkerIdentityString } from "@acp/contracts";
 
-import type { ToolRefusal, ToolTransportKind } from "../contract/index.js";
+import type {
+  ToolRefusal,
+  ToolTransportKind,
+  ToolTransportUnresolved,
+} from "../contract/index.js";
 
 export type ToolCallOutcomeName = "COMPLETED" | "REFUSED";
 
@@ -41,7 +51,7 @@ export interface ToolCallReceipt {
   readonly sessionId: string;
   readonly serverId: string;
   readonly toolName: string;
-  readonly transport: ToolTransportKind;
+  readonly transport: ToolTransportKind | ToolTransportUnresolved;
   readonly identity: WorkerIdentityString;
   readonly outcome: ToolCallOutcomeName;
   readonly refusal: ToolRefusal | null;
@@ -55,7 +65,7 @@ export interface ToolReceiptInput {
   readonly sessionId: string;
   readonly serverId: string;
   readonly toolName: string;
-  readonly transport: ToolTransportKind;
+  readonly transport: ToolTransportKind | ToolTransportUnresolved;
   readonly identity: WorkerIdentityString;
   readonly refusal: ToolRefusal | null;
   readonly argumentBytes: number;

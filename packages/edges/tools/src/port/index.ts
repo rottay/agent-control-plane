@@ -29,6 +29,7 @@ import type { ToolAllowlistEntry, ToolCallRequest, ToolRefusal } from "../contra
 import {
   TOOL_ARGUMENTS_BYTES_MAX,
   TOOL_SERVER_LIFETIME_MS,
+  TOOL_TRANSPORT_UNRESOLVED,
   holdsToolWriteAuthority,
 } from "../contract/index.js";
 import { toolFrameBytes } from "../jsonrpc/index.js";
@@ -172,6 +173,17 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
       const serialized: unknown = JSON.stringify(request.arguments);
       const argumentBytes = typeof serialized === "string" ? toolFrameBytes(serialized) : 0;
 
+      // Resolved once, up front, for the same reason `argumentBytes` is: a
+      // receipt coordinate that varied by refusal path could not be compared
+      // across paths.
+      //
+      // A `Map` read is not "touching a server" in the sense step 1 below
+      // means -- it performs no I/O and starts no child -- so the decisions
+      // keep their order and only the receipt's coordinate is resolved here. A
+      // `serverId` nobody admitted has no transport, and inventing one would be
+      // a receipt asserting a fact about a server that does not exist.
+      const transport = servers.get(request.serverId)?.kind ?? TOOL_TRANSPORT_UNRESOLVED;
+
       const refuse = (refusal: ToolRefusal, at: string): ToolCallOutcome => ({
         ok: false,
         refusal,
@@ -180,7 +192,7 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
           sessionId: request.sessionId,
           serverId: request.serverId,
           toolName: request.toolName,
-          transport: "STDIO",
+          transport,
           identity: request.identity,
           refusal,
           argumentBytes,
@@ -260,7 +272,7 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
           sessionId: request.sessionId,
           serverId: request.serverId,
           toolName: request.toolName,
-          transport: "STDIO",
+          transport,
           identity: request.identity,
           refusal: null,
           argumentBytes,

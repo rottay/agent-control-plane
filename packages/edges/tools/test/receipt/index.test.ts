@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { WorkerIdentityString } from "@acp/contracts";
 
+import { TOOL_TRANSPORT_UNRESOLVED } from "../../src/contract/index.js";
 import { toolReceipt, toolResultIsUnsafe } from "../../src/receipt/index.js";
 import type { ToolReceiptInput } from "../../src/receipt/index.js";
 
@@ -136,5 +137,36 @@ describe("the result guard refuses what the plane will not carry", () => {
     // The vacuity guard: a predicate that refused everything would pass every
     // case above and be useless.
     expect(toolResultIsUnsafe({ content: [{ type: "text", text: "the answer" }] })).toBe(false);
+  });
+});
+
+describe("the widened transport member survives every path (V2-B4b S4-0)", () => {
+  it("keeps exactly the same ten members when the transport is unresolved", () => {
+    // The shape pin does not move. The member's *type* widened; the member set
+    // did not, which is the whole reason this packet is cheap.
+    const receipt = toolReceipt({ ...base, transport: TOOL_TRANSPORT_UNRESOLVED });
+    expect(Object.keys(receipt).sort()).toEqual(MEMBERS);
+    expect(receipt.transport).toBe(TOOL_TRANSPORT_UNRESOLVED);
+  });
+
+  it("preserves the unresolved word through the redaction fallback", () => {
+    // The advantage of a word over a null, and the reason `:107` needed no
+    // edit: the redaction path replaces the free-text coordinates and carries
+    // the transport through untouched. A word survives that passthrough exactly
+    // as a member did.
+    const receipt = toolReceipt({
+      ...base,
+      toolName: "sk-ant-api03-" + "A".repeat(32),
+      transport: TOOL_TRANSPORT_UNRESOLVED,
+    });
+    expect(receipt.outcome).toBe("REFUSED");
+    expect(receipt.refusal).toBe("RESULT_UNSAFE");
+    expect(receipt.transport).toBe(TOOL_TRANSPORT_UNRESOLVED);
+    expect(Object.keys(receipt).sort()).toEqual(MEMBERS);
+  });
+
+  it("stays clockless and equal-by-value with the word", () => {
+    const input = { ...base, transport: TOOL_TRANSPORT_UNRESOLVED };
+    expect(toolReceipt(input)).toEqual(toolReceipt(input));
   });
 });

@@ -25,6 +25,7 @@ export {
   TOOL_SERVER_ENV_KEYS,
   TOOL_SERVER_LIFETIME_MS,
   TOOL_TRANSPORT_KINDS,
+  TOOL_TRANSPORT_UNRESOLVED,
   TOOL_WRITE_ROLES,
   holdsToolWriteAuthority,
 } from "./contract/index.js";
@@ -34,6 +35,7 @@ export type {
   ToolRefusal,
   ToolServerDescriptor,
   ToolTransportKind,
+  ToolTransportUnresolved,
   ToolWriteRole,
 } from "./contract/index.js";
 
