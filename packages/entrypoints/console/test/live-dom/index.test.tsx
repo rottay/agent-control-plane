@@ -390,6 +390,10 @@ function streamFrameData(value: unknown): string {
   return JSON.stringify(StreamFrame.parse(value));
 }
 
+/**
+ * `resumedFrom` is required and nullable since V2-B3c, so this fixture states
+ * it. `null` is a live open, which is what these frames are.
+ */
 function streamHello(headSequence: number, databaseId = STREAM_DATABASE): string {
   return streamFrameData({
     apiContractVersion: API_CONTRACT_VERSION,
@@ -397,6 +401,7 @@ function streamHello(headSequence: number, databaseId = STREAM_DATABASE): string
     kind: "hello",
     database: { id: databaseId, label: "acp.db", pathRedacted: true },
     headSequence,
+    resumedFrom: null,
   });
 }
 
@@ -780,6 +785,11 @@ describe("the live stream's privacy boundary, measured on the DOM", () => {
         kind: "hello",
         database: { id: STREAM_DATABASE, label: "/Users/someone/acp.db", pathRedacted: true },
         headSequence: 0,
+        // Stated even though this frame is deliberately hand-written and
+        // invalid: without it the client would refuse for the WRONG reason — a
+        // missing required key rather than the widened label — and this test
+        // would pass while measuring nothing.
+        resumedFrom: null,
       }),
     );
 

@@ -177,12 +177,22 @@ describe("the binding table matches the schemas it claims to bind", () => {
     // field the parity law never checked.
     const bound = PARITY_BINDINGS.eventStream.map((binding) => binding.field).sort();
     expect(bound).toEqual(shapeKeys(StreamFrame));
-    for (const field of ["kind", "channel", "item", "database", "headSequence", "reason"]) {
+    for (const field of [
+      "kind",
+      "channel",
+      "item",
+      "database",
+      "headSequence",
+      "reason",
+      // V2-B3c. A `hello` field, so it is exactly the kind of key a table bound
+      // to one arm would miss.
+      "resumedFrom",
+    ]) {
       expect({ field, bound: bound.includes(field) }).toEqual({ field, bound: true });
     }
   });
 
-  it("keeps the stream's item comparable, and only its liveness reason excepted (V2-B3a)", () => {
+  it("keeps the stream's item comparable, and only its two liveness fields excepted (V2-B3a, B3c)", () => {
     // `item` and `channel` must stay comparable: the whole claim of the packet
     // is that the stream is a transport over the same projection, and a field
     // excused from the equality is a field where the two could diverge unseen.
@@ -190,20 +200,35 @@ describe("the binding table matches the schemas it claims to bind", () => {
     expect(comparable).toContain("item");
     expect(comparable).toContain("channel");
     expect(comparable).not.toContain("reason");
+    expect(comparable).not.toContain("resumedFrom");
 
     // The exceptions are the two frozen version constants every route carries,
-    // plus exactly one field of this route's own.
+    // plus exactly two fields of this route's own. It was one until V2-B3c, and
+    // the widening is the visible cost of the design: the server cannot detect
+    // a foreign resume from a bare sequence, so it restates what it knows about
+    // THIS connection, and a fact about a connection is liveness by
+    // construction. A third would need the same argument made again.
     const excepted = declaredExceptions("eventStream").map((binding) => binding.field);
-    expect(excepted).toEqual(["apiContractVersion", "ledgerContractVersion", "reason"]);
+    expect(excepted).toEqual([
+      "apiContractVersion",
+      "ledgerContractVersion",
+      "reason",
+      "resumedFrom",
+    ]);
     expect(
       declaredExceptions("eventStream")
         .filter((binding) => binding.source !== "CONTRACT_VERSION")
         .map((binding) => binding.field),
-    ).toEqual(["reason"]);
-    // And the exception says why, like every other one in this table.
-    const reason = PARITY_BINDINGS.eventStream.find((binding) => binding.field === "reason");
-    expect(reason?.source).toBe("LIVENESS");
-    expect(reason?.because ?? "").not.toBe("");
+    ).toEqual(["reason", "resumedFrom"]);
+    // And each exception says why, like every other one in this table.
+    for (const field of ["reason", "resumedFrom"]) {
+      const binding = PARITY_BINDINGS.eventStream.find((entry) => entry.field === field);
+      expect({ field, source: binding?.source }).toEqual({ field, source: "LIVENESS" });
+      expect({ field, explained: (binding?.because ?? "") !== "" }).toEqual({
+        field,
+        explained: true,
+      });
+    }
   });
 
   it("declares every volatile field that actually appears in a response", () => {

@@ -90,15 +90,46 @@ it added nothing to `API_WRITE_ROUTES`.
 
 **Resuming.** Send `Last-Event-ID` with the sequence you last received. The
 cursor is exclusive, like every other cursor here, so the row you name is not
-repeated. Omit the header and the stream serves live from the current head
-after one `hello` frame — history is `events`' job, not the stream's.
+repeated. Omit the header and the stream serves live from the current head —
+history is `events`' job, not the stream's.
+
+**Every open begins with a `hello`, resumed or not.** It carries the ledger's
+redacted identity, its `headSequence`, and `resumedFrom`: the anchor this
+connection resumed at, or `null` if you opened live. The frame carries **no**
+`id:` line, so reading it moves no cursor. It arrives *before* any replayed row,
+which is what lets a client decide whether it is still reading the same ledger
+before it applies anything from the new one.
+
+`resumedFrom` is required and nullable rather than optional. `null` means "you
+opened live"; `0` means "you asked for the whole log"; these are different
+answers and a client must be able to tell them apart. Because the frame is
+strict, a client pinned to an older `apiContractVersion` will reject it — see
+`API_CONTRACT_VERSION`, which moved to `0.12.0` with this field.
+
+**The server does not detect a foreign resume, and cannot.** `Last-Event-ID` is
+a bare decimal sequence: only event frames carry an `id:`, and its value is that
+row's `sequence` verbatim, so the header has nowhere to put a ledger identity.
+The server's obligation is to restate identity on every open; comparing it
+against what you anchored to is **yours**. If `hello.database.id` is not the one
+you were reading, discard your cache and refetch — the rows the server is about
+to replay belong to a different file, and their sequences will collide with
+yours. `docs/architecture/0028-the-resumed-stream-identity.md` records why the
+division of labour is this way round.
 
 **The two unusable anchors, and how they differ.** An anchor that is not a
 decimal sequence is a `BAD_REQUEST` envelope, answered before the connection is
-hijacked. An anchor **ahead of the head** is a ledger this client was not
-reading — rebuilt, or a different file — and receives one `resync` frame with
-`reason: "ANCHOR_AHEAD_OF_HEAD"` and a close. It is never silently restarted
-from zero. There is no "too old": the event log is never pruned.
+hijacked. An anchor **ahead of the head** receives one `resync` frame with
+`reason: "ANCHOR_AHEAD_OF_HEAD"` and a close, with no `hello` before it, and is
+never silently restarted from zero. There is no "too old": the event log is
+never pruned.
+
+Note what that refusal does and does not cover. It fires only when your anchor
+is beyond this ledger's head — a *shorter* replacement. A rebuilt or different
+ledger whose head is at or beyond your anchor produces no refusal at all and is
+served as an ordinary resume; the `hello`'s `database.id` is the only thing that
+tells you, which is why it is now sent on resumed connections too. A server
+refusal and a client-side scope reset are deliberately different events: one
+closes the connection, the other continues against the new ledger.
 
 **Channels.** Every frame carries a `channel`, one of `lifecycle`, `execution`,
 `steps`, `state`, `progress`. The mapping from the twenty-four ledger event

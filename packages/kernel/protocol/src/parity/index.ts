@@ -322,13 +322,21 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
      * two clients can compute identically from ledger state is ledger-derived,
      * however it happens to be transported.
      *
-     * `reason` is the one exception, and it is `LIVENESS` rather than
-     * `LEDGER`: "this connection cannot serve the anchor you gave me" is a
-     * fact about *this process's* handle on the file — which ledger it opened,
-     * how far it has read — and not a fact recorded anywhere in the ledger.
-     * Binding it to `LEDGER` would claim a CLI folding the same events would
-     * arrive at the same value, and it would not, because it was never given
-     * an anchor.
+     * `reason` and `resumedFrom` are the two exceptions, and both are
+     * `LIVENESS` rather than `LEDGER`. "This connection cannot serve the anchor
+     * you gave me" and "this connection resumed at N, or opened live" are facts
+     * about *this process's* handle on the file — which ledger it opened, how
+     * far it has read, what cursor the browser happened to send — and not facts
+     * recorded anywhere in the ledger. Binding either to `LEDGER` would claim a
+     * CLI folding the same events would arrive at the same value, and it would
+     * not, because it was never given an anchor.
+     *
+     * `resumedFrom` joined at V2-B3c and the exception list widened from one
+     * field to two. That widening is the visible cost of the design and it is
+     * deliberate: the server cannot detect a foreign resume — `Last-Event-ID`
+     * is a bare sequence by L1 and by the frame union's shape — so it restates
+     * what it knows about *this connection* and lets the client compare. A
+     * restatement about a connection is liveness by construction.
      */
     eventStream: Object.freeze([
       bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
@@ -339,6 +347,11 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("database", "LEDGER"),
       bind("headSequence", "LEDGER"),
       bind("reason", "LIVENESS", "why this process's handle cannot serve the anchor; never a fact in the ledger"),
+      bind(
+        "resumedFrom",
+        "LIVENESS",
+        "the anchor this connection resumed at, or null on a live open; a fact about this process's handle, never recorded in the ledger",
+      ),
     ]),
     /**
      * The task's recorded tool calls (V2-B4b stage 3C).

@@ -56,6 +56,10 @@ function frameData(value: unknown): string {
   return JSON.stringify(StreamFrame.parse(value));
 }
 
+/**
+ * `resumedFrom` is required and nullable since V2-B3c, so every fixture states
+ * it. `null` is a live open, which is what these frames are.
+ */
 function helloFrame(databaseId: string, headSequence: number): string {
   return frameData({
     apiContractVersion: API_CONTRACT_VERSION,
@@ -63,6 +67,7 @@ function helloFrame(databaseId: string, headSequence: number): string {
     kind: "hello",
     database: { id: databaseId, label: "acp.db", pathRedacted: true },
     headSequence,
+    resumedFrom: null,
   });
 }
 

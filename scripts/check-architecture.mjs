@@ -4162,6 +4162,122 @@ const V2B3B_WRITE_SET = [
 ];
 
 /**
+ * V2-B3c — the resumed stream's identity.
+ *
+ * **What was wrong.** A resumed SSE connection was never bound to the ledger it
+ * resumed from. `#open()` returned on the `anchor.kind === "at"` branch before
+ * writing a `hello`, so `LedgerDatabaseIdentity` was never restated on exactly
+ * the connections that carry an anchor — and the client's identity comparison
+ * lives inside `acceptHello`, so the client law never ran on them either. The
+ * one refusal that existed, `ANCHOR_AHEAD_OF_HEAD`, catches only a SHORTER
+ * replacement ledger; a rebuilt or different ledger whose head is at or beyond
+ * the anchor was served as a continuous resume by both ends.
+ *
+ * **The design ruling: the server cannot detect a foreign resume, and does not
+ * try.** `Last-Event-ID` is a bare decimal sequence and cannot be widened. Two
+ * independent mechanisms hold that: the frame union gives an `id:` line only to
+ * the `event` arm, and L1 below requires the gateway stream directory to hold
+ * exactly one `"id: "` expression and requires it to be `String(sequence)`. The
+ * server is therefore handed a number and nothing else. Its obligation is to
+ * RESTATE — which ledger this is, how far it has got, which anchor this
+ * connection resumed at — on every open; the detection is the client's. ADR
+ * 0028 records that ruling and cites L1 as the reason the cursor was not
+ * enriched.
+ *
+ * **No new path-scoped law lands, and that is a declaration rather than an
+ * omission.** Every line this packet edits is already governed:
+ *
+ * - **L1** ("the stream mints no identity"), scoped to
+ *   `packages/entrypoints/gateway/src/stream/`, governs the new `hello` write.
+ *   It refuses `randomUUID`, `performance.now`, `Math.random` and `node:crypto`
+ *   in that directory, refuses any `++` or `--` anywhere in it, and pins the
+ *   single `"id: "` producer. The new frame goes through `encodeControlFrame`,
+ *   which takes no sequence and writes no `id:`, so the count stays at one and
+ *   the pinned expression is untouched.
+ * - **L4** ("the console mints no sequence"), scoped to
+ *   `packages/entrypoints/console/src/api/stream/`, governs the client arm.
+ *   `lastApplied` may only be assigned from a row's `sequence`, `headSequence`
+ *   or zero, so `lastApplied = frame.resumedFrom` would fail it. The arm
+ *   COMPARES `resumedFrom` and never assigns it — which is the correct
+ *   semantics independently, because the server replays.
+ * - **L5** ("the console opens the stream in one module") still names one
+ *   opener. No polyfill, no `fetch` transport and no second `EventSource`.
+ *
+ * A new law here would have to be about something none of those three cover,
+ * and there is nothing: the packet adds a field to a frame and a branch to a
+ * reader, both inside directories that are already fenced. Inventing a fourth
+ * law to satisfy the convention that new laws arrive with fixtures would be
+ * writing a law for the fence rather than for the code, so `PATH_SCOPED_LAWS`
+ * stays **88** and the `requireScope` call sites stay 88 with it.
+ *
+ * **The pins that do move.** `API_CONTRACT_VERSION` `0.11.0` → **`0.12.0`**:
+ * every arm of `StreamFrame` is a `z.strictObject`, so a reader pinned at
+ * `0.11.0` REJECTS a `0.12.0` `hello` on the unknown key, which is this
+ * repository's own rule for a minor. Five tests pin that literal or build a
+ * `hello` through the strict schema and move with it — three version pins in
+ * the CLI and gateway suites, two console fixtures — and they are in the
+ * write-set for that reason and no other. The parity table's stream entry gains
+ * `bind("resumedFrom", "LIVENESS", …)`, so its declared exceptions widen from
+ * one field to two: a fact about THIS process's handle on the file is not a
+ * fact a CLI folding the same events could arrive at.
+ *
+ * **What does not move.** `LEDGER_CONTRACT_VERSION` — no recorded event changes
+ * shape and no history is reinterpreted. `API_ROUTES` and `API_WRITE_ROUTES` —
+ * the route surface is untouched, so the api-reference bijection law is
+ * satisfied unchanged and that document's edit is prose. `STREAM_RESYNC_REASONS`
+ * stays at one and `StreamFrame` stays at three kinds: this packet widens no
+ * closed union, because widening `ANCHOR_AHEAD_OF_HEAD` to cover a new case is
+ * exactly what would make the two indistinguishable in operation.
+ *
+ * **Nineteen paths, and the count is a history rather than an estimate.** Eleven
+ * were briefed. The pre-audit added seven, each mandatory under a pin that
+ * exists at HEAD: the parity source and its test, the three version-pin suites,
+ * and the two console fixture suites. The nineteenth was found by the full
+ * serial run and authorized as amendment B3c-A1.
+ *
+ * That nineteenth is worth recording, because the pre-audit had explicitly
+ * cleared it. `packages/entrypoints/gateway/test/parity/index.test.ts` was
+ * checked for whether it PARSES a `hello` — it does, and a required key the
+ * server sends is satisfied — and cleared on that basis. The breakage is not a
+ * parse: the drill opens an ANCHORED connection and indexes `frames[index]`
+ * against the CLI's rows, so the control frame this packet puts in front of the
+ * replay shifts every row by one and the first index is no longer an event.
+ *
+ * The distinguishing property is "counts or indexes frames on an anchored
+ * connection", not "constructs a `hello`", and a scan for the second finds only
+ * the first kind by luck. Five drills in the sibling stream suite had the same
+ * defect and were caught; this was the one instance outside the declared set.
+ * The fix is four lines of reading — read one more frame, assert the `hello` is
+ * first, compare the rows — and no source, pin or law moves with it.
+ *
+ * The write-set law proves the staged set EQUAL to this array, so
+ * under-declaring and over-declaring fail alike; editing that file without
+ * declaring it here would have been a silent under-declaration, which is why
+ * the packet stopped for authorization rather than improvising a nineteenth.
+ */
+const V2B3C_WRITE_SET = [
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/src/stream/index.ts",
+  "packages/entrypoints/gateway/test/stream/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/console/src/api/stream/index.ts",
+  "packages/entrypoints/console/test/api/stream/index.test.ts",
+  "packages/entrypoints/console/test/hooks/use-event-stream/index.test.ts",
+  "packages/entrypoints/console/test/live-dom/index.test.tsx",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0028-the-resumed-stream-identity.md",
+  "docs/architecture/index.md",
+  "docs/api-reference.md",
+];
+
+/**
  * V2-B7S: the plane composes its own submission.
  *
  * **Twelve paths, and the twelfth is `pnpm-lock.yaml`.** The packet was mapped
@@ -5715,6 +5831,7 @@ const WRITE_SET = [
   ...V2B25_WRITE_SET,
   ...V2B3A_WRITE_SET,
   ...V2B3B_WRITE_SET,
+  ...V2B3C_WRITE_SET,
   ...V2B7S_WRITE_SET,
   ...V2B7T_WRITE_SET,
   ...V2B7R_WRITE_SET,

@@ -312,11 +312,14 @@ describe("usage", () => {
       // connection that stays open and expects to be resumed by header. Moved
       // again to 0.10.0 at V2-B4b stage 3C, on that same reason for the third
       // time: one write route now makes the server start a child process and
-      // speak a protocol to it. Asserted as a literal on purpose: the CLI's job
-      // here is to report the number a reader can pin against, and comparing it
-      // to the constant it prints would assert only that the CLI can echo
-      // itself.
-      apiContractVersion: "0.11.0",
+      // speak a protocol to it. To 0.11.0 at V2 X1b for one new error code, and
+      // to 0.12.0 at V2-B3c for one new required field on the stream's `hello`
+      // frame — every arm is a `z.strictObject`, so a reader pinned at 0.11.0
+      // rejects the frame rather than ignoring the key, which is what makes it
+      // a minor. Asserted as a literal on purpose: the CLI's job here is to
+      // report the number a reader can pin against, and comparing it to the
+      // constant it prints would assert only that the CLI can echo itself.
+      apiContractVersion: "0.12.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });

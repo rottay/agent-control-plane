@@ -502,6 +502,11 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
       // First connection. The tail starts at the head: history is the paged
       // route's job, and a live section that backfilled an entire ledger on
       // open would be doing that job badly and slowly.
+      //
+      // `resumedFrom` is not consulted here and cannot be non-null: an anchor
+      // exists only because this `EventSource` instance was handed an `id:`,
+      // and a scope that has never been anchored has never had one. A reload
+      // builds a new scope and a new `EventSource`, so it opens live.
       resetScope(frame.database.id, frame.headSequence);
       return;
     }
@@ -509,9 +514,58 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
       // A different ledger behind the same URL. The server cannot enforce this
       // — `EventSource` sends no custom header, so it has nothing to compare —
       // which makes it a client law, and this is where the client keeps it.
+      //
+      // Until V2-B3c this arm was unreachable on exactly the connections that
+      // needed it: a resumed connection received no `hello` at all, so the
+      // client law never ran on the one case it exists for. The server now
+      // restates identity on every open, and this arm is what that buys.
+      //
+      // `resetScope` to the FOREIGN head is what discards the old ledger's
+      // rows, and it also disposes of the replay that is about to arrive: the
+      // server will replay the foreign ledger from the anchor to its head, and
+      // every one of those rows carries a sequence at or below the head this
+      // scope just adopted, so `acceptEvent`'s duplicate arm drops each of
+      // them and counts it. No foreign row is applied to the old scope, and
+      // none is applied to the new one either — the view refetches, because
+      // rows read from a ledger this one is not are not rows about this one.
       resetScope(frame.database.id, frame.headSequence);
       options.onDatabaseChanged?.();
       emit();
+      return;
+    }
+    if (frame.resumedFrom !== null) {
+      // The identity matches and this connection carries an anchor (V2-B3c).
+      //
+      // The server is about to replay from `resumedFrom` forward, so backfill
+      // is not merely unnecessary here — it would fetch exactly the rows about
+      // to arrive and duplicate them at the seam. That is why this arm returns
+      // rather than falling through to the `headSequence > lastApplied` arm
+      // below, which is written for the other case: a reconnection the browser
+      // made with no anchor to send.
+      //
+      // The halt is one-directional, and the asymmetry is the point.
+      // `Last-Event-ID` is the last id the browser RECEIVED; `lastApplied` is
+      // the last one this scope APPLIED. With a gap open at the moment the
+      // connection dropped, held frames make `resumedFrom > lastApplied`
+      // perfectly legitimate — the gap machinery is already running and the
+      // replay will close it. Only the other direction is impossible: an anchor
+      // BEHIND what this scope has already applied means the browser is
+      // resuming from a position this scope has moved past, and continuing
+      // would replay rows it has already rendered.
+      //
+      // `resumedFrom` is compared and never assigned. The cursor has one set of
+      // legal sources — a row's `sequence`, `headSequence`, or zero — and L4
+      // pins them; assigning an anchor to it would be the console minting a
+      // position from a frame field rather than from a row it applied.
+      if (frame.resumedFrom < lastApplied) {
+        halt(
+          "This connection resumed at sequence " +
+            String(frame.resumedFrom) +
+            ", behind the " +
+            String(lastApplied) +
+            " this view has already applied. The live tail has stopped; reload to re-anchor.",
+        );
+      }
       return;
     }
     if (frame.headSequence < lastApplied) {
@@ -527,7 +581,8 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
     if (frame.headSequence > lastApplied) {
       // A reconnection the browser made without an anchor — it had no id to
       // send, because this scope had never been given an event frame. The rows
-      // in between are missing and are fetched, not skipped.
+      // in between are missing and are fetched, not skipped. Reachable only
+      // when `resumedFrom` is null, which the arm above guarantees.
       backfillTarget = Math.max(backfillTarget, frame.headSequence);
       startBackfill();
     }

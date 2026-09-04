@@ -74,13 +74,26 @@ function frameData(value: unknown): string {
   return JSON.stringify(StreamFrame.parse(value));
 }
 
-function helloFrame(databaseId: string, headSequence: number): string {
+/**
+ * A `hello`, live by default and resumed when a caller says so (V2-B3c).
+ *
+ * `resumedFrom` is required and nullable, so every fixture states it and the
+ * default is `null` — a live open, which is what every pre-B3c drill in this
+ * file is exercising. The parameter is what lets the new drills build the other
+ * kind without a second helper that could drift from this one.
+ */
+function helloFrame(
+  databaseId: string,
+  headSequence: number,
+  resumedFrom: number | null = null,
+): string {
   return frameData({
     apiContractVersion: API_CONTRACT_VERSION,
     ledgerContractVersion: LEDGER_CONTRACT_VERSION,
     kind: "hello",
     database: { id: databaseId, label: "acp.db", pathRedacted: true },
     headSequence,
+    resumedFrom,
   });
 }
 
@@ -617,6 +630,160 @@ describe("ledger identity", () => {
 
     expect(store.getSnapshot().state).toBe("degraded");
     expect(store.getSnapshot().detail).toContain("moved backwards");
+  });
+});
+
+describe("a resumed connection, and which ledger it resumed into (V2-B3c)", () => {
+  /**
+   * The client law, on the connections it was written for.
+   *
+   * The comparison in `acceptHello` always existed and always said the right
+   * thing; until B3c it could not run on a resumed connection, because a
+   * resumed connection received no `hello` at all. The server now restates
+   * identity on every open — it cannot do better, because `Last-Event-ID` is a
+   * bare sequence and it has nothing to compare — so these are the drills for
+   * the half that was unreachable.
+   */
+
+  it("resets the scope and drops every replayed foreign row, applying none of them", () => {
+    // Test 1. The second ledger is LONGER than the anchor, which is what makes
+    // this the case the old design could not see: `ANCHOR_AHEAD_OF_HEAD` only
+    // ever caught a shorter replacement, so a rebuilt-and-longer ledger was
+    // served as a continuous resume by both ends.
+    let refetched = 0;
+    const { store, cursors } = storeWith(() => page([]), {
+      onDatabaseChanged: () => {
+        refetched += 1;
+      },
+    });
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    for (const sequence of [1, 2, 3]) store.acceptFrame(eventFrame(item(sequence)));
+    expect(sequences(store)).toEqual([1, 2, 3]);
+    const droppedBefore = store.getSnapshot().droppedFrames;
+
+    // The browser reconnects with `Last-Event-ID: 3`. A DIFFERENT ledger is
+    // behind the same URL, and its head is 40 — well ahead of the anchor.
+    store.acceptFrame(helloFrame(DATABASE_B, 40, 3));
+
+    const reset = store.getSnapshot();
+    expect(reset.databaseId).toBe(DATABASE_B);
+    expect(reset.items).toHaveLength(0);
+    expect(reset.lastApplied).toBe(40);
+    expect(refetched).toBe(1);
+
+    // And now the replay the server is about to send: the foreign ledger's rows
+    // from the anchor forward. Every one carries a sequence at or below the
+    // head this scope just adopted, so the duplicate arm discards each of them.
+    // Asserting the DROP rather than only the reset is the point — otherwise
+    // "no foreign row was applied" would be implied rather than observed.
+    const replayed = [4, 5, 6, 7];
+    for (const sequence of replayed) store.acceptFrame(eventFrame(item(sequence)));
+
+    const after = store.getSnapshot();
+    expect(after.droppedFrames).toBe(droppedBefore + replayed.length);
+    expect(after.items).toHaveLength(0);
+    expect(sequences(store)).toEqual([]);
+    // Nothing was fetched: the view refetches, because rows read from a ledger
+    // this one is not are not rows about this one.
+    expect(cursors).toEqual([]);
+    expect(after.state).not.toBe("degraded");
+  });
+
+  it("performs no backfill when the identity matches and the connection resumed", () => {
+    // Test 3. The old anchored arm treated `headSequence > lastApplied` as
+    // "rows are missing, fetch them". On a resumed connection that would fetch
+    // exactly the rows the server is about to replay and duplicate them at the
+    // seam, which is why this arm returns instead of falling through.
+    const { store, cursors } = storeWith(() => page([item(4), item(5)]));
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    for (const sequence of [1, 2, 3]) store.acceptFrame(eventFrame(item(sequence)));
+
+    store.acceptFrame(helloFrame(DATABASE_A, 9, 3));
+
+    // No page was asked for, even though the head is six ahead of what this
+    // scope has applied.
+    expect(cursors).toEqual([]);
+    expect(store.getSnapshot().lastApplied).toBe(3);
+
+    // And the replay lands normally, in order, exactly once.
+    for (const sequence of [4, 5, 6]) store.acceptFrame(eventFrame(item(sequence)));
+    expect(sequences(store)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(cursors).toEqual([]);
+    expect(store.getSnapshot().state).toBe("live");
+  });
+
+  it("still backfills when the identity matches and the connection opened live", () => {
+    // Test 4. The new arm must not have swallowed the old one: a reconnection
+    // the browser made with no id to send still leaves a hole, and the rows in
+    // between are fetched rather than skipped.
+    const { store, cursors } = storeWith(() => page([item(2), item(3)]));
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    store.acceptFrame(eventFrame(item(1)));
+
+    store.acceptFrame(helloFrame(DATABASE_A, 3, null));
+
+    expect(cursors).toEqual([1]);
+    expect(store.getSnapshot().state).toBe("recovering");
+  });
+
+  it("halts when the anchor is BEHIND what this view has already applied", () => {
+    // Test 5, first direction. An anchor behind `lastApplied` means the browser
+    // is resuming from a position this scope has moved past, so continuing
+    // would replay rows it has already rendered.
+    const { store } = storeWith(() => page([]));
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    for (const sequence of [1, 2, 3]) store.acceptFrame(eventFrame(item(sequence)));
+
+    store.acceptFrame(helloFrame(DATABASE_A, 9, 1));
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.state).toBe("degraded");
+    expect(snapshot.halted).toBe(true);
+    expect(snapshot.detail).toContain("resumed at sequence 1");
+    expect(snapshot.detail).toContain("reload");
+  });
+
+  it("neither halts nor backfills when the anchor is AHEAD of what was applied", () => {
+    // Test 5, second direction, and the reason the halt is one-directional.
+    // `Last-Event-ID` is the last id the browser RECEIVED; `lastApplied` is the
+    // last one this scope APPLIED. With a gap open at the moment the connection
+    // dropped, held frames make `resumedFrom > lastApplied` perfectly
+    // legitimate — the gap machinery is already running and the replay closes
+    // it. A symmetric equality check would halt on an ordinary reconnect.
+    const { store, cursors } = storeWith(() => page([]));
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    store.acceptFrame(eventFrame(item(1)));
+    // A gap: 3 arrives without 2, so it is held rather than applied.
+    store.acceptFrame(eventFrame(item(3)));
+    expect(store.getSnapshot().lastApplied).toBe(1);
+    const cursorsBefore = [...cursors];
+
+    // The browser received id 3 before the drop, so it resumes from 3 while
+    // this scope has applied only 1.
+    store.acceptFrame(helloFrame(DATABASE_A, 9, 3));
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.halted).toBe(false);
+    expect(snapshot.state).not.toBe("degraded");
+    expect(snapshot.lastApplied).toBe(1);
+    // No NEW page was requested by the hello itself: the gap's own recovery is
+    // what was already running, and the arm added no second one.
+    expect(cursors).toEqual(cursorsBefore);
+  });
+
+  it("never assigns the anchor to the cursor, whichever direction it points", () => {
+    // The cursor has one set of legal sources — a row's `sequence`,
+    // `headSequence`, or zero — and fence law L4 pins them in the source. This
+    // is the behavioural half: `resumedFrom` is compared and never becomes the
+    // position, so a server that sent a wrong anchor could not move this view.
+    const { store } = storeWith(() => page([]));
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    for (const sequence of [1, 2]) store.acceptFrame(eventFrame(item(sequence)));
+
+    store.acceptFrame(helloFrame(DATABASE_A, 50, 2));
+
+    expect(store.getSnapshot().lastApplied).toBe(2);
+    expect(store.getSnapshot().lastApplied).not.toBe(50);
   });
 });
 

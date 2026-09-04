@@ -1872,8 +1872,13 @@ describe("the stream frame", () => {
 
   it("accepts the three kinds it declares", () => {
     expect(
-      StreamFrame.safeParse({ ...VERSIONS, kind: "hello", database: DATABASE, headSequence: 7 })
-        .success,
+      StreamFrame.safeParse({
+        ...VERSIONS,
+        kind: "hello",
+        database: DATABASE,
+        headSequence: 7,
+        resumedFrom: null,
+      }).success,
     ).toBe(true);
     expect(
       StreamFrame.safeParse({
@@ -1891,9 +1896,65 @@ describe("the stream frame", () => {
 
   it("admits a hello against an empty ledger, whose head is zero", () => {
     expect(
-      StreamFrame.safeParse({ ...VERSIONS, kind: "hello", database: DATABASE, headSequence: 0 })
-        .success,
+      StreamFrame.safeParse({
+        ...VERSIONS,
+        kind: "hello",
+        database: DATABASE,
+        headSequence: 0,
+        resumedFrom: null,
+      }).success,
     ).toBe(true);
+  });
+
+  it("requires resumedFrom on hello, and lets it be null (V2-B3c)", () => {
+    // Required and nullable, not optional, and the distinction is the whole
+    // point: a missing key and a live open would otherwise be the same wire
+    // shape, so a client could not tell "this server opened me live" from "this
+    // server is older than the field". Required makes the answer always
+    // present, which is also what forces the minor version bump — every arm is
+    // a `z.strictObject`, so a reader at `0.11.0` rejects the frame outright.
+    const base = { ...VERSIONS, kind: "hello", database: DATABASE, headSequence: 7 };
+
+    expect(StreamFrame.safeParse({ ...base, resumedFrom: null }).success).toBe(true);
+    expect(StreamFrame.safeParse({ ...base, resumedFrom: 0 }).success).toBe(true);
+    expect(StreamFrame.safeParse({ ...base, resumedFrom: 7 }).success).toBe(true);
+
+    // Omitted is refused. Without this the field would be optional in practice
+    // whatever the type said.
+    expect(StreamFrame.safeParse(base).success).toBe(false);
+
+    // And it is a sequence, so it obeys the same grammar every other sequence
+    // on this plane does.
+    for (const bad of [-1, 1.5, "3", true, {}]) {
+      expect({ bad, ok: StreamFrame.safeParse({ ...base, resumedFrom: bad }).success }).toEqual({
+        bad,
+        ok: false,
+      });
+    }
+  });
+
+  it("keeps resumedFrom off the arms that are not hello (V2-B3c)", () => {
+    // The field is a fact about the connection's anchor, and only the opening
+    // frame states it. An `event` or `resync` carrying one would be a second
+    // place for a client to read a position from, which is the thing this
+    // plane's one-cursor rule exists to prevent.
+    expect(
+      StreamFrame.safeParse({
+        ...VERSIONS,
+        kind: "event",
+        channel: "lifecycle",
+        item: TIMELINE_ITEM,
+        resumedFrom: 3,
+      }).success,
+    ).toBe(false);
+    expect(
+      StreamFrame.safeParse({
+        ...VERSIONS,
+        kind: "resync",
+        reason: "ANCHOR_AHEAD_OF_HEAD",
+        resumedFrom: 3,
+      }).success,
+    ).toBe(false);
   });
 
   it("refuses a kind it does not declare", () => {
@@ -1928,6 +1989,10 @@ describe("the stream frame", () => {
         kind: "hello",
         database: DATABASE,
         headSequence: 1,
+        resumedFrom: null,
+        // The foreign key. `resumedFrom` is stated above it so this frame is
+        // refused for the key it does not belong to rather than for one it is
+        // missing — otherwise the assertion would pass while measuring nothing.
         channel: "lifecycle",
       }).success,
     ).toBe(false);
@@ -2045,19 +2110,26 @@ describe("the tool call's wire contract", () => {
     expect(Object.keys(ToolCallExecuteResponse.shape)).toContain("content");
   });
 
-  it("names the twelfth error code, and the version that came with it", () => {
+  it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.11.0");
+    expect(API_CONTRACT_VERSION).toBe("0.12.0");
   });
 
-  it("names the thirteenth error code, and the version that came with it", () => {
+  it("names the thirteenth error code, and the version the surface now stands at", () => {
     // V2 X1b. A client can branch on a code, so a code a reader at `0.10.0` has
     // never seen is a shape it did not know about — the rule this file's own
     // version docblock states, and the one `WRITE_REFUSED`, `STREAM_CAPACITY`
     // and `TOOL_SERVERS_UNCONFIGURED` each set. Hence a minor, not a patch.
     expect(API_ERROR_CODES).toContain("CLAIM_HELD");
     expect(API_ERROR_CODES).toHaveLength(13);
-    expect(API_CONTRACT_VERSION).toBe("0.11.0");
+    // The literal is the version the surface stands at TODAY, not the one this
+    // code arrived with, and the two titles were corrected at V2-B3c to stop
+    // saying otherwise. `CLAIM_HELD` landed at `0.11.0`; the constant has since
+    // moved to `0.12.0` for the stream's `resumedFrom`, and an error-code count
+    // that did not move with it is exactly the point — the version tracks the
+    // whole surface, not one list. The number stays a literal so it is asserted
+    // rather than echoed.
+    expect(API_CONTRACT_VERSION).toBe("0.12.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);

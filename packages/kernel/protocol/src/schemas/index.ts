@@ -1282,6 +1282,13 @@ export type StreamQuery = z.infer<typeof StreamQuery>;
  * sequence — which is what "one sequence authority" means once it stops being
  * a sentence and becomes a shape.
  *
+ * **That law is also why `hello` carries `resumedFrom` (V2-B3c).** Because the
+ * cursor is a bare sequence, the server is handed a number and nothing else: it
+ * cannot tell a resume of *this* ledger from a resume of a different one, and
+ * enriching the cursor to let it would break the shape above. So the server
+ * does not detect — it restates, on every open, and the client compares. The
+ * `hello` frame carries no `id:`, so restating costs no cursor movement.
+ *
  * **The privacy boundary is `TimelineItem` and nothing else.** No transcript,
  * no prompt, no tool argument, no credential, no absolute path and no provider
  * payload crosses, because none of them has a field here — the item carries
@@ -1295,12 +1302,35 @@ const streamFrameVersions = {
 
 export const StreamFrame = z
   .discriminatedUnion("kind", [
-    /** Sent once, on a connection that carries no anchor: here is the ledger, here is its head. */
+    /**
+     * Which ledger this is and how far it has got — sent on **every** open
+     * (V2-B3c).
+     *
+     * It used to be sent only on a connection that carried no anchor, and that
+     * was the defect: a resumed connection is exactly the one whose ledger
+     * identity a client cannot otherwise learn, because `Last-Event-ID` is a
+     * bare decimal sequence and has nowhere to put one. So the server restates
+     * identity on every open, and the client decides.
+     *
+     * `resumedFrom` is the anchor this connection resumed at, or `null` on a
+     * live open. It is **required and nullable** rather than optional: a
+     * missing key and a live open would otherwise be the same wire shape, and a
+     * client would have to guess which of the two it was looking at. Required
+     * makes the answer always present, and `z.strictObject` makes a `0.11.0`
+     * reader reject the frame outright rather than silently treat a resume as a
+     * live open — which is why the API version moves minor rather than patch.
+     *
+     * It is a fact about **this process's handle**, never a ledger fact: it is
+     * the number this connection was handed, and a CLI folding the same events
+     * would never arrive at it. The parity table binds it to `LIVENESS` for
+     * exactly that reason, beside `reason`.
+     */
     z.strictObject({
       ...streamFrameVersions,
       kind: z.literal("hello"),
       database: LedgerDatabaseIdentity,
       headSequence: SequenceOrZero,
+      resumedFrom: SequenceOrZero.nullable(),
     }),
     /** One ledger row. The only arm that is written with an `id:` line. */
     z.strictObject({

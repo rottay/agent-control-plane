@@ -269,6 +269,13 @@ class StreamConnection {
    * zero**: a client holding a position this ledger has never reached is
    * reading a different file or a rebuilt one, and replaying the whole history
    * at it would present a fresh stream as a resumed one.
+   *
+   * Both branches write a `hello` (V2-B3c). `ANCHOR_AHEAD_OF_HEAD` only ever
+   * caught a *shorter* replacement ledger; a rebuilt or different ledger whose
+   * head is at or beyond the anchor was served as a continuous resume by both
+   * ends. Restating identity on every open is what closes that, and it is the
+   * server's whole obligation here — the detection is the client's, because a
+   * bare sequence is all this side is given.
    */
   async #open(): Promise<boolean> {
     const { anchor, database } = this.#context;
@@ -288,6 +295,35 @@ class StreamConnection {
         );
         return false;
       }
+      // Restate which ledger this is, BEFORE any replayed row (V2-B3c).
+      //
+      // This branch used to return here having said nothing about identity,
+      // and that was the hole: a resumed connection is exactly the one whose
+      // ledger a client cannot otherwise learn. `Last-Event-ID` is a bare
+      // decimal sequence — L1 pins the only `id:` producer to
+      // `String(sequence)`, and only the `event` arm gets one — so the server
+      // is handed a number and cannot tell a resume of this ledger from a
+      // resume of a different one. It does not try. It restates what it knows
+      // about THIS connection and lets the client compare, which is the whole
+      // design and is recorded in ADR 0028.
+      //
+      // Before the replay rather than after, because a client that learned the
+      // ledger had changed only after applying rows from it would have already
+      // mixed two ledgers in one scope. `encodeControlFrame` takes no sequence
+      // and writes no `id:`, so this frame structurally cannot advance the
+      // browser's cursor: restating identity costs nothing at the seam.
+      await this.#write(
+        encodeControlFrame(
+          StreamFrame.parse({
+            apiContractVersion: API_CONTRACT_VERSION,
+            ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+            kind: "hello",
+            database,
+            headSequence,
+            resumedFrom: anchor.sequence,
+          }),
+        ),
+      );
       // Resume exactly where the client says it got to. The catch-up is the
       // ordinary tail loop with a cursor behind the head, so there is one
       // implementation of "send the rows after this one" rather than two that
@@ -296,6 +332,9 @@ class StreamConnection {
       return true;
     }
 
+    // The live open. `resumedFrom` is `null` and not absent: the field is
+    // required, so "opened live" is a value a client reads rather than a key it
+    // fails to find.
     await this.#write(
       encodeControlFrame(
         StreamFrame.parse({
@@ -304,6 +343,7 @@ class StreamConnection {
           kind: "hello",
           database,
           headSequence,
+          resumedFrom: null,
         }),
       ),
     );

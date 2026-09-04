@@ -379,6 +379,30 @@ function parsedFrames(client: SseClient): StreamFrame[] {
   return client.frames().map((frame) => StreamFrame.parse(JSON.parse(frame.data)));
 }
 
+/**
+ * The event frames only, and the ids they carry (V2-B3c).
+ *
+ * Since B3c an anchored connection opens with a `hello` like a live one does,
+ * so "the frames" and "the rows" stopped being the same list. These two helpers
+ * are what keep the reconnect and parity drills measuring rows: they were
+ * counting frames, which was the same number until a control frame appeared in
+ * front of the replay.
+ *
+ * `id` is read from the raw SSE frame rather than from the parsed body, because
+ * the claim under test is about the wire — that the `id:` line a browser will
+ * resume from is the row's own sequence.
+ */
+function eventFrames(client: SseClient): StreamFrame[] {
+  return parsedFrames(client).filter((frame) => frame.kind === "event");
+}
+
+function eventIds(client: SseClient): number[] {
+  return client
+    .frames()
+    .filter((frame) => frame.id !== null && frame.id !== "")
+    .map((frame) => Number(frame.id));
+}
+
 // ---------------------------------------------------------------------------
 // The anchor grammar
 // ---------------------------------------------------------------------------
@@ -487,6 +511,7 @@ describe("only a ledger row carries an id, and the id is its sequence", () => {
           pathRedacted: true,
         },
         headSequence: 12,
+        resumedFrom: null,
       }),
     );
     const resync = encodeControlFrame(
@@ -546,22 +571,40 @@ describe("a reconnect loses nothing and repeats nothing", () => {
     // killed part-way through, at a sequence it has genuinely received.
     const first = await openStream(running.port, STREAM_PATH, { "last-event-id": "0" });
     expect(first.status).toBe(200);
-    await first.waitForFrames(5);
-    const firstIds = first.frames().map((frame) => Number(frame.id));
+    await first.waitUntil(() => eventIds(first).length >= 5, "five rows");
+    const firstIds = eventIds(first);
     first.abort();
 
     const resumeFrom = firstIds[firstIds.length - 1];
     expect(resumeFrom).toBeGreaterThan(0);
 
     // Second connection: resumed from exactly where the first one got to.
+    //
+    // Since B3c this connection opens with a `hello` before the replay, which
+    // is exactly the frame the client needs in order to know it is still
+    // reading the same ledger. It carries no `id:`, so it moves no cursor and
+    // the coverage claim below is measured on rows rather than on frames.
     const second = await openStream(running.port, STREAM_PATH, {
       "last-event-id": String(resumeFrom),
     });
+    // Both conditions, and the first one is not redundant. The first
+    // connection waits for five rows but may well have drained the whole log
+    // before it was aborted, in which case `headSequence - resumeFrom` is ZERO
+    // and a row-count predicate is satisfied before this connection has
+    // received anything at all. Waiting for the `hello` too is what makes the
+    // assertion below deterministic: it is the one frame every open produces,
+    // whatever the anchor turned out to be.
     await second.waitUntil(
-      () => second.frames().length >= headSequence - (resumeFrom ?? 0),
-      "the tail after the anchor",
+      () =>
+        parsedFrames(second).length >= 1 &&
+        eventIds(second).length >= headSequence - (resumeFrom ?? 0),
+      "the hello and the tail after the anchor",
     );
-    const secondIds = second.frames().map((frame) => Number(frame.id));
+    const opening = parsedFrames(second)[0];
+    expect(opening?.kind).toBe("hello");
+    if (opening?.kind !== "hello") throw new Error("expected a hello");
+    expect(opening.resumedFrom).toBe(resumeFrom);
+    const secondIds = eventIds(second);
     second.abort();
 
     // The oracle is the ledger, not a fixture: what the two connections saw
@@ -579,8 +622,12 @@ describe("a reconnect loses nothing and repeats nothing", () => {
     const { path } = seed({ perTask: 6 });
     const running = await serve(path);
     const client = await openStream(running.port, STREAM_PATH, { "last-event-id": "3" });
-    await client.waitForFrames(3);
-    const ids = client.frames().map((frame) => Number(frame.id));
+    await client.waitUntil(() => eventIds(client).length >= 3, "three rows after the anchor");
+    const ids = eventIds(client);
+    // The `hello` precedes the replay and carries no id, so the first ROW is
+    // still the one after the anchor.
+    const opening = parsedFrames(client)[0];
+    expect(opening?.kind).toBe("hello");
     client.abort();
     expect(ids[0]).toBe(4);
     expect(ids).not.toContain(3);
@@ -597,6 +644,10 @@ describe("a reconnect loses nothing and repeats nothing", () => {
     expect(hello?.kind).toBe("hello");
     if (hello?.kind !== "hello") throw new Error("expected a hello");
     expect(hello.headSequence).toBe(headSequence);
+    // A live open says so with a value rather than with a missing key
+    // (V2-B3c). `null` and "an older server that does not tell you" would
+    // otherwise be the same wire shape.
+    expect(hello.resumedFrom).toBeNull();
     // The path never crosses: the browser is told which ledger by a digest and
     // a bare label, exactly as every other route tells it.
     expect(hello.database.pathRedacted).toBe(true);
@@ -647,6 +698,98 @@ describe("a reconnect loses nothing and repeats nothing", () => {
 });
 
 // ---------------------------------------------------------------------------
+// V2-B3c: identity is restated on every open, including a resumed one
+// ---------------------------------------------------------------------------
+
+/**
+ * The server's whole obligation under B3c, and the boundary of it.
+ *
+ * It cannot detect a foreign resume. `Last-Event-ID` is a bare decimal
+ * sequence — the frame union gives an `id:` line only to the `event` arm, and
+ * fence law L1 pins the single producer to `String(sequence)` — so this side is
+ * handed a number and nothing else. Enriching the cursor to carry a ledger
+ * identity would break the shape those two laws exist to hold.
+ *
+ * So the server restates rather than detects: which ledger this is, how far it
+ * has got, and which anchor this connection resumed at. The comparison is the
+ * client's, and the console suite is where it is drilled. What is asserted here
+ * is that the client is given what it needs to make it, in time to matter.
+ */
+describe("a resumed connection is told which ledger it resumed into", () => {
+  it("writes a hello carrying the anchor, before any replayed row", async () => {
+    const { path, headSequence } = seed({ perTask: 6 });
+    const running = await serve(path);
+    const client = await openStream(running.port, STREAM_PATH, { "last-event-id": "2" });
+    expect(client.status).toBe(200);
+    await client.waitUntil(() => eventIds(client).length >= 2, "rows after the anchor");
+    const frames = parsedFrames(client);
+    const wire = client.frames();
+    client.abort();
+
+    // First, before anything replayed. Ordering is the assertion: a client that
+    // learned the ledger had changed only after applying rows from it would
+    // have already mixed two ledgers in one scope.
+    const hello = frames[0];
+    expect(hello?.kind).toBe("hello");
+    if (hello?.kind !== "hello") throw new Error("expected a hello");
+    expect(hello.resumedFrom).toBe(2);
+    expect(hello.headSequence).toBe(headSequence);
+    // The identity itself, redacted exactly as every other route sends it.
+    expect(hello.database.pathRedacted).toBe(true);
+    expect(hello.database.id).not.toBe("");
+
+    // And it carries no `id:`, so restating identity moves no cursor. This is
+    // the structural half of the design: the frame cannot advance a browser's
+    // resume position even by accident.
+    expect(wire[0]?.id).toBeNull();
+    // Every row still arrives after it, numbered by the ledger.
+    expect(eventIds(client)[0]).toBe(3);
+  });
+
+  it("says resumedFrom zero for the anchor that means the whole log", async () => {
+    // Zero is a legitimate anchor — "replay everything" — and it must be
+    // distinguishable from a live open, which is `null`. A field that collapsed
+    // the two would leave a client unable to tell a full replay from a tail.
+    const { path } = seed({ perTask: 3 });
+    const running = await serve(path);
+    const client = await openStream(running.port, STREAM_PATH, { "last-event-id": "0" });
+    await client.waitUntil(() => eventIds(client).length >= 1, "a row");
+    const hello = parsedFrames(client)[0];
+    client.abort();
+
+    expect(hello?.kind).toBe("hello");
+    if (hello?.kind !== "hello") throw new Error("expected a hello");
+    expect(hello.resumedFrom).toBe(0);
+    expect(hello.resumedFrom).not.toBeNull();
+  });
+
+  it("carries no credential- or transcript-shaped material on the resumed hello either", async () => {
+    // The privacy sweep, extended to the frame this packet adds rather than
+    // duplicated beside it. A new frame on a new code path is exactly where a
+    // redaction gap would open unobserved.
+    const { path } = seed({
+      perTask: 4,
+      payload: { accountId: "acct-a", tokens: 12, note: "a bounded operator note" },
+    });
+    const running = await serve(path);
+    const client = await openStream(running.port, STREAM_PATH, { "last-event-id": "1" });
+    await client.waitUntil(() => eventIds(client).length >= 1, "a row");
+    const hello = parsedFrames(client)[0];
+    const raw = client.raw();
+    client.abort();
+
+    expect(hello?.kind).toBe("hello");
+    if (hello?.kind !== "hello") throw new Error("expected a hello");
+    for (const projection of [hello, canonicalize(hello)]) {
+      expect(hasObservationPrivacyViolation(projection)).toBe(false);
+    }
+    // No absolute path reached the wire under the new field's cover.
+    expect(raw).not.toContain("/Users/");
+    expect(raw).not.toContain(".sqlite3");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The two unusable anchors, answered rather than papered over
 // ---------------------------------------------------------------------------
 
@@ -659,6 +802,13 @@ describe("an anchor this ledger has never reached", () => {
     });
     expect(client.status).toBe(200);
     await client.waitForEnd();
+
+    // The refusal comes alone (V2-B3c). An anchor ahead of the head is
+    // answered before identity is restated, so a client can still tell a
+    // server REFUSAL from the client-side scope reset a foreign `hello`
+    // triggers — one arrives as a `resync` and closes, the other as a `hello`
+    // followed by a replay. A `hello` here would blur the two.
+    expect(parsedFrames(client).map((frame) => frame.kind)).toEqual(["resync"]);
 
     const frames = parsedFrames(client);
     expect(frames).toHaveLength(1);
@@ -716,10 +866,10 @@ describe("the stream and the paged route tell the same story", () => {
 
     const client = await openStream(running.port, STREAM_PATH, { "last-event-id": "0" });
     await client.waitUntil(
-      () => client.frames().length >= sequencesInLedger(path).length,
+      () => eventFrames(client).length >= sequencesInLedger(path).length,
       "every row",
     );
-    const streamed = parsedFrames(client);
+    const streamed = eventFrames(client);
     client.abort();
 
     const { body } = await getJson(running.port, "/api/v1/events?limit=200");
@@ -741,9 +891,9 @@ describe("the stream and the paged route tell the same story", () => {
     const { path } = seed();
     const running = await serve(path);
     const client = await openStream(running.port, STREAM_PATH, { "last-event-id": "0" });
-    await client.waitUntil(() => client.frames().length >= EVENT_TYPES.length, "every type");
+    await client.waitUntil(() => eventFrames(client).length >= EVENT_TYPES.length, "every type");
     const channels = new Set(
-      parsedFrames(client).map((frame) => (frame.kind === "event" ? frame.channel : null)),
+      eventFrames(client).map((frame) => (frame.kind === "event" ? frame.channel : null)),
     );
     client.abort();
     expect([...channels].sort()).toEqual([
@@ -773,9 +923,9 @@ describe("filters", () => {
       { "last-event-id": "0" },
     );
     const expected = sequencesInLedger(path, target);
-    await filtered.waitUntil(() => filtered.frames().length >= expected.length, "the filtered rows");
-    const ids = filtered.frames().map((frame) => Number(frame.id));
-    const frames = parsedFrames(filtered);
+    await filtered.waitUntil(() => eventIds(filtered).length >= expected.length, "the filtered rows");
+    const ids = eventIds(filtered);
+    const frames = eventFrames(filtered);
     filtered.abort();
 
     // The rows are that task's, and the ids are the ledger's own sequences —

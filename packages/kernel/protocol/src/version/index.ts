@@ -80,8 +80,27 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * door. What changed is that a tool call can now lose a race to a different
  * operating-system process and be told so, rather than both processes running
  * the tool and the ledger absorbing the second receipt.
+ *
+ * `0.11.0` → `0.12.0` at V2-B3c: the stream's `hello` frame gains one required
+ * nullable field, `resumedFrom`, and is now sent on **every** open rather than
+ * only on an unanchored one.
+ *
+ * Minor and not patch, and the reason is mechanical rather than a judgement
+ * call: every arm of `StreamFrame` is a `z.strictObject`, so a reader pinned at
+ * `0.11.0` parsing a `0.12.0` `hello` **rejects it** on the unknown key. That is
+ * a shape a `0.11.0` reader has never seen, which is this file's own rule for
+ * the minor. Making the key optional to spare that reader was rejected: it
+ * would make "live open" and "an older server that does not say" the same wire
+ * shape, and the whole point of the field is that a client can tell which
+ * connection it is on without guessing.
+ *
+ * The route surface does not move — `API_ROUTES` and `API_WRITE_ROUTES` are
+ * untouched — and neither does `LEDGER_CONTRACT_VERSION`: no recorded event
+ * changes shape, no history is reinterpreted and no migration is implied. What
+ * changed is what a connection tells a client about itself, which is API
+ * surface and not ledger surface. ADR 0028 carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.11.0" as const;
+export const API_CONTRACT_VERSION = "0.12.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

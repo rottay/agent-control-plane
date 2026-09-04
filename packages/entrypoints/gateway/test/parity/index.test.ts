@@ -542,11 +542,24 @@ describe("the stream is a fourth transport of the same rows, not a fourth projec
         }
       })();
 
-      const frames = await readStream(running.port, API_ROUTES.eventStream, cliBuilt.items.length);
-      expect(frames).toHaveLength(cliBuilt.items.length);
+      // Since V2-B3c an anchored connection opens with a `hello` before the
+      // replay, so "the frames" and "the rows" are no longer the same list.
+      // The claim under test is unchanged — every ROW the stream carries is the
+      // item the CLI builds from the ledger for that sequence — and the reading
+      // is adjusted rather than the assertion weakened: one more frame is read,
+      // the control frame is asserted to be first, and the comparison runs over
+      // the rows.
+      const frames = await readStream(
+        running.port,
+        API_ROUTES.eventStream,
+        cliBuilt.items.length + 1,
+      );
+      expect(frames[0]?.kind).toBe("hello");
+      const rows = frames.filter((frame) => frame.kind === "event");
+      expect(rows).toHaveLength(cliBuilt.items.length);
 
       for (const [index, item] of cliBuilt.items.entries()) {
-        const frame = frames[index];
+        const frame = rows[index];
         if (frame?.kind !== "event") throw new Error("expected an event frame");
         expect(canonicalize(frame.item)).toEqual(canonicalize(item));
       }
