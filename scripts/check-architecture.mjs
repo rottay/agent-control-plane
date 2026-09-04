@@ -4691,6 +4691,48 @@ const V2B4B_S3D_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b stage 3E — the equivalence proof, and the stage's closure.
+ *
+ * The closing packet of A → B → C → D → E. It adds **evidence and a record**
+ * and changes no behaviour: nothing under any package's `src/` moves except
+ * one README sentence that Packet D falsified.
+ *
+ * **Two identically-seeded ledgers, not one.** Running both doors at one
+ * coordinate on one ledger would compare an execution against a replay and pass
+ * for the wrong reason, because the coordinate is spent once by law. Seeding two
+ * ledgers identically gives the stronger claim the stage actually wants: the two
+ * responses are equal **field for field, `eventId` and `sequence` included, with
+ * no exclusion list**. That is available only because nothing in either door
+ * reads a clock, a row count or a random source for anything in that document.
+ *
+ * **Cross-door replay is asserted in both directions**, because an
+ * implementation in which only one door performed the replay read would pass one
+ * direction and fail the other.
+ *
+ * **A third deep alias.** The comparator is the gateway's parity suite, and it
+ * could previously reach only the CLI's read projection. Reaching the CLI's
+ * *door* needs one more alias, which moves four pinned sites — the vitest
+ * config, the gateway test tsconfig, and both fence pins — and the "exactly
+ * two" prose beside them. It is a use of the mechanism rather than an erosion
+ * of it: both packages' entry points stay byte-untouched, which is the property
+ * the aliases exist to preserve. The specifier deliberately does not end where
+ * a plural sibling could begin, because the sole-importer scan is a substring
+ * test and the CLI already has a `tool-calls` read verb.
+ *
+ * `PATH_SCOPED_LAWS` moves 61 → 62 for L-B4B-12. No surface pin moves: this
+ * packet adds no export, no route, no schema and no dependency.
+ */
+const V2B4B_S3E_WRITE_SET = [
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/tsconfig.json",
+  "vitest.config.ts",
+  "docs/architecture/0020-the-explicit-tool-operation.md",
+  "docs/architecture/index.md",
+  "packages/edges/tools/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -5077,6 +5119,7 @@ const WRITE_SET = [
   ...V2B4B_S3B_WRITE_SET,
   ...V2B4B_S3C_WRITE_SET,
   ...V2B4B_S3D_WRITE_SET,
+  ...V2B4B_S3E_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5980,6 +6023,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the CLI holds exactly one writable ledger open, in the tool-call verb",
     scope: "packages/entrypoints/cli/src/**",
+  },
+  // V2-B4b stage 3E. The stage's whole claim in one mechanical check: two
+  // doors, one operation, and no third.
+  {
+    law: "exactly two doors reach the tool operation, and neither reaches the port",
+    scope: "packages/*/*/src/** outside @acp/runtime",
   },
 ];
 
@@ -11864,7 +11913,8 @@ if (accountsIndex === null) {
     }
   }
 
-// The P3D deep aliases: exactly two, pointing at exactly these two modules, and
+// The P3D deep aliases: exactly three since V2-B4b stage 3E, pointing at exactly
+// those three modules, and
 // importable only by the parity test. Aliasing rather than widening either
 // package's entry point is what keeps both closed surfaces byte-untouched.
 const vitestConfig = readIfPresent("vitest.config.ts");
@@ -11872,6 +11922,11 @@ if (vitestConfig !== null) {
   const aliasTargets = [
     ["@acp/cli/observation-rows", "packages/entrypoints/cli/src/observation/index.ts"],
     ["@acp/console/row-model", "packages/entrypoints/console/src/api/client/index.ts"],
+    // V2-B4b stage 3E: the third alias, and the first that reaches a door
+    // rather than a projection. The equivalence proof drives the CLI's write
+    // verb as values and compares its response with the API door's; without
+    // this the comparator could only reach the CLI's read projection.
+    ["@acp/cli/tool-call-door", "packages/entrypoints/cli/src/tool-call/index.ts"],
   ];
   for (const [specifier, target] of aliasTargets) {
     if (!vitestConfig.includes(target)) {
@@ -11884,7 +11939,7 @@ if (vitestConfig !== null) {
       if (relativePath === "vitest.config.ts") continue;
       if (relativePath === "scripts/check-architecture.mjs") continue;
       if (relativePath === "packages/entrypoints/gateway/test/parity/index.test.ts") continue;
-      // The TypeScript counterpart of the same two aliases, and since P8-T G8
+      // The TypeScript counterpart of the same three aliases, and since P8-T G8
       // the ONLY one. `tsc` and type-aware eslint never read
       // `vitest.config.ts`, so without a declaration the parity test resolves
       // at run time and fails both other gates — but the declaration belongs to
@@ -11910,10 +11965,10 @@ if (vitestConfig !== null) {
       }
     }
   }
-  notes.push("the parity deep aliases point at two modules and are used by one test");
+  notes.push("the parity deep aliases point at three modules and are used by one test");
 }
 
-// The TypeScript side of the same two aliases, pinned against the TEST project
+// The TypeScript side of the same three aliases, pinned against the TEST project
 // (P8-T G8). `tsc` and type-aware eslint never read `vitest.config.ts`, so the
 // parity test needs a declaration or it resolves at run time and fails both
 // other gates. What G8 changed is which project declares it: the production
@@ -11932,6 +11987,7 @@ const GATEWAY_TS_ALIASES_FILE = "packages/entrypoints/gateway/test/tsconfig.json
 const GATEWAY_TS_ALIASES = {
   "@acp/cli/observation-rows": "../../cli/dist/observation/index.d.ts",
   "@acp/console/row-model": "../../console/dist/app/api/client/index.d.ts",
+  "@acp/cli/tool-call-door": "../../cli/dist/tool-call/index.d.ts",
 };
 // P8-8A adds `../../domains/observation`: the initiative plane folds token
 // rollups, and `tsc --build` resolves a workspace package through project
@@ -13621,6 +13677,63 @@ if (tracked.status === 0) {
   notes.push(
     "the CLI opens one writable ledger, in the tool-call verb, and every other open is query-only",
   );
+}
+
+// L-B4B-12 -- the closure law: two doors, one operation, and no third.
+//
+// The sentence a reviewer would otherwise have to re-derive by reading four
+// packets, and the one a future contributor is most likely to break by adding a
+// third caller. Both halves matter: naming `runToolCall` is what makes a door a
+// door, and NOT naming `createToolProtocolPort` is what keeps every refusal
+// recordable -- the port builds its refusal receipt from raw caller input, so a
+// door that reached it directly would produce refusals the recorder rejects.
+const TOOL_OPERATION_DOORS = [
+  "packages/entrypoints/gateway/src/tool-calls/index.ts",
+  "packages/entrypoints/cli/src/tool-call/index.ts",
+];
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  let doorsScanned = 0;
+  const callers = [];
+  for (const relativePath of present) {
+    if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+    if (!relativePath.endsWith(".ts")) continue;
+    // The operation's own package declares it; declaring is not calling.
+    if (relativePath.startsWith("packages/domains/runtime/")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    doorsScanned += 1;
+    // Word-bounded, not a substring test. The CLI's command module names
+    // `runToolCallVerb` when it dispatches to its door, and that is not a
+    // second door -- it is the door's own package routing to it. A substring
+    // scan would count it and the law would fail on a correct tree, which is
+    // the same prefix trap the deep-alias specifier had to dodge.
+    if (/\brunToolCall\b/.test(stripComments(content))) callers.push(relativePath);
+  }
+
+  const sorted = [...callers].sort();
+  if (sorted.join(", ") !== [...TOOL_OPERATION_DOORS].sort().join(", ")) {
+    fail(
+      "the tool operation is reached from [" +
+        sorted.join(", ") +
+        "]; the stage closed with exactly two doors, [" +
+        TOOL_OPERATION_DOORS.join(", ") +
+        "], and a third caller is a third place process-start authority is granted",
+    );
+  }
+  for (const door of TOOL_OPERATION_DOORS) {
+    const content = readIfPresent(door);
+    if (content === null) continue;
+    if (stripComments(content).includes("createToolProtocolPort")) {
+      fail(
+        door +
+          " reaches the tool port directly; a door composes an operation scope and calls" +
+          " runToolCall, because the port builds a refusal receipt from raw caller input",
+      );
+    }
+  }
+  requireScope("exactly two doors reach the tool operation, and neither reaches the port", doorsScanned);
+  notes.push("two doors reach the tool operation, neither reaches the port, and there is no third");
 }
 
 // The closed barrel, pinned by equality in both directions.

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,9 @@ import {
   PARITY_ROUTES,
   TaskDetailResponse,
   TaskPageResponse,
+  ToolCallExecuteResponse,
+  ToolCallPageResponse,
+  toolCallsPath,
   WorkerDetailResponse,
   WorkerPageResponse,
   bindingCoversAllRoutes,
@@ -28,6 +31,7 @@ import {
 } from "@acp/protocol";
 import type { ApiRouteName } from "@acp/protocol";
 import { openLedger } from "@acp/ledger";
+import { TOOL_ARGUMENTS_BYTES_MAX } from "@acp/tools";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -39,9 +43,13 @@ import {
   buildTaskPage,
   buildWorkerDetail,
   buildWorkerPage,
+  buildToolCallPage,
   cliRowModel,
   databaseIdentity,
 } from "@acp/cli/observation-rows";
+// V2-B4b stage 3E: the CLI's write door, as values. The third deep alias, and
+// the first that reaches a door rather than a projection.
+import { runToolCallVerb } from "@acp/cli/tool-call-door";
 import { uiRowModel } from "@acp/console/row-model";
 
 import { buildServer } from "../../src/build-server/index.js";
@@ -69,6 +77,13 @@ afterEach(() => {
     if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
   }
 });
+
+/** A temp directory this suite owns and cleans, for the door fixtures. */
+function temporaryDirectory(): string {
+  const directory = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), "acp-parity-door-")));
+  temporaries.push(directory);
+  return directory;
+}
 
 function temporaryDatabase(): string {
   const directory = mkdtempSync(join(tmpdir(), "acp-parity-"));
@@ -579,5 +594,582 @@ describe("redaction is absence, in every client", () => {
   it("would report a blanked credential rather than accept it", () => {
     // Absence, not emptiness: a blanked field still names the secret.
     expect(hasObservationPrivacyViolation({ apiKey: "" })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B4b stage 3E — the explicit tool operation, proved equivalent across doors
+// ---------------------------------------------------------------------------
+
+/**
+ * The closing proof of the A → E sequence.
+ *
+ * Three things are established here that no earlier packet could establish
+ * alone, because each needs both doors in one place:
+ *
+ * 1. The **read** projection of `taskToolCalls` agrees three ways, with the CLI
+ *    folding the ledger itself and never seeing the server's answer.
+ * 2. The **write** is equivalent field for field — including `eventId` and
+ *    `sequence`, with no exclusion list — because both doors are deterministic
+ *    over the same request and the same seeded history.
+ * 3. **One execution, one receipt across the doors**: a coordinate spent by one
+ *    door replays at the other, in both directions, with no second child.
+ *
+ * The write proof runs over **two identically-seeded ledgers**, not one. Running
+ * both doors at one coordinate on one ledger would compare an execution against
+ * a replay and pass for the wrong reason — the coordinate is spent once by law.
+ * Two ledgers give the stronger claim: `eventId` is `deterministicUuid` over
+ * `(taskId, attempt, transitionId)` and nothing here reads a clock or a row
+ * count, so the two responses must be byte-identical.
+ */
+
+const TOOL_TASK = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a0e";
+const TOOL_IDENTITY = "claude/opus/implementer/01";
+const TOOL_REVIEWER = "claude/opus/reviewer/01";
+const TOOL_ACCOUNT = "acct-primary";
+const TOOL_SUBMITTED_AT = "2026-09-03T12:00:00.000Z";
+const TOOL_DIGEST = "a".repeat(64);
+const TOOL_SENTINEL = "SENTINEL-STAGE3E-MUST-NOT-BE-DURABLE";
+const TOOL_BEARER = "stage3e-parity-" + "t".repeat(28);
+
+/** A tool-call receipt row, as the recorder writes one. */
+function toolCallEvent(input: {
+  readonly taskId: string;
+  readonly callIndex: number;
+  readonly outcome: "COMPLETED" | "REFUSED";
+  readonly refusal: string | null;
+  readonly occurredAt: string;
+}): Record<string, unknown> {
+  const transitionId = "tool.0." + String(input.callIndex);
+  return {
+    contractVersion: LEDGER_CONTRACT_VERSION,
+    eventId: randomUUID(),
+    taskId: input.taskId,
+    attempt: 1,
+    transitionId,
+    idempotencyKey: input.taskId + "/1/" + transitionId,
+    type: "TOOL_CALL_RECORDED",
+    // A same-state passthrough: recording that a tool ran moves no lifecycle.
+    fromState: "DISCOVERED",
+    toState: "DISCOVERED",
+    emittedBy: TOOL_IDENTITY,
+    occurredAt: input.occurredAt,
+    recordedAt: input.occurredAt,
+    correlationId: null,
+    causationId: null,
+    payload: {
+      accountId: TOOL_ACCOUNT,
+      serverId: "docs",
+      toolName: "docs.search",
+      transport: "STDIO",
+      outcome: input.outcome,
+      refusal: input.refusal,
+      argumentBytes: 12 + input.callIndex,
+      resultBytes: 34 + input.callIndex,
+      contentBlocks: input.outcome === "COMPLETED" ? 1 : 0,
+    },
+  };
+}
+
+/**
+ * A ledger with one discovered task and two recorded tool calls.
+ *
+ * Two rows so ordering is part of the equality, and one of each outcome so both
+ * `outcome` values are exercised rather than one being assumed.
+ */
+function seedWithToolCalls(): { readonly path: string; readonly taskId: string } {
+  const path = temporaryDatabase();
+  const ledger = openLedger(path);
+  ledger.append(
+    makeEvent({
+      taskId: TOOL_TASK,
+      transitionId: "discover",
+      type: "TASK_DISCOVERED",
+      toState: "DISCOVERED",
+      emittedBy: WORKER_B,
+    }),
+  );
+  ledger.append(
+    toolCallEvent({
+      taskId: TOOL_TASK,
+      callIndex: 0,
+      outcome: "COMPLETED",
+      refusal: null,
+      occurredAt: "2026-08-27T12:01:00.000Z",
+    }),
+  );
+  ledger.append(
+    toolCallEvent({
+      taskId: TOOL_TASK,
+      callIndex: 1,
+      outcome: "REFUSED",
+      refusal: "TOOL_NOT_ALLOWED",
+      occurredAt: "2026-08-27T12:02:00.000Z",
+    }),
+  );
+  ledger.close();
+  return { path, taskId: TOOL_TASK };
+}
+
+describe("the tool-call read agrees three ways (V2-B4b stage 3E)", () => {
+  it("agrees on taskToolCalls, with the CLI folding the ledger itself", async () => {
+    const { path, taskId } = seedWithToolCalls();
+
+    const body = await serverBody(path, toolCallsPath(taskId), ToolCallPageResponse);
+
+    // The CLI's own producer, over the same ledger, never having seen the
+    // server's answer. A dedicated seed rather than the shared one because a
+    // page with no rows would agree vacuously.
+    const ledger = openLedger(path, { readOnly: true });
+    let cliBuilt;
+    try {
+      cliBuilt = buildToolCallPage(ledger, { taskId, limit: DEFAULT_PAGE_LIMIT });
+    } finally {
+      ledger.close();
+    }
+
+    const fromServer = canonicalRows("taskToolCalls", body);
+    expect(cliRowModel("taskToolCalls", cliBuilt)).toEqual(fromServer);
+    expect(uiRowModel("taskToolCalls", body)).toEqual(fromServer);
+
+    const rendered = fromServer as Record<string, unknown>;
+    for (const field of comparableFields("taskToolCalls")) {
+      expect({ field, present: field in rendered }).toEqual({ field, present: true });
+    }
+
+    // Ordering and both outcomes are genuinely in the comparison.
+    const page = body as { items: { outcome: string; sequence: number }[] };
+    expect(page.items).toHaveLength(2);
+    expect(page.items.map((row) => row.outcome)).toEqual(["COMPLETED", "REFUSED"]);
+    expect(page.items[0]!.sequence).toBeLessThan(page.items[1]!.sequence);
+
+    expect(hasObservationPrivacyViolation(body)).toBe(false);
+  });
+});
+
+/** A minimal stdio MCP server this suite owns, logging its own pid. */
+function writeToolServerScript(dir: string, pidLog: string, leak = false): string {
+  const path = join(dir, "fake-mcp.mjs");
+  const answer = leak
+    ? "'sk-ant-api03-' + 'A'.repeat(32)"
+    : "'the answer'";
+  writeFileSync(
+    path,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      "appendFileSync(" + JSON.stringify(pidLog) + ", String(process.pid) + '\\n');",
+      "let buffer = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => {",
+      "  buffer += chunk;",
+      "  let index = buffer.indexOf('\\n');",
+      "  while (index >= 0) {",
+      "    const line = buffer.slice(0, index);",
+      "    buffer = buffer.slice(index + 1);",
+      "    index = buffer.indexOf('\\n');",
+      "    if (line.trim() !== '') handle(JSON.parse(line));",
+      "  }",
+      "});",
+      "function send(v) { process.stdout.write(JSON.stringify(v) + '\\n'); }",
+      "function handle(m) {",
+      "  const { id, method } = m;",
+      "  if (method === 'initialize') {",
+      "    send({ jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18',",
+      "      capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '0' } } });",
+      "    return;",
+      "  }",
+      "  if (method === 'notifications/initialized') return;",
+      "  if (method === 'tools/list') {",
+      "    send({ jsonrpc: '2.0', id, result: { tools: [{ name: 'docs.search',",
+      "      description: 'd', inputSchema: { type: 'object' } }] } });",
+      "    return;",
+      "  }",
+      "  if (method === 'tools/call') {",
+      "    send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: " + answer + " }],",
+      "      isError: false } });",
+      "  }",
+      "}",
+    ].join("\n"),
+    "utf8",
+  );
+  chmodSync(path, 0o700);
+  return path;
+}
+
+interface DoorFixture {
+  readonly dir: string;
+  readonly pidLog: string;
+  readonly bearerPath: string;
+  readonly toolServersPath: string;
+}
+
+/** The operator documents both doors read, written once and shared by both. */
+function doorFixture(options: { readonly leak?: boolean } = {}): DoorFixture {
+  const dir = temporaryDirectory();
+  const pidLog = join(dir, "pids.log");
+  writeFileSync(pidLog, "", "utf8");
+
+  const bearerPath = join(dir, "write.token");
+  writeFileSync(bearerPath, TOOL_BEARER + "\n", "utf8");
+  chmodSync(bearerPath, 0o600);
+
+  const script = writeToolServerScript(dir, pidLog, options.leak ?? false);
+  const toolServersPath = join(dir, "tool-servers.json");
+  writeFileSync(
+    toolServersPath,
+    JSON.stringify([
+      {
+        serverId: "docs",
+        transport: "STDIO",
+        command: process.execPath,
+        args: [script],
+        tools: [
+          { name: "docs.search", writes: false },
+          { name: "docs.write", writes: true },
+        ],
+      },
+    ]),
+    "utf8",
+  );
+  chmodSync(toolServersPath, 0o600);
+  return { dir, pidLog, bearerPath, toolServersPath };
+}
+
+/** A ledger holding exactly one discovered task, ready for a tool call. */
+function seedForExecution(): string {
+  const path = temporaryDatabase();
+  const ledger = openLedger(path);
+  ledger.append(
+    makeEvent({
+      taskId: TOOL_TASK,
+      transitionId: "discover",
+      type: "TASK_DISCOVERED",
+      toState: "DISCOVERED",
+      emittedBy: WORKER_B,
+    }),
+  );
+  ledger.close();
+  return path;
+}
+
+function toolRequest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    taskId: TOOL_TASK,
+    attempt: 1,
+    submittedAt: TOOL_SUBMITTED_AT,
+    submissionDigest: TOOL_DIGEST,
+    operationIndex: 0,
+    callIndex: 0,
+    accountId: TOOL_ACCOUNT,
+    identity: TOOL_IDENTITY,
+    serverId: "docs",
+    toolName: "docs.search",
+    arguments: { q: TOOL_SENTINEL },
+    ...overrides,
+  };
+}
+
+/** Drive the API door and return the parsed response document. */
+async function apiDoor(
+  ledgerPath: string,
+  fixture: DoorFixture,
+  request: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const app = buildServer({
+    ledgerPath,
+    writeBearerPath: fixture.bearerPath,
+    toolServersPath: fixture.toolServersPath,
+  });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: toolCallsPath(String(request["taskId"])),
+      headers: { authorization: "Bearer " + TOOL_BEARER },
+      payload: request,
+    });
+    expect(response.statusCode).toBe(200);
+    return ToolCallExecuteResponse.parse(response.json()) as unknown as Record<string, unknown>;
+  } finally {
+    await app.close();
+  }
+}
+
+/** Drive the CLI door, as values, and return the parsed response document. */
+async function cliDoor(
+  ledgerPath: string,
+  fixture: DoorFixture,
+  request: Record<string, unknown>,
+  name = "request.json",
+): Promise<Record<string, unknown>> {
+  // The CLI door's authority IS the uid ladder over real files, so the request
+  // is written to disk rather than handed over as a value. Driving it any other
+  // way would prove a path production never takes.
+  const requestPath = join(fixture.dir, name);
+  writeFileSync(requestPath, JSON.stringify(request), "utf8");
+  chmodSync(requestPath, 0o600);
+  const result = await runToolCallVerb({
+    databasePath: ledgerPath,
+    requestPath,
+    toolServersPath: fixture.toolServersPath,
+  });
+  return result.document as unknown as Record<string, unknown>;
+}
+
+function pidsIn(pidLog: string): readonly number[] {
+  return readFileSync(pidLog, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => Number(line));
+}
+
+function rowCount(ledgerPath: string): number {
+  const ledger = openLedger(ledgerPath, { readOnly: true });
+  try {
+    return ledger.listEvents({ taskId: TOOL_TASK, type: "TOOL_CALL_RECORDED" }).events.length;
+  } finally {
+    ledger.close();
+  }
+}
+
+describe("the two doors are equivalent on the write (V2-B4b stage 3E)", () => {
+  it("answers byte-identically over two identically-seeded ledgers, with no field excluded", async () => {
+    const fixture = doorFixture();
+    const api = await apiDoor(seedForExecution(), fixture, toolRequest());
+    const cli = await cliDoor(seedForExecution(), fixture, toolRequest());
+
+    // Every field, `eventId` and `sequence` included. An exclusion list here
+    // would be a difference being papered over: both doors are deterministic
+    // over the same request and the same seeded history, and neither reads a
+    // clock, a row count or a random source for anything in this document.
+    expect(cli).toEqual(api);
+    expect(cli["outcome"]).toBe("COMPLETED");
+    expect(cli["content"]).toEqual(["the answer"]);
+  });
+
+  it("agrees on a refusal exactly as it agrees on a completion", async () => {
+    const fixture = doorFixture();
+    const refusing = toolRequest({ toolName: "docs.write", identity: TOOL_REVIEWER });
+    const api = await apiDoor(seedForExecution(), fixture, refusing);
+    const cli = await cliDoor(seedForExecution(), fixture, refusing, "refusal.json");
+
+    expect(cli).toEqual(api);
+    expect(api["outcome"]).toBe("REFUSED");
+    expect(api["refusal"]).toBe("IDENTITY_FORBIDS_WRITE");
+    // A refusal is a recorded outcome at both doors: HTTP 200 and exit 0 are
+    // the two spellings of "it became an operation".
+    expect(api["at"]).toBe(cli["at"]);
+  });
+
+  it("differs where the request differs, and nowhere else", async () => {
+    // The negative direction, so the equality above is not vacuous.
+    const fixture = doorFixture();
+    const first = await apiDoor(seedForExecution(), fixture, toolRequest());
+    const second = await apiDoor(seedForExecution(), fixture, toolRequest({ callIndex: 1 }));
+
+    expect(second["transitionId"]).not.toBe(first["transitionId"]);
+    expect(second["eventId"]).not.toBe(first["eventId"]);
+    for (const field of ["outcome", "refusal", "at", "serverId", "toolName", "transport",
+      "accountId", "argumentBytes", "resultBytes", "contentBlocks", "sequence", "replayed"]) {
+      expect({ field, equal: second[field] === first[field] }).toEqual({ field, equal: true });
+    }
+  });
+});
+
+describe("one execution, one receipt, across the two doors (V2-B4b stage 3E)", () => {
+  it("replays at the CLI a coordinate the API spent, with no second child", async () => {
+    const fixture = doorFixture();
+    const ledgerPath = seedForExecution();
+
+    const api = await apiDoor(ledgerPath, fixture, toolRequest());
+    expect(api["replayed"]).toBe(false);
+    expect(api["content"]).toEqual(["the answer"]);
+    const spawnedOnce = pidsIn(fixture.pidLog).length;
+    expect(spawnedOnce).toBeGreaterThan(0);
+    expect(rowCount(ledgerPath)).toBe(1);
+
+    const cli = await cliDoor(ledgerPath, fixture, toolRequest());
+    expect(cli["replayed"]).toBe(true);
+    expect(cli["eventId"]).toBe(api["eventId"]);
+    expect(cli["transitionId"]).toBe(api["transitionId"]);
+    expect(cli["sequence"]).toBe(api["sequence"]);
+    expect(cli["content"]).toEqual([]);
+    expect(cli["at"]).toBeNull();
+    expect(rowCount(ledgerPath)).toBe(1);
+    // The load-bearing half: no second execution happened.
+    expect(pidsIn(fixture.pidLog).length).toBe(spawnedOnce);
+  });
+
+  it("replays at the API a coordinate the CLI spent, the mirror image", async () => {
+    // Asserted in both directions on purpose: an implementation in which only
+    // one door performed the replay read would pass one and fail the other.
+    const fixture = doorFixture();
+    const ledgerPath = seedForExecution();
+
+    const cli = await cliDoor(ledgerPath, fixture, toolRequest());
+    expect(cli["replayed"]).toBe(false);
+    const spawnedOnce = pidsIn(fixture.pidLog).length;
+    expect(spawnedOnce).toBeGreaterThan(0);
+
+    const api = await apiDoor(ledgerPath, fixture, toolRequest());
+    expect(api["replayed"]).toBe(true);
+    expect(api["eventId"]).toBe(cli["eventId"]);
+    expect(api["transitionId"]).toBe(cli["transitionId"]);
+    expect(api["sequence"]).toBe(cli["sequence"]);
+    expect(api["content"]).toEqual([]);
+    expect(api["at"]).toBeNull();
+    expect(rowCount(ledgerPath)).toBe(1);
+    expect(pidsIn(fixture.pidLog).length).toBe(spawnedOnce);
+  });
+});
+
+describe("the doors refuse alike, and neither records the argument (V2-B4b stage 3E)", () => {
+  /**
+   * The refusal ladder, driven through both doors on paired ledgers.
+   *
+   * Four of the five the stage names are driven here. `RESULT_UNSAFE` has its
+   * own case below, because it needs a server that answers with something
+   * credential-shaped rather than a differently-shaped request.
+   */
+  const LADDER: readonly (readonly [string, Record<string, unknown>])[] = [
+    ["TOOL_NOT_ALLOWED", { toolName: "shell.exec" }],
+    ["IDENTITY_FORBIDS_WRITE", { toolName: "docs.write", identity: TOOL_REVIEWER }],
+    ["SERVER_NOT_ADMITTED", { serverId: "absent" }],
+    // Just over the tool edge's own argument ceiling (8 KiB), and deliberately
+    // well under the CLI door's 64 KiB document ceiling. The size is not
+    // arbitrary: the two ceilings are ordered, so an argument big enough to
+    // trip the tool edge still fits in a request document, and both doors reach
+    // the same refusal. A first draft used 200 KB and the CLI refused the
+    // *document* instead -- the doors would have looked divergent because the
+    // fixture was wrong, not because they are.
+    ["ARGUMENTS_UNBOUNDED", { arguments: { q: "x".repeat(9_000) } }],
+  ];
+
+  it("keeps the two ceilings ordered, which is what lets the doors agree above", () => {
+    // Stated as an assertion rather than a comment: if the tool edge's argument
+    // ceiling ever rose above the CLI's document ceiling, the CLI could never
+    // produce ARGUMENTS_UNBOUNDED and the ladder case above would silently stop
+    // comparing anything.
+    expect(TOOL_ARGUMENTS_BYTES_MAX).toBeLessThan(64 * 1024);
+  });
+
+  it("gives the same refusal and the same field path at both doors", async () => {
+    for (const [expected, overrides] of LADDER) {
+      const fixture = doorFixture();
+      const request = toolRequest(overrides);
+      const api = await apiDoor(seedForExecution(), fixture, request);
+      const cliLedger = seedForExecution();
+      const cli = await cliDoor(cliLedger, fixture, request, "ladder.json");
+
+      expect({ expected, api: api["refusal"] }).toEqual({ expected, api: expected });
+      expect({ expected, cli: cli["refusal"] }).toEqual({ expected, cli: expected });
+      expect({ expected, at: cli["at"] }).toEqual({ expected, at: api["at"] });
+      // A refusal is a recorded outcome at both doors.
+      expect({ expected, rows: rowCount(cliLedger) }).toEqual({ expected, rows: 1 });
+    }
+  });
+
+  it("gives the same refusal when the server answers with something unsafe", async () => {
+    const fixture = doorFixture({ leak: true });
+    const request = toolRequest();
+    const api = await apiDoor(seedForExecution(), fixture, request);
+    const cliLedger = seedForExecution();
+    const cli = await cliDoor(cliLedger, fixture, request, "unsafe.json");
+
+    expect(api["refusal"]).toBe("RESULT_UNSAFE");
+    expect(cli["refusal"]).toBe(api["refusal"]);
+    expect(cli["at"]).toBe(api["at"]);
+    expect(api["content"]).toEqual([]);
+    expect(cli["content"]).toEqual([]);
+    expect(rowCount(cliLedger)).toBe(1);
+  });
+
+  it("refuses the same malformed tool documents at both doors", async () => {
+    // Packet D's D-7: the two doors read the document with two separate
+    // ladders. This is the assertion standing between them and a silent
+    // divergence about which documents are admissible.
+    const malformed: readonly (readonly [string, unknown])[] = [
+      ["not an array", { servers: [] }],
+      ["empty", []],
+      ["spaced server id", [{ serverId: "not a name", transport: "STDIO", command: "/bin/true", tools: [] }]],
+      ["remote", [{ serverId: "remote", transport: "STDIO", url: "https://example.com", tools: [] }]],
+    ];
+
+    for (const [label, document] of malformed) {
+      const fixture = doorFixture();
+      const documentPath = join(fixture.dir, "bad-" + label.replace(/[^a-z]/g, "-") + ".json");
+      writeFileSync(documentPath, JSON.stringify(document), "utf8");
+      chmodSync(documentPath, 0o600);
+      const bad = { ...fixture, toolServersPath: documentPath };
+
+      // The API door answers 503: the document it was started with is not
+      // admissible, so the capability is absent.
+      const app = buildServer({
+        ledgerPath: seedForExecution(),
+        writeBearerPath: fixture.bearerPath,
+        toolServersPath: documentPath,
+      });
+      let apiStatus: number;
+      try {
+        const response = await app.inject({
+          method: "POST",
+          url: toolCallsPath(TOOL_TASK),
+          headers: { authorization: "Bearer " + TOOL_BEARER },
+          payload: toolRequest(),
+        });
+        apiStatus = response.statusCode;
+      } finally {
+        await app.close();
+      }
+      expect({ label, apiStatus }).toEqual({ label, apiStatus: 503 });
+
+      // The CLI door refuses the same document rather than admitting it.
+      let cliRefused = false;
+      try {
+        await cliDoor(seedForExecution(), bad, toolRequest(), "with-bad-doc.json");
+      } catch {
+        cliRefused = true;
+      }
+      expect({ label, cliRefused }).toEqual({ label, cliRefused: true });
+      expect({ label, spawned: pidsIn(fixture.pidLog).length }).toEqual({ label, spawned: 0 });
+    }
+  });
+
+  it("keeps the argument out of the ledger at both doors, non-vacuously", async () => {
+    const fixture = doorFixture();
+    const apiLedger = seedForExecution();
+    const cliLedger = seedForExecution();
+    await apiDoor(apiLedger, fixture, toolRequest());
+    await cliDoor(cliLedger, fixture, toolRequest(), "sentinel.json");
+
+    for (const [label, ledgerPath] of [["api", apiLedger], ["cli", cliLedger]] as const) {
+      const ledger = openLedger(ledgerPath, { readOnly: true });
+      const canonical = ledger
+        .listEvents({ taskId: TOOL_TASK })
+        .events.map((row) => row.canonicalJson)
+        .join("\n");
+      ledger.close();
+      expect({ label, leaked: canonical.includes(TOOL_SENTINEL) }).toEqual({
+        label,
+        leaked: false,
+      });
+      // Non-vacuous: the row that does not carry the argument carries its size.
+      expect({ label, sized: canonical.includes("argumentBytes") }).toEqual({
+        label,
+        sized: true,
+      });
+    }
+  });
+
+  it("carries the nine payload key names, and no value, onto the read surface", async () => {
+    const fixture = doorFixture();
+    const ledgerPath = seedForExecution();
+    await apiDoor(ledgerPath, fixture, toolRequest());
+
+    const body = await serverBody(ledgerPath, API_ROUTES.events, EventPageResponse);
+    const rendered = JSON.stringify(body);
+    expect(rendered).not.toContain(TOOL_SENTINEL);
+    // The timeline item projects key names and a byte size, structurally.
+    expect(rendered).toContain("argumentBytes");
+    expect(hasObservationPrivacyViolation(body)).toBe(false);
   });
 });

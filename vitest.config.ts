@@ -143,7 +143,7 @@ const daemonSourceAliases = [
  * only, invisible to production code, and both packages' public surfaces stay
  * byte-untouched.
  *
- * The architecture fence asserts these two targets and that the specifiers are
+ * The architecture fence asserts these three targets and that the specifiers are
  * imported only by `packages/entrypoints/gateway/test/parity/index.test.ts`.
  */
 const cliRowModelSource = fileURLToPath(
@@ -152,10 +152,24 @@ const cliRowModelSource = fileURLToPath(
 const uiRowModelSource = fileURLToPath(
   new URL('./packages/entrypoints/console/src/api/client/index.ts', import.meta.url),
 );
+/**
+ * The CLI's write door, for V2-B4b stage 3E's equivalence proof.
+ *
+ * The third alias, and the first that reaches a door rather than a projection:
+ * the parity suite drives the CLI's `tool-call` verb as values and compares its
+ * response against the API door's. `@acp/cli/tool-call-door` rather than
+ * `@acp/cli/tool-call`, because the alias law's sole-importer scan is a
+ * substring test and the CLI already has a `tool-calls` read verb one character
+ * away — two pins that are prefixes of each other would report the wrong file.
+ */
+const cliToolCallDoorSource = fileURLToPath(
+  new URL('./packages/entrypoints/cli/src/tool-call/index.ts', import.meta.url),
+);
 const parityAliases = [
   ...workspaceSourceAliases,
   { find: /^@acp\/cli\/observation-rows$/, replacement: cliRowModelSource },
   { find: /^@acp\/console\/row-model$/, replacement: uiRowModelSource },
+  { find: /^@acp\/cli\/tool-call-door$/, replacement: cliToolCallDoorSource },
 ];
 
 export default defineConfig({

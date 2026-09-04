@@ -16,7 +16,9 @@ session when a true in-execution caller exists.
 is no daemon tool policy: the plane calls a tool because an operator asked it
 to, over an authenticated route, and never because a walk decided to. The one
 composition site is `src/operation/index.ts` — inside this package, and no
-longer only in its suites — and the caller is the gateway's tool-call route.
+longer only in its suites — and the callers are the gateway's tool-call route
+and the CLI's `tool-call` verb (V2-B4b stage 3D). Two doors, one operation:
+that independence is what the stage's equivalence proof compares.
 
 Nothing here is adopted into real operation. Adoption is a single explicit
 decision that happens after P8 certification and a separate P9 authorization.

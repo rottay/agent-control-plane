@@ -10,7 +10,8 @@
     "incremental": false,
     "paths": {
       "@acp/cli/observation-rows": ["../../cli/dist/observation/index.d.ts"],
-      "@acp/console/row-model": ["../../console/dist/app/api/client/index.d.ts"]
+      "@acp/console/row-model": ["../../console/dist/app/api/client/index.d.ts"],
+      "@acp/cli/tool-call-door": ["../../cli/dist/tool-call/index.d.ts"]
     }
   },
   "include": ["**/*.ts", "../src/**/*.ts"],

@@ -18,7 +18,7 @@ new records from `_template.md`, which carries the required fields.
 |---|---|---|
 | 0001 | [Where state authority lives](0001-control-plane-authority.md) | accepted |
 | 0002 | [The SQLite event ledger](0002-sqlite-event-ledger.md) | accepted |
-| 0003 | [The read-only observation plane](0003-read-only-observation-plane.md) | accepted, amended by 0013 |
+| 0003 | [The read-only observation plane](0003-read-only-observation-plane.md) | accepted, amended by 0013, 0020 |
 | 0004 | [Durability, the supervisor, and the recovery law](0004-durability-and-supervisor.md) | accepted |
 | 0005 | [The Restate driver, and what adoption would mean](0005-restate-driver-and-adoption.md) | accepted |
 | 0006 | [Daemon process lifecycle](0006-daemon-process-lifecycle.md) | accepted |
@@ -35,6 +35,7 @@ new records from `_template.md`, which carries the required fields.
 | 0017 | [The ledger sequence is the stream, and the only cursor](0017-the-stream-boundary.md) | accepted |
 | 0018 | [The submission path elects the route, and the walk still does not](0018-the-submission-path.md) | accepted |
 | 0019 | [The owned session lifecycle](0019-the-owned-session-lifecycle.md) | accepted |
+| 0020 | [The explicit tool operation](0020-the-explicit-tool-operation.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is
