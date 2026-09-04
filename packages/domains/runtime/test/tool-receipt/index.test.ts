@@ -1,3 +1,4 @@
+import { BOUNDED_IDENTIFIER } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
@@ -411,7 +412,16 @@ describe("the module refuses rather than appending", () => {
       "tool-identifier",
       "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9b0d",
     );
-    const bad = ["", "read file", "x".repeat(121)];
+    // Since V2-B4b stage 3A the grammar is `@acp/contracts`' and the tool
+    // edge's admission door judges by the same constant, so what this module
+    // refuses is asserted against that constant rather than against a second
+    // regex restated here — a restated one would be the drift the
+    // canonicalization removed, reintroduced in a test.
+    const bad = ["", "read file", "x".repeat(121), ".leading", "has/slash", "{brace}"];
+    for (const value of bad) expect(BOUNDED_IDENTIFIER.test(value)).toBe(false);
+    for (const value of [ACCOUNT, COMPLETED.serverId, COMPLETED.toolName]) {
+      expect(BOUNDED_IDENTIFIER.test(value)).toBe(true);
+    }
     for (const value of bad) {
       // The account travels beside the facts, so it is exercised the same way.
       expect(() =>

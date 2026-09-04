@@ -104,6 +104,30 @@ unfalsifiable in operation.
 stream, are not done here and are not claimed here.** This stage returns the
 receipt to its caller and stops.
 
+## Names are bounded by one grammar, and it is not this package's
+
+`serverId` and every allowlisted tool name are judged at admission against
+`BOUNDED_IDENTIFIER`, declared once in `@acp/contracts`: at most 120 characters
+of letters, digits, dot, underscore, colon and hyphen, beginning with a letter
+or a digit. A name with a space, a slash, a quote, a brace or a newline in it is
+not a name, and `admitToolServer` refuses it as `SERVER_NOT_ADMITTED` at
+`descriptor.serverId` or `descriptor.tools` — before the transport is read,
+before a URL is parsed, before the command is stat-ed, and therefore before any
+child exists.
+
+The grammar is shared rather than declared here because `@acp/runtime`'s durable
+recorder already enforced exactly it: a name this package admitted but that one
+refused would be a call the plane could make and could not write down. One
+constant, imported by both, is what makes that disagreement unrepresentable.
+
+**What this covers, and what it does not.** Admission governs the *configured*
+side: the descriptors an operator writes. The values a caller supplies on a
+request — `ToolCallRequest`'s own `serverId` and `toolName` — are still raw
+strings at this stage, and typing them is the obligation of the door that will
+accept a request from outside this package. Until that door lands, a refusal
+built from a caller-supplied name is not guaranteed to be recordable, and this
+package does not claim otherwise.
+
 ## Public surface
 
 The barrel is closed — no `export *` — and the fence pins the set by equality

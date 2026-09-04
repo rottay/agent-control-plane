@@ -52,6 +52,7 @@ this table against the barrel.
 | `account-record` | an account and its actions, with the refusal vocabulary |
 | `usage-limits` | the bounds a quota estimate is computed against |
 | `exit-codes` | the process exit convention, declared here because it is shared |
+| `bounded-identifier` | the one grammar a configured name must satisfy, shared by the tool edge and the recorder |
 
 ## The laws these shapes carry
 

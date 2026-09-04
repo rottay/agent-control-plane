@@ -28,6 +28,10 @@ export {
   utf8ByteLength,
 } from "./primitives/index.js";
 export {
+  BOUNDED_IDENTIFIER,
+  BoundedIdentifier,
+} from "./bounded-identifier/index.js";
+export {
   EXIT_OK,
   EXIT_USAGE,
 } from "./exit-codes/index.js";

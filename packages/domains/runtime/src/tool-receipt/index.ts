@@ -1,4 +1,4 @@
-import { CONTRACT_VERSION, ControlPlaneEvent } from "@acp/contracts";
+import { BOUNDED_IDENTIFIER, CONTRACT_VERSION, ControlPlaneEvent } from "@acp/contracts";
 import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts";
 
 import type { DurableInvocation } from "../contracts/index.js";
@@ -36,7 +36,7 @@ import { SupervisorError } from "../errors/index.js";
  *
  * | Field | Bound | Why it cannot carry content |
  * |---|---|---|
- * | `accountId`, `serverId`, `toolName` | {@link IDENTIFIER} | no space, quote, brace, slash or newline |
+ * | `accountId`, `serverId`, `toolName` | `BOUNDED_IDENTIFIER` | no space, quote, brace, slash or newline |
  * | `transport`, `outcome`, `refusal` | {@link VOCABULARY_WORD} | screaming-snake only, or null for `refusal` |
  * | `argumentBytes`, `resultBytes`, `contentBlocks` | non-negative integers | a count of a secret is not a secret |
  *
@@ -51,17 +51,19 @@ import { SupervisorError } from "../errors/index.js";
  * `resultBytes` is a wrong number a reader can see, not a quiet
  * disappearance — so the refusal has no subject here. Stated so a later reader
  * does not read the absence as an oversight.
- */
-
-/**
- * The grammar for a configured identifier.
  *
- * `accountId`, `serverId` and `toolName` are all config-owned names, and
- * `toolName` in particular comes from the caller's **allowlist** rather than
- * from whatever a server advertised. The bound admits exactly the shape a name
- * has and nothing a payload fragment has.
+ * **The identifier grammar is the contract's, not this module's** (V2-B4b
+ * stage 3A). `accountId`, `serverId` and `toolName` are config-owned names,
+ * and `toolName` in particular comes from the caller's **allowlist** rather
+ * than from whatever a server advertised — so the same grammar has to govern
+ * the door that admits a name and the recorder that writes it down. It is
+ * `BOUNDED_IDENTIFIER`, declared once in `@acp/contracts` and imported here.
+ * A local copy is what let `@acp/tools` admit a name this module would then
+ * refuse to record. `VOCABULARY_WORD` below is a different grammar and stays
+ * local: its membership lives in `@acp/tools`, and hoisting the shape without
+ * the membership would move a bound away from the only place that can check
+ * it.
  */
-const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/;
 
 /**
  * The grammar for a vocabulary word.
@@ -157,7 +159,7 @@ export interface ToolCallRecordResult {
 }
 
 function requireIdentifier(name: string, value: string): void {
-  if (!IDENTIFIER.test(value)) {
+  if (!BOUNDED_IDENTIFIER.test(value)) {
     throw new SupervisorError(
       "refusing to record a tool call whose " +
         name +

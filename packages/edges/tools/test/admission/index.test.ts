@@ -175,6 +175,70 @@ describe("the stdio fields are admitted, never assumed", () => {
   });
 });
 
+describe("a name outside the bounded grammar never reaches a spawn (V2-B4b stage 3A)", () => {
+  // The door and the durable recorder now judge by the same constant, so a
+  // name admitted here is a name `recordToolCall` can write down. Before this
+  // stage the door asked only whether the string was non-empty, and a server
+  // id with a space in it was admitted, spawned, called — and then refused by
+  // the recorder, after the child had already run.
+  it.each([
+    ["docs local", "a space"],
+    ["x".repeat(121), "one character past the bound"],
+    [".docs", "a leading dot"],
+    ["docs/search", "a slash"],
+    ['docs"quote', "a quote"],
+  ])("refuses serverId %j (%s) at descriptor.serverId", (serverId) => {
+    expect(admitToolServer(stdio({ serverId }))).toEqual({
+      ok: false,
+      refusal: "SERVER_NOT_ADMITTED",
+      at: "descriptor.serverId",
+    });
+  });
+
+  it.each([
+    ["docs search", "a space"],
+    ["docs/search", "a slash"],
+    ["x".repeat(121), "one character past the bound"],
+    [".docs.search", "a leading dot"],
+  ])("refuses tool name %j (%s) at descriptor.tools", (name) => {
+    expect(admitToolServer(stdio({ tools: [{ name, writes: false }] }))).toEqual({
+      ok: false,
+      refusal: "SERVER_NOT_ADMITTED",
+      at: "descriptor.tools",
+    });
+  });
+
+  it("refuses a bad name even when a good one sits beside it", () => {
+    // Every entry is judged, not just the first: an allowlist whose second
+    // member is unrecordable is an allowlist that can produce an unrecordable
+    // call.
+    expect(
+      admitToolServer(
+        stdio({
+          tools: [
+            { name: "docs.search", writes: false },
+            { name: "docs write", writes: true },
+          ],
+        }),
+      ),
+    ).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools" });
+  });
+
+  it("still admits the names the package already uses", () => {
+    // The regression direction. `docs.search` is the fixture every other suite
+    // in this package is written against, and the grammar admits it, a
+    // hyphenated id, and a colon-and-underscore name — so nothing landed had
+    // to move to make the door stricter.
+    for (const serverId of ["docs", "acct-primary", "a:b_c"]) {
+      const outcome = admitToolServer(stdio({ serverId }));
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) continue;
+      expect(outcome.server.serverId).toBe(serverId);
+      expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false }]);
+    }
+  });
+});
+
 describe("a credential cannot be described at all", () => {
   it("carries no secret-bearing field into the admitted server", () => {
     // The refusal is by the absence of a field, not by a scan. An operator

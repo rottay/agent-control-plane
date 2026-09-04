@@ -4466,6 +4466,59 @@ const V2B4B_S2_WRITE_SET = [
 ];
 
 /**
+ * V2-B4b stage 3A: one bounded-identifier grammar, owned by the contracts.
+ *
+ * Two packages judged the same vocabulary by two different rules. `@acp/tools`
+ * admitted a server on "a non-empty string"; `@acp/runtime`'s recorder refused
+ * to write a receipt whose `accountId`, `serverId` or `toolName` fell outside
+ * `/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/`. Between the two sat a band of names
+ * the door admitted and the ledger would not take — a server the plane could
+ * spawn and call, and then could not write down. This packet is the narrowest
+ * repair of that: the grammar moves into `@acp/contracts` unchanged in content,
+ * and both sides import the one constant.
+ *
+ * **Behaviour-identical by construction, on both sides.** The pattern is the
+ * receipt's own, byte for byte, so no landed row and no landed fixture moves;
+ * of every server id and tool name literal the tools package carries, only `""`
+ * falls outside the grammar, and it was already refused with the identical
+ * refusal at the identical field path. What changes is the set of *rejected*
+ * inputs at admission, which is the point.
+ *
+ * **What it deliberately does not do.** `port/index.ts` still builds a refusal
+ * receipt from the caller's raw `serverId` and `toolName`, so a request-side
+ * name outside the grammar can still produce a receipt the recorder would
+ * refuse. That leg is unreachable at this HEAD — `@acp/tools` has no consumer
+ * package, and `callTool` and `recordToolCall` have no callers — and closing it
+ * means typing the wire, which is the API door's packet, not this one. Stated
+ * rather than papered over: the tools README says the same thing in prose, and
+ * neither claims that every port refusal is recordable yet.
+ *
+ * `VOCABULARY_WORD` and the transition-id grammar are NOT canonicalized here.
+ * They are different grammars with different bounds, and hoisting a shape away
+ * from the package that owns its membership would be a widening wearing a
+ * deduplication's clothes. L-B4B-7 below is scoped by the bounded quantifier
+ * for exactly that reason: a character-class ban would fail on the three
+ * legitimate transition-id copies in the runtime tree.
+ *
+ * `CONTRACTS_SCHEMA_EXPORTS` moves 98 → 100 and `PATH_SCOPED_LAWS` 56 → 57;
+ * those are the only pins this packet touches. `RUNTIME_PUBLIC_EXPORTS` stays
+ * 192 — `IDENTIFIER` was never exported — and `TOOLS_PUBLIC_EXPORTS` stays 30.
+ */
+const V2B4B_S3A_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/bounded-identifier/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/bounded-identifier/index.test.ts",
+  "packages/edges/tools/src/admission/index.ts",
+  "packages/edges/tools/test/admission/index.test.ts",
+  "packages/domains/runtime/src/tool-receipt/index.ts",
+  "packages/domains/runtime/test/tool-receipt/index.test.ts",
+  "packages/edges/tools/README.md",
+  "scripts/check-architecture.mjs",
+];
+
+/**
  * Publication authorization: the no-push fence becomes a publication fence.
  *
  * The owner authorized publishing committed `main` on 2026-09-03 — "Autorizo
@@ -4848,6 +4901,7 @@ const WRITE_SET = [
   ...V2B4A_WRITE_SET,
   ...V2B4B_WRITE_SET,
   ...V2B4B_S2_WRITE_SET,
+  ...V2B4B_S3A_WRITE_SET,
   ...PUBLICATION_WRITE_SET,
   ...P8T_DOC_WRITE_SET,
   ...P5N_A_WRITE_SET,
@@ -5719,6 +5773,17 @@ const PATH_SCOPED_LAWS = [
   {
     law: "tool write authority is a closed role subset",
     scope: "packages/edges/tools/src/{contract,port}/index.ts",
+  },
+  // V2-B4b stage 3A. One new path-shaped surface, so one new row: the register
+  // and the `requireScope` call sites both move 56 -> 57, and
+  // `assertPathScopedInventory` fails and prints both numbers if only one side
+  // of this edit lands. The scope is prose on purpose -- it names two package
+  // globs and the word between them -- so `PACKAGE_PATH_LITERAL` reads it as a
+  // description rather than pulling it into the literal scan's `mustHaveSeen`,
+  // which is the same treatment the ledger/runtime row above gets.
+  {
+    law: "the identifier grammar has one declaration and two importers",
+    scope: "packages/edges/tools/{src,test}/** and packages/domains/runtime/{src,test}/**",
   },
 ];
 
@@ -11394,6 +11459,8 @@ if (accountsIndex === null) {
   "AccountStatus",
   "ArtifactRef",
   "AuthMode",
+  "BOUNDED_IDENTIFIER",
+  "BoundedIdentifier",
   "CHECKPOINT_MAX_BYTES",
   "CLI_SUBSCRIPTION_PROVIDERS",
   "CONTRACT_VERSION",
@@ -12975,6 +13042,135 @@ if (tracked.status === 0) {
         " of the control plane's roles, a closed subset decided by membership",
     );
   }
+}
+
+// L-B4B-7 — one bounded-identifier grammar, declared once and imported twice.
+//
+// The map's wording for this law — "neither `@acp/tools` nor `@acp/runtime`
+// declares its own regex" — cannot be implemented as a character-class ban, and
+// implementing it that way would fail on code that is correct. Three grammars
+// share that character class and only one of them is being canonicalized here:
+// the transition-id grammar `/^[A-Za-z0-9][A-Za-z0-9._:-]*$/` is unbounded and
+// appears legitimately in the runtime tree, `VOCABULARY_WORD` is a different
+// shape whose membership lives in `@acp/tools` and is deliberately not hoisted,
+// and `@acp/contracts` itself holds inline transition-id copies — so the law
+// cannot be scoped to contracts either.
+//
+// What actually distinguishes the canonicalized grammar is its bound. The
+// duplication scan is therefore keyed on the bounded quantifier and never on
+// the character class: a second `{0,119}` in either package is the copy this
+// packet removed, coming back.
+//
+// Three assertions, and the third is what makes the first two mean anything: a
+// pinned source nobody imports is a constant, not an authority.
+const BOUNDED_IDENTIFIER_SITE = "packages/kernel/contracts/src/schemas/bounded-identifier/index.ts";
+const BOUNDED_IDENTIFIER_SOURCE = "^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$";
+const BOUNDED_IDENTIFIER_BOUND = "{0,119}";
+const BOUNDED_IDENTIFIER_IMPORTERS = [
+  TOOLS_ADMISSION_SITE,
+  "packages/domains/runtime/src/tool-receipt/index.ts",
+];
+// A value import naming bindings from the contracts package. `import type` is
+// excluded on purpose: a type-only binding cannot be the thing `.test()` is
+// called on, so accepting one would accept a consumer that judges nothing.
+const CONTRACTS_VALUE_IMPORT = /import\s+(?!type\b)\{([^}]*)\}\s*from\s*["']@acp\/contracts["']/g;
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+
+  // 1. The canonical source, pinned by equality. A widening — for a slash, say
+  //    — is a deliberate act that moves this line, and moving it is what a
+  //    reviewer sees.
+  const grammar = readIfPresent(BOUNDED_IDENTIFIER_SITE);
+  if (grammar === null) {
+    fail(BOUNDED_IDENTIFIER_SITE + " is missing; the identifier grammar has no declaration to be pinned");
+  } else {
+    const declared = /export const BOUNDED_IDENTIFIER\s*=\s*\/([^\n]*)\/;/.exec(stripComments(grammar));
+    if (declared === null) {
+      fail(BOUNDED_IDENTIFIER_SITE + " no longer declares BOUNDED_IDENTIFIER as a RegExp literal");
+    } else if (declared[1] !== BOUNDED_IDENTIFIER_SOURCE) {
+      fail(
+        BOUNDED_IDENTIFIER_SITE +
+          " declares BOUNDED_IDENTIFIER as /" +
+          declared[1] +
+          "/, but the pinned grammar is /" +
+          BOUNDED_IDENTIFIER_SOURCE +
+          "/",
+      );
+    }
+  }
+
+  // 2. No second copy of the bounded grammar in either consumer package, tests
+  //    included, comments excluded — both packages necessarily NAME the grammar
+  //    in prose to explain why they no longer declare it.
+  let grammarScanned = 0;
+  for (const relativePath of present) {
+    const inConsumer =
+      inAnyArea(relativePath, "tools", ["src", "test"], PACKAGE_STRATA) ||
+      inAnyArea(relativePath, "runtime", ["src", "test"], PACKAGE_STRATA);
+    if (!inConsumer || !relativePath.endsWith(".ts")) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    grammarScanned += 1;
+    if (stripComments(content).includes(BOUNDED_IDENTIFIER_BOUND)) {
+      fail(
+        relativePath +
+          " declares the bounded identifier grammar (" +
+          BOUNDED_IDENTIFIER_BOUND +
+          ") locally; it is " +
+          BOUNDED_IDENTIFIER_SITE +
+          "'s, and a second copy is the drift this law exists to refuse",
+      );
+    }
+  }
+
+  // 3. Both consumers reach the one declaration, and reach it BY NAME. Without
+  //    this, the packages could satisfy 2 by simply not judging identifiers at
+  //    all.
+  //
+  //    Naming the symbol and importing the package are two facts that do not
+  //    compose into the one this law means. A consumer could declare its own
+  //    copy under a different bound -- `{0,200}`, which assertion 2 does not
+  //    scan for -- and import `@acp/contracts` for an unrelated symbol, and a
+  //    pair of independent substring checks would call that canonical. What the
+  //    law is actually about is the binding: BOUNDED_IDENTIFIER, named in a
+  //    value import, from `@acp/contracts`. That is what is checked here.
+  for (const relativePath of BOUNDED_IDENTIFIER_IMPORTERS) {
+    const content = readIfPresent(relativePath);
+    if (content === null) {
+      fail(relativePath + " is missing; it is one of the two importers the identifier grammar law names");
+      continue;
+    }
+    const code = stripComments(content);
+    if (!code.includes("BOUNDED_IDENTIFIER")) {
+      fail(relativePath + " no longer names BOUNDED_IDENTIFIER; it would be judging names by some other rule");
+    }
+    if (!importSpecifiers(content).includes("@acp/contracts")) {
+      fail(relativePath + " no longer imports @acp/contracts; the grammar it uses would not be the canonical one");
+    }
+    let boundToContracts = false;
+    CONTRACTS_VALUE_IMPORT.lastIndex = 0;
+    let clause = CONTRACTS_VALUE_IMPORT.exec(code);
+    while (clause !== null) {
+      const named = clause[1]
+        .split(",")
+        .map((entry) => entry.trim().split(/\s+as\s+/)[0].trim())
+        .filter(Boolean);
+      if (named.includes("BOUNDED_IDENTIFIER")) boundToContracts = true;
+      clause = CONTRACTS_VALUE_IMPORT.exec(code);
+    }
+    if (!boundToContracts) {
+      fail(
+        relativePath +
+          " does not import BOUNDED_IDENTIFIER by name from @acp/contracts;" +
+          " naming the symbol and importing the package separately would still admit a local copy",
+      );
+    }
+  }
+
+  requireScope("the identifier grammar has one declaration and two importers", grammarScanned);
+  notes.push(
+    "one bounded identifier grammar, declared in @acp/contracts and imported by the tool edge and the recorder",
+  );
 }
 
 // The closed barrel, pinned by equality in both directions.

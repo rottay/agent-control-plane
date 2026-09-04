@@ -14,6 +14,8 @@ export {
   ROADMAP_CONTENT_MAX_BYTES,
   utf8ByteLength,
   CONTRACT_VERSION,
+  BOUNDED_IDENTIFIER,
+  BoundedIdentifier,
   EXIT_OK,
   EXIT_USAGE,
   TOKENS_USED_MAX,

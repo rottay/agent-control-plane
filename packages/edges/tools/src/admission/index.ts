@@ -9,10 +9,18 @@
  * This is also the only module in the package that reads `process.env`, and
  * the only one that touches the filesystem. Everything downstream of it is a
  * pure function of an already-admitted server.
+ *
+ * The name grammar it judges by is `@acp/contracts`' `BOUNDED_IDENTIFIER`, not
+ * a local copy (V2-B4b stage 3A). The durable recorder in `@acp/runtime`
+ * refuses to write a receipt whose `serverId` or `toolName` falls outside that
+ * grammar, and a door that admitted a name the recorder would later refuse
+ * would be a door whose decisions cannot all be written down.
  */
 
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
+
+import { BOUNDED_IDENTIFIER } from "@acp/contracts";
 
 import type {
   ToolAllowlistEntry,
@@ -134,7 +142,13 @@ function buildToolServerEnv(): Readonly<Record<string, string>> {
  * loosened field ends up in a config.
  */
 export function admitToolServer(descriptor: ToolServerDescriptor): ToolAdmissionOutcome {
-  if (typeof descriptor.serverId !== "string" || descriptor.serverId.length === 0) {
+  // The name is judged before the transport, before the URL parse and before
+  // `admitCommand` opens anything, so a server id outside the grammar is
+  // refused ahead of every read, spawn and call this package can reach.
+  // `typeof` still guards the `.test()`, which would otherwise stringify
+  // whatever it was handed and judge the string it produced. The grammar
+  // subsumes the emptiness check it replaces: `""` has no leading character.
+  if (typeof descriptor.serverId !== "string" || !BOUNDED_IDENTIFIER.test(descriptor.serverId)) {
     return refuse("SERVER_NOT_ADMITTED", "descriptor.serverId");
   }
 
@@ -188,7 +202,17 @@ export function admitToolServer(descriptor: ToolServerDescriptor): ToolAdmission
     const entry = raw as Record<string, unknown>;
     const name = entry["name"];
     const writes = entry["writes"];
-    if (typeof name !== "string" || name.length === 0 || typeof writes !== "boolean") {
+    // Every allowlisted name is judged here, before the admitted server is
+    // frozen and therefore before any of these names can reach a request. The
+    // emptiness check is kept beside the grammar rather than folded into it:
+    // it states the intent the grammar happens to imply, and it is the one a
+    // reader checks first.
+    if (
+      typeof name !== "string" ||
+      name.length === 0 ||
+      !BOUNDED_IDENTIFIER.test(name) ||
+      typeof writes !== "boolean"
+    ) {
       return refuse("SERVER_NOT_ADMITTED", "descriptor.tools");
     }
     if (names.has(name)) return refuse("SERVER_NOT_ADMITTED", "descriptor.tools");
