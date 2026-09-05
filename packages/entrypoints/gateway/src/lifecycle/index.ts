@@ -353,6 +353,29 @@ export async function executeLifecycleVerb(
       );
     }
 
+    // V2 L4, and deliberate because **nothing forces it**: a fourth refusal
+    // would otherwise flow into `document.refusal` and answer 200 with
+    // `ok: false`, which no type error announces. The engine was reached and
+    // said it holds no invocation at this address; that is a not-found, and the
+    // API says so with the code it already has. No document, for the same
+    // reason a capability gap carries none — the request never became an
+    // operation this plane can report on.
+    //
+    // `NOT_FOUND` now has two sources on this route: the ledger pre-check, when
+    // the ledger holds no such task or attempt, and this, when the ledger holds
+    // it and the engine does not. They share a code deliberately, because to a
+    // caller they mean the same thing — there is nothing there to act on — and
+    // the ledger remains the authority on what the task did.
+    if (!result.outcome.ok && result.outcome.refusal === "INVOCATION_NOT_FOUND") {
+      throw new ApiRouteError(
+        "NOT_FOUND",
+        "the engine holds no invocation at this attempt's address; confirm the" +
+          " endpoint is registered and ask once more, and the ledger remains the" +
+          " authority on what the task did",
+        verb === "CANCEL" ? "cancel" : "attach",
+      );
+    }
+
     document = {
       verb: result.verb,
       mode: result.mode,
@@ -365,11 +388,17 @@ export async function executeLifecycleVerb(
   } catch (error: unknown) {
     if (error instanceof ApiRouteError) throw error;
 
-    // Every other throw from below this line is a driver's. The contract's only
-    // refusal is `CAPABILITY_UNSUPPORTED`, which the driver answers as an
-    // outcome rather than a throw, so a server that could not be reached, an
-    // address that does not resolve or an invocation the engine never heard of
-    // are failures of the CHANNEL, not answers about the work.
+    // Every other throw from below this line is a driver's, and what reaches
+    // here is now genuinely a channel failure: a server that could not be
+    // reached, or an address that does not resolve.
+    //
+    // This comment used to include "an invocation the engine never heard of" in
+    // that list, and V2 L4 retired the claim because it was false. It was
+    // written when the driver threw on every non-ok attach status, so the door
+    // had no way to tell a reached engine's plain answer from an unreachable
+    // one — and the sentence described the driver's limitation as though it
+    // were a fact about the world. The drills had measured the opposite all
+    // along. That answer is now `INVOCATION_NOT_FOUND` and is handled above.
     //
     // The message never crosses. A driver error carries a status number, and a
     // status number is the one thing about an engine this plane puts in no body.

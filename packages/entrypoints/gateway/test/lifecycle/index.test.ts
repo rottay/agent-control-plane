@@ -487,6 +487,65 @@ describe("the lifecycle door refuses by name, and acts on none of it", () => {
     expect(gapResponse.statusCode).not.toBe(downResponse.statusCode);
   });
 
+  it("P5/N4/N8 answers 404 NOT_FOUND with no document when the engine holds no invocation", async () => {
+    // V2 L4. The silent-failure mode §4 named: a fourth refusal would otherwise
+    // flow into the document and answer 200 with `ok: false`, and no type error
+    // would have said so. N4 asserts the negative directly.
+    const staged = stage("gw-l4-not-found", 4);
+    const before = eventCount(staged.databasePath);
+    const { app } = serve(staged, {
+      makeDriver: scriptedDriver({
+        ok: false,
+        refusal: "INVOCATION_NOT_FOUND",
+        at: "reattach",
+      }),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: lifecyclePath(staged.taskId),
+      headers: AUTH,
+      payload: body(staged, { verb: "ATTACH" }),
+    });
+
+    // P5: the envelope, and the code the plane already had.
+    expect(response.statusCode).toBe(404);
+    const error = ApiError.parse(response.json()).error;
+    expect(error.code).toBe("NOT_FOUND");
+    // N4: not a document, and emphatically not a 200.
+    expect(response.statusCode).not.toBe(200);
+    expect(response.body).not.toContain("finalSequence");
+    expect(response.body).not.toContain("INVOCATION_NOT_FOUND");
+    // N6: no status number and no engine identity on any surface.
+    expect(response.body).not.toContain("404\"");
+    expect(response.body).not.toContain("inv_");
+    // N8: nothing appended.
+    expect(eventCount(staged.databasePath)).toBe(before);
+    await app.close();
+  });
+
+  it("N1 keeps an unreachable engine at 503, distinct from the engine's answer", async () => {
+    // The two must stay apart: one is worth retrying and the other is not.
+    const staged = stage("gw-l4-unreachable", 4);
+    const { app } = serve(staged, {
+      makeDriver: scriptedDriver(() =>
+        Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:8080 status=502")),
+      ),
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: lifecyclePath(staged.taskId),
+      headers: AUTH,
+      payload: body(staged, { verb: "ATTACH" }),
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.statusCode).not.toBe(404);
+    expect(ApiError.parse(response.json()).error.code).toBe("LEDGER_UNAVAILABLE");
+    await app.close();
+  });
+
   it("N7 guards the write and leaves the read open", async () => {
     const staged = stage("gw-l3-bearer", 4);
     const { app } = serve(staged);

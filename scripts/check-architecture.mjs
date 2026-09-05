@@ -5929,6 +5929,64 @@ const V2L3_WRITE_SET = [
   "README.md",
 ];
 
+/**
+ * V2 L4 — the driver names an invocation the engine forgot.
+ *
+ * `DRIVER_REFUSALS` gains a fourth member, `INVOCATION_NOT_FOUND`, and
+ * `RestateDriver.reattach` stops throwing on a `404`. One engine fact had two
+ * opposite treatments: `cancel` let `404` and `409` fall through to settlement,
+ * while `reattach` threw on every non-ok status — so an engine that had been
+ * REACHED and had answered plainly arrived at both doors as an unreachable
+ * engine, with a retry hint that could never come true. The drills had measured
+ * the opposite all along.
+ *
+ * **Eighteen paths, and two of them are allowances that end untouched.**
+ *
+ * The eighteenth was forced and authorized on measurement: the brief excluded
+ * "any daemon path" on the ground that the daemon calls neither verb, which is
+ * true of daemon **source** and false of its lifecycle drill. That drill calls
+ * `reattach` against a real engine for a key it never issued and asserted the
+ * throw this packet converts into a refusal, so the exclusion is narrowed to
+ * daemon *source* paths. The drill now measures the closed outcome — which is
+ * P1 against the production endpoint, at no extra cost — and sweeps the
+ * refusal for engine-minted identity like every other surface.
+ *
+ * `runtime/test/drivers/sqlite-supervisor` needed no new assertion — the
+ * correspondence law is a biconditional over refused-or-not, never over WHICH
+ * refusal — and `cli/src/lifecycle/index.ts` took a doc comment only, because
+ * the refusal already passes through the door unbranched. Both are listed
+ * because the brief authorized them; neither was required.
+ *
+ * No protocol path enters the set and `API_CONTRACT_VERSION` stays `0.13.0`:
+ * this adds no route, no schema and no error-code member, and moves one
+ * situation from a code that was a defect to the existing code that is true.
+ * `CONTRACT_VERSION` is untouched by a refusal member, and no fence law
+ * enumerates the members — `DRIVER_REFUSALS` is pinned as an export NAME only,
+ * and the single equality pin on its members lives in the contracts suite.
+ *
+ * Record: `docs/architecture/0032-the-invocation-the-engine-forgot.md`.
+ */
+const V2L4_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/durability-plane/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/lifecycle-operation/index.test.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/lifecycle/index.ts",
+  "packages/entrypoints/cli/test/lifecycle/index.test.ts",
+  "packages/entrypoints/cli/README.md",
+  "packages/entrypoints/gateway/src/lifecycle/index.ts",
+  "packages/entrypoints/gateway/test/lifecycle/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/lifecycle/index.test.ts",
+  "docs/api-reference.md",
+  "docs/architecture/0032-the-invocation-the-engine-forgot.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6071,6 +6129,7 @@ const WRITE_SET = [
   ...P5N_C11_WRITE_SET,
   ...V2DOCSAUDIT_WRITE_SET,
   ...V2L3_WRITE_SET,
+  ...V2L4_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */

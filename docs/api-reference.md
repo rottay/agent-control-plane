@@ -211,6 +211,7 @@ the wrong thing with at least one of them.
 | --- | --- | --- | --- |
 | `CAPABILITY_UNSUPPORTED` | `501` | the engine this attempt runs on does not serve that lifecycle verb | do not retry; nothing an operator does makes it succeed |
 | `SCENARIO_UNCONFIGURED` | `503` | this server was started without a scenario naming its ledger | an operator restarts it with `--scenario`; then retry |
+| `NOT_FOUND` | `404` | the engine was reached and answered that it holds no invocation at this attempt's address | not as a loop; confirm the endpoint is registered, then ask once more — the ledger remains the authority |
 | `LEDGER_UNAVAILABLE` | `503` | the ledger could not be read, or the engine could not be reached | retry |
 
 The distinction between the first and the last two is the reason
@@ -225,6 +226,22 @@ A driver's own refusal is not an error at all. `TASK_TERMINAL` and
 `POSTCONDITION_UNKNOWN` answer `200` with `ok: false` and the refusal named in
 the document, because the request became an operation; `4xx` and `5xx` are
 reserved for requests that never did.
+
+`INVOCATION_NOT_FOUND` is the exception, and the second and last one beside
+`CAPABILITY_UNSUPPORTED`: it arrives as a **`404` envelope with no document**,
+because the engine holds nothing to report on. `NOT_FOUND` therefore has two
+sources on the lifecycle route — the ledger pre-check, when the ledger holds no
+such task or attempt, and this, when the ledger holds the attempt and the engine
+does not. They share a code deliberately, because to a caller they mean the same
+thing: there is nothing there to act on.
+
+The retry guidance is bounded rather than absolute, and the reason is measured.
+A `404` on the attach path has two causes — an invocation that is genuinely
+absent, and a deployment that is not registered — and the plane will not read
+the engine's response body to tell them apart. A caller whose endpoint is not
+yet registered would otherwise be told to abandon a live attempt. So: confirm
+the endpoint is registered, ask once more, and read the ledger, which is the
+authority on what the task actually did.
 
 `CLAIM_HELD` is the one that most looks retryable and most is not. Nothing was
 wrong with the request and the plane is not overloaded — so it is neither a

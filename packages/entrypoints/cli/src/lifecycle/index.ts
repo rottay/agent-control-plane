@@ -302,6 +302,13 @@ function refuseRecovery(refusal: string, at: string): LifecycleRefused {
  * answers `CAPABILITY_UNSUPPORTED` from a real driver rather than from a branch
  * that guessed, and an attempt with no recorded route is refused in the same
  * words whichever mode was named.
+ *
+ * Since V2 L4 a fourth driver refusal passes through here unchanged:
+ * `INVOCATION_NOT_FOUND`, which the engine answers when it holds no invocation
+ * at an address. It needed no branch — the door prints whatever refusal the
+ * outcome carries — and the exit table maps it to `EXIT_NOT_FOUND`. Before L4
+ * that answer arrived as a throw and was reported as an unreachable engine,
+ * which told an operator to retry something that could never change.
  */
 export async function runLifecycleVerb(input: LifecycleVerbInput): Promise<LifecycleVerbResult> {
   const mode = admitMode(input.mode);

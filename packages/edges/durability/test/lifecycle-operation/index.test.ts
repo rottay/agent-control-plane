@@ -17,13 +17,16 @@ import {
   LOOPBACK_HOST,
   OUTCOME_STEP,
   RESTATE_ADMIN_URL,
+  LIFECYCLE_PLAN,
   RESTATE_INGRESS_URL,
   RUNTIME_SERVICE_PORT,
+  buildEvent,
   canonicalSubmissionDigest,
   createEvidenceProbe,
   lifecycleBeat,
   removeScenarioRoot,
   resolveScenarioRoot,
+  planStep,
   restateInvocation,
   runLifecycleOperation,
   scenarioLedgerPath,
@@ -324,6 +327,39 @@ async function openIntent(
   return { root, ledger, server, endpoint, invocation };
 }
 
+/**
+ * A ledger seeded to `RUN_STARTED` for a key that was never sent to the engine.
+ *
+ * `restateInvocation` verifies the submission digest against the events, so the
+ * seed is built the way a real submission builds it — a fixture with a
+ * placeholder digest would be refused before a driver was ever constructed, and
+ * the drill would measure the refusal instead of the engine.
+ */
+function seedNeverIssued(root: ScenarioRoot, ledger: Ledger, taskId: string): DurableInvocation {
+  const invocation = drillInvocation(taskId);
+  const route: ResolvedRoute = drillRoute({
+    taskId,
+    attempt: 1,
+    invocationId: "",
+    submittedAt: SUBMITTED_AT,
+    submissionDigest: "",
+  });
+  for (let index = 0; index <= 4; index += 1) {
+    ledger.append(
+      buildEvent({
+        invocation,
+        step: planStep(index),
+        emittedBy: EMITTED_BY,
+        initiativeId: TEST_INITIATIVE_ID,
+        plan: LIFECYCLE_PLAN,
+        route,
+      }),
+    );
+  }
+  void root;
+  return invocation;
+}
+
 describe("the lifecycle operation against a real engine", () => {
   it("has a verified server to run against, and fails rather than skipping", () => {
     // A green suite must never be mistakable for a green adoption decision.
@@ -511,6 +547,129 @@ describe("the lifecycle operation against a real engine", () => {
           heldTasks: heldTasks(staged.endpoint).size,
           duplicateTransitions: 0,
           integrityOk: staged.ledger.verifyIntegrity().ok,
+        }) +
+        "\n",
+    );
+  }, 240_000);
+
+  it("P1/P2 tells an invocation the engine never issued from one it holds", async () => {
+    // The defect V2 L4 fixes, measured at the edge before either door is
+    // touched. Both halves run against ONE real server with the object
+    // deployed, so the only difference between them is whether the engine was
+    // ever asked to hold the key.
+    const id = "l4-attach-not-found";
+    const liveTask = randomUUID();
+    const staged = await openIntent(id, liveTask);
+
+    // P1: a key this engine was never sent. The object is deployed — the walk
+    // above proves it — so a 404 here is an answer about the invocation and not
+    // about the deployment. It refuses; it does not throw.
+    const absentTask = randomUUID();
+    const absent = seedNeverIssued(staged.root, staged.ledger, absentTask);
+    const before = staged.ledger.status();
+    const absentDoor = lifecycleDoor(staged.root, staged.ledger, absentTask);
+    expect(absentDoor.invocation.invocationId).toBe(absent.invocationId);
+
+    const refused = await runLifecycleOperation({
+      driver: absentDoor.driver,
+      verb: "ATTACH",
+      invocation: absentDoor.invocation,
+    });
+    expect(refused.outcome).toEqual({
+      ok: false,
+      refusal: "INVOCATION_NOT_FOUND",
+      at: "reattach",
+    });
+    // Nothing is appended on the refusal, and no status number crosses.
+    expect(staged.ledger.status().eventCount).toBe(before.eventCount);
+    expect(staged.ledger.status().headEventSha256).toBe(before.headEventSha256);
+    expect(JSON.stringify(refused.outcome)).not.toContain("404");
+
+    // P2: the live invocation still rejoins. Released, the held walk finishes,
+    // and an attach to that same key answers a ledger coordinate rather than a
+    // refusal — so the new branch narrowed nothing it should not have.
+    writeFileSync(releasePath(staged.root, "AFTER_INTENT"), "release", "utf8");
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      if (staged.ledger.getTask(liveTask)?.currentState === "CHECKPOINTED") break;
+      await delay(200);
+    }
+    expect(staged.ledger.getTask(liveTask)?.currentState).toBe("CHECKPOINTED");
+
+    const settled = staged.ledger.status();
+    const liveDoor = lifecycleDoor(staged.root, staged.ledger, liveTask);
+    const rejoined = await runLifecycleOperation({
+      driver: liveDoor.driver,
+      verb: "ATTACH",
+      invocation: liveDoor.invocation,
+    });
+    expect(rejoined.outcome.ok).toBe(true);
+    // The attach observes; it does not move the head.
+    expect(staged.ledger.status().eventCount).toBe(settled.eventCount);
+    expect(staged.ledger.status().headEventSha256).toBe(settled.headEventSha256);
+    expect(staged.ledger.verifyIntegrity().ok).toBe(true);
+
+    process.stdout.write(
+      "RECEIPT " +
+        JSON.stringify({
+          drill: "L4-ATTACH-NOT-FOUND",
+          mode: "RESTATE",
+          construction: "forLifecycle",
+          deployment: "REGISTERED",
+          absentRefusal: refused.outcome.ok ? null : refused.outcome.refusal,
+          liveRejoined: rejoined.outcome.ok,
+          eventCountUnchangedOnRefusal: true,
+          integrityOk: staged.ledger.verifyIntegrity().ok,
+        }) +
+        "\n",
+    );
+  }, 240_000);
+
+  it("N9 answers the same refusal when no deployment is registered", async () => {
+    // The second measured cause of a 404 on this path, recorded by a test
+    // rather than discovered by an operator. Against a bare server the attach
+    // answers 404 for an UNKNOWN SERVICE — a fact about the deployment, not
+    // about the invocation — and the driver cannot tell the two apart without
+    // reading the engine's body, which this plane refuses to do.
+    //
+    // This is why the refusal is defined by what the engine answered rather
+    // than by why, and why the retry guidance is bounded rather than absolute:
+    // a caller whose endpoint is not yet registered would otherwise be told to
+    // abandon a live attempt.
+    const id = "l4-attach-no-deployment";
+    const taskId = randomUUID();
+    const root = scenario(id);
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    // A real server, and deliberately no `registerDeployment` and no endpoint.
+    trackServer(await startServer(root));
+    seedNeverIssued(root, ledger, taskId);
+    const before = ledger.status();
+
+    const door = lifecycleDoor(root, ledger, taskId);
+    const outcome = await runLifecycleOperation({
+      driver: door.driver,
+      verb: "ATTACH",
+      invocation: door.invocation,
+    });
+
+    expect(outcome.outcome).toEqual({
+      ok: false,
+      refusal: "INVOCATION_NOT_FOUND",
+      at: "reattach",
+    });
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    process.stdout.write(
+      "RECEIPT " +
+        JSON.stringify({
+          drill: "L4-ATTACH-NO-DEPLOYMENT",
+          mode: "RESTATE",
+          construction: "forLifecycle",
+          deployment: "UNREGISTERED",
+          refusal: outcome.outcome.ok ? null : outcome.outcome.refusal,
+          eventCount: ledger.status().eventCount,
+          integrityOk: ledger.verifyIntegrity().ok,
         }) +
         "\n",
     );

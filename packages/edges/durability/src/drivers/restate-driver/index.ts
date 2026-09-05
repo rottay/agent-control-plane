@@ -900,6 +900,13 @@ export class RestateDriver implements OrchestrationDriver {
       this.#options.adminUrl,
       invocation,
     );
+    // Byte-identical since V2-B2-4b, and deliberately so. `404` and `409` fall
+    // through to settlement here because on THIS path the settlement decides,
+    // not the engine: an invocation the engine no longer holds may still have
+    // an intent the ledger must close. That is the opposite of `reattach`,
+    // where a `404` is the whole answer because there is nothing to settle —
+    // one engine status, two paths, two honest treatments. V2 L4 restated this
+    // comment in the new vocabulary and changed no branch.
     if (!stopped.ok && stopped.status !== 404 && stopped.status !== 409) {
       throw new SupervisorError(
         "the engine did not accept the cancellation and answered " +
@@ -1011,14 +1018,30 @@ export class RestateDriver implements OrchestrationDriver {
    *
    * Three answers, and the shape of each is deliberate.
    *
-   * It never returns a `DriverRefused`, because the only refusal this contract
-   * has is `CAPABILITY_UNSUPPORTED` and the capability is present: a server
-   * that could not be reached, an address that does not resolve or an
-   * invocation the engine has never heard of are failures of the OBSERVATION
-   * channel, not answers about the work. Reporting one as a refusal would tell
-   * a caller the engine cannot reattach when what actually happened is that
-   * this attempt could not see. So those throw, and the caller falls back to
-   * the authority that always knows — the ledger.
+   * **A `404` is an answer about the work, and V2 L4 stopped pretending
+   * otherwise.** Until then every non-ok status threw, so an engine that had
+   * been reached and had replied plainly — "I hold no invocation at this
+   * address" — arrived at both doors as an unreachable engine, with a retry
+   * hint that could never come true. The drills had measured the truth all
+   * along: a never-issued key answers `404` from a real server with the ledger
+   * untouched. That is `INVOCATION_NOT_FOUND`, and it is a refusal.
+   *
+   * The refusal is definite about the answer and silent about the cause,
+   * because a `404` here has two measured causes — an invocation genuinely
+   * absent, and a deployment not registered — and separating them would mean
+   * reading the engine's response body, which this plane refuses to do.
+   *
+   * **Only `404` maps.** Every other non-ok status — `409`, `403`, `400` and
+   * every `5xx` — still throws, and `409` is excluded on evidence rather than
+   * on taste: no test, drill or pinned note has ever produced one on this
+   * path, and inferring its meaning from the admin cancel's `409` would be
+   * inference rather than measurement.
+   *
+   * Everything that is genuinely a channel failure still throws, because
+   * reporting one as a refusal would tell a caller the engine cannot reattach
+   * when what actually happened is that this attempt could not see. So those
+   * throw, and the caller falls back to the authority that always knows — the
+   * ledger.
    *
    * What it returns on success is a ledger coordinate and only that. The
    * handler's own output is `{ finalSequence }`, the head the walk reached, so
@@ -1028,6 +1051,12 @@ export class RestateDriver implements OrchestrationDriver {
   async reattach(invocation: DurableInvocation): Promise<DriverOutcome> {
     const result = await attachAdvance(this.#options.ingressUrl, invocation);
     if (!result.ok) {
+      // The one status with measured semantics on this path. Branched on and
+      // then discarded: the number reaches no door, no ledger row and no
+      // response body, and the refusal name is the whole answer.
+      if (result.status === 404) {
+        return { ok: false, refusal: "INVOCATION_NOT_FOUND", at: "reattach" };
+      }
       // The status, never the body: a router or handler error text is engine
       // output and may name an engine invocation id.
       throw new SupervisorError(

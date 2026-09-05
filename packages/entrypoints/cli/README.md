@@ -175,7 +175,7 @@ envelope on stderr.
 | `0`  | The question was answered.                                   |
 | `1`  | Internal failure, including a response that failed to parse. |
 | `2`  | The request was malformed: bad command, option, or filter — or it named an attempt that had already ended (`TASK_TERMINAL`, printed as a document). |
-| `4`  | The task or worker asked for is not recorded.                 |
+| `4`  | Nothing is there to act on, from either of two sources: the ledger holds no such task, worker or attempt (an envelope on stderr), or the ledger holds the attempt and the engine answered that it holds no invocation at its address (`INVOCATION_NOT_FOUND`, printed as a document on stdout). Not a retry loop: confirm the endpoint is registered, then ask once more — the ledger remains the authority on what the task did. |
 | `5`  | The ledger could not be read, the engine could not be reached, or the effect's postcondition could not be established (`POSTCONDITION_UNKNOWN`, printed as a document, nothing appended). |
 | `6`  | The ledger is not trustworthy: integrity check failed.        |
 | `7`  | Another caller holds this tool coordinate.                    |

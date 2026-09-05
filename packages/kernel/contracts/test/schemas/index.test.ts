@@ -1800,11 +1800,20 @@ describe("the driver capability declaration (V2-B2-1)", () => {
     // a reason arrives with the drill that earns it. `CANCEL` became real
     // there, and a real verb refuses for reasons that are about the TASK
     // rather than about the engine's capabilities.
+    //
+    // V2 L4 added the fourth under the same rule. `INVOCATION_NOT_FOUND` is
+    // what a reached engine answers when it holds no invocation at an address,
+    // and it arrived with the drills that measure it — a never-issued key and
+    // an unregistered deployment both answer `404`, which is why the member is
+    // definite about the answer and silent about the cause. N7: exactly four,
+    // in declared order.
     expect([...DRIVER_REFUSALS]).toEqual([
       "CAPABILITY_UNSUPPORTED",
+      "INVOCATION_NOT_FOUND",
       "POSTCONDITION_UNKNOWN",
       "TASK_TERMINAL",
     ]);
+    expect(DRIVER_REFUSALS).toHaveLength(4);
   });
 
   it("admits two states and no third", () => {

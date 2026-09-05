@@ -211,7 +211,11 @@ type ScriptedAnswer =
   | { readonly ok: true; readonly finalSequence: number }
   | {
       readonly ok: false;
-      readonly refusal: "CAPABILITY_UNSUPPORTED" | "POSTCONDITION_UNKNOWN" | "TASK_TERMINAL";
+      readonly refusal:
+        | "CAPABILITY_UNSUPPORTED"
+        | "INVOCATION_NOT_FOUND"
+        | "POSTCONDITION_UNKNOWN"
+        | "TASK_TERMINAL";
       readonly at: string;
     };
 
@@ -361,6 +365,54 @@ describe("the lifecycle door fails closed", () => {
 
     // Three refusals, three codes, none of them zero.
     expect(new Set([EXIT_CAPABILITY_UNSUPPORTED, EXIT_UNAVAILABLE, EXIT_USAGE]).size).toBe(3);
+  });
+
+  it("P4 prints the document and exits 4 when the engine holds no such invocation", async () => {
+    // V2 L4. Before it, this answer arrived as a throw and was reported as an
+    // unreachable engine — exit 5, "look again" — for a fact that could never
+    // change. It is now a refusal like the others: the seven-field document on
+    // stdout, and `EXIT_NOT_FOUND` because there is nothing there to act on.
+    const staged = stage("cli-l4-not-found", 4);
+    const result = await invoke(argsFor("attach", staged, "RESTATE"), {
+      makeDriver: scriptedDriver({
+        ok: false,
+        refusal: "INVOCATION_NOT_FOUND",
+        at: "reattach",
+      }),
+    });
+
+    expect(result.exitCode).toBe(EXIT_NOT_FOUND);
+    const printed = document(result);
+    expect(printed.refusal).toBe("INVOCATION_NOT_FOUND");
+    expect(printed.ok).toBe(false);
+    expect(printed.finalSequence).toBeNull();
+    // The document, not an envelope: this is an answer about the work, and it
+    // goes to stdout with nothing on stderr.
+    expect(result.stderr).toBe("");
+    // N6: no status number reaches any surface.
+    for (const surface of [result.stdout, result.stderr]) {
+      expect(surface).not.toContain("404");
+      expect(surface).not.toContain("inv_");
+    }
+    // Four refusals, four codes, still none of them zero.
+    expect(
+      new Set([EXIT_CAPABILITY_UNSUPPORTED, EXIT_NOT_FOUND, EXIT_UNAVAILABLE, EXIT_USAGE]).size,
+    ).toBe(4);
+  });
+
+  it("N1 keeps an unreachable engine at exit 5, distinct from the engine's answer", async () => {
+    // The mirror of the fix: a channel failure is still a throw and still
+    // reports as unavailable. If this ever became `INVOCATION_NOT_FOUND` the
+    // packet would have replaced one false answer with another.
+    const staged = stage("cli-l4-unreachable", 4);
+    const result = await invoke(argsFor("attach", staged, "RESTATE"), {
+      makeDriver: scriptedDriver(() =>
+        Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:8080")),
+      ),
+    });
+    expect(result.exitCode).toBe(EXIT_UNAVAILABLE);
+    expect(result.exitCode).not.toBe(EXIT_NOT_FOUND);
+    expect(result.stdout).toBe("");
   });
 
   it("refuses a missing or misspelled --mode without opening a ledger", async () => {

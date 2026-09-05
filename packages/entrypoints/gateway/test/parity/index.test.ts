@@ -1641,6 +1641,107 @@ describe("the two lifecycle doors are equivalent on the write (V2 L3)", () => {
     expect(afterCli).toBe(before);
   });
 
+  it("P6 renders one driver outcome two ways, and the asymmetry is the assertion", async () => {
+    // V2 L4. `INVOCATION_NOT_FOUND` is the second and last outcome outside
+    // document equality, beside `CAPABILITY_UNSUPPORTED`. Asserting equality
+    // here would be asserting something false, so the suite asserts the
+    // difference instead — that both doors reach the SAME driver outcome and
+    // then present it as each surface's contract requires.
+    const taskId = randomUUID();
+    const notFound = () =>
+      ({ mode }: { mode: string }) =>
+        ({
+          mode,
+          cancel: () =>
+            Promise.resolve({ ok: false, refusal: "INVOCATION_NOT_FOUND", at: "cancel" }),
+          reattach: () =>
+            Promise.resolve({ ok: false, refusal: "INVOCATION_NOT_FOUND", at: "reattach" }),
+          signal: () =>
+            Promise.resolve({ ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "signal" }),
+          timer: () =>
+            Promise.resolve({ ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "timer" }),
+          advance: () => Promise.reject(new Error("the scripted driver walks no plan")),
+          status: () => Promise.reject(new Error("the scripted driver reports no status")),
+          reconcile: () => Promise.reject(new Error("the scripted driver reconciles nothing")),
+          capabilities: () => ({
+            contractVersion: "2.2.0",
+            mode,
+            verbs: {
+              CANCEL: "SUPPORTED",
+              REATTACH: "SUPPORTED",
+              SIGNAL: "SUPPORTED",
+              TIMER: "SUPPORTED",
+            },
+            properties: { SERIALIZED_PER_TASK: "SUPPORTED" },
+          }),
+        }) as never;
+
+    // The API: an envelope, 404, no document.
+    const apiSeed = seedLifecycle("l4-parity-api", taskId);
+    const app = buildServer({
+      ledgerPath: apiSeed.databasePath,
+      writeBearerPath: lifecycleBearer(apiSeed.scenarioId),
+      scenarioId: apiSeed.scenarioId,
+      makeDriver: notFound(),
+    });
+    let apiStatus = 0;
+    let apiBody = "";
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: lifecyclePath(taskId),
+        headers: { authorization: "Bearer " + LIFECYCLE_BEARER },
+        payload: { verb: "ATTACH", mode: "RESTATE", taskId, attempt: 1 },
+      });
+      apiStatus = response.statusCode;
+      apiBody = response.body;
+    } finally {
+      await app.close();
+    }
+
+    // The CLI: the seven-field document, with the refusal named in it.
+    const cliSeed = seedLifecycle("l4-parity-cli", taskId);
+    const cli = await runLifecycleVerb({
+      verb: "ATTACH",
+      databasePath: cliSeed.databasePath,
+      scenarioId: cliSeed.scenarioId,
+      taskId,
+      attempt: "1",
+      mode: "RESTATE",
+      makeDriver: notFound(),
+    });
+
+    // Same driver outcome, reached through the same operation.
+    expect(cli.outcome).toEqual({
+      ok: false,
+      refusal: "INVOCATION_NOT_FOUND",
+      at: "reattach",
+    });
+
+    // Two presentations, asserted as a difference rather than an equality.
+    expect(apiStatus).toBe(404);
+    expect(JSON.parse(apiBody)).toHaveProperty("error.code", "NOT_FOUND");
+    expect(apiBody).not.toContain("finalSequence");
+
+    const document = cli.document as unknown as Record<string, unknown>;
+    expect(Object.keys(document).sort()).toEqual([
+      "attempt",
+      "finalSequence",
+      "mode",
+      "ok",
+      "refusal",
+      "taskId",
+      "verb",
+    ]);
+    expect(document["refusal"]).toBe("INVOCATION_NOT_FOUND");
+    expect(document["ok"]).toBe(false);
+
+    // Neither surface carries the engine's status number.
+    for (const surface of [apiBody, JSON.stringify(document)]) {
+      expect(surface).not.toContain("inv_");
+    }
+  });
+
   it("T3 leaves the ledger byte-identical when the API door is called twice", async () => {
     const taskId = randomUUID();
     const seed = seedLifecycle("l3-parity-twice", taskId);

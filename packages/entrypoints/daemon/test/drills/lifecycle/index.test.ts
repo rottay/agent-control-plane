@@ -801,27 +801,33 @@ describe("V2-B2-5G: the production endpoint serves the durable gate", () => {
     const signalled = await plane.driver.signal(invocation);
     expect(signalled).toEqual({ ok: true });
 
-    // Two errors, chosen because they are the two KINDS this plane can raise:
-    // one refused before the wire, and one carrying an engine status back.
-    // A message is unbounded text, so it is the surface most likely to leak.
+    // One thrown message, and it is the "refused before the wire" kind. A
+    // message is unbounded text, so it is the surface most likely to leak.
     const errors: string[] = [];
     await expect(plane.driver.timer(invocation, -1)).rejects.toThrow();
     await plane.driver.timer(invocation, -1).catch((error: unknown) => {
       errors.push(error instanceof Error ? error.message : String(error));
     });
+    expect(errors).toHaveLength(1);
+
+    // The engine's own answer is no longer a thrown message. Since V2 L4 a real
+    // 404 on the attach path — a key this engine never issued — arrives as a
+    // closed refusal rather than as a status-bearing throw, so it is swept as a
+    // surface below instead of as text. The closed outcome has no field an
+    // engine string could occupy, and the regexes prove that rather than
+    // assume it.
     const neverIssued = invocationFor(randomUUID(), "7");
-    await plane.driver.reattach(neverIssued).catch((error: unknown) => {
-      errors.push(error instanceof Error ? error.message : String(error));
+    const forgotten = await plane.driver.reattach(neverIssued);
+    expect(forgotten).toEqual({
+      ok: false,
+      refusal: "INVOCATION_NOT_FOUND",
+      at: "reattach",
     });
-    expect(errors).toHaveLength(2);
-    // The second one is a real engine answer, reported as a STATUS and never as
-    // a body: if the driver forwarded the router's text this is where it would
-    // show, because that text names the engine's own invocation.
-    expect(errors[1]).toContain("the ledger remains the authority");
 
     const surfaces: readonly (readonly [string, unknown])[] = [
       ["signal outcome", signalled],
       ["thrown messages", errors],
+      ["reattach refusal", forgotten],
       ["events", plane.ledger.listEvents({ limit: 500 }).events.map((record) => record.event)],
       ["task read model", plane.ledger.getTask(invocation.taskId)],
       ["task list", plane.ledger.listTasks().tasks],

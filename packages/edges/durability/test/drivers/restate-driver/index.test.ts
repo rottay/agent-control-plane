@@ -1255,25 +1255,58 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     ]);
   });
 
-  it("throws rather than refusing when the attach could not answer", async () => {
-    // A capability refusal would say the engine cannot reattach. What actually
-    // happened is that this attempt could not see, which is a fact about the
-    // observation channel — so it throws, and the caller falls back to the
-    // ledger rather than being told a falsehood about the engine.
-    const subject = capabilitySubject("attach-unanswerable");
-    await expect(
-      withAttachAnswering({ status: 404, body: '{"code":404,"message":"not found"}' }, () =>
-        subject.driver.reattach(INVOCATION_FOR_CAPABILITIES),
-      ),
-    ).rejects.toBeInstanceOf(SupervisorError);
+  it("refuses INVOCATION_NOT_FOUND on a 404 rather than throwing (V2 L4)", async () => {
+    // Until L4 this threw, so an engine that had been REACHED and had answered
+    // plainly arrived at both doors as an unreachable engine — a retry hint
+    // that could never come true. A 404 here is an answer about the work, and
+    // the refusal says exactly what the engine said and nothing about why.
+    const subject = capabilitySubject("attach-not-found");
+    const { result } = await withAttachAnswering(
+      { status: 404, body: '{"code":404,"message":"not found"}' },
+      () => subject.driver.reattach(INVOCATION_FOR_CAPABILITIES),
+    );
+    expect(result).toEqual({ ok: false, refusal: "INVOCATION_NOT_FOUND", at: "reattach" });
+  });
+
+  it("N3 keeps every other non-ok attach status a throw, 409 included", async () => {
+    // Q3's boundary, asserted rather than assumed. 409 is excluded on evidence:
+    // nothing in this repository has ever produced one on the attach path, and
+    // inferring its meaning from the admin cancel's 409 would be inference, not
+    // measurement. If a drill ever produces one, that is new semantics and a
+    // new adjudication — not a local widening here.
+    const subject = capabilitySubject("attach-other-statuses");
+    for (const status of [409, 403, 400, 401, 500, 502, 503]) {
+      await expect(
+        withAttachAnswering({ status, body: '{"message":"nope"}' }, () =>
+          subject.driver.reattach(INVOCATION_FOR_CAPABILITIES),
+        ),
+      ).rejects.toBeInstanceOf(SupervisorError);
+    }
+  });
+
+  it("N2 treats a 5xx as unreachable rather than not-found", async () => {
+    // The mirror of the bug L4 fixes: turning a channel failure into a refusal
+    // would tell a caller the engine answered about the work when it did not.
+    const subject = capabilitySubject("attach-server-error");
+    const outcome = await withAttachAnswering({ status: 500, body: "{}" }, () =>
+      subject.driver
+        .reattach(INVOCATION_FOR_CAPABILITIES)
+        .then((value) => value)
+        .catch((e: unknown) => e),
+    );
+    expect(outcome.result).toBeInstanceOf(SupervisorError);
+    expect(outcome.result).not.toEqual(
+      expect.objectContaining({ refusal: "INVOCATION_NOT_FOUND" }),
+    );
   });
 
   it("carries the status and never the engine's own text into the error", async () => {
     // The refusal body from a real server names an engine invocation id. The
-    // driver reports the status it saw and stops there.
+    // driver reports the status it saw and stops there. Asserted on a status
+    // that still throws, since 404 is now an answer rather than a failure.
     const subject = capabilitySubject("attach-error-text");
     const failure = await withAttachAnswering(
-      { status: 404, body: '{"message":"not found","id":"inv_12G2mtFCEW7b0uysHSZtM8sQ9pD8TndCov"}' },
+      { status: 500, body: '{"message":"boom","id":"inv_12G2mtFCEW7b0uysHSZtM8sQ9pD8TndCov"}' },
       () =>
         subject.driver
           .reattach(INVOCATION_FOR_CAPABILITIES)
@@ -1282,8 +1315,22 @@ describe("the driver declares what it cannot do, and the declaration is checked"
     );
     const error = failure.result;
     expect(error).toBeInstanceOf(SupervisorError);
-    expect((error as Error).message).toContain("404");
+    expect((error as Error).message).toContain("500");
     expect((error as Error).message).not.toContain("inv_");
+  });
+
+  it("N6 puts no status number in the refusal it returns", async () => {
+    // Branched on and discarded. The refusal name is the whole answer: no door
+    // prints the number, no ledger row carries it, nothing names it.
+    const subject = capabilitySubject("attach-no-status-leak");
+    const { result } = await withAttachAnswering(
+      { status: 404, body: '{"code":404,"message":"not found","id":"inv_abc"}' },
+      () => subject.driver.reattach(INVOCATION_FOR_CAPABILITIES),
+    );
+    const rendered = JSON.stringify(result);
+    expect(rendered).not.toContain("404");
+    expect(rendered).not.toContain("inv_");
+    expect(Object.keys(result as object).sort()).toEqual(["at", "ok", "refusal"]);
   });
 
   it("refuses to guess a sequence from a reply that is not a handler result", async () => {
@@ -1460,6 +1507,11 @@ describe("cancellation stops the engine, then settles the ledger", () => {
     // postcondition act 2 exists to reach: an invocation the engine has never
     // heard of, and one it has already completed. Refusing on either would
     // leave a task uncancellable because the engine had already stopped it.
+    // P3 (V2 L4): `cancel` is byte-identical after the reattach change. Its
+    // branch was untouched and only its comment was restated, so the trails
+    // below must remain what they were — and must remain equal to each other,
+    // because on THIS path the settlement decides rather than the engine.
+    const trails: string[][] = [];
     for (const status of [404, 409]) {
       const subject = capabilitySubject("cancel-engine-" + String(status));
       const before = subject.ledger.status().eventCount;
@@ -1473,7 +1525,12 @@ describe("cancellation stops the engine, then settles the ledger", () => {
         result: { ok: true, finalSequence: subject.ledger.status().headSequence },
       });
       expect(subject.ledger.status().eventCount).toBe(before + 1);
+      trails.push(
+        subject.ledger.listEvents({ limit: 200 }).events.map((record) => record.event.type),
+      );
     }
+    expect(trails[0]).toEqual(trails[1]);
+    expect(trails[0]?.at(-1)).toBe("TASK_CANCELLED");
   });
 
   it("refuses to aim a cancellation at an address it could not read", async () => {

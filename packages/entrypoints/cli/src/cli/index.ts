@@ -506,12 +506,23 @@ function fromLifecycleError(error: unknown): CliFailure {
  *   the answer is not available, and looking again is the right next move.
  * - `TASK_TERMINAL` — the task had already ended. The coordinates were the
  *   wrong ones to ask about, which is what `EXIT_USAGE` says.
+ * - `INVOCATION_NOT_FOUND` (V2 L4) — the engine was reached and answered that
+ *   it holds no invocation at this address. `EXIT_NOT_FOUND`, because to an
+ *   operator that is the same thing the ledger pre-check means when it says a
+ *   task or attempt is not recorded: there is nothing there to act on. The two
+ *   share a code and differ in stream — the pre-check is an envelope on stderr
+ *   about the request, this is a document on stdout about the work — and the
+ *   ledger remains the authority on what the task did. It is deliberately not
+ *   `EXIT_UNAVAILABLE`: the engine answered, so retrying in a loop is exactly
+ *   the wrong move.
  */
 function lifecycleExitCode(outcome: LifecycleOutcome): number {
   if (outcome.ok) return EXIT_OK;
   switch (outcome.refusal) {
     case "CAPABILITY_UNSUPPORTED":
       return EXIT_CAPABILITY_UNSUPPORTED;
+    case "INVOCATION_NOT_FOUND":
+      return EXIT_NOT_FOUND;
     case "POSTCONDITION_UNKNOWN":
       return EXIT_UNAVAILABLE;
     case "TASK_TERMINAL":

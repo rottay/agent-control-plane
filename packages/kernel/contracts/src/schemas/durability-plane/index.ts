@@ -206,12 +206,44 @@ export type DriverCapabilities = z.infer<typeof DriverCapabilities>;
  *   cancel. Refused before the engine is touched and before anything is
  *   appended.
  *
+ * V2 L4 adds the fourth, and it follows the same rule: a member arrives with
+ * the drill that earns it. `reattach` threw on every non-ok status, so an
+ * engine that answered plainly "I hold no invocation at this address" reached
+ * both doors as an unreachable engine — a retry hint that could never come
+ * true. The drills had measured the opposite all along: a never-issued key
+ * answers `404` from a real server with the ledger untouched, which is an
+ * answer about the work rather than a broken channel.
+ *
+ * - `INVOCATION_NOT_FOUND` — the engine was reached and answered that it holds
+ *   no invocation at this address.
+ *
+ * Definite about the answer and deliberately silent about the cause. A `404`
+ * on the attach path has two measured causes — an invocation that is genuinely
+ * absent, and a deployment that is not registered — and telling them apart
+ * would mean reading the engine's response body, which this plane refuses to
+ * do. So the member says what the engine said. Callers are told to confirm the
+ * endpoint is registered and ask once more rather than to retry in a loop or
+ * to give up, and the ledger remains the authority on what the task did.
+ *
+ * Not `INVOCATION_UNKNOWN`: `UNKNOWN` is already this vocabulary's epistemic
+ * marker — `POSTCONDITION_UNKNOWN` means "could not be established" — and
+ * reusing it for a definite answer is exactly the ambiguity to avoid. Not
+ * `CAPABILITY_UNSUPPORTED`, because the engine can reattach and simply has
+ * nothing to reattach to. Not `TASK_TERMINAL`, because the LEDGER is the
+ * authority on terminality and may hold a live attempt whose engine record has
+ * aged out.
+ *
+ * Only `404` maps. Every other non-ok status on the attach path — `409`, `403`,
+ * `400` and every `5xx` — keeps its throw, because none of them has measured
+ * semantics there.
+ *
  * The correspondence law is unaffected and stays exactly as strict: a verb
  * declared `SUPPORTED` must not refuse the call the law observes, whatever the
  * reason on the refusal would have been.
  */
 export const DRIVER_REFUSALS = [
   "CAPABILITY_UNSUPPORTED",
+  "INVOCATION_NOT_FOUND",
   "POSTCONDITION_UNKNOWN",
   "TASK_TERMINAL",
 ] as const;
