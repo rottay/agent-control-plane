@@ -79,6 +79,7 @@ function scripted(script: FakeScript): ProviderAdapter {
         argv: fakeProviderArgv(script),
         env: { PATH: "/usr/bin:/bin" },
         cwd: req.workdir,
+        delivery: { kind: "STDIN" },
       };
     },
   };
@@ -500,3 +501,13 @@ describe("errors stay classified", () => {
 
 /** Keeps `dirname` used, and documents where the module under test lives. */
 export const MODULE_DIRECTORY = dirname(join(PROVIDER_SRC, "index.ts"));
+
+describe("how this transport takes an instruction (V2-B1c)", () => {
+  it("P4 declares delivery purely, and performs no I/O to do it", () => {
+    // `-p` with no positional prompt is exactly the shape that reads stdin, so
+    // the pipe the spawn already opens is the transport. Declared here and
+    // performed by `startSession`; this method still does no I/O.
+    const descriptor = claudeAdapter.describe(request(IMPLEMENTER));
+    expect(descriptor.delivery).toEqual({ kind: "STDIN" });
+  });
+});

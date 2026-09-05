@@ -80,6 +80,12 @@ function scripted(script: FakeScript): ProviderAdapter {
         argv: fakeProviderArgv(script),
         env: { PATH: "/usr/bin:/bin" },
         cwd: req.workdir,
+        // This local override replaces the argv with a fake node subject, so it
+        // is its own transport rather than an impersonation of the real one:
+        // the subject reads stdin, and what is under test here is the PARSER.
+        // The real adapter's `UNSUPPORTED` declaration is asserted directly in
+        // the delivery test below, against the adapter itself.
+        delivery: { kind: "STDIN" },
       };
     },
   };
@@ -838,5 +844,15 @@ describe("the provider module keeps the boundary's laws", () => {
       }
     }
     expect({ spawned: ownedPids.length > 0, alive }).toEqual({ spawned: true, alive: 0 });
+  });
+});
+
+describe("how this transport takes an instruction (V2-B1c)", () => {
+  it("P4 declares delivery purely, and performs no I/O to do it", () => {
+    // The frame that would carry the instruction needs the `sessionId` the
+    // server returns to `session/new`, so it cannot be built purely here: it is
+    // a client-side conversation, not one frame.
+    const descriptor = kimiAdapter.describe(request(IMPLEMENTER));
+    expect(descriptor.delivery).toEqual({ kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" });
   });
 });

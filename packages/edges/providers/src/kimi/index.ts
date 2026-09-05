@@ -369,6 +369,11 @@ export const kimiAdapter: ProviderAdapter = {
       provider: "kimi",
       argv: buildArgv(),
       env: buildEnv("kimi", request.configRoot),
+      // V2-B1c. The prompt frame that would carry the instruction needs the
+      // `sessionId` the server returns to `session/new`, so it cannot exist
+      // before the process does and cannot be built purely here -- it is a
+      // client-side conversation driven by parse results, not one frame.
+      delivery: { kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" },
       cwd: request.workdir,
     };
   },

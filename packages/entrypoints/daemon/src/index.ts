@@ -248,6 +248,30 @@ export function readOwnStatus(): DaemonStatusDocument | null {
 }
 
 /** Explicitly reclaim an abandoned lock. Never removes a live daemon's lock. */
+/**
+ * The instruction an execution carries, and the only place it is produced.
+ *
+ * It is the packet's own `objective` and nothing else: not a template, not a
+ * rendering, not a concatenation of context. Both `createExecutionEffects`
+ * sites call this, so there is exactly one answer to "what was the model
+ * asked?" and it is the sentence the authorizing envelope already contains.
+ *
+ * `L-B1C-1` pins that: within the daemon, the runtime and the edges there is
+ * exactly one producer of an `instructions:` field for an `ExecutionRequest`,
+ * and it reads `envelope.objective`. The two drill children are named in the
+ * law as deterministic, drill-only exceptions. Presentation code that renders
+ * an initiative's objective on a page is outside the law's scope, because
+ * rendering an objective is not producing an execution instruction.
+ *
+ * No bound is applied here. `TaskEnvelope.objective` and
+ * `ExecutionRequest.instructions` carry the same `min(1).max(4_000)`, so a
+ * value that passed the envelope door passes this one; re-bounding would be a
+ * second policy able to disagree with the first.
+ */
+function instructionFor(envelope: TaskEnvelope): string {
+  return envelope.objective;
+}
+
 export function recoverOwnStaleLock(options: {
   readonly adoptStale: boolean;
   readonly inspector?: ProcessInspector | undefined;
@@ -614,6 +638,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           taskId: options.taskId,
           attempt: options.attempt,
           identity: options.emittedBy,
+          instructions: instructionFor(options.envelope),
           reattach: null,
         },
         scenarioRoot,
@@ -899,6 +924,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
               taskId: walk.spec.taskId,
               attempt: walk.spec.attempt,
               identity: walk.spec.emittedBy,
+              instructions: instructionFor(walk.envelope),
               reattach: null,
             },
             scenarioRoot: walkRoot,

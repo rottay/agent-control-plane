@@ -127,6 +127,9 @@ export const fakeAdapter: ProviderAdapter = {
       argv: ["-e", "process.exit(0);"],
       env: { PATH: "/usr/bin:/bin" },
       cwd: request.workdir,
+      // This stand-in is its own transport, not an impersonation of one: it
+      // declares `STDIN` because the fake subject it drives reads stdin.
+      delivery: { kind: "STDIN" },
     };
   },
 
@@ -183,6 +186,14 @@ export function scriptedAdapter(base: ProviderAdapter, script: FakeScript): Prov
         argv: fakeProviderArgv(script),
         env: { PATH: "/usr/bin:/bin" },
         cwd: request.workdir,
+        // Asked of the real adapter, never restated here (V2-B1c). This
+        // function replaces the argv so a fake subject can be driven; it must
+        // not also replace what the transport says about delivery, or a
+        // Codex- or Kimi-shaped fake would accept an instruction the real
+        // adapter refuses and the pre-spawn refusal would be proved against a
+        // fixture that disagrees with production. A copied provider table here
+        // would drift the moment an adapter changed its declaration.
+        delivery: base.describe(request).delivery,
       };
     },
   };

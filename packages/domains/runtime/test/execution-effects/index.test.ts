@@ -92,7 +92,13 @@ function invocationFor(taskId: string): DurableInvocation {
 }
 
 function requestFor(invocation: DurableInvocation): ExecutionRequest {
-  return { taskId: invocation.taskId, attempt: invocation.attempt, identity: EMITTED_BY, reattach: null };
+  return {
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    identity: EMITTED_BY,
+    instructions: "run the effects the test asked for",
+    reattach: null,
+  };
 }
 
 /** The intersection trail every transport can produce, terminal included. */

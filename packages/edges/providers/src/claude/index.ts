@@ -229,6 +229,11 @@ export const claudeAdapter: ProviderAdapter = {
       // and LC_ALL. `process.env` is never spread, here or anywhere.
       env: buildEnv("claude", request.configRoot),
       cwd: request.workdir,
+      // V2-B1c. The argv above is `-p` with **no positional prompt**, which is
+      // exactly the shape a real `claude` reads stdin for -- so the pipe the
+      // spawn already opens is the transport, and it was never written to. The
+      // declaration is all this pure method does; `startSession` performs it.
+      delivery: { kind: "STDIN" },
     };
   },
 

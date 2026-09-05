@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,6 +29,9 @@ const TASK = "00000000-0000-4000-8000-00000000000a";
 const created: string[] = [];
 /** Every PID this file spawned, swept at the end of this file. */
 const ownedPids: number[] = [];
+
+/** What the plane asks the model to do, in this suite. */
+const INSTRUCTION = "summarise the packet and propose a plan";
 
 function drillRoot(): string {
   const path = join(TMP_ROOT, "acp-p4a-session-" + randomUUID());
@@ -63,6 +66,7 @@ function request(
     workdir: root as AdmittedWorkdir,
     resumeSessionId: null,
     limits: limits(),
+    instructions: INSTRUCTION,
     ...overrides,
   } as SessionRequest;
 }
@@ -77,6 +81,7 @@ function scripted(script: FakeScript): ProviderAdapter {
         argv: fakeProviderArgv(script),
         env: { PATH: "/usr/bin:/bin" },
         cwd: req.workdir,
+        delivery: { kind: "STDIN" },
       };
     },
   };
@@ -232,6 +237,7 @@ describe("the reviewer guarantee is structural, not a setting", () => {
           argv: ["--yolo"],
           env: {},
           cwd: req.workdir,
+          delivery: { kind: "STDIN" },
         };
       },
     };
@@ -291,6 +297,7 @@ describe("the reviewer guarantee is structural, not a setting", () => {
           argv: ["--sandbox", "workspace-write"],
           env: {},
           cwd: req.workdir,
+          delivery: { kind: "STDIN" },
         };
       },
     };
@@ -464,5 +471,141 @@ describe("the process is owned, stopped and reaped", () => {
 describe("a binary is admitted for the session too", () => {
   it("admits the node binary the fake runs under", () => {
     expect(admitBinary(NODE, { provider: "claude", taskId: TASK })).toBe(NODE);
+  });
+});
+
+/**
+ * The instruction channel (V2-B1c).
+ *
+ * The channel is write-only: these tests are the only place its bytes are
+ * observed, and they observe them through a **side file the subject owns**
+ * rather than through stdout. Stdout is adapter-parsed, and an unrecognised
+ * line becomes a classified event whose bounded payload can reach a log — the
+ * exact leak this packet forbids.
+ */
+describe("delivering the instruction", () => {
+  /** A subject that reads stdin to EOF and writes what it got to a file. */
+  function echoingAdapter(echoPath: string, kind: "STDIN" | "UNSUPPORTED"): ProviderAdapter {
+    const program = [
+      "const chunks = [];",
+      "process.stdin.on('data', (c) => chunks.push(c));",
+      "process.stdin.on('end', () => {",
+      "  require('node:fs').writeFileSync(" + JSON.stringify(echoPath) + ", chunks.join(''));",
+      "  process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success' }) + '\\n');",
+      "  process.exit(0);",
+      "});",
+    ].join("\n");
+    return {
+      ...fakeAdapter,
+      describe(req: SessionRequest) {
+        return {
+          provider: "claude" as const,
+          argv: ["-e", program],
+          env: { PATH: "/usr/bin:/bin" },
+          cwd: req.workdir,
+          delivery:
+            kind === "STDIN"
+              ? ({ kind: "STDIN" } as const)
+              : ({ kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" } as const),
+        };
+      },
+    };
+  }
+
+  it("P2 writes the instruction to stdin and closes it, so the child sees EOF", async () => {
+    // The close is what makes this observable at all: the subject's `end`
+    // handler never fires on an open pipe, so a write without a close would
+    // hang until the step's timeout rather than deliver. Reading the file back
+    // proves both halves at once.
+    const echoPath = join(drillRoot(), "echo.txt");
+    const session = startSession(echoingAdapter(echoPath, "STDIN"), request(IMPLEMENTER, {
+      lines: [],
+      exitCode: 0,
+    }));
+    ownedPids.push(session.pid);
+    for await (const _event of session.events()) {
+      void _event;
+    }
+    expect(readFileSync(echoPath, "utf8")).toBe(INSTRUCTION);
+  });
+
+  it("P3 refuses before spawn when the transport cannot take an instruction", () => {
+    // No process is created: the refusal is thrown before `spawnAdmitted`, so
+    // there is no pid to track and nothing to reap. A spawn-then-discard would
+    // have started a model with no instruction and charged for it.
+    const echoPath = join(drillRoot(), "never-written.txt");
+    const before = ownedPids.length;
+    let thrown: unknown;
+    try {
+      startSession(echoingAdapter(echoPath, "UNSUPPORTED"), request(IMPLEMENTER, {
+        lines: [],
+        exitCode: 0,
+      }));
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AdapterError);
+    expect((thrown as AdapterError).code).toBe("PROTOCOL_UNSUPPORTED");
+    expect(ownedPids.length).toBe(before);
+    expect(existsSync(echoPath)).toBe(false);
+  });
+
+  it("N3 refuses credential-shaped material before the write, and never echoes it", () => {
+    // Scanned as an object, so the guard's value scan actually runs over the
+    // content. The bytes reach neither the child nor the message.
+    const echoPath = join(drillRoot(), "credential.txt");
+    const secret = "AKIA" + "ABCDEFGHIJKLMNOP";
+    let thrown: unknown;
+    try {
+      startSession(
+        echoingAdapter(echoPath, "STDIN"),
+        request(IMPLEMENTER, { lines: [], exitCode: 0 }, { instructions: "deploy with " + secret }),
+      );
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AdapterError);
+    expect((thrown as AdapterError).code).toBe("CREDENTIAL_MATERIAL");
+    expect(JSON.stringify(thrown)).not.toContain(secret);
+    expect((thrown as Error).message).not.toContain(secret);
+    expect(existsSync(echoPath)).toBe(false);
+  });
+
+  it("N5 keeps the read-only refusal first, before anything is delivered", () => {
+    // Order is the fail-closed story. A reviewer identity with write-enabling
+    // argv is refused before delivery is even considered, so no instruction is
+    // written on a path that should not have started.
+    const echoPath = join(drillRoot(), "read-only.txt");
+    const base = echoingAdapter(echoPath, "STDIN");
+    const writeEnabling: ProviderAdapter = {
+      ...base,
+      describe(req: SessionRequest) {
+        return { ...base.describe(req), argv: ["--yolo"] };
+      },
+    };
+    let thrown: unknown;
+    try {
+      startSession(writeEnabling, request(REVIEWER, { lines: [], exitCode: 0 }));
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect((thrown as AdapterError).code).toBe("READ_ONLY_VIOLATION");
+    expect(existsSync(echoPath)).toBe(false);
+  });
+
+  it("N8 leaves the delivery union closed, with no silent third path", () => {
+    // The union is enforced by the compiler through an exhaustive switch with a
+    // `never` guard, so an unhandled kind fails the build rather than falling
+    // through to a spawn that quietly delivered nothing. What is asserted here
+    // is the runtime half: both declared kinds are handled, and they differ.
+    const echoPath = join(drillRoot(), "closed.txt");
+    const stdin = echoingAdapter(echoPath, "STDIN").describe(
+      request(IMPLEMENTER, { lines: [], exitCode: 0 }),
+    );
+    const unsupported = echoingAdapter(echoPath, "UNSUPPORTED").describe(
+      request(IMPLEMENTER, { lines: [], exitCode: 0 }),
+    );
+    expect(stdin.delivery).toEqual({ kind: "STDIN" });
+    expect(unsupported.delivery).toEqual({ kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" });
   });
 });

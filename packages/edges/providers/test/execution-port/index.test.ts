@@ -95,7 +95,14 @@ function route(overrides: Partial<ResolvedRoute> = {}): ResolvedRoute {
 }
 
 function request(overrides: Partial<ExecutionRequest> = {}): ExecutionRequest {
-  return { taskId: TASK, attempt: 1, identity: IDENTITY, reattach: null, ...overrides };
+  return {
+    taskId: TASK,
+    attempt: 1,
+    identity: IDENTITY,
+    instructions: "summarise the packet",
+    reattach: null,
+    ...overrides,
+  };
 }
 
 function portFor(
@@ -233,40 +240,73 @@ function assertSharedTrail(leg: string, trail: readonly ExecutionEvent[], expect
   }).toEqual({ leg, tokensUsed: TOKENS, toState: TERMINAL_STATE, route: expected });
 }
 
-describe("one scenario normalizes identically across the three CLI adapters", () => {
-  it("produces one normalized trail from three different wire protocols", async () => {
-    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
-      assertSharedTrail("cli/" + provider, await trailFor(provider), route({ provider }));
+describe("one scenario normalizes identically across the CLI adapters that take an instruction", () => {
+  /**
+   * V2-B1c changed what this describe can honestly claim.
+   *
+   * Every execution now carries an instruction, and only Claude's transport can
+   * take one: Codex pins an unknown framing and never sends `initialize`, and
+   * Kimi's prompt frame needs a `sessionId` the server has not yet returned. So
+   * driving all three through the port no longer produces three trails — it
+   * produces one trail and two **classified pre-spawn refusals**, which is what
+   * these tests now assert.
+   *
+   * The three-way parser normalization claim did not disappear; it moved to
+   * where it can still be made truthfully. Each adapter's unit suite drives its
+   * own parser against a fake subject, so the wire-protocol normalization is
+   * still proved per transport — just not through a port that must first decide
+   * whether the transport may be spoken to at all.
+   */
+  it("produces one normalized trail from the transport that can be instructed", async () => {
+    assertSharedTrail("cli/claude", await trailFor("claude"), route({ provider: "claude" }));
+  });
+
+  it("P5 surfaces the other two as classified transport refusals, not as silent successes", async () => {
+    // Not a spawn, and not a success with nothing delivered. The port maps the
+    // pre-spawn throw to `TRANSPORT_UNAVAILABLE` and names where it came from,
+    // so a caller can tell "this transport will not take an instruction" from
+    // "the model failed".
+    // The CLI transport set did not shrink; what shrank is how many of them can
+    // be handed an instruction. Stated here so the narrowing above reads as a
+    // fact about delivery rather than as a provider quietly disappearing.
+    expect([...CLI_SUBSCRIPTION_PROVIDERS].sort()).toEqual(["claude", "codex", "kimi"]);
+
+    for (const provider of ["codex", "kimi"] as const) {
+      const port = portFor({ "acct-primary": binding(ADAPTER[provider], SCENARIO[provider]) });
+      const outcome = await port.start(route({ provider }), request());
+      expect({ provider, outcome }).toEqual({
+        provider,
+        outcome: {
+          ok: false,
+          refusal: "TRANSPORT_UNAVAILABLE",
+          at: "startSession/PROTOCOL_UNSUPPORTED",
+        },
+      });
     }
   });
 
   it("differs only where the contract says a provider may differ", async () => {
-    const identity: Record<string, unknown> = {};
-    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
-      const trail = await trailFor(provider);
-      const started = trail.find((event) => event.kind === "started");
-      identity[provider] =
-        started?.kind === "started"
-          ? { resolvedModel: started.resolvedModel, protocolVersion: started.protocolVersion }
-          : null;
-    }
+    const trail = await trailFor("claude");
+    const started = trail.find((event) => event.kind === "started");
+    const identity =
+      started?.kind === "started"
+        ? { resolvedModel: started.resolvedModel, protocolVersion: started.protocolVersion }
+        : null;
 
     // `protocolVersion` is the provider's own handshake generation, and
-    // `resolvedModel` is what the provider says it bound. Codex reports
-    // `unreported` structurally: its thread record names a vendor, not a
-    // model, and the landed adapter refuses to pass one off as the other.
-    // Both fields are provider identity — the contract expects them to differ
-    // — and neither is rewritten to match the route.
+    // `resolvedModel` is what the provider says it bound. Neither is rewritten
+    // to match the route. Codex's structural `unreported` and Kimi's own model
+    // string are asserted in their adapter suites, which is the only place they
+    // can be reached now that the port refuses those transports.
     expect(identity).toEqual({
-      claude: { resolvedModel: "claude-opus-5-20260115", protocolVersion: PROTOCOL.claude },
-      codex: { resolvedModel: "unreported", protocolVersion: PROTOCOL.codex },
-      kimi: { resolvedModel: "kimi-k2-0711", protocolVersion: PROTOCOL.kimi },
+      resolvedModel: "claude-opus-5-20260115",
+      protocolVersion: PROTOCOL.claude,
     });
   });
 
-  it("pins the one transport-neutral field the three adapters do NOT agree on", async () => {
+  it("pins the one transport-neutral field the adapters do NOT agree on", async () => {
     const indices: Record<string, unknown> = {};
-    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
+    for (const provider of ["claude"] as const) {
       const trail = await trailFor(provider);
       const usage = trail.find((event) => event.kind === "usage");
       const completed = trail.find((event) => event.kind === "completed");
@@ -288,11 +328,12 @@ describe("one scenario normalizes identically across the three CLI adapters", ()
     // `completed.stepIndex` inherits the same value because it is defined as
     // the last step the transport reported. This assertion exists to fail
     // loudly the day that changes.
-    expect(indices).toEqual({
-      claude: { usage: 1, completed: 1 },
-      codex: { usage: 0, completed: 0 },
-      kimi: { usage: 0, completed: 0 },
-    });
+    // Codex and Kimi are no longer reachable through the port (V2-B1c), so
+    // their hardcoded zeros are asserted in their own adapter suites now. What
+    // remains here is Claude's ordinal, which is the only one the port can
+    // still observe -- and the finding above is unchanged: only Claude reports
+    // an ordinal at all.
+    expect(indices).toEqual({ claude: { usage: 1, completed: 1 } });
   });
 });
 
@@ -516,16 +557,21 @@ describe("the dual-transport acceptance bullet", () => {
     // here rather than inside one transport's describe because it belongs to
     // none of them: adding a fourth leg means adding it to this map, and the
     // count below is what makes forgetting impossible.
+    //
+    // V2-B1c narrowed the CLI side to one leg: an execution carries an
+    // instruction, and Claude is the only CLI transport that can take one, so
+    // the other two refuse before a session exists. The acceptance criterion is
+    // unchanged in kind — every leg that CAN run produces the same normalized
+    // trail — and the count below moves with it rather than being quietly
+    // reinterpreted.
     const legs: Record<string, readonly string[]> = {};
-    for (const provider of CLI_SUBSCRIPTION_PROVIDERS) {
-      legs["cli/" + provider] = (await trailFor(provider)).map((event) => event.kind);
-    }
+    legs["cli/claude"] = (await trailFor("claude")).map((event) => event.kind);
     legs["api/" + API_PROVIDER] = (await drain(dualPort(), apiRoute())).map((event) => event.kind);
     legs["local/" + LOCAL_PROVIDER] = (await drain(localPort(), localRoute())).map((event) => event.kind);
 
     const distinct = new Set(Object.values(legs).map((kinds) => kinds.join(",")));
     expect({ legs: Object.keys(legs).length, distinctTrails: distinct.size }).toEqual({
-      legs: 5,
+      legs: 3,
       distinctTrails: 1,
     });
     expect([...distinct][0]).toBe(SHARED_KINDS.join(","));

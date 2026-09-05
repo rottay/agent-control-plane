@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import type { TaskEnvelope } from "@acp/contracts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -133,6 +133,8 @@ const EMITTED_BY = "claude/opus/implementer/01";
 const INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
 const ACCOUNT = "acct-b1b-fixture";
 const TASK = "b1b00000-0000-4000-8000-000000000001";
+/** What the drill asks the subject to do, echoed back by it (V2-B1c). */
+const DRILL_OBJECTIVE = "echo the instruction you were given, then stop";
 const NOW = "2026-08-30T12:00:00Z";
 const RESET = "2026-08-30T13:00:00Z";
 const RESOLVED_AT = "2026-08-30T12:00:05.000Z";
@@ -289,6 +291,7 @@ function scriptedClaude(lines: readonly string[]): ProviderAdapter {
         argv: ["-e", program],
         env: { PATH: "/usr/bin:/bin" },
         cwd: request.workdir,
+        delivery: { kind: "STDIN" },
       };
     },
   };
@@ -403,7 +406,13 @@ function invocation(): DurableInvocation {
 }
 
 function executionRequest(): ExecutionRequest {
-  return { taskId: TASK, attempt: 1, identity: EMITTED_BY, reattach: null };
+  return {
+    taskId: TASK,
+    attempt: 1,
+    identity: EMITTED_BY,
+    instructions: DRILL_OBJECTIVE,
+    reattach: null,
+  };
 }
 
 interface Walk {
@@ -1650,29 +1659,60 @@ const B4A_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7b01";
  * child is gone" checkable without scanning, matching a pattern or guessing:
  * the process announces itself, exactly as `ProcessHandle` only ever signals
  * a pid it created.
+ *
+ * Since V2-B1c it also **echoes what it was told**, into a second file it owns.
+ * Before that, this subject read neither argv nor stdin, so every green
+ * execution drill in this file would have been byte-identical if the channel
+ * had carried nothing — the evidence could not have failed. Now it can.
+ *
+ * The echo is a side file and never stdout, deliberately: stdout is parsed by
+ * the real adapter, and an unrecognised line becomes a classified event whose
+ * bounded payload can reach a log line. Writing the instruction there would
+ * create the exact leak this packet forbids in order to prove it did not leak.
  */
 function fakeProviderBinary(
   lines: readonly string[],
   options: { readonly linger: boolean },
-): { readonly binary: string; readonly root: string; readonly pidFile: string } {
+): {
+  readonly binary: string;
+  readonly root: string;
+  readonly pidFile: string;
+  readonly echoFile: string;
+} {
   const root = mkdtempSync(join(TMP_ROOT, "acp-b4a-provider-"));
   chmodSync(root, 0o700);
   const pidFile = join(root, "child.pid");
+  // Outside the worktree, deliberately. The walk's conformance gate scans the
+  // declared write-set, and a subject that recorded its evidence inside the
+  // tree it is working in would be a write-set violation -- the drill would
+  // then fail for a reason that has nothing to do with what it proves.
+  const echoRoot = mkdtempSync(join(TMP_ROOT, "acp-b1c-echo-"));
+  chmodSync(echoRoot, 0o700);
+  temporaries.push(echoRoot);
+  const echoFile = join(echoRoot, "instruction.txt");
   const binary = join(root, "fake-provider");
   writeFileSync(
     binary,
     "#!" + realpathSync(process.execPath) + "\n" +
       "require('node:fs').writeFileSync(" + JSON.stringify(pidFile) + ", String(process.pid));\n" +
+      // Read to EOF, then record. A subject that never saw the close would
+      // hang here rather than write, so the file existing at all is evidence
+      // that the pipe was closed as well as written.
+      "const chunks = [];\n" +
+      "process.stdin.on('data', (c) => chunks.push(c));\n" +
+      "process.stdin.on('end', () => {\n" +
+      "  require('node:fs').writeFileSync(" + JSON.stringify(echoFile) + ", chunks.join(''));\n" +
+      "});\n" +
       "const lines = " + JSON.stringify([...lines]) + ";\n" +
       "for (const line of lines) process.stdout.write(line + \"\\n\");\n" +
       (options.linger
         ? "setInterval(() => {}, 1000);\n"
-        : "process.exit(0);\n"),
+        : "setTimeout(() => process.exit(0), 250);\n"),
     { mode: 0o700 },
   );
   temporaries.push(root);
   initWorktree(root);
-  return { binary, root, pidFile };
+  return { binary, root, pidFile, echoFile };
 }
 
 function b4aExecutionConfig(binary: string, root: string): DaemonExecutionConfig {
@@ -1783,5 +1823,57 @@ describe("the production daemon owns and reaps its provider children (V2-B4a)", 
     const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
     expect(Number.isInteger(pid)).toBe(true);
     expect(isAlive(pid)).toBe(false);
+  });
+});
+
+/**
+ * The instruction channel, end to end (V2-B1c).
+ *
+ * Before this packet the subject read neither argv nor stdin, so the channel
+ * could carry nothing and every drill above would still be green. These are the
+ * assertions that could not previously fail.
+ */
+describe("the packet's objective reaches the model (V2-B1c)", () => {
+  it("P1/P6 delivers the envelope's objective, and nothing else, to the subject", async () => {
+    const { binary, root, echoFile } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const run = await startDaemon(
+      b4aOptions(b4aScenarioId("b1c-delivery"), b4aExecutionConfig(binary, root)),
+    );
+    await stopDaemon(run);
+
+    // P1: the subject wrote back what it received, into a file it owns. The
+    // file existing at all proves the pipe was closed as well as written --
+    // its `end` handler never fires otherwise.
+    expect(existsSync(echoFile)).toBe(true);
+    // P6: the instruction is the envelope's own objective, resolved by the one
+    // producer, and it is the whole of what was sent -- not a template, not a
+    // rendering, not a concatenation of context.
+    expect(readFileSync(echoFile, "utf8")).toBe("walk the plan");
+  });
+
+  it("N4 leaves no instruction byte, and no digest, anywhere in the plane", async () => {
+    // The channel is write-only. What is swept here is every durable and
+    // observable surface the drill can reach: the ledger's rows and payloads,
+    // the status document, and the daemon's own published phases. A digest is
+    // searched for as well as the text, because "we only stored a hash of what
+    // we asked" is exactly the compromise the DT ruling refused.
+    const { binary, root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const scenarioId = b4aScenarioId("b1c-no-trace");
+    const run = await startDaemon(b4aOptions(scenarioId, b4aExecutionConfig(binary, root)));
+    await stopDaemon(run);
+
+    const objective = "walk the plan";
+    const digest = createHash("sha256").update(objective).digest("hex");
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(scenarioId)));
+    try {
+      const rows = ledger.listEvents({ limit: 500 }).events;
+      const serialized = JSON.stringify(rows);
+      expect(serialized).not.toContain(objective);
+      expect(serialized).not.toContain(digest);
+      // Non-vacuous: the sweep would find the string if it were there.
+      expect(JSON.stringify([{ payload: { note: objective } }])).toContain(objective);
+    } finally {
+      ledger.close();
+    }
   });
 });

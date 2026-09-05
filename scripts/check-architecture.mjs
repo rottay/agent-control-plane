@@ -6034,6 +6034,75 @@ const V2B26_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1c — the instruction channel.
+ *
+ * The plane could start a model and could not tell it anything: `-p` with no
+ * positional prompt, zero `stdin` hits against a piped spawn, and an
+ * `objective` no execution path read. The drill subject read neither argv nor
+ * stdin, so every green execution drill would have been byte-identical if the
+ * channel had carried nothing -- which it did. This packet opens the channel
+ * and makes the claim falsifiable.
+ *
+ * **Twenty-six paths.** The brief's twenty-three plus three forced and
+ * separately authorized, each a type-only consequence of making `delivery`
+ * required on `SessionDescriptor`, each proposed from a stop at the write-set
+ * boundary:
+ *
+ * - `providers/test/process/spawn/index.test.ts` -- three Claude descriptor
+ *   fixtures, one `delivery: { kind: "STDIN" }` line each.
+ * - `providers/test/testing/index.ts` -- the package's shared scripted
+ *   stand-in. `fakeAdapter` declares its own `STDIN`; `scriptedAdapter` derives
+ *   delivery from `base.describe(request).delivery` rather than restating a
+ *   provider table, so a Codex- or Kimi-shaped fake cannot accept an
+ *   instruction the real adapter refuses.
+ * - `providers/src/errors/index.ts` -- `CREDENTIAL_MATERIAL`, which moved
+ *   `ADAPTER_ERROR_CODES` 13 -> 14. The one place this packet mints a code
+ *   rather than reusing one, because no existing member said "content the plane
+ *   will not transmit"; the delivery refusal reuses `PROTOCOL_UNSUPPORTED`
+ *   precisely so the set did not move twice.
+ *
+ * Claude only. Codex and Kimi declare `UNSUPPORTED`/`HANDSHAKE_REQUIRED` and
+ * refuse **before** the spawn, which reverses the earlier "all three together"
+ * ruling: Codex pins an unknown framing and never sends `initialize`, and
+ * Kimi's frame needs a `sessionId` the server has not yet returned. No real
+ * binary, network, account or spend; every capability stays `UNKNOWN`.
+ *
+ * `L-B1C-1` moves `PATH_SCOPED_LAWS` 91 -> 92: one producer of an execution
+ * instruction, scoped to the execution path and to the produced field, with the
+ * two drill children named as deterministic exceptions.
+ *
+ * Record: `docs/architecture/0034-the-instruction-channel.md`.
+ */
+const V2B1C_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/src/codex/index.ts",
+  "packages/edges/providers/src/kimi/index.ts",
+  "packages/edges/providers/src/session/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/src/errors/index.ts",
+  "packages/edges/providers/test/contract/index.test.ts",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/test/codex/index.test.ts",
+  "packages/edges/providers/test/kimi/index.test.ts",
+  "packages/edges/providers/test/session/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/process/spawn/index.test.ts",
+  "packages/edges/providers/test/testing/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "docs/architecture/0034-the-instruction-channel.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6178,6 +6247,7 @@ const WRITE_SET = [
   ...V2L3_WRITE_SET,
   ...V2L4_WRITE_SET,
   ...V2B26_WRITE_SET,
+  ...V2B1C_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -6892,6 +6962,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the toy effect binds no production seam (route b: the toy names from @acp/runtime)", scope: "packages/*/*/src/**" },
   { law: "the recorded route travels under one pinned key", scope: "packages/*/*/src/**" },
   { law: "the submission digest has one producer and one door", scope: "packages/*/*/src/**" },
+  { law: "one producer of an execution instruction, and two named drill exceptions", scope: "packages/entrypoints/daemon/src/**, packages/domains/runtime/src/**, packages/edges/**" },
   { law: "the publication hook's semantics, driven case by case", scope: ".githooks/pre-push" },
   { law: "both drivers declare their capabilities, pinned by equality", scope: "the two driver sources" },
   {
@@ -15372,6 +15443,105 @@ if (tracked.status === 0) {
     }
   }
   notes.push("no non-daemon entrypoint constructs a driver inside a catch; --mode reaches the constructor");
+
+  // --- L-B1C-1: one producer of an execution instruction.
+  //
+  // `ExecutionRequest.instructions` is what the plane asks a model to do, and
+  // the question that matters is not "who reads an objective" but "who decides
+  // what the model is told". So the law is scoped to the execution path and to
+  // the PRODUCED field: within the daemon, the runtime and the edges, exactly
+  // one site builds an `instructions:` for an `ExecutionRequest`, and it reads
+  // `envelope.objective`.
+  //
+  // It is deliberately NOT a tree-wide ban on reading `.objective`. Three
+  // lawful readers render an initiative's objective on a page -- two console
+  // views and a gateway row mapper -- and rendering an objective is not
+  // producing an execution instruction. A law that caught them would be a law
+  // its own author had to keep explaining.
+  //
+  // The two drill children are named exceptions rather than silent ones. Their
+  // configs carry no envelope, so they cannot read one, and a deterministic
+  // module-level constant is what keeps drill ledgers byte-stable across runs.
+  // Each is asserted to be exactly that: a constant, not an envelope read.
+  const INSTRUCTION_PRODUCER = "packages/entrypoints/daemon/src/index.ts";
+  const DRILL_INSTRUCTION_EXCEPTIONS = [
+    "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+    "packages/edges/durability/src/drivers/restate-child/index.ts",
+  ];
+  const instructionScope = tracked.status === 0
+    ? tracked.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter(
+          (relativePath) =>
+            /\.tsx?$/.test(relativePath) &&
+            !relativePath.includes("/test/") &&
+            (relativePath.startsWith("packages/entrypoints/daemon/src/") ||
+              relativePath.startsWith("packages/domains/runtime/src/") ||
+              relativePath.startsWith("packages/edges/")),
+        )
+    : [];
+  requireScope(
+    "one producer of an execution instruction, and two named drill exceptions",
+    instructionScope.length,
+  );
+  const instructionProducers = [];
+  for (const relativePath of instructionScope) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    // Producing, not carrying. A type member declares the field; a
+    // pass-through assigns it from another `.instructions`; a guard call names
+    // it as an argument key. None of those decides what the model is told, and
+    // a law that caught them would be a law about the word rather than about
+    // the authority. What is left is a site that assigns the field a value of
+    // its own -- which is exactly the thing there may be only one of.
+    for (const match of live.matchAll(/(^|[^.\w])instructions:\s*([^,;\n]+)/g)) {
+      const assigned = (match[2] ?? "").trim();
+      const isTypeMember = /^(readonly\s|string\b|\w+\s*\|)/.test(assigned) || /readonly instructions:/.test(match[0]);
+      const isPassThrough = /\.instructions\b/.test(assigned);
+      if (isTypeMember || isPassThrough) continue;
+      instructionProducers.push(relativePath);
+      break;
+    }
+  }
+  for (const relativePath of instructionProducers) {
+    if (relativePath === INSTRUCTION_PRODUCER) continue;
+    if (DRILL_INSTRUCTION_EXCEPTIONS.includes(relativePath)) continue;
+    fail(
+      relativePath +
+        " produces an execution instruction; exactly one site does that (" +
+        INSTRUCTION_PRODUCER +
+        "), and it reads envelope.objective",
+    );
+  }
+  if (!instructionProducers.includes(INSTRUCTION_PRODUCER)) {
+    fail(INSTRUCTION_PRODUCER + " no longer produces the execution instruction the law names");
+  }
+  {
+    const producer = stripComments(readIfPresent(INSTRUCTION_PRODUCER) ?? "");
+    if (!/envelope\.objective/.test(producer)) {
+      fail(INSTRUCTION_PRODUCER + " produces an instruction that is not the envelope's objective");
+    }
+  }
+  for (const relativePath of DRILL_INSTRUCTION_EXCEPTIONS) {
+    const live = stripComments(readIfPresent(relativePath) ?? "");
+    if (!/^const DRILL_INSTRUCTION = "/m.test(live)) {
+      fail(
+        relativePath +
+          " is a named drill exception, so its instruction must be a module-level constant",
+      );
+    }
+    if (/envelope/.test(live)) {
+      fail(relativePath + " reads an envelope; a drill child's instruction is deterministic");
+    }
+  }
+  notes.push(
+    "one execution-instruction producer over " +
+      String(instructionScope.length) +
+      " sources, plus two named drill constants",
+  );
 
   // --- L-V2L-3: outside the daemon, a door's effect port can only read.
   //

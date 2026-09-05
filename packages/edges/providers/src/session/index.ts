@@ -1,7 +1,7 @@
 import { StringDecoder } from "node:string_decoder";
 
 import type { HealthProbe, WorkerIdentityString } from "@acp/contracts";
-import { parseWorkerIdentity } from "@acp/contracts";
+import { findCredentialViolations, parseWorkerIdentity } from "@acp/contracts";
 
 import type {
   CapabilityRecord,
@@ -275,10 +275,29 @@ class Session implements AdapterSession {
 }
 
 /**
- * Start one session.
+ * Start one session, and deliver the instruction it carries.
  *
  * Read-only enforcement happens here, before the spawn: a reviewer descriptor
  * whose argv carries a write-enabling flag never becomes a process.
+ *
+ * This is the **one impure seam** (V2-B1c). Adapters declare how a transport
+ * takes an instruction; only this function performs it. The order below is the
+ * whole of the fail-closed story and it is the order rather than the checks
+ * that matters:
+ *
+ * 1. the read-only argv scan, so a reviewer identity is refused before
+ *    anything else is considered;
+ * 2. the delivery-support check, so a transport that cannot take an
+ *    instruction refuses **before a process exists** -- never a silent skip,
+ *    never a spawn-then-discard;
+ * 3. the credential scan over the content;
+ * 4. spawn;
+ * 5. write, then **close**.
+ *
+ * The write is last and the close is not optional. The pipe is opened by the
+ * spawn either way, so a delivery that wrote without closing would convert
+ * today's silent no-op into a silent block until the step's timeout -- a worse
+ * failure, and a harder one to see.
  */
 export function startSession(adapter: ProviderAdapter, request: SessionRequest): AdapterSession {
   const context = { provider: adapter.provider, taskId: request.taskId };
@@ -288,8 +307,47 @@ export function startSession(adapter: ProviderAdapter, request: SessionRequest):
     throw new AdapterError("READ_ONLY_VIOLATION", context);
   }
 
+  // Before the spawn. A transport whose protocol needs a handshake this plane
+  // has not performed, or whose instruction frame needs an id the server has
+  // not yet returned, cannot be handed an instruction -- so no process is
+  // created, no byte is written and no frame is sent.
+  //
+  // `PROTOCOL_UNSUPPORTED` rather than a new code: the specificity lives in the
+  // descriptor's own `reason`, and minting a member would move a pinned closed
+  // set for no semantic gain.
+  const delivery = descriptor.delivery;
+  switch (delivery.kind) {
+    case "UNSUPPORTED":
+      throw new AdapterError("PROTOCOL_UNSUPPORTED", context);
+    case "STDIN":
+      break;
+    default: {
+      // The union is closed and the compiler enforces it here: a third kind
+      // added without a branch fails the build rather than falling through to
+      // a spawn that quietly delivered nothing.
+      const unreachable: never = delivery;
+      return unreachable;
+    }
+  }
+
+  // Scanned as an OBJECT, not as a bare string: the guard's value scan is what
+  // must run over the content. A hit refuses before the write, and the
+  // offending bytes never reach the child and never reach the message.
+  //
+  // `findTranscriptViolations` is deliberately not invoked: it scans denied
+  // KEYS, so it is vacuous on this content, and calling it would look like
+  // content filtering that is not happening.
+  if (findCredentialViolations({ instructions: request.instructions }).length > 0) {
+    throw new AdapterError("CREDENTIAL_MATERIAL", context);
+  }
+
   const spawned = spawnAdmitted(request.binary, descriptor, request.limits, context);
   const handle = new ProcessHandle(spawned, request.limits, context);
+
+  // Written once, then closed, so the child sees EOF and can act. The bytes
+  // cross exactly this boundary and are recorded nowhere.
+  spawned.child.stdin.end(request.instructions);
+
   const session = new Session(adapter, request, handle);
   session.transition("STARTING");
   return session;

@@ -1641,9 +1641,43 @@ describe("ExecutionRequest", () => {
       taskId: TASK_ID,
       attempt: 1,
       identity: WRITER,
+      instructions: "summarise the packet and propose a plan",
       reattach: null,
     });
     expect(parsed.reattach).toBeNull();
+    expect(parsed.instructions).toBe("summarise the packet and propose a plan");
+  });
+
+  it("carries the instruction, bounded exactly as the envelope's objective is (V2-B1c)", () => {
+    // The same bound at both doors on purpose: the value comes from
+    // `TaskEnvelope.objective`, and a looser bound here would be a second
+    // policy able to disagree with the first about what the model was asked.
+    const base = {
+      taskId: TASK_ID,
+      attempt: 1,
+      identity: WRITER,
+      instructions: "do the work",
+      reattach: null,
+    };
+    expect(ExecutionRequest.safeParse({ ...base, instructions: "x".repeat(4_000) }).success).toBe(true);
+    // N2: over the bound is a refusal, never a truncation. An adapter that
+    // shortened an instruction would be inventing a policy about what the model
+    // was asked, which is the one thing no transport may decide.
+    expect(ExecutionRequest.safeParse({ ...base, instructions: "x".repeat(4_001) }).success).toBe(false);
+    expect(ExecutionRequest.safeParse({ ...base, instructions: "" }).success).toBe(false);
+    // Required, not optional: an execution with no instruction is not a start
+    // with a default, it is a request that does not say what to do.
+    const withoutInstruction: Record<string, unknown> = { ...base };
+    delete withoutInstruction["instructions"];
+    expect(ExecutionRequest.safeParse(withoutInstruction).success).toBe(false);
+    // The key set stays closed.
+    expect(Object.keys(ExecutionRequest.shape).sort()).toEqual([
+      "attempt",
+      "identity",
+      "instructions",
+      "reattach",
+      "taskId",
+    ]);
   });
 
   it("accepts a reattach reference, and requires the field to be stated", () => {
@@ -1652,18 +1686,32 @@ describe("ExecutionRequest", () => {
         taskId: TASK_ID,
         attempt: 2,
         identity: WRITER,
+        instructions: "rejoin the run and finish it",
         reattach: "session-abc",
       }).success,
     ).toBe(true);
     // Null is the ordinary case, but it is never implicit: a caller says which
-    // it means, so a transport can never read absence as "start fresh".
+    // it means, so a transport can never read absence as "start fresh". The
+    // instruction is supplied here so `reattach`'s absence is the only reason
+    // this refuses.
     expect(
-      ExecutionRequest.safeParse({ taskId: TASK_ID, attempt: 1, identity: WRITER }).success,
+      ExecutionRequest.safeParse({
+        taskId: TASK_ID,
+        attempt: 1,
+        identity: WRITER,
+        instructions: "do the work",
+      }).success,
     ).toBe(false);
   });
 
   it("rejects a non-uuid task, a zero attempt and an unknown key", () => {
-    const base = { taskId: TASK_ID, attempt: 1, identity: WRITER, reattach: null };
+    const base = {
+      taskId: TASK_ID,
+      attempt: 1,
+      identity: WRITER,
+      instructions: "do the work",
+      reattach: null,
+    };
     expect(ExecutionRequest.safeParse({ ...base, taskId: "task-1" }).success).toBe(false);
     expect(ExecutionRequest.safeParse({ ...base, attempt: 0 }).success).toBe(false);
     expect(ExecutionRequest.safeParse({ ...base, binary: "/usr/bin/claude" }).success).toBe(false);

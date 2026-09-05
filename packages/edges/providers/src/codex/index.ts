@@ -484,6 +484,12 @@ export const codexAdapter: ProviderAdapter = {
       argv: buildArgv(),
       env: buildEnv("codex", request.configRoot),
       cwd: request.workdir,
+      // V2-B1c. This module pins `FRAMING: "UNKNOWN"` and records that it never
+      // sends `initialize`. Writing an instruction would assert a wire framing
+      // the plane calls unknown and perform a handshake it calls unauthorized,
+      // so the honest declaration is that this transport cannot take one yet.
+      // Delivering here is gated on an owner authorization to settle framing.
+      delivery: { kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" },
     };
   },
 

@@ -137,9 +137,14 @@ describe("a capability is a claim, and a claim needs the right evidence", () => 
 });
 
 describe("the error surface is closed and says nothing it should not", () => {
-  it("declares exactly thirteen codes, sorted", () => {
+  it("declares exactly fourteen codes, sorted", () => {
     expect([...ADAPTER_ERROR_CODES]).toEqual([...ADAPTER_ERROR_CODES].sort());
-    expect(ADAPTER_ERROR_CODES).toHaveLength(13);
+    // Thirteen until V2-B1c, which added `CREDENTIAL_MATERIAL`: an instruction
+    // carrying credential-shaped material is refused before the write, and no
+    // existing member said that. The set grows visibly rather than by a word
+    // being borrowed to mean two things.
+    expect(ADAPTER_ERROR_CODES).toHaveLength(14);
+    expect(ADAPTER_ERROR_CODES).toContain("CREDENTIAL_MATERIAL");
   });
 
   it("carries the code, provider and task id, and nothing else", () => {

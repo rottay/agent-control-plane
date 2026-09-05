@@ -193,16 +193,33 @@ export type ExecutionEvent = z.infer<typeof ExecutionEvent>;
 /**
  * What the caller hands the port besides the route.
  *
- * Task coordinates, the identity the work is attributed to, and — optionally —
- * a reference to an execution already in flight. Transport-specific budgets,
- * binaries and working directories are not here: those belong to the adapter
- * that owns the transport, and putting them in the owned boundary would make
- * this contract change every time a transport did.
+ * Task coordinates, the identity the work is attributed to, the instruction the
+ * model is to act on, and — optionally — a reference to an execution already in
+ * flight. Transport-specific budgets, binaries and working directories are not
+ * here: those belong to the adapter that owns the transport, and putting them in
+ * the owned boundary would make this contract change every time a transport did.
  */
 export const ExecutionRequest = z.strictObject({
   taskId: Uuid,
   attempt: z.number().int().positive().max(10_000),
   identity: WorkerIdentityString,
+  /**
+   * What the model is being asked to do (V2-B1c).
+   *
+   * Required, and bounded exactly as `TaskEnvelope.objective` is bounded —
+   * `min(1).max(4_000)` — because that is where the value comes from and a
+   * second, looser bound at the boundary would be a place for the two to
+   * disagree. Over the bound is a **contract refusal**, never a truncation: an
+   * adapter that shortened an instruction would be inventing a policy about
+   * what the model was asked, which is the one thing no transport may decide.
+   *
+   * The field is write-only in the plane's sense. It crosses exactly one
+   * boundary — this process to the child — and enters no ledger row, event
+   * payload, stream frame, telemetry attribute, checkpoint, status document or
+   * log line. Not even as a digest: the plane records that work was asked for,
+   * not what was said.
+   */
+  instructions: z.string().min(1).max(4_000),
   /**
    * An execution to rejoin rather than start. Null is the ordinary case.
    *

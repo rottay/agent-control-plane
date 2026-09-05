@@ -110,6 +110,7 @@ describe("the spawner is shell-free and pinned", () => {
       argv: ["-e", "process.stdout.write(process.env.MARKER ?? 'none'); process.exit(0);"],
       env: { MARKER: "pinned", PATH: "/usr/bin:/bin" },
       cwd: dir as AdmittedWorkdir,
+      delivery: { kind: "STDIN" },
     };
     const spawned = spawnAdmitted(
       realpathSync(process.execPath) as AdmittedBinary,
@@ -142,6 +143,7 @@ describe("the spawner is shell-free and pinned", () => {
           argv: ["-e", "process.stdout.write(process.env.ACP_P4A_AMBIENT ?? 'absent');"],
           env: { PATH: "/usr/bin:/bin" },
           cwd: dir as AdmittedWorkdir,
+          delivery: { kind: "STDIN" },
         },
         LIMITS,
         CONTEXT,
@@ -173,6 +175,7 @@ describe("the spawner is shell-free and pinned", () => {
           argv: [],
           env: {},
           cwd: drillDir() as AdmittedWorkdir,
+          delivery: { kind: "STDIN" },
         },
         LIMITS,
         CONTEXT,

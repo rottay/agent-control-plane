@@ -859,6 +859,7 @@ describe("N2: a non-CLI elected transport fails closed at the port", () => {
       taskId: B7S_TASK,
       attempt: 1,
       identity: "claude/opus/implementer/01",
+      instructions: "start the packet",
       reattach: null,
     });
 

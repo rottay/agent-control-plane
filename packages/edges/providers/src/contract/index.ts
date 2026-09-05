@@ -200,6 +200,15 @@ export interface SessionRequest {
   readonly workdir: AdmittedWorkdir;
   readonly resumeSessionId: string | null;
   readonly limits: SessionLimits;
+  /**
+   * What the model is being asked to do (V2-B1c).
+   *
+   * Carried from `ExecutionRequest.instructions`, already bounded there. The
+   * adapter never renders, templates or truncates it; the descriptor only
+   * declares HOW a transport would deliver it, and `startSession` is the one
+   * place that delivers.
+   */
+  readonly instructions: string;
 }
 
 export interface SessionDescriptor {
@@ -208,6 +217,24 @@ export interface SessionDescriptor {
   /** Exactly the variables this provider is allowed; nothing is inherited. */
   readonly env: Readonly<Record<string, string>>;
   readonly cwd: AdmittedWorkdir;
+  /**
+   * How this transport takes the instruction — or that it cannot (V2-B1c).
+   *
+   * Declared, never performed: `describe` stays pure and does no I/O, and
+   * `startSession` remains the only impure seam. The union is inline rather
+   * than a named export so the package's pinned public surface does not move
+   * for a field.
+   *
+   * `STDIN` is Claude's, and today only Claude's. Codex and Kimi declare
+   * `UNSUPPORTED`, because their protocols need a handshake this plane has not
+   * performed and their instruction frame needs an id the server has not yet
+   * returned — so no frame carrying an instruction can be built purely here.
+   * Declaring that is a statement about a transport's protocol, not about a
+   * capability, and no capability moves off `UNKNOWN` for it.
+   */
+  readonly delivery:
+    | { readonly kind: "STDIN" }
+    | { readonly kind: "UNSUPPORTED"; readonly reason: "HANDSHAKE_REQUIRED" };
 }
 
 export interface ParseCursor {

@@ -13,6 +13,13 @@ export type AdapterErrorCode =
   | "CONFIG_ROOT_REFUSED"
   | "BINARY_NOT_ADMITTED"
   | "READ_ONLY_VIOLATION"
+  // V2-B1c. The instruction a caller asked us to deliver carries
+  // credential-shaped material, so it is refused before the write and before
+  // the process exists. A genuinely new kind: content the plane will not
+  // transmit, which no other member describes. Reusing `PROTOCOL_UNSUPPORTED`
+  // would have collapsed it into the delivery refusal, and reusing any other
+  // member would have named a different failure.
+  | "CREDENTIAL_MATERIAL"
   // the process itself
   | "SPAWN_FAILED"
   | "EXIT_UNEXPECTED"
@@ -32,6 +39,7 @@ export const ADAPTER_ERROR_CODES: readonly AdapterErrorCode[] = Object.freeze([
   "BINARY_NOT_ADMITTED",
   "CAPABILITY_UNPROVEN",
   "CONFIG_ROOT_REFUSED",
+  "CREDENTIAL_MATERIAL",
   "EXIT_UNEXPECTED",
   "HANDSHAKE_TIMEOUT",
   "ILLEGAL_TRANSITION",

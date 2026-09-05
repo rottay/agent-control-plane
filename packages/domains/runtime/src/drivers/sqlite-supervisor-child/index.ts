@@ -41,6 +41,22 @@ import type { FaultPoint } from "../sqlite-supervisor/index.js";
 const FAULT_POINTS: readonly string[] = ["AFTER_INTENT", "AFTER_EFFECT", "AFTER_OUTCOME"];
 
 /** The digest pins what was asked for, so its shape is checked at the door. */
+/**
+ * The instruction the drill child asks for (V2-B1c).
+ *
+ * A module-level constant rather than a config field, and deterministic on
+ * purpose: the drills compare ledgers across runs byte for byte, so an
+ * instruction that varied would move a head digest for a reason that has
+ * nothing to do with what a drill is proving. This child's config carries no
+ * envelope and no objective, so there is nothing here to read one from.
+ *
+ * It is a second producer of an `ExecutionRequest` instruction in everything
+ * but name, which is why `L-B1C-1` names this file explicitly as a drill-only
+ * exception and asserts that the value is a module-level constant, is
+ * deterministic, and reads no envelope. An unnamed third producer fails the law.
+ */
+const DRILL_INSTRUCTION = "walk the drill plan and record what happened";
+
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 interface ChildConfig {
@@ -301,6 +317,7 @@ export async function runChild(config: ChildConfig): Promise<void> {
                 taskId: config.invocation.taskId,
                 attempt: config.invocation.attempt,
                 identity: config.emittedBy,
+                instructions: DRILL_INSTRUCTION,
                 reattach: null,
               },
               scenarioRoot,

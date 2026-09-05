@@ -630,6 +630,10 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
         workdir: binding.workdir,
         resumeSessionId: null,
         limits: binding.limits,
+        // Carried through unchanged (V2-B1c). The port neither renders nor
+        // bounds it: the value was bounded at `ExecutionRequest`, and a second
+        // policy here could disagree with the first about what was asked.
+        instructions: asked.instructions,
       };
 
       let session: AdapterSession;
