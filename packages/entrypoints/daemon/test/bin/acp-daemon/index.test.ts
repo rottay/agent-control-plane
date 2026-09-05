@@ -94,6 +94,7 @@ function validExecution(): DaemonExecutionConfig {
     bindings: [
       {
         accountId: "acct-config-contract",
+        provider: "claude",
         binary: realpathSync(process.execPath),
         configRoot: home,
         workdir: home,
@@ -771,6 +772,7 @@ describe("A2: an elected route survives the door", () => {
         bindings: [
           {
             accountId: composed.submission.route.accountId,
+            provider: composed.submission.route.provider,
             binary: realpathSync(process.execPath),
             configRoot: home,
             workdir: home,
@@ -819,6 +821,7 @@ describe("A2: an elected route survives the door", () => {
           bindings: [
             {
               accountId: swapped.accountId,
+              provider: swapped.provider,
               binary: realpathSync(process.execPath),
               configRoot: home,
               workdir: home,
@@ -912,6 +915,7 @@ describe("F2: execution.bindings is a plural, fully-admitted array", () => {
   function entryFor(accountId: string, home: string): Record<string, unknown> {
     return {
       accountId,
+      provider: "claude",
       binary: realpathSync(process.execPath),
       configRoot: home,
       workdir: home,
@@ -1090,5 +1094,228 @@ describe("F2: execution.bindings is a plural, fully-admitted array", () => {
       withExecution({ ...execution, bindings: [first, entryFor("acct-second", first.workdir)] }),
     );
     expect(parsed.execution.bindings.every((b) => b.workdir === first.workdir)).toBe(true);
+  });
+});
+
+/**
+ * V2-B1f/F2b — a binding declares the provider it serves.
+ *
+ * F2 gave the entry an `accountId` but not a provider, so the composition had
+ * nothing per-entry to select an adapter from and hoisted the route's out of
+ * the loop. The config door is where that is fixed: every entry declares its
+ * own provider, from the same vocabulary the route's own refinement uses, and
+ * the routed entry must agree with the route.
+ *
+ * Every refusal is asserted **by its path**, and nothing is inherited: an entry
+ * that omits the field is refused rather than filled from the route or from a
+ * sibling that does carry it. Nothing here spawns a process, opens a socket or
+ * names a credential; every case is a pure parse.
+ */
+describe("F2b: every execution binding declares its own provider", () => {
+  function withExecution(execution: unknown): Record<string, unknown> {
+    return { ...validConfig(), execution };
+  }
+
+  /** One well-formed entry, provider included, sharing the route's worktree. */
+  function entryFor(accountId: string, provider: string, home: string): Record<string, unknown> {
+    return {
+      accountId,
+      provider,
+      binary: realpathSync(process.execPath),
+      configRoot: home,
+      workdir: home,
+      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+    };
+  }
+
+  it("P2 admits a mixed-provider config: one route, two providers, one worktree", () => {
+    // The claude route is served by the claude entry; a codex account sits
+    // beside it, reachable but not routed. This is the shape F5's landing needs
+    // and the shape the defect used to flatten onto one adapter.
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    const elsewhere = stage();
+
+    const parsed = parseDaemonChildConfig(
+      withExecution({
+        ...execution,
+        bindings: [
+          first,
+          { ...entryFor("acct-second", "codex", first.workdir), configRoot: elsewhere },
+        ],
+      }),
+    );
+
+    expect(parsed.execution.bindings).toHaveLength(2);
+    expect(parsed.execution.bindings.map((b) => b.provider)).toEqual(["claude", "codex"]);
+    // One worktree, two credential roots: the switch lands without moving the
+    // checkout, and neither account borrows the other's configuration.
+    expect(parsed.execution.bindings.every((b) => b.workdir === first.workdir)).toBe(true);
+    expect(parsed.execution.bindings[1]?.configRoot).toBe(elsewhere);
+    expect(parsed.execution.bindings[0]?.configRoot).not.toBe(elsewhere);
+  });
+
+  it("P3 round-trips each entry's provider, and neither inherits the other's", () => {
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+
+    const parsed = parseDaemonChildConfig(
+      withExecution({
+        ...execution,
+        bindings: [
+          first,
+          entryFor("acct-second", "codex", first.workdir),
+          entryFor("acct-third", "kimi", first.workdir),
+        ],
+      }),
+    );
+
+    expect(parsed.execution.bindings.map((b) => [b.accountId, b.provider])).toEqual([
+      ["acct-config-contract", "claude"],
+      ["acct-second", "codex"],
+      ["acct-third", "kimi"],
+    ]);
+    // The route's provider is not the map's default: two of the three differ
+    // from it and survive.
+    expect(parsed.execution.route.provider).toBe("claude");
+  });
+
+  it("N1 refuses an entry with no provider, by path, filling it from nothing", () => {
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+
+    // Rebuilt without the field rather than deleted from a copy: the absence is
+    // what is under test, and constructing it directly says so.
+    const complete = entryFor("acct-second", "codex", first.workdir);
+    const broken = Object.fromEntries(
+      Object.entries(complete).filter(([key]) => key !== "provider"),
+    );
+    const message = refusalOf(withExecution({ ...execution, bindings: [first, broken] }));
+    expect(message).toContain("execution.bindings[1].provider must be a non-empty string");
+    // Not filled from `route.provider`, and not filled from the sibling that
+    // does carry one: the document produces nothing at all.
+    expect(refusalOf(withExecution({ ...execution, bindings: [first, broken] }))).not.toBe("");
+  });
+
+  it("N2 refuses a provider outside the CLI vocabulary, and a malformed one, by path", () => {
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    const home = first.workdir;
+
+    // A real provider name this control plane has no CLI transport for. The
+    // vocabulary refusal is separate from the shape refusal because they are
+    // separate operator mistakes.
+    const unknown = refusalOf(
+      withExecution({ ...execution, bindings: [first, entryFor("acct-second", "gemini", home)] }),
+    );
+    expect(unknown).toContain("execution.bindings[1].provider");
+    expect(unknown).toContain("names no CLI subscription provider");
+
+    for (const malformed of [7, null, true, [], {}, ""]) {
+      const message = refusalOf(
+        withExecution({
+          ...execution,
+          bindings: [first, { ...entryFor("acct-second", "codex", home), provider: malformed }],
+        }),
+      );
+      expect(message).toContain("execution.bindings[1].provider must be a non-empty string");
+    }
+  });
+
+  it("N3 refuses a routed entry that disagrees with the route, naming both values", () => {
+    // Refused at admission, not deferred to session time, where it would
+    // surface as a port refusal in the middle of a walk.
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+
+    const message = refusalOf(
+      withExecution({ ...execution, bindings: [{ ...first, provider: "codex" }] }),
+    );
+    expect(message).toContain("execution.route.provider is claude");
+    expect(message).toContain("but the entry serving it declares codex");
+    expect(message).toContain("the routed entry must declare the provider the route names");
+  });
+
+  it("N4 lets a NON-routed entry differ freely from the route", () => {
+    // The agreement rule binds the entry that serves the route and no other.
+    // A backup account on a second provider is the point of the packet.
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+
+    const parsed = parseDaemonChildConfig(
+      withExecution({
+        ...execution,
+        bindings: [first, entryFor("acct-second", "codex", first.workdir)],
+      }),
+    );
+    expect(parsed.execution.bindings[0]?.provider).toBe(parsed.execution.route.provider);
+    expect(parsed.execution.bindings[1]?.provider).toBe("codex");
+  });
+
+  it("N9 leaves F2's invariants exactly as they were, with the field present", () => {
+    // The new field neither relaxes the ceiling, the duplicate refusal, the
+    // singular-key break nor the one-worktree law.
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    const home = first.workdir;
+
+    const atCeiling = [
+      first,
+      ...Array.from({ length: MAX_EXECUTION_BINDINGS - 1 }, (_, i) =>
+        entryFor("acct-" + String(i), "codex", home),
+      ),
+    ];
+    expect(
+      parseDaemonChildConfig(withExecution({ ...execution, bindings: atCeiling })).execution.bindings,
+    ).toHaveLength(MAX_EXECUTION_BINDINGS);
+    expect(
+      refusalOf(
+        withExecution({ ...execution, bindings: [...atCeiling, entryFor("acct-over", "kimi", home)] }),
+      ),
+    ).toContain("execution.bindings carries more than " + String(MAX_EXECUTION_BINDINGS));
+
+    // Duplicate by index, still.
+    expect(
+      refusalOf(withExecution({ ...execution, bindings: [first, { ...first }] })),
+    ).toContain("execution.bindings[1].accountId");
+
+    // The singular key, still refused by name.
+    expect(
+      refusalOf(withExecution({ route: execution.route, binding: { ...first } })),
+    ).toContain("execution.binding is no longer accepted");
+
+    // One worktree, still, and both accounts still named.
+    const elsewhere = stage();
+    const split = refusalOf(
+      withExecution({
+        ...execution,
+        bindings: [first, { ...entryFor("acct-second", "codex", home), workdir: elsewhere }],
+      }),
+    );
+    expect(split).toContain("execution.bindings disagree on workdir");
+    expect(split).toContain("acct-second");
+  });
+
+  it("N11 names the index of the entry that omitted it, not a sibling's value", () => {
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+
+    const complete = entryFor("acct-second", "codex", first.workdir);
+    const broken = Object.fromEntries(
+      Object.entries(complete).filter(([key]) => key !== "provider"),
+    );
+    const message = refusalOf(withExecution({ ...execution, bindings: [first, broken] }));
+    expect(message).toContain("execution.bindings[1].provider");
+    // The first entry carries `claude`; the refusal is about index 1 and does
+    // not report index 0 as the offender.
+    expect(message).not.toContain("execution.bindings[0].provider");
   });
 });

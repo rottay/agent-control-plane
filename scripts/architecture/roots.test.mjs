@@ -555,6 +555,65 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("authors a singular binding: key");
   });
 
+  it("refuses a daemon source that selects its CLI adapter from the route (L-F2B-1)", async () => {
+    // V2-B1f/F2b's law. Before that packet `executionPortFor` hoisted one
+    // adapter out of the entry loop -- `CLI_ADAPTERS[route.provider]` -- so
+    // every admitted binding carried the route's, whatever account it served,
+    // and the port's cross-provider guard compared a value against itself for
+    // every map the daemon built. This is what keeps that shape from returning.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line and the offending path.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/daemon/src/probe/index.ts",
+      "export const pick = (route) => CLI_ADAPTERS[route.provider];\n",
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("selects a CLI adapter from the route's provider");
+    expect(output).toContain("packages/entrypoints/daemon/src/probe/index.ts");
+  });
+
+  it("leaves the lawful provider forms alone: per-entry selection, a refusal, a docblock", async () => {
+    // The negative control, and the half that keeps this law from widening from
+    // "selects from the route" to "mentions the route". Every form below is
+    // lawful and must stay lawful: the composition selects per entry and builds
+    // its context from the entry; the parser must NAME `execution.route
+    // .provider` in order to refuse a routed entry that disagrees with it; and
+    // a docblock has to be able to describe the shape the law forbids, which is
+    // exactly what the comment above this law does.
+    //
+    // The anti-vacuity half fires here -- this synthetic tree has no real
+    // composition site -- which is why only the forbidden-shape messages are
+    // asserted absent, exactly as the `L-F3-2` pair does.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/daemon/src/probe/index.ts",
+      [
+        "// The defect this replaced selected CLI_ADAPTERS[route.provider] once,",
+        "// out of the loop, and built every context as provider: route.provider.",
+        "export const adapterFor = (entry) => CLI_ADAPTERS[entry.provider];",
+        "export const contextFor = (entry, taskId) => ({ provider: entry.provider, taskId });",
+        "export const agree = (route, routed) => {",
+        "  if (routed.provider !== route.provider) {",
+        '    throw new Error("execution.route.provider is " + route.provider + " but the entry serving it declares " + routed.provider);',
+        "  }",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("selects a CLI adapter from the route's provider");
+    expect(output).not.toContain("builds an admission context from the route's provider");
+  });
+
   it("refuses a domain source that constructs a CHECKPOINT_WRITTEN event (L-F3-1)", async () => {
     // V2-B1f/F3's law, with a fixture that can falsify it. Before that packet
     // the terminal appended the event and nothing was ever written, so a third

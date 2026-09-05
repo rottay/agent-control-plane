@@ -84,6 +84,7 @@ function walkOf(
         bindings: [
           {
             accountId: ROUTE.accountId,
+            provider: ROUTE.provider,
             binary: worktreePath + "/fake",
             configRoot: worktreePath,
             workdir: worktreePath,

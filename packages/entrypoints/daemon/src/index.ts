@@ -1543,6 +1543,14 @@ function bindingForRoute(execution: DaemonExecutionConfig): DaemonExecutionBindi
  * account reaches this map because the operator wrote it down and it passed
  * the same admission as every other, or it does not reach it at all.
  *
+ * **The adapter is per entry since V2-B1f/F2b.** F2 gave the entry an account
+ * but not a provider, so this function hoisted ONE adapter out of the loop and
+ * every admitted binding got the route's -- a codex account declared beside a
+ * claude route was admitted under the claude adapter, whose `buildEnv` exports
+ * a codex credential root as `CLAUDE_CONFIG_DIR` and never sets `CODEX_HOME`.
+ * The entry now carries the provider it speaks, and the port's cross-provider
+ * guard stops being vacuous for the maps this function builds.
+ *
  * The name and this function's position after `conformanceGateFor` are load
  * bearing for `L-C-4b` and stay exactly as they were.
  */
@@ -1553,10 +1561,38 @@ function executionPortFor(
 ): ModelExecutionPort {
   const { route } = execution;
   const bindings = new Map<string, CliBinding>();
-  const adapter = route.transportKind === "CLI_SUBSCRIPTION" ? CLI_ADAPTERS[route.provider] : undefined;
-  if (adapter !== undefined) {
-    const context = { provider: route.provider, taskId };
+  // **The outer guard is the transport, not the adapter (V2-B1f/F2b).** The
+  // previous `if (adapter !== undefined)` conflated "this is not a CLI route"
+  // with "no adapter exists for this provider" and answered both with an empty
+  // map. Keying the branch on `transportKind` keeps the non-CLI behaviour byte
+  // for byte -- the map stays empty and the port refuses at
+  // `route.transportKind` -- while the missing adapter becomes a refusal, which
+  // is what failing closed at admission means.
+  if (route.transportKind === "CLI_SUBSCRIPTION") {
     for (const entry of execution.bindings) {
+      // `Object.hasOwn` before the index, because `CLI_ADAPTERS` is a plain
+      // object typed by string: an entry naming `constructor` would otherwise
+      // resolve to an inherited member rather than to `undefined` and slip past
+      // the refusal below. The parser refuses such a name outright, so this is
+      // a door-only exposure -- and the door is the point, because
+      // `startDaemon` accepts a config value that never passed the parser.
+      const adapter = Object.hasOwn(CLI_ADAPTERS, entry.provider)
+        ? CLI_ADAPTERS[entry.provider]
+        : undefined;
+      if (adapter === undefined) {
+        throw new StartupError(
+          "the execution binding for " +
+            entry.accountId +
+            " names no CLI adapter for provider " +
+            entry.provider,
+        );
+      }
+      // The context is the entry's, not the route's. The adapter decides the
+      // credential environment variable -- `buildEnv` sets `CLAUDE_CONFIG_DIR`,
+      // `CODEX_HOME` or `KIMI_CODE_HOME` from the adapter's own provider -- so
+      // an entry admitted under the route's provider would have had one
+      // provider's credential root exported under another's variable.
+      const context = { provider: entry.provider, taskId };
       try {
         bindings.set(entry.accountId, {
           adapter,
@@ -1570,9 +1606,21 @@ function executionPortFor(
         // from a refused first. Without it an operator holding four bindings
         // would be told only that "the" binding was refused, and would have to
         // guess which credential root the daemon objected to.
+        //
+        // The provider clause is APPENDED to that sentence rather than spliced
+        // into it, so F2's assertion on the existing text stays green unchanged.
+        // It is the one thing this packet makes observable before a second
+        // session is ever opened: a refused second binding now reports the
+        // provider it was admitted as, which a route-derived admission could not
+        // have said.
         const code = error instanceof AdapterError ? error.code : "UNCLASSIFIED";
         throw new StartupError(
-          "the execution binding for " + entry.accountId + " was refused: " + code,
+          "the execution binding for " +
+            entry.accountId +
+            " was refused: " +
+            code +
+            "; it was admitted as " +
+            entry.provider,
         );
       }
     }

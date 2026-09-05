@@ -271,6 +271,7 @@ function executionConfigIn(root: string): DaemonExecutionConfig {
     bindings: [
       {
         accountId: "acct-launchd-drill",
+        provider: "claude",
         binary,
         configRoot: worktree,
         workdir: worktree,

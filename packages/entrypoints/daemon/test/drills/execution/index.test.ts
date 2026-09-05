@@ -1899,6 +1899,7 @@ function fakeProviderBinary(
   readonly root: string;
   readonly pidFile: string;
   readonly echoFile: string;
+  readonly envFile: string;
 } {
   const root = mkdtempSync(join(TMP_ROOT, "acp-b4a-provider-"));
   chmodSync(root, 0o700);
@@ -1911,11 +1912,24 @@ function fakeProviderBinary(
   chmodSync(echoRoot, 0o700);
   temporaries.push(echoRoot);
   const echoFile = join(echoRoot, "instruction.txt");
+  // V2-B1f/F2b. The environment the subject was actually given, beside the
+  // echo file and outside the worktree for the same reason: the adapter
+  // decides the credential variable -- `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+  // `KIMI_CODE_HOME` -- so which adapter admitted this entry is readable from
+  // the subject's own process rather than from a spy on the admission call.
+  // Written, never declared: it is outside the tree, so the conformance gate
+  // neither expects it nor digests it.
+  const envFile = join(echoRoot, "environment.json");
   const binary = join(root, "fake-provider");
   writeFileSync(
     binary,
     "#!" + realpathSync(process.execPath) + "\n" +
       "require('node:fs').writeFileSync(" + JSON.stringify(pidFile) + ", String(process.pid));\n" +
+      // First, so a subject that ran at all has recorded its environment even
+      // if it is later killed. A subject that never ran leaves this file
+      // absent, which is what the codex-routed and refused cases assert.
+      "require('node:fs').writeFileSync(" + JSON.stringify(envFile) +
+      ", JSON.stringify(process.env));\n" +
       // Read to EOF, then record. A subject that never saw the close would
       // hang here rather than write, so the file existing at all is evidence
       // that the pipe was closed as well as written.
@@ -1940,7 +1954,7 @@ function fakeProviderBinary(
   writeFileSync(pidFile, "0", "utf8");
   temporaries.push(root);
   initWorktree(root);
-  return { binary, root, pidFile, echoFile };
+  return { binary, root, pidFile, echoFile, envFile };
 }
 
 function b4aExecutionConfig(binary: string, root: string): DaemonExecutionConfig {
@@ -1958,6 +1972,7 @@ function b4aExecutionConfig(binary: string, root: string): DaemonExecutionConfig
     bindings: [
       {
         accountId: "acct-b4a-drill",
+        provider: "claude",
         binary,
         configRoot: root,
         workdir: root,
@@ -2072,8 +2087,8 @@ const SECOND_ACCOUNT = "acct-b4a-second";
 /** Two fake providers sharing one worktree, each with its own credential root. */
 function twoProviders(): {
   readonly worktree: string;
-  readonly first: { binary: string; echoFile: string; configRoot: string };
-  readonly second: { binary: string; echoFile: string; configRoot: string };
+  readonly first: { binary: string; echoFile: string; envFile: string; pidFile: string; configRoot: string };
+  readonly second: { binary: string; echoFile: string; envFile: string; pidFile: string; configRoot: string };
 } {
   const a = fakeProviderBinary(CLAUDE_LINES, { linger: false });
   const b = fakeProviderBinary(CLAUDE_LINES, { linger: false });
@@ -2081,15 +2096,31 @@ function twoProviders(): {
     // One worktree per packet: the route's entry supplies it and every other
     // entry must declare the same one, so a switch cannot move the checkout.
     worktree: a.root,
-    first: { binary: a.binary, echoFile: a.echoFile, configRoot: a.root },
-    second: { binary: b.binary, echoFile: b.echoFile, configRoot: b.root },
+    first: { binary: a.binary, echoFile: a.echoFile, envFile: a.envFile, pidFile: a.pidFile, configRoot: a.root },
+    second: { binary: b.binary, echoFile: b.echoFile, envFile: b.envFile, pidFile: b.pidFile, configRoot: b.root },
   };
 }
 
-/** A two-entry execution config whose route names `accountId`. */
+/** The CLI subscription vocabulary, spelled here so the mix can be named. */
+type DrillProvider = "claude" | "codex" | "kimi";
+
+/**
+ * A two-entry execution config whose route names `accountId`.
+ *
+ * `mix` says which provider each entry declares (V2-B1f/F2b). Both are `claude`
+ * by default, which is exactly what every F2 case above wants: those drills are
+ * about accounts, not providers, and two claude subjects is what they always
+ * ran. The route's own provider follows the routed entry, because a config
+ * whose route disagreed with the entry serving it is refused at the door -- the
+ * one case that builds such a config on purpose says so at the point it does it.
+ */
 function pluralExecution(
   accountId: string,
   providers: ReturnType<typeof twoProviders>,
+  mix: { readonly first: DrillProvider; readonly second: DrillProvider } = {
+    first: "claude",
+    second: "claude",
+  },
 ): DaemonExecutionConfig {
   const limits = {
     timeoutMs: 10_000,
@@ -2099,7 +2130,7 @@ function pluralExecution(
   };
   return {
     route: {
-      provider: "claude",
+      provider: accountId === SECOND_ACCOUNT ? mix.second : mix.first,
       model: "opus",
       accountId,
       transportKind: "CLI_SUBSCRIPTION",
@@ -2109,6 +2140,7 @@ function pluralExecution(
     bindings: [
       {
         accountId: "acct-b4a-drill",
+        provider: mix.first,
         binary: providers.first.binary,
         configRoot: providers.first.configRoot,
         workdir: providers.worktree,
@@ -2116,6 +2148,7 @@ function pluralExecution(
       },
       {
         accountId: SECOND_ACCOUNT,
+        provider: mix.second,
         binary: providers.second.binary,
         configRoot: providers.second.configRoot,
         workdir: providers.worktree,
@@ -2218,6 +2251,242 @@ describe("F2: a switch has somewhere to land -- plural bindings, end to end", ()
     await expect(
       startDaemon(b4aOptions(b4aScenarioId("f2-named-refusal"), broken)),
     ).rejects.toThrow(new RegExp("the execution binding for " + SECOND_ACCOUNT + " was refused"));
+  });
+});
+
+/**
+ * A binding declares the provider it serves (V2-B1f/F2b).
+ *
+ * F2 gave the entry an account but not a provider, so `executionPortFor`
+ * hoisted ONE adapter out of the entry loop and every admitted binding got the
+ * route's. The cost is not the diagnostic context -- `admitBinary` and the
+ * directory admissions make no decision from it -- but the adapter itself:
+ * `buildEnv` sets exactly `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or
+ * `KIMI_CODE_HOME` from the adapter's own provider, so a codex account driven
+ * by the claude adapter had its codex credential root exported under claude's
+ * variable and `CODEX_HOME` was never set at all.
+ *
+ * **What is honestly observable here, and nothing stronger.** Only the routed
+ * entry is ever executed before F5, so a non-routed entry's provider has two
+ * consequences and these cases are built on exactly those two: the named
+ * refusal now says which provider the entry was admitted as, and the port's
+ * cross-provider guard becomes reachable through the daemon's own door.
+ *
+ * **What a daemon-level test may read.** A port refusal raised inside a walk
+ * reaches the scenario ledger only as `TASK_FAILED` with
+ * `reason: "EXECUTION_FAILED"` -- the payload carries a digest and a closed
+ * reason and no exception message -- and reaches the daemon log only as the
+ * error's bare name. So no case below asserts a refusal name or an `at` from
+ * the daemon: `ROUTE_INVALID` at `route.provider` and `TRANSPORT_UNAVAILABLE`
+ * at `startSession/PROTOCOL_UNSUPPORTED` are proven at port level, by the
+ * providers suite and by the adapters' own `describe`, and are named here in
+ * prose only. What the daemon can see is the ledger's shape and the subject's
+ * own evidence, and that pair is fully discriminating against the before-state.
+ *
+ * Zero real providers, zero network, zero spend: every subject is a `node`
+ * script under a `mkdtemp` root, and the codex entries below are never
+ * executed at all.
+ */
+describe("F2b: a binding declares the provider it serves", () => {
+  /**
+   * The daemon-level evidence a mid-walk port refusal leaves behind.
+   *
+   * The ledger's shape, never a refusal name: the walk settled failed for an
+   * execution reason and no checkpoint was written. A startup refusal would
+   * leave no `TASK_FAILED` at all, so its presence also proves the daemon got
+   * past composition and into the walk.
+   */
+  function settledWithoutCheckpoint(scenarioId: string): void {
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(scenarioId)), { readOnly: true });
+    try {
+      const events = ledger.listEvents({ limit: 500 }).events;
+      const types = events.map((entry) => entry.event.type);
+      expect(types).toContain("TASK_FAILED");
+      expect(types).not.toContain("CHECKPOINT_WRITTEN");
+      const failed = events.find((entry) => entry.event.type === "TASK_FAILED");
+      expect(failed?.event.payload["reason"]).toBe("EXECUTION_FAILED");
+    } finally {
+      ledger.close();
+    }
+  }
+
+  /** A subject that never ran leaves exactly this behind, and nothing more. */
+  function neverRan(subject: { echoFile: string; envFile: string; pidFile: string }): void {
+    expect(existsSync(subject.echoFile)).toBe(false);
+    expect(existsSync(subject.envFile)).toBe(false);
+    // NOT absence: `fakeProviderBinary` commits `child.pid` as "0" for every
+    // subject root before the daemon starts, so the file exists whether or not
+    // it ever ran. What a refused subject leaves is the committed literal,
+    // never overwritten by a real pid.
+    expect(readFileSync(subject.pidFile, "utf8")).toBe("0");
+  }
+
+  it("P1 names the provider a refused binding was admitted as, and keeps F2's sentence", async () => {
+    // The one discriminating positive available before F5. A route-derived
+    // admission would have said `claude` here, because the route is claude;
+    // the entry says codex, and the entry is what was admitted.
+    const providers = twoProviders();
+    const execution = pluralExecution("acct-b4a-drill", providers, {
+      first: "claude",
+      second: "codex",
+    });
+    const [first, second] = execution.bindings;
+    if (first === undefined || second === undefined) throw new Error("expected two entries");
+    const broken: DaemonExecutionConfig = {
+      ...execution,
+      bindings: [
+        first,
+        { ...second, binary: join(providers.second.configRoot, "no-such-binary") },
+      ],
+    };
+
+    await expect(
+      startDaemon(b4aOptions(b4aScenarioId("f2b-named-provider"), broken)),
+    ).rejects.toThrow(
+      "the execution binding for " + SECOND_ACCOUNT +
+        " was refused: BINARY_NOT_ADMITTED; it was admitted as codex",
+    );
+
+    // N8: the clause is APPENDED, so F2's own assertion still holds over the
+    // same message, unchanged.
+    await expect(
+      startDaemon(b4aOptions(b4aScenarioId("f2b-named-provider-compat"), broken)),
+    ).rejects.toThrow(new RegExp("the execution binding for " + SECOND_ACCOUNT + " was refused"));
+  });
+
+  it("P5(a) hands the routed entry its own provider's credential variable", async () => {
+    // The subject writes the environment it was actually given, outside the
+    // worktree, so this is evidence written by the process the daemon spawned
+    // rather than a spy's record of a call. This is the foundation F5 inherits
+    // and exactly what the hoisted adapter would have broken.
+    const providers = twoProviders();
+    const execution = pluralExecution("acct-b4a-drill", providers, {
+      first: "claude",
+      second: "codex",
+    });
+
+    const run = await startDaemon(b4aOptions(b4aScenarioId("f2b-claude-env"), execution));
+    await stopDaemon(run);
+
+    expect(existsSync(providers.first.envFile)).toBe(true);
+    const env = JSON.parse(readFileSync(providers.first.envFile, "utf8")) as Record<string, string>;
+    expect(env["CLAUDE_CONFIG_DIR"]).toBe(providers.first.configRoot);
+    // One provider's credential root never reaches another's variable.
+    expect(env["CODEX_HOME"]).toBeUndefined();
+    expect(env["KIMI_CODE_HOME"]).toBeUndefined();
+
+    // The codex entry was admitted and bound, and still never executed: only
+    // the routed entry runs before F5.
+    expect(existsSync(providers.second.echoFile)).toBe(false);
+    expect(existsSync(providers.second.envFile)).toBe(false);
+  });
+
+  it("P5(b) gives the codex entry the shipped codex adapter, proved by its honest refusal", async () => {
+    // Codex and kimi cannot execute through the daemon at this HEAD: their
+    // `describe` returns an UNSUPPORTED delivery, `startSession` throws
+    // PROTOCOL_UNSUPPORTED before any spawn, and the port turns that into
+    // TRANSPORT_UNAVAILABLE at `startSession/PROTOCOL_UNSUPPORTED`. That is a
+    // limitation this packet neither lifts nor may lift -- and it is exactly
+    // the evidence: the claude adapter would have spawned the subject and
+    // written its echo file, and nothing was spawned at all.
+    const providers = twoProviders();
+    const execution = pluralExecution(SECOND_ACCOUNT, providers, {
+      first: "claude",
+      second: "codex",
+    });
+    const scenarioId = b4aScenarioId("f2b-codex-refused");
+
+    await expect(startDaemon(b4aOptions(scenarioId, execution))).rejects.toThrow();
+
+    settledWithoutCheckpoint(scenarioId);
+    neverRan(providers.second);
+  });
+
+  it("N5 refuses a config value naming no CLI adapter, before any subject is spawned", async () => {
+    // `startDaemon` accepts a `DaemonExecutionConfig` VALUE that never passed
+    // the parser, so the composition defends its own door. The parser refuses
+    // these outright; this is the second lock on the same gate.
+    const providers = twoProviders();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [first, second] = execution.bindings;
+    if (first === undefined || second === undefined) throw new Error("expected two entries");
+
+    const outside = {
+      ...execution,
+      bindings: [first, { ...second, provider: "gemini" }],
+    } as unknown as DaemonExecutionConfig;
+    await expect(
+      startDaemon(b4aOptions(b4aScenarioId("f2b-no-adapter"), outside)),
+    ).rejects.toThrow(
+      "the execution binding for " + SECOND_ACCOUNT + " names no CLI adapter for provider gemini",
+    );
+
+    // R2. `CLI_ADAPTERS` is a plain object typed by string, so an entry naming
+    // an inherited member would resolve to `Object.prototype.constructor`
+    // rather than to `undefined` and slip past the refusal above. Guarded with
+    // `Object.hasOwn`, it is refused by the same sentence.
+    const prototypeKey = {
+      ...execution,
+      bindings: [first, { ...second, provider: "constructor" }],
+    } as unknown as DaemonExecutionConfig;
+    await expect(
+      startDaemon(b4aOptions(b4aScenarioId("f2b-prototype-key"), prototypeKey)),
+    ).rejects.toThrow(
+      "the execution binding for " + SECOND_ACCOUNT + " names no CLI adapter for provider constructor",
+    );
+
+    // Refused at admission: neither subject was ever spawned.
+    expect(existsSync(providers.first.echoFile)).toBe(false);
+    expect(existsSync(providers.second.echoFile)).toBe(false);
+  });
+
+  it("N6 makes the port's cross-provider guard reachable through the daemon's own door", async () => {
+    // The sharpest test in the packet. This config never passed the parser --
+    // which now refuses exactly this disagreement by name -- and the routed
+    // entry declares codex while the route names claude.
+    //
+    // BEFORE this packet the entry was admitted under `CLI_ADAPTERS[route
+    // .provider]`, so it ran under the claude adapter, reached CHECKPOINTED
+    // and wrote its echo file: the port's guard compared the route's provider
+    // with itself and could not fire. AFTER, the binding really carries the
+    // codex adapter, the guard refuses ROUTE_INVALID at `route.provider` at the
+    // first effect -- proven by name at port level, never read from here -- and
+    // the walk settles failed with nothing spawned.
+    const providers = twoProviders();
+    const base = pluralExecution("acct-b4a-drill", providers, { first: "codex", second: "claude" });
+    const disagreeing: DaemonExecutionConfig = {
+      ...base,
+      route: { ...base.route, provider: "claude" },
+    };
+    const scenarioId = b4aScenarioId("f2b-route-invalid");
+
+    await expect(startDaemon(b4aOptions(scenarioId, disagreeing))).rejects.toThrow();
+
+    settledWithoutCheckpoint(scenarioId);
+    // The before-state wrote every one of these.
+    neverRan(providers.first);
+  });
+
+  it("N10 leaves the non-CLI transport exactly as it was", async () => {
+    // The behaviour the transport-keyed outer guard preserves byte for byte:
+    // a route on another transport contributes no binding, so the map is empty
+    // and the port refuses at `route.transportKind` the first time the walk
+    // asks for an effect -- never served from a default, and never refused at
+    // composition. `TASK_FAILED` being present at all is what proves the config
+    // still LOADED: a startup refusal would have left no walk to fail.
+    const providers = twoProviders();
+    const base = pluralExecution("acct-b4a-drill", providers);
+    const nonCli: DaemonExecutionConfig = {
+      ...base,
+      route: { ...base.route, transportKind: "API_KEY" },
+    };
+    const scenarioId = b4aScenarioId("f2b-non-cli");
+
+    await expect(startDaemon(b4aOptions(scenarioId, nonCli))).rejects.toThrow();
+
+    settledWithoutCheckpoint(scenarioId);
+    neverRan(providers.first);
+    neverRan(providers.second);
   });
 });
 

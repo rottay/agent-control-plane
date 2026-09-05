@@ -1011,13 +1011,16 @@ function writeConfigDocument(dir: string, extra: Record<string, unknown> = {}): 
           capabilityPolicyVersion: "stale",
           resolvedAt: "2026-01-01T00:00:00.000Z",
         },
-        // Plural since V2-B1f/F2. The CLI validates nothing under `execution`
-        // but `route` and spreads the rest through untouched, so this fixture
+        // Plural since V2-B1f/F2, and each entry declares its own provider
+        // since V2-B1f/F2b. The CLI validates nothing under `execution` but
+        // `route` and spreads the rest through untouched, so this fixture
         // exists to prove the passthrough over the shape the daemon actually
-        // accepts. Left singular it would pin a document the daemon refuses.
+        // accepts. Left singular, or left without a provider, it would pin a
+        // document the daemon refuses.
         bindings: [
           {
             accountId: B7S_ACCOUNT,
+            provider: "claude",
             binary: realpathSync(process.execPath),
             configRoot: dir,
             workdir: dir,

@@ -230,6 +230,7 @@ function executionConfig(): DaemonExecutionConfig {
     bindings: [
       {
         accountId: "acct-fallback-gate",
+        provider: "claude",
         binary: join(executionRoot, "fake-provider"),
         configRoot: executionRoot,
         workdir: executionRoot,

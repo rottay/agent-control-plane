@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ResolvedRoute, TaskEnvelope } from "@acp/contracts";
+import { CLI_SUBSCRIPTION_PROVIDERS, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
 import { canonicalSubmission, canonicalSubmissionDigest } from "@acp/runtime";
 
 import { ModeError } from "../errors/index.js";
@@ -44,6 +44,32 @@ export interface DaemonExecutionLimits {
 }
 
 /**
+ * The CLI subscription providers a binding may declare (V2-B1f/F2b).
+ *
+ * Spelled from the contract's own list rather than restated here, because the
+ * route's refinement reads that same list: a config and a route that disagreed
+ * about what a provider name is would be two vocabularies, and the whole point
+ * of the agreement check below is that there is one.
+ *
+ * `@acp/providers` spells its `ProviderName` the same way, so the two types are
+ * identical by construction. It is deliberately NOT imported: the child's graph
+ * stays small, and a type it can already spell is not worth a package edge.
+ */
+type CliSubscriptionProvider = (typeof CLI_SUBSCRIPTION_PROVIDERS)[number];
+
+/**
+ * Membership in that vocabulary, as a predicate rather than a cast.
+ *
+ * `includes` over a widened array does not narrow, and an `as` would assert a
+ * value into the vocabulary instead of testing it into it -- which is the
+ * failure the three refusals below exist to prevent, in another spelling. The
+ * predicate is the whole of the narrowing.
+ */
+function isCliSubscriptionProvider(value: unknown): value is CliSubscriptionProvider {
+  return typeof value === "string" && (CLI_SUBSCRIPTION_PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
  * One CLI binding admission the config carries (V2-B1b D5; plural since F2).
  *
  * Absolute, canonical paths -- the `config-file` manner -- checked here for
@@ -53,9 +79,17 @@ export interface DaemonExecutionLimits {
  *
  * `accountId` joined the shape in V2-B1f/F2: a binding now says which account
  * it serves, because there is more than one.
+ *
+ * `provider` joined it in V2-B1f/F2b: a binding now says which provider its
+ * transport speaks, because the accounts it serves need not all speak the same
+ * one. It is required on every entry for every transport kind -- a
+ * conditionally-required field would give the config two shapes, which is the
+ * second-spelling defect F2 refused by name.
  */
 export interface DaemonExecutionBinding {
   readonly accountId: string;
+  /** The CLI subscription provider this account's transport speaks (V2-B1f/F2b). */
+  readonly provider: CliSubscriptionProvider;
   readonly binary: string;
   readonly configRoot: string;
   readonly workdir: string;
@@ -284,6 +318,19 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
     }
     seenAccounts.add(accountId);
 
+    // **The provider is declared, never derived (V2-B1f/F2b).** The shape
+    // refusal and the vocabulary refusal are separate because they are separate
+    // operator mistakes: an entry that forgot the field, and an entry that named
+    // a provider this control plane has no CLI transport for. Neither message
+    // echoes the value; the path is the diagnosis.
+    const provider = admission["provider"];
+    if (typeof provider !== "string" || provider === "") {
+      throw new ModeError(at + ".provider must be a non-empty string");
+    }
+    if (!isCliSubscriptionProvider(provider)) {
+      throw new ModeError(at + ".provider names no CLI subscription provider");
+    }
+
     const limits = admission["limits"];
     if (typeof limits !== "object" || limits === null) {
       throw new ModeError(at + ".limits must be an object");
@@ -296,6 +343,7 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
     // places is a binding nobody wrote down.
     bindings.push({
       accountId,
+      provider,
       binary: admittedPath(admission["binary"], at + ".binary"),
       configRoot: admittedPath(admission["configRoot"], at + ".configRoot"),
       workdir: admittedPath(admission["workdir"], at + ".workdir"),
@@ -314,6 +362,29 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
   const routed = bindings.find((entry) => entry.accountId === route.data.accountId);
   if (routed === undefined) {
     throw new ModeError("execution.route.accountId names no entry in execution.bindings");
+  }
+
+  // **The routed entry must speak the route's provider (V2-B1f/F2b).** A
+  // disagreement is refused at admission rather than deferred to session time,
+  // where it would surface as a port refusal in the middle of a walk. The
+  // message names BOTH values, following the workdir law's precedent below:
+  // provider names are public vocabulary words, not values that carry a secret.
+  //
+  // **Scoped to CLI_SUBSCRIPTION deliberately.** `ResolvedRoute.provider` is
+  // constrained to this vocabulary only for CLI routes; a non-CLI route's
+  // provider segment is opaque, and an `API_KEY` route may legitimately name a
+  // provider no entry can declare. An unconditional equality would make every
+  // non-CLI config unloadable and silently delete a documented behaviour -- the
+  // port's own `TRANSPORT_UNAVAILABLE` at `route.transportKind`. The
+  // unconditional rule was considered and declined for exactly that reason.
+  if (route.data.transportKind === "CLI_SUBSCRIPTION" && routed.provider !== route.data.provider) {
+    throw new ModeError(
+      "execution.route.provider is " +
+        route.data.provider +
+        " but the entry serving it declares " +
+        routed.provider +
+        "; the routed entry must declare the provider the route names",
+    );
   }
 
   // **One worktree per packet.** A switch must not lose context, so a switch

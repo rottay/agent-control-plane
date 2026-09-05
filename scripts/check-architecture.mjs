@@ -6432,6 +6432,59 @@ const V2B1F3_WRITE_SET = [
   "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
 ];
 
+/**
+ * V2-B1f/F2b — a binding declares the provider it serves.
+ *
+ * F2 gave the execution entry an `accountId` and stopped there, so
+ * `executionPortFor` hoisted ONE adapter out of the entry loop and every
+ * admitted binding got the ROUTE's, whatever account it served. The admission
+ * context is diagnostic only -- `admitBinary` and the directory admissions make
+ * no decision from it -- but the adapter is not: each adapter's `describe` calls
+ * `buildEnv` with its own provider literal, and `buildEnv` sets exactly one of
+ * `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `KIMI_CODE_HOME`. A codex account driven
+ * by the claude adapter therefore had its codex credential root exported under
+ * claude's variable, and `CODEX_HOME` was never set at all.
+ *
+ * The consequence was a check that could not fire: the port refuses
+ * `ROUTE_INVALID` at `route.provider` when a binding's adapter disagrees with
+ * the admitted route, and for every map the daemon built those two values were
+ * the same by construction. The guard is not untested -- the providers suite
+ * asserts it over hand-built maps -- it was **vacuous for daemon-built ports**.
+ *
+ * **Fourteen paths, and never a fifteenth.** The immediately preceding,
+ * structurally identical packet (F2, `cb9e0a2..1d680bc`) moved the identical
+ * field shape into the identical literals and took exactly this set; F2b adds
+ * `provider` where F2 added `accountId`, to the same literals, under the same
+ * laws. `daemon/test/drills/lifecycle` authors no execution config and stays
+ * out; `packages/edges/providers/**` is correct as written and stays out --
+ * this packet stops feeding the port a value that made its check vacuous and
+ * changes nothing inside it.
+ *
+ * **No public pin moves.** `DaemonExecutionBinding` and `DaemonExecutionConfig`
+ * are not public exports of `@acp/daemon`, so `DAEMON_PUBLIC_EXPORTS` stays 30;
+ * the vocabulary is the contracts' existing `CLI_SUBSCRIPTION_PROVIDERS`, so
+ * `CONTRACTS_SCHEMA_EXPORTS` stays 100 and `PROVIDERS_PUBLIC_EXPORTS` 87.
+ * `PATH_SCOPED_LAWS` 97 -> **98** for `L-F2B-1`, and the ADR corpus 39 -> 40.
+ *
+ * Record: `docs/architecture/0040-a-binding-declares-the-provider-it-serves.md`.
+ */
+const V2B1F2B_WRITE_SET = [
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/scheduler/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0040-a-binding-declares-the-provider-it-serves.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6582,6 +6635,7 @@ const WRITE_SET = [
   ...V2B1F_WRITE_SET,
   ...V2B1F2_WRITE_SET,
   ...V2B1F3_WRITE_SET,
+  ...V2B1F2B_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7659,6 +7713,16 @@ const PATH_SCOPED_LAWS = [
   {
     law: "only the plan and the terminal guard construct a CHECKPOINT_WRITTEN event",
     scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
+  },
+  // V2-B1f/F2b. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 97 -> 98. Scoped to the daemon with
+  // the same expression F2's row uses, because the hoisted adapter only ever
+  // existed in its composition and the two laws must not select different sets.
+  // The anti-vacuity half beside it is a whole-tree assertion over the
+  // composition site alone and adds no `requireScope`, exactly as `L-F3-2` does.
+  {
+    law: "the daemon selects a CLI adapter per binding, never per route",
+    scope: "packages/entrypoints/daemon/**/src",
   },
 ];
 
@@ -16181,6 +16245,104 @@ if (tracked.status === 0) {
   }
   notes.push(
     "no singular execution binding across " + String(bindingScope.length) + " daemon sources",
+  );
+
+  // --- L-F2B-1: the adapter comes from the entry, never from the route.
+  //
+  // V2-B1f/F2b. `executionPortFor` used to hoist one adapter out of the entry
+  // loop -- `CLI_ADAPTERS[route.provider]` -- and build every admission context
+  // as `{ provider: route.provider, taskId }`. So every admitted binding
+  // carried the ROUTE's adapter whatever account it served, and the port's
+  // cross-provider guard compared a value against itself for every map the
+  // daemon built. The adapter is what decides the credential environment
+  // variable, so that is a codex credential root exported as
+  // `CLAUDE_CONFIG_DIR` the day a switch lands on a second provider.
+  //
+  // **The predicate is the two shapes the defect HAD, and nothing wider.**
+  // Selecting an adapter from the route, and building an admission context from
+  // it. Naming `route.provider` for any other purpose stays lawful -- the port
+  // refuses at `route.provider` and the parser's agreement message names it in
+  // prose -- so the law forbids the two forms that make a decision, not the
+  // mention.
+  //
+  // **Scope is spelled with L-B1F2-1's own expression above**, deliberately, so
+  // the two laws cannot come to select different sets of files.
+  //
+  // **String literals are blanked after `stripComments`, and that exemption is
+  // load bearing** for exactly the reason the law above documents: the parser
+  // must REFUSE a routed entry that disagrees with the route, and a refusal has
+  // to name what it refuses -- the message contains the prose
+  // `execution.route.provider is `. Read over raw text the law would fail on
+  // the one site that enforces it.
+  //
+  // **The second predicate is broader than admission contexts, and that is
+  // recorded rather than discovered.** `provider: route.provider` spans all
+  // daemon `src`, not only the composition. No planned successor writes that
+  // literal, but a future lawful daemon object literal with that key -- usage
+  // attribution is the obvious candidate -- must either spell it differently or
+  // re-scope this law in its own packet. ADR 0040 states the constraint.
+  //
+  // **There is deliberately no "no fallback" clause**, for the same reason the
+  // law above gives: `??`, `||` and default parameters are fallbacks and none is
+  // nameable by a text predicate. That property belongs to the tests, which
+  // assert that an entry missing `provider` is refused rather than filled from
+  // the route or from a sibling.
+  requireScope("the daemon selects a CLI adapter per binding, never per route", bindingScope.length);
+  for (const relativePath of bindingScope) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content)
+      .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+      .replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+    if (/CLI_ADAPTERS\s*\[\s*route\./.test(live)) {
+      fail(
+        relativePath +
+          " selects a CLI adapter from the route's provider; every binding is admitted" +
+          " under the provider its own entry declares",
+      );
+    }
+    if (/provider\s*:\s*route\.provider/.test(live)) {
+      fail(
+        relativePath +
+          " builds an admission context from the route's provider; the context is the entry's",
+      );
+    }
+  }
+  // The anti-vacuity half, on the real tree only. Without it, deleting the
+  // adapter loop outright would leave both predicates satisfied and the law
+  // would certify an empty composition. The message is deliberately DISTINCT
+  // from the two above: the probes in `roots.test.mjs` run against a synthetic
+  // tree where the composition site does not exist, so this half fires there
+  // and the negative control asserts only the absence of the forbidden-shape
+  // messages. `L-F3-2` above is the precedent for a whole-tree half beside a
+  // path-scoped pair.
+  {
+    // Named here rather than through `DAEMON_COMPOSITION_SITE`, which is
+    // declared further down this file: these laws run during module evaluation,
+    // so a reference to a later `const` would be a temporal dead zone rather
+    // than a shared name.
+    const compositionSite = "packages/entrypoints/daemon/src/index.ts";
+    const composition = readIfPresent(compositionSite);
+    if (composition === null) {
+      fail(
+        compositionSite + " is missing; the per-binding adapter law would stand over nothing",
+      );
+    } else {
+      const live = stripComments(composition)
+        .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+        .replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+      if (!/CLI_ADAPTERS\s*\[/.test(live)) {
+        fail(
+          compositionSite +
+            " selects no CLI adapter at all; the per-binding selection this law protects has gone",
+        );
+      }
+    }
+  }
+  notes.push(
+    "every CLI adapter is selected from the binding's own provider, across " +
+      String(bindingScope.length) +
+      " daemon sources",
   );
 
   // --- L-F3-1: the terminal event has exactly two producers.
