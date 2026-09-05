@@ -6557,6 +6557,64 @@ const V2B1F4A_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1f/F4b -- the elector reads the pressure the plane recorded.
+ *
+ * The measured void: F4a made provider pressure a durable, attributed fact and
+ * **nothing read it**. `decideSwitch` -- the module that turns pressure into a
+ * lawful plan -- had no production caller since it was written, and its
+ * `trigger` field had no producer at all outside a test. F4a was therefore
+ * structurally live and behaviourally empty, which is the defect this wave
+ * exists to remove.
+ *
+ * **What this packet does.** Three functions and one verb: a reader beside
+ * F4a's recorder in its own module, a fold beside `SWITCH_TRIGGERS` where the
+ * fail-closed `isTrigger` predicate is module-private, and a CLI verb that
+ * composes the routing request **through the same helper the re-election verb
+ * uses** and calls `decideSwitch`. It prints what it observed and what was
+ * decided.
+ *
+ * **What it stops short of, by construction rather than by discipline.** It
+ * plays no plan: a switch plan revokes a lease, and the executor refuses one
+ * without a real `Lease` that only the daemon's arbiter produces. It moves no
+ * account state: the plan asks for statuses no `ACCOUNT_ACTIONS` verb produces,
+ * and the one door that records an operator action lives in an entrypoint the
+ * CLI may not import. It appends nothing at all -- the handle is opened
+ * `readOnly: true`, so an append is a database-level error rather than a policy
+ * one. `executeSwitchPlan` still has no production caller.
+ *
+ * **Twelve paths, and never a thirteenth.** The verb is inline beside the
+ * re-election verb rather than in a module of its own: a new
+ * `packages/entrypoints/*` source would force a mirrored test path under the
+ * topology law and move five scope notes for no gain. No new package source or
+ * test file is created, which is why those five notes stay at 134 / 123 / 418 /
+ * 20 / 151.
+ *
+ * **Which pins move.** `ACCOUNTS_PUBLIC_EXPORTS` 76 -> 82 over six names --
+ * four types and two values; `PressureSummary` is exported because the exported
+ * `PressureTriggerOutcome` names it. `RUNTIME_PUBLIC_EXPORTS` 239 -> 242; the
+ * reader's ceiling and page limit stay module-private. `PATH_SCOPED_LAWS`
+ * 103 -> 105 and the ADR corpus 41 -> 42. Nothing else moves: no contract, no
+ * event type, no task state, no account status, no account action, no route, no
+ * channel and no migration.
+ *
+ * Record: `docs/architecture/0042-the-elector-reads-the-pressure-the-plane-recorded.md`.
+ */
+const V2B1F4B_WRITE_SET = [
+  "packages/domains/accounts/src/switching/index.ts",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/test/switching/index.test.ts",
+  "packages/domains/runtime/src/pressure/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/pressure/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0042-the-elector-reads-the-pressure-the-plane-recorded.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6709,6 +6767,7 @@ const WRITE_SET = [
   ...V2B1F3_WRITE_SET,
   ...V2B1F2B_WRITE_SET,
   ...V2B1F4A_WRITE_SET,
+  ...V2B1F4B_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7822,6 +7881,17 @@ const PATH_SCOPED_LAWS = [
   {
     law: "no adapter classifies pressure from evidence it does not hold",
     scope: "providers/src/claude/index.ts and providers/src/kimi/index.ts",
+  },
+  // V2-B1f/F4b. Two new path-shaped surfaces, so two new rows: the register
+  // and the `requireScope` call sites both move 103 -> 105. One keeps the
+  // decision verb a decision, and one keeps the trigger vocabulary single.
+  {
+    law: "the decision verb decides and does not write",
+    scope: "packages/entrypoints/cli/src/cli/index.ts",
+  },
+  {
+    law: "one trigger vocabulary, and the fold declares no severity of its own",
+    scope: "packages/domains/accounts/src/switching/index.ts",
   },
 ];
 
@@ -13633,6 +13703,12 @@ const RUNTIME_PUBLIC_EXPORTS = [
   // structurally, exactly as `readAccountUsage`'s is read.
   "readAccountActions",
   "ActionEventSource",
+  // V2-B1f/F4b: the pressure reader, the third sibling of the two above and
+  // here for their reason. Its ceiling and page limit stay module-private:
+  // they are this reader's own bounds and nothing outside it uses either.
+  "readAccountPressure",
+  "AccountPressureRead",
+  "PressureEventSource",
   // V2-B7R: the shared failure classification, asked by both drivers.
   "FAILURE_REFUSALS",
   "FailureDecision",
@@ -13838,6 +13914,16 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "SWITCH_STEPS",
   "SWITCH_TRIGGERS",
   "decideSwitch",
+  // V2-B1f/F4b: the fold from recorded pressure to a classified trigger. It
+  // lives beside `decideSwitch` because the fail-closed `isTrigger` predicate
+  // is module-private and exporting it would put that boundary on the public
+  // surface. `PressureSummary` is here because the exported outcome names it.
+  "PressureObservation",
+  "PressureSummary",
+  "PressureTriggerOutcome",
+  "PressureTriggerRefusal",
+  "PRESSURE_TRIGGER_REFUSALS",
+  "foldPressureTrigger",
   // P8-5: the versioned capability/policy registry (law 4).
   "PolicyConfidence",
   "PolicyEntry",
@@ -16694,6 +16780,141 @@ if (tracked.status === 0) {
         String(present.length) +
         " sources",
     );
+  }
+
+  // --- V2-B1f/F4b: the elector reads the pressure the plane recorded -------
+
+  // --- L-F4B-1: the decision verb decides and does not write.
+  //
+  // The verb reaches `decideSwitch` from an entrypoint whose ledger handle is
+  // opened `readOnly: true`, so an append is already a database-level error.
+  // This law is what stops that becoming untrue quietly: the verb's own region
+  // may not name the plan player, either account-action door, a bare `.append(`
+  // or a second `openLedger(` of its own.
+  //
+  // **The region is bounded by two LITERAL anchors** -- the `L-C-4b` shape, two
+  // `indexOf` calls and a slice. Naming the second anchor literally is what
+  // stops the region silently growing to the end of a 1500-line file the day
+  // the verb stops being the last thing before it.
+  //
+  // String literals are blanked after `stripComments` for the reason the
+  // binding law blanks them: a refusal has to be able to name what it refuses.
+  const DECISION_VERB_HOME = "packages/entrypoints/cli/src/cli/index.ts";
+  {
+    const source = readIfPresent(DECISION_VERB_HOME);
+    requireScope("the decision verb decides and does not write", source === null ? 0 : 1);
+    if (source === null) {
+      fail(DECISION_VERB_HOME + " is missing; the decision verb's law would stand over nothing");
+    } else {
+      const live = stripComments(source)
+        .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+        .replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+      const opens = live.indexOf("function runSwitchDecision");
+      const closes = live.indexOf("export interface CliSeams");
+      if (opens === -1) {
+        fail(DECISION_VERB_HOME + " no longer declares runSwitchDecision; the law's region has no start");
+      } else if (closes === -1) {
+        fail(
+          DECISION_VERB_HOME +
+            " no longer declares the CliSeams interface the law's region ends at; the region would" +
+            " run to the end of the file and the law would stop meaning what it says",
+        );
+      } else if (closes < opens) {
+        fail(
+          DECISION_VERB_HOME +
+            " declares CliSeams before runSwitchDecision; the law's region is inverted and selects nothing",
+        );
+      } else {
+        const region = live.slice(opens, closes);
+        for (const forbidden of [
+          "executeSwitchPlan",
+          "recordAccountAction",
+          "appendAccountAction",
+          ".append(",
+          "openLedger(",
+        ]) {
+          if (region.includes(forbidden)) {
+            fail(
+              DECISION_VERB_HOME +
+                " names " +
+                forbidden +
+                " inside the decision verb; the verb decides and prints, and the handle it is given" +
+                " is query-only precisely so a decision cannot become an act",
+            );
+          }
+        }
+        notes.push("the decision verb decides and does not write, in " + DECISION_VERB_HOME);
+      }
+    }
+  }
+
+  // --- L-F4B-2: one trigger vocabulary, and the fold declares no severity of
+  // its own.
+  //
+  // The fold ranks an exhaustion above a warning. It must do that by walking
+  // `SWITCH_TRIGGERS` in its declared order and asking the module-private
+  // `isTrigger`, not by restating the two names -- and there are two ways to
+  // restate them. A quoted `"QUOTA_…"` literal is the obvious one; a
+  // `{ QUOTA_EXHAUSTED: 0, QUOTA_WARNING: 1 }` severity record is the one a law
+  // that banned only strings would have let through, while defeating its whole
+  // purpose. Both forms are forbidden inside the fold's own body.
+  //
+  // The body is sliced from `function foldPressureTrigger` to the next
+  // top-level `export`, so the docblock above it -- which must be able to
+  // explain the vocabulary in prose -- is outside the region.
+  const TRIGGER_FOLD_HOME = "packages/domains/accounts/src/switching/index.ts";
+  {
+    const source = readIfPresent(TRIGGER_FOLD_HOME);
+    requireScope("one trigger vocabulary, and the fold declares no severity", source === null ? 0 : 1);
+    if (source === null) {
+      fail(TRIGGER_FOLD_HOME + " is missing; the trigger fold's law would stand over nothing");
+    } else {
+      const live = stripComments(source);
+      const opens = live.indexOf("function foldPressureTrigger");
+      if (opens === -1) {
+        fail(TRIGGER_FOLD_HOME + " no longer declares foldPressureTrigger; the fold's law selects nothing");
+      } else if (!live.includes("isTrigger(")) {
+        fail(
+          TRIGGER_FOLD_HOME +
+            " no longer calls isTrigger; the fail-closed boundary between what a provider said and" +
+            " what may move a task would be gone",
+        );
+      } else {
+        const after = live.slice(opens);
+        // The next top-level `export`, at column 0: the fold's own body and
+        // nothing after it.
+        const nextExport = after.search(/\nexport /);
+        const body = nextExport === -1 ? after : after.slice(0, nextExport);
+        if (!body.includes("SWITCH_TRIGGERS")) {
+          fail(
+            TRIGGER_FOLD_HOME +
+              " folds a trigger without walking SWITCH_TRIGGERS; a second severity order is a second" +
+              " vocabulary, and two vocabularies drift",
+          );
+        }
+        if (!body.includes("isTrigger(")) {
+          fail(
+            TRIGGER_FOLD_HOME +
+              " folds a trigger without asking isTrigger; the fold would decide membership itself",
+          );
+        }
+        if (/"QUOTA_/.test(body)) {
+          fail(
+            TRIGGER_FOLD_HOME +
+              " restates a trigger name as a string literal inside the fold; the vocabulary is" +
+              " declared once and walked, never spelled again",
+          );
+        }
+        if (/QUOTA_[A-Z_]+\s*:/.test(body)) {
+          fail(
+            TRIGGER_FOLD_HOME +
+              " restates the trigger names as record keys inside the fold; a severity table that" +
+              " passes a string check is the same second vocabulary spelled differently",
+          );
+        }
+        notes.push("the trigger fold walks SWITCH_TRIGGERS and declares no severity of its own");
+      }
+    }
   }
 
   // --- L-F3-1: the terminal event has exactly two producers.

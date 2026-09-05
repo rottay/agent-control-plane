@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { PROVIDER_PRESSURES } from "@acp/contracts";
-import type { ResolvedRoute } from "@acp/contracts";
+import type { ControlPlaneEvent as ControlPlaneEventValue, ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,7 +18,12 @@ import {
   scenarioLedgerPath,
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
-import { pressureTransitionId, recordProviderPressure } from "../../src/pressure/index.js";
+import {
+  pressureTransitionId,
+  readAccountPressure,
+  recordProviderPressure,
+} from "../../src/pressure/index.js";
+import type { PressureEventSource } from "../../src/pressure/index.js";
 import type { DurableInvocation } from "../../src/contracts/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
 
@@ -418,5 +427,296 @@ describe("the module never opens a task, and never invents a number", () => {
     // Causation is null: the provider prompted this, and the provider is not
     // one of ours to name as a cause.
     expect(row?.causationId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4b — the reader
+// ---------------------------------------------------------------------------
+
+const SINCE = "2026-09-05T12:00:00.000Z";
+const AFTER = "2026-09-05T12:30:00.000Z";
+const BEFORE = "2026-09-05T11:30:00.000Z";
+
+interface SourceEvent {
+  readonly sequence: number;
+  readonly event: ControlPlaneEventValue;
+}
+
+/** One F4a pressure row, as the ledger hands it back. */
+function pressureRow(
+  sequence: number,
+  overrides: {
+    readonly accountId?: string;
+    readonly provider?: string;
+    readonly pressure?: string;
+    readonly type?: string;
+    readonly occurredAt?: string;
+    readonly payload?: Record<string, unknown>;
+  } = {},
+): SourceEvent {
+  const payload = overrides.payload ?? {
+    accountId: overrides.accountId ?? "acct-primary",
+    provider: overrides.provider ?? "codex",
+    pressure: overrides.pressure ?? "QUOTA_EXHAUSTED",
+  };
+  return {
+    sequence,
+    event: {
+      type: overrides.type ?? "QUOTA_WARNING",
+      eventId: "ev-" + String(sequence),
+      occurredAt: overrides.occurredAt ?? AFTER,
+      payload,
+    } as unknown as ControlPlaneEventValue,
+  };
+}
+
+/** A source that hands out fixed pages per type, and records what it was asked. */
+function pagedSource(byType: Readonly<Record<string, readonly (readonly SourceEvent[])[]>>): {
+  readonly source: PressureEventSource;
+  readonly queries: unknown[];
+} {
+  const queries: unknown[] = [];
+  const cursors: Record<string, number> = {};
+  const source: PressureEventSource = {
+    listEvents: (query) => {
+      queries.push(query);
+      const type = String(query.type);
+      const pages = byType[type] ?? [];
+      const index = cursors[type] ?? 0;
+      const events = pages[index] ?? [];
+      const hasMore = index < pages.length - 1;
+      cursors[type] = index + 1;
+      return { events, nextCursor: hasMore ? index + 1 : null, hasMore };
+    },
+  };
+  return { source, queries };
+}
+
+describe("F4b P3: the reader pages, merges, filters and bounds", () => {
+  it("asks for both event types, exhaustively, following each cursor", () => {
+    // Both types, because the fold must see an auth-only account to refuse it
+    // honestly rather than as an anonymous silence.
+    const { source, queries } = pagedSource({
+      QUOTA_WARNING: [[pressureRow(2)], [pressureRow(4)]],
+      AUTH_REQUIRED_RAISED: [
+        [pressureRow(3, { type: "AUTH_REQUIRED_RAISED", pressure: "AUTH_REQUIRED" })],
+      ],
+    });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((row) => row.sequence)).toEqual([2, 3, 4]);
+    expect(queries.map((query) => (query as { type: string }).type)).toEqual([
+      "QUOTA_WARNING",
+      "QUOTA_WARNING",
+      "AUTH_REQUIRED_RAISED",
+    ]);
+    expect(queries[1]).toMatchObject({ afterSequence: 1 });
+  });
+
+  it("merges the two type scans ascending by ledger sequence, not by instant", () => {
+    // The instants tie deliberately: F4a rows carry the walk's submission
+    // instant, so two rows of one walk are indistinguishable by `occurredAt`
+    // and only the ledger's own position orders them.
+    const { source } = pagedSource({
+      QUOTA_WARNING: [[pressureRow(9), pressureRow(3)]],
+      AUTH_REQUIRED_RAISED: [
+        [
+          pressureRow(6, { type: "AUTH_REQUIRED_RAISED", pressure: "AUTH_REQUIRED" }),
+          pressureRow(1, { type: "AUTH_REQUIRED_RAISED", pressure: "AUTH_REQUIRED" }),
+        ],
+      ],
+    });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((row) => row.sequence)).toEqual([1, 3, 6, 9]);
+    expect(new Set(outcome.observations.map((row) => row.occurredAt))).toEqual(new Set([AFTER]));
+  });
+
+  it("keeps only this account's rows from a mixed ledger", () => {
+    const { source } = pagedSource({
+      QUOTA_WARNING: [[pressureRow(1), pressureRow(2, { accountId: "acct-other" }), pressureRow(3)]],
+    });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((row) => row.sequence)).toEqual([1, 3]);
+    expect(new Set(outcome.observations.map((row) => row.accountId))).toEqual(
+      new Set(["acct-primary"]),
+    );
+  });
+
+  it("excludes a row at or before the baseline, and keeps one strictly after it", () => {
+    // The usage fold's rule verbatim: a row at the exact instant the baseline
+    // was published is already inside it.
+    const { source } = pagedSource({
+      QUOTA_WARNING: [
+        [
+          pressureRow(1, { occurredAt: BEFORE }),
+          pressureRow(2, { occurredAt: SINCE }),
+          pressureRow(3, { occurredAt: AFTER }),
+        ],
+      ],
+    });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((row) => row.sequence)).toEqual([3]);
+  });
+
+  it("carries the row's own provider, pressure, instant, sequence and event id", () => {
+    const { source } = pagedSource({
+      QUOTA_WARNING: [[pressureRow(5, { provider: "anthropic-api", pressure: "QUOTA_WARNING" })]],
+    });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations[0]).toEqual({
+      accountId: "acct-primary",
+      provider: "anthropic-api",
+      pressure: "QUOTA_WARNING",
+      occurredAt: AFTER,
+      sequence: 5,
+      eventId: "ev-5",
+    });
+  });
+
+  it("returns an empty success when the account recorded nothing in the window", () => {
+    const { source } = pagedSource({});
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome).toEqual({ ok: true, observations: [] });
+  });
+});
+
+describe("F4b N5: a decision can never feed its own next decision", () => {
+  it("skips a plan-produced row that carries no pressure member, and does not refuse", () => {
+    // The exact shape the switch decision's own DRAIN plan produces: a
+    // QUOTA_WARNING event whose payload is `{accountId}` with no `pressure`
+    // key. The day a later packet plays such a plan, those rows must not read
+    // back as observations. Skipped, not refused: the ledger is not malformed.
+    const { source } = pagedSource({
+      QUOTA_WARNING: [
+        [
+          pressureRow(1, { payload: { accountId: "acct-primary" } }),
+          pressureRow(2),
+          pressureRow(3, { payload: { accountId: "acct-primary", provider: "codex" } }),
+        ],
+      ],
+    });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((row) => row.sequence)).toEqual([2]);
+  });
+
+  it("skips a row whose pressure is outside the closed vocabulary", () => {
+    const { source } = pagedSource({
+      QUOTA_WARNING: [[pressureRow(1, { pressure: "DRAINING" }), pressureRow(2)]],
+    });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((row) => row.sequence)).toEqual([2]);
+  });
+
+  it("skips a row with an empty provider or a non-string payload", () => {
+    const { source } = pagedSource({
+      QUOTA_WARNING: [
+        [
+          pressureRow(1, { provider: "" }),
+          pressureRow(2, { payload: { accountId: "acct-primary", provider: "codex", pressure: 7 } }),
+          pressureRow(3),
+        ],
+      ],
+    });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((row) => row.sequence)).toEqual([3]);
+  });
+});
+
+describe("F4b N6: a refusal, never a truncation", () => {
+  it("refuses above the ceiling rather than folding a prefix", () => {
+    // Folding a prefix would let an exhaustion at row n+1 read as a warning,
+    // and this is a set where the most severe row decides rather than the
+    // newest — so a truncated success is a wrong answer, not a partial one.
+    const pages: (readonly SourceEvent[])[] = [];
+    for (let page = 0; page < 101; page += 1) {
+      pages.push(
+        Array.from({ length: 1_000 }, (_unused, index) => pressureRow(page * 1_000 + index + 1)),
+      );
+    }
+    const { source } = pagedSource({ QUOTA_WARNING: pages });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect({ reason: outcome.reason, at: outcome.at }).toEqual({
+      reason: "PRESSURE_HISTORY_EXCEEDED",
+      at: "observations",
+    });
+  });
+
+  it("counts the ceiling per account, never plane-wide", () => {
+    const noisy = Array.from({ length: 5_000 }, (_unused, index) =>
+      pressureRow(index + 1, { accountId: "acct-other" }),
+    );
+    const { source } = pagedSource({ QUOTA_WARNING: [[...noisy, pressureRow(9_001)]] });
+    const outcome = readAccountPressure(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((row) => row.sequence)).toEqual([9_001]);
+  });
+
+  it("refuses an unparseable baseline rather than reading from the beginning of time", () => {
+    // The reader is total, exactly as the usage fold is. The one production
+    // caller passes a contract Timestamp and cannot reach this, which is why
+    // it is asserted here rather than left to be discovered.
+    const { source } = pagedSource({ QUOTA_WARNING: [[pressureRow(1)]] });
+    const outcome = readAccountPressure(source, "acct-primary", { since: "not-an-instant" });
+    expect(outcome).toEqual({ ok: false, reason: "SINCE_INVALID", at: "since" });
+  });
+
+  it("propagates a page read that throws, and returns no partial history", () => {
+    let calls = 0;
+    const source: PressureEventSource = {
+      listEvents: () => {
+        calls += 1;
+        if (calls === 1) return { events: [pressureRow(1)], nextCursor: 1, hasMore: true };
+        throw new Error("the ledger went away mid-scan");
+      },
+    };
+    expect(() => readAccountPressure(source, "acct-primary", { since: SINCE })).toThrow();
+  });
+});
+
+describe("F4b N7: the reader reads no clock and no random source", () => {
+  it("takes every instant from the rows themselves", () => {
+    const here = resolve(fileURLToPath(import.meta.url), "..");
+    const source = readFileSync(join(here, "..", "..", "src", "pressure", "index.ts"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    for (const token of ["Date.now", "new Date(", "performance.now", "Math.random", "process.env"]) {
+      expect({ token, present: code.includes(token) }).toEqual({ token, present: false });
+    }
+    // `Date.parse` is the one date call, and it only reads what it was handed.
+    expect(code).toContain("Date.parse");
+  });
+
+  it("is deterministic over the same pages", () => {
+    const build = () =>
+      pagedSource({
+        QUOTA_WARNING: [[pressureRow(2), pressureRow(1)]],
+        AUTH_REQUIRED_RAISED: [
+          [pressureRow(3, { type: "AUTH_REQUIRED_RAISED", pressure: "AUTH_REQUIRED" })],
+        ],
+      }).source;
+    const first = JSON.stringify(readAccountPressure(build(), "acct-primary", { since: SINCE }));
+    for (let index = 0; index < 20; index += 1) {
+      expect(JSON.stringify(readAccountPressure(build(), "acct-primary", { since: SINCE }))).toBe(
+        first,
+      );
+    }
   });
 });

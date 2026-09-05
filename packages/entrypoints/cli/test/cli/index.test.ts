@@ -1883,3 +1883,468 @@ describe("P6: the CLI election folds the same answer the read model publishes", 
     expect((JSON.parse(ready.stdout) as EmittedConfig).execution.route.accountId).toBe(B7S_ACCOUNT);
   });
 });
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4b — the decision verb
+// ---------------------------------------------------------------------------
+
+const F4B_SECOND_ACCOUNT = "acct-b7s-cli-second";
+const F4B_SINCE = "2026-08-26T00:00:00Z";
+const F4B_OBSERVED_AT = "2026-08-27T10:00:00.000Z";
+
+/** The document the decision verb prints, as a reader consumes it. */
+interface DecisionDocument {
+  readonly now: string;
+  readonly accounts: readonly {
+    readonly accountId: string;
+    readonly since: string;
+    readonly decision: string;
+    readonly reason?: string;
+    readonly at?: string;
+    readonly trigger?: string;
+    readonly causedBy?: string;
+    readonly observed: {
+      readonly counts: Record<string, number>;
+      readonly latestEventId: string | null;
+      readonly latestOccurredAt: string | null;
+    };
+    readonly plan?: {
+      readonly kind: string;
+      readonly accountStatus: string | null;
+      readonly taskState: string | null;
+      readonly selectedAccountId: string | null;
+      readonly steps: readonly string[];
+      readonly events: readonly { readonly type: string }[];
+    };
+  }[];
+}
+
+/** An accounts file with one or two accounts, so a SWITCH has somewhere to go. */
+function writeSwitchAccountsFile(dir: string, accountIds: readonly string[]): string {
+  const path = join(dir, "accounts-switch.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      contractVersion: LEDGER_CONTRACT_VERSION,
+      accounts: accountIds.map((accountId) => ({
+        contractVersion: LEDGER_CONTRACT_VERSION,
+        accountId,
+        provider: "claude",
+        alias: accountId,
+        authMode: "PREAUTHENTICATED_PROFILE",
+        authProfileRef: B7S_PROFILE_REF,
+        credentialRef: null,
+        plan: "max",
+        enabledModels: ["opus"],
+        knownLimits: { weekly: 1_000_000 },
+        resetSchedule: {
+          kind: "DECLARED",
+          nextResetAt: B7S_RESET,
+          timezone: "UTC",
+          confidence: "HIGH",
+        },
+        quotaEstimate: {
+          remainingRatio: 0.5,
+          estimatedTokensRemaining: 500_000,
+          estimatedAt: F4B_SINCE,
+          confidence: "MEDIUM",
+        },
+        lastHealthProbe: null,
+        lastClassifiedError: null,
+        status: "AVAILABLE",
+        isolatedConfigRoot: "/tmp/acp-f4b-" + accountId,
+        contextSwitchCost: { estimatedTokens: 1_000, estimatedSeconds: 10 },
+      })),
+    }),
+  );
+  chmodSync(path, 0o600);
+  return path;
+}
+
+/** A ledger holding one discovered task and the pressure rows a walk recorded. */
+function ledgerWithPressure(
+  rows: readonly {
+    readonly type: string;
+    readonly accountId: string;
+    readonly provider?: string;
+    readonly pressure?: string;
+    readonly occurredAt?: string;
+    readonly payload?: Record<string, unknown>;
+  }[],
+): string {
+  const path = disposableLedgerPath();
+  const taskId = randomUUID();
+  const events: Record<string, unknown>[] = [
+    makeEvent({ taskId, transitionId: "discover", toState: "DISCOVERED" }),
+  ];
+  rows.forEach((row, index) => {
+    events.push(
+      makeEvent({
+        taskId,
+        transitionId: "pressure." + String(index),
+        type: row.type,
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        occurredAt: row.occurredAt ?? F4B_OBSERVED_AT,
+        payload: row.payload ?? {
+          accountId: row.accountId,
+          provider: row.provider ?? "claude",
+          pressure: row.pressure ?? "QUOTA_EXHAUSTED",
+        },
+      }),
+    );
+  });
+  seed(path, events);
+  return path;
+}
+
+/** The ledger's own head, for asserting a verb appended nothing. */
+function ledgerDigest(path: string): { readonly eventCount: number; readonly head: string | null } {
+  const ledger = openLedger(path, { readOnly: true });
+  try {
+    const status = ledger.status();
+    return { eventCount: status.eventCount, head: status.headEventSha256 };
+  } finally {
+    ledger.close();
+  }
+}
+
+function decisionArgv(
+  accounts: string,
+  database: string,
+  extra: readonly string[] = [],
+): readonly string[] {
+  return [
+    "switch-decision",
+    "--database",
+    database,
+    "--accounts",
+    accounts,
+    "--policy",
+    SHIPPED_POLICY,
+    "--estimated-tokens",
+    "10000",
+    "--reserve-tokens",
+    "5000",
+    "--duration-seconds",
+    "600",
+    "--model",
+    "opus",
+    ...extra,
+  ];
+}
+
+describe("F4b P4: the verb reaches decideSwitch and prints a real plan", () => {
+  it("turns a recorded QUOTA_WARNING into a DRAIN, naming what it observed", async () => {
+    // The first production call of `decideSwitch` in this plane's history: a
+    // row the walk recorded, folded into a trigger, handed to the policy.
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_WARNING" },
+    ]);
+
+    const invocation = await invoke(decisionArgv(accounts, database));
+    expect(invocation.exitCode).toBe(EXIT_OK);
+
+    const document = JSON.parse(invocation.stdout) as DecisionDocument;
+    expect(document.now).toBe(FIXED_NOW);
+    expect(document.accounts).toHaveLength(1);
+    const account = document.accounts[0];
+    expect(account?.accountId).toBe(B7S_ACCOUNT);
+    expect(account?.since).toBe(F4B_SINCE);
+    expect(account?.decision).toBe("DRAIN");
+    expect(account?.trigger).toBe("QUOTA_WARNING");
+    // A warning drains: the account stops taking new work, and the task in
+    // flight is not moved.
+    expect(account?.plan?.accountStatus).toBe("DRAINING");
+    expect(account?.plan?.taskState).toBeNull();
+    expect(account?.plan?.selectedAccountId).toBeNull();
+    expect(account?.plan?.steps).toEqual([
+      "MARK_ACCOUNT_DRAINING",
+      "FINISH_CURRENT_ATOMIC_STEP",
+      "WRITE_CHECKPOINT",
+    ]);
+    // The observation summary, and the deciding row named as the cause.
+    expect(account?.observed.counts).toEqual({ QUOTA_WARNING: 1 });
+    expect(account?.causedBy).toBe(account?.observed.latestEventId);
+    expect(account?.observed.latestOccurredAt).toBe(F4B_OBSERVED_AT);
+  });
+
+  it("reports every account in the file when none is named", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_WARNING" },
+    ]);
+
+    const document = JSON.parse(
+      (await invoke(decisionArgv(accounts, database))).stdout,
+    ) as DecisionDocument;
+    expect(document.accounts.map((entry) => entry.accountId)).toEqual([
+      B7S_ACCOUNT,
+      F4B_SECOND_ACCOUNT,
+    ]);
+    // The account with no rows is a success-shaped nothing, not an error.
+    const second = document.accounts[1];
+    expect(second?.decision).toBe("NONE");
+    expect(second?.reason).toBe("NO_PRESSURE_RECORDED");
+    expect(second?.observed.counts).toEqual({});
+  });
+
+  it("narrows to one account when --account names it", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_WARNING" },
+    ]);
+
+    const document = JSON.parse(
+      (await invoke(decisionArgv(accounts, database, ["--account", F4B_SECOND_ACCOUNT]))).stdout,
+    ) as DecisionDocument;
+    expect(document.accounts.map((entry) => entry.accountId)).toEqual([F4B_SECOND_ACCOUNT]);
+  });
+});
+
+describe("F4b P5: a SWITCH plan is produced and printed, and nothing is played", () => {
+  it("names a second account, an exhausted status, and the four candidate events", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_EXHAUSTED" },
+    ]);
+
+    const before = ledgerDigest(database);
+    const invocation = await invoke(decisionArgv(accounts, database, ["--account", B7S_ACCOUNT]));
+    expect(invocation.exitCode).toBe(EXIT_OK);
+
+    const document = JSON.parse(invocation.stdout) as DecisionDocument;
+    const account = document.accounts[0];
+    expect(account?.decision).toBe("SWITCH");
+    expect(account?.trigger).toBe("QUOTA_EXHAUSTED");
+    expect(account?.plan?.taskState).toBe("QUOTA_BLOCKED");
+    expect(["EXHAUSTED", "COOLDOWN"]).toContain(account?.plan?.accountStatus);
+    // The destination is a real other account, not the one that was refused.
+    expect(account?.plan?.selectedAccountId).toBe(F4B_SECOND_ACCOUNT);
+    // The four the decision has actually earned by the time it is made. A
+    // completion is a claim about the END of a switch and is deliberately
+    // absent: nothing has selected, probed, opened or rehydrated anything, and
+    // the fence keeps `ACCOUNT_SWITCH_COMPLETED` without a constructor until
+    // the packet that finishes a switch exists.
+    expect(account?.plan?.events.map((event) => event.type)).toEqual([
+      "QUOTA_WARNING",
+      "TASK_STATE_CHANGED",
+      "LEASE_REVOKED",
+      "ACCOUNT_SWITCH_STARTED",
+    ]);
+
+    // The plan is a value. Nothing was played: the ledger is byte-identical.
+    expect(ledgerDigest(database)).toEqual(before);
+  });
+
+  it("lets severity outrank recency end to end", async () => {
+    // An exhaustion, then a warning recorded after it. The verb still decides
+    // on the exhaustion, and names the exhaustion's row as the cause.
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_EXHAUSTED" },
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_WARNING" },
+    ]);
+
+    const document = JSON.parse(
+      (await invoke(decisionArgv(accounts, database, ["--account", B7S_ACCOUNT]))).stdout,
+    ) as DecisionDocument;
+    const account = document.accounts[0];
+    expect(account?.decision).toBe("SWITCH");
+    expect(account?.observed.counts).toEqual({ QUOTA_EXHAUSTED: 1, QUOTA_WARNING: 1 });
+    // The cause is the exhaustion, not the newest row.
+    expect(account?.causedBy).not.toBe(account?.observed.latestEventId);
+  });
+});
+
+describe("F4b P8: the only live pressure is legible", () => {
+  it("prints AUTH_REQUIRED by name rather than an anonymous NONE", async () => {
+    // The one pressure a real daemon can currently record. It is never a
+    // trigger — and the operator's answer to it is a re-authentication, which
+    // they can only reach if the verb says what it saw.
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT]);
+    const database = ledgerWithPressure([
+      {
+        type: "AUTH_REQUIRED_RAISED",
+        accountId: B7S_ACCOUNT,
+        pressure: "AUTH_REQUIRED",
+        provider: "claude",
+      },
+    ]);
+
+    const invocation = await invoke(decisionArgv(accounts, database));
+    expect(invocation.exitCode).toBe(EXIT_OK);
+
+    const account = (JSON.parse(invocation.stdout) as DecisionDocument).accounts[0];
+    expect(account?.decision).toBe("NONE");
+    expect(account?.reason).toBe("NO_TRIGGER_CLASSIFIED");
+    expect(account?.at).toBe("AUTH_REQUIRED");
+    expect(account?.observed.counts).toEqual({ AUTH_REQUIRED: 1 });
+    expect(account?.observed.latestEventId).not.toBeNull();
+  });
+});
+
+describe("F4b P7: the verb is deterministic and reads one clock", () => {
+  it("prints byte-identical documents over the same ledger, files and now", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_EXHAUSTED" },
+    ]);
+
+    const first = await invoke(decisionArgv(accounts, database));
+    const second = await invoke(decisionArgv(accounts, database));
+    expect(second.stdout).toBe(first.stdout);
+    expect(second.exitCode).toBe(first.exitCode);
+  });
+});
+
+describe("F4b N1/N9/N10: the verb decides and does not act", () => {
+  it("N1: appends nothing, for any decision it reaches", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    for (const pressure of ["QUOTA_EXHAUSTED", "QUOTA_WARNING", "AUTH_REQUIRED"]) {
+      const database = ledgerWithPressure([
+        {
+          type: pressure === "AUTH_REQUIRED" ? "AUTH_REQUIRED_RAISED" : "QUOTA_WARNING",
+          accountId: B7S_ACCOUNT,
+          pressure,
+        },
+      ]);
+      const before = ledgerDigest(database);
+      const invocation = await invoke(decisionArgv(accounts, database));
+      expect({ pressure, exitCode: invocation.exitCode }).toEqual({ pressure, exitCode: EXIT_OK });
+      // The handle is query-only, so this is structural rather than a promise.
+      expect({ pressure, after: ledgerDigest(database) }).toEqual({ pressure, after: before });
+    }
+  });
+
+  it("N9/N10: no account state moves and no switch is executed", () => {
+    const here = resolve(fileURLToPath(import.meta.url), "..");
+    const source = readFileSync(join(here, "..", "..", "src", "cli", "index.ts"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    for (const token of [
+      "executeSwitchPlan",
+      "recordAccountAction",
+      "appendAccountAction",
+      "ACCOUNT_SWITCH_STARTED",
+      "ACCOUNT_SWITCH_COMPLETED",
+    ]) {
+      expect({ token, present: code.includes(token) }).toEqual({ token, present: false });
+    }
+    // The read-only open is the only open, and the verb adds none of its own.
+    expect(code).toContain("readOnly: true");
+  });
+});
+
+describe("F4b N11: refusals are carried, not re-worded", () => {
+  it("prints a fold refusal as a NONE decision at EXIT_OK, with its own words", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT]);
+    // A transient is a lawful observation and is not a decision problem: the
+    // verb succeeds, and says why it decided nothing.
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "TRANSIENT" },
+    ]);
+
+    const invocation = await invoke(decisionArgv(accounts, database));
+    expect(invocation.exitCode).toBe(EXIT_OK);
+    const account = (JSON.parse(invocation.stdout) as DecisionDocument).accounts[0];
+    expect({ decision: account?.decision, reason: account?.reason, at: account?.at }).toEqual({
+      decision: "NONE",
+      reason: "NO_TRIGGER_CLASSIFIED",
+      at: "TRANSIENT",
+    });
+  });
+
+  it("skips a plan-shaped row so a decision cannot feed its own next decision", async () => {
+    // The exact payload a played DRAIN plan would write: `{accountId}` and no
+    // pressure member. The verb must not read it back as an observation.
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, payload: { accountId: B7S_ACCOUNT } },
+    ]);
+
+    const account = (JSON.parse((await invoke(decisionArgv(accounts, database))).stdout) as DecisionDocument)
+      .accounts[0];
+    expect(account?.decision).toBe("NONE");
+    expect(account?.reason).toBe("NO_PRESSURE_RECORDED");
+    expect(account?.observed.counts).toEqual({});
+  });
+
+  it("prints no credential, no absolute path and no owner-file field", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_EXHAUSTED" },
+    ]);
+
+    const invocation = await invoke(decisionArgv(accounts, database));
+    for (const secret of [B7S_PROFILE_REF, "/tmp/acp-f4b-", accounts, database, "knownLimits"]) {
+      expect({ secret, leaked: invocation.stdout.includes(secret) }).toEqual({
+        secret,
+        leaked: false,
+      });
+    }
+  });
+});
+
+describe("F4b N15: --account is validated by the protocol's own grammar", () => {
+  it("refuses a path segment, a glob and an empty value", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT]);
+    const database = ledgerWithPressure([]);
+    for (const candidate of ["../etc/passwd", "acct/*", ""]) {
+      const invocation = await invoke(decisionArgv(accounts, database, ["--account", candidate]));
+      expect({ candidate, exitCode: invocation.exitCode }).toEqual({
+        candidate,
+        exitCode: EXIT_USAGE,
+      });
+      expect(invocation.stdout).toBe("");
+    }
+  });
+
+  it("restates no account-id grammar of its own", () => {
+    const here = resolve(fileURLToPath(import.meta.url), "..");
+    const source = readFileSync(join(here, "..", "..", "src", "cli", "index.ts"), "utf8");
+    expect(source).toContain("accountActionsPath(");
+  });
+
+  it("refuses an account the file does not declare", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT]);
+    const invocation = await invoke(
+      decisionArgv(accounts, ledgerWithPressure([]), ["--account", "acct-not-in-the-file"]),
+    );
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+  });
+
+  it("names itself, not another verb, when a required option is missing", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT]);
+    const invocation = await invoke([
+      "switch-decision",
+      "--database",
+      ledgerWithPressure([]),
+      "--accounts",
+      accounts,
+      "--policy",
+      SHIPPED_POLICY,
+      "--estimated-tokens",
+      "10000",
+      "--reserve-tokens",
+      "5000",
+    ]);
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(invocation.stderr).toContain("switch-decision");
+    expect(invocation.stderr).not.toContain("acp submission");
+  });
+});

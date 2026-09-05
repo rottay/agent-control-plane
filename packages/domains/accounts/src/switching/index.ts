@@ -23,7 +23,7 @@
  * probe this module performs.
  */
 
-import type { AccountRecord, ControlPlaneEventType } from "@acp/contracts";
+import type { AccountRecord, ControlPlaneEventType, PROVIDER_PRESSURES } from "@acp/contracts";
 
 import type { RoutingOutcome, RoutingRequest } from "../routing/index.js";
 import { rankAccounts } from "../routing/index.js";
@@ -41,6 +41,22 @@ import { rankAccounts } from "../routing/index.js";
  */
 export type SwitchTrigger = "QUOTA_WARNING" | "QUOTA_EXHAUSTED";
 
+/**
+ * The trigger vocabulary, **most severe first**.
+ *
+ * The order is a law of this module, not an accident of the alphabet. An
+ * exhaustion outranks a warning: an account that has been refused outright
+ * must not be read as merely under pressure because a warning was recorded
+ * later. `foldPressureTrigger` walks this array in order and returns the first
+ * member it can prove, so a third member added in the wrong position would
+ * change what a fold decides — which is why a test pins the exact list in
+ * order rather than by membership.
+ *
+ * The architecture fence compares this set against the observation vocabulary
+ * in `@acp/contracts` in both directions, but it compares it **as a set**: the
+ * two genuinely are sets, and the ordering above is this module's own claim
+ * about severity, enforced here and by that test.
+ */
 export const SWITCH_TRIGGERS: readonly SwitchTrigger[] = Object.freeze([
   "QUOTA_EXHAUSTED",
   "QUOTA_WARNING",
@@ -48,6 +64,155 @@ export const SWITCH_TRIGGERS: readonly SwitchTrigger[] = Object.freeze([
 
 function isTrigger(value: unknown): value is SwitchTrigger {
   return typeof value === "string" && (SWITCH_TRIGGERS as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
+// The fold: recorded pressure into a classified trigger
+// ---------------------------------------------------------------------------
+
+/**
+ * One pressure row, as the ledger recorded it and a reader hands it over.
+ *
+ * Declared here rather than in the module that reads the ledger, for one
+ * mechanical reason: the fold's whole job is to decide whether an observation
+ * is a trigger, and `isTrigger` above is module-private. Placing the fold
+ * beside it lets the predicate be used directly, so the observation and
+ * decision vocabularies cannot drift. A fold anywhere else would need the
+ * predicate exported — putting the fail-closed boundary on the public surface
+ * where a caller could route around it.
+ *
+ * `provider` is a bounded string and deliberately **not** the CLI union: API
+ * and local walks record pressure too, under the opaque provider segment their
+ * route carries.
+ */
+export interface PressureObservation {
+  readonly accountId: string;
+  readonly provider: string;
+  readonly pressure: (typeof PROVIDER_PRESSURES)[number];
+  readonly occurredAt: string;
+  /** The ledger's own monotone position: the only ordering it guarantees. */
+  readonly sequence: number;
+  /** The row's own event id, so a decision can name what caused it. */
+  readonly eventId: string;
+}
+
+/** Why no trigger could be classified. Each names the input that decided it. */
+export const PRESSURE_TRIGGER_REFUSALS = ["NO_PRESSURE_RECORDED", "NO_TRIGGER_CLASSIFIED"] as const;
+
+export type PressureTriggerRefusal = (typeof PRESSURE_TRIGGER_REFUSALS)[number];
+
+/**
+ * What was observed, whatever was decided.
+ *
+ * Returned on **both** arms, because the only pressure the plane can currently
+ * observe in production is an authentication requirement, which is never a
+ * trigger — and a refusal that said only "nothing classified" would hide the
+ * one thing the operator needs to see. The members counted are the contract's
+ * own vocabulary and the ids are the ledger's; this shape introduces no
+ * vocabulary of its own.
+ */
+export interface PressureSummary {
+  /** One count per observed member. A member with no rows is absent. */
+  readonly counts: Readonly<Record<string, number>>;
+  readonly latestEventId: string | null;
+  readonly latestOccurredAt: string | null;
+}
+
+export type PressureTriggerOutcome =
+  | {
+      readonly ok: true;
+      readonly trigger: SwitchTrigger;
+      /** The deciding row's own event id: what a later packet links a switch to. */
+      readonly causedBy: string;
+      readonly observed: PressureSummary;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: PressureTriggerRefusal;
+      readonly at: string;
+      readonly observed: PressureSummary;
+    };
+
+function summarize(observations: readonly PressureObservation[]): PressureSummary {
+  const counts: Record<string, number> = {};
+  let latest: PressureObservation | null = null;
+  for (const observation of observations) {
+    counts[observation.pressure] = (counts[observation.pressure] ?? 0) + 1;
+    // The ledger's sequence, never the instant: rows carry the walk's own
+    // submission time, so ties are ordinary and an instant cannot order them.
+    if (latest === null || observation.sequence > latest.sequence) latest = observation;
+  }
+  return Object.freeze({
+    counts: Object.freeze(counts),
+    latestEventId: latest === null ? null : latest.eventId,
+    latestOccurredAt: latest === null ? null : latest.occurredAt,
+  });
+}
+
+/**
+ * Fold recorded pressure into the one trigger a decision may be made on.
+ *
+ * **Severity outranks recency.** The fold walks `SWITCH_TRIGGERS` in its
+ * declared order — most severe first — and returns the first member some
+ * observation proves under `isTrigger`. An exhaustion therefore decides even
+ * when a warning was recorded after it, and the row named as the cause is the
+ * latest observation *of the deciding member*, by ledger sequence.
+ *
+ * **An authentication requirement is never a trigger**, and that is not a gap:
+ * `decideSwitch` reaches its escalation branch from the folded account state,
+ * never from the trigger. A transient or an unclassified utterance is likewise
+ * refused rather than read as quota — the fail-closed direction, since an
+ * unread transient costs nothing and a transient read as quota costs an
+ * account. Every such refusal names the member it saw.
+ *
+ * **An empty set is a success-shaped fact**, not a failure: it means this
+ * account recorded no pressure in the window, which is exactly what a reader
+ * needs to know. A read failure is never coerced into it.
+ *
+ * Pure, frozen, no clock, no random source, no I/O.
+ */
+export function foldPressureTrigger(
+  observations: readonly PressureObservation[],
+): PressureTriggerOutcome {
+  const observed = summarize(observations);
+  if (observations.length === 0) {
+    return Object.freeze({
+      ok: false as const,
+      reason: "NO_PRESSURE_RECORDED" as const,
+      at: "observations",
+      observed,
+    });
+  }
+
+  for (const candidate of SWITCH_TRIGGERS) {
+    let deciding: PressureObservation | null = null;
+    for (const observation of observations) {
+      if (!isTrigger(observation.pressure) || observation.pressure !== candidate) continue;
+      if (deciding === null || observation.sequence > deciding.sequence) deciding = observation;
+    }
+    if (deciding !== null) {
+      return Object.freeze({
+        ok: true as const,
+        trigger: candidate,
+        causedBy: deciding.eventId,
+        observed,
+      });
+    }
+  }
+
+  // Nothing here is a trigger. Name the member of the latest row so the
+  // refusal says what was seen rather than only that nothing classified.
+  let latest: PressureObservation | null = null;
+  for (const observation of observations) {
+    if (isTrigger(observation.pressure)) continue;
+    if (latest === null || observation.sequence > latest.sequence) latest = observation;
+  }
+  return Object.freeze({
+    ok: false as const,
+    reason: "NO_TRIGGER_CLASSIFIED" as const,
+    at: latest === null ? "observations" : latest.pressure,
+    observed,
+  });
 }
 
 // ---------------------------------------------------------------------------

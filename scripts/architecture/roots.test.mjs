@@ -1023,6 +1023,166 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("constructs a pressure signal; this adapter's provider publishes no quota");
   });
 
+  it("refuses a decision verb that writes instead of deciding (L-F4B-1)", async () => {
+    // V2-B1f/F4b's first law. The verb reaches the switch policy from an
+    // entrypoint whose ledger handle is query-only, so an append is already a
+    // database-level error; this is what stops that becoming untrue quietly.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line and the offending path.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/cli/src/cli/index.ts",
+      [
+        "function runSwitchDecision(values, io, ledger) {",
+        "  const outcome = decideSwitch({ trigger, currentAccountId, routing });",
+        "  return executeSwitchPlan({ ledger, plan: outcome.plan });",
+        "}",
+        "export interface CliSeams {}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("names executeSwitchPlan inside the decision verb");
+    expect(output).toContain("packages/entrypoints/cli/src/cli/index.ts");
+  });
+
+  it("leaves a decision verb that only decides alone, and needs both region anchors", async () => {
+    // Two halves. The lawful verb — it folds, decides and prints, and names a
+    // refusal in prose, which the literal-blanking makes safe — must stay
+    // silent. And a file that loses the closing anchor must NOT silently widen
+    // the region to the end of the file: the law says so by name.
+    const lawful = syntheticTree();
+    write(
+      lawful,
+      "packages/entrypoints/cli/src/cli/index.ts",
+      [
+        "function runSwitchDecision(values, io, ledger) {",
+        "  const read = readAccountPressure(ledger, accountId, { since });",
+        "  const folded = foldPressureTrigger(read.observations);",
+        '  if (!folded.ok) return { decision: "NONE", reason: folded.reason };',
+        "  const outcome = decideSwitch({ trigger: folded.trigger, currentAccountId, routing });",
+        '  return { decision: outcome.plan.kind, plan: outcome.plan };',
+        "}",
+        "export interface CliSeams {}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(lawful);
+
+    const clean = await runFenceAgainst(lawful);
+    expect(clean.output).not.toContain("inside the decision verb");
+
+    const unanchored = syntheticTree();
+    write(
+      unanchored,
+      "packages/entrypoints/cli/src/cli/index.ts",
+      [
+        "function runSwitchDecision(values, io, ledger) {",
+        "  return decideSwitch({ trigger, currentAccountId, routing });",
+        "}",
+        "function somethingElse() {}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(unanchored);
+
+    const drifted = await runFenceAgainst(unanchored);
+    expect(drifted.status).not.toBe(0);
+    expect(drifted.output).toContain("no longer declares the CliSeams interface");
+  });
+
+  it("refuses a fold that restates the trigger names, in either form (L-F4B-2)", async () => {
+    // V2-B1f/F4b's second law, and the reason it has two predicates. The fold
+    // ranks an exhaustion above a warning; it must do that by walking the one
+    // declared vocabulary, not by spelling the names again. A quoted literal
+    // is the obvious restatement; a severity record is the one a string-only
+    // law would have let through while defeating its whole purpose.
+    const quoted = syntheticTree();
+    write(
+      quoted,
+      "packages/domains/accounts/src/switching/index.ts",
+      [
+        "const SWITCH_TRIGGERS = [];",
+        "function isTrigger(value) { return SWITCH_TRIGGERS.includes(value); }",
+        "export function foldPressureTrigger(observations) {",
+        "  void SWITCH_TRIGGERS;",
+        "  void isTrigger(null);",
+        '  const worst = observations.find((row) => row.pressure === "QUOTA_EXHAUSTED");',
+        "  return worst;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(quoted);
+
+    const literal = await runFenceAgainst(quoted);
+    expect(literal.status).not.toBe(0);
+    expect(literal.output).toContain("restates a trigger name as a string literal inside the fold");
+
+    const record = syntheticTree();
+    write(
+      record,
+      "packages/domains/accounts/src/switching/index.ts",
+      [
+        "const SWITCH_TRIGGERS = [];",
+        "function isTrigger(value) { return SWITCH_TRIGGERS.includes(value); }",
+        "export function foldPressureTrigger(observations) {",
+        "  void SWITCH_TRIGGERS;",
+        "  void isTrigger(null);",
+        "  const severity = { QUOTA_EXHAUSTED: 0, QUOTA_WARNING: 1 };",
+        "  return observations.sort((a, b) => severity[a.pressure] - severity[b.pressure])[0];",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(record);
+
+    const table = await runFenceAgainst(record);
+    expect(table.status).not.toBe(0);
+    expect(table.output).toContain("restates the trigger names as record keys inside the fold");
+    // The two forms report differently, so a reader is told which one they wrote.
+    expect(table.output).not.toContain("restates a trigger name as a string literal");
+  });
+
+  it("leaves a fold that walks the vocabulary and asks the predicate alone", async () => {
+    // The negative control that matters. This fold ranks by severity and names
+    // neither trigger: it walks the declared array and asks the module-private
+    // predicate, which is the only shape the law permits — and it must stay
+    // silent, or the law would forbid its own first rule.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/accounts/src/switching/index.ts",
+      [
+        "// The vocabulary is most-severe-first, and QUOTA_EXHAUSTED outranks",
+        "// QUOTA_WARNING — prose the law must not catch.",
+        'const SWITCH_TRIGGERS = ["QUOTA_EXHAUSTED", "QUOTA_WARNING"];',
+        "function isTrigger(value) { return SWITCH_TRIGGERS.includes(value); }",
+        "export function foldPressureTrigger(observations) {",
+        "  for (const candidate of SWITCH_TRIGGERS) {",
+        "    for (const row of observations) {",
+        "      if (isTrigger(row.pressure) && row.pressure === candidate) return row;",
+        "    }",
+        "  }",
+        "  return null;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("restates a trigger name as a string literal inside the fold");
+    expect(output).not.toContain("restates the trigger names as record keys inside the fold");
+    expect(output).not.toContain("folds a trigger without walking SWITCH_TRIGGERS");
+    expect(output).not.toContain("folds a trigger without asking isTrigger");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The

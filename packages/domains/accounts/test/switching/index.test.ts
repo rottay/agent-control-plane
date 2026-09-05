@@ -4,18 +4,30 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { AccountRecord, CONTRACT_VERSION, CONTROL_PLANE_EVENT_TYPES } from "@acp/contracts";
+import {
+  AccountRecord,
+  CONTRACT_VERSION,
+  CONTROL_PLANE_EVENT_TYPES,
+  PROVIDER_PRESSURES,
+} from "@acp/contracts";
 
 import type { QuotaEstimate, QuotaOutcome } from "../../src/quota/index.js";
 import type { RoutingRequest } from "../../src/routing/index.js";
 import { DEFAULT_ROUTING_CONFIG } from "../../src/routing/index.js";
 import {
+  PRESSURE_TRIGGER_REFUSALS,
   SWITCH_REFUSALS,
   SWITCH_STEPS,
   SWITCH_TRIGGERS,
   decideSwitch,
+  foldPressureTrigger,
 } from "../../src/switching/index.js";
-import type { SwitchOutcome, SwitchRefused, SwitchRequest } from "../../src/switching/index.js";
+import type {
+  PressureObservation,
+  SwitchOutcome,
+  SwitchRefused,
+  SwitchRequest,
+} from "../../src/switching/index.js";
 
 const NOW = "2026-08-28T12:00:00Z";
 const RESET = "2026-08-28T13:00:00Z";
@@ -570,5 +582,251 @@ describe("the module keeps its own laws", () => {
     ]) {
       expect({ token, present: code.includes(token) }).toEqual({ token, present: false });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4b — the fold from recorded pressure to a classified trigger
+// ---------------------------------------------------------------------------
+
+const OBSERVED_AT = "2026-09-05T10:00:00.000Z";
+
+function observation(
+  pressure: PressureObservation["pressure"],
+  overrides: Partial<PressureObservation> = {},
+): PressureObservation {
+  return {
+    accountId: "acct-primary",
+    provider: "codex",
+    pressure,
+    occurredAt: OBSERVED_AT,
+    sequence: 1,
+    eventId: "00000000-0000-4000-8000-0000000000" + String(10 + (overrides.sequence ?? 1)),
+    ...overrides,
+  };
+}
+
+describe("F4b P1: the fold is total over the closed observation vocabulary", () => {
+  it("gives every member exactly one outcome, and names what it saw when it refuses", () => {
+    // Asserted over the contract's own closed set, so a sixth member cannot be
+    // added without deciding here what it folds to.
+    const expected: Readonly<Record<string, "TRIGGER" | "NO_TRIGGER_CLASSIFIED">> = {
+      AUTH_REQUIRED: "NO_TRIGGER_CLASSIFIED",
+      QUOTA_EXHAUSTED: "TRIGGER",
+      QUOTA_WARNING: "TRIGGER",
+      TRANSIENT: "NO_TRIGGER_CLASSIFIED",
+      UNCLASSIFIED: "NO_TRIGGER_CLASSIFIED",
+    };
+    expect(Object.keys(expected).sort()).toEqual([...PROVIDER_PRESSURES].sort());
+
+    for (const member of PROVIDER_PRESSURES) {
+      const outcome = foldPressureTrigger([observation(member)]);
+      if (expected[member] === "TRIGGER") {
+        expect({ member, ok: outcome.ok }).toEqual({ member, ok: true });
+        if (!outcome.ok) continue;
+        expect(outcome.trigger).toBe(member);
+      } else {
+        expect({ member, ok: outcome.ok }).toEqual({ member, ok: false });
+        if (outcome.ok) continue;
+        expect(outcome.reason).toBe("NO_TRIGGER_CLASSIFIED");
+        // The refusal names the member, so NO_TRIGGER_CLASSIFIED is never the
+        // same words a malformed row would produce.
+        expect(outcome.at).toBe(member);
+      }
+      // Present on every arm, whatever was decided.
+      expect(outcome.observed.counts).toEqual({ [member]: 1 });
+      expect(outcome.observed.latestOccurredAt).toBe(OBSERVED_AT);
+      expect(outcome.observed.latestEventId).not.toBeNull();
+    }
+  });
+
+  it("treats an empty set as a success-shaped fact, never as a trigger", () => {
+    const outcome = foldPressureTrigger([]);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe("NO_PRESSURE_RECORDED");
+    expect(outcome.at).toBe("observations");
+    expect(outcome.observed).toEqual({
+      counts: {},
+      latestEventId: null,
+      latestOccurredAt: null,
+    });
+  });
+
+  it("closes its refusal vocabulary at two, sorted and deduplicated", () => {
+    expect([...PRESSURE_TRIGGER_REFUSALS]).toEqual([
+      "NO_PRESSURE_RECORDED",
+      "NO_TRIGGER_CLASSIFIED",
+    ]);
+    expect(new Set(PRESSURE_TRIGGER_REFUSALS).size).toBe(PRESSURE_TRIGGER_REFUSALS.length);
+  });
+});
+
+describe("F4b P2: severity is declared, not assumed", () => {
+  it("pins the trigger vocabulary in order, most severe first", () => {
+    // By ORDER and not only by membership. The architecture fence compares
+    // this vocabulary against the contract's observation vocabulary as a SET
+    // in both directions, so the ordering is this module's own law and this
+    // assertion is the only thing that enforces it. An exhaustion first is the
+    // claim; the alphabet agreeing with it today is a coincidence.
+    expect([...SWITCH_TRIGGERS]).toEqual(["QUOTA_EXHAUSTED", "QUOTA_WARNING"]);
+    expect(SWITCH_TRIGGERS[0]).toBe("QUOTA_EXHAUSTED");
+  });
+
+  it("lets severity outrank recency, and names the deciding row as the cause", () => {
+    // The warning is the LATER row. Severity still decides, and `causedBy` is
+    // the exhaustion's own event id — not the newest row's.
+    const exhausted = observation("QUOTA_EXHAUSTED", { sequence: 4, eventId: "ev-exhausted" });
+    const warning = observation("QUOTA_WARNING", { sequence: 9, eventId: "ev-warning" });
+    const outcome = foldPressureTrigger([exhausted, warning]);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.trigger).toBe("QUOTA_EXHAUSTED");
+    expect(outcome.causedBy).toBe("ev-exhausted");
+    // The summary still describes everything that was seen.
+    expect(outcome.observed.counts).toEqual({ QUOTA_EXHAUSTED: 1, QUOTA_WARNING: 1 });
+    expect(outcome.observed.latestEventId).toBe("ev-warning");
+  });
+
+  it("names the highest-sequence row of the deciding member when two agree", () => {
+    // The tie rule, stated: among observations of the member that decided, the
+    // cause is the ledger's latest, never the first encountered.
+    const first = observation("QUOTA_EXHAUSTED", { sequence: 2, eventId: "ev-first" });
+    const second = observation("QUOTA_EXHAUSTED", { sequence: 7, eventId: "ev-second" });
+    const outcome = foldPressureTrigger([first, second]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.causedBy).toBe("ev-second");
+    expect(outcome.observed.counts).toEqual({ QUOTA_EXHAUSTED: 2 });
+  });
+
+  it("orders by ledger sequence and not by the order it was handed", () => {
+    const shuffled = [
+      observation("QUOTA_EXHAUSTED", { sequence: 7, eventId: "ev-late" }),
+      observation("QUOTA_EXHAUSTED", { sequence: 2, eventId: "ev-early" }),
+    ];
+    const outcome = foldPressureTrigger(shuffled);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.causedBy).toBe("ev-late");
+  });
+});
+
+describe("F4b N2/N3/N4: what never becomes a trigger", () => {
+  it("N2: an authentication requirement is refused, and the account is still described", () => {
+    // The only pressure the plane can currently observe through a daemon. It
+    // must never move a task, and it must never print as an anonymous NONE:
+    // the operator's answer to it is a re-authentication, not a switch.
+    const outcome = foldPressureTrigger([
+      observation("AUTH_REQUIRED", { provider: "claude", sequence: 3, eventId: "ev-auth" }),
+    ]);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect({ reason: outcome.reason, at: outcome.at }).toEqual({
+      reason: "NO_TRIGGER_CLASSIFIED",
+      at: "AUTH_REQUIRED",
+    });
+    expect(outcome.observed.counts).toEqual({ AUTH_REQUIRED: 1 });
+    expect(outcome.observed.latestEventId).toBe("ev-auth");
+  });
+
+  it("N3: a transient or an unclassified utterance never becomes a switch", () => {
+    for (const member of ["TRANSIENT", "UNCLASSIFIED"] as const) {
+      const outcome = foldPressureTrigger([observation(member)]);
+      expect({ member, ok: outcome.ok }).toEqual({ member, ok: false });
+      if (outcome.ok) continue;
+      expect({ member, at: outcome.at }).toEqual({ member, at: member });
+    }
+  });
+
+  it("N4: a non-trigger crowd never promotes itself, however many rows there are", () => {
+    const outcome = foldPressureTrigger([
+      observation("TRANSIENT", { sequence: 1, eventId: "ev-1" }),
+      observation("AUTH_REQUIRED", { sequence: 2, eventId: "ev-2" }),
+      observation("UNCLASSIFIED", { sequence: 3, eventId: "ev-3" }),
+    ]);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe("NO_TRIGGER_CLASSIFIED");
+    // The member named is the latest by sequence, so the refusal describes the
+    // most recent thing the account said rather than an arbitrary one.
+    expect(outcome.at).toBe("UNCLASSIFIED");
+    expect(outcome.observed.counts).toEqual({
+      TRANSIENT: 1,
+      AUTH_REQUIRED: 1,
+      UNCLASSIFIED: 1,
+    });
+  });
+
+  it("finds the one trigger buried among rows that are not", () => {
+    const outcome = foldPressureTrigger([
+      observation("TRANSIENT", { sequence: 1, eventId: "ev-1" }),
+      observation("QUOTA_WARNING", { sequence: 2, eventId: "ev-warning" }),
+      observation("AUTH_REQUIRED", { sequence: 3, eventId: "ev-3" }),
+    ]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect({ trigger: outcome.trigger, causedBy: outcome.causedBy }).toEqual({
+      trigger: "QUOTA_WARNING",
+      causedBy: "ev-warning",
+    });
+  });
+});
+
+describe("F4b N8: the two vocabularies agree as sets, and the order is a separate claim", () => {
+  it("holds in both directions over the quota members", () => {
+    // The tested twin of the fence law that reads both files. It is a SET
+    // comparison on purpose — the ordering claim is P2's, and conflating the
+    // two is exactly what would let a re-sort pass unnoticed.
+    const quotaMembers = [...PROVIDER_PRESSURES].filter((member) => member.startsWith("QUOTA_"));
+    expect([...quotaMembers].sort()).toEqual([...SWITCH_TRIGGERS].sort());
+    for (const trigger of SWITCH_TRIGGERS) {
+      expect({ trigger, known: quotaMembers.includes(trigger) }).toEqual({ trigger, known: true });
+    }
+    for (const member of quotaMembers) {
+      expect({
+        member,
+        known: (SWITCH_TRIGGERS as readonly string[]).includes(member),
+      }).toEqual({ member, known: true });
+    }
+  });
+
+  it("folds a trigger that decideSwitch then re-classifies independently", () => {
+    // Two independent classifications, deliberately: the fold decides WHICH
+    // rows are a trigger, and `decideSwitch`'s own fail-closed guard decides
+    // whether the string it was handed is one. Neither trusts the other.
+    const outcome = foldPressureTrigger([observation("QUOTA_WARNING")]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    const decided = decideSwitch(request({ trigger: outcome.trigger }));
+    expect(decided.ok).toBe(true);
+  });
+});
+
+describe("F4b: the fold keeps the module's own laws", () => {
+  it("is pure and frozen at every level", () => {
+    const outcome = foldPressureTrigger([observation("QUOTA_EXHAUSTED")]);
+    expect(Object.isFrozen(outcome)).toBe(true);
+    expect(Object.isFrozen(outcome.observed)).toBe(true);
+    expect(Object.isFrozen(outcome.observed.counts)).toBe(true);
+  });
+
+  it("is deterministic: the same observations fold the same way every time", () => {
+    const rows = [
+      observation("QUOTA_EXHAUSTED", { sequence: 4, eventId: "ev-a" }),
+      observation("QUOTA_WARNING", { sequence: 5, eventId: "ev-b" }),
+    ];
+    const first = JSON.stringify(foldPressureTrigger(rows));
+    for (let index = 0; index < 50; index += 1) {
+      expect(JSON.stringify(foldPressureTrigger(rows))).toBe(first);
+    }
+  });
+
+  it("mutates nothing it was handed", () => {
+    const rows = [observation("QUOTA_EXHAUSTED"), observation("QUOTA_WARNING", { sequence: 2 })];
+    const before = JSON.stringify(rows);
+    foldPressureTrigger(rows);
+    expect(JSON.stringify(rows)).toBe(before);
   });
 });

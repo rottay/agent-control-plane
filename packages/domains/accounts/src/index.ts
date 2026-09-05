@@ -90,6 +90,10 @@ export {
 // anything it was not given the standing to decide. Quota and selection are
 // composed from P5B and P5C rather than re-decided here.
 export type {
+  PressureObservation,
+  PressureSummary,
+  PressureTriggerOutcome,
+  PressureTriggerRefusal,
   SwitchAccountStatus,
   SwitchEvent,
   SwitchOutcome,
@@ -100,7 +104,17 @@ export type {
   SwitchStep,
   SwitchTrigger,
 } from "./switching/index.js";
-export { SWITCH_REFUSALS, SWITCH_STEPS, SWITCH_TRIGGERS, decideSwitch } from "./switching/index.js";
+// V2-B1f/F4b: the fold that turns recorded pressure into the one trigger a
+// decision may be made on. It lives beside `decideSwitch` because the
+// fail-closed `isTrigger` predicate is module-private and must stay that way.
+export {
+  PRESSURE_TRIGGER_REFUSALS,
+  SWITCH_REFUSALS,
+  SWITCH_STEPS,
+  SWITCH_TRIGGERS,
+  decideSwitch,
+  foldPressureTrigger,
+} from "./switching/index.js";
 
 // P8-5: the versioned capability/policy registry (law 4). The document is data
 // under `policy/`, outside application code; this package carries its schema,

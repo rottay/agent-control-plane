@@ -34,6 +34,7 @@ import {
   LEDGER_CONTRACT_VERSION,
   TasksQuery,
   WorkersQuery,
+  accountActionsPath,
   taskPath,
   workerPath,
 } from "@acp/protocol";
@@ -44,13 +45,26 @@ import {
   DEFAULT_ROUTING_CONFIG,
   EVIDENCE_ABSENT,
   buildRegistry,
+  decideSwitch,
   estimateQuota,
   foldEffectiveState,
+  foldPressureTrigger,
   loadAccountsFile,
   loadPolicyRegistry,
 } from "@acp/accounts";
-import type { CandidateEvidence, PolicyRouteRequest, QuotaObservation, RoutingRequest } from "@acp/accounts";
-import { composeSubmission, readAccountActions, readAccountUsage } from "@acp/runtime";
+import type {
+  CandidateEvidence,
+  PolicyRegistry,
+  PolicyRouteRequest,
+  QuotaObservation,
+  RoutingRequest,
+} from "@acp/accounts";
+import {
+  composeSubmission,
+  readAccountActions,
+  readAccountPressure,
+  readAccountUsage,
+} from "@acp/runtime";
 
 import {
   renderError,
@@ -167,6 +181,8 @@ const OPTIONS = {
   config: { type: "string" },
   accounts: { type: "string" },
   policy: { type: "string" },
+  account: { type: "string" },
+  model: { type: "string" },
   "estimated-tokens": { type: "string" },
   "reserve-tokens": { type: "string" },
   "duration-seconds": { type: "string" },
@@ -207,6 +223,15 @@ export const TOOL_CALL_COMMAND = "tool-call";
  */
 export const CANCEL_COMMAND = "cancel";
 export const ATTACH_COMMAND = "attach";
+
+/**
+ * The decision verb's name, as one literal (V2-B1f/F4b).
+ *
+ * Named for the reason the four above are, and for one more: the usage errors
+ * its own options raise name the command they belong to, so an operator who
+ * mistypes an option on this verb is not told to consult a different one.
+ */
+export const SWITCH_DECISION_COMMAND = "switch-decision";
 
 type OptionName = keyof typeof OPTIONS;
 type ParsedValues = Partial<Record<OptionName, string | boolean>>;
@@ -279,6 +304,24 @@ const COMMANDS: readonly CommandSpec[] = [
     positional: null,
     options: ["config", "accounts", "policy", "estimated-tokens", "reserve-tokens", "duration-seconds"],
     summary: "re-elect a daemon config's route by policy and print the updated document",
+  },
+  // V2-B1f/F4b. The verb that reads the pressure the plane recorded and asks
+  // the switch policy what it implies. It reaches `decideSwitch` -- which had
+  // no production caller until this packet -- and prints what it observed and
+  // what was decided. It plays no plan, moves no account and appends nothing.
+  {
+    name: SWITCH_DECISION_COMMAND,
+    positional: null,
+    options: [
+      "accounts",
+      "policy",
+      "account",
+      "model",
+      "estimated-tokens",
+      "reserve-tokens",
+      "duration-seconds",
+    ],
+    summary: "fold recorded provider pressure into a switch decision and print it",
   },
   // V2-B4b stage 3D. A read over the tool-call receipts this plane records,
   // and the one verb that writes. The read is an ordinary handler; the write
@@ -968,15 +1011,26 @@ function absolutePathOption(values: ParsedValues, name: OptionName): string {
   return supplied;
 }
 
-/** A required non-negative integer option. No default: a budget is never guessed. */
-function integerOption(values: ParsedValues, name: OptionName): number {
+/**
+ * A required non-negative integer option. No default: a budget is never guessed.
+ *
+ * The command is a parameter, defaulting to the verb that first needed this,
+ * so a second verb taking the same three options raises a usage error naming
+ * **itself**. An operator told to consult a command they did not run would be
+ * reading a diagnostic about somebody else's verb.
+ */
+function integerOption(
+  values: ParsedValues,
+  name: OptionName,
+  command: string = SUBMISSION_COMMAND,
+): number {
   const supplied = stringOption(values, name);
   if (supplied === undefined || !/^[0-9]+$/.test(supplied)) {
     throw failure(
       EXIT_USAGE,
       "BAD_REQUEST",
       "--" + name + " is required and must be a non-negative integer",
-      "acp " + SUBMISSION_COMMAND,
+      "acp " + command,
     );
   }
   return Number(supplied);
@@ -1011,65 +1065,57 @@ function requiredString(document: Record<string, unknown>, key: string): string 
 }
 
 /**
- * The worker role the run executes under, taken from the identity the config
- * already declares rather than from a flag of its own.
+ * The task profile a routing request is composed against.
  *
- * A worker identity is `provider/model/role/instance`; the role is its third
- * segment. Reading it here means the elected route is eligible for the role the
- * config says will run it, instead of a role a caller could assert separately
- * from the identity the events will carry.
+ * Three numbers the caller states and nothing else: the composition below
+ * neither defaults them nor infers them from a config document, so both verbs
+ * that use it state the same three or fail the same way.
  */
-function roleFromIdentity(emittedBy: string): string {
-  const role = emittedBy.split("/")[2];
-  if (role === undefined || role === "") {
-    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config's emittedBy names no role", "config.emittedBy");
-  }
-  return role;
+interface RoutingTaskProfile {
+  readonly estimatedTokens: number;
+  readonly estimatedDurationSeconds: number;
+  readonly reserveTokens: number;
+  /**
+   * The routing alias the work is scheduled against.
+   *
+   * Empty on the submission path, and deliberately: there the **policy seam**
+   * chooses the model, calling `rankAccounts` once per eligible entry with
+   * that entry's own alias. A caller that ranks accounts directly has no such
+   * seam above it, and `rankAccounts` admits an account only if its
+   * `enabledModels` contains this value — so a direct caller that left it
+   * empty would be told every account is ineligible, whatever their quota.
+   */
+  readonly model: string;
 }
 
-interface SubmissionResult {
-  readonly document: unknown;
-  readonly exitCode: number;
+interface ComposedRouting {
+  readonly registry: ReturnType<typeof buildRegistry>;
+  readonly routing: RoutingRequest;
+  readonly policy: PolicyRegistry;
+  readonly now: string;
 }
 
-function runSubmission(values: ParsedValues, io: CliIo, ledger: Ledger): SubmissionResult {
-  const configPath = absolutePathOption(values, "config");
-  const accountsPath = absolutePathOption(values, "accounts");
-  const policyPath = absolutePathOption(values, "policy");
-  const estimatedTokens = integerOption(values, "estimated-tokens");
-  const reserveTokens = integerOption(values, "reserve-tokens");
-  const estimatedDurationSeconds = integerOption(values, "duration-seconds");
-
-  const config = readJsonDocument(configPath, "config document");
-
-  // Only what the digest is taken over, and the transport the config already
-  // asked for. Everything else stays opaque.
-  const taskId = requiredString(config, "taskId");
-  const submittedAt = requiredString(config, "submittedAt");
-  const initiativeId = requiredString(config, "initiativeId");
-  const emittedBy = requiredString(config, "emittedBy");
-  const attempt = config["attempt"];
-  if (typeof attempt !== "number" || !Number.isInteger(attempt)) {
-    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config does not declare attempt", "config.attempt");
-  }
-  const execution = config["execution"];
-  if (typeof execution !== "object" || execution === null || Array.isArray(execution)) {
-    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config declares no execution", "config.execution");
-  }
-  const executionRecord = execution as Record<string, unknown>;
-  const currentRoute = executionRecord["route"];
-  if (typeof currentRoute !== "object" || currentRoute === null || Array.isArray(currentRoute)) {
-    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config declares no execution route", "config.execution.route");
-  }
-  const transportKind = (currentRoute as Record<string, unknown>)["transportKind"];
-  if (typeof transportKind !== "string" || transportKind === "") {
-    throw failure(
-      EXIT_USAGE,
-      "BAD_REQUEST",
-      "the config's route declares no transportKind",
-      "config.execution.route.transportKind",
-    );
-  }
+/**
+ * Compose the routing request both deciding verbs need, exactly once.
+ *
+ * **Extracted rather than copied (V2-B1f/F4b).** The submission verb built this
+ * and the decision verb needs the identical thing: the same accounts file, the
+ * same policy document, the same operator-state overlay, the same exhaustive
+ * usage read, the same estimator call and the same single clock read. A second
+ * copy would be a second registry that could disagree with the first about
+ * which accounts exist and what they have left — the failure this extraction
+ * exists to make impossible.
+ *
+ * One `io.now()`, taken here and threaded, so nothing downstream reads a clock.
+ */
+function composeRoutingRequest(input: {
+  readonly ledger: Ledger;
+  readonly accountsPath: string;
+  readonly policyPath: string;
+  readonly io: CliIo;
+  readonly task: RoutingTaskProfile;
+}): ComposedRouting {
+  const { ledger, accountsPath, policyPath, io, task } = input;
 
   const now = io.now();
 
@@ -1168,16 +1214,99 @@ function runSubmission(values: ParsedValues, io: CliIo, ledger: Ledger): Submiss
     evidence,
     task: {
       // Ignored by the policy seam, which chooses the model; carried because
-      // the request type is shared with `rankAccounts`.
-      model: "",
-      estimatedTokens,
-      estimatedDurationSeconds,
-      reserveTokens,
+      // the request type is shared with `rankAccounts`, and read directly by
+      // it when a caller ranks without that seam above them.
+      model: task.model,
+      estimatedTokens: task.estimatedTokens,
+      estimatedDurationSeconds: task.estimatedDurationSeconds,
+      reserveTokens: task.reserveTokens,
       requiredCapabilities: [],
     },
     config: DEFAULT_ROUTING_CONFIG,
     now,
   };
+
+  return { registry, routing, policy: policy.registry, now };
+}
+
+/**
+ * The worker role the run executes under, taken from the identity the config
+ * already declares rather than from a flag of its own.
+ *
+ * A worker identity is `provider/model/role/instance`; the role is its third
+ * segment. Reading it here means the elected route is eligible for the role the
+ * config says will run it, instead of a role a caller could assert separately
+ * from the identity the events will carry.
+ */
+function roleFromIdentity(emittedBy: string): string {
+  const role = emittedBy.split("/")[2];
+  if (role === undefined || role === "") {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config's emittedBy names no role", "config.emittedBy");
+  }
+  return role;
+}
+
+interface SubmissionResult {
+  readonly document: unknown;
+  readonly exitCode: number;
+}
+
+/** What the decision verb prints: one document, and the code it exits with. */
+interface SwitchDecisionResult {
+  readonly document: unknown;
+  readonly exitCode: number;
+}
+
+function runSubmission(values: ParsedValues, io: CliIo, ledger: Ledger): SubmissionResult {
+  const configPath = absolutePathOption(values, "config");
+  const accountsPath = absolutePathOption(values, "accounts");
+  const policyPath = absolutePathOption(values, "policy");
+  const estimatedTokens = integerOption(values, "estimated-tokens");
+  const reserveTokens = integerOption(values, "reserve-tokens");
+  const estimatedDurationSeconds = integerOption(values, "duration-seconds");
+
+  const config = readJsonDocument(configPath, "config document");
+
+  // Only what the digest is taken over, and the transport the config already
+  // asked for. Everything else stays opaque.
+  const taskId = requiredString(config, "taskId");
+  const submittedAt = requiredString(config, "submittedAt");
+  const initiativeId = requiredString(config, "initiativeId");
+  const emittedBy = requiredString(config, "emittedBy");
+  const attempt = config["attempt"];
+  if (typeof attempt !== "number" || !Number.isInteger(attempt)) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config does not declare attempt", "config.attempt");
+  }
+  const execution = config["execution"];
+  if (typeof execution !== "object" || execution === null || Array.isArray(execution)) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config declares no execution", "config.execution");
+  }
+  const executionRecord = execution as Record<string, unknown>;
+  const currentRoute = executionRecord["route"];
+  if (typeof currentRoute !== "object" || currentRoute === null || Array.isArray(currentRoute)) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "the config declares no execution route", "config.execution.route");
+  }
+  const transportKind = (currentRoute as Record<string, unknown>)["transportKind"];
+  if (typeof transportKind !== "string" || transportKind === "") {
+    throw failure(
+      EXIT_USAGE,
+      "BAD_REQUEST",
+      "the config's route declares no transportKind",
+      "config.execution.route.transportKind",
+    );
+  }
+
+  const composed = composeRoutingRequest({
+    ledger,
+    accountsPath,
+    policyPath,
+    io,
+    // The empty alias is what this verb has always passed: the policy seam
+    // below chooses the model, and this request is its input rather than the
+    // router's.
+    task: { estimatedTokens, estimatedDurationSeconds, reserveTokens, model: "" },
+  });
+  const { routing, policy, now } = composed;
 
   const request: PolicyRouteRequest = {
     role: roleFromIdentity(emittedBy),
@@ -1185,15 +1314,15 @@ function runSubmission(values: ParsedValues, io: CliIo, ledger: Ledger): Submiss
     transportKind: admitTransportKind(transportKind),
   };
 
-  const composed = composeSubmission(request, policy.registry, {
+  const submission = composeSubmission(request, policy, {
     taskId,
     attempt,
     submittedAt,
     initiativeId,
     resolvedAt: now,
   });
-  if (!composed.ok) {
-    throw failure(EXIT_USAGE, "BAD_REQUEST", "no route could be elected", composed.reason);
+  if (!submission.ok) {
+    throw failure(EXIT_USAGE, "BAD_REQUEST", "no route could be elected", submission.reason);
   }
 
   // Exactly two fields are replaced. Everything else is the caller's document,
@@ -1201,8 +1330,8 @@ function runSubmission(values: ParsedValues, io: CliIo, ledger: Ledger): Submiss
   return {
     document: {
       ...config,
-      submissionDigest: composed.submissionDigest,
-      execution: { ...executionRecord, route: composed.submission.route },
+      submissionDigest: submission.submissionDigest,
+      execution: { ...executionRecord, route: submission.submission.route },
     },
     exitCode: EXIT_OK,
   };
@@ -1214,6 +1343,168 @@ function runSubmission(values: ParsedValues, io: CliIo, ledger: Ledger): Submiss
  * Separated from the entry point so the whole surface can be tested in process,
  * and so importing this module never runs anything and never opens a database.
  */
+/**
+ * Fold the recorded pressure and ask the switch policy what it implies.
+ *
+ * **The first production caller of `decideSwitch` in this plane's history.**
+ * The pressure the walk records has had a writer since F4a and no reader at
+ * all; the decision policy has had no caller since it was written. This verb
+ * closes exactly that gap and nothing else.
+ *
+ * **It decides and prints. It does not act.** No plan is played: a switch plan
+ * revokes a lease, and the executor refuses one without a real `Lease` that
+ * only the daemon's arbiter can produce. No account state is written: the plan
+ * asks for statuses no operator verb produces, and the one door that records an
+ * operator action lives in an entrypoint this package may not import. Nothing
+ * is appended at all — the handle this verb is given is query-only, so an
+ * append is a database-level error rather than a policy one.
+ *
+ * **What it observed is printed whatever it decided.** The only pressure the
+ * plane can currently observe through a daemon is an authentication
+ * requirement, which is never a trigger; a verb that answered that with a bare
+ * "nothing to do" would hide the one thing an operator needs to act on.
+ */
+function runSwitchDecision(values: ParsedValues, io: CliIo, ledger: Ledger): SwitchDecisionResult {
+  const accountsPath = absolutePathOption(values, "accounts");
+  const policyPath = absolutePathOption(values, "policy");
+  const estimatedTokens = integerOption(values, "estimated-tokens", SWITCH_DECISION_COMMAND);
+  const reserveTokens = integerOption(values, "reserve-tokens", SWITCH_DECISION_COMMAND);
+  const estimatedDurationSeconds = integerOption(
+    values,
+    "duration-seconds",
+    SWITCH_DECISION_COMMAND,
+  );
+
+  /**
+   * The routing alias a switch would be for, and why this verb must be told.
+   *
+   * `decideSwitch` ranks the other accounts by calling `rankAccounts`
+   * **directly**, and that admission reads `record.enabledModels.includes(
+   * task.model)`. The submission verb never states an alias because the policy
+   * seam above it chooses one and re-ranks per candidate model; this verb has
+   * no such seam, so an unstated alias would make every account ineligible and
+   * every exhaustion refuse `NO_ELIGIBLE_ACCOUNT` — a fail-closed answer that
+   * looks exactly like "there is nowhere to go" when the truth is "nobody said
+   * where from". Required, never defaulted, for the reason a budget is never
+   * guessed: the switch is about a particular piece of work.
+   */
+  const model = stringOption(values, "model");
+  if (model === undefined || model === "") {
+    throw failure(
+      EXIT_USAGE,
+      "BAD_REQUEST",
+      "--model is required and names the routing alias the switch would be for",
+      "acp " + SWITCH_DECISION_COMMAND,
+    );
+  }
+
+  // Validated through the protocol's own account-id grammar rather than a
+  // regex restated here: `accountActionsPath` parses exactly that grammar and
+  // throws on a violation, so the path it builds is discarded and only the
+  // judgement is kept. A second spelling of a grammar is how two doors come to
+  // disagree about what an account id is.
+  const onlyAccount = stringOption(values, "account");
+  if (onlyAccount !== undefined) {
+    try {
+      accountActionsPath(onlyAccount);
+    } catch {
+      throw failure(
+        EXIT_USAGE,
+        "BAD_REQUEST",
+        "--account is not a valid account id",
+        "acp " + SWITCH_DECISION_COMMAND,
+      );
+    }
+  }
+
+  const composed = composeRoutingRequest({
+    ledger,
+    accountsPath,
+    policyPath,
+    io,
+    task: { estimatedTokens, estimatedDurationSeconds, reserveTokens, model },
+  });
+  const { registry, routing, now } = composed;
+
+  const selected =
+    onlyAccount === undefined
+      ? registry.accounts
+      : registry.accounts.filter((record) => record.accountId === onlyAccount);
+  if (onlyAccount !== undefined && selected.length === 0) {
+    throw failure(
+      EXIT_USAGE,
+      "BAD_REQUEST",
+      "the accounts file declares no such account",
+      "acp " + SWITCH_DECISION_COMMAND,
+    );
+  }
+
+  const accounts = selected.map((record) => {
+    const since = record.quotaEstimate.estimatedAt;
+    const read = readAccountPressure(ledger, record.accountId, { since });
+    if (!read.ok) {
+      // A refusal is a refusal. It is never coerced into "no pressure": the
+      // second is a fact about the account and the first is a fact about the
+      // read, and folding one into the other is how a scan that failed comes
+      // to read as an account that is fine.
+      throw failure(
+        EXIT_UNAVAILABLE,
+        "LEDGER_UNAVAILABLE",
+        "the recorded provider pressure could not be read",
+        read.at,
+      );
+    }
+
+    const folded = foldPressureTrigger(read.observations);
+    if (!folded.ok) {
+      return {
+        accountId: record.accountId,
+        since,
+        decision: "NONE",
+        reason: folded.reason,
+        at: folded.at,
+        observed: folded.observed,
+      };
+    }
+
+    // The trigger is handed over and `decideSwitch` classifies it again
+    // regardless. Two independent classifications is the correct redundancy:
+    // the fold decides which rows are a trigger, the policy's own guard
+    // decides whether the string it was handed is one.
+    const outcome = decideSwitch({
+      trigger: folded.trigger,
+      currentAccountId: record.accountId,
+      routing,
+    });
+    if (!outcome.ok) {
+      return {
+        accountId: record.accountId,
+        since,
+        decision: "REFUSED",
+        // Carried verbatim, never re-worded: a refusal an operator can look up
+        // is worth more than a sentence this verb invented for it.
+        reason: outcome.reason,
+        at: outcome.at,
+        trigger: folded.trigger,
+        causedBy: folded.causedBy,
+        observed: folded.observed,
+      };
+    }
+
+    return {
+      accountId: record.accountId,
+      since,
+      decision: outcome.plan.kind,
+      trigger: folded.trigger,
+      causedBy: folded.causedBy,
+      observed: folded.observed,
+      plan: outcome.plan,
+    };
+  });
+
+  return { document: { now, accounts }, exitCode: EXIT_OK };
+}
+
 /**
  * Seams the command surface accepts, and production supplies none of.
  *
@@ -1404,6 +1695,23 @@ export async function run(
   if (spec.name === SUBMISSION_COMMAND) {
     try {
       const result = runSubmission(values, io, ledger);
+      io.stdout(renderJson(result.document));
+      return result.exitCode;
+    } catch (error: unknown) {
+      return emitFailure(error instanceof CliFailure ? error : fromUnknownError(error), format, io);
+    } finally {
+      ledger.close();
+    }
+  }
+
+  // V2-B1f/F4b. The same shape and the same handle: the decision verb reads
+  // the pressure this ledger recorded and prints what the policy makes of it.
+  // It branches here rather than joining the handler table for the reason the
+  // submission verb does -- it composes a routing request rather than
+  // projecting a read model, and it needs the clock the seams inject.
+  if (spec.name === SWITCH_DECISION_COMMAND) {
+    try {
+      const result = runSwitchDecision(values, io, ledger);
       io.stdout(renderJson(result.document));
       return result.exitCode;
     } catch (error: unknown) {

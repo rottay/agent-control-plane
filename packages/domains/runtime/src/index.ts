@@ -358,6 +358,13 @@ export type { UsageSample, UsageSink } from "./execution-effects/index.js";
 // the surface carries rather than an inference.
 export { pressureTransitionId, recordProviderPressure } from "./pressure/index.js";
 export type { ProviderPressureObservation } from "./pressure/index.js";
+// V2-B1f/F4b: the acquisition half, sibling of `readAccountUsage` and
+// `readAccountActions` above and here for their reason -- `@acp/accounts` owns
+// the fold and may not import a ledger, so the paging lives on the side of the
+// boundary that may. The ceiling and the page limit stay module-private: they
+// are this reader's own bounds, and nothing outside it has a use for either.
+export { readAccountPressure } from "./pressure/index.js";
+export type { AccountPressureRead, PressureEventSource } from "./pressure/index.js";
 export type { PressureSample, PressureSink } from "./execution-effects/index.js";
 
 // V2-B4b stage 2: the durable tool-call receipt. The seam between the tool edge
