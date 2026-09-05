@@ -1,13 +1,10 @@
-import {
-  ACCOUNT_ACTION_STATE,
-  LEDGER_ACCOUNT_CONTRACT_VERSION,
-  LedgerError,
-  openLedger,
-} from "@acp/ledger";
+import { ACCOUNT_ACTION_STATE } from "@acp/ledger";
 import { foldEffectiveState as foldAccountState } from "@acp/accounts";
 import type { EffectiveState } from "@acp/accounts";
 import type { AccountActionRequest } from "@acp/protocol";
 import type { AccountAction, AccountActionRecordRow, AccountStatus, Ledger } from "@acp/ledger";
+
+import { recordAccountAction as recordAccountActionWrite } from "@acp/runtime";
 
 import { readAccounts } from "../accounts/index.js";
 
@@ -108,9 +105,12 @@ export type { EffectiveState };
  * `@acp/accounts` may not import a ledger, so this unwrapping has to happen on
  * the side of the boundary that may, and it happens once.
  *
- * Both call sites keep their existing signature: this module's own
- * `recordAccountAction` below, and `overlayFor` in the accounts read model.
- * `L-V2B1E-1` in the architecture fence is what proves no copy came back.
+ * Its one call site here is `overlayFor` in the accounts read model. The
+ * write door used to be the second, and since V2-B1f/F4c it lives in
+ * `@acp/runtime` and calls the domain fold directly over the row's own event,
+ * so the unwrapping happens once on each side of the boundary and never twice
+ * on this one. `L-V2B1E-1` in the architecture fence is what proves no copy
+ * came back.
  */
 export function foldEffectiveState(
   fileState: AccountStatus,
@@ -134,9 +134,25 @@ export function resultingStateFor(
 /**
  * Record one action, or refuse it by name.
  *
- * The order is the design, and it mirrors the roadmap write: gather the fold,
- * decide against it, then append. Nothing is written before the decision, and
- * the decision reads only what it needs.
+ * **A delegating wrapper since V2-B1f/F4c**, and the shape is the one this
+ * module already uses for `foldEffectiveState` above: the export, its
+ * signature and every refusal it can produce are exactly what they were, and
+ * the ledger-writing door itself now lives in `@acp/runtime` beside the reader
+ * of the same history.
+ *
+ * **What stays here is what belongs to an entrypoint**: the wire type, the
+ * owner-file path, and the admission ladder that turns that path into a
+ * baseline. The refusals that ladder produces stay here with it — deliberately.
+ * `accounts.reason` is this gateway's own five-word vocabulary, mapped from the
+ * loader's fourteen refusals by a table this package keeps private, and it
+ * travels into a 409's detail. Surfacing the loader's raw reason instead would
+ * describe an operator's filesystem to anyone who can reach the port, and no
+ * test would have caught the change.
+ *
+ * So the two refusals that depend on the file are produced **here**, before the
+ * runtime is called, by the same two lines that produced them before; the three
+ * that depend on the ledger are the runtime's, and its vocabulary is a subset
+ * of this one, so its outcome is returned unchanged.
  */
 export function recordAccountAction(input: AccountActionExecution): AccountActionOutcome {
   const { ledger, accountsFilePath, accountId, request, recordedAt, eventId } = input;
@@ -154,61 +170,17 @@ export function recordAccountAction(input: AccountActionExecution): AccountActio
     return { ok: false, reason: "UNKNOWN_ACCOUNT", at: "accountId" };
   }
 
-  const history = ledger.listAccountActions(accountId);
-  const current = foldEffectiveState(baseline.state as AccountStatus, history);
-
-  const resulting = resultingStateFor(request.action, request.setState);
-  if (resulting === null) {
-    // Only reachable for OWNER_OVERRIDE without a state; the schema refuses
-    // that shape first, so this is a belt to the schema's braces rather than
-    // a path a well-formed request takes.
-    return { ok: false, reason: "UNKNOWN_ACCOUNT", at: "setState" };
-  }
-
-  // A no-op is refused by name rather than granted silently. Recording an
-  // action that changes nothing would put an entry in the history that a
-  // reader must then reason about, and "nothing happened" is exactly the
-  // thing a log should not have to say.
-  if (resulting === current.effectiveState) {
-    return { ok: false, reason: "ALREADY_IN_STATE", at: current.effectiveState };
-  }
-
-  const version = (history.at(-1)?.event.version ?? 0) + 1;
-  const event = {
-    contractVersion: LEDGER_ACCOUNT_CONTRACT_VERSION,
-    eventId,
+  // The state is a value from here on. The runtime opens no owner file, names
+  // no loader, and cannot reach this package.
+  return recordAccountActionWrite({
+    source: ledger,
     accountId,
-    version,
-    idempotencyKey: accountId + "/1/action." + String(version),
+    baseline: baseline.state as AccountStatus,
     action: request.action,
-    resultingState: resulting,
+    setState: request.setState,
     actor: request.actor,
     note: request.note,
-    occurredAt: recordedAt,
     recordedAt,
-  };
-
-  // The short-lived writable handle, opened here and closed in `finally` —
-  // the read path never holds one.
-  const writable = openLedger(ledger.path);
-  try {
-    const appended = writable.appendAccountAction(event);
-    return { ok: true, record: appended.record, inserted: appended.inserted };
-  } catch (error: unknown) {
-    // The same narrow catch packet 1 established, for the same reason: two
-    // operators acting on one account at once both fold version N and both
-    // build the same key. The loser is late, not broken.
-    if (error instanceof LedgerError && RACE_LOST_CODES.includes(error.code)) {
-      return { ok: false, reason: "WRITE_CONFLICT", at: "version" };
-    }
-    throw error;
-  } finally {
-    writable.close();
-  }
+    eventId,
+  });
 }
-
-/** Exactly the two conflict codes, matched by name. See packet 1's seam. */
-const RACE_LOST_CODES: readonly string[] = Object.freeze([
-  "LEDGER_IDEMPOTENCY_CONFLICT",
-  "LEDGER_EVENT_ID_CONFLICT",
-]);

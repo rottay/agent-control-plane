@@ -6727,6 +6727,51 @@ const V2B1F4D_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1f/F4c -- one door records what an account's state became.
+ *
+ * ADR 0042 deferred the account-state transition the switch executor names by
+ * hand (`switch-executor/index.ts:127-131`), and F4d landed the walk that
+ * plays a decided switch. What neither could reach is the append itself: the
+ * ONE door that writes an `AccountActionEvent` lived in an entrypoint --
+ * `gateway/src/account-actions/index.ts` -- so no domain-stratum caller could
+ * call it without an entrypoint importing an entrypoint. This packet moves the
+ * door down to `@acp/runtime` and leaves the gateway a delegating wrapper, the
+ * shape that same file already uses for `foldEffectiveState`.
+ *
+ * **The baseline crosses the seam as a value, not as a path.** The admission
+ * ladder that resolves the owner file stays with the gateway, because the
+ * private refusal it produces reaches an HTTP 409 payload and moving it would
+ * move a wire-visible answer. So the writer takes `{accountId, baseline}` and
+ * never names `loadAccountsFile`, `readAccounts` or a file path at all;
+ * `@acp/protocol` is NOT added to the runtime's allowlist, and the writer
+ * declares its own input over kernel primitives instead.
+ *
+ * **The vocabulary does not widen.** `ACCOUNT_ACTIONS` stays four,
+ * `OWNER_OVERRIDE` is never manufactured, and `EXHAUSTED`/`COOLDOWN` stay
+ * unreachable by machine decision -- no verb implies either, and F4d created a
+ * carrier for the status without a consumer. `L-F4C-1` makes both halves
+ * mechanical: one named append site with a non-vacuity guard, and no source
+ * outside the contracts stratum inventing either status as a literal.
+ *
+ * **Pins.** `PATH_SCOPED_LAWS` 109 -> 110, ADR corpus 44 -> 45,
+ * `RUNTIME_PUBLIC_EXPORTS` 246 -> 249. Nothing else moves: no contract, no
+ * protocol, no route, no wire type, no package file, and the gateway's own
+ * account-actions suite passes with no assertion edited.
+ *
+ * Record: `docs/architecture/0045-one-door-records-what-an-accounts-state-became.md`.
+ */
+const V2B1F4C_WRITE_SET = [
+  "packages/domains/runtime/src/actions/index.ts",
+  "packages/domains/runtime/test/actions/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/entrypoints/gateway/src/account-actions/index.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0045-one-door-records-what-an-accounts-state-became.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6882,6 +6927,7 @@ const WRITE_SET = [
   ...V2B1F4B_WRITE_SET,
   ...V2B1F4E_WRITE_SET,
   ...V2B1F4D_WRITE_SET,
+  ...V2B1F4C_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -8031,6 +8077,14 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the switch port carries the real lease, at every seam",
     scope: "packages/entrypoints/daemon/src/index.ts",
+  },
+  // V2-B1f/F4c. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 109 -> 110. It keeps the account
+  // action append to one named door, and keeps a machine from inventing a
+  // status no verb implies.
+  {
+    law: "one door appends an account action, and no source invents a status",
+    scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
   },
 ];
 
@@ -9923,10 +9977,25 @@ const DUPLICATION_ADJUDICATED = [
   // not authorize, to hide a delegation that is not a duplication. What makes
   // the single-implementation claim mechanical is `L-V2B1E-1` below, which is
   // a shape predicate over production `src` rather than a promise here.
+  // V2-B1f/F4c. The same shape one packet later, and for the same reason. The
+  // ledger-writing door moved down to `@acp/runtime`, where a domain-stratum
+  // caller can reach it; `gateway/src/account-actions/index.ts` keeps the name
+  // as a delegating wrapper because `routes/index.ts` calls it under that name
+  // and that file is outside this packet's write-set, and because the wrapper
+  // owns something the runtime deliberately does not: the owner-file admission
+  // ladder whose private refusal reaches an HTTP 409 payload. The wrapper's
+  // body resolves that baseline, maps its two file-dependent refusals, and
+  // hands the rest to the one implementation. `L-F4C-1` above proves the claim
+  // mechanically rather than promising it here: only one source appends.
+  {
+    name: "recordAccountAction",
+    packages: ["packages/domains/runtime", "packages/entrypoints/gateway"],
+    why: "not a duplicate implementation — the gateway's is a delegating wrapper that resolves the owner-file baseline, maps the two refusals that depend on that file (its HTTP payload names them), and calls the one writer in @acp/runtime; L-F4C-1 proves exactly one source appends an account action, and the runtime writer names no file path at all",
+  },
   {
     name: "foldEffectiveState",
     packages: ["packages/domains/accounts", "packages/entrypoints/gateway"],
-    why: "not a duplicate implementation — the gateway's is a delegating wrapper that unwraps @acp/ledger's row projection and calls the one fold in @acp/accounts, which may not name a ledger; L-V2B1E-1 proves no second fold exists in src, and the gateway's two call sites keep the row-typed signature they have always had",
+    why: "not a duplicate implementation — the gateway's is a delegating wrapper that unwraps @acp/ledger's row projection and calls the one fold in @acp/accounts, which may not name a ledger; L-V2B1E-1 proves no second fold exists in src, and the wrapper's one remaining call site (overlayFor) keeps the row-typed signature it has always had -- V2-B1f/F4c moved the write door to @acp/runtime, where it calls the domain fold directly",
   },
 ];
 
@@ -13842,6 +13911,14 @@ const RUNTIME_PUBLIC_EXPORTS = [
   // structurally, exactly as `readAccountUsage`'s is read.
   "readAccountActions",
   "ActionEventSource",
+  // V2-B1f/F4c: the write half of the same seam, moved down from the gateway
+  // so a domain-stratum caller can reach the one append door. The baseline
+  // crosses as a value, so the input type names no file path and no protocol
+  // shape; the outcome union is the ledger-side subset of the gateway's four
+  // refusals, and the gateway's own contract is unchanged.
+  "recordAccountAction",
+  "AccountActionWrite",
+  "AccountActionWriteOutcome",
   // V2-B1f/F4b: the pressure reader, the third sibling of the two above and
   // here for their reason. Its ceiling and page limit stay module-private:
   // they are this reader's own bounds and nothing outside it uses either.
@@ -17364,6 +17441,96 @@ if (tracked.status === 0) {
         "the switch port carries the real lease at all " +
           String(carrying) +
           " walk seam(s) that play one",
+      );
+    }
+  }
+
+  // --- L-F4C-1: one door appends an account action, and no source invents a
+  // status.
+  //
+  // V2-B1f/F4c. Before this packet the only `appendAccountAction` caller lived
+  // in an entrypoint, which is why no domain-stratum caller could record what
+  // an account's state became. The door moved down to `@acp/runtime`; what
+  // must not follow is a SECOND door, because two appends fold two histories
+  // and the version they build is the ledger's only concurrency guard.
+  //
+  // **Three halves, and each answers a distinct failure.**
+  //
+  // 1. **One site, named.** `appendAccountAction(` may be called from exactly
+  //    one source, the literal below. A second is a second door.
+  // 2. **Non-vacuity.** The law fails if that file STOPS naming it -- a law
+  //    whose permitted producer has gone away passes vacuously, which is the
+  //    guard `L-F3-1` established and `L-F4D-2` reuses for its exemption.
+  // 3. **No invented status.** No source outside `packages/kernel/contracts/**`
+  //    may construct an account action whose `resultingState` is the literal
+  //    `"EXHAUSTED"` or `"COOLDOWN"`. No verb implies either, so a machine that
+  //    wrote one would be forging an operator's override. An operator-supplied
+  //    `setState` travelling as a VALUE is untouched, and the roots probe's
+  //    negative control is what proves the difference.
+  //
+  // **String literals are blanked for the first two halves and NOT for the
+  // third**, deliberately. Halves 1 and 2 are about a call, so a mention inside
+  // a message must not count; half 3 is about a literal, and blanking the
+  // literals would blank the exact evidence it looks for. Both halves read the
+  // comment-stripped text, so a note like this one cannot trip either.
+  const ACCOUNT_APPEND_HOME = "packages/domains/runtime/src/actions/index.ts";
+  const INVENTED_STATUS = /resultingState\s*:\s*(?:"|')(EXHAUSTED|COOLDOWN)(?:"|')/;
+  {
+    const appendScope = tracked.status === 0
+      ? tracked.stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .filter(
+            (relativePath) =>
+              /\.tsx?$/.test(relativePath) &&
+              !relativePath.includes("/test/") &&
+              (/^packages\/domains\/[^/]+\/src\//.test(relativePath) ||
+                /^packages\/entrypoints\/[^/]+\/src\//.test(relativePath)),
+          )
+      : [];
+    requireScope("one door appends an account action, and no source invents a status", appendScope.length);
+    const doors = [];
+    for (const relativePath of appendScope) {
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      const stripped = stripComments(content);
+      const live = stripped
+        .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+        .replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+      if (/\bappendAccountAction\s*\(/.test(live)) {
+        doors.push(relativePath);
+        if (relativePath !== ACCOUNT_APPEND_HOME) {
+          fail(
+            relativePath +
+              " appends an account action; exactly one door writes that event, " +
+              ACCOUNT_APPEND_HOME +
+              ", because two appends fold two histories and the version they build is the" +
+              " ledger's only concurrency guard",
+          );
+        }
+      }
+      if (INVENTED_STATUS.test(stripped)) {
+        fail(
+          relativePath +
+            " constructs an account action whose resultingState is a literal EXHAUSTED or COOLDOWN;" +
+            " no verb implies either state, so a machine that recorded one would be forging an" +
+            " override no operator asked for",
+        );
+      }
+    }
+    // The non-vacuity half: the permitted door must still be a door.
+    if (!doors.includes(ACCOUNT_APPEND_HOME)) {
+      fail(
+        ACCOUNT_APPEND_HOME +
+          " no longer appends an account action; the one door this law permits has gone away, and" +
+          " a law whose permitted producer is absent passes over nothing",
+      );
+    } else {
+      notes.push(
+        "one account-action append door across " +
+          String(appendScope.length) +
+          " domain and entrypoint sources, and no invented account status",
       );
     }
   }

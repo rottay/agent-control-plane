@@ -358,6 +358,13 @@ export type { UsageEventSource } from "./usage/index.js";
 // and naming it here would grow a pinned surface by a name nothing imports.
 export { readAccountActions } from "./actions/index.js";
 export type { ActionEventSource } from "./actions/index.js";
+// V2-B1f/F4c: the write half of the same seam. The one door that appends an
+// account action lived in an entrypoint, so no domain module could reach it;
+// it lives here now, beside the read. The baseline is a value the caller
+// resolved — this module opens no owner file and names no loader — so any
+// caller that can supply one can record, including one forbidden the file.
+export { recordAccountAction } from "./actions/index.js";
+export type { AccountActionWrite, AccountActionWriteOutcome } from "./actions/index.js";
 export type { UsageSample, UsageSink } from "./execution-effects/index.js";
 
 // V2-B1f: what a provider said about an account's standing, recorded once

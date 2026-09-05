@@ -1534,6 +1534,91 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(bypass.output).toContain("names executeSwitchPlan directly");
   });
 
+  it("refuses a second source that appends an account action (L-F4C-1)", async () => {
+    // The door moved down a stratum; what must not follow is a second one.
+    // Two appends fold two histories, and the version each builds from its own
+    // fold is the ledger's only concurrency guard — so a second door does not
+    // merely duplicate code, it removes the guard.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/actions/index.ts",
+      "export const record = (l, e) => l.appendAccountAction(e);\n",
+    );
+    write(
+      root,
+      "packages/entrypoints/gateway/src/account-actions/index.ts",
+      "export const alsoRecord = (l, e) => l.appendAccountAction(e);\n",
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("appends an account action");
+    expect(output).toContain("packages/entrypoints/gateway/src/account-actions/index.ts");
+  });
+
+  it("keeps the permitted door honest, and refuses an invented account status", async () => {
+    // Three halves of one law, driven separately.
+    //
+    // Half 2, non-vacuity: a law whose permitted producer has gone away
+    // passes over nothing, so the door must still be a door.
+    const hollow = syntheticTree();
+    write(
+      hollow,
+      "packages/domains/runtime/src/actions/index.ts",
+      "export const record = (outcome) => outcome;\n",
+    );
+    commitAll(hollow);
+
+    const gone = await runFenceAgainst(hollow);
+    expect(gone.status).not.toBe(0);
+    expect(gone.output).toContain("no longer appends an account action");
+
+    // Half 3: no source outside the contracts stratum may construct an action
+    // whose resulting state is a literal EXHAUSTED or COOLDOWN. No verb
+    // implies either, so writing one would forge an override nobody asked for.
+    const forged = syntheticTree();
+    write(
+      forged,
+      "packages/domains/runtime/src/actions/index.ts",
+      [
+        "export const record = (l, e) => l.appendAccountAction(e);",
+        'export const forge = () => ({ action: "DRAIN", resultingState: "EXHAUSTED" });',
+        "",
+      ].join("\n"),
+    );
+    commitAll(forged);
+
+    const invented = await runFenceAgainst(forged);
+    expect(invented.status).not.toBe(0);
+    expect(invented.output).toContain("resultingState is a literal EXHAUSTED or COOLDOWN");
+
+    // The negative control, and the law is worth little without it: an
+    // operator-supplied state threaded through as a VALUE is exactly what the
+    // override verb is for, and must stay lawful. Without this half the law
+    // would quietly widen from "invents a status" to "mentions one".
+    const lawful = syntheticTree();
+    write(
+      lawful,
+      "packages/domains/runtime/src/actions/index.ts",
+      [
+        "export const record = (l, e) => l.appendAccountAction(e);",
+        "export const overrideFor = (setState) => ({",
+        '  action: "OWNER_OVERRIDE",',
+        "  resultingState: setState,",
+        "});",
+        'export const REACHABLE = ["EXHAUSTED", "COOLDOWN"];',
+        "",
+      ].join("\n"),
+    );
+    commitAll(lawful);
+
+    const value = await runFenceAgainst(lawful);
+    expect(value.output).not.toContain("resultingState is a literal EXHAUSTED or COOLDOWN");
+    expect(value.output).not.toContain("no longer appends an account action");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The
