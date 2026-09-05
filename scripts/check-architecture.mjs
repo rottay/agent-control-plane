@@ -5802,6 +5802,59 @@ const P5N_C11_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * docs/audit governance — the audit record becomes a tracked, frozen folder.
+ *
+ * Owner decision, 2026-09-04: the independent backend-V2 audit lives in this
+ * repository permanently, as a dated folder under `docs/audit/`, and the
+ * compact nineteen-file layout is canonical. The earlier flat layout, the raw
+ * fence and suite logs and the `.acp-local` listing are superseded and are
+ * never restored.
+ *
+ * **Nineteen literals, one per file, and no glob.** `WRITE_SET` is an exact
+ * `Set.has()` lookup over each relative path, so `docs/audit/**` would match
+ * nothing; the only prefix mechanism in this file is closed by design and is
+ * not reopened here. The array is append-only *by dated folder*: a later audit
+ * declares its own array beside this one rather than widening this one.
+ *
+ * **The old layout is refused by the exact write-set itself**, not by
+ * `RETIRED_PATHS`. Those files were never tracked, and any path not listed
+ * fails the write-set check on the next run; adding ~20 retired entries would
+ * buy a redundant second refusal while growing a frozen block this very audit
+ * criticises.
+ *
+ * No new law, no new `requireScope`, no exemption: `PATH_SCOPED_LAWS` stays at
+ * 91. The credential, product-token, forbidden-roadmap-literal and
+ * credential-store filename laws keep scanning `docs/audit/` unchanged and
+ * unweakened — verified negatively, because the folder trips none of them.
+ *
+ * Record: `docs/architecture/0030-the-audit-record.md`.
+ */
+const V2DOCSAUDIT_WRITE_SET = [
+  "docs/audit/README.md",
+  "docs/audit/2026-09-04-backend-v2/README.md",
+  "docs/audit/2026-09-04-backend-v2/audit-report.md",
+  "docs/audit/2026-09-04-backend-v2/rubric.md",
+  "docs/audit/2026-09-04-backend-v2/use-cases.md",
+  "docs/audit/2026-09-04-backend-v2/data-model.md",
+  "docs/audit/2026-09-04-backend-v2/architecture-decision.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/accounts.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/durability.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/fence.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/ledger.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/neutrality.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/parity.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/product.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/security.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/streaming.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/structure.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/tests.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/wiring.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0030-the-audit-record.md",
+  "docs/architecture/index.md",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -5942,6 +5995,7 @@ const WRITE_SET = [
   ...P5N_C9_WRITE_SET,
   ...P5N_C10_WRITE_SET,
   ...P5N_C11_WRITE_SET,
+  ...V2DOCSAUDIT_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
