@@ -4,6 +4,8 @@ import {
   LedgerError,
   openLedger,
 } from "@acp/ledger";
+import { foldEffectiveState as foldAccountState } from "@acp/accounts";
+import type { EffectiveState } from "@acp/accounts";
 import type { AccountActionRequest } from "@acp/protocol";
 import type { AccountAction, AccountActionRecordRow, AccountStatus, Ledger } from "@acp/ledger";
 
@@ -82,43 +84,42 @@ export interface AccountActionExecution {
   readonly eventId: string;
 }
 
-/** One account's effective state, and where the answer came from. */
-export interface EffectiveState {
-  readonly effectiveState: AccountStatus;
-  readonly stateSource: "OWNER_FILE" | "OPERATOR_ACTION";
-  readonly lastAction: {
-    readonly action: AccountAction;
-    readonly at: string;
-    readonly by: string;
-  } | null;
-}
+/**
+ * One account's effective state, and where the answer came from.
+ *
+ * Re-exported from `@acp/accounts` rather than restated (V2-B1e). The name
+ * this module has always published keeps working, and there is exactly one
+ * declaration of the shape behind it.
+ */
+export type { EffectiveState };
 
 /**
- * Fold one account's effective state from the file's baseline and its history.
+ * Fold one account's effective state, over the ledger's row projection.
  *
- * The whole authority law in six lines: the baseline is the file's, the
- * history overrides it if it exists at all, and the newest entry wins. Pure
- * over its two inputs, so the same file and the same history always produce
- * the same answer — which is what makes a restart re-fold to the same state
- * rather than to whatever the file happens to say now.
+ * **The law itself moved to `@acp/accounts` in V2-B1e, and this is a wrapper
+ * over it — not a second implementation.** The CLI election needs the same
+ * fold and may not import the gateway, so a fold that stayed here would have
+ * had to be written twice; two folds of one authority law are two answers to
+ * "which state governs", differing on the day one of them is edited.
+ *
+ * What remains here is the only thing that is genuinely this module's: the
+ * translation from `@acp/ledger`'s `AccountActionRecordRow` — a row with a
+ * sequence and an event inside it — to the kernel event the domain fold reads.
+ * `@acp/accounts` may not import a ledger, so this unwrapping has to happen on
+ * the side of the boundary that may, and it happens once.
+ *
+ * Both call sites keep their existing signature: this module's own
+ * `recordAccountAction` below, and `overlayFor` in the accounts read model.
+ * `L-V2B1E-1` in the architecture fence is what proves no copy came back.
  */
 export function foldEffectiveState(
   fileState: AccountStatus,
   history: readonly AccountActionRecordRow[],
 ): EffectiveState {
-  const newest = history.at(-1);
-  if (newest === undefined) {
-    return { effectiveState: fileState, stateSource: "OWNER_FILE", lastAction: null };
-  }
-  return {
-    effectiveState: newest.event.resultingState,
-    stateSource: "OPERATOR_ACTION",
-    lastAction: {
-      action: newest.event.action,
-      at: newest.event.recordedAt,
-      by: newest.event.actor,
-    },
-  };
+  return foldAccountState(
+    fileState,
+    history.map((row) => row.event),
+  );
 }
 
 /** The state an action produces: the verb's, or the override's own. */

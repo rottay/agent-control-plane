@@ -45,11 +45,12 @@ import {
   EVIDENCE_ABSENT,
   buildRegistry,
   estimateQuota,
+  foldEffectiveState,
   loadAccountsFile,
   loadPolicyRegistry,
 } from "@acp/accounts";
 import type { CandidateEvidence, PolicyRouteRequest, QuotaObservation, RoutingRequest } from "@acp/accounts";
-import { composeSubmission, readAccountUsage } from "@acp/runtime";
+import { composeSubmission, readAccountActions, readAccountUsage } from "@acp/runtime";
 
 import {
   renderError,
@@ -1081,7 +1082,48 @@ function runSubmission(values: ParsedValues, io: CliIo, ledger: Ledger): Submiss
     throw failure(EXIT_USAGE, "BAD_REQUEST", "the policy document was refused", policy.reason);
   }
 
-  const registry = buildRegistry(accounts.registry.accounts);
+  /**
+   * The state an operator's recorded actions put each account in (V2-B1e).
+   *
+   * The defect this closes: the election built its registry from the owner
+   * file alone and never read `account_events`, so an account an operator had
+   * explicitly drained was still elected by the very next submission. The
+   * ledger held the decision and nothing on this path looked at it.
+   *
+   * **The overlay is deliberately not a new eligibility rule.** `DRAINING` is
+   * already refused by `estimateQuota`'s `ACCOUNT_NOT_AVAILABLE` and,
+   * independently, by the router; both read `record.status`. Folding the
+   * effective state onto that field feeds the existing admissions rather than
+   * adding a second rule beside them, which is what keeps the estimator and
+   * the router refusing identically by construction (ADR 0035 s3.1a) instead
+   * of by two rules that could drift.
+   *
+   * **The overlaid record is an in-memory view and is never persisted or
+   * re-parsed.** `buildRegistry` freezes and indexes without re-validating, so
+   * a `REAUTH_REQUIRED` overlay can sit beside a non-null published ratio in a
+   * combination the contract's own refinement forbids. Harmless here because
+   * both admissions refuse on status first -- and stated so that nobody later
+   * writes such a record back to a file.
+   *
+   * **A read that fails refuses; it never falls back to the file.** "The
+   * history could not be read" is not the same fact as "the ledger records no
+   * action", and only the second one means the owner file stands.
+   */
+  const withOperatorState = accounts.registry.accounts.map((record) => {
+    const read = readAccountActions(ledger, record.accountId);
+    if (!read.ok) {
+      throw failure(
+        EXIT_UNAVAILABLE,
+        "LEDGER_UNAVAILABLE",
+        "the recorded operator actions could not be read",
+        read.at,
+      );
+    }
+    const folded = foldEffectiveState(record.status, read.history);
+    return folded.stateSource === "OWNER_FILE" ? record : { ...record, status: folded.effectiveState };
+  });
+
+  const registry = buildRegistry(withOperatorState);
 
   /**
    * The spend this account has recorded since its own baseline was published.

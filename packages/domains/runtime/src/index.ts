@@ -324,6 +324,17 @@ export type {
 } from "./failure/index.js";
 export { USAGE_TOKENS_MAX, readAccountUsage, usageTransitionId } from "./usage/index.js";
 export type { UsageEventSource } from "./usage/index.js";
+
+// V2-B1e: the acquisition half of the operator-state fold, sibling to
+// `readAccountUsage` above and here for the same reason -- `@acp/accounts` owns
+// the fold and may not import a ledger, so the read lives on the side of the
+// boundary that may. The outcome type stays inline in the module; only the
+// reader and its structural port are named here.
+// `AccountActionsRead` stays module-scoped deliberately: the outcome is an
+// inline union a caller reads structurally, exactly as `readAccountUsage`'s is,
+// and naming it here would grow a pinned surface by a name nothing imports.
+export { readAccountActions } from "./actions/index.js";
+export type { ActionEventSource } from "./actions/index.js";
 export type { UsageSample, UsageSink } from "./execution-effects/index.js";
 
 // V2-B4b stage 2: the durable tool-call receipt. The seam between the tool edge

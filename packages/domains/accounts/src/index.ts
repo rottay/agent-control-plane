@@ -137,3 +137,11 @@ export {
 // type is deliberately not re-exported from this barrel, and the fence's pin
 // refuses a barrel that carries the name.
 export { resolveRoute } from "./resolution/index.js";
+
+// V2-B1e: the operator-state fold, moved here from the gateway so that both
+// doors that need it — the gateway's read model and the CLI's election — derive
+// effective state through one implementation. The gateway keeps a delegating
+// wrapper over its own ledger row type and no copy of the law;
+// `L-V2B1E-1` in the architecture fence is what keeps the count at one.
+export type { EffectiveState } from "./operator-state/index.js";
+export { ACCOUNT_ACTIONS_MAX, foldEffectiveState } from "./operator-state/index.js";

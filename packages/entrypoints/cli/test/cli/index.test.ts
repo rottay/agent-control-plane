@@ -42,6 +42,7 @@ import {
   EVIDENCE_ABSENT,
   buildRegistry,
   estimateQuota,
+  foldEffectiveState,
   loadAccountsFile,
   loadPolicyRegistry,
 } from "@acp/accounts";
@@ -49,6 +50,7 @@ import { composeSubmission } from "@acp/runtime";
 
 import {
   EXIT_INTEGRITY,
+  EXIT_INTERNAL,
   EXIT_NOT_FOUND,
   EXIT_OK,
   EXIT_UNAVAILABLE,
@@ -1558,5 +1560,316 @@ describe("the planning verb obeys the database law", () => {
     );
     expect(invocation.exitCode).toBe(EXIT_UNAVAILABLE);
     expect(invocation.stdout).toBe("");
+  });
+});
+
+
+/**
+ * V2-B1e: a recorded operator action reaches the election.
+ *
+ * The measured defect these drills close: `runSubmission` built its registry
+ * from the owner file alone and never read `account_events`, so an account an
+ * operator had explicitly drained was elected by the very next submission. The
+ * ledger held the decision and nothing on this path looked at it.
+ *
+ * Everything below drives the real `run()` over a real ledger seeded through
+ * the ledger's own `appendAccountAction`, so what is asserted is the verb's
+ * behaviour and not a re-statement of the fold.
+ */
+
+const B1E_ACTOR = "kimi/k3/coordinator/01";
+
+/**
+ * A ledger carrying one account action, appended through the ledger's own door.
+ *
+ * The `idempotencyKey` is composed exactly as the account-actions seam composes
+ * it, because the contract refuses any other shape -- so a seeded row is the
+ * same row the gateway would have written.
+ */
+function ledgerWithAction(
+  action: string,
+  resultingState: string,
+  version = 1,
+  accountId: string = B7S_ACCOUNT,
+  path: string = emptyLedger(),
+): string {
+  const ledger = openLedger(path);
+  try {
+    ledger.appendAccountAction({
+      contractVersion: LEDGER_CONTRACT_VERSION,
+      eventId: randomUUID(),
+      accountId,
+      version,
+      idempotencyKey: accountId + "/1/action." + String(version),
+      action,
+      resultingState,
+      actor: B1E_ACTOR,
+      note: null,
+      occurredAt: "2026-08-27T00:00:00.000Z",
+      recordedAt: "2026-08-27T00:00:00.000Z",
+    });
+  } finally {
+    ledger.close();
+  }
+  return path;
+}
+
+describe("P1: a recorded DRAIN makes the account ineligible for the very next submission", () => {
+  it("elects the account while nothing is recorded, and refuses it once a DRAIN is", async () => {
+    const dir = b7sStage();
+    const config = writeConfigDocument(dir);
+    const accounts = writeAccountsFile(dir, ["opus"]);
+
+    // Before: the owner file says AVAILABLE and nothing is recorded, so the
+    // account is elected. This half is what makes the second half evidence.
+    const before = await invoke(submissionArgv(config, accounts, SHIPPED_POLICY));
+    expect(before.exitCode).toBe(EXIT_OK);
+    expect((JSON.parse(before.stdout) as EmittedConfig).execution.route.accountId).toBe(B7S_ACCOUNT);
+
+    // After: one DRAIN, recorded. The owner file is byte-identical; the only
+    // thing that changed is the ledger.
+    const drained = ledgerWithAction("DRAIN", "DRAINING");
+    const after = await invoke(submissionArgv(config, accounts, SHIPPED_POLICY, drained));
+
+    expect(after.exitCode).toBe(EXIT_USAGE);
+    expect(after.stdout).toBe("");
+    expect(after.stderr).toContain("no route could be elected");
+  });
+
+  it("ACCOUNT_READY after a DRAIN restores eligibility -- the newest row wins", async () => {
+    const dir = b7sStage();
+    const config = writeConfigDocument(dir);
+    const accounts = writeAccountsFile(dir, ["opus"]);
+
+    const path = ledgerWithAction("DRAIN", "DRAINING");
+    expect((await invoke(submissionArgv(config, accounts, SHIPPED_POLICY, path))).exitCode).toBe(
+      EXIT_USAGE,
+    );
+
+    ledgerWithAction("ACCOUNT_READY", "AVAILABLE", 2, B7S_ACCOUNT, path);
+    const restored = await invoke(submissionArgv(config, accounts, SHIPPED_POLICY, path));
+
+    expect(restored.exitCode).toBe(EXIT_OK);
+    expect((JSON.parse(restored.stdout) as EmittedConfig).execution.route.accountId).toBe(B7S_ACCOUNT);
+  });
+
+  it("REAUTH_REQUIRED also removes the account, through the same existing admission", async () => {
+    // No new eligibility rule fired for this verb either: `AUTH_REQUIRED` is
+    // not `AVAILABLE`, and the estimator and the router both refuse on that.
+    const dir = b7sStage();
+    const invocation = await invoke(
+      submissionArgv(
+        writeConfigDocument(dir),
+        writeAccountsFile(dir, ["opus"]),
+        SHIPPED_POLICY,
+        ledgerWithAction("REAUTH_REQUIRED", "AUTH_REQUIRED"),
+      ),
+    );
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(invocation.stdout).toBe("");
+  });
+
+  it("an OWNER_OVERRIDE back to AVAILABLE elects the account again", async () => {
+    const dir = b7sStage();
+    const path = ledgerWithAction("DRAIN", "DRAINING");
+    ledgerWithAction("OWNER_OVERRIDE", "AVAILABLE", 2, B7S_ACCOUNT, path);
+
+    const invocation = await invoke(
+      submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY, path),
+    );
+    expect(invocation.exitCode).toBe(EXIT_OK);
+  });
+
+  it("an action recorded against a different account leaves this election alone", async () => {
+    // N5's claim at the CLI door: the ledger read is account-filtered, so a
+    // drain on somebody else's account cannot remove this one.
+    const dir = b7sStage();
+    const invocation = await invoke(
+      submissionArgv(
+        writeConfigDocument(dir),
+        writeAccountsFile(dir, ["opus"]),
+        SHIPPED_POLICY,
+        ledgerWithAction("DRAIN", "DRAINING", 1, "acct-somebody-else"),
+      ),
+    );
+    expect(invocation.exitCode).toBe(EXIT_OK);
+    expect((JSON.parse(invocation.stdout) as EmittedConfig).execution.route.accountId).toBe(B7S_ACCOUNT);
+  });
+
+  it("with no history at all the owner file still governs, unchanged", async () => {
+    // The baseline this packet must not have moved: an empty history means
+    // "the owner file stands", and the verb behaves exactly as it did before.
+    const dir = b7sStage();
+    const invocation = await invoke(
+      submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY),
+    );
+    expect(invocation.exitCode).toBe(EXIT_OK);
+  });
+});
+
+/**
+ * A corrupt action row, written straight into the table.
+ *
+ * `account_events` is append-only -- `UPDATE` and `DELETE` are denied by
+ * triggers -- so corruption is simulated the only way it can actually occur:
+ * an `INSERT` whose `event_json` never passed the append door's validation.
+ * The row's own columns stay well formed, because what is under test is the
+ * `AccountActionEvent.parse` of the JSON blob on the read path.
+ */
+function insertCorruptAction(path: string, accountId: string = B7S_ACCOUNT, version = 99): void {
+  const database = new DatabaseSync(path);
+  try {
+    database
+      .prepare(
+        "INSERT INTO account_events (event_id, idempotency_key, account_id, version, action," +
+          " resulting_state, actor, note, occurred_at, recorded_at, contract_version, event_json)" +
+          " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        randomUUID(),
+        accountId + "/1/action." + String(version),
+        accountId,
+        version,
+        "DRAIN",
+        "DRAINING",
+        B1E_ACTOR,
+        null,
+        "2026-08-27T00:00:00.000Z",
+        "2026-08-27T00:00:00.000Z",
+        LEDGER_CONTRACT_VERSION,
+        JSON.stringify({ accountId, action: "NOT_A_VERB" }),
+      );
+  } finally {
+    database.close();
+  }
+}
+
+describe("N2/N3/N4: no failure path elects, and none falls back to the owner file", () => {
+  it("N2 maps the two LedgerError subclasses the CLI black box can reach", async () => {
+    // Through this door only `LEDGER_OPEN` and `LEDGER_MIGRATION` are
+    // reachable, and both arise at the query-only open above `runSubmission`.
+    // `LEDGER_INTEGRITY` and `LEDGER_QUERY` cannot be provoked from
+    // `listAccountActions`; they stay covered by `fromLedgerError`'s own pin.
+    const dir = b7sStage();
+
+    const unopenable = await invoke(
+      submissionArgv(
+        writeConfigDocument(dir),
+        writeAccountsFile(dir, ["opus"]),
+        SHIPPED_POLICY,
+        join(dir, "no-such-directory", "control-plane.sqlite"),
+      ),
+    );
+    expect(unopenable.exitCode).toBe(EXIT_UNAVAILABLE);
+    expect(unopenable.stdout).toBe("");
+
+    // A file that is not a migrated ledger at all: the open refuses rather
+    // than the election proceeding on the file alone.
+    const notALedger = join(dir, "not-a-ledger.sqlite");
+    writeFileSync(notALedger, "this is not a database\n");
+    chmodSync(notALedger, 0o600);
+    const wrongSchema = await invoke(
+      submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY, notALedger),
+    );
+    expect(wrongSchema.exitCode).toBe(EXIT_UNAVAILABLE);
+    expect(wrongSchema.stdout).toBe("");
+  });
+
+  it("N3 a corrupt action row yields EXIT_INTERNAL, and the election does not proceed", async () => {
+    // A `ZodError` from `AccountActionEvent.parse`, not a `LedgerError`:
+    // `fromUnknownError` routes it through `issuePaths` to EXIT_INTERNAL. That
+    // is already fail-closed, and the packet deliberately does not reclassify
+    // it -- inventing a `LedgerError` for a schema failure would misreport a
+    // data defect as a database one.
+    const dir = b7sStage();
+    const path = ledgerWithAction("DRAIN", "DRAINING");
+    insertCorruptAction(path);
+
+    const invocation = await invoke(
+      submissionArgv(writeConfigDocument(dir), writeAccountsFile(dir, ["opus"]), SHIPPED_POLICY, path),
+    );
+
+    expect(invocation.exitCode).toBe(EXIT_INTERNAL);
+    expect(invocation.stdout).toBe("");
+    // Never the ledger path, and never a value out of the row.
+    expect(invocation.stderr).not.toContain(path);
+    expect(invocation.stderr).not.toContain("NOT_A_VERB");
+  });
+
+  it("N4 every failure path refuses, and not one of them elects", async () => {
+    // Read together: the open, the corrupt row, and -- above the ceiling --
+    // the reader's own refusal, which is unit-drilled in the runtime suite
+    // because ten thousand and one rows is not a fixture a CLI test should
+    // append. What is asserted here is the shared property: no stdout, no
+    // elected route, no fall back to the owner file's published state.
+    const dir = b7sStage();
+    const accounts = writeAccountsFile(dir, ["opus"]);
+
+    const corrupt = ledgerWithAction("DRAIN", "DRAINING");
+    insertCorruptAction(corrupt);
+
+    const failures = [
+      await invoke(
+        submissionArgv(
+          writeConfigDocument(dir),
+          accounts,
+          SHIPPED_POLICY,
+          join(dir, "no-such-directory", "control-plane.sqlite"),
+        ),
+      ),
+      await invoke(submissionArgv(writeConfigDocument(dir), accounts, SHIPPED_POLICY, corrupt)),
+      await invoke(
+        submissionArgv(writeConfigDocument(dir), accounts, SHIPPED_POLICY, ledgerWithAction("DRAIN", "DRAINING")),
+      ),
+    ];
+
+    for (const invocation of failures) {
+      expect(invocation.exitCode).not.toBe(EXIT_OK);
+      expect(invocation.stdout).toBe("");
+    }
+  });
+});
+
+describe("P6: the CLI election folds the same answer the read model publishes", () => {
+  it("the election agrees with the shared fold over one seeded ledger, in both directions", async () => {
+    // Behavioural parity, and it is deliberately stated as half of a pair.
+    //
+    // This half drives the REAL CLI verb through `run()` over a seeded ledger
+    // and, in the same test, folds that ledger's own rows through
+    // `foldEffectiveState` -- the single implementation `@acp/accounts` now
+    // owns. The other half lives in the gateway suite, where the real HTTP
+    // read model is reachable and is shown to publish exactly what this same
+    // fold produces. Together the two make the parity behavioural rather than
+    // structural, without reaching across an entrypoint boundary that the
+    // import law does not open for a test.
+    const dir = b7sStage();
+    const accounts = writeAccountsFile(dir, ["opus"]);
+    const path = ledgerWithAction("DRAIN", "DRAINING");
+
+    const foldedOver = (database: string): string => {
+      const ledger = openLedger(database, { readOnly: true });
+      try {
+        return foldEffectiveState(
+          "AVAILABLE",
+          ledger.listAccountActions(B7S_ACCOUNT).map((row) => row.event),
+        ).effectiveState;
+      } finally {
+        ledger.close();
+      }
+    };
+
+    // The fold says DRAINING while the owner file still says AVAILABLE, and
+    // the election refuses the account. Same ledger, same conclusion.
+    expect(foldedOver(path)).toBe("DRAINING");
+    const drained = await invoke(submissionArgv(writeConfigDocument(dir), accounts, SHIPPED_POLICY, path));
+    expect(drained.exitCode).toBe(EXIT_USAGE);
+    expect(drained.stdout).toBe("");
+
+    // The other direction, so the agreement is not an artefact of one state.
+    ledgerWithAction("ACCOUNT_READY", "AVAILABLE", 2, B7S_ACCOUNT, path);
+    expect(foldedOver(path)).toBe("AVAILABLE");
+    const ready = await invoke(submissionArgv(writeConfigDocument(dir), accounts, SHIPPED_POLICY, path));
+    expect(ready.exitCode).toBe(EXIT_OK);
+    expect((JSON.parse(ready.stdout) as EmittedConfig).execution.route.accountId).toBe(B7S_ACCOUNT);
   });
 });

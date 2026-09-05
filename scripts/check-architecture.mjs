@@ -6152,6 +6152,67 @@ const V2B1D_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1e — a recorded operator action reaches the election.
+ *
+ * P8-8G packet 2 built the door that records `drain`, `account-ready`,
+ * `reauth-required` and the owner override, and the fold that decides which of
+ * the owner file and the ledger governs an account's state. The gateway's read
+ * model published the answer. The election never read it: `runSubmission` built
+ * its registry from the owner file alone and never touched `account_events`, so
+ * an account an operator had explicitly drained was elected by the very next
+ * submission. The decision was recorded, visible, and inert.
+ *
+ * **The fold relocates rather than duplicating.** It moves from
+ * `gateway/src/account-actions/index.ts` to
+ * `packages/domains/accounts/src/operator-state/index.ts` and is re-typed from
+ * `@acp/ledger`'s `AccountActionRecordRow` to the kernel's `AccountActionEvent`,
+ * because `ACCOUNTS_ALLOWED_PACKAGES` is `{@acp/contracts}` and this package may
+ * not name a ledger -- the same adjustment `usageObservationsFrom` made in
+ * V2-B1d. The gateway keeps a delegating wrapper whose whole body unwraps
+ * `row.event`, so both of its call sites and every wire shape are unchanged.
+ * `readAccountActions` in `@acp/runtime` is the acquisition half, sibling to
+ * `readAccountUsage` and structural over an `ActionEventSource` port.
+ *
+ * **No eligibility rule is added, deliberately.** `DRAINING` is already refused
+ * by `estimateQuota`'s `ACCOUNT_NOT_AVAILABLE` and, independently, by the
+ * router; both read `record.status`. The election overlays the folded state
+ * onto that field, so a recorded action bites through the rules that already
+ * existed and ADR 0035 s3.1a's admission parity stays true by construction
+ * rather than by a second rule that could drift.
+ *
+ * **Fourteen paths, and no `G1_MOVE_MAP` entry.** The map stays frozen at 302:
+ * it is G1's record and not G7's, and law (a) derives retired prefixes from a
+ * pair's first two segments, so a pair whose old path is
+ * `packages/entrypoints/gateway/src/account-actions/index.ts` would retire
+ * `packages/entrypoints/` and fail every tracked file beneath it. The gateway
+ * file does not move in any case. The relocation is recorded in ADR 0036 and
+ * here; `L-V2B1E-1` below is what guarantees no second copy exists.
+ *
+ * `ACCOUNTS_PUBLIC_EXPORTS` 73 -> 76 and `RUNTIME_PUBLIC_EXPORTS` 228 -> 230.
+ * `PATH_SCOPED_LAWS` 93 -> 94 for `L-V2B1E-1`. No contract, route, wire field,
+ * error code, event type or migration moves; `QUOTA_REFUSALS` stays 13 and
+ * `ACCOUNT_ACTIONS` stays 4.
+ *
+ * Record: `docs/architecture/0036-operator-state-reaches-the-election.md`.
+ */
+const V2B1E_WRITE_SET = [
+  "packages/domains/accounts/src/operator-state/index.ts",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/test/operator-state/index.test.ts",
+  "packages/domains/runtime/src/actions/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/actions/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/src/account-actions/index.ts",
+  "packages/entrypoints/gateway/test/account-actions/index.test.ts",
+  "docs/architecture/0036-operator-state-reaches-the-election.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6298,6 +6359,7 @@ const WRITE_SET = [
   ...V2B26_WRITE_SET,
   ...V2B1C_WRITE_SET,
   ...V2B1D_WRITE_SET,
+  ...V2B1E_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7343,6 +7405,13 @@ const PATH_SCOPED_LAWS = [
   {
     law: "outside the daemon, a door's effect port can only read",
     scope: "packages/entrypoints/{cli,gateway,console}/src/** (every entrypoint but the daemon)",
+  },
+  // V2-B1e. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 93 -> 94. Same scope as L-V2B1D-1's,
+  // because the fold and the reader it feeds live in the same three strata.
+  {
+    law: "one fold derives an account's effective state, and no door derives a second",
+    scope: "packages/domains/accounts/**/src, packages/domains/runtime/**/src, packages/entrypoints/*/src",
   },
 ];
 
@@ -9221,6 +9290,24 @@ const DUPLICATION_ADJUDICATED = [
     name: "buildToolCallPage",
     packages: ["packages/entrypoints/cli", "packages/entrypoints/gateway"],
     why: "two independent producers of one projection, on purpose — the CLI folds TOOL_CALL_RECORDED rows for its own page and the gateway folds them for its GET, and Packet E's equivalence proof compares the two; a shared implementation would collapse the proof into a tautology; neither package imports the other and the CLI importing the gateway is a stop",
+  },
+  // Surfaced by V2-B1e, and the one entry in this register that is NOT two
+  // implementations. The name collides because the gateway keeps a delegating
+  // wrapper: `@acp/accounts` owns the fold and may not name a ledger, so the
+  // translation from `AccountActionRecordRow` to `AccountActionEvent` has to
+  // happen on the side of the boundary that may. The wrapper's whole body is
+  // `history.map((row) => row.event)` and a call into the domain fold.
+  //
+  // It is adjudicated here rather than renamed because `overlayFor` in
+  // `gateway/src/accounts/index.ts` calls it under this name and that file is
+  // outside the packet's write-set; renaming would force a path the brief did
+  // not authorize, to hide a delegation that is not a duplication. What makes
+  // the single-implementation claim mechanical is `L-V2B1E-1` below, which is
+  // a shape predicate over production `src` rather than a promise here.
+  {
+    name: "foldEffectiveState",
+    packages: ["packages/domains/accounts", "packages/entrypoints/gateway"],
+    why: "not a duplicate implementation — the gateway's is a delegating wrapper that unwraps @acp/ledger's row projection and calls the one fold in @acp/accounts, which may not name a ledger; L-V2B1E-1 proves no second fold exists in src, and the gateway's two call sites keep the row-typed signature they have always had",
   },
 ];
 
@@ -13121,6 +13208,12 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "readAccountUsage",
   "UsageEventSource",
   "usageTransitionId",
+  // V2-B1e: the operator-action reader, sibling to the usage reader above and
+  // here for the same reason -- `@acp/accounts` owns the fold and may not name
+  // a ledger. The outcome union stays module-scoped: a caller reads it
+  // structurally, exactly as `readAccountUsage`'s is read.
+  "readAccountActions",
+  "ActionEventSource",
   // V2-B7R: the shared failure classification, asked by both drivers.
   "FAILURE_REFUSALS",
   "FailureDecision",
@@ -13346,6 +13439,13 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   // stays owned by `@acp/contracts` and is imported there, never re-exported
   // from this barrel (C1); a barrel that carried the name fails this pin.
   "resolveRoute",
+  // V2-B1e: the operator-state fold, moved here from the gateway so the CLI
+  // election and the gateway read model derive effective state through one
+  // implementation. The ceiling belongs beside the fold that consumes the
+  // history it bounds; the reader that enforces it lives in `@acp/runtime`.
+  "EffectiveState",
+  "ACCOUNT_ACTIONS_MAX",
+  "foldEffectiveState",
 ];
 
 const accountsIndex = readIfPresent("packages/domains/accounts/src/index.ts");
@@ -15573,6 +15673,103 @@ if (tracked.status === 0) {
   }
   notes.push(
     "one usage-to-observation fold over " + String(usageFoldScope.length) + " sources, and no door estimates on an empty set",
+  );
+
+  // --- L-V2B1E-1: one operator-state fold.
+  //
+  // Outside its owner file, no production `src` file derives an account's
+  // effective state for itself. P8-8G packet 2 put the fold in the gateway;
+  // V2-B1e moved it to `@acp/accounts` because the CLI election needs the same
+  // answer and may not import an entrypoint. The risk the move creates is that
+  // somebody writes the law a second time in the door that needs it, and two
+  // folds of one authority law are two answers to "which state governs",
+  // differing on the day one of them is edited.
+  //
+  // **The predicate is a shape, not a word.** An earlier draft forbade a file
+  // that "reads `resultingState` to decide eligibility", which has no
+  // mechanical form and, read literally, fails at HEAD: the gateway's routes
+  // render `resultingState` in their responses and the console compares
+  // `stateSource`. Rendering a recorded value is not folding an authority law.
+  // So the law names the two assignments only a fold performs:
+  //
+  //   - assigning a `stateSource:` LITERAL (`"OWNER_FILE"`/`"OPERATOR_ACTION"`),
+  //     which is the act of deciding which source governs; and
+  //   - assigning `effectiveState:` FROM a `.resultingState` expression, which
+  //     is the act of taking a recorded action's state as the effective one.
+  //
+  // **The skips are stated here rather than discovered by the law's first
+  // failure**, and each is a form that exists at HEAD and is lawful:
+  //
+  //   - type members -- `readonly stateSource: "OWNER_FILE" | "OPERATOR_ACTION"`
+  //     (`gateway/accounts:122`, `:233`) declares a shape, it does not decide one;
+  //   - pass-throughs -- `stateSource: folded.stateSource` (`gateway/accounts:239`)
+  //     carries the fold's own answer outward;
+  //   - comparisons -- `stateSource === "OPERATOR_ACTION"`
+  //     (`console/.../accounts-view:213`) reads a decision already made;
+  //   - rendering and version arithmetic -- `resultingState: row.event.resultingState`
+  //     (`gateway/routes`) and `.at(-1)?.event.version`, which stay.
+  //
+  // Every `test/` tree is excluded: fixtures legitimately build histories and
+  // assert the literals the law forbids in `src`, including the negatives that
+  // prove the fold still answers correctly.
+  const OPERATOR_STATE_OWNER = "packages/domains/accounts/src/operator-state/index.ts";
+  const operatorStateScope = tracked.status === 0
+    ? tracked.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter(
+          (relativePath) =>
+            /\.tsx?$/.test(relativePath) &&
+            !relativePath.includes("/test/") &&
+            (/^packages\/domains\/accounts\/src\//.test(relativePath) ||
+              /^packages\/domains\/runtime\/src\//.test(relativePath) ||
+              /^packages\/entrypoints\/[^/]+\/src\//.test(relativePath)),
+        )
+    : [];
+  requireScope("one fold derives an account's effective state, and no door derives a second", operatorStateScope.length);
+  let operatorStateOwnerSeen = false;
+  for (const relativePath of operatorStateScope) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+
+    // The literal assignment. `readonly` in front makes it a type member, which
+    // declares the vocabulary rather than choosing from it.
+    const assignsSource = [...live.matchAll(/(readonly\s+)?stateSource:\s*"(?:OWNER_FILE|OPERATOR_ACTION)"/g)]
+      .some((match) => match[1] === undefined);
+    // Taking a recorded action's state as the effective one.
+    const assignsFromResulting = /effectiveState:\s*[^,;\n]*\.resultingState/.test(live);
+
+    if (relativePath === OPERATOR_STATE_OWNER) {
+      operatorStateOwnerSeen = assignsSource && assignsFromResulting;
+      continue;
+    }
+    if (assignsSource) {
+      fail(
+        relativePath +
+          " assigns a stateSource literal; exactly one file decides which source governs an account (" +
+          OPERATOR_STATE_OWNER +
+          ")",
+      );
+    }
+    if (assignsFromResulting) {
+      fail(
+        relativePath +
+          " assigns effectiveState from a recorded action's resultingState; that fold belongs to " +
+          OPERATOR_STATE_OWNER +
+          " alone",
+      );
+    }
+  }
+  if (!operatorStateOwnerSeen) {
+    fail(
+      OPERATOR_STATE_OWNER +
+        " no longer holds the one operator-state fold the law names; a law whose owner stopped folding passes vacuously",
+    );
+  }
+  notes.push(
+    "one operator-state fold over " + String(operatorStateScope.length) + " sources, and no door derives a second",
   );
 
   // --- L-B1C-1: one producer of an execution instruction.

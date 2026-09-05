@@ -13,7 +13,11 @@ import {
 import { openLedger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { foldEffectiveState as foldAccountState } from "@acp/accounts";
+import { readAccountActions } from "@acp/runtime";
+
 import { foldEffectiveState } from "../../src/account-actions/index.js";
+import { readAccounts } from "../../src/accounts/index.js";
 import { buildServer } from "../../src/build-server/index.js";
 
 /**
@@ -415,6 +419,187 @@ describe("the second door inherits the bearer by where it is registered", () => 
       const response = await app.inject({ method, url: actionsUrl() });
       expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
     }
+    await app.close();
+  });
+});
+
+/**
+ * V2-B1e: the fold moved to `@acp/accounts`, and this door delegates to it.
+ *
+ * What these two describes drill is the *move*, not the law — the law's own
+ * precedence matrix lives in the accounts suite now, where it can be exercised
+ * over a pure function with no server and no ledger. Here the question is
+ * narrower and is the one a relocation actually risks: does this module still
+ * answer exactly what it answered before, at both of its call sites.
+ */
+describe("P7: the delegation changed nothing this door publishes", () => {
+  it("the wrapper agrees with the domain fold, row for row, over every shape", () => {
+    // Byte-identical in the only sense a structural equality can be: the
+    // wrapper's whole remaining job is unwrapping `row.event`, so the two must
+    // agree on the empty history, on one row, and on the newest-wins case.
+    const rowFor = (version: number, action: string, resultingState: string, at: string) => ({
+      sequence: version,
+      eventId: "b1e00000-0000-4000-8000-" + String(version).padStart(12, "0"),
+      event: {
+        contractVersion: LEDGER_CONTRACT_VERSION,
+        eventId: "b1e00000-0000-4000-8000-" + String(version).padStart(12, "0"),
+        accountId: ACCOUNT,
+        version,
+        idempotencyKey: ACCOUNT + "/1/action." + String(version),
+        action,
+        resultingState,
+        actor: ACTOR,
+        note: null,
+        occurredAt: at,
+        recordedAt: at,
+      },
+    });
+
+    const histories = [
+      [],
+      [rowFor(1, "DRAIN", "DRAINING", "2026-08-31T01:00:00.000Z")],
+      [
+        rowFor(1, "DRAIN", "DRAINING", "2026-08-31T01:00:00.000Z"),
+        rowFor(2, "ACCOUNT_READY", "AVAILABLE", "2026-08-31T02:00:00.000Z"),
+      ],
+      [rowFor(1, "OWNER_OVERRIDE", "COOLDOWN", "2026-08-31T03:00:00.000Z")],
+    ] as never[][];
+
+    for (const fileState of ["AVAILABLE", "DRAINING", "AUTH_REQUIRED"] as const) {
+      for (const history of histories) {
+        expect(foldEffectiveState(fileState, history)).toEqual(
+          foldAccountState(
+            fileState,
+            history.map((row: { readonly event: never }) => row.event),
+          ),
+        );
+      }
+    }
+  });
+
+  it("still publishes the pre-move answers for the empty and the recorded case", () => {
+    // The literal expectations this suite has always held, restated against
+    // the delegating wrapper so the move has to keep them true.
+    expect(foldEffectiveState("AVAILABLE", [])).toEqual({
+      effectiveState: "AVAILABLE",
+      stateSource: "OWNER_FILE",
+      lastAction: null,
+    });
+  });
+
+  it("both call sites still fold: the write door refuses a no-op it read through the wrapper", async () => {
+    // `recordAccountAction`'s own call site, exercised end to end. A second
+    // DRAIN is a no-op only because the wrapper folded the first one, so this
+    // refusal is evidence that the write door's fold still runs.
+    const { app } = harness();
+    expect((await act(app, drain)).statusCode).toBe(200);
+
+    const repeat = await act(app, drain);
+    expect(repeat.statusCode).toBe(409);
+    const refusal = ApiError.parse(repeat.json());
+    expect(refusal.error.code).toBe("WRITE_REFUSED");
+    expect(refusal.error.message).toContain("ALREADY_IN_STATE");
+    await app.close();
+  });
+});
+
+describe("N6: the read model with no action source still reports file-only", () => {
+  it("names the owner file as the source and reports no action, exactly as before", () => {
+    // `actionsFor` absent means "file only" — the honest answer when nobody
+    // asked. The delegation must not have turned an unasked question into a
+    // fold over an empty history that claims an operator acted.
+    const dir = root();
+    const path = ownerFile(dir, [account({ status: "COOLDOWN" })]);
+    const outcome = readAccounts(path, PINNED_NOW);
+    if (!outcome.ok) throw new Error("expected the owner file to load");
+    const item = outcome.items[0];
+    if (item === undefined) throw new Error("expected one account");
+
+    expect(item.state).toBe("COOLDOWN");
+    expect(item.effectiveState).toBe("COOLDOWN");
+    expect(item.stateSource).toBe("OWNER_FILE");
+    expect(item.lastAction).toBeNull();
+  });
+
+  it("N7: no new API error code reaches the wire from this door", async () => {
+    // The refusal vocabulary is closed and did not move with the fold. A
+    // relocation that introduced a code would show up here rather than in a
+    // reader's surprise.
+    const { app } = harness();
+    const unknown = await act(app, drain, "acct-nonexistent");
+    expect(unknown.statusCode).toBe(409);
+    const error = ApiError.parse(unknown.json());
+    expect(error.error.code).toBe("WRITE_REFUSED");
+    expect(error.error.message).toContain("UNKNOWN_ACCOUNT");
+    await app.close();
+  });
+});
+
+
+describe("P6: the read model and the CLI's election mechanism agree over one ledger", () => {
+  it("publishes exactly what the election's own reader and fold produce", async () => {
+    // The gateway half of the parity pair. The CLI half drives the real `run()`
+    // verb in the CLI suite; here the real HTTP read model is driven over a
+    // ledger written by the real HTTP write door, and the CLI's own election
+    // mechanism -- `readAccountActions` then `foldEffectiveState`, the exact
+    // pair `runSubmission` runs -- is applied to that same ledger in the same
+    // test. Both doors now fold through one implementation, so a disagreement
+    // would have to show up here.
+    const { app, dir } = harness();
+    expect((await act(app, drain)).statusCode).toBe(200);
+
+    const published = AccountsResponse.parse(
+      (await app.inject({ method: "GET", url: "/api/v1/accounts" })).json(),
+    );
+    if (published.status !== "READY") throw new Error("expected READY");
+    const item = published.items[0];
+    if (item === undefined) throw new Error("expected one account");
+
+    // The election's mechanism, over the same ledger the door just wrote.
+    const ledger = openLedger(ledgerPath(dir), { readOnly: true });
+    try {
+      const read = readAccountActions(ledger, ACCOUNT);
+      if (!read.ok) throw new Error("expected the reader to succeed");
+      const folded = foldAccountState("AVAILABLE", read.history);
+
+      expect(folded.effectiveState).toBe(item.effectiveState);
+      expect(folded.stateSource).toBe(item.stateSource);
+      expect(folded.lastAction?.action).toBe(item.lastAction?.action);
+
+      // And the substance: the file still says AVAILABLE, both say DRAINING.
+      expect(item.state).toBe("AVAILABLE");
+      expect(folded.effectiveState).toBe("DRAINING");
+    } finally {
+      ledger.close();
+    }
+
+    await app.close();
+  });
+
+  it("still agrees after the newest row restores the account", async () => {
+    const { app, dir } = harness();
+    expect((await act(app, drain)).statusCode).toBe(200);
+    expect(
+      (await act(app, { action: "ACCOUNT_READY", setState: null, note: null, actor: ACTOR })).statusCode,
+    ).toBe(200);
+
+    const published = AccountsResponse.parse(
+      (await app.inject({ method: "GET", url: "/api/v1/accounts" })).json(),
+    );
+    if (published.status !== "READY") throw new Error("expected READY");
+
+    const ledger = openLedger(ledgerPath(dir), { readOnly: true });
+    try {
+      const read = readAccountActions(ledger, ACCOUNT);
+      if (!read.ok) throw new Error("expected the reader to succeed");
+      expect(foldAccountState("AVAILABLE", read.history).effectiveState).toBe(
+        published.items[0]?.effectiveState,
+      );
+      expect(published.items[0]?.effectiveState).toBe("AVAILABLE");
+    } finally {
+      ledger.close();
+    }
+
     await app.close();
   });
 });

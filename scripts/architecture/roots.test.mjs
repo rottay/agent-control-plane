@@ -22,7 +22,7 @@
  * does not join the serialized pools: it binds no port and outlives nothing.
  */
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -99,13 +99,51 @@ function commitAll(root) {
   });
 }
 
-/** Run the real fence against a synthetic tree. Never against the real one. */
+/**
+ * Run the real fence against a synthetic tree. Never against the real one.
+ *
+ * **Asynchronous on purpose, and it is the runner that requires it.** This file
+ * spawns the whole fence fifteen times, and the fence takes seconds per run. A
+ * `spawnSync` here blocks the vitest worker's event loop for essentially the
+ * file's entire duration, so the worker cannot answer the runner's `onTaskUpdate`
+ * RPC; past a certain number of probes the runner gives up on it and the project
+ * exits non-zero with every assertion green -- a gate that reports failure while
+ * proving nothing. Awaiting `spawn` leaves the loop free between runs, so the
+ * worker stays reachable and the exit code means what it says.
+ *
+ * The contract is deliberately identical to the `spawnSync` it replaces:
+ * `status` is the child's exit code and is `null` when a signal killed it, and
+ * `output` is stdout and stderr concatenated in that order -- the fence writes
+ * its `✗` lines to stderr, so a probe that read stdout alone would miss exactly
+ * the lines it exists to assert. No timeout is imposed here, as none was before;
+ * vitest's own per-test timeout remains the only bound.
+ */
 function runFenceAgainst(root) {
-  const result = spawnSync(process.execPath, [FENCE], {
-    encoding: "utf8",
-    env: { ...process.env, ACP_FENCE_ROOT: root },
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [FENCE], {
+      env: { ...process.env, ACP_FENCE_ROOT: root },
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    // A spawn that never started is reported rather than swallowed. `spawnSync`
+    // would have returned `status: null` with empty output here, which a probe
+    // asserting "not 0" would read as a pass -- a false green on a fence that
+    // never ran.
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({ status: code, output: stdout + stderr });
+    });
   });
-  return { status: result.status, output: (result.stdout ?? "") + (result.stderr ?? "") };
 }
 
 describe("the resolver answers package-path questions (L1)", () => {
@@ -233,7 +271,7 @@ describe("the injectable root defaults to the real one (L7, L10)", () => {
 });
 
 describe("the classification law covers every package (L8, G1')", () => {
-  it("refuses a package that exists but no stratum classifies", () => {
+  it("refuses a package that exists but no stratum classifies", async () => {
     // The synthetic tree carries a package the strata table does not name, so
     // the completeness half of the law has to speak. This is the failure a
     // hand-maintained second list would eventually produce for real: a package
@@ -250,20 +288,20 @@ describe("the classification law covers every package (L8, G1')", () => {
     write(root, "packages/unclassified/package.json", '{"name":"@acp/unclassified","private":true,"license":"UNLICENSED"}\n');
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("unclassified");
   });
 });
 
 describe("the fence fires its laws against a synthetic tree (L7)", () => {
-  it("refuses a tree whose hook path is not configured", () => {
+  it("refuses a tree whose hook path is not configured", async () => {
     const root = syntheticTree();
     execFileSync("git", ["config", "--unset", "core.hooksPath"], { cwd: root });
     write(root, "README.md", "# probe\n");
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("core.hooksPath");
   });
@@ -273,31 +311,31 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
   // law actually forbids, and they replace the single case that used to be
   // enough when every remote was a violation. A lone canonical origin is now
   // legal, so asserting that ANY remote fails would assert the old law.
-  it("refuses a remote that is not the canonical repository", () => {
+  it("refuses a remote that is not the canonical repository", async () => {
     const root = syntheticTree();
     execFileSync("git", ["remote", "add", "origin", "https://example.invalid/x.git"], { cwd: root });
     write(root, "README.md", "# probe\n");
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output.toLowerCase()).toContain("remote");
     expect(output).toContain("only authorized repository");
   });
 
-  it("refuses a second remote beside the canonical one", () => {
+  it("refuses a second remote beside the canonical one", async () => {
     const root = syntheticTree();
     execFileSync("git", ["remote", "add", "origin", "https://github.com/rottay/agent-control-plane.git"], { cwd: root });
     execFileSync("git", ["remote", "add", "mirror", "https://example.invalid/x.git"], { cwd: root });
     write(root, "README.md", "# probe\n");
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("found also the remote(s): mirror");
   });
 
-  it("refuses a canonical remote whose URL carries credentials", () => {
+  it("refuses a canonical remote whose URL carries credentials", async () => {
     // The credential case is checked before the URL comparison, so the refusal
     // names the problem without echoing the secret back into the output.
     const root = syntheticTree();
@@ -309,13 +347,13 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     write(root, "README.md", "# probe\n");
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("embedded credentials");
     expect(output).not.toContain("token@");
   });
 
-  it("refuses an entrypoint that hands the estimator an empty observation set (L-V2B1D-1)", () => {
+  it("refuses an entrypoint that hands the estimator an empty observation set (L-V2B1D-1)", async () => {
     // V2-B1d's law, with a fixture that can falsify it. Before that packet both
     // production doors passed `observations: []`, so every account estimated at
     // its full declared limit from zero evidence and the router ranked on a
@@ -333,13 +371,67 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     );
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("hands estimateQuota an empty observation set");
     expect(output).toContain("packages/entrypoints/probe/src/index.ts");
   });
 
-  it("refuses a tracked file that no write-set declares (write-set conformance)", () => {
+  it("refuses an entrypoint that derives an account's effective state for itself (L-V2B1E-1)", async () => {
+    // V2-B1e's law, with a fixture that can falsify it. The fold moved to
+    // `@acp/accounts` so the CLI election and the gateway read model could
+    // share one implementation; what the law guards is that a door needing the
+    // answer does not write the authority law a second time.
+    //
+    // The fixture assigns the `stateSource:` LITERAL, which is the law's shape
+    // predicate — deciding which source governs — rather than merely mentioning
+    // `resultingState`, which several lawful readers do at HEAD when they
+    // render a recorded value. A probe on the wrong shape would pass while the
+    // law it claims to test was never exercised.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line and the offending path. Asserting
+    // only "nonzero" would prove nothing about this law.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/probe/src/index.ts",
+      'export const folded = { effectiveState: newest.resultingState, stateSource: "OPERATOR_ACTION" };\n',
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("assigns a stateSource literal");
+    expect(output).toContain("packages/entrypoints/probe/src/index.ts");
+  });
+
+  it("leaves the lawful stateSource forms alone: a type member, a pass-through, a comparison", async () => {
+    // The other half of a shape predicate's evidence, and the half a probe
+    // usually lacks. Each of these three exists in production at HEAD and must
+    // stay lawful; a law that caught them would be a law its own author had to
+    // keep explaining. If the predicate ever widens to catch a declaration, a
+    // forwarding assignment or a read, this fails and names the line.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/probe/src/index.ts",
+      [
+        'export interface Row { readonly stateSource: "OWNER_FILE" | "OPERATOR_ACTION"; }',
+        "export const carried = { stateSource: folded.stateSource };",
+        'export const operatorSet = account.stateSource === "OPERATOR_ACTION";',
+        "export const rendered = { resultingState: row.event.resultingState };",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("assigns a stateSource literal");
+    expect(output).not.toContain("assigns effectiveState from a recorded action");
+  });
+
+  it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The
     // earlier label claimed it proved the epoch, and it did not.
@@ -347,12 +439,12 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     write(root, "packages/invented/src/index.ts", "export const x = 1;\n");
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("packages/invented/src/index.ts");
   });
 
-  it("refuses a declared, tracked file that was genuinely deleted (the epoch, L5)", () => {
+  it("refuses a declared, tracked file that was genuinely deleted (the epoch, L5)", async () => {
     // The scenario the epoch law actually names. `README.md` is declared by a
     // frozen write-set array, so once it has entered the index it may not simply
     // vanish: retiring a pre-epoch path is a deliberate act that moves it into
@@ -366,12 +458,12 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     // a declared path that has never been created.
     rmSync(join(root, "README.md"));
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("tracked path is missing: README.md");
   });
 
-  it("refuses a retired path that came back (the epoch's other direction, L5)", () => {
+  it("refuses a retired path that came back (the epoch's other direction, L5)", async () => {
     // The mirror of the above: a path already retired may not reappear. Together
     // the two make the epoch a boundary rather than a suggestion — nothing
     // leaves the declared set without being retired, and nothing retired returns.
@@ -379,12 +471,12 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     write(root, "vitest.workspace.ts", "export default {};\n");
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("retired path is present again: vitest.workspace.ts");
   });
 
-  it("runs against the synthetic tree and never against the real one", () => {
+  it("runs against the synthetic tree and never against the real one", async () => {
     // The guarantee the whole mechanism rests on: the child's root is the
     // temporary directory, and the repository it was launched from is not it.
     const root = syntheticTree();
@@ -392,7 +484,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     commitAll(root);
 
     expect(root.startsWith(REAL_REPO)).toBe(false);
-    const { output } = runFenceAgainst(root);
+    const { output } = await runFenceAgainst(root);
     // Whatever it reported, it reported about the synthetic tree: the real
     // repository's own paths cannot appear in a run rooted somewhere else.
     expect(output).not.toContain(join(REAL_REPO, "packages", "domains", "runtime"));
@@ -405,7 +497,7 @@ describe("the expired-literal table catches the fragments V2-B6-fence armed", ()
   // the drill recorded in the packet report: with the entry removed, the same
   // tree passes, which is the pre-fix state.
 
-  it("refuses a README that brings back the pre-G5 two-drivers sentence", () => {
+  it("refuses a README that brings back the pre-G5 two-drivers sentence", async () => {
     const root = syntheticTree();
     // The pre-G10 bytes, across the wrap they had in the file. `flatten`
     // lowercases and collapses whitespace, so the line break is immaterial and
@@ -418,13 +510,13 @@ describe("the expired-literal table catches the fragments V2-B6-fence armed", ()
     );
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("still says");
     expect(output).toContain("a durability plane with two orchestration drivers under a supervised local daemon");
   });
 
-  it("does not fire on the successor sentence, which still names two drivers", () => {
+  it("does not fire on the successor sentence, which still names two drivers", async () => {
     // The discriminator, and the reason the literal is long. The live README
     // says "two orchestration drivers" too; a shorter pin would have made this
     // tree red and the law useless.
@@ -438,11 +530,11 @@ describe("the expired-literal table catches the fragments V2-B6-fence armed", ()
     );
     commitAll(root);
 
-    const { output } = runFenceAgainst(root);
+    const { output } = await runFenceAgainst(root);
     expect(output).not.toContain("a durability plane with two orchestration drivers under a supervised local daemon");
   });
 
-  it("refuses a contracts barrel that still counts its capability modules in prose", () => {
+  it("refuses a contracts barrel that still counts its capability modules in prose", async () => {
     const root = syntheticTree();
     write(root, "README.md", "# probe\n");
     write(
@@ -453,7 +545,7 @@ describe("the expired-literal table catches the fragments V2-B6-fence armed", ()
     );
     commitAll(root);
 
-    const { status, output } = runFenceAgainst(root);
+    const { status, output } = await runFenceAgainst(root);
     expect(status).not.toBe(0);
     expect(output).toContain("still says");
     expect(output).toContain("fourteen capability modules");
