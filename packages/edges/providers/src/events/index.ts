@@ -26,7 +26,8 @@ export type NormalizedEventName =
   | "auth.required"
   | "session.interrupted"
   | "session.failed"
-  | "provider.state";
+  | "provider.state"
+  | "quota.pressure";
 
 /** The one place the mapping is written down. */
 export const FROZEN_TYPE_BY_EVENT: Readonly<Record<NormalizedEventName, ControlPlaneEventType>> =
@@ -38,6 +39,13 @@ export const FROZEN_TYPE_BY_EVENT: Readonly<Record<NormalizedEventName, ControlP
     "session.interrupted": "TASK_CANCELLED",
     "session.failed": "TASK_FAILED",
     "provider.state": "TASK_STATE_CHANGED",
+    // No frozen type is created for pressure, and none may be: the vocabulary
+    // is 24 names onto 5 channels and a 25th moves the protocol, the console
+    // and the API contract version. An exhaustion is recorded under
+    // QUOTA_WARNING with the classified kind in the payload, following
+    // `decideSwitch`'s own SWITCH branch, which already emits QUOTA_WARNING
+    // for an exhaustion.
+    "quota.pressure": "QUOTA_WARNING",
   });
 
 export const NORMALIZED_EVENT_NAMES: readonly NormalizedEventName[] = Object.freeze(
@@ -112,6 +120,14 @@ export function toNormalized(
       });
     case "state":
       return normalizedEvent("provider.state", provider, taskId, { toState: signal.toState });
+    case "pressure":
+      // The provider travels on the payload because the recorder attributes
+      // the row to the adapter that classified the frame, not to a second
+      // reading taken later at another layer.
+      return normalizedEvent("quota.pressure", provider, taskId, {
+        provider,
+        pressure: signal.pressure,
+      });
     case "write":
       return null;
   }

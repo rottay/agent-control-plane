@@ -1,4 +1,9 @@
-import { ExecutionEvent, ExecutionRequest, ResolvedRoute } from "@acp/contracts";
+import {
+  ExecutionEvent,
+  ExecutionRequest,
+  PROVIDER_PRESSURES,
+  ResolvedRoute,
+} from "@acp/contracts";
 import type {
   ExecutionRefusal,
   ExecutionRefused,
@@ -12,6 +17,7 @@ import type {
   AdmittedConfigRoot,
   AdmittedWorkdir,
   ProviderAdapter,
+  ProviderPressure,
   SessionLimits,
   SessionRequest,
 } from "../contract/index.js";
@@ -207,6 +213,20 @@ function count(value: unknown): number | null {
 }
 
 /**
+ * The classified member, or nothing.
+ *
+ * Checked against the contract's own list rather than against a copy, so a
+ * payload string the vocabulary does not contain is `UNEXPRESSIBLE` at the
+ * boundary instead of a pressure nobody classified.
+ */
+function pressureOf(value: unknown): ProviderPressure | null {
+  return typeof value === "string" &&
+    (PROVIDER_PRESSURES as readonly string[]).includes(value)
+    ? (value as ProviderPressure)
+    : null;
+}
+
+/**
  * Turn one normalized adapter event into one execution event.
  *
  * The payload arrives already bounded and redacted, which means a field can be
@@ -253,6 +273,23 @@ export function toExecutionEvent(normalized: NormalizedEvent, route: ResolvedRou
       const toState = text(payload["toState"]);
       if (toState === null) return { kind: "UNEXPRESSIBLE", detail: "provider.state lost toState" };
       return { kind: "EVENT", event: { kind: "state", toState } };
+    }
+    case "quota.pressure": {
+      const pressure = pressureOf(payload["pressure"]);
+      if (pressure === null) {
+        return { kind: "UNEXPRESSIBLE", detail: "quota.pressure lost pressure" };
+      }
+      // The provider is the normalizing adapter's own — the one whose parser
+      // classified the frame — carried rather than re-derived from the route.
+      // Post provider-per-binding the two cannot differ for a session that
+      // opened, because `startExecution` refuses ROUTE_INVALID at
+      // `route.provider` before `startSession`; carrying it keeps the
+      // provenance with the classification instead of taking a second reading
+      // at another layer.
+      return {
+        kind: "EVENT",
+        event: { kind: "pressure", provider: normalized.provider, pressure },
+      };
     }
     case "session.interrupted":
     case "session.failed":

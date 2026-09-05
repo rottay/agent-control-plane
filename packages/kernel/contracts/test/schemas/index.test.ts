@@ -38,6 +38,7 @@ import {
   Initiative,
   InitiativeEvent,
   LIFECYCLE_STATES,
+  PROVIDER_PRESSURES,
   RECONCILIATION_VERDICTS,
   RESUMABLE_VERDICTS,
   ROADMAP_CONTENT_MAX_BYTES,
@@ -1480,6 +1481,28 @@ describe("transport kinds and the CLI provider vocabulary", () => {
     expect(new Set(CLI_SUBSCRIPTION_PROVIDERS).size).toBe(CLI_SUBSCRIPTION_PROVIDERS.length);
   });
 
+  it("declares the observation vocabulary here, sorted, closed at five", () => {
+    expect([...PROVIDER_PRESSURES]).toEqual([
+      "AUTH_REQUIRED",
+      "QUOTA_EXHAUSTED",
+      "QUOTA_WARNING",
+      "TRANSIENT",
+      "UNCLASSIFIED",
+    ]);
+    expect([...PROVIDER_PRESSURES]).toEqual([...PROVIDER_PRESSURES].sort());
+    expect(new Set(PROVIDER_PRESSURES).size).toBe(PROVIDER_PRESSURES.length);
+  });
+
+  it("gives the observation vocabulary no field a quantity could occupy", () => {
+    // The members are bare strings. There is no remaining count, ratio, reset
+    // instant, limit or retry-after anywhere in the shape, which is what makes
+    // "never fabricate remaining quota" structural rather than remembered.
+    for (const pressure of PROVIDER_PRESSURES) {
+      expect(typeof pressure).toBe("string");
+      expect(pressure).toMatch(/^[A-Z_]+$/);
+    }
+  });
+
   it("closes the refusal vocabulary, sorted and deduplicated", () => {
     expect([...EXECUTION_REFUSALS]).toEqual([...EXECUTION_REFUSALS].sort());
     expect(new Set(EXECUTION_REFUSALS).size).toBe(EXECUTION_REFUSALS.length);
@@ -1595,6 +1618,7 @@ describe("ExecutionEvent", () => {
       { kind: "toolUse", tool: "read_file", detail: "packages/contracts" },
       { kind: "checkpoint", digest: SHA256 },
       { kind: "authRequired", reason: "subscription session expired" },
+      { kind: "pressure", provider: "codex", pressure: "QUOTA_EXHAUSTED" },
       { kind: "error", refusal: "CAPABILITY_UNSUPPORTED", detail: "no tool support" },
       { kind: "completed", stepIndex: 7 },
     ];
@@ -1618,13 +1642,60 @@ describe("ExecutionEvent", () => {
     expect(ExecutionEvent.safeParse({ kind: "checkpoint", digest: "nope" }).success).toBe(false);
   });
 
-  it("is exactly the ten normalized variants", () => {
+  it("carries a classified pressure, its provider, and no quantity at all", () => {
+    const parsed = ExecutionEvent.parse({
+      kind: "pressure",
+      provider: "codex",
+      pressure: "QUOTA_EXHAUSTED",
+    });
+    expect(parsed).toEqual({
+      kind: "pressure",
+      provider: "codex",
+      pressure: "QUOTA_EXHAUSTED",
+    });
+    // The member is a strict object over three closed scalars, so a remaining
+    // count, a reset instant or a retry-after is unrepresentable at the
+    // boundary rather than merely discouraged.
+    for (const extra of [
+      { remaining: 0 },
+      { resetAt: "2026-09-05T00:00:00.000Z" },
+      { retryAfter: 60 },
+      { limit: 1_000 },
+    ]) {
+      expect(
+        ExecutionEvent.safeParse({
+          kind: "pressure",
+          provider: "codex",
+          pressure: "QUOTA_EXHAUSTED",
+          ...extra,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses a pressure outside the observation vocabulary or the CLI providers", () => {
+    expect(
+      ExecutionEvent.safeParse({ kind: "pressure", provider: "codex", pressure: "DRAINING" })
+        .success,
+    ).toBe(false);
+    expect(
+      ExecutionEvent.safeParse({
+        kind: "pressure",
+        provider: "openai",
+        pressure: "QUOTA_EXHAUSTED",
+      }).success,
+    ).toBe(false);
+    expect(ExecutionEvent.safeParse({ kind: "pressure", provider: "codex" }).success).toBe(false);
+  });
+
+  it("is exactly the eleven normalized variants", () => {
     const kinds = ExecutionEvent.options.map((option) => option.shape.kind.value);
     expect([...kinds].sort()).toEqual([
       "authRequired",
       "checkpoint",
       "completed",
       "error",
+      "pressure",
       "started",
       "state",
       "text",

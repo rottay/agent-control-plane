@@ -711,6 +711,318 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("composes an artifacts directory");
   });
 
+  it("refuses an adapter that builds a pressure signal carrying a number (L-V2B1F4-1)", async () => {
+    // V2-B1f/F4a's first law. The observation vocabulary carries a
+    // classification and no quantity, so "never fabricate remaining quota" is
+    // a property of the shape. This is what keeps an adapter from reading a
+    // number out of a provider message and putting it beside the
+    // classification, where the router would eventually act on it.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line and the offending path.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/edges/providers/src/probe/index.ts",
+      'export const signal = { kind: "pressure", pressure: "QUOTA_EXHAUSTED", remaining: 12 };\n',
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("builds a pressure signal carrying a number");
+    expect(output).toContain("packages/edges/providers/src/probe/index.ts");
+  });
+
+  it("leaves a lawful pressure constructor alone: a classification, and prose about numbers", async () => {
+    // The negative control, and the half that keeps this law from widening
+    // from "carries a quantity" to "mentions one". A constructor carrying only
+    // the classification is the shipped shape; a comment describing the
+    // members the law forbids is exactly what the law's own home does, and a
+    // digit elsewhere in the file is not a digit in the constructor.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/edges/providers/src/probe/index.ts",
+      [
+        "// A pressure carries no remaining count, ratio, resetAt or retryAfter:",
+        "// there is no field one of those could occupy, which is the point.",
+        "export const MAX_FRAMES = 100;",
+        'export const signal = { kind: "pressure", pressure: "QUOTA_EXHAUSTED" };',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("builds a pressure signal carrying a number");
+    expect(output).not.toContain("builds a pressure signal carrying a remaining member");
+  });
+
+  it("refuses an effects module that writes its marker before recording pressure (L-V2B1F4-2)", async () => {
+    // V2-B1f/F4a's second law, the `L-B7T-3` twin. `closeIntent` probes first
+    // and, on DONE, appends without re-entering `apply`, so a sink after the
+    // marker is unreachable on exactly the resume window it covers.
+    //
+    // The fixture carries the spend sink and the conformance gate BEFORE the
+    // marker deliberately: their own laws must stay silent, so what this probe
+    // proves is that the new law fires on its own line rather than riding one
+    // of theirs.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/execution-effects/index.ts",
+      [
+        "export const apply = (operation, target, trail) => {",
+        "  recordUsage({ operationIndex: operation.operationIndex });",
+        "  checkConformance(operation.operationIndex);",
+        "  writeMarker(target, { eventCount: trail.length });",
+        "  recordPressure({ operationIndex: operation.operationIndex });",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("writes the evidence marker before recording pressure");
+    expect(output).toContain("packages/domains/runtime/src/execution-effects/index.ts");
+    // Its neighbours over the same two anchors stay silent: the spend sink and
+    // the gate both precede the marker in this fixture.
+    expect(output).not.toContain("writes the evidence marker before recording usage");
+    expect(output).not.toContain("runs the conformance gate after the evidence marker");
+  });
+
+  it("leaves an effects module that records before its marker alone", async () => {
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/execution-effects/index.ts",
+      [
+        "export const apply = (operation, target, trail) => {",
+        "  recordUsage({ operationIndex: operation.operationIndex });",
+        "  recordPressure({ operationIndex: operation.operationIndex });",
+        "  checkConformance(operation.operationIndex);",
+        "  writeMarker(target, { eventCount: trail.length });",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("writes the evidence marker before recording pressure");
+    expect(output).not.toContain("no longer calls the pressure sink inside apply");
+  });
+
+  it("refuses a daemon seam that builds execution effects without a pressure sink (L-V2B1F4-3)", async () => {
+    // V2-B1f/F4a's third law, written in `L-C-4c`'s shape rather than
+    // `L-B7T-2`'s: `L-B7T-2` uses `indexOf` and checks only the FIRST
+    // construction site, and this daemon builds two. The fixture below is the
+    // isolation test N12 asks for -- both literals carry a conformance gate,
+    // a usage sink and the recorder call, and the file selects its adapter per
+    // entry, so `L-C-4c`, `L-B7T-2` and `L-F2B-1` all stay silent and only the
+    // new law fires.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/daemon/src/index.ts",
+      [
+        "export const adapterFor = (entry) => CLI_ADAPTERS[entry.provider];",
+        "export const singular = () => createExecutionEffects({",
+        "  recordUsage: (sample) => recordTokenObservation(ledger, sample),",
+        "  checkConformance: gate,",
+        "});",
+        "export const plural = () => createExecutionEffects({",
+        "  recordUsage: (sample) => recordTokenObservation(ledger, sample),",
+        "  checkConformance: gate,",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("builds execution effects without a pressure sink");
+    // Isolation: the three landed laws over the same file and the same call
+    // sites report nothing here.
+    expect(output).not.toContain("builds execution effects without a conformance gate");
+    expect(output).not.toContain("builds the execution effects without a usage sink");
+    expect(output).not.toContain("selects a CLI adapter from the route's provider");
+  });
+
+  it("leaves a daemon whose every seam carries a sink alone, and needs the recorder too", async () => {
+    // Two halves in one control. A composition carrying a sink at both seams
+    // and reaching the recorder is lawful and must stay silent; the same
+    // composition with the sink but WITHOUT the recorder is the structurally-
+    // live-behaviourally-empty shape, and it must not be.
+    const lawful = syntheticTree();
+    write(
+      lawful,
+      "packages/entrypoints/daemon/src/index.ts",
+      [
+        "export const adapterFor = (entry) => CLI_ADAPTERS[entry.provider];",
+        "export const singular = () => createExecutionEffects({",
+        "  recordUsage: (sample) => recordTokenObservation(ledger, sample),",
+        "  recordPressure: (sample) => recordProviderPressure(ledger, sample),",
+        "  checkConformance: gate,",
+        "});",
+        "export const plural = () => createExecutionEffects({",
+        "  recordUsage: (sample) => recordTokenObservation(ledger, sample),",
+        "  recordPressure: (sample) => recordProviderPressure(ledger, sample),",
+        "  checkConformance: gate,",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    commitAll(lawful);
+
+    const clean = await runFenceAgainst(lawful);
+    expect(clean.output).not.toContain("builds execution effects without a pressure sink");
+    expect(clean.output).not.toContain("passes a pressure sink that does not reach the recorder");
+
+    const empty = syntheticTree();
+    write(
+      empty,
+      "packages/entrypoints/daemon/src/index.ts",
+      [
+        "export const adapterFor = (entry) => CLI_ADAPTERS[entry.provider];",
+        "export const singular = () => createExecutionEffects({",
+        "  recordUsage: (sample) => recordTokenObservation(ledger, sample),",
+        "  recordPressure: (sample) => sample,",
+        "  checkConformance: gate,",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    commitAll(empty);
+
+    const hollow = await runFenceAgainst(empty);
+    expect(hollow.status).not.toBe(0);
+    expect(hollow.output).toContain("passes a pressure sink that does not reach the recorder");
+  });
+
+  it("refuses two vocabularies that disagree on the quota members (L-V2B1F4-4)", async () => {
+    // V2-B1f/F4a's fourth law, the `L-B7T-4` twin. The observation vocabulary
+    // and the decision vocabulary stay two sets on purpose -- an auth
+    // requirement and a transient are lawful observations that must never be
+    // triggers -- but the overlap must be spelled identically on both sides,
+    // or a pressure is recorded under a name the elector never derives.
+    // `accounts` may not import the contracts' execution boundary, so the
+    // fence is the only reader of both files.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+      [
+        "export const PROVIDER_PRESSURES = [",
+        '  "AUTH_REQUIRED",',
+        '  "QUOTA_EXHAUSTED",',
+        '  "TRANSIENT",',
+        "] as const;",
+        "",
+      ].join("\n"),
+    );
+    write(
+      root,
+      "packages/domains/accounts/src/switching/index.ts",
+      [
+        'export const SWITCH_TRIGGERS = ["QUOTA_WARNING", "QUOTA_EXHAUSTED"];',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("disagree; a pressure recorded under a name the elector does not derive");
+  });
+
+  it("leaves two vocabularies that agree on the overlap alone, non-quota members included", async () => {
+    // The negative control, and the half that keeps this law from collapsing
+    // the two sets into one: the observation vocabulary carries three members
+    // the decision vocabulary must NOT have, and that is lawful.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+      [
+        "export const PROVIDER_PRESSURES = [",
+        '  "AUTH_REQUIRED",',
+        '  "QUOTA_EXHAUSTED",',
+        '  "QUOTA_WARNING",',
+        '  "TRANSIENT",',
+        '  "UNCLASSIFIED",',
+        "] as const;",
+        "",
+      ].join("\n"),
+    );
+    write(
+      root,
+      "packages/domains/accounts/src/switching/index.ts",
+      [
+        'export const SWITCH_TRIGGERS = ["QUOTA_WARNING", "QUOTA_EXHAUSTED"];',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("disagree; a pressure recorded under a name the elector does not derive");
+  });
+
+  it("refuses a claude or kimi adapter that classifies pressure (L-V2B1F4-5)", async () => {
+    // V2-B1f/F4a's fifth law. Codex is the one adapter with protocol evidence
+    // for a quota vocabulary; claude's result subtype is an open token and
+    // kimi names exactly one code. Two empty tables are the honest result, and
+    // this is what makes the packet that acquires the evidence move a law on
+    // purpose rather than add a row quietly.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/edges/providers/src/kimi/index.ts",
+      'export const guess = { kind: "pressure", pressure: "QUOTA_EXHAUSTED" };\n',
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("constructs a pressure signal; this adapter's provider publishes no quota");
+    expect(output).toContain("packages/edges/providers/src/kimi/index.ts");
+  });
+
+  it("leaves the two evidence-free adapters alone while they classify nothing", async () => {
+    // The negative control. Both files exist, both name the vocabulary in
+    // prose, and neither constructs a carrier -- which is the shipped state
+    // and must stay silent.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/edges/providers/src/claude/index.ts",
+      [
+        "// No quota row: the result subtype is an open token, so a QUOTA_EXHAUSTED",
+        "// classification here would be an invention rather than a reading.",
+        'export const signal = { kind: "authRequired", reason: "LOGIN_REQUIRED" };',
+        "",
+      ].join("\n"),
+    );
+    write(
+      root,
+      "packages/edges/providers/src/kimi/index.ts",
+      [
+        "// Kimi names exactly one code, and it is an auth refusal.",
+        'export const signal = { kind: "authRequired", reason: "LOGIN_REQUIRED" };',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("constructs a pressure signal; this adapter's provider publishes no quota");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The

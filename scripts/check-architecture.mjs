@@ -6485,6 +6485,78 @@ const V2B1F2B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1f/F4a -- the plane records the pressure a provider reports.
+ *
+ * The measured defect: the plane observed provider pressure on the one
+ * provider that can execute, carried it intact through the adapter, the
+ * normalizer and the port into the walk's own trail -- and then read exactly
+ * one kind out of that trail (`usage`) and folded the rest into a digest. So
+ * an account that a provider had refused, or that needed a human at a
+ * credential path, was never recorded as such; `AUTH_REQUIRED_RAISED`'s only
+ * producer was a switch branch with no caller; and `decideSwitch`, whose whole
+ * input is a trigger, had no producer anywhere outside a test.
+ *
+ * **What this packet does, and where it stops.** One neutral observation
+ * vocabulary declared in the contracts, carried on a seventh provider signal,
+ * an eighth normalized name and an eleventh `ExecutionEvent` member, and
+ * recorded once per observed frame against the account and the provider that
+ * produced it. It decides nothing: no `decideSwitch` caller, no plan, no
+ * account-state move, no quota estimate and no reset instant. The decision
+ * needs a `RoutingRequest` the walk is forbidden -- `DAEMON_ALLOWED_PACKAGES`
+ * excludes `@acp/accounts` and `L-B7S` bans the four elector symbols across
+ * every daemon production source -- so it belongs to the successor packet,
+ * where the routing state already is.
+ *
+ * **Twenty-three paths, and never a twenty-fourth.** The two chunk unions
+ * (`api-key`, `local`) stay out: both mappers assign every non-`started` chunk
+ * structurally into `ExecutionEvent`, so a member there would bind three
+ * shapes together forever for a transport where nothing can produce it, and a
+ * narrower union assigned to a wider one typechecks unaided.
+ * `providers/test/contract` stays out: it pins `PROVIDER_NAMES`, a runtime
+ * copy, and the new type alias has none.
+ *
+ * **Which pins move, and which do not.** `CONTRACTS_SCHEMA_EXPORTS` 100 ->
+ * 101 (one bare list, no companion type, the `CLI_SUBSCRIPTION_PROVIDERS`
+ * precedent); `PROVIDERS_PUBLIC_EXPORTS` 87 -> 88; `RUNTIME_PUBLIC_EXPORTS`
+ * 234 -> 239; `PATH_SCOPED_LAWS` 98 -> 103; the ADR corpus 40 -> 41. The
+ * frozen event vocabulary stays 24 onto 5 channels -- an exhaustion is
+ * recorded under `QUOTA_WARNING` with the classified kind in the payload,
+ * exactly as `decideSwitch`'s own SWITCH branch already does -- and
+ * `CONTRACT_VERSION`, `API_CONTRACT_VERSION`, `ACCOUNTS_PUBLIC_EXPORTS` and
+ * every migration stay where they were. The scope counts the fence prints do
+ * move, because a new runtime source lands inside them: `L-B1F-1`/`L-F3-1`
+ * 133 -> 134, `L-V2B1D-1`/`L-V2B1E-1` 122 -> 123, tracked package files 416 ->
+ * 418. None of the three is an asserted pin; all three are notes.
+ *
+ * Record: `docs/architecture/0041-the-plane-records-the-pressure-a-provider-reports.md`.
+ */
+const V2B1F4A_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/src/events/index.ts",
+  "packages/edges/providers/src/codex/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/src/index.ts",
+  "packages/edges/providers/test/events/index.test.ts",
+  "packages/edges/providers/test/codex/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/domains/runtime/src/pressure/index.ts",
+  "packages/domains/runtime/test/pressure/index.test.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0041-the-plane-records-the-pressure-a-provider-reports.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6636,6 +6708,7 @@ const WRITE_SET = [
   ...V2B1F2_WRITE_SET,
   ...V2B1F3_WRITE_SET,
   ...V2B1F2B_WRITE_SET,
+  ...V2B1F4A_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7723,6 +7796,32 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the daemon selects a CLI adapter per binding, never per route",
     scope: "packages/entrypoints/daemon/**/src",
+  },
+  // V2-B1f/F4a. Five new path-shaped surfaces, so five new rows: the register
+  // and the `requireScope` call sites both move 98 -> 103. Each one guards a
+  // different way this packet could be live in the tree and empty in
+  // production -- a fabricated quantity, a sink after the marker, a seam
+  // without a sink, two vocabularies drifting apart on the one name they
+  // share, and a classification an adapter holds no evidence for.
+  {
+    law: "no adapter fabricates a quota quantity",
+    scope: "packages/edges/providers/**/src",
+  },
+  {
+    law: "the pressure sink runs before the evidence marker",
+    scope: "packages/domains/runtime/src/execution-effects/index.ts",
+  },
+  {
+    law: "the production walk records the pressure it observes, at every seam",
+    scope: "packages/entrypoints/daemon/src/index.ts",
+  },
+  {
+    law: "the observation and decision vocabularies agree on quota, both ways",
+    scope: "contracts/.../execution-boundary/index.ts and accounts/src/switching/index.ts",
+  },
+  {
+    law: "no adapter classifies pressure from evidence it does not hold",
+    scope: "providers/src/claude/index.ts and providers/src/kimi/index.ts",
   },
 ];
 
@@ -13476,7 +13575,9 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "planStep",
   "probeEffect",
   "quarantineWorktree",
+  "pressureTransitionId",
   "recordCommit",
+  "recordProviderPressure",
   "recordTokenObservation",
   "removeScenarioRoot",
   "renewLease",
@@ -13513,6 +13614,9 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "FailureReason",
   "FailureSettlement",
   "FailureVerdict",
+  "PressureSample",
+  "PressureSink",
+  "ProviderPressureObservation",
   "USAGE_TOKENS_MAX",
   "UsageSample",
   "UsageSink",
@@ -13908,6 +14012,7 @@ if (accountsIndex === null) {
   "LifecycleState",
   "LocalAuthReference",
   "ModelExecutionPort",
+  "PROVIDER_PRESSURES",
   "PathDigest",
   "RECONCILIATION_VERDICTS",
   "RESUMABLE_VERDICTS",
@@ -14295,6 +14400,7 @@ const PROVIDERS_PUBLIC_EXPORTS = [
   "ParseOutcome",
   "ProviderAdapter",
   "ProviderName",
+  "ProviderPressure",
   "ProviderSignal",
   "SessionDescriptor",
   "SessionLimits",
@@ -16344,6 +16450,251 @@ if (tracked.status === 0) {
       String(bindingScope.length) +
       " daemon sources",
   );
+
+
+  // --- V2-B1f/F4a: the plane records the pressure a provider reports -------
+  //
+  // Five laws, and each one guards a different way the packet could become
+  // structurally live and behaviourally empty, or true-in-the-tree and false
+  // in production.
+
+  // --- L-V2B1F4-1: no adapter fabricates a quota quantity.
+  //
+  // The observation vocabulary carries the classification and nothing else, so
+  // "never fabricate remaining quota" is a property of the shape rather than a
+  // rule someone has to remember. This law is what keeps it that way at the
+  // one layer that could break it: an adapter that read a number out of a
+  // provider message and put it beside the classification would be inventing a
+  // measurement the plane would then act on.
+  //
+  // **Anchored on the constructor shape, and string literals are NOT blanked**
+  // -- the deliberate difference from `L-F2B-1` beside it. The anchor
+  // `kind: "pressure"` is itself a string literal, so blanking would erase the
+  // very thing this law selects. The window is bounded to one object literal,
+  // where a string is a payload rather than prose, so reading it raw is the
+  // stronger reading and not a weaker one.
+  const pressureScope = tracked.status === 0
+    ? tracked.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter(
+          (relativePath) =>
+            /\.tsx?$/.test(relativePath) &&
+            !relativePath.includes("/test/") &&
+            /^packages\/edges\/providers\/src\//.test(relativePath),
+        )
+    : [];
+  requireScope("no adapter fabricates a quota quantity", pressureScope.length);
+  const FABRICATION_KEYS = [
+    "remaining",
+    "ratio",
+    "resetAt",
+    "nextResetAt",
+    "retryAfter",
+    "limit",
+    "tokens",
+  ];
+  let pressureConstructors = 0;
+  for (const relativePath of pressureScope) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    for (const match of live.matchAll(/kind\s*:\s*"pressure"/g)) {
+      pressureConstructors += 1;
+      // The enclosing literal, bounded by its own closing brace.
+      const from = match.index ?? 0;
+      const close = live.indexOf("}", from);
+      const literal = live.slice(from, close === -1 ? live.length : close);
+      if (/\d/.test(literal)) {
+        fail(
+          relativePath +
+            " builds a pressure signal carrying a number; the observation vocabulary carries a" +
+            " classification and no quantity, and a fabricated remaining count is a number the" +
+            " router would act on",
+        );
+      }
+      for (const key of FABRICATION_KEYS) {
+        if (new RegExp("(?:^|[{,\\s])" + key + "\\s*:").test(literal)) {
+          fail(
+            relativePath +
+              " builds a pressure signal carrying a " +
+              key +
+              " member; no provider reported one in a form this plane read",
+          );
+        }
+      }
+    }
+  }
+  notes.push(
+    "no pressure constructor carries a quantity, across " +
+      String(pressureScope.length) +
+      " adapter sources (" +
+      String(pressureConstructors) +
+      " constructor site(s))",
+  );
+
+  // --- L-V2B1F4-2: the pressure sink runs before the evidence marker.
+  //
+  // The `L-B7T-3` twin, for the same crash-safety reason and anchored the same
+  // way -- on the CALL, never the declaration. `closeIntent` probes first and,
+  // on `DONE`, appends the outcome without re-entering `apply`, so a sink after
+  // the marker would be permanently unreachable on exactly the resume window it
+  // exists to cover, and the observation would be lost rather than replayed.
+  const PRESSURE_SINK_HOME = "packages/domains/runtime/src/execution-effects/index.ts";
+  {
+    const source = stripComments(readIfPresent(PRESSURE_SINK_HOME) ?? "");
+    requireScope("the pressure sink runs before the marker", source.length === 0 ? 0 : 1);
+    const sinkAt = source.indexOf("recordPressure({");
+    const markerAt = source.indexOf("writeMarker(target, {");
+    if (sinkAt === -1) {
+      fail(PRESSURE_SINK_HOME + " no longer calls the pressure sink inside apply");
+    } else if (markerAt === -1) {
+      fail(
+        PRESSURE_SINK_HOME + " no longer writes the evidence marker this law orders the sink against",
+      );
+    } else if (sinkAt > markerAt) {
+      fail(
+        PRESSURE_SINK_HOME +
+          " writes the evidence marker before recording pressure; a resumed walk finds the marker" +
+          " verified and never re-enters apply, so the observation would be lost rather than replayed",
+      );
+    } else {
+      notes.push("the pressure sink runs before the evidence marker, in " + PRESSURE_SINK_HOME);
+    }
+  }
+
+  // --- L-V2B1F4-3: the production walk records the pressure it observes.
+  //
+  // Written in `L-C-4c`'s shape and deliberately NOT `L-B7T-2`'s: `L-B7T-2`
+  // uses `indexOf` and therefore checks only the FIRST construction site, and
+  // this daemon builds two. Every literal must carry a sink, and the file must
+  // reach the recorder -- which is what stops the optionality on
+  // `ExecutionEffectsInput` becoming a production path that observes a refusal
+  // and records nothing.
+  const PRESSURE_COMPOSITION_HOME = "packages/entrypoints/daemon/src/index.ts";
+  {
+    const source = stripComments(readIfPresent(PRESSURE_COMPOSITION_HOME) ?? "");
+    requireScope(
+      "the production walk records the pressure it observes",
+      source.length === 0 ? 0 : 1,
+    );
+    const seams = [...source.matchAll(/createExecutionEffects\(\{/g)].map((match) => match.index ?? -1);
+    if (seams.length === 0) {
+      fail(
+        PRESSURE_COMPOSITION_HOME +
+          " builds no execution effects; the pressure sink this law protects would stand over nothing",
+      );
+    }
+    for (const at of seams) {
+      const next = seams.find((other) => other > at);
+      const literal = source.slice(at, next === undefined ? source.length : next);
+      if (!literal.includes("recordPressure:")) {
+        fail(
+          PRESSURE_COMPOSITION_HOME +
+            " builds execution effects without a pressure sink; the walk would observe a provider" +
+            " refusing an account and record nothing, which is the defect this packet closed",
+        );
+      }
+    }
+    if (seams.length > 0 && !source.includes("recordProviderPressure(")) {
+      fail(PRESSURE_COMPOSITION_HOME + " passes a pressure sink that does not reach the recorder");
+    }
+    if (seams.length > 0) {
+      notes.push(
+        "the production walk passes a pressure sink at all " +
+          String(seams.length) +
+          " execution seams, and it reaches the recorder",
+      );
+    }
+  }
+
+  // --- L-V2B1F4-4: the observation and decision vocabularies agree on quota.
+  //
+  // The `L-B7T-4` twin. `PROVIDER_PRESSURES` is an observation vocabulary and
+  // `SWITCH_TRIGGERS` is a decision one, and they stay two sets on purpose:
+  // `AUTH_REQUIRED`, `TRANSIENT` and `UNCLASSIFIED` are lawful observations
+  // that must never be triggers, and `isTrigger`'s fail-closed guard IS that
+  // boundary. What must not drift is the overlap -- the two quota members have
+  // to be spelled identically on both sides, or an observation the elector is
+  // meant to fold would arrive under a name it does not recognise. `accounts`
+  // may not import the contracts' execution boundary for this, so the fence is
+  // the only place that can read both files.
+  const PRESSURE_VOCAB_HOME = "packages/kernel/contracts/src/schemas/execution-boundary/index.ts";
+  const TRIGGER_VOCAB_HOME = "packages/domains/accounts/src/switching/index.ts";
+  {
+    const vocabSource = stripComments(readIfPresent(PRESSURE_VOCAB_HOME) ?? "");
+    const triggerSource = stripComments(readIfPresent(TRIGGER_VOCAB_HOME) ?? "");
+    requireScope(
+      "the observation and decision vocabularies agree on quota",
+      vocabSource.length === 0 || triggerSource.length === 0 ? 0 : 2,
+    );
+    const vocabBlock = /export const PROVIDER_PRESSURES = \[([\s\S]*?)\] as const;/.exec(vocabSource);
+    const triggerBlock = /export const SWITCH_TRIGGERS[^=]*=\s*(?:Object\.freeze\()?\[([\s\S]*?)\]/.exec(
+      triggerSource,
+    );
+    if (vocabBlock === null) {
+      fail(PRESSURE_VOCAB_HOME + " no longer declares PROVIDER_PRESSURES, so the overlap cannot be compared");
+    } else if (triggerBlock === null) {
+      fail(TRIGGER_VOCAB_HOME + " no longer declares SWITCH_TRIGGERS, so the overlap cannot be compared");
+    } else {
+      const namesOf = (block) =>
+        [...block.matchAll(/"([A-Z_]+)"/g)].map((match) => match[1] ?? "");
+      const observed = namesOf(vocabBlock[1] ?? "").filter((name) => name.startsWith("QUOTA_"));
+      const triggers = namesOf(triggerBlock[1] ?? "");
+      const missingFromObservation = triggers.filter((name) => !observed.includes(name));
+      const missingFromTriggers = observed.filter((name) => !triggers.includes(name));
+      if (missingFromObservation.length > 0 || missingFromTriggers.length > 0) {
+        fail(
+          "the quota members of PROVIDER_PRESSURES (" +
+            observed.join(", ") +
+            ") and SWITCH_TRIGGERS (" +
+            triggers.join(", ") +
+            ") disagree; a pressure recorded under a name the elector does not derive is an" +
+            " observation nothing can act on",
+        );
+      } else {
+        notes.push(
+          "the observation vocabulary's quota members and SWITCH_TRIGGERS agree both ways (" +
+            observed.join(", ") +
+            ")",
+        );
+      }
+    }
+  }
+
+  // --- L-V2B1F4-5: no adapter classifies pressure it holds no evidence for.
+  //
+  // Codex is the one adapter with protocol evidence for a quota vocabulary --
+  // `usageLimitExceeded` is a name in the schema this repository vendored.
+  // Claude's `result.subtype` is an open token and kimi names exactly one code,
+  // so neither can classify an allowance refusal without someone inventing the
+  // reading. Two empty tables are the honest result, and this law makes them
+  // mechanical: the packet that acquires the evidence moves a law on purpose
+  // rather than adding a row quietly.
+  const EVIDENCE_FREE_ADAPTERS = [
+    "packages/edges/providers/src/claude/index.ts",
+    "packages/edges/providers/src/kimi/index.ts",
+  ];
+  {
+    const present = EVIDENCE_FREE_ADAPTERS.filter((path) => readIfPresent(path) !== null);
+    requireScope("no adapter classifies pressure from evidence it does not hold", present.length);
+    for (const relativePath of present) {
+      const live = stripComments(readIfPresent(relativePath) ?? "");
+      if (/kind\s*:\s*"pressure"/.test(live)) {
+        fail(
+          relativePath +
+            " constructs a pressure signal; this adapter's provider publishes no quota vocabulary" +
+            " this plane has read, so the classification would be an invention",
+        );
+      }
+    }
+    notes.push(
+      "neither the claude nor the kimi adapter classifies pressure, across " +
+        String(present.length) +
+        " sources",
+    );
+  }
 
   // --- L-F3-1: the terminal event has exactly two producers.
   //

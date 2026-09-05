@@ -56,6 +56,8 @@ import {
   createExecutionEffects,
   deriveEventCoordinate,
   deterministicUuid,
+  pressureTransitionId,
+  recordProviderPressure,
   recordTokenObservation,
   resolveScenarioRoot,
   scenarioLedgerPath,
@@ -679,6 +681,31 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
             emittedBy: options.emittedBy,
           });
         },
+        // V2-B1f. What the provider said about this account, made durable: one
+        // row per observed frame, against the account the route elected and the
+        // provider the sample carries.
+        //
+        // `sample.provider`, never `route.provider`. The value resolved in
+        // `@acp/runtime` is the adapter's own — the parser that classified the
+        // frame — and the resolution belongs there, one layer from the trail
+        // that carries it. The daemon spells nothing: this closure receives an
+        // already-resolved provider and passes it through, which is why the
+        // binding law's second predicate is met by construction here rather
+        // than remembered.
+        //
+        // The transition name is the operation's plan index and the event's own
+        // trail position, so a resumed attempt replays instead of appending a
+        // second row, and two different frames in one stream stay two rows.
+        recordPressure: (sample) => {
+          recordProviderPressure(openedLedger, {
+            invocation,
+            accountId: route.accountId,
+            provider: sample.provider,
+            pressure: sample.pressure,
+            transitionId: pressureTransitionId(sample.operationIndex, sample.trailIndex),
+            emittedBy: options.emittedBy,
+          });
+        },
         // V2 concurrency C4, DT Option B. The legacy singular path is gated
         // exactly as the scheduler path is: same builder, same five steps, its
         // own envelope's declared write-set. A production path without this is
@@ -967,6 +994,19 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
                 accountId: route.accountId,
                 tokens: sample.tokensUsed,
                 transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+                emittedBy: walk.spec.emittedBy,
+              });
+            },
+            // The same recorder, per walk: this walk's ledger, this walk's
+            // invocation, this walk's elected account. One law, two call sites,
+            // and `sample.provider` at both.
+            recordPressure: (sample) => {
+              recordProviderPressure(held.ledger, {
+                invocation: held.invocation,
+                accountId: route.accountId,
+                provider: sample.provider,
+                pressure: sample.pressure,
+                transitionId: pressureTransitionId(sample.operationIndex, sample.trailIndex),
                 emittedBy: walk.spec.emittedBy,
               });
             },

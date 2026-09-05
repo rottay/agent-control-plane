@@ -6,6 +6,7 @@ import type {
   ParseCursor,
   ParseOutcome,
   ProviderAdapter,
+  ProviderPressure,
   ProviderSignal,
   SessionDescriptor,
   SessionRequest,
@@ -212,6 +213,80 @@ const CODEX_ERROR_VARIANTS: readonly string[] = Object.freeze([
 /** The token used when a frame's error variant is absent or off-schema. */
 const UNCLASSIFIED_ERROR = "unclassified";
 
+/**
+ * What each error variant says about the account's standing.
+ *
+ * **Total over all eighteen tokens** — the schema's seventeen plus
+ * `unclassified` — because a table that answers for only the interesting ones
+ * makes "absent" and "not about quota" the same answer, and they are not.
+ * A variant a future Codex release adds classifies as `UNCLASSIFIED` through
+ * `classifyErrorVariant`, which already refuses names the schema does not
+ * define, so nothing new arrives here unclassified by accident.
+ *
+ * **Classification is total; emission is narrow.** Only the two quota members
+ * construct a pressure signal. `AUTH_REQUIRED` routes onto the landed
+ * `authRequired` signal rather than a second carrier, and `TRANSIENT` and
+ * `UNCLASSIFIED` construct nothing at all: an unrecorded transient costs
+ * nothing, and a transient recorded as quota costs an account.
+ *
+ * Two readings are worth stating because they are the tempting mistakes:
+ *
+ * • `sessionBudgetExceeded` is `TRANSIENT`, not quota. A session budget is a
+ *   per-session ceiling this plane sets, not the account's allowance; reading
+ *   it as quota would drain an account over a limit of our own making.
+ * • The stream-level failures are the provider failing, not the account being
+ *   refused, so none of them is a quota member either.
+ */
+const PRESSURE_BY_ERROR_VARIANT: Readonly<Record<string, ProviderPressure>> = Object.freeze({
+  activeTurnNotSteerable: "UNCLASSIFIED",
+  badRequest: "UNCLASSIFIED",
+  contextWindowExceeded: "UNCLASSIFIED",
+  cyberPolicy: "UNCLASSIFIED",
+  httpConnectionFailed: "TRANSIENT",
+  internalServerError: "UNCLASSIFIED",
+  misalignmentPolicyViolation: "UNCLASSIFIED",
+  other: "UNCLASSIFIED",
+  responseStreamConnectionFailed: "TRANSIENT",
+  responseStreamDisconnected: "TRANSIENT",
+  responseTooManyFailedAttempts: "TRANSIENT",
+  sandboxError: "UNCLASSIFIED",
+  serverOverloaded: "TRANSIENT",
+  sessionBudgetExceeded: "TRANSIENT",
+  threadRollbackFailed: "UNCLASSIFIED",
+  unauthorized: "AUTH_REQUIRED",
+  usageLimitExceeded: "QUOTA_EXHAUSTED",
+  [UNCLASSIFIED_ERROR]: "UNCLASSIFIED",
+});
+
+/**
+ * The classification for one variant. Absence from the table is
+ * `UNCLASSIFIED`, which is the same answer the table gives explicitly — the
+ * fallback exists so a lookup can never walk off the end into `undefined`.
+ */
+function pressureForVariant(variant: string): ProviderPressure {
+  if (!Object.hasOwn(PRESSURE_BY_ERROR_VARIANT, variant)) return "UNCLASSIFIED";
+  return PRESSURE_BY_ERROR_VARIANT[variant] ?? "UNCLASSIFIED";
+}
+
+/**
+ * The signals a classified pressure adds beside the landed state token.
+ *
+ * Never in place of it: the state token and its retry disposition are the
+ * parser's existing output and a pinned behaviour, and replacing one with a
+ * pressure would be a silent change to what the stream says happened.
+ */
+function pressureSignals(variant: string): readonly ProviderSignal[] {
+  const pressure = pressureForVariant(variant);
+  if (pressure === "QUOTA_EXHAUSTED" || pressure === "QUOTA_WARNING") {
+    return [{ kind: "pressure", pressure }];
+  }
+  if (pressure === "AUTH_REQUIRED") {
+    // The landed carrier, with a classified reason and no provider message.
+    return [{ kind: "authRequired", reason: "LOGIN_REQUIRED" }];
+  }
+  return [];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -370,7 +445,12 @@ function readErrorNotification(params: unknown): FrameOutcome {
   const variant = classifyErrorVariant(error["codexErrorInfo"]);
   return {
     ok: true,
-    signals: [{ kind: "state", toState: (willRetry ? "ERROR_RETRYING_" : "ERROR_") + variant }],
+    signals: [
+      { kind: "state", toState: (willRetry ? "ERROR_RETRYING_" : "ERROR_") + variant },
+      // Beside the state token, never in place of it, and only for the
+      // members the table says are about the account.
+      ...pressureSignals(variant),
+    ],
   };
 }
 

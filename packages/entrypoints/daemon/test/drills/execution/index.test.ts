@@ -2909,3 +2909,107 @@ describe("P8: a tracked deletion digests the empty string, and only a tracked de
     }
   }, 120_000);
 });
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4 — the pressure a provider reports becomes a durable row
+// ---------------------------------------------------------------------------
+
+/**
+ * The one half of this packet that is reachable through a real daemon, and it
+ * is reachable on the shipped parser rather than on an invention.
+ *
+ * Claude is the only provider that can execute here — codex and kimi declare
+ * an UNSUPPORTED delivery and `startSession` refuses before any spawn — and the
+ * one pressure Claude documents is its `auth_required` system frame. So the
+ * subject writes that frame, the **shipped** `claudeAdapter.parse` classifies
+ * it (nothing is spliced: `fakeProviderBinary` is a node script speaking
+ * Claude's wire format, and the adapter is the real one the daemon composes),
+ * and the walk records exactly one row naming the account and the provider.
+ *
+ * **What this case does not claim.** Nothing about Claude's quota behaviour.
+ * Claude publishes no quota vocabulary this plane can read, and the quota half
+ * of the packet is proved at adapter, normalizer, port and recorder level
+ * because it is dormant in production: codex stays refused at `startSession`
+ * until framing is authorized, and this packet neither lifts that nor adds a
+ * seam around it.
+ */
+
+/** A Claude turn that reports it needs a human, between `init` and `result`. */
+const F4_AUTH_LINES: readonly string[] = [
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "system", subtype: "auth_required" }),
+  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
+  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+];
+
+describe("F4: the plane records the pressure a provider reports", () => {
+  it("records one attributed row for an auth requirement, and still checkpoints", async () => {
+    const { binary, root } = fakeProviderBinary(F4_AUTH_LINES, { linger: false });
+    const id = b4aScenarioId("f4-auth-recorded");
+    await stopDaemon(await startDaemon(b4aOptions(id, b4aExecutionConfig(binary, root))));
+
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)), { readOnly: true });
+    try {
+      const events = ledger.listEvents({ limit: 500 }).events;
+      const raised = events.filter((entry) => entry.event.type === "AUTH_REQUIRED_RAISED");
+
+      // Exactly one row, for exactly one observed frame. Before this packet
+      // the event reached the trail, was folded into a digest and discarded,
+      // and the walk succeeded with the evidence gone.
+      expect(raised).toHaveLength(1);
+      const row = raised[0]?.event;
+      expect(row?.payload).toEqual({
+        accountId: "acct-b4a-drill",
+        provider: "claude",
+        pressure: "AUTH_REQUIRED",
+      });
+      // A same-state passthrough: the row names what happened without moving
+      // the task, and the walk reaches its terminal exactly as before.
+      expect(row?.fromState).toBe(row?.toState);
+      expect(events.map((entry) => entry.event.type)).toContain("CHECKPOINT_WRITTEN");
+
+      // The producer this type acquires is the walk itself. Nothing here
+      // decided anything: no switch, no plan, no account state.
+      for (const forbidden of [
+        "ACCOUNT_SWITCH_STARTED",
+        "ACCOUNT_SWITCH_COMPLETED",
+        "QUOTA_BLOCKED",
+      ]) {
+        expect({
+          forbidden,
+          present: events.some((entry) => entry.event.type === forbidden),
+        }).toEqual({ forbidden, present: false });
+      }
+      // And no quota row: an auth requirement is not an allowance problem.
+      expect(events.some((entry) => entry.event.type === "QUOTA_WARNING")).toBe(false);
+
+      // No provider message, prompt, URL or code travelled with it: the
+      // payload is three classified scalars.
+      const serialized = JSON.stringify(raised);
+      for (const token of ["auth_required", "LOGIN_REQUIRED", "http", "remaining", "resetAt"]) {
+        expect({ token, present: serialized.includes(token) }).toEqual({ token, present: false });
+      }
+    } finally {
+      ledger.close();
+    }
+  }, 120_000);
+
+  it("records nothing at all for a walk whose provider reported no pressure", async () => {
+    // The regression half, stated as its own case: the unedited scenario every
+    // other drill in this file runs produces the same ledger it always did.
+    const { binary, root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const id = b4aScenarioId("f4-quiet-walk");
+    await stopDaemon(await startDaemon(b4aOptions(id, b4aExecutionConfig(binary, root))));
+
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)), { readOnly: true });
+    try {
+      const types = ledger.listEvents({ limit: 500 }).events.map((entry) => entry.event.type);
+      expect(types).toContain("CHECKPOINT_WRITTEN");
+      // Silence is not a pressure, and no default is supplied.
+      expect(types).not.toContain("AUTH_REQUIRED_RAISED");
+      expect(types).not.toContain("QUOTA_WARNING");
+    } finally {
+      ledger.close();
+    }
+  }, 120_000);
+});

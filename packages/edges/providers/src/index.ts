@@ -36,6 +36,7 @@ export type {
   ParseOutcome,
   ProviderAdapter,
   ProviderName,
+  ProviderPressure,
   ProviderSignal,
   SessionDescriptor,
   SessionLimits,

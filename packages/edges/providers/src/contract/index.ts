@@ -1,5 +1,5 @@
 import { CLI_SUBSCRIPTION_PROVIDERS } from "@acp/contracts";
-import type { WorkerIdentityString } from "@acp/contracts";
+import type { PROVIDER_PRESSURES, WorkerIdentityString } from "@acp/contracts";
 
 import { AdapterError } from "../errors/index.js";
 
@@ -24,6 +24,18 @@ import { AdapterError } from "../errors/index.js";
  * must never depend on adapters.
  */
 export type ProviderName = (typeof CLI_SUBSCRIPTION_PROVIDERS)[number];
+
+/**
+ * What a provider said about the account's standing, classified.
+ *
+ * Derived from `@acp/contracts` for the reason `ProviderName` is, and spelled
+ * here rather than exported from contracts as a companion type: the contract
+ * owns one list, and each consumer names the union it needs from it. There is
+ * no runtime copy of this one, because nothing in this package pins it as a
+ * value — the classification tables are the only producers, and a test pins
+ * each of them variant by variant.
+ */
+export type ProviderPressure = (typeof PROVIDER_PRESSURES)[number];
 
 /**
  * The same vocabulary as a frozen runtime value.
@@ -265,6 +277,15 @@ export type ProviderSignal =
   | { readonly kind: "checkpoint"; readonly digest: string }
   | { readonly kind: "authRequired"; readonly reason: string }
   | { readonly kind: "state"; readonly toState: string }
+  /**
+   * What the provider said about the account's standing, classified.
+   *
+   * Carries the classification and nothing else: no count, no ratio, no reset
+   * instant, no retry-after, no provider message. An adapter that cannot say
+   * which of the five it observed emits no pressure signal at all, which is
+   * why the classification tables are total while emission stays narrow.
+   */
+  | { readonly kind: "pressure"; readonly pressure: ProviderPressure }
   /** A write-class action. Fatal for a reviewer identity. */
   | { readonly kind: "write"; readonly target: string };
 

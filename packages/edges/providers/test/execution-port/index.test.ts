@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CLI_SUBSCRIPTION_PROVIDERS, ExecutionEvent } from "@acp/contracts";
+import { CLI_SUBSCRIPTION_PROVIDERS, ExecutionEvent, PROVIDER_PRESSURES } from "@acp/contracts";
 import type { ExecutionRequest, ModelExecutionPort, ResolvedRoute } from "@acp/contracts";
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -16,7 +16,12 @@ import type {
   SessionLimits,
 } from "../../src/contract/index.js";
 import type { CliBinding } from "../../src/execution-port/index.js";
-import { createExecutionPort, executionSessionId } from "../../src/execution-port/index.js";
+import {
+  createExecutionPort,
+  executionSessionId,
+  toExecutionEvent,
+} from "../../src/execution-port/index.js";
+import { normalizedEvent } from "../../src/events/index.js";
 import type { ApiKeyBinding, ApiStreamChunk } from "../../src/api-key/index.js";
 import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "../../src/claude/index.js";
 import { CODEX_APP_SERVER_PROTOCOL, codexAdapter } from "../../src/codex/index.js";
@@ -751,6 +756,93 @@ describe("the port surfaces what the provider resolved, verbatim", () => {
       asked: "opus",
       got: other,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The mapping function, exercised directly
+// ---------------------------------------------------------------------------
+//
+// The quota half cannot be reached through a live session in a test or in
+// production: codex and kimi declare UNSUPPORTED/HANDSHAKE_REQUIRED and
+// `startSession` refuses before any spawn, and the scripted adapter keeps the
+// base delivery rather than lifting it. "Port level" therefore means the
+// mapping function, called with a normalized event built by hand, and the
+// stream-level evidence for pressure is the auth half in the daemon drill.
+
+describe("a classified pressure crosses the boundary carrying its own provider", () => {
+  it("expresses every member of the closed observation vocabulary", () => {
+    // Over the closed set, so a sixth member cannot be added without a test.
+    // Only the two quota members are ever *constructed* by an adapter — the
+    // codex suite pins that — but the boundary can express each of them, and
+    // an event it could not express would be a silent drop.
+    for (const pressure of PROVIDER_PRESSURES) {
+      const mapping = toExecutionEvent(
+        normalizedEvent("quota.pressure", "codex", TASK, { provider: "codex", pressure }),
+        route({ provider: "codex" }),
+      );
+      expect({ pressure, kind: mapping.kind }).toEqual({ pressure, kind: "EVENT" });
+      if (mapping.kind !== "EVENT") continue;
+      expect(ExecutionEvent.safeParse(mapping.event).success).toBe(true);
+      expect(mapping.event).toEqual({ kind: "pressure", provider: "codex", pressure });
+    }
+  });
+
+  it("takes the provider from the adapter that classified the frame", () => {
+    // The two cannot differ for a session that opened: `startExecution`
+    // refuses ROUTE_INVALID at `route.provider` when the binding's adapter
+    // disagrees with the admitted provider, before `startSession`. This pins
+    // which of the two is the *source*, so the attribution stays with the
+    // classification rather than being re-derived a layer later.
+    const mapping = toExecutionEvent(
+      normalizedEvent("quota.pressure", "codex", TASK, {
+        provider: "codex",
+        pressure: "QUOTA_EXHAUSTED",
+      }),
+      route({ provider: "claude" }),
+    );
+    expect(mapping.kind).toBe("EVENT");
+    if (mapping.kind !== "EVENT") return;
+    expect(mapping.event).toEqual({
+      kind: "pressure",
+      provider: "codex",
+      pressure: "QUOTA_EXHAUSTED",
+    });
+  });
+
+  it("refuses a half-built pressure rather than yielding one", () => {
+    // The landed behaviour of every other case in this switch: a member the
+    // privacy shaping dropped, or a token outside the vocabulary, ends the
+    // stream with a classified error rather than a pressure nobody classified.
+    for (const payload of [
+      { provider: "codex" },
+      { provider: "codex", pressure: "" },
+      { provider: "codex", pressure: "DRAINING" },
+      { provider: "codex", pressure: 3 },
+    ]) {
+      const mapping = toExecutionEvent(
+        normalizedEvent("quota.pressure", "codex", TASK, payload),
+        route({ provider: "codex" }),
+      );
+      expect({ payload, kind: mapping.kind }).toEqual({ payload, kind: "UNEXPRESSIBLE" });
+    }
+  });
+
+  it("still carries an auth requirement without a provider of its own", () => {
+    // `authRequired` is a landed contract member and is not widened by this
+    // packet: the two structural chunk pass-throughs would be bound to its
+    // exact shape forever. The effects module supplies the route's provider
+    // for this kind instead, which the port's guard makes the same value.
+    const mapping = toExecutionEvent(
+      normalizedEvent("auth.required", "claude", TASK, {
+        provider: "claude",
+        reason: "LOGIN_REQUIRED",
+      }),
+      route(),
+    );
+    expect(mapping.kind).toBe("EVENT");
+    if (mapping.kind !== "EVENT") return;
+    expect(mapping.event).toEqual({ kind: "authRequired", reason: "LOGIN_REQUIRED" });
   });
 });
 

@@ -7,6 +7,7 @@ import type {
   ExecutionRefusal,
   ExecutionRequest,
   ModelExecutionPort,
+  PROVIDER_PRESSURES,
   ResolvedRoute,
 } from "@acp/contracts";
 import { canonicalJsonStringify } from "@acp/ledger";
@@ -113,6 +114,27 @@ export interface ExecutionEffectsInput {
    * the throw settles the walk rather than inviting a retry.
    */
   readonly checkConformance?: ConformanceGate | undefined;
+  /**
+   * Where the port's own pressure observations go (V2-B1f).
+   *
+   * The third use of the idiom the two members above document, injected for
+   * their reason: this module still opens no ledger and writes nothing but its
+   * own markers, and widening `EffectPort` instead would move ten inline
+   * `effects: {` literals, one of them production source.
+   *
+   * **Optional in the type, mandatory in production**, and what makes that
+   * safe is `L-V2B1F4-3` rather than hope: it asserts that *every*
+   * `createExecutionEffects` call in the daemon passes a sink and that the
+   * daemon reaches the recorder.
+   *
+   * **Synchronous, in the same window, before the marker.** The crash-safety
+   * argument is the usage sink's, verbatim: a resumed walk that finds a
+   * verified marker never re-enters `apply`, so a sink after the marker would
+   * be permanently unreachable on exactly the window it exists to cover. A
+   * throwing sink leaves no marker, the probe answers `NOT_DONE`, and the
+   * effect re-executes.
+   */
+  readonly recordPressure?: PressureSink | undefined;
 }
 
 /**
@@ -153,6 +175,48 @@ export type UsageSink = (sample: UsageSample) => void;
  * it decides only *when* the question is asked.
  */
 export type ConformanceGate = (operationIndex: number) => void;
+
+/**
+ * One classified pressure from the port's trail, as the sink receives it.
+ *
+ * `operationIndex` is the operation's own plan index and `trailIndex` is the
+ * event's position in the drained trail; together they name this observation
+ * durably, without a clock and without a counter. **The trail position, not a
+ * provider-reported ordinal** — two different pressure frames in one stream
+ * are two facts and must not collide on one key.
+ *
+ * The provider is resolved here, once, and the two sources are not
+ * interchangeable:
+ *
+ * • a `pressure` event **carries its own**, filled by the port from the
+ *   normalizing adapter — the one whose parser classified the frame;
+ * • an `authRequired` event carries none. It is a landed contract member, and
+ *   widening it would bind the two structural chunk pass-throughs to its exact
+ *   shape forever, so this module supplies the route's provider instead.
+ *
+ * The second source is not a guess: the port refuses `ROUTE_INVALID` at
+ * `route.provider` when the binding's adapter disagrees with the admitted
+ * provider, before the session starts, so for any session that produced an
+ * event the route's provider *is* the adapter's. Typed as the route's provider
+ * because a non-CLI transport can raise `authRequired` too, and dropping those
+ * would be a fail-open on evidence.
+ */
+export interface PressureSample {
+  readonly operationIndex: number;
+  readonly trailIndex: number;
+  readonly provider: ResolvedRoute["provider"];
+  readonly pressure: (typeof PROVIDER_PRESSURES)[number];
+}
+
+/**
+ * The sink the walk hands its observed pressure to.
+ *
+ * Synchronous, for the reason `UsageSink` is: it runs between the execution
+ * and the marker write and must be able to fail the apply closed. An
+ * asynchronous sink whose rejection the caller could forget to await would be
+ * a sink that silently dropped the evidence.
+ */
+export type PressureSink = (sample: PressureSample) => void;
 
 /**
  * The execution could not be carried to completion.
@@ -412,6 +476,41 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
             stepIndex: event.stepIndex,
             tokensUsed: event.tokensUsed,
           });
+        }
+      }
+
+      // V2-B1f. In the same window, and before the marker, for the same
+      // crash-safety reason the spend sink is: what the provider said about
+      // the account is evidence, and evidence written after the marker is
+      // evidence a resumed walk never writes.
+      //
+      // Two kinds are read, and the provider is resolved differently for each
+      // because only one of them carries one. Neither is inferred: a pressure
+      // event's provider is the adapter that classified the frame, and an
+      // auth requirement's is the route the port already refused to serve
+      // with a disagreeing adapter.
+      const recordPressure = input.recordPressure;
+      if (recordPressure !== undefined) {
+        for (let trailIndex = 0; trailIndex < trail.length; trailIndex += 1) {
+          const event = trail[trailIndex];
+          if (event === undefined) continue;
+          if (event.kind === "pressure") {
+            recordPressure({
+              operationIndex: operation.operationIndex,
+              trailIndex,
+              provider: event.provider,
+              pressure: event.pressure,
+            });
+            continue;
+          }
+          if (event.kind === "authRequired") {
+            recordPressure({
+              operationIndex: operation.operationIndex,
+              trailIndex,
+              provider: input.route.provider,
+              pressure: "AUTH_REQUIRED",
+            });
+          }
         }
       }
 

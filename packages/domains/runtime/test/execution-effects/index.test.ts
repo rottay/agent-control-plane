@@ -27,7 +27,12 @@ import {
   createEvidenceProbe,
   createExecutionEffects,
 } from "../../src/execution-effects/index.js";
-import type { UsageSample, UsageSink } from "../../src/execution-effects/index.js";
+import type {
+  PressureSample,
+  PressureSink,
+  UsageSample,
+  UsageSink,
+} from "../../src/execution-effects/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -356,9 +361,10 @@ describe("the module keeps its own laws", () => {
     }
   });
 
-  it("is exported from the barrel as exactly six names", () => {
-    // Three until V2-B7T; the usage sink added exactly two, both types, and
-    // V2 L2 added the reader half of the port. Pinned by equality in both
+  it("is exported from the barrel as exactly eight names", () => {
+    // Three until V2-B7T; the usage sink added exactly two, both types, V2 L2
+    // added the reader half of the port, and V2-B1f's pressure sink added its
+    // own pair for the symmetry the usage pair set. Pinned by equality in both
     // directions, so a name that arrives in the barrel without arriving here
     // fails, and so does the reverse.
     const barrel = codeOf(BARREL);
@@ -371,6 +377,8 @@ describe("the module keeps its own laws", () => {
     expect(exported).toEqual([
       "ExecutionEffectError",
       "ExecutionEffectsInput",
+      "PressureSample",
+      "PressureSink",
       "UsageSample",
       "UsageSink",
       "createEvidenceProbe",
@@ -502,9 +510,211 @@ describe("the usage sink (V2-B7T)", () => {
     // calling an injected function, and the append happens in the daemon.
     const code = codeOf(MODULE);
     expect(code).toContain("canonicalJsonStringify");
-    for (const forbidden of ["openLedger", "recordTokenObservation", "LedgerPort", ".append("]) {
+    for (const forbidden of [
+      "openLedger",
+      "recordTokenObservation",
+      "recordProviderPressure",
+      "LedgerPort",
+      ".append(",
+    ]) {
       expect({ forbidden, present: code.includes(forbidden) }).toEqual({ forbidden, present: false });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f: the pressure sink, and where each sample's provider comes from
+// ---------------------------------------------------------------------------
+
+/**
+ * The sink runs in the same window as the spend sink and before the marker,
+ * for the identical reason: what the provider said about the account is
+ * evidence, and evidence written after the marker is evidence a resumed walk
+ * never writes.
+ *
+ * Two trail kinds reach it and only one of them carries a provider. A
+ * `pressure` event carries the adapter's own, filled by the port from the
+ * normalized event; an `authRequired` event carries none, and the module
+ * supplies the route's — which the port's own guard makes the same value for
+ * any session that opened.
+ */
+const B1F_TASKS = [
+  "b1f00000-0000-4000-8000-000000000001",
+  "b1f00000-0000-4000-8000-000000000002",
+  "b1f00000-0000-4000-8000-000000000003",
+  "b1f00000-0000-4000-8000-000000000004",
+  "b1f00000-0000-4000-8000-000000000005",
+  "b1f00000-0000-4000-8000-000000000006",
+  "b1f00000-0000-4000-8000-000000000007",
+] as const;
+
+/** A route the API leg serves: an opaque provider, outside the CLI list. */
+const API_ROUTE: ResolvedRoute = {
+  provider: "anthropic-api",
+  model: "claude-opus-5",
+  accountId: "acct-api",
+  transportKind: "API_KEY",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: AT,
+};
+
+const PRESSURE_TRAIL: readonly ExecutionEvent[] = [
+  { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
+  { kind: "authRequired", reason: "LOGIN_REQUIRED" },
+  { kind: "usage", stepIndex: 1, tokensUsed: TOKENS },
+  { kind: "pressure", provider: "codex", pressure: "QUOTA_EXHAUSTED" },
+  { kind: "state", toState: "TURN_COMPLETED" },
+  { kind: "completed", stepIndex: 1 },
+];
+
+function pressureEffectsFor(
+  name: string,
+  taskId: string,
+  script: FakeScript,
+  recordPressure?: PressureSink,
+  route: ResolvedRoute = ROUTE,
+) {
+  const root = scenario(name);
+  const invocation = invocationFor(taskId);
+  const calls = { starts: 0 };
+  const effects = createExecutionEffects({
+    port: fakePort(script, calls),
+    route,
+    request: requestFor(invocation),
+    scenarioRoot: root,
+    ...(recordPressure === undefined ? {} : { recordPressure }),
+  });
+  const operation = operationForStep(invocation, INTENT_STEP);
+  return { root, invocation, calls, effects, operation };
+}
+
+describe("the pressure sink (V2-B1f)", () => {
+  it("is called once per observed frame, at the frame's own trail position", async () => {
+    const seen: PressureSample[] = [];
+    const staged = pressureEffectsFor(
+      "b1f-sink-per-frame",
+      B1F_TASKS[0],
+      { events: PRESSURE_TRAIL },
+      (sample) => {
+        seen.push(sample);
+      },
+    );
+
+    await staged.effects.apply(staged.operation);
+
+    expect(seen).toHaveLength(2);
+    // The trail position, never a provider-reported ordinal: two frames in one
+    // stream are two facts and must not collide on one durable name.
+    expect(seen.map((sample) => sample.trailIndex)).toEqual([1, 3]);
+    expect(seen.map((sample) => sample.pressure)).toEqual(["AUTH_REQUIRED", "QUOTA_EXHAUSTED"]);
+    expect(new Set(seen.map((sample) => sample.operationIndex))).toEqual(
+      new Set([staged.operation.operationIndex]),
+    );
+  });
+
+  it("takes a pressure event's provider from the event and an auth event's from the route", async () => {
+    const seen: PressureSample[] = [];
+    const staged = pressureEffectsFor(
+      "b1f-sink-providers",
+      B1F_TASKS[1],
+      { events: PRESSURE_TRAIL },
+      (sample) => {
+        seen.push(sample);
+      },
+    );
+
+    await staged.effects.apply(staged.operation);
+
+    // The route is claude's and the pressure event names codex: the fixture is
+    // built so the two sources are distinguishable, and each sample takes the
+    // one its kind actually carries. In production they cannot differ — the
+    // port refuses ROUTE_INVALID before the session starts — but which value
+    // is the source is exactly what this pins.
+    expect(seen.map((sample) => sample.provider)).toEqual([ROUTE.provider, "codex"]);
+  });
+
+  it("records a non-CLI auth requirement under the route's own opaque provider", async () => {
+    // Both non-CLI transports already put `authRequired` on the trail, and the
+    // route's provider there is a bounded string outside the CLI list.
+    // Dropping those samples would be a fail-open on evidence.
+    const seen: PressureSample[] = [];
+    const staged = pressureEffectsFor(
+      "b1f-sink-api-leg",
+      B1F_TASKS[2],
+      {
+        events: [
+          { kind: "started", route: API_ROUTE, resolvedModel: "claude-opus-5", protocolVersion: "messages/1" },
+          { kind: "authRequired", reason: "credentials rejected" },
+          { kind: "completed", stepIndex: 0 },
+        ],
+      },
+      (sample) => {
+        seen.push(sample);
+      },
+      API_ROUTE,
+    );
+
+    await staged.effects.apply(staged.operation);
+
+    expect(seen).toEqual([
+      {
+        operationIndex: staged.operation.operationIndex,
+        trailIndex: 1,
+        provider: "anthropic-api",
+        pressure: "AUTH_REQUIRED",
+      },
+    ]);
+  });
+
+  it("offers nothing at all when the trail carries no pressure", async () => {
+    const seen: PressureSample[] = [];
+    const staged = pressureEffectsFor("b1f-sink-quiet", B1F_TASKS[3], {}, (sample) => {
+      seen.push(sample);
+    });
+    await staged.effects.apply(staged.operation);
+    expect(seen).toEqual([]);
+    expect(markerFiles(staged.root)).toHaveLength(1);
+  });
+
+  it("runs before the marker is written", async () => {
+    const order: string[] = [];
+    const staged = pressureEffectsFor(
+      "b1f-sink-order",
+      B1F_TASKS[4],
+      { events: PRESSURE_TRAIL },
+      () => {
+        order.push("sink:" + String(markerFiles(staged.root).length));
+      },
+    );
+
+    await staged.effects.apply(staged.operation);
+
+    expect(order).toEqual(["sink:0", "sink:0"]);
+    expect(markerFiles(staged.root)).toHaveLength(1);
+  });
+
+  it("fails the apply closed when it throws, and the effect re-executes", async () => {
+    const staged = pressureEffectsFor(
+      "b1f-sink-throws",
+      B1F_TASKS[5],
+      { events: PRESSURE_TRAIL },
+      () => {
+        throw new Error("the pressure recorder refused");
+      },
+    );
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toThrow(
+      /the pressure recorder refused/,
+    );
+    expect(markerFiles(staged.root)).toHaveLength(0);
+    await expect(staged.effects.probe(staged.operation)).resolves.toBe("NOT_DONE");
+  });
+
+  it("stays optional, so the drill children keep building this port unchanged", async () => {
+    const staged = pressureEffectsFor("b1f-sink-absent", B1F_TASKS[6], { events: PRESSURE_TRAIL });
+    await expect(staged.effects.apply(staged.operation)).resolves.toBeUndefined();
+    expect(markerFiles(staged.root)).toHaveLength(1);
+    await expect(staged.effects.probe(staged.operation)).resolves.toBe("DONE");
   });
 });
 

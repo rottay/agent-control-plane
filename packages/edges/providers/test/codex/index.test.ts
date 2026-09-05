@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { PROVIDER_PRESSURES } from "@acp/contracts";
+
 import { allowedEnvKeys } from "../../src/config-root/index.js";
 import type {
   AdmittedBinary,
@@ -395,6 +397,114 @@ describe("the parser reads the claimed subset, and refuses the rest", () => {
           toState: "ERROR_" + variant,
         });
       }
+    }
+  });
+
+  it("classifies the pressure of every token the schema defines, and emits for two", async () => {
+    // The bijection, observed: eighteen tokens — the schema's seventeen plus
+    // `unclassified` — and each produces exactly one classification outcome
+    // beside its state token. Only the members that are about the *account*
+    // construct a carrier: an exhaustion becomes a pressure signal, an
+    // unauthorized frame joins the landed auth path, and everything else —
+    // the provider's own failures and the tokens this table does not
+    // understand — constructs nothing at all.
+    const expected: Readonly<Record<string, string | null>> = {
+      activeTurnNotSteerable: null,
+      badRequest: null,
+      contextWindowExceeded: null,
+      cyberPolicy: null,
+      httpConnectionFailed: null,
+      internalServerError: null,
+      misalignmentPolicyViolation: null,
+      other: null,
+      responseStreamConnectionFailed: null,
+      responseStreamDisconnected: null,
+      responseTooManyFailedAttempts: null,
+      sandboxError: null,
+      serverOverloaded: null,
+      // A session budget is a per-session ceiling this plane sets, not the
+      // account's allowance. Reading it as quota would drain an account over
+      // a limit of our own making.
+      sessionBudgetExceeded: null,
+      threadRollbackFailed: null,
+      unauthorized: "auth.required",
+      usageLimitExceeded: "quota.pressure",
+      unclassified: null,
+    };
+    expect(Object.keys(expected).sort()).toEqual(
+      [...CODEX_ERROR_VARIANTS, "unclassified"].sort(),
+    );
+
+    for (const [variant, carrier] of Object.entries(expected)) {
+      const line =
+        variant === "unclassified"
+          ? errorNotification("inventedByAPeer")
+          : errorNotification(variant);
+      const { events, failure } = await collect({ lines: [line], exitCode: 0 });
+      const names = events.map((event) => event.name);
+      expect({ variant, failure, names }).toEqual({
+        variant,
+        failure: null,
+        names: carrier === null ? ["provider.state"] : ["provider.state", carrier],
+      });
+    }
+  });
+
+  it("names an exhaustion as one, with no count, ratio, reset or retry-after", async () => {
+    const { events } = await collect({
+      lines: [errorNotification("usageLimitExceeded")],
+      exitCode: 0,
+    });
+    // The landed state token is not replaced: the pressure travels *beside*
+    // it, so nothing the stream said before this packet stopped being said.
+    expect(events[0]?.name).toBe("provider.state");
+    expect(events[0]?.payload["toState"]).toBe("ERROR_usageLimitExceeded");
+    expect(events[1]?.name).toBe("quota.pressure");
+    expect(events[1]?.payload).toEqual({ provider: "codex", pressure: "QUOTA_EXHAUSTED" });
+    const serialized = JSON.stringify(events[1]);
+    for (const token of ["remaining", "resetAt", "retryAfter", "limit", "ratio"]) {
+      expect({ token, present: serialized.includes(token) }).toEqual({ token, present: false });
+    }
+  });
+
+  it("keeps the retry disposition when an exhaustion is retryable", async () => {
+    const { events } = await collect({
+      lines: [errorNotification("usageLimitExceeded", true)],
+      exitCode: 0,
+    });
+    expect(events[0]?.payload["toState"]).toBe("ERROR_RETRYING_usageLimitExceeded");
+    expect(events[1]?.payload).toEqual({ provider: "codex", pressure: "QUOTA_EXHAUSTED" });
+  });
+
+  it("routes an unauthorized frame onto the landed auth carrier, not a second one", async () => {
+    const { events } = await collect({
+      lines: [errorNotification("unauthorized")],
+      exitCode: 0,
+    });
+    expect(events[1]?.name).toBe("auth.required");
+    expect(events[1]?.payload).toEqual({ provider: "codex", reason: "LOGIN_REQUIRED" });
+  });
+
+  it("lets no transient failure become a quota observation", async () => {
+    // The fail-closed direction is the cheap one: an unrecorded transient
+    // costs nothing, and a transient recorded as quota costs an account.
+    for (const variant of [
+      "serverOverloaded",
+      "httpConnectionFailed",
+      "responseStreamDisconnected",
+      "responseStreamConnectionFailed",
+      "responseTooManyFailedAttempts",
+      "sessionBudgetExceeded",
+    ]) {
+      const { events } = await collect({ lines: [errorNotification(variant)], exitCode: 0 });
+      expect({ variant, names: events.map((event) => event.name) }).toEqual({
+        variant,
+        names: ["provider.state"],
+      });
+      expect({ variant, toState: events[0]?.payload["toState"] }).toEqual({
+        variant,
+        toState: "ERROR_" + variant,
+      });
     }
   });
 
@@ -951,6 +1061,52 @@ describe("the provider module keeps the boundary's laws", () => {
         file: entry.name,
         cp: false,
       });
+    }
+  });
+
+  it("answers for every error token in one table, with one member each", () => {
+    // Totality read off the module's own text, because the observable
+    // difference between "the provider failed" and "this table does not
+    // understand it" is deliberately nil — both construct nothing. Without
+    // this, a variant could be dropped from the table and only the two
+    // emitting members would notice.
+    const block = /const PRESSURE_BY_ERROR_VARIANT[^{]*\{([\s\S]*?)\n\}\);/.exec(code);
+    expect(block).not.toBeNull();
+    const body = block?.[1] ?? "";
+    const rows = [...body.matchAll(/^\s*(?:\[?([A-Za-z_]+)\]?):\s*"([A-Z_]+)",$/gm)];
+    const keys = rows.map(([, key]) => (key === "UNCLASSIFIED_ERROR" ? "unclassified" : key));
+    expect(keys.sort()).toEqual([...CODEX_ERROR_VARIANTS, "unclassified"].sort());
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const [, key, member] of rows) {
+      expect({ key, known: PROVIDER_PRESSURES.includes(member as never) }).toEqual({
+        key,
+        known: true,
+      });
+    }
+  });
+
+  it("fabricates no quantity in any pressure it constructs", () => {
+    // The constructor shape carries the classification and nothing else. A
+    // number reaching it would be a remaining count, a limit or a retry-after
+    // that no provider reported in a form this table read.
+    for (const match of code.matchAll(/kind:\s*"pressure"[^}]*\}/g)) {
+      const literal = match[0];
+      expect({ literal, digits: /\d/.test(literal) }).toEqual({ literal, digits: false });
+      for (const banned of [
+        "remaining",
+        "ratio",
+        "resetAt",
+        "nextResetAt",
+        "retryAfter",
+        "limit",
+        "tokens",
+      ]) {
+        expect({ literal, banned, present: literal.includes(banned) }).toEqual({
+          literal,
+          banned,
+          present: false,
+        });
+      }
     }
   });
 

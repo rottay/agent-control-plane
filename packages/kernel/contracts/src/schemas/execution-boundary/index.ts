@@ -46,6 +46,35 @@ export type TransportKind = z.infer<typeof TransportKind>;
 export const CLI_SUBSCRIPTION_PROVIDERS = ["claude", "codex", "kimi"] as const;
 
 /**
+ * What a provider said about its own willingness to keep serving an account.
+ *
+ * Declared here for the reason the provider list above gives — one list, one
+ * home, no drift — and exported as a bare list with no companion type, so each
+ * consumer spells the union locally against its own vocabulary rather than
+ * importing a second name for the same five strings.
+ *
+ * The members are an **observation** vocabulary, not a decision one. They say
+ * what a provider reported; whether that warrants moving a task is the router's
+ * judgement, and `SWITCH_TRIGGERS` stays a separate, narrower set for exactly
+ * that reason. `TRANSIENT` and `UNCLASSIFIED` are what make it structurally
+ * impossible for a merely-failed or unrecognised frame to arrive at a quota
+ * destination.
+ *
+ * Deliberately absent from the shape: every number. No remaining count, no
+ * ratio, no reset instant, no limit, no retry-after — so "never fabricate
+ * remaining quota" is a property of the vocabulary rather than a rule someone
+ * has to remember. `ACCOUNT_QUOTA_UNPUBLISHED` and `RESET_UNKNOWN` stay the
+ * only answers to "how much is left" and "when does it come back".
+ */
+export const PROVIDER_PRESSURES = [
+  "AUTH_REQUIRED",
+  "QUOTA_EXHAUSTED",
+  "QUOTA_WARNING",
+  "TRANSIENT",
+  "UNCLASSIFIED",
+] as const;
+
+/**
  * Why an execution boundary refused a route.
  *
  * Closed and sorted, like every other refusal vocabulary here. A refusal is
@@ -175,6 +204,23 @@ export const ExecutionEvent = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("authRequired"),
     reason: z.string().min(1).max(200),
+  }),
+  /**
+   * What the provider said about the account's standing, classified.
+   *
+   * Carries its own `provider` because the value that matters is the adapter
+   * that classified the frame, not a second reading taken later at another
+   * layer. Only CLI adapters classify pressure, so the member names the CLI
+   * vocabulary; a transport that acquires the evidence to classify its own
+   * pressure moves this member on purpose.
+   *
+   * Three closed scalars and nothing else: there is no field a remaining
+   * count, a reset instant or a retry-after could occupy.
+   */
+  z.strictObject({
+    kind: z.literal("pressure"),
+    provider: z.enum(CLI_SUBSCRIPTION_PROVIDERS),
+    pressure: z.enum(PROVIDER_PRESSURES),
   }),
   z.strictObject({
     kind: z.literal("error"),

@@ -350,6 +350,16 @@ export { readAccountActions } from "./actions/index.js";
 export type { ActionEventSource } from "./actions/index.js";
 export type { UsageSample, UsageSink } from "./execution-effects/index.js";
 
+// V2-B1f: what a provider said about an account's standing, recorded once
+// against the account and the provider that produced it. The recorder decides
+// nothing -- it appends into the existing frozen vocabulary and the task's own
+// state -- and its sample and sink are named here for the symmetry the usage
+// pair above already has: the daemon closure's parameter type should be a name
+// the surface carries rather than an inference.
+export { pressureTransitionId, recordProviderPressure } from "./pressure/index.js";
+export type { ProviderPressureObservation } from "./pressure/index.js";
+export type { PressureSample, PressureSink } from "./execution-effects/index.js";
+
 // V2-B4b stage 2: the durable tool-call receipt. The seam between the tool edge
 // and the ledger is a grammar, not a registry -- `@acp/tools` keeps the
 // transport, refusal and ceiling vocabularies, and this stratum never names it.
