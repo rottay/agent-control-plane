@@ -165,11 +165,25 @@ const uiRowModelSource = fileURLToPath(
 const cliToolCallDoorSource = fileURLToPath(
   new URL('./packages/entrypoints/cli/src/tool-call/index.ts', import.meta.url),
 );
+/**
+ * V2 L3: the fourth alias, and the second that reaches a door.
+ *
+ * The lifecycle equivalence drives the CLI's verb as values and compares its
+ * document with the API door's; without this the comparator could only reach
+ * the CLI's read projections. `@acp/cli/lifecycle-door` rather than
+ * `@acp/cli/lifecycle`, for the reason the tool-call alias states: the sole
+ * importer scan is a substring test, and two pins that are prefixes of each
+ * other would report the wrong file.
+ */
+const cliLifecycleDoorSource = fileURLToPath(
+  new URL('./packages/entrypoints/cli/src/lifecycle/index.ts', import.meta.url),
+);
 const parityAliases = [
   ...workspaceSourceAliases,
   { find: /^@acp\/cli\/observation-rows$/, replacement: cliRowModelSource },
   { find: /^@acp\/console\/row-model$/, replacement: uiRowModelSource },
   { find: /^@acp\/cli\/tool-call-door$/, replacement: cliToolCallDoorSource },
+  { find: /^@acp\/cli\/lifecycle-door$/, replacement: cliLifecycleDoorSource },
 ];
 
 export default defineConfig({

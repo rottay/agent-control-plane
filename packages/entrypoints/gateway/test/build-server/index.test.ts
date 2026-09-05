@@ -893,6 +893,7 @@ describe("the served surface matches the frozen route table", () => {
       "initiativeRoadmap",
       "accountActions",
       "taskToolCalls",
+      "taskLifecycle",
     ]);
     await app.close();
   });
@@ -918,6 +919,7 @@ describe("the served surface matches the frozen route table", () => {
       "initiativeRoadmap",
       "accountActions",
       "taskToolCalls",
+      "taskLifecycle",
     ]);
     await app.close();
   });
@@ -1010,6 +1012,7 @@ describe("the served surface matches the frozen route table", () => {
       "initiativeRoadmap",
       "accountActions",
       "taskToolCalls",
+      "taskLifecycle",
     ]);
     await app.close();
   });

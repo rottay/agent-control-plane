@@ -11,6 +11,7 @@
     { "path": "../../persistence/ledger" },
     { "path": "../../domains/observation" },
     { "path": "../../domains/runtime" },
+    { "path": "../../edges/durability" },
     { "path": "../../edges/tools" },
     { "path": "../cli" },
     { "path": "../console" }

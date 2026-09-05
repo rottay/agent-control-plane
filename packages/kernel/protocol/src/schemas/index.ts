@@ -253,6 +253,31 @@ export const API_ERROR_CODES = [
    * from a 503 because the plane is not overloaded.
    */
   "CLAIM_HELD",
+  /**
+   * V2 L3: this engine does not serve the lifecycle verb that was asked.
+   *
+   * A capability gap, and deliberately **not** collapsed into the 503 family
+   * above it. Every code that answers 503 here describes something an operator
+   * can fix and a caller can usefully retry: a ledger that could not be
+   * reached, a process at its stream ceiling, a tool document that was never
+   * supplied. Nothing an operator does makes a SQLite supervisor cancel a
+   * running invocation, and nothing a caller does makes a retry help. A driver
+   * that declares the verb unsupported is answering about the work, not about
+   * the channel, and 501 is the status that says so.
+   */
+  "CAPABILITY_UNSUPPORTED",
+  /**
+   * V2 L3: this server was started without a scenario, so it cannot address
+   * the evidence a lifecycle verb probes.
+   *
+   * The shape `TOOL_SERVERS_UNCONFIGURED` set, for the same reason and with the
+   * same status: an operator problem, reachable only **after** the bearer has
+   * passed, so the caller is already authorized and sent nothing wrong. It is a
+   * separate code rather than a reuse of that one because a caller told "no
+   * tool document" about a missing scenario has been told something false, and
+   * a closed vocabulary whose words are approximately right is not closed.
+   */
+  "SCENARIO_UNCONFIGURED",
   "INTERNAL",
 ] as const;
 
@@ -2154,3 +2179,123 @@ export const ToolCallsQuery = z
   })
   .superRefine(attachGuards);
 export type ToolCallsQuery = z.infer<typeof ToolCallsQuery>;
+
+// ---------------------------------------------------------------------------
+// Task lifecycle (V2 L3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The lifecycle verbs the API exposes.
+ *
+ * Two, and the omission is the decision. `signal` and `timer` exist on the
+ * driver and are deliberately not exposed: a door that accepted a verb it had
+ * never tested would be a promise the plane has not proved. A strict enum is
+ * what makes the omission enforceable — `signal` is a `BAD_REQUEST` naming the
+ * field, not an unrecognised string that falls through to something.
+ */
+export const API_LIFECYCLE_VERBS = ["CANCEL", "ATTACH"] as const;
+export const ApiLifecycleVerb = z.enum(API_LIFECYCLE_VERBS);
+export type ApiLifecycleVerb = z.infer<typeof ApiLifecycleVerb>;
+
+/**
+ * Which engine the caller is addressing.
+ *
+ * Stated, never inferred, and never lower-cased: the door does not probe an
+ * engine and fall back to the other one, because a driver that fails over on
+ * its own turns an unreachable engine into a silently different execution
+ * plane. The vocabulary is the durability plane's own; a second spelling would
+ * be a second vocabulary.
+ */
+export const API_LIFECYCLE_MODES = ["SQLITE_SUPERVISOR", "RESTATE"] as const;
+export const ApiLifecycleMode = z.enum(API_LIFECYCLE_MODES);
+export type ApiLifecycleMode = z.infer<typeof ApiLifecycleMode>;
+
+/**
+ * What a caller may say about a lifecycle verb, and nothing else.
+ *
+ * Four fields, and the strictness is the whole security property rather than a
+ * style preference. **A body may never name a scenario root, a database path, a
+ * route or a commit policy.** Each of those is an authority this plane holds
+ * and the caller does not: the scenario is startup configuration, the ledger is
+ * the one this process serves, the route is recovered from the ledger and
+ * verified against the digest every event of the attempt carries, and no commit
+ * policy is recorded or needed. `strictObject` refuses all four by refusing
+ * every unknown key, which means the refusal cannot rot as fields are added.
+ *
+ * Everything else the operation needs — the invocation, the submitted instant,
+ * the submission digest, the emitting worker, the initiative, the route — is
+ * recovered from the ledger. A request that could supply them would be a second
+ * authority for values the log already holds, and the two could then disagree
+ * about which attempt is being cancelled.
+ */
+export const TaskLifecycleRequest = z
+  .strictObject({
+    verb: ApiLifecycleVerb,
+    mode: ApiLifecycleMode,
+    taskId: Uuid,
+    attempt: z.number().int().positive().max(10_000),
+  })
+  .superRefine(attachGuards);
+export type TaskLifecycleRequest = z.infer<typeof TaskLifecycleRequest>;
+
+/**
+ * The document a lifecycle verb answers with — the parity subject itself.
+ *
+ * Exactly seven fields, and exactly the seven the CLI door prints, because the
+ * equivalence this packet proves is that the two doors return *the same
+ * document* rather than two documents a comparator could be taught to reconcile.
+ * There is no contract-version envelope on this arm for that reason: adding one
+ * would put a field on one door that the other has never had, and the parity
+ * claim would immediately need an exclusion list, which is the thing an
+ * exclusion list is always the beginning of.
+ *
+ * Bounded by construction. Nothing here can carry an engine-minted invocation
+ * id, a path, a route, a driver's message or a status number: `finalSequence`
+ * is a ledger coordinate the ledger can restate for itself, and `refusal` is a
+ * closed word from the driver's own vocabulary.
+ *
+ * A refusal is **not** an error. A driver that answers `TASK_TERMINAL` or
+ * `POSTCONDITION_UNKNOWN` answers 200 with `ok: false`, because the request
+ * became an operation; 4xx and 5xx are reserved for requests that never did.
+ * That is the same invariant the tool-call door states, applied to a verb whose
+ * refusals are the driver's rather than the operation's.
+ */
+export const TaskLifecycleExecuteResponse = z
+  .strictObject({
+    verb: ApiLifecycleVerb,
+    mode: ApiLifecycleMode,
+    taskId: Uuid,
+    attempt: z.number().int().positive().max(10_000),
+    ok: z.boolean(),
+    /** The ledger head the verb reached, or null when it refused. */
+    finalSequence: Count.nullable(),
+    /** The driver's own closed refusal name, or null when it did not refuse. */
+    refusal: z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/).nullable(),
+  })
+  .superRefine(attachGuards);
+export type TaskLifecycleExecuteResponse = z.infer<typeof TaskLifecycleExecuteResponse>;
+
+/**
+ * What the lifecycle route's GET answers.
+ *
+ * The read half exists because `registerGetAndPost` is the only guarded
+ * registrar on this plane and has no POST-only form, and because every write
+ * route answers "its read, plus the one write". It is not a formality: a caller
+ * about to cancel needs to know which attempt is the latest and what state the
+ * task is in, and asking the write door for that would mean issuing a write to
+ * find out whether to issue it.
+ *
+ * Every field is ledger-derived, read through the same read-only source every
+ * other GET uses. **No writable handle is opened on this path** — the write
+ * door opens one, acts and closes it, and the read half never does.
+ */
+export const TaskLifecycleResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    taskId: Uuid,
+    latestAttempt: Count,
+    currentState: TaskState,
+  })
+  .superRefine(attachGuards);
+export type TaskLifecycleResponse = z.infer<typeof TaskLifecycleResponse>;

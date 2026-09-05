@@ -5855,6 +5855,80 @@ const V2DOCSAUDIT_WRITE_SET = [
   "docs/architecture/index.md",
 ];
 
+/**
+ * V2 L3 — the lifecycle API door, and two-door equivalence.
+ *
+ * The plane's fourth write route. `cancel` and `attach` are exposed at the API
+ * through the same `@acp/runtime` operation the CLI door already calls, and the
+ * packet's claim is that the two doors return the same seven-field document —
+ * not that they behave similarly, but that they answer the same bytes.
+ *
+ * **Thirty-two paths, three more than the brief enumerated**, each authorized on
+ * measurement rather than assumed, and each proposed from a stop at the
+ * write-set boundary rather than improvised:
+ *
+ * - `packages/kernel/protocol/src/index.ts` — `@acp/protocol` publishes exactly
+ *   one entry point and its barrel is an explicit named list, so the request and
+ *   response schemas and the path helper are unreachable from the gateway
+ *   without a re-export line. The addition is those names and nothing else.
+ * - `packages/entrypoints/gateway/test/build-server/index.test.ts` — three
+ *   assertions pin `API_WRITE_ROUTES` by deep equality, and this packet takes
+ *   that table from three routes to four. One string appended to each.
+ * - `packages/entrypoints/gateway/src/start/index.ts` — the bin parses
+ *   `--scenario` and `startServer` hands `buildServer` an enumerated object, so
+ *   without two lines here the operator flag would parse and be dropped. No
+ *   gate catches that: it is a correctness need, not a red one. `makeDriver` is
+ *   deliberately NOT threaded through it — that seam is for suites reaching
+ *   `buildServer` directly, and an operator has no business pinning a driver.
+ *
+ * The route surface moves here, which the last two contract bumps did not do:
+ * `API_ROUTES` gains one and `API_WRITE_ROUTES` goes three to four, so
+ * `API_CONTRACT_VERSION` moves `0.12.0` to `0.13.0` along with two new error
+ * codes — `CAPABILITY_UNSUPPORTED` (501) and `SCENARIO_UNCONFIGURED` (503).
+ * The ledger contract does not move: the door appends only the rows the
+ * cancellation settlement already produced at L2.
+ *
+ * No durability test path is in this set, deliberately. The real-engine proofs
+ * are L2's and stay L2's; this packet proves what the doors do with a driver's
+ * answer, over the identical `forLifecycle` construction.
+ *
+ * Record: `docs/architecture/0031-the-lifecycle-api-door.md`.
+ */
+const V2L3_WRITE_SET = [
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/entrypoints/gateway/src/lifecycle/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/errors/index.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "packages/entrypoints/gateway/src/bin/index.ts",
+  "packages/entrypoints/gateway/src/start/index.ts",
+  "packages/entrypoints/gateway/package.json",
+  "packages/entrypoints/gateway/tsconfig.json",
+  "packages/entrypoints/gateway/test/tsconfig.json",
+  "packages/entrypoints/gateway/test/lifecycle/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/README.md",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "pnpm-lock.yaml",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+  "docs/api-reference.md",
+  "docs/architecture/0031-the-lifecycle-api-door.md",
+  "docs/architecture/index.md",
+  "README.md",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -5996,6 +6070,7 @@ const WRITE_SET = [
   ...P5N_C10_WRITE_SET,
   ...P5N_C11_WRITE_SET,
   ...V2DOCSAUDIT_WRITE_SET,
+  ...V2L3_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7860,6 +7935,11 @@ const P1B_DEPENDENCY_LAW = [
     // manifest, this law, the lockfile, and both project references.
     dependencies: [
       "@acp/accounts",
+      // V2 L3: the lifecycle door constructs the Restate driver on the RESTATE
+      // branch, exactly as the CLI door does. One workspace edge, declared
+      // everywhere it has to be: the manifest, this law, the lockfile and both
+      // project references.
+      "@acp/durability",
       "@acp/protocol",
       "@acp/ledger",
       "@acp/observation",
@@ -8860,6 +8940,20 @@ if (tracked.status === 0) {
 // config cannot import a workspace package — and being able to prove a
 // collision is the whole point of pinning them).
 const DUPLICATION_ADJUDICATED = [
+  // Surfaced by V2 L3, and adjudicated rather than unified because unifying it
+  // would create the dependency it exists to avoid. Each door declares how ITS
+  // caller may inject a driver: the CLI's factory names the CLI's own seam and
+  // the gateway's names the gateway's, and the two packages import each other
+  // nowhere. A shared type would have to live in `@acp/runtime`, which would
+  // make the runtime declare a testing seam for two entrypoints it does not
+  // know about — the door layer's business leaking into the operation layer.
+  // The structural resemblance is real and is the point: the doors are meant to
+  // be shaped alike, which is what makes their documents comparable at all.
+  {
+    name: "LifecycleDriverFactory",
+    packages: ["packages/entrypoints/cli", "packages/entrypoints/gateway"],
+    why: "one injection seam per door, each naming its own package's construction; unifying it would put an entrypoint testing seam in @acp/runtime, and neither package imports the other",
+  },
   {
     name: "refuse",
     packages: [
@@ -13273,8 +13367,8 @@ if (accountsIndex === null) {
     }
   }
 
-// The P3D deep aliases: exactly three since V2-B4b stage 3E, pointing at exactly
-// those three modules, and
+// The P3D deep aliases: exactly four since V2 L3, pointing at exactly
+// those four modules, and
 // importable only by the parity test. Aliasing rather than widening either
 // package's entry point is what keeps both closed surfaces byte-untouched.
 const vitestConfig = readIfPresent("vitest.config.ts");
@@ -13287,6 +13381,10 @@ if (vitestConfig !== null) {
     // verb as values and compares its response with the API door's; without
     // this the comparator could only reach the CLI's read projection.
     ["@acp/cli/tool-call-door", "packages/entrypoints/cli/src/tool-call/index.ts"],
+    // V2 L3: the fourth, and the second that reaches a door rather than a
+    // projection. The lifecycle equivalence drives the CLI's verb as values and
+    // compares its document with the API door's.
+    ["@acp/cli/lifecycle-door", "packages/entrypoints/cli/src/lifecycle/index.ts"],
   ];
   for (const [specifier, target] of aliasTargets) {
     if (!vitestConfig.includes(target)) {
@@ -13325,7 +13423,7 @@ if (vitestConfig !== null) {
       }
     }
   }
-  notes.push("the parity deep aliases point at three modules and are used by one test");
+  notes.push("the parity deep aliases point at four modules and are used by one test");
 }
 
 // The TypeScript side of the same three aliases, pinned against the TEST project
@@ -13348,6 +13446,8 @@ const GATEWAY_TS_ALIASES = {
   "@acp/cli/observation-rows": "../../cli/dist/observation/index.d.ts",
   "@acp/console/row-model": "../../console/dist/app/api/client/index.d.ts",
   "@acp/cli/tool-call-door": "../../cli/dist/tool-call/index.d.ts",
+  // V2 L3: the lifecycle equivalence reaches the CLI's verb as values.
+  "@acp/cli/lifecycle-door": "../../cli/dist/lifecycle/index.d.ts",
 };
 // P8-8A adds `../../domains/observation`: the initiative plane folds token
 // rollups, and `tsc --build` resolves a workspace package through project
@@ -13373,6 +13473,10 @@ const GATEWAY_TS_REFERENCES = [
   // the tool edge's scope, so the project references both. Two workspace edges
   // the DT authorized by name, not a widening of what the gateway may reach.
   "../../domains/runtime",
+  // V2 L3: the lifecycle door constructs the Restate driver for the RESTATE
+  // branch, so the gateway references the durability edge as the CLI already
+  // does. One workspace edge the DT authorized by name.
+  "../../edges/durability",
   "../../edges/tools",
   "../../kernel/protocol",
   "../../persistence/ledger",

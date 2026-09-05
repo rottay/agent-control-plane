@@ -42,13 +42,21 @@ than trusting this table.
   P8-8C, and `API_ALLOWED_METHODS` still says `["GET"]` because that describes
   the read plane, which did not change. The writes are recorded in a separate
   frozen table, `API_WRITE_ROUTES`, rather than by softening the first one.
-  There are **two**, and the table grows visibly rather than a method quietly
+  There are **four**, and the table grows visibly rather than a method quietly
   appearing on a route:
 
   | Write route | Method and path | Added by |
   | --- | --- | --- |
   | `initiativeRoadmap` | `POST /api/v1/initiatives/:initiativeId/roadmap` | P8-8D-pre |
   | `accountActions` | `POST /api/v1/accounts/:accountId/actions` | P8-8G packet 2 |
+  | `taskToolCalls` | `POST /api/v1/tasks/:taskId/tool-calls` | V2-B4b stage 3C |
+  | `taskLifecycle` | `POST /api/v1/tasks/:taskId/lifecycle` | V2 L3 |
+
+  This table said **two** while there were three: `taskToolCalls` landed at
+  V2-B4b stage 3C and the count was not moved with it. Corrected at V2 L3,
+  where the fourth arrived — recorded as pre-existing drift rather than as that
+  packet's doing, because a table whose whole purpose is to be short is only
+  useful while it is also right.
 
   A reader asking "what can mutate?" gets one short answer; a reader asking
   "is this route a read?" gets the unchanged one.

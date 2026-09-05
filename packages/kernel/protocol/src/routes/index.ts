@@ -67,6 +67,13 @@ export const API_ROUTES = Object.freeze({
   // operation. Registered through the same guarded registrar as the other two,
   // so the bearer is inherited structurally rather than remembered.
   taskToolCalls: "/api/v1/tasks/:taskId/tool-calls",
+  // V2 L3: the plane's fourth write door, and the first whose write acts on
+  // work already in flight rather than recording something new. GET reads the
+  // task's lifecycle coordinates; POST cancels an attempt or rejoins its
+  // invocation, through the same `@acp/runtime` operation the CLI door calls.
+  // Registered through the same guarded registrar as the other three, so the
+  // bearer is inherited structurally rather than remembered.
+  taskLifecycle: "/api/v1/tasks/:taskId/lifecycle",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -122,6 +129,11 @@ export const API_WRITE_ROUTES = Object.freeze([
   "initiativeRoadmap",
   "accountActions",
   "taskToolCalls",
+  // V2 L3. The fourth, and the second that reaches beyond the ledger: the
+  // tool-call door starts a child, and this one speaks to an execution engine
+  // about an invocation already running. The API contract version moves with
+  // it, as it did for the third.
+  "taskLifecycle",
 ] as const);
 export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 
@@ -221,4 +233,14 @@ export function initiativeRoadmapContentPath(initiativeId: string): string {
  */
 export function toolCallsPath(taskId: string): string {
   return taskPath(taskId) + "/tool-calls";
+}
+
+/**
+ * Build the lifecycle path for a single task.
+ *
+ * Built through `taskPath` for the same reason `toolCallsPath` is: one
+ * validator for every task-scoped path, rather than a second that could drift.
+ */
+export function lifecyclePath(taskId: string): string {
+  return taskPath(taskId) + "/lifecycle";
 }

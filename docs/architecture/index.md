@@ -46,6 +46,7 @@ new records from `_template.md`, which carries the required fields.
 | 0028 | [A resumed stream restates its identity](0028-the-resumed-stream-identity.md) | accepted |
 | 0029 | [The lifecycle door recovers what it acts on](0029-the-lifecycle-door.md) | accepted |
 | 0030 | [An external audit is a frozen dated record, not an authority](0030-the-audit-record.md) | accepted |
+| 0031 | [The API cancels through the same operation the CLI does](0031-the-lifecycle-api-door.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

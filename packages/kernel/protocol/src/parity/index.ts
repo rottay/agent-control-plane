@@ -377,6 +377,28 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("count", "LEDGER"),
       bind("nextCursor", "LEDGER"),
     ]),
+    /**
+     * The lifecycle route (V2 L3), bound on its **read** and only its read.
+     *
+     * The `initiativeRoadmap` precedent, applied to a door whose write is even
+     * less of a projection than that one's: the POST answers a document about
+     * an operation the driver performed, whose `finalSequence` is a head this
+     * process moved. A parity claim over that would be comparing two clients'
+     * accounts of one side effect, which is not what this table means by
+     * equality — it means two clients reading one ledger see the same rows.
+     *
+     * So the GET's five fields are bound here, all of them ledger-derived, and
+     * the write's document is proved equal across the doors by the equivalence
+     * suite instead. The two claims are different in kind and are kept apart on
+     * purpose.
+     */
+    taskLifecycle: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("taskId", "LEDGER"),
+      bind("latestAttempt", "LEDGER"),
+      bind("currentState", "LEDGER"),
+    ]),
   });
 
 /** Every route the contract covers, matching the frozen route table exactly. */

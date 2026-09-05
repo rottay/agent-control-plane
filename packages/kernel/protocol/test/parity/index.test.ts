@@ -37,6 +37,7 @@ import {
   RoadmapContentResponse,
   StreamFrame,
   ToolCallPageResponse,
+  TaskLifecycleResponse,
 } from "../../src/schemas/index.js";
 
 describe("the contract covers every frozen route", () => {
@@ -138,6 +139,13 @@ describe("the binding table matches the schemas it claims to bind", () => {
     // projection parity is about; the POST response is a write receipt no
     // client renders, exactly as the roadmap write's is.
     taskToolCalls: ToolCallPageResponse,
+    // V2 L3. The bound surface is the GET, on the same rule: the POST answers a
+    // document about an operation this process performed, and a parity claim
+    // over that would be comparing two clients' accounts of one side effect
+    // rather than two clients reading one ledger. The document's equality
+    // across the doors is proved by the equivalence suite instead, which is a
+    // different claim and is kept apart on purpose.
+    taskLifecycle: TaskLifecycleResponse,
   };
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {

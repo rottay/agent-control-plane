@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@acp/accounts": "workspace:*",
+    "@acp/durability": "workspace:*",
     "@acp/protocol": "workspace:*",
     "@acp/ledger": "workspace:*",
     "@acp/observation": "workspace:*",

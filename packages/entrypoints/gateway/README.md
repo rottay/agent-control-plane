@@ -38,6 +38,7 @@ routes that also accept a write are named in a separate frozen table,
 | `initiativeRoadmap` | `POST /api/v1/initiatives/:initiativeId/roadmap` | a roadmap version |
 | `accountActions` | `POST /api/v1/accounts/:accountId/actions` | an account action |
 | `taskToolCalls` | `POST /api/v1/tasks/:taskId/tool-calls` | one explicit tool call — the only route that starts a child process |
+| `taskLifecycle` | `POST /api/v1/tasks/:taskId/lifecycle` | one lifecycle verb against an attempt already running — `CANCEL` or `ATTACH`, through the same operation the CLI door calls |
 
 All are registered through the same guarded registrar, so the bearer check is
 **structural rather than remembered**: a future write route registered through

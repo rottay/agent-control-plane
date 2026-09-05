@@ -272,6 +272,9 @@ importers:
       '@acp/accounts':
         specifier: workspace:*
         version: link:../../domains/accounts
+      '@acp/durability':
+        specifier: workspace:*
+        version: link:../../edges/durability
       '@acp/ledger':
         specifier: workspace:*
         version: link:../../persistence/ledger

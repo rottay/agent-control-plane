@@ -15,6 +15,9 @@ import {
   API_ERROR_CODES,
   API_ROUTES,
   API_ROUTE_PATTERNS,
+  TaskLifecycleExecuteResponse,
+  TaskLifecycleRequest,
+  TaskLifecycleResponse,
   isWriteRoute,
   ApiError,
   CursorPageMeta,
@@ -356,12 +359,13 @@ describe("routes", () => {
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     // P8-8D-pre: the read plane's method list did not move when the first
     // write route arrived, and it has not moved since. The exceptions live in
-    // their own frozen table, which is the one that grows -- three entries as
-    // of V2-B4b stage 3C, the newest being the tool-call door.
+    // their own frozen table, which is the one that grows -- four entries as of
+    // V2 L3, the newest being the lifecycle door.
     expect([...API_WRITE_ROUTES]).toEqual([
       "initiativeRoadmap",
       "accountActions",
       "taskToolCalls",
+      "taskLifecycle",
     ]);
     expect([...API_WRITE_METHODS]).toEqual(["GET", "POST"]);
     expect(Object.isFrozen(API_WRITE_ROUTES)).toBe(true);
@@ -2112,7 +2116,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.12.0");
+    expect(API_CONTRACT_VERSION).toBe("0.13.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -2121,7 +2125,7 @@ describe("the tool call's wire contract", () => {
     // version docblock states, and the one `WRITE_REFUSED`, `STREAM_CAPACITY`
     // and `TOOL_SERVERS_UNCONFIGURED` each set. Hence a minor, not a patch.
     expect(API_ERROR_CODES).toContain("CLAIM_HELD");
-    expect(API_ERROR_CODES).toHaveLength(13);
+    expect(API_ERROR_CODES).toHaveLength(15);
     // The literal is the version the surface stands at TODAY, not the one this
     // code arrived with, and the two titles were corrected at V2-B3c to stop
     // saying otherwise. `CLAIM_HELD` landed at `0.11.0`; the constant has since
@@ -2129,9 +2133,83 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.12.0");
+    expect(API_CONTRACT_VERSION).toBe("0.13.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
+  });
+
+  it("names the fourteenth and fifteenth error codes, and keeps them apart", () => {
+    // V2 L3. Two codes, not one, and the count moves by two: a writer who
+    // bumped it by one would get this line red rather than a plane that
+    // silently answers the wrong status for one of them.
+    expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
+    expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
+    expect(API_ERROR_CODES).toHaveLength(15);
+    expect(API_CONTRACT_VERSION).toBe("0.13.0");
+
+    // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
+    // operator problem a restart fixes, on the shape
+    // `TOOL_SERVERS_UNCONFIGURED` set; `CAPABILITY_UNSUPPORTED` is an engine
+    // that will never serve the verb, which no restart and no retry changes.
+    // Reusing either for the other would tell a caller something false.
+    expect(API_ERROR_CODES.filter((code) => code === "CAPABILITY_UNSUPPORTED")).toHaveLength(1);
+    expect(API_ERROR_CODES.filter((code) => code === "SCENARIO_UNCONFIGURED")).toHaveLength(1);
+  });
+
+  it("closes the lifecycle request against every authority a caller does not hold", () => {
+    const valid = {
+      verb: "CANCEL",
+      mode: "RESTATE",
+      taskId: "0f2a1a34-0f6f-4d55-9d0a-2a4b1d3e5f60",
+      attempt: 1,
+    };
+    expect(TaskLifecycleRequest.safeParse(valid).success).toBe(true);
+
+    // D2, enforced by the schema rather than by a check a later field could
+    // outgrow: a body may never name a scenario root, a database path, a route
+    // or a commit policy. `strictObject` refuses each on the unknown key.
+    for (const extra of [
+      { scenario: "l3" },
+      { scenarioId: "l3" },
+      { database: "/tmp/ledger.sqlite" },
+      { databasePath: "/tmp/ledger.sqlite" },
+      { route: { provider: "claude" } },
+      { commitPolicy: "NO_COMMIT" },
+    ]) {
+      const parsed = TaskLifecycleRequest.safeParse({ ...valid, ...extra });
+      expect({ extra, ok: parsed.success }).toEqual({ extra, ok: false });
+    }
+
+    // D3: two verbs, and the omission is enforced rather than implied.
+    for (const verb of ["SIGNAL", "TIMER", "signal", "cancel"]) {
+      expect(TaskLifecycleRequest.safeParse({ ...valid, verb }).success).toBe(false);
+    }
+    // N1: no alias, and no lower-cased spelling. A second spelling would be a
+    // second vocabulary.
+    for (const mode of ["restate", "sqlite_supervisor", "SQLITE", ""]) {
+      expect(TaskLifecycleRequest.safeParse({ ...valid, mode }).success).toBe(false);
+    }
+    for (const attempt of [0, -1, 1.5]) {
+      expect(TaskLifecycleRequest.safeParse({ ...valid, attempt }).success).toBe(false);
+    }
+  });
+
+  it("answers the lifecycle verb with exactly the seven fields the CLI door prints", () => {
+    // The document is the parity subject, so its key set is pinned by equality
+    // rather than by containment: a field added on one door and not the other
+    // is the beginning of an exclusion list, which is what this assertion
+    // exists to prevent.
+    expect(Object.keys(TaskLifecycleExecuteResponse.shape).sort()).toEqual(
+      ["attempt", "finalSequence", "mode", "ok", "refusal", "taskId", "verb"],
+    );
+    // No contract-version envelope on this arm, deliberately: the CLI document
+    // has never carried one.
+    expect(Object.keys(TaskLifecycleExecuteResponse.shape)).not.toContain("apiContractVersion");
+
+    // The read half does carry one, like every other read on this plane.
+    expect(Object.keys(TaskLifecycleResponse.shape).sort()).toEqual(
+      ["apiContractVersion", "currentState", "latestAttempt", "ledgerContractVersion", "taskId"],
+    );
   });
 });

@@ -35,6 +35,13 @@ import {
   WorkersQuery,
 } from "@acp/protocol";
 import type { Ledger } from "@acp/ledger";
+
+import {
+  buildLifecycleRead,
+  executeLifecycleVerb,
+  loadScenario,
+  type LifecycleDriverFactory,
+} from "../lifecycle/index.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { randomUUID } from "node:crypto";
@@ -339,6 +346,8 @@ export function registerRoutes(
   writeBearerPath?: string,
   now?: () => string,
   toolServersPath?: string,
+  scenarioId?: string,
+  makeDriver?: LifecycleDriverFactory,
 ): void {
   // The instant seam. Absent means the real clock, which is what production
   // passes and what every route below used directly until this packet.
@@ -352,6 +361,14 @@ export function registerRoutes(
   // per request would let a file edited mid-flight change the answer between
   // two calls of one batch. A rotation is a restart.
   const toolServers = loadToolServers(toolServersPath);
+  // Loaded once, beside the other two and for the same reason. The ledger the
+  // scenario must agree with is the one this process serves, so an unavailable
+  // source resolves to no scenario -- which costs nothing, because every route
+  // already refuses while the source is unavailable.
+  const scenario = loadScenario(
+    scenarioId,
+    source.kind === "unavailable" ? "" : source.ledger.path,
+  );
 
   registerGet(app, API_ROUTES.health, (request) => {
     assertEmptyQuery(queryOf(request));
@@ -945,6 +962,35 @@ export function registerRoutes(
         servers: toolServers,
         taskId,
         body: request.body,
+      });
+    },
+    bearer,
+  );
+
+  // V2 L3: the lifecycle door. Registered through the same guarded registrar as
+  // the other three writes, so the bearer is inherited structurally rather than
+  // remembered -- and so nothing about the scenario is learnable before the
+  // bearer check has passed. The GET half is an unguarded read like every other
+  // GET on this plane, and opens nothing writable.
+  registerGetAndPost(
+    app,
+    API_ROUTES.taskLifecycle,
+    (request) => {
+      const taskId = parseTaskIdParam(paramsOf(request)["taskId"] ?? "");
+      assertEmptyQuery(queryOf(request));
+      const { ledger } = requireOpen(source);
+      return buildLifecycleRead(ledger, taskId);
+    },
+    async (request) => {
+      const taskId = parseTaskIdParam(paramsOf(request)["taskId"] ?? "");
+      assertEmptyQuery(queryOf(request));
+      const { ledger } = requireOpen(source);
+      return await executeLifecycleVerb({
+        ledger,
+        scenario,
+        taskId,
+        body: request.body,
+        makeDriver,
       });
     },
     bearer,

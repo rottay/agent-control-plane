@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 
 import { classifyFastifyError, sendApiError } from "../errors/index.js";
 import { openLedgerSource } from "../ledger-source/index.js";
+import type { LifecycleDriverFactory } from "../lifecycle/index.js";
 import { registerRoutes } from "../routes/index.js";
 import { createStreamRegistry } from "../stream/index.js";
 import {
@@ -49,6 +50,31 @@ export interface BuildServerOptions {
    * tool-call write and serves every other route exactly as before.
    */
   readonly toolServersPath?: string | undefined;
+  /**
+   * The scenario this server's ledger belongs to (V2 L3).
+   *
+   * Optional, and its absence is a configured state rather than a defect: a
+   * server started without one answers `SCENARIO_UNCONFIGURED` on the lifecycle
+   * write and serves every other route exactly as before.
+   *
+   * It is **startup** configuration and can never be a request field. The
+   * evidence a cancellation probes is addressable only through the brand
+   * `resolveScenarioRoot` mints, and a caller that could name one would be
+   * choosing which ledger's evidence this process reads.
+   */
+  readonly scenarioId?: string | undefined;
+  /**
+   * How the lifecycle door builds a driver, when a caller wants to pin it
+   * (V2 L3).
+   *
+   * Optional, defaulting to the real construction, so omitting it is
+   * production's path and there is no test hook on it. It exists for the same
+   * topology reason the CLI door's does: the `gateway` vitest project binds no
+   * Restate port, so a door reachable only through a live engine would have no
+   * suite in its own package. The real-engine proofs remain L2's, over the
+   * identical `forLifecycle` construction.
+   */
+  readonly makeDriver?: LifecycleDriverFactory | undefined;
   /**
    * The instant supplier the accounts read uses, when a caller wants to pin it
    * (P8-8G causal).
@@ -168,6 +194,8 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     options.writeBearerPath,
     options.now,
     options.toolServersPath,
+    options.scenarioId,
+    options.makeDriver,
   );
   return app;
 }

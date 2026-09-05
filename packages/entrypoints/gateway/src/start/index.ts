@@ -19,6 +19,13 @@ export interface StartServerOptions {
   /** Path to the write bearer token file (P8-8G). Absent → writes answer 403. */
   readonly writeBearerPath?: string | undefined;
   readonly toolServersPath?: string | undefined;
+  /**
+   * The scenario this server's ledger belongs to (V2 L3). Passed through to
+   * `buildServer` unchanged, exactly as the three paths above are. Absent is a
+   * lawful configuration: the lifecycle write answers `SCENARIO_UNCONFIGURED`
+   * and every other route is served as before.
+   */
+  readonly scenarioId?: string | undefined;
   readonly port?: number | undefined;
   /**
    * Present only so an unsafe bind is rejected loudly rather than silently
@@ -62,6 +69,7 @@ export async function startServer(options: StartServerOptions): Promise<RunningS
     accountsFilePath: options.accountsFilePath,
     writeBearerPath: options.writeBearerPath,
     toolServersPath: options.toolServersPath,
+    scenarioId: options.scenarioId,
     logger: options.logger,
   });
   await app.listen({ host, port: requestedPort });

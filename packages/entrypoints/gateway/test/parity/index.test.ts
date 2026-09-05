@@ -28,11 +28,13 @@ import {
   comparableFields,
   declaredExceptions,
   hasObservationPrivacyViolation,
+  TaskLifecycleExecuteResponse,
+  lifecyclePath,
 } from "@acp/protocol";
 import type { ApiRouteName } from "@acp/protocol";
 import { openToolClaimStore, openLedger, toolClaimStorePath } from "@acp/ledger";
 import { TOOL_ARGUMENTS_BYTES_MAX } from "@acp/tools";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import {
   buildEventPage,
@@ -50,10 +52,25 @@ import {
 // V2-B4b stage 3E: the CLI's write door, as values. The third deep alias, and
 // the first that reaches a door rather than a projection.
 import { runToolCallVerb } from "@acp/cli/tool-call-door";
+// V2 L3. The cross-door row count and the document comparison both need the
+// CLI's lifecycle verb as values; this alias is what makes T2 and T3 possible
+// at all, and it is the only way this test reaches that door.
+import { runLifecycleVerb } from "@acp/cli/lifecycle-door";
 import { uiRowModel } from "@acp/console/row-model";
 // V2 X1b: the coordinate a request lands on, derived exactly as the operation
 // derives it. Values, not a copy of the derivation.
-import { deriveEventCoordinate, deriveInvocation, toolCallTransitionId } from "@acp/runtime";
+import {
+  LIFECYCLE_PLAN,
+  buildEvent,
+  canonicalSubmissionDigest,
+  deriveEventCoordinate,
+  deriveInvocation,
+  planStep,
+  removeScenarioRoot,
+  resolveScenarioRoot,
+  scenarioLedgerPath,
+  toolCallTransitionId,
+} from "@acp/runtime";
 
 import { buildServer } from "../../src/build-server/index.js";
 import { startServer } from "../../src/start/index.js";
@@ -1397,5 +1414,242 @@ describe("the two doors contend on one claim (V2 X1b)", () => {
     } finally {
       store.close();
     }
+  });
+});
+
+/**
+ * The lifecycle doors, compared on the document itself (V2 L3).
+ *
+ * The equivalence stage 3E proved for the tool call, proved again for the verb
+ * that acts on work already running. It is the stronger claim of the two: the
+ * tool-call doors answer about a call they both made, while these two answer
+ * about an invocation that exists independently of either — so an agreement
+ * here is an agreement about recovery, not just about serialisation.
+ *
+ * Both doors are driven with an injected driver, and that is the honest shape
+ * rather than a convenience: this project binds no Restate port, and the real
+ * engine's proofs are L2's, in the durability project, over the identical
+ * `forLifecycle` construction both doors reach in production.
+ */
+const LIFECYCLE_BEARER = "v2-l3-parity-" + "p".repeat(32);
+const LIFECYCLE_EMITTED_BY = "claude/opus/implementer/01";
+const LIFECYCLE_INITIATIVE = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+const LIFECYCLE_SUBMITTED_AT = "2026-08-27T12:00:00.000Z";
+
+const LIFECYCLE_ROUTE = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION" as const,
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: LIFECYCLE_SUBMITTED_AT,
+};
+
+const lifecycleScenarios: string[] = [];
+
+afterAll(() => {
+  for (const name of lifecycleScenarios.splice(0)) {
+    try {
+      removeScenarioRoot(name);
+    } catch {
+      // already gone
+    }
+  }
+});
+
+interface LifecycleSeed {
+  readonly scenarioId: string;
+  readonly databasePath: string;
+  readonly taskId: string;
+}
+
+/**
+ * Two identically-seeded ledgers, not one.
+ *
+ * Running both doors at one coordinate on one ledger would compare an execution
+ * against a replay and pass for the wrong reason. Seeding two gives the claim
+ * this suite actually wants: the two documents are equal field for field, with
+ * no exclusion list.
+ */
+function seedLifecycle(name: string, taskId: string): LifecycleSeed {
+  lifecycleScenarios.push(name);
+  const databasePath = scenarioLedgerPath(resolveScenarioRoot(name));
+  const invocation = deriveInvocation(
+    taskId,
+    1,
+    LIFECYCLE_SUBMITTED_AT,
+    canonicalSubmissionDigest({
+      taskId,
+      attempt: 1,
+      submittedAt: LIFECYCLE_SUBMITTED_AT,
+      initiativeId: LIFECYCLE_INITIATIVE,
+      route: LIFECYCLE_ROUTE,
+    }),
+  );
+  const ledger = openLedger(databasePath);
+  try {
+    for (let index = 0; index <= 4; index += 1) {
+      ledger.append(
+        buildEvent({
+          invocation,
+          step: planStep(index),
+          emittedBy: LIFECYCLE_EMITTED_BY,
+          initiativeId: LIFECYCLE_INITIATIVE,
+          plan: LIFECYCLE_PLAN,
+          route: LIFECYCLE_ROUTE,
+        }),
+      );
+    }
+  } finally {
+    ledger.close();
+  }
+  return { scenarioId: name, databasePath, taskId };
+}
+
+function lifecycleBearer(scenarioId: string): string {
+  const path = join(resolveScenarioRoot(scenarioId), "write.token");
+  writeFileSync(path, LIFECYCLE_BEARER + "\n", "utf8");
+  chmodSync(path, 0o600);
+  return path;
+}
+
+/** A driver that answers one scripted result, for both doors alike. */
+function lifecycleDriver(finalSequence: number) {
+  return ({ mode }: { mode: string }) =>
+    ({
+      mode,
+      cancel: () => Promise.resolve({ ok: true, finalSequence }),
+      reattach: () => Promise.resolve({ ok: true, finalSequence }),
+      signal: () => Promise.resolve({ ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "signal" }),
+      timer: () => Promise.resolve({ ok: false, refusal: "CAPABILITY_UNSUPPORTED", at: "timer" }),
+      advance: () => Promise.reject(new Error("the scripted driver walks no plan")),
+      status: () => Promise.reject(new Error("the scripted driver reports no status")),
+      reconcile: () => Promise.reject(new Error("the scripted driver reconciles nothing")),
+      capabilities: () => ({
+        contractVersion: "2.2.0",
+        mode,
+        verbs: {
+          CANCEL: "SUPPORTED",
+          REATTACH: "SUPPORTED",
+          SIGNAL: "SUPPORTED",
+          TIMER: "SUPPORTED",
+        },
+        properties: { SERIALIZED_PER_TASK: "SUPPORTED" },
+      }),
+    }) as never;
+}
+
+async function apiLifecycleDoor(
+  seed: LifecycleSeed,
+  finalSequence: number,
+  verb = "CANCEL",
+): Promise<Record<string, unknown>> {
+  const app = buildServer({
+    ledgerPath: seed.databasePath,
+    writeBearerPath: lifecycleBearer(seed.scenarioId),
+    scenarioId: seed.scenarioId,
+    makeDriver: lifecycleDriver(finalSequence),
+  });
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: lifecyclePath(seed.taskId),
+      headers: { authorization: "Bearer " + LIFECYCLE_BEARER },
+      payload: { verb, mode: "RESTATE", taskId: seed.taskId, attempt: 1 },
+    });
+    expect(response.statusCode).toBe(200);
+    return TaskLifecycleExecuteResponse.parse(response.json()) as unknown as Record<
+      string,
+      unknown
+    >;
+  } finally {
+    await app.close();
+  }
+}
+
+async function cliLifecycleDoor(
+  seed: LifecycleSeed,
+  finalSequence: number,
+  verb = "CANCEL",
+): Promise<Record<string, unknown>> {
+  const result = await runLifecycleVerb({
+    verb: verb as "CANCEL" | "ATTACH",
+    databasePath: seed.databasePath,
+    scenarioId: seed.scenarioId,
+    taskId: seed.taskId,
+    attempt: "1",
+    mode: "RESTATE",
+    makeDriver: lifecycleDriver(finalSequence),
+  });
+  return result.document as unknown as Record<string, unknown>;
+}
+
+function lifecycleRowCount(databasePath: string): number {
+  const ledger = openLedger(databasePath, { readOnly: true });
+  try {
+    return ledger.status().eventCount;
+  } finally {
+    ledger.close();
+  }
+}
+
+describe("the two lifecycle doors are equivalent on the write (V2 L3)", () => {
+  it("T2 answers the same seven-field document, with no field excluded", async () => {
+    const taskId = randomUUID();
+    const api = await apiLifecycleDoor(seedLifecycle("l3-parity-api", taskId), 5);
+    const cli = await cliLifecycleDoor(seedLifecycle("l3-parity-cli", taskId), 5);
+
+    // Every field. Neither door reads a clock, a row count or a random source
+    // for anything in this document, so an exclusion list here would be a
+    // difference being papered over rather than a volatility being handled.
+    expect(cli).toEqual(api);
+    expect(Object.keys(api).sort()).toEqual([
+      "attempt",
+      "finalSequence",
+      "mode",
+      "ok",
+      "refusal",
+      "taskId",
+      "verb",
+    ]);
+    expect(api["ok"]).toBe(true);
+    expect(api["refusal"]).toBeNull();
+  });
+
+  it("T2 agrees on the attach verb as well as the cancel", async () => {
+    const taskId = randomUUID();
+    const api = await apiLifecycleDoor(seedLifecycle("l3-parity-api-attach", taskId), 9, "ATTACH");
+    const cli = await cliLifecycleDoor(seedLifecycle("l3-parity-cli-attach", taskId), 9, "ATTACH");
+    expect(cli).toEqual(api);
+    expect(api["verb"]).toBe("ATTACH");
+  });
+
+  it("T3 appends exactly one row per coordinate, counted across both doors", async () => {
+    // The scripted driver appends nothing of its own, so what is counted here
+    // is what the DOORS append: neither may add a row on its own account, and a
+    // second call through the other door must not add one either.
+    const taskId = randomUUID();
+    const seed = seedLifecycle("l3-parity-once", taskId);
+    const before = lifecycleRowCount(seed.databasePath);
+
+    await apiLifecycleDoor(seed, 5);
+    const afterApi = lifecycleRowCount(seed.databasePath);
+    await cliLifecycleDoor(seed, 5);
+    const afterCli = lifecycleRowCount(seed.databasePath);
+
+    expect(afterApi).toBe(before);
+    expect(afterCli).toBe(before);
+  });
+
+  it("T3 leaves the ledger byte-identical when the API door is called twice", async () => {
+    const taskId = randomUUID();
+    const seed = seedLifecycle("l3-parity-twice", taskId);
+    const before = lifecycleRowCount(seed.databasePath);
+
+    const first = await apiLifecycleDoor(seed, 5);
+    const second = await apiLifecycleDoor(seed, 5);
+
+    expect(second).toEqual(first);
+    expect(lifecycleRowCount(seed.databasePath)).toBe(before);
   });
 });

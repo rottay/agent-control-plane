@@ -11,7 +11,8 @@
     "paths": {
       "@acp/cli/observation-rows": ["../../cli/dist/observation/index.d.ts"],
       "@acp/console/row-model": ["../../console/dist/app/api/client/index.d.ts"],
-      "@acp/cli/tool-call-door": ["../../cli/dist/tool-call/index.d.ts"]
+      "@acp/cli/tool-call-door": ["../../cli/dist/tool-call/index.d.ts"],
+      "@acp/cli/lifecycle-door": ["../../cli/dist/lifecycle/index.d.ts"]
     }
   },
   "include": ["**/*.ts", "../src/**/*.ts"],
@@ -19,6 +20,7 @@
     { "path": "../../../domains/accounts" }, { "path": "../../../kernel/protocol" },
     { "path": "../../../persistence/ledger" },
     { "path": "../../../domains/runtime" },
+    { "path": "../../../edges/durability" },
     { "path": "../../../edges/tools" },
     { "path": "../../cli" },
     { "path": "../../console" }

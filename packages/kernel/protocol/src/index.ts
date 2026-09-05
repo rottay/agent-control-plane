@@ -42,6 +42,7 @@ export {
   initiativeRoadmapPath,
   taskPath,
   toolCallsPath,
+  lifecyclePath,
   isWriteRoute,
   workerPath,
 } from "./routes/index.js";
@@ -130,6 +131,18 @@ export {
   ToolCallPageResponse,
   ToolCallRow,
   ToolCallsQuery,
+  // V2 L3: the lifecycle door's contract surface. Re-exported here for the
+  // same reason the tool-call schemas above are — this barrel is the package's
+  // only entry point, so a schema the gateway must parse against is reachable
+  // from nowhere else, and a door that redeclared it would be a second
+  // vocabulary for one contract.
+  API_LIFECYCLE_MODES,
+  API_LIFECYCLE_VERBS,
+  ApiLifecycleMode,
+  ApiLifecycleVerb,
+  TaskLifecycleExecuteResponse,
+  TaskLifecycleRequest,
+  TaskLifecycleResponse,
   AccountDto,
   AccountStatusDto,
   AccountsResponse,

@@ -65,7 +65,7 @@ systems*.
 | --- | --- |
 | Contracts | Frozen, strict, versioned, provider-neutral. Credential-shaped keys rejected structurally. |
 | Event ledger | Append-only SQLite (WAL), hash-chained, idempotent, with checksummed migrations and rebuildable read models. |
-| Observation plane | 17 routes over Fastify on loopback, 2 of them guarded writes. Server, CLI and console proven equal route by route. |
+| Observation plane | 20 routes over Fastify on loopback, 4 of them guarded writes. Server, CLI and console proven equal route by route. |
 | Durable execution | One lifecycle engine, two drivers, recovery proven against real process kills. |
 | Daemon | Supervised local process with a singleton lock, bounded logs and fail-closed port checks. |
 | Provider adapters | Claude, Kimi and Codex, behind a single spawn authority with a per-provider environment allowlist. |

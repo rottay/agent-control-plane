@@ -99,8 +99,26 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * changes shape, no history is reinterpreted and no migration is implied. What
  * changed is what a connection tells a client about itself, which is API
  * surface and not ledger surface. ADR 0028 carries the reasoning.
+ *
+ * `0.12.0` → `0.13.0` at V2 L3: the plane's fourth write door,
+ * `taskLifecycle`, and **two** new error codes with it —
+ * `CAPABILITY_UNSUPPORTED` and `SCENARIO_UNCONFIGURED`.
+ *
+ * Minor rather than major on this file's own rule: everything a `0.12.0`
+ * client knew is still true and still shaped the same way. Minor rather than
+ * patch for two independent reasons, either of which would be enough — the
+ * route surface **does** move here, unlike at `0.11.0` and `0.12.0`
+ * (`API_ROUTES` gains a route and `API_WRITE_ROUTES` goes from three to four),
+ * and a client can branch on an error code, so two codes a `0.12.0` reader has
+ * never seen are shapes it did not know about.
+ *
+ * `LEDGER_CONTRACT_VERSION` does not move. The lifecycle door appends only
+ * rows the cancellation settlement already produced at `0.12.0`: no event type,
+ * payload key or migration is added, and no history is reinterpreted. What
+ * changed is that the API can now ask for the settlement the CLI could already
+ * ask for. ADR 0031 carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.12.0" as const;
+export const API_CONTRACT_VERSION = "0.13.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

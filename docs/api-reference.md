@@ -55,6 +55,7 @@ cursors and redaction. This document is the readable form of the same table.
 | `accountActions` | GET, POST | `/api/v1/accounts/:accountId/actions` | `accountId` (bounded label) | none | `AccountActionsResponse` / `AccountActionWriteResponse` |
 | `eventStream` | GET | `/api/v1/events/stream` | — | `StreamQuery` | `StreamFrame` (Server-Sent Events) |
 | `taskToolCalls` | GET, POST | `/api/v1/tasks/:taskId/tool-calls` | `taskId` (uuid) | `ToolCallsQuery` | `ToolCallPageResponse` / `ToolCallExecuteResponse` |
+| `taskLifecycle` | GET, POST | `/api/v1/tasks/:taskId/lifecycle` | `taskId` (uuid) | none | `TaskLifecycleResponse` / `TaskLifecycleExecuteResponse` |
 
 ## The writes
 
@@ -68,9 +69,30 @@ the mechanism and its anchors.
 | `initiativeRoadmap` | `RoadmapVersionWriteRequest` | a roadmap version, content-addressed; the event carries the digest and the bytes live in the artifact store |
 | `accountActions` | `AccountActionRequest` | an account action, with the refusal vocabulary the accounts domain defines |
 | `taskToolCalls` | `ToolCallExecuteRequest` | one explicit tool call, and whatever it did: this is the only route that starts a child process, and a refused call is a `200` with a recorded row rather than an error |
+| `taskLifecycle` | `TaskLifecycleRequest` | one lifecycle verb — `CANCEL` or `ATTACH` — against an attempt already running; the rows it appends are the ones the cancellation settlement already produced, and `ATTACH` appends none |
 
 A write that is refused answers with a classified refusal rather than a bare
 failure: `AccountActionRefusalDto` names which rule refused it.
+
+**Every write route answers its read as well as its write, and the two halves
+are guarded differently.** The `POST` passes the bearer; the `GET` does not,
+because observation is free on this plane and the asymmetry is the design. On
+`taskLifecycle` this matters more than elsewhere: the read tells a caller which
+attempt is the latest and what state the task is in, so a caller can decide
+whether to cancel without issuing a write to find out.
+
+**`taskLifecycle` names no scenario, no ledger, no route and no commit policy.**
+Its request is a strict object of four fields — `verb`, `mode`, `taskId`,
+`attempt` — and every other value the operation needs is recovered from the
+ledger and verified against the digest the attempt's own events carry. The
+scenario is startup configuration (`--scenario`); a body that names one is a
+`400` on the unknown key, before any ledger is opened.
+
+**`ATTACH` blocks until the invocation completes, and no request timeout is
+imposed.** A caller that attaches to a long run holds the HTTP connection open
+for the length of that run. This is the honest consequence of the verb rather
+than an oversight: rejoining an invocation means waiting for it. A caller that
+cannot hold a connection should poll the `GET` instead.
 
 ## The one stream
 
@@ -104,7 +126,8 @@ before it applies anything from the new one.
 opened live"; `0` means "you asked for the whole log"; these are different
 answers and a client must be able to tell them apart. Because the frame is
 strict, a client pinned to an older `apiContractVersion` will reject it — see
-`API_CONTRACT_VERSION`, which moved to `0.12.0` with this field.
+`API_CONTRACT_VERSION`, which moved to `0.12.0` with this field and stands at
+`0.13.0` since the lifecycle route arrived.
 
 **The server does not detect a foreign resume, and cannot.** `Last-Event-ID` is
 a bare decimal sequence: only event frames carry an `id:`, and its value is that
@@ -181,6 +204,27 @@ the wrong thing with at least one of them.
 | `CONTRACT_VERSION_MISMATCH` | the request names a contract this build does not speak | upgrade one side; do not retry |
 | `WRITE_REFUSED` | the write lost to a concurrent one | worth retrying against a fresh head |
 | `CLAIM_HELD` | another operating-system process holds this durable tool coordinate | **read** the recorded call; do not retry |
+
+### `501` and `503`, and why a capability gap is neither an outage nor a defect
+
+| Code | Status | What happened | What the caller should do |
+| --- | --- | --- | --- |
+| `CAPABILITY_UNSUPPORTED` | `501` | the engine this attempt runs on does not serve that lifecycle verb | do not retry; nothing an operator does makes it succeed |
+| `SCENARIO_UNCONFIGURED` | `503` | this server was started without a scenario naming its ledger | an operator restarts it with `--scenario`; then retry |
+| `LEDGER_UNAVAILABLE` | `503` | the ledger could not be read, or the engine could not be reached | retry |
+
+The distinction between the first and the last two is the reason
+`CAPABILITY_UNSUPPORTED` exists as its own code. A `503` invites a retry loop,
+and a retry loop against a SQLite supervisor asked to cancel will spin forever
+on an answer that cannot move. `SCENARIO_UNCONFIGURED` is on the operator side
+like `TOOL_SERVERS_UNCONFIGURED`, and is reachable only **after** the bearer has
+passed, so an unauthenticated caller learns nothing about how the process was
+started.
+
+A driver's own refusal is not an error at all. `TASK_TERMINAL` and
+`POSTCONDITION_UNKNOWN` answer `200` with `ok: false` and the refusal named in
+the document, because the request became an operation; `4xx` and `5xx` are
+reserved for requests that never did.
 
 `CLAIM_HELD` is the one that most looks retryable and most is not. Nothing was
 wrong with the request and the plane is not overloaded — so it is neither a

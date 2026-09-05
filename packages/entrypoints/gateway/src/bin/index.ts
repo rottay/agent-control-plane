@@ -49,6 +49,7 @@ const USAGE = [
   "  --accounts-file <path>   optional; the owner accounts file",
   "  --write-bearer <path>    optional; the write bearer token file",
   "  --tool-servers <path>    optional; the admitted tool server document",
+  "  --scenario <id>          optional; the scenario this ledger belongs to",
   "  --port <n>               optional; 0 asks the OS for a free port",
   "",
   "  Every path must be absolute. The server binds " + SERVER_BIND_HOST + " only.",
@@ -59,6 +60,15 @@ export interface ParsedArgv {
   readonly accountsFilePath?: string | undefined;
   readonly writeBearerPath?: string | undefined;
   readonly toolServersPath?: string | undefined;
+  /**
+   * The scenario this server's ledger belongs to (V2 L3).
+   *
+   * A brand rather than a path: it is resolved through `resolveScenarioRoot`
+   * and then compared with the served ledger through `realpathSync`, so a
+   * symlink cannot make two names look different. Startup only -- a request may
+   * never name one.
+   */
+  readonly scenarioId?: string | undefined;
   readonly port?: number | undefined;
 }
 
@@ -74,6 +84,19 @@ const PATH_FLAGS = new Map<string, keyof ParsedArgv>([
 ]);
 
 /**
+ * The scenario brand's grammar.
+ *
+ * `--scenario` is deliberately **not** in `PATH_FLAGS`: it names a scenario the
+ * plane already owns, not a file the operator chose, so the absolute-path rule
+ * every other flag carries would reject the only values that can work. The
+ * resolution that matters happens in `loadScenario`, which resolves the brand
+ * to a root and compares that root's ledger with the served one through
+ * `realpathSync` -- the canonical check D2 asks for, applied where the ledger
+ * is known. Bounded here so an unbounded string never reaches a path builder.
+ */
+const SCENARIO_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
+
+/**
  * Parse an argv tail into options, or classify why not.
  *
  * Pure over its input and exported, so the whole decision is testable without
@@ -82,6 +105,7 @@ const PATH_FLAGS = new Map<string, keyof ParsedArgv>([
 export function parseArgv(argv: readonly string[]): ArgvOutcome {
   const values = new Map<keyof ParsedArgv, string>();
   let port: number | undefined;
+  let scenarioId: string | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
@@ -96,6 +120,20 @@ export function parseArgv(argv: readonly string[]): ArgvOutcome {
       const parsed = Number.parseInt(raw, 10);
       if (parsed > 65535) return { ok: false, reason: "PORT_OUT_OF_RANGE", exit: EXIT_USAGE };
       port = parsed;
+      continue;
+    }
+
+    if (flag === "--scenario") {
+      const raw = argv[index + 1];
+      index += 1;
+      if (raw === undefined || raw === "" || raw.startsWith("-")) {
+        return { ok: false, reason: "FLAG_WITHOUT_VALUE", exit: EXIT_USAGE };
+      }
+      // Named, never echoed, exactly like every refusal above.
+      if (!SCENARIO_ID.test(raw)) {
+        return { ok: false, reason: "SCENARIO_NOT_A_BRAND", exit: EXIT_USAGE };
+      }
+      scenarioId = raw;
       continue;
     }
 
@@ -132,6 +170,7 @@ export function parseArgv(argv: readonly string[]): ArgvOutcome {
       accountsFilePath: values.get("accountsFilePath"),
       writeBearerPath: values.get("writeBearerPath"),
       toolServersPath: values.get("toolServersPath"),
+      scenarioId,
       port,
     },
   };

@@ -78,6 +78,22 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   // capability this process was started without, which is exactly what
   // `LEDGER_UNAVAILABLE` means one line above.
   TOOL_SERVERS_UNCONFIGURED: 503,
+  // 503, beside the three above and for the same reason (V2 L3). The lifecycle
+  // door was started without a scenario naming this server's ledger, so it
+  // cannot address the evidence a verb would probe. Reachable only after the
+  // bearer has passed, exactly like `TOOL_SERVERS_UNCONFIGURED`: the caller is
+  // authorized and sent nothing wrong, and what is missing is a capability this
+  // process was started without.
+  SCENARIO_UNCONFIGURED: 503,
+  // 501, and deliberately NOT in the 503 family above (V2 L3, D1). Every code
+  // there describes something an operator can fix and a caller can usefully
+  // retry. This one describes an engine that will never serve the verb: a
+  // SQLite supervisor does not cancel a running invocation, no restart changes
+  // that, and a retry loop told 503 would spin forever on an answer that cannot
+  // move. 501 is the status for a request this server does not implement here,
+  // and the distinction is the whole reason the code exists rather than being
+  // folded into `LEDGER_UNAVAILABLE`.
+  CAPABILITY_UNSUPPORTED: 501,
   LEDGER_INTEGRITY: 500,
   INTERNAL: 500,
 };
