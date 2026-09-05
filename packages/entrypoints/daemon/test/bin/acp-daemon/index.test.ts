@@ -1319,3 +1319,189 @@ describe("F2b: every execution binding declares its own provider", () => {
     expect(message).not.toContain("execution.bindings[0].provider");
   });
 });
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4d — the door admits a decided switch, or refuses it by path
+// ---------------------------------------------------------------------------
+
+/**
+ * A switch reaches a walk exactly as its route does: as data an elector
+ * decided and this door admitted. What the door refuses is an authorization
+ * that disagrees with the config it arrived in — because the walk that plays
+ * it will not re-decide, so a disagreement admitted here becomes a switch
+ * played against the wrong account, or toward one nothing can reach.
+ */
+
+function twoBindingExecution(): DaemonExecutionConfig {
+  const base = validExecution();
+  const routed = base.bindings[0];
+  if (routed === undefined) throw new Error("the fixture declares no binding");
+  return {
+    ...base,
+    bindings: [routed, { ...routed, accountId: "acct-second", provider: "claude" }],
+  };
+}
+
+function authorizationDocument(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    trigger: "QUOTA_EXHAUSTED",
+    decidedForAccountId: "acct-config-contract",
+    decidedBy: "claude/opus/implementer/01",
+    decidedAt: SUBMITTED_AT,
+    decidedFromEventId: "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9b01",
+    observedSince: SUBMITTED_AT,
+    plan: {
+      kind: "SWITCH",
+      accountStatus: "EXHAUSTED",
+      taskState: "QUOTA_BLOCKED",
+      steps: ["MARK_TASK_QUOTA_BLOCKED"],
+      selectedAccountId: "acct-second",
+      events: [{ type: "ACCOUNT_SWITCH_STARTED", payload: { toAccountId: "acct-second" } }],
+    },
+    ...overrides,
+  };
+}
+
+function configWithAuthorization(
+  authorization: unknown,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const base = validConfig();
+  const execution = twoBindingExecution();
+  const taskId = base["taskId"] as string;
+  return {
+    ...base,
+    submissionDigest: canonicalSubmissionDigest({
+      taskId,
+      attempt: 1,
+      submittedAt: SUBMITTED_AT,
+      initiativeId: CONFIG_INITIATIVE_ID,
+      route: execution.route,
+    }),
+    execution: { ...execution, switchAuthorization: authorization },
+    ...overrides,
+  };
+}
+
+describe("F4d: the switch authorization is admitted at the same door as the route", () => {
+  it("admits a complete, agreeing authorization", () => {
+    const parsed = parseDaemonChildConfig(configWithAuthorization(authorizationDocument()));
+    expect(parsed.execution.switchAuthorization?.trigger).toBe("QUOTA_EXHAUSTED");
+    expect(parsed.execution.switchAuthorization?.plan.selectedAccountId).toBe("acct-second");
+  });
+
+  it("is optional, so every landed config still parses unchanged", () => {
+    // The property that keeps every existing fixture valid: absent is the
+    // ordinary case and is not a refusal.
+    const parsed = parseDaemonChildConfig(validConfig());
+    expect(parsed.execution.switchAuthorization).toBeUndefined();
+  });
+
+  it("refuses by path when the contract is not satisfied", () => {
+    for (const [omitted, fragment] of [
+      ["decidedAt", "switchAuthorization.decidedAt"],
+      ["decidedFromEventId", "switchAuthorization.decidedFromEventId"],
+      ["observedSince", "switchAuthorization.observedSince"],
+      ["decidedBy", "switchAuthorization.decidedBy"],
+    ] as const) {
+      const authorization = Object.fromEntries(
+        Object.entries(authorizationDocument()).filter(([key]) => key !== omitted),
+      );
+      expect({ omitted, refusal: refusalOf(configWithAuthorization(authorization)) }).toEqual({
+        omitted,
+        refusal: expect.stringContaining(fragment) as unknown as string,
+      });
+    }
+  });
+
+  it("refuses an authorization decided for another account than the route names", () => {
+    // The agreement rule, beside the routed entry's. A decision taken against
+    // another account is a decision a re-election overtook.
+    const refusal = refusalOf(
+      configWithAuthorization(authorizationDocument({ decidedForAccountId: "acct-elsewhere" })),
+    );
+    expect(refusal).toContain("decidedForAccountId");
+    expect(refusal).toContain("acct-config-contract");
+  });
+
+  it("refuses a SWITCH plan naming no destination, and will not fill one in", () => {
+    const authorization = authorizationDocument();
+    const plan = { ...(authorization["plan"] as Record<string, unknown>), selectedAccountId: null };
+    const refusal = refusalOf(configWithAuthorization({ ...authorization, plan }));
+    expect(refusal).toContain("selectedAccountId is null for a SWITCH plan");
+  });
+
+  it("refuses a destination no binding declares", () => {
+    const authorization = authorizationDocument();
+    const plan = {
+      ...(authorization["plan"] as Record<string, unknown>),
+      selectedAccountId: "acct-unbound",
+    };
+    const refusal = refusalOf(configWithAuthorization({ ...authorization, plan }));
+    expect(refusal).toContain("declares no entry in execution.bindings");
+  });
+
+  it("refuses a cross-provider destination, which is playable and never landable", () => {
+    const base = validConfig();
+    const routed = validExecution().bindings[0];
+    if (routed === undefined) throw new Error("the fixture declares no binding");
+    const execution: DaemonExecutionConfig = {
+      ...validExecution(),
+      bindings: [routed, { ...routed, accountId: "acct-second", provider: "codex" }],
+    };
+    const taskId = base["taskId"] as string;
+    const refusal = refusalOf({
+      ...base,
+      submissionDigest: canonicalSubmissionDigest({
+        taskId,
+        attempt: 1,
+        submittedAt: SUBMITTED_AT,
+        initiativeId: CONFIG_INITIATIVE_ID,
+        route: execution.route,
+      }),
+      execution: { ...execution, switchAuthorization: authorizationDocument() },
+    });
+    expect(refusal).toContain("cross-provider switch cannot be landed yet");
+  });
+
+  it("refuses a non-SWITCH plan that selects an account anyway", () => {
+    const authorization = authorizationDocument();
+    const plan = {
+      ...(authorization["plan"] as Record<string, unknown>),
+      kind: "DRAIN",
+      accountStatus: "DRAINING",
+      taskState: null,
+    };
+    const refusal = refusalOf(configWithAuthorization({ ...authorization, plan }));
+    expect(refusal).toContain("which selects no account");
+  });
+
+  it("N9: RESTATE refuses an authorization at the door rather than accepting it silently", () => {
+    // Silence would let an operator write an authorization, watch the daemon
+    // start, and believe a switch was armed in a mode that cannot play one.
+    const execution = twoBindingExecution();
+    const refusal = refusalOf(
+      walksConfig(
+        [
+          walkEntry({
+            execution: { ...execution, switchAuthorization: authorizationDocument() },
+          }),
+        ],
+        { mode: "RESTATE" },
+      ),
+    );
+    expect(refusal).toContain("switchAuthorization is admitted only under SQLITE_SUPERVISOR");
+  });
+
+  it("admits the same walk under SQLITE_SUPERVISOR", () => {
+    const execution = twoBindingExecution();
+    const parsed = parseDaemonChildConfig(
+      walksConfig([
+        walkEntry({ execution: { ...execution, switchAuthorization: authorizationDocument() } }),
+      ]),
+    );
+    expect(parsed.walks?.[0]?.spec.execution.switchAuthorization?.trigger).toBe("QUOTA_EXHAUSTED");
+  });
+});

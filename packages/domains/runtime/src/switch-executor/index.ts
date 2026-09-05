@@ -1,15 +1,17 @@
-import { CONTRACT_VERSION, ControlPlaneEvent } from "@acp/contracts";
+import { CONTRACT_VERSION, ControlPlaneEvent, PROVIDER_PRESSURES } from "@acp/contracts";
 import type {
   ControlPlaneEvent as ParsedControlPlaneEvent,
   ControlPlaneEventType,
   Lease,
+  SwitchAuthorization,
   TaskState,
 } from "@acp/contracts";
-import type { SwitchPlan, SwitchStep } from "@acp/accounts";
+import { foldPressureTrigger } from "@acp/accounts";
+import type { PressureObservation, SwitchPlan, SwitchStep } from "@acp/accounts";
 
 import type { DurableInvocation } from "../contracts/index.js";
 import { deriveEventCoordinate } from "../core/coordinates/index.js";
-import type { LedgerPort } from "../core/step-executor/index.js";
+import type { BeatContext, LedgerPort } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
 
 /**
@@ -326,4 +328,260 @@ function payloadFor(
     holder: lease.holder,
     cause: "ACCOUNT_SWITCH",
   };
+}
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4d — the walk plays a switch it did not decide
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a walk did not play a switch.
+ *
+ * Closed and ordered: `considerSwitch` refuses at the **first** failure and
+ * names it, so an operator reading a declined switch learns which condition
+ * was not met rather than that something was not met.
+ *
+ * Every member is a refusal to act on an authorization, never a judgement
+ * about routing. The walk holds no accounts file, no policy document and no
+ * `RoutingRequest`; it compares what it was admitted against what it recorded,
+ * and stops.
+ */
+export const SWITCH_DECLINE_REASONS = [
+  "NO_AUTHORIZATION",
+  "NO_PRESSURE",
+  "TRIGGER_MISMATCH",
+  "ACCOUNT_MISMATCH",
+  "NO_DESTINATION",
+  "DESTINATION_UNBOUND",
+  "DESTINATION_UNLANDABLE",
+] as const;
+
+export type SwitchDeclineReason = (typeof SWITCH_DECLINE_REASONS)[number];
+
+export type SwitchConsideration =
+  | { readonly kind: "SWITCHED"; readonly startedEventId: string }
+  | { readonly kind: "NOT_SWITCHED"; readonly reason: SwitchDeclineReason };
+
+/**
+ * The seam the supervisor asks before it settles a classified failure.
+ *
+ * A closure, not data, and the difference is the whole of the design. The
+ * authorization is a value an operator wrote and the door admitted, so it
+ * travels with the route and the bindings. The **lease** is a live grant this
+ * process holds and renews; serializing it would let a second holder claim the
+ * grant, which is exactly the shape the fence refuses. Only a closure can
+ * carry both, and it is the idiom this plane already uses three times.
+ */
+export interface SwitchPort {
+  consider(context: BeatContext): Promise<SwitchConsideration>;
+}
+
+/**
+ * The ledger surface `considerSwitch` needs to read this attempt's pressure.
+ *
+ * Structural, and **not** `LedgerPort`: that port is `append`, `getTask`,
+ * `getEventBySequence` and `getEventByIdempotencyKey` — it does not list, and
+ * widening it would put a read the step executor never makes into the
+ * executor's own port. The real `Ledger` satisfies this shape, and a fake can
+ * drive the paging without appending a hundred thousand rows.
+ */
+export interface SwitchPressureSource {
+  listEvents(query: {
+    readonly taskId?: string | undefined;
+    readonly type?: ControlPlaneEventType | undefined;
+    readonly afterSequence?: number | undefined;
+    readonly limit?: number | undefined;
+  }): {
+    readonly events: readonly { readonly sequence: number; readonly event: ParsedControlPlaneEvent }[];
+    readonly nextCursor: number | null;
+    readonly hasMore: boolean;
+  };
+}
+
+/** One binding the walk was admitted with, as the destination check reads it. */
+export interface SwitchDestination {
+  readonly accountId: string;
+  readonly provider: string;
+}
+
+export interface SwitchConsiderationInput {
+  /** The authorization the door admitted, or nothing at all. */
+  readonly authorization: SwitchAuthorization | undefined;
+  /** The lease this process holds. Never constructed here, never serialized. */
+  readonly lease: Lease;
+  /** The account and provider the route names. */
+  readonly routeAccountId: string;
+  readonly routeProvider: string;
+  /** The bindings the config admitted, each carrying its own provider (F2b). */
+  readonly destinations: readonly SwitchDestination[];
+  /** The ledger, as a listing surface. */
+  readonly source: SwitchPressureSource;
+}
+
+/** The ledger's own page ceiling, restated where the pager needs it. */
+const SWITCH_PRESSURE_PAGE_LIMIT = 1_000;
+
+/**
+ * The pressure rows this attempt recorded, as the fold reads them.
+ *
+ * **This attempt's own**, and the filter is four-fold rather than one: the
+ * task, the attempt, a transition id the pressure recorder minted, and a
+ * payload carrying a member of the observation vocabulary. The last is load
+ * bearing — a played plan appends its own `QUOTA_WARNING` row with payload
+ * `{accountId}` and no `pressure` key, and reading one of those back would let
+ * a switch justify the next switch.
+ *
+ * `readAccountPressure` is deliberately not reused: its `since` is strictly
+ * exclusive and every row of this walk carries `occurredAt = submittedAt`, so
+ * it would exclude exactly the rows this decision is about.
+ */
+function observedPressure(
+  source: SwitchPressureSource,
+  invocation: DurableInvocation,
+): readonly PressureObservation[] {
+  const kept: PressureObservation[] = [];
+  let afterSequence = 0;
+
+  for (;;) {
+    const page = source.listEvents({
+      taskId: invocation.taskId,
+      type: "QUOTA_WARNING",
+      afterSequence,
+      limit: SWITCH_PRESSURE_PAGE_LIMIT,
+    });
+
+    for (const record of page.events) {
+      const event = record.event;
+      if (event.attempt !== invocation.attempt) continue;
+      if (!event.transitionId.startsWith("pressure.")) continue;
+
+      const payload: unknown = event.payload;
+      if (typeof payload !== "object" || payload === null) continue;
+      const fields = payload as Record<string, unknown>;
+
+      const accountId = fields["accountId"];
+      const provider = fields["provider"];
+      const pressure = fields["pressure"];
+      if (typeof accountId !== "string" || accountId === "") continue;
+      if (typeof provider !== "string" || provider === "") continue;
+      if (typeof pressure !== "string") continue;
+      if (!(PROVIDER_PRESSURES as readonly string[]).includes(pressure)) continue;
+
+      kept.push({
+        accountId,
+        provider,
+        pressure: pressure as PressureObservation["pressure"],
+        occurredAt: event.occurredAt,
+        sequence: record.sequence,
+        eventId: event.eventId,
+      });
+    }
+
+    if (!page.hasMore || page.nextCursor === null) break;
+    afterSequence = page.nextCursor;
+  }
+
+  return kept;
+}
+
+/**
+ * Decide whether this walk plays the switch it was admitted, and play it.
+ *
+ * **It decides nothing about routing.** Everything it compares was decided
+ * elsewhere: the elector produced the plan, the door admitted it, the recorder
+ * wrote the pressure. What this function does is refuse to play an
+ * authorization that does not match what actually happened — and then hand the
+ * plan, verbatim, to the executor that has been waiting for a caller since it
+ * was written.
+ *
+ * Refusals are ordered from the cheapest to the most specific, and each is the
+ * first thing that was not true:
+ *
+ * • `NO_AUTHORIZATION` — nothing was admitted. The ordinary case.
+ * • `NO_PRESSURE` — this attempt recorded nothing a trigger can be folded from.
+ * • `TRIGGER_MISMATCH` — the trigger the elector decided for is not the one
+ *   this attempt actually observed. **The walk does not re-decide**; it declines.
+ * • `ACCOUNT_MISMATCH` — the authorization was decided against another account
+ *   than the one this route names, which means the route was re-elected after
+ *   the decision was taken.
+ * • `NO_DESTINATION` — a `SWITCH` plan naming no account to switch to. The walk
+ *   may not fill it in from the bindings: choosing is routing.
+ * • `DESTINATION_UNBOUND` — the named account has no admitted binding, so the
+ *   switch could never be landed by anyone.
+ * • `DESTINATION_UNLANDABLE` — the destination binding declares a different
+ *   provider than the route. Such a switch is playable and **never landable**:
+ *   the session that would land it is refused before any spawn, one switch per
+ *   attempt is structural, and no plan step leaves the blocked state. Starting
+ *   a switch known not to finish would park the attempt with cancellation as
+ *   the only exit. A temporary refusal, inherited from the provider-framing
+ *   decision, and lifted by the packet that lifts it.
+ */
+export function considerSwitch(
+  context: BeatContext,
+  input: SwitchConsiderationInput,
+): SwitchConsideration {
+  const { authorization, lease, routeAccountId, routeProvider, destinations, source } = input;
+
+  if (authorization === undefined) return decline("NO_AUTHORIZATION");
+
+  // This attempt's own rows, folded by the ONE fold that classifies a trigger.
+  // A second fold here would be a second vocabulary, and two drift.
+  const observed = observedPressure(source, context.invocation);
+  const folded = foldPressureTrigger(observed);
+  if (!folded.ok) return decline("NO_PRESSURE");
+  if (folded.trigger !== authorization.trigger) return decline("TRIGGER_MISMATCH");
+
+  if (authorization.decidedForAccountId !== routeAccountId) return decline("ACCOUNT_MISMATCH");
+
+  const plan = authorization.plan;
+  if (plan.kind === "SWITCH") {
+    const destinationId = plan.selectedAccountId;
+    if (destinationId === null) return decline("NO_DESTINATION");
+    const destination = destinations.find((entry) => entry.accountId === destinationId);
+    if (destination === undefined) return decline("DESTINATION_UNBOUND");
+    if (destination.provider !== routeProvider) return decline("DESTINATION_UNLANDABLE");
+  }
+
+  const task = context.ledger.getTask(context.invocation.taskId);
+  if (task === null) {
+    throw new SupervisorError(
+      "refusing to play a switch for a task the ledger has never seen",
+    );
+  }
+
+  // The plan, verbatim. Nothing here builds, repairs, completes or reorders it,
+  // and `causedBy` is the audit link the elector recorded — the cross-task
+  // cause that field was designed for, not the row that satisfied the match.
+  const played = executeSwitchPlan({
+    ledger: context.ledger,
+    invocation: context.invocation,
+    plan: {
+      kind: plan.kind,
+      accountStatus: plan.accountStatus,
+      taskState: plan.taskState,
+      steps: [...plan.steps],
+      selectedAccountId: plan.selectedAccountId,
+      events: plan.events.map((candidate) => ({
+        type: candidate.type,
+        payload: { ...candidate.payload },
+      })),
+    },
+    emittedBy: context.emittedBy,
+    lease,
+    taskState: task.currentState,
+    causedBy: authorization.decidedFromEventId,
+  });
+
+  const started = played.events.find((event) => event.type === "ACCOUNT_SWITCH_STARTED");
+  if (started === undefined) {
+    throw new SupervisorError(
+      "refusing to report a switch that appended no ACCOUNT_SWITCH_STARTED row;" +
+        " the destination authority a landing reads would not exist",
+    );
+  }
+  return { kind: "SWITCHED", startedEventId: started.eventId };
+}
+
+function decline(reason: SwitchDeclineReason): SwitchConsideration {
+  return { kind: "NOT_SWITCHED", reason };
 }

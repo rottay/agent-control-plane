@@ -29,6 +29,7 @@ import {
 } from "../../core/step-executor/index.js";
 import type { BeatContext, BeatResult, EffectPort } from "../../core/step-executor/index.js";
 import type { CheckpointPort } from "../../checkpoint/index.js";
+import type { SwitchPort } from "../../switch-executor/index.js";
 import { SupervisorError } from "../../errors/index.js";
 import { classifyFailure, settleFailure } from "../../failure/index.js";
 
@@ -101,6 +102,19 @@ export interface SqliteSupervisorOptions {
    * walks the shared prefix and never reaches a terminal.
    */
   readonly checkpoints?: CheckpointPort | undefined;
+  /**
+   * The seam that plays a switch this walk did not decide (V2-B1f/F4d).
+   *
+   * Optional, and **the optionality is the refusal**, exactly as `checkpoints`
+   * above documents it: a construction with no port truthfully cannot switch,
+   * which is true of both drill children and of every lifecycle verb. Nothing
+   * is defaulted, because a default would be a switch nobody authorized.
+   *
+   * It is asked once, in the catch below, before the failure settles — the one
+   * moment in a walk where the task is still `RUNNING`, its INTENT is durable,
+   * its pressure is recorded and nothing has settled yet.
+   */
+  readonly switchPort?: SwitchPort | undefined;
   /**
    * Deliberate interruption seam, for the kill/restart drills only.
    *
@@ -181,6 +195,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
   readonly #initiativeId: string;
   readonly #route: ResolvedRoute;
   readonly #checkpoints: CheckpointPort | undefined;
+  readonly #switchPort: SwitchPort | undefined;
   readonly #faultPoint: FaultPoint | undefined;
   readonly #onFault: (() => void) | undefined;
   /** True when this object was built for the lifecycle verbs and may not walk. */
@@ -201,6 +216,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
     this.#initiativeId = options.initiativeId;
     this.#route = options.route;
     this.#checkpoints = options.checkpoints;
+    this.#switchPort = options.switchPort;
     this.#faultPoint = options.__faultPoint;
     this.#onFault = options.__onFault;
   }
@@ -445,6 +461,26 @@ export class SqliteSupervisor implements OrchestrationDriver {
       // asks the same function the same question — so the two lanes cannot
       // answer it differently.
       const decision = classifyFailure(error);
+
+      // V2-B1f/F4d. The fork, and it is deliberately narrow.
+      //
+      // `classifyFailure` is **not** edited: it is the shared decision both
+      // drivers ask, so editing it would change Restate's verdicts too. What
+      // happens here instead is that a failure which *would* settle is offered
+      // to the switch port first. A port that played a switch means the walk
+      // must NOT settle — the attempt is now blocked awaiting a landing, and a
+      // terminal event would foreclose it. `SWITCHED` means *do not settle*;
+      // it never means *do not fail*, which is why the original error is still
+      // thrown below on every path.
+      //
+      // The gate on `decision.settle` is what keeps this out of the way of
+      // everything else: a plan failure, a postcondition unknown, a bound
+      // exhaustion — none of them reaches the port at all.
+      if (decision.settle && this.#switchPort !== undefined) {
+        const played = await this.#switchPort.consider(context);
+        if (played.kind === "SWITCHED") throw error;
+      }
+
       if (decision.settle) {
         await settleFailure(context, decision.reason);
       }

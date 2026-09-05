@@ -270,6 +270,16 @@ export type {
 } from "./usage/index.js";
 
 export { executeSwitchPlan } from "./switch-executor/index.js";
+// V2-B1f/F4d: the seam that plays a switch the walk did not decide. The
+// elector decides, the daemon's door admits, the walk plays — and no stratum
+// does two of those. `considerSwitch` refuses an authorization that does not
+// match what this attempt actually recorded; it never re-decides.
+export { considerSwitch } from "./switch-executor/index.js";
+export type {
+  SwitchConsideration,
+  SwitchDeclineReason,
+  SwitchPort,
+} from "./switch-executor/index.js";
 export type { SwitchExecutionInput, SwitchExecutionResult } from "./switch-executor/index.js";
 
 // V2-B2-4b: cancellation as a ledger settlement. The domain decides what the

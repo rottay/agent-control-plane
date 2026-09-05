@@ -15,6 +15,7 @@ import {
   Timestamp,
   Uuid,
 } from "../primitives/index.js";
+import { ControlPlaneEventType } from "../control-plane-event/index.js";
 import { WorkerIdentityString } from "../worker-identity/index.js";
 import type { HealthProbe } from "../worker-slot/index.js";
 
@@ -73,6 +74,104 @@ export const PROVIDER_PRESSURES = [
   "TRANSIENT",
   "UNCLASSIFIED",
 ] as const;
+
+/**
+ * The eleven steps a switch is made of, as the plan names them.
+ *
+ * Declared here because this package imports nothing from `@acp/*` and every
+ * other package imports it — the reason the provider list above gives. The
+ * decision module owns the same eleven as its own `SWITCH_STEPS`, and the two
+ * may never drift: the architecture fence is the only reader of both files and
+ * compares them by equality in both directions.
+ *
+ * A plan is always a prefix-free selection from this list **in this order** —
+ * never a reordering, never an invention.
+ */
+export const SWITCH_STEP_NAMES = [
+  "MARK_ACCOUNT_DRAINING",
+  "MARK_TASK_QUOTA_BLOCKED",
+  "FINISH_CURRENT_ATOMIC_STEP",
+  "WRITE_CHECKPOINT",
+  "RELEASE_LEASE",
+  "SELECT_ACCOUNT",
+  "READ_ONLY_HEALTH_PROBE",
+  "OPEN_FRESH_SESSION",
+  "REVALIDATE_AUTHORITY_AND_PRESTATE",
+  "REHYDRATE_CHECKPOINT",
+  "CONTINUE",
+] as const;
+
+/**
+ * A decided switch plan, as a value crossing a process boundary.
+ *
+ * The decision module's `SwitchPlan` shape, restated here as a schema so a
+ * plan an operator wrote into a configuration document can be **admitted**
+ * rather than trusted. It is deliberately not a re-declaration of the
+ * decision: nothing here decides anything, and the fence pins the two member
+ * sets equal so a plan that parses is a plan that module could have produced.
+ *
+ * Every collection is bounded, because this shape crosses a door an operator
+ * authors: eleven steps is the whole vocabulary, and a plan carrying more
+ * events than there are steps is not a plan.
+ */
+export const SwitchPlanShape = z.strictObject({
+  kind: z.enum(["DRAIN", "SWITCH", "ESCALATE"]),
+  accountStatus: z.enum(["DRAINING", "EXHAUSTED", "COOLDOWN", "AUTH_REQUIRED"]),
+  taskState: z.enum(["QUOTA_BLOCKED", "AUTH_REQUIRED"]).nullable(),
+  steps: z.array(z.enum(SWITCH_STEP_NAMES)).max(SWITCH_STEP_NAMES.length),
+  /** The account the router chose, or null when no selection was made. */
+  selectedAccountId: z.string().min(1).max(80).nullable(),
+  events: z
+    .array(
+      z.strictObject({
+        type: ControlPlaneEventType,
+        /** Bounded, string-valued, and never a transcript or a credential. */
+        payload: z.record(z.string().min(1).max(80), z.string().max(200)),
+      }),
+    )
+    .max(SWITCH_STEP_NAMES.length),
+});
+export type SwitchPlanShape = z.infer<typeof SwitchPlanShape>;
+
+/**
+ * A switch that has already been decided, admitted through the same door as
+ * the route it applies to.
+ *
+ * **The walk never decides.** Routing needs an accounts file, a policy
+ * document and a `RoutingRequest`, and the process that walks a task holds
+ * none of them and is forbidden all three. So a switch reaches a walk exactly
+ * as its route does — as data an elector decided, an operator wrote into the
+ * configuration document, and the daemon's own door admitted by path. This
+ * shape is what that door admits.
+ *
+ * The audit block is what makes the decision answerable after the fact: who
+ * decided, when, against which account, on which trigger, and from which
+ * recorded pressure row.
+ *
+ * **`decidedAt` is audit, not policy.** Nothing expires an authorization on
+ * it: how old a decision may be before it stops meaning anything is a routing
+ * judgement, and the walk may not make one. What it buys is that a row a
+ * reader finds later can be aged.
+ */
+export const SwitchAuthorization = z.strictObject({
+  /** The trigger this plan was decided for. Nothing else may fire it. */
+  trigger: z.enum(["QUOTA_EXHAUSTED", "QUOTA_WARNING"]),
+  /** The account it was decided against; it must equal the route's. */
+  decidedForAccountId: z.string().min(1).max(80),
+
+  /** The elector's own identity — a machine identity, never a person. */
+  decidedBy: WorkerIdentityString,
+  /** When the decision was taken. The elector's clock, never the walk's. */
+  decidedAt: Timestamp,
+  /** The recorded pressure row that prompted it, so the decision is traceable. */
+  decidedFromEventId: Uuid,
+  /** The instant the elector measured pressure from, so the window is legible. */
+  observedSince: Timestamp,
+
+  /** The decision module's output, verbatim and admitted. */
+  plan: SwitchPlanShape,
+});
+export type SwitchAuthorization = z.infer<typeof SwitchAuthorization>;
 
 /**
  * Why an execution boundary refused a route.

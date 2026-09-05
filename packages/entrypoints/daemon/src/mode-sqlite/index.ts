@@ -1,6 +1,6 @@
 import type { CommitPolicy, ResolvedRoute } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
-import type { CheckpointPort, DurableInvocation, EffectPort } from "@acp/runtime";
+import type { CheckpointPort, DurableInvocation, EffectPort, SwitchPort } from "@acp/runtime";
 import { SqliteSupervisor } from "@acp/runtime";
 
 import { ModeError } from "../errors/index.js";
@@ -65,6 +65,16 @@ export interface SqliteModeInput {
    * better answer than a mode inventing a port on the caller's behalf.
    */
   readonly checkpoints?: CheckpointPort | undefined;
+  /**
+   * The seam that plays an already-decided switch (V2-B1f/F4d).
+   *
+   * Passed through exactly as `checkpoints` is, and optional for its reason: a
+   * mode invoked without one truthfully cannot switch. The daemon composes it
+   * over the lease it holds, because a lease is a live grant this process owns
+   * and renews — it cannot be serialized into a config without becoming a
+   * second holder's claim on the same grant.
+   */
+  readonly switchPort?: SwitchPort | undefined;
 }
 
 export interface SqliteModeResult {
@@ -85,6 +95,7 @@ export async function runSqliteMode(input: SqliteModeInput): Promise<SqliteModeR
     initiativeId: input.initiativeId,
     route: input.route,
     checkpoints: input.checkpoints,
+    switchPort: input.switchPort,
   });
 
   const report = await supervisor.reconcile();

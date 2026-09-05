@@ -2,7 +2,12 @@ import { realpathSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CLI_SUBSCRIPTION_PROVIDERS, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
+import {
+  CLI_SUBSCRIPTION_PROVIDERS,
+  ResolvedRoute,
+  SwitchAuthorization,
+  TaskEnvelope,
+} from "@acp/contracts";
 import { canonicalSubmission, canonicalSubmissionDigest } from "@acp/runtime";
 
 import { ModeError } from "../errors/index.js";
@@ -129,6 +134,21 @@ export const MAX_EXECUTION_BINDINGS = 8;
 export interface DaemonExecutionConfig {
   readonly route: ResolvedRoute;
   readonly bindings: readonly DaemonExecutionBinding[];
+  /**
+   * A switch an elector already decided, admitted through this same door
+   * (V2-B1f/F4d).
+   *
+   * **Optional, and the optionality is what keeps every landed config
+   * valid.** A walk with no authorization behaves exactly as it did before
+   * this packet; nothing is defaulted, because a defaulted switch would be a
+   * switch nobody decided.
+   *
+   * It enters here rather than being computed anywhere, because routing needs
+   * an accounts file, a policy document and a `RoutingRequest`, and this
+   * process holds none of them and is forbidden all three. The route arrives
+   * the same way and for the same reason.
+   */
+  readonly switchAuthorization?: SwitchAuthorization | undefined;
 }
 
 /**
@@ -404,7 +424,88 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
     }
   }
 
-  return { route: route.data, bindings: Object.freeze(bindings) };
+  // V2-B1f/F4d. The switch, admitted exactly as the route above was: by the
+  // contract first, then by the agreements this config can check and the
+  // contract cannot.
+  //
+  // Absent is the ordinary case and is not a refusal. What is refused is an
+  // authorization that disagrees with the config it arrived in — because the
+  // walk that plays it will not re-decide, so a disagreement admitted here
+  // becomes a switch played against the wrong account or toward an account
+  // nothing can reach.
+  const authorizationRaw = value["switchAuthorization"];
+  let switchAuthorization: SwitchAuthorization | undefined;
+  if (authorizationRaw !== undefined) {
+    const parsed = SwitchAuthorization.safeParse(authorizationRaw);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const path = issue === undefined ? [] : issue.path.map((segment) => String(segment));
+      throw new ModeError(
+        ["execution.switchAuthorization", ...path].join(".") + " does not satisfy the contract",
+      );
+    }
+    const authorization = parsed.data;
+
+    // The agreement rule, beside the routed entry's above and for its reason:
+    // a decision taken against another account than the one this route names
+    // is a decision that was overtaken by a re-election.
+    if (authorization.decidedForAccountId !== route.data.accountId) {
+      throw new ModeError(
+        "execution.switchAuthorization.decidedForAccountId is " +
+          authorization.decidedForAccountId +
+          " but execution.route.accountId is " +
+          route.data.accountId +
+          "; an authorization must be decided for the account it applies to",
+      );
+    }
+
+    const plan = authorization.plan;
+    const destinationId = plan.selectedAccountId;
+    if (plan.kind === "SWITCH") {
+      if (destinationId === null) {
+        throw new ModeError(
+          "execution.switchAuthorization.plan.selectedAccountId is null for a SWITCH plan;" +
+            " the destination is the elector's to choose and this door will not fill it in",
+        );
+      }
+      const destination = bindings.find((entry) => entry.accountId === destinationId);
+      if (destination === undefined) {
+        throw new ModeError(
+          "execution.switchAuthorization.plan.selectedAccountId names " +
+            destinationId +
+            ", which declares no entry in execution.bindings",
+        );
+      }
+      // A destination on another provider is playable and never landable: the
+      // session that would land it is refused before any spawn. Refused here
+      // as well as in the walk, so an operator learns it at the door rather
+      // than from a parked attempt. Temporary, and lifted by the packet that
+      // lifts the provider-framing refusal.
+      if (destination.provider !== routed.provider) {
+        throw new ModeError(
+          "execution.switchAuthorization.plan.selectedAccountId names a " +
+            destination.provider +
+            " binding while the route runs on " +
+            routed.provider +
+            "; a cross-provider switch cannot be landed yet",
+        );
+      }
+    } else if (destinationId !== null) {
+      throw new ModeError(
+        "execution.switchAuthorization.plan.selectedAccountId is set for a " +
+          plan.kind +
+          " plan, which selects no account",
+      );
+    }
+
+    switchAuthorization = authorization;
+  }
+
+  return {
+    route: route.data,
+    bindings: Object.freeze(bindings),
+    ...(switchAuthorization === undefined ? {} : { switchAuthorization }),
+  };
 }
 
 /** Validate the child's configuration. Nothing is read from the environment. */
@@ -478,6 +579,16 @@ function parseWalks(raw: unknown, mode: DaemonMode): readonly ScheduledWalk[] {
     }
 
     const execution = parseExecutionSection(value["execution"]);
+    // V2-B1f/F4d. A switch is played by the SQLite supervisor's own catch, and
+    // the Restate lane has no such fork. Silence would let an operator write an
+    // authorization, see the daemon start, and believe a switch was armed in a
+    // mode that cannot play one — so the deferral is named rather than implied.
+    if (mode === "RESTATE" && execution.switchAuthorization !== undefined) {
+      throw new ModeError(
+        at + ".execution.switchAuthorization is admitted only under SQLITE_SUPERVISOR;" +
+          " config.mode RESTATE does not play switch authorizations",
+      );
+    }
     // The route's own entry is the packet's worktree; every other entry has
     // already been refused unless it declares the same one (V2-B1f/F2).
     if (!isAbsolute(bindingForRoute(execution).workdir)) {
@@ -615,6 +726,14 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   // Required, never defaulted (V2-B1b, D4/D5): a config that does not say
   // which route it executes, and through which admitted binding, gets no daemon.
   const execution = parseExecutionSection(value["execution"]);
+
+  // The same deferral, on the singular form of the config.
+  if (mode === "RESTATE" && execution.switchAuthorization !== undefined) {
+    throw new ModeError(
+      "config.mode RESTATE does not play switch authorizations;" +
+        " execution.switchAuthorization is admitted only under SQLITE_SUPERVISOR",
+    );
+  }
 
   // The door (V2-B1c, stage 2). The declared digest must be exactly the digest
   // of the submission this config describes, route included.

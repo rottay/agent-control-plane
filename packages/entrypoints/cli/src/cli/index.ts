@@ -183,6 +183,7 @@ const OPTIONS = {
   policy: { type: "string" },
   account: { type: "string" },
   model: { type: "string" },
+  "emit-authorization": { type: "boolean" },
   "estimated-tokens": { type: "string" },
   "reserve-tokens": { type: "string" },
   "duration-seconds": { type: "string" },
@@ -317,6 +318,8 @@ const COMMANDS: readonly CommandSpec[] = [
       "policy",
       "account",
       "model",
+      "config",
+      "emit-authorization",
       "estimated-tokens",
       "reserve-tokens",
       "duration-seconds",
@@ -1388,6 +1391,7 @@ function runSwitchDecision(values: ParsedValues, io: CliIo, ledger: Ledger): Swi
    * where from". Required, never defaulted, for the reason a budget is never
    * guessed: the switch is about a particular piece of work.
    */
+  const emitAuthorization = values["emit-authorization"] === true;
   const model = stringOption(values, "model");
   if (model === undefined || model === "") {
     throw failure(
@@ -1501,6 +1505,89 @@ function runSwitchDecision(values: ParsedValues, io: CliIo, ledger: Ledger): Swi
       plan: outcome.plan,
     };
   });
+
+  // V2-B1f/F4d. The authorization the walk will play, emitted as the **whole**
+  // configuration document.
+  //
+  // A fragment an operator merges by hand would be a second door: nothing
+  // would stop them pairing one packet's plan with another packet's route, and
+  // the daemon would admit the pair because each half parses. Printing the
+  // entire document with `execution.switchAuthorization` inside it — exactly as
+  // the re-election verb prints the whole re-elected document — means the door
+  // never sees a half.
+  //
+  // `decidedBy` is the config's own `emittedBy`, so the identity recorded as
+  // the decider is the identity the walk's events will carry. `decidedAt` is
+  // this verb's single clock read, threaded like every other instant here.
+  if (emitAuthorization) {
+    const config = readJsonDocument(
+      absolutePathOption(values, "config"),
+      "config document",
+    );
+    const execution = config["execution"];
+    if (typeof execution !== "object" || execution === null || Array.isArray(execution)) {
+      throw failure(
+        EXIT_USAGE,
+        "BAD_REQUEST",
+        "the config declares no execution",
+        "config.execution",
+      );
+    }
+    const executionRecord = execution as Record<string, unknown>;
+    const configRoute = executionRecord["route"];
+    if (typeof configRoute !== "object" || configRoute === null || Array.isArray(configRoute)) {
+      throw failure(
+        EXIT_USAGE,
+        "BAD_REQUEST",
+        "the config declares no execution route",
+        "config.execution.route",
+      );
+    }
+    const configAccountId = (configRoute as Record<string, unknown>)["accountId"];
+    const decided = accounts.find((entry) => entry.accountId === configAccountId);
+    if (decided === undefined) {
+      throw failure(
+        EXIT_USAGE,
+        "BAD_REQUEST",
+        "no decision was taken for the account the config's route names",
+        "config.execution.route.accountId",
+      );
+    }
+    // Nothing is emitted for an account the policy did not decide to move. A
+    // document carrying an authorization the elector never issued would be the
+    // forged decision this whole boundary exists to prevent.
+    const undecided = decided.reason ?? decided.decision;
+    const plan = decided.plan;
+    const trigger = decided.trigger;
+    const causedBy = decided.causedBy;
+    if (plan === undefined || trigger === undefined || causedBy === undefined) {
+      throw failure(
+        EXIT_USAGE,
+        "BAD_REQUEST",
+        "no switch was decided for the account the config's route names",
+        undecided,
+      );
+    }
+
+    return {
+      document: {
+        ...config,
+        execution: {
+          ...executionRecord,
+          switchAuthorization: {
+            trigger,
+            decidedForAccountId: decided.accountId,
+            decidedBy: requiredString(config, "emittedBy"),
+            decidedAt: now,
+            decidedFromEventId: causedBy,
+            observedSince: decided.since,
+            plan,
+          },
+        },
+      },
+      exitCode: EXIT_OK,
+    };
+  }
 
   return { document: { now, accounts }, exitCode: EXIT_OK };
 }

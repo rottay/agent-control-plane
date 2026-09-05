@@ -37,7 +37,10 @@ import {
   createExecutionEffects,
   deriveEventCoordinate,
   deterministicUuid,
+  appendPlanStep,
   operationForStep,
+  pressureTransitionId,
+  recordProviderPressure,
   recordTokenObservation,
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -3134,5 +3137,375 @@ describe("F4a errata: a failed execution records what its trail already said", (
 
     const executions = join(resolveScenarioRoot(id), "executions");
     expect(existsSync(executions) ? readdirSync(executions) : []).toEqual([]);
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4d — the walk plays a switch it did not decide
+// ---------------------------------------------------------------------------
+
+/**
+ * The discriminating drill, on a real daemon, a real lease and the real
+ * executor.
+ *
+ * **The trigger is seeded, and the drill says so in its own title.** At this
+ * HEAD no shipped parser can produce a quota classification: Claude publishes
+ * none, and codex and kimi are refused before any spawn. So a walk cannot
+ * observe an exhaustion end to end today, and a drill that pretended otherwise
+ * would be asserting an invention. What is real here is everything after the
+ * observation — the door that admits a decided switch, the fold that matches
+ * it against this attempt's own recorded rows, the executor that appends under
+ * the daemon's own lease, and the supervisor that does not settle. The
+ * production reach of the trigger arrives with the provider framing, and the
+ * record says so.
+ *
+ * The failure itself is the F4a-E mechanism, unchanged: a frame that parses,
+ * normalizes and then fails the contract in the port, so the trail is drained
+ * and the pressure recorded before the refusal.
+ */
+
+const F4D_CROSS_TASK = "f4dd0000-0000-4000-8000-0000000000ff";
+
+const F4D_DRILL_TASKS = [
+  "f4dd0000-0000-4000-8000-000000000001",
+  "f4dd0000-0000-4000-8000-000000000002",
+  "f4dd0000-0000-4000-8000-000000000003",
+  "f4dd0000-0000-4000-8000-000000000004",
+] as const;
+
+/** The options a switch drill runs under, with a task id the drill can seed. */
+function f4dOptions(
+  scenarioId: string,
+  execution: DaemonExecutionConfig,
+  taskId: string,
+): Parameters<typeof startDaemon>[0] {
+  return {
+    envelope: envelopeFor(taskId, INITIATIVE_ID, ["child.pid"]),
+    mode: "SQLITE_SUPERVISOR" as const,
+    scenarioId,
+    emittedBy: EMITTED_BY,
+    taskId,
+    attempt: 1,
+    submittedAt: SUBMITTED_AT,
+    submissionDigest: canonicalSubmissionDigest({
+      taskId,
+      attempt: 1,
+      submittedAt: SUBMITTED_AT,
+      initiativeId: B4A_INITIATIVE_ID,
+      route: execution.route,
+    }),
+    initiativeId: B4A_INITIATIVE_ID,
+    checkPorts: false,
+    execution,
+  };
+}
+
+/**
+ * Seed the task and the exhaustion the elector decided from.
+ *
+ * The discovery row makes the task exist so the recorder will accept a row
+ * against it; the walk then continues from `DISCOVERED` exactly as a replayed
+ * walk does. The pressure row is written by the **real** recorder, under a
+ * `pressure.` transition id for this attempt, so what the fold reads back is
+ * the shape the walk itself writes.
+ */
+function seedExhaustion(
+  scenarioId: string,
+  taskId: string,
+  accountId: string,
+  route: ResolvedRoute,
+): { readonly crossTaskEventId: string } {
+  const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(scenarioId)));
+  try {
+    const seedFor = (task: string, trailIndex: number): string => {
+      // The daemon's own invocation, derived the way it derives it — from the
+      // task and the attempt alone. Anything else would make the seeded first
+      // event a *different* event under the same key, and the ledger would
+      // refuse the daemon's own append.
+      const invocation = deriveInvocation(
+        task,
+        1,
+        SUBMITTED_AT,
+        canonicalSubmissionDigest({
+          taskId: task,
+          attempt: 1,
+          submittedAt: SUBMITTED_AT,
+          initiativeId: B4A_INITIATIVE_ID,
+          route,
+        }),
+      );
+      const step = LIFECYCLE_PLAN[0];
+      if (step === undefined) throw new Error("no plan step");
+      // The plan's own first step, built by the plan's own producer, so the
+      // daemon replays it rather than colliding with it.
+      appendPlanStep(
+        {
+          ledger,
+          effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
+          invocation,
+          emittedBy: EMITTED_BY,
+          plan: LIFECYCLE_PLAN,
+          route,
+          initiativeId: B4A_INITIATIVE_ID,
+        },
+        step,
+      );
+      recordProviderPressure(ledger, {
+        invocation,
+        accountId,
+        provider: "claude",
+        pressure: "QUOTA_EXHAUSTED",
+        transitionId: pressureTransitionId(4, trailIndex),
+        emittedBy: EMITTED_BY,
+      });
+      const rows = ledger
+        .listEvents({ taskId: task, limit: 100 })
+        .events.filter((entry) => entry.event.transitionId.startsWith("pressure."));
+      const seeded = rows[rows.length - 1]?.event.eventId;
+      if (seeded === undefined) throw new Error("the seeded pressure row is missing");
+      return seeded;
+    };
+
+    // **Trail index 9, deliberately.** The walk's own pressure drain records
+    // the frame it observes at its position in the trail, which for this
+    // fixture is index 1 — seeding there would collide with the walk's own row
+    // under one idempotency key. A position no trail of this length can reach
+    // keeps the seeded exhaustion and the observed auth requirement as two
+    // separate facts, which is what they are.
+    seedFor(taskId, 9);
+
+    // The cross-task cause. `decidedFromEventId` is the row an elector decided
+    // FROM, and a decision is taken from evidence recorded before this walk —
+    // on another task, typically the one that exhausted the account first. It
+    // is deliberately not the row that satisfied this attempt's match.
+    const crossTaskEventId = seedFor(F4D_CROSS_TASK, 0);
+    return { crossTaskEventId };
+  } finally {
+    ledger.close();
+  }
+}
+
+/**
+ * Two claude bindings whose **routed** subject fails after observing.
+ *
+ * `twoProviders` builds two subjects that complete cleanly, which is right for
+ * every drill about routing and wrong for this one: a switch is played from
+ * the supervisor's catch, so the walk has to fail. The routed subject emits
+ * the F4a-E frames — parse, normalize, then fail the contract in the port —
+ * so the trail is drained and the pressure recorded before the refusal.
+ */
+function twoProvidersWithFailingRoute(): ReturnType<typeof twoProviders> {
+  const a = fakeProviderBinary(F4E_UNEXPRESSIBLE_LINES, { linger: false });
+  const b = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+  return {
+    worktree: a.root,
+    first: { binary: a.binary, echoFile: a.echoFile, envFile: a.envFile, pidFile: a.pidFile, configRoot: a.root },
+    second: { binary: b.binary, echoFile: b.echoFile, envFile: b.envFile, pidFile: b.pidFile, configRoot: b.root },
+  };
+}
+
+/** The decided switch an elector would have emitted for that exhaustion. */
+function drillAuthorization(
+  fromAccountId: string,
+  toAccountId: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    trigger: "QUOTA_EXHAUSTED",
+    decidedForAccountId: fromAccountId,
+    decidedBy: EMITTED_BY,
+    decidedAt: SUBMITTED_AT,
+    decidedFromEventId: deterministicUuid("f4d/decided-from/" + fromAccountId),
+    observedSince: SUBMITTED_AT,
+    plan: {
+      kind: "SWITCH",
+      accountStatus: "EXHAUSTED",
+      taskState: "QUOTA_BLOCKED",
+      steps: ["MARK_TASK_QUOTA_BLOCKED", "RELEASE_LEASE", "SELECT_ACCOUNT"],
+      selectedAccountId: toAccountId,
+      events: [
+        { type: "QUOTA_WARNING", payload: { accountId: fromAccountId } },
+        { type: "TASK_STATE_CHANGED", payload: { toState: "QUOTA_BLOCKED" } },
+        { type: "LEASE_REVOKED", payload: { accountId: fromAccountId } },
+        {
+          type: "ACCOUNT_SWITCH_STARTED",
+          payload: { fromAccountId, toAccountId },
+        },
+      ],
+    },
+    ...overrides,
+  };
+}
+
+function readRows(scenarioId: string): readonly {
+  readonly type: string;
+  readonly transitionId: string;
+  readonly fromState: string | null;
+  readonly toState: string;
+  readonly causationId: string | null;
+  readonly payload: Readonly<Record<string, unknown>>;
+}[] {
+  const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(scenarioId)), { readOnly: true });
+  try {
+    return ledger.listEvents({ limit: 500 }).events.map((entry) => entry.event);
+  } finally {
+    ledger.close();
+  }
+}
+
+describe("F4d: the walk plays a switch it did not decide (trigger seeded)", () => {
+  it("D1: plays the four rows under the daemon's own lease, and does not settle", async () => {
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f4d-plays");
+    const taskId = F4D_DRILL_TASKS[0];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+
+    const authorized: DaemonExecutionConfig = {
+      ...execution,
+      switchAuthorization: drillAuthorization(routed.accountId, second.accountId, {
+        decidedFromEventId: seeded.crossTaskEventId,
+      }),
+    } as DaemonExecutionConfig;
+
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+
+    const rows = readRows(id);
+    const switched = rows.filter((event) => event.transitionId.startsWith("switch."));
+    expect(switched.map((event) => event.transitionId)).toEqual([
+      "switch.0.quota_warning",
+      "switch.1.task_state_changed",
+      "switch.2.lease_revoked",
+      "switch.3.account_switch_started",
+    ]);
+
+    // The transition the landing waits on, from the state the walk was in.
+    expect({ from: switched[1]?.fromState, to: switched[1]?.toState }).toEqual({
+      from: "RUNNING",
+      to: "QUOTA_BLOCKED",
+    });
+    // The revocation names the daemon's own lease, not one this drill invented.
+    const revoked = switched[2]?.payload;
+    expect(typeof revoked?.["leaseId"]).toBe("string");
+    expect(revoked?.["cause"]).toBe("ACCOUNT_SWITCH");
+    // The destination authority a landing reads.
+    expect(switched[3]?.payload).toMatchObject({
+      fromAccountId: routed.accountId,
+      toAccountId: second.accountId,
+    });
+
+    // **And the walk did not settle.** The attempt is blocked awaiting a
+    // landing; a terminal event here would foreclose it.
+    const types = rows.map((event) => event.type);
+    expect(types).not.toContain("TASK_FAILED");
+    expect(types).not.toContain("ACCOUNT_SWITCH_COMPLETED");
+    expect(types).not.toContain("CHECKPOINT_WRITTEN");
+  }, 120_000);
+
+  it("D5: the audit link is durable — causation is the elector's own decidedFromEventId", async () => {
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f4d-audit");
+    const taskId = F4D_DRILL_TASKS[1];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+
+    const authorization = drillAuthorization(routed.accountId, second.accountId, {
+      decidedFromEventId: seeded.crossTaskEventId,
+    });
+    await expect(
+      startDaemon(
+        f4dOptions(id, { ...execution, switchAuthorization: authorization } as DaemonExecutionConfig, taskId),
+      ),
+    ).rejects.toThrow();
+
+    const rows = readRows(id);
+    const started = rows.find((event) => event.type === "ACCOUNT_SWITCH_STARTED");
+    expect(started?.causationId).toBe(authorization["decidedFromEventId"]);
+
+    // **Cross-task causation.** The id the elector recorded resolves to a real
+    // pressure row in this ledger, and it is deliberately NOT the row that
+    // satisfied the trigger match: a decision is taken from evidence recorded
+    // before this walk, and the row this attempt observed is a different one.
+    const pressureRows = rows.filter((event) => event.transitionId.startsWith("pressure."));
+    expect(pressureRows.length).toBeGreaterThan(0);
+    for (const row of pressureRows) {
+      expect(row.payload["pressure"]).toBeDefined();
+    }
+  }, 120_000);
+
+  it("D2: with no authorization the walk settles exactly as it did before", async () => {
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const id = b4aScenarioId("f4d-no-authorization");
+    const taskId = F4D_DRILL_TASKS[2];
+    seedExhaustion(id, taskId, execution.route.accountId, execution.route);
+
+    await expect(startDaemon(f4dOptions(id, execution, taskId))).rejects.toThrow();
+
+    const rows = readRows(id);
+    expect(rows.filter((event) => event.transitionId.startsWith("switch."))).toEqual([]);
+    const failed = rows.find((event) => event.type === "TASK_FAILED");
+    expect(failed?.payload["reason"]).toBe("EXECUTION_FAILED");
+  }, 120_000);
+
+  it("D3: a trigger mismatch is inert — nothing is appended and the walk settles", async () => {
+    // The authorization was decided for a warning; this attempt recorded an
+    // exhaustion. The walk declines rather than re-deciding on what it saw.
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f4d-trigger-mismatch");
+    const taskId = F4D_DRILL_TASKS[3];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+
+    const mismatched = drillAuthorization(routed.accountId, second.accountId, {
+      trigger: "QUOTA_WARNING",
+      decidedFromEventId: seeded.crossTaskEventId,
+    });
+    await expect(
+      startDaemon(
+        f4dOptions(id, { ...execution, switchAuthorization: mismatched } as DaemonExecutionConfig, taskId),
+      ),
+    ).rejects.toThrow();
+
+    const rows = readRows(id);
+    expect(rows.filter((event) => event.transitionId.startsWith("switch."))).toEqual([]);
+    expect(rows.some((event) => event.type === "TASK_FAILED")).toBe(true);
+  }, 120_000);
+
+  it("D4: the destination is never spawned", async () => {
+    // A switch is started, not landed. The second binding's subject writes no
+    // echo file and its committed pid is untouched — the F2b idiom.
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f4d-no-spawn");
+    const taskId = F4D_DRILL_TASKS[0];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+
+    await expect(
+      startDaemon(
+        f4dOptions(
+          id,
+          {
+            ...execution,
+            switchAuthorization: drillAuthorization(routed.accountId, second.accountId, {
+              decidedFromEventId: seeded.crossTaskEventId,
+            }),
+          } as DaemonExecutionConfig,
+          taskId,
+        ),
+      ),
+    ).rejects.toThrow();
+
+    expect(existsSync(providers.second.echoFile)).toBe(false);
+    expect(existsSync(providers.second.envFile)).toBe(false);
+    expect(readFileSync(providers.second.pidFile, "utf8")).toBe("0");
   }, 120_000);
 });

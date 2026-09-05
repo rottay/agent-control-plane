@@ -1330,6 +1330,210 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("refuses on something other than the execution outcome");
   });
 
+  it("refuses an admitted plan that drifts from the decided plan (L-F4D-1)", async () => {
+    // V2-B1f/F4d's first law. A plan an operator writes into a configuration
+    // document is admitted by a schema in the contracts; the plan an elector
+    // produces is a value in the decision module. Neither package may import
+    // the other's shape, so the fence is the only reader of both — and if the
+    // two drift, a plan that parses at the door is one the decision could
+    // never have made.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+      [
+        'export const SWITCH_STEP_NAMES = ["MARK_ACCOUNT_DRAINING", "CONTINUE"] as const;',
+        "export const SwitchPlanShape = z.strictObject({",
+        '  kind: z.enum(["DRAIN", "SWITCH"]),',
+        '  accountStatus: z.enum(["DRAINING", "EXHAUSTED"]),',
+        '  taskState: z.enum(["QUOTA_BLOCKED"]).nullable(),',
+        "});",
+        "",
+      ].join("\n"),
+    );
+    write(
+      root,
+      "packages/domains/accounts/src/switching/index.ts",
+      [
+        'export const SWITCH_STEPS = Object.freeze(["MARK_ACCOUNT_DRAINING", "CONTINUE"]);',
+        "export interface SwitchPlan {",
+        '  readonly kind: "DRAIN" | "SWITCH" | "ESCALATE";',
+        '  readonly taskState: "QUOTA_BLOCKED" | null;',
+        "}",
+        'export type SwitchAccountStatus = "DRAINING" | "EXHAUSTED";',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the admitted and decided plan disagree on the plan kinds");
+  });
+
+  it("leaves an admitted plan that matches the decided one alone", async () => {
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+      [
+        'export const SWITCH_STEP_NAMES = ["MARK_ACCOUNT_DRAINING", "CONTINUE"] as const;',
+        "export const SwitchPlanShape = z.strictObject({",
+        '  kind: z.enum(["DRAIN", "SWITCH", "ESCALATE"]),',
+        '  accountStatus: z.enum(["DRAINING", "EXHAUSTED"]),',
+        '  taskState: z.enum(["QUOTA_BLOCKED", "AUTH_REQUIRED"]).nullable(),',
+        "});",
+        "",
+      ].join("\n"),
+    );
+    write(
+      root,
+      "packages/domains/accounts/src/switching/index.ts",
+      [
+        'export const SWITCH_STEPS = Object.freeze(["CONTINUE", "MARK_ACCOUNT_DRAINING"]);',
+        "export interface SwitchPlan {",
+        '  readonly kind: "ESCALATE" | "DRAIN" | "SWITCH";',
+        '  readonly taskState: "AUTH_REQUIRED" | "QUOTA_BLOCKED" | null;',
+        "}",
+        'export type SwitchAccountStatus = "EXHAUSTED" | "DRAINING";',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    // Compared as SETS, so a different declaration order is lawful — what the
+    // law forbids is a different membership.
+    expect(output).not.toContain("the admitted and decided plan disagree");
+  });
+
+  it("refuses a runtime source that names an elector symbol (L-F4D-2)", async () => {
+    // The ruling made mechanical. `L-B7S` closes the daemon's stratum against
+    // the four elector symbols; this closes the one below it, so the shape
+    // where a walk resolves its own route cannot return under a symbol that
+    // list has not learned.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/probe/index.ts",
+      "export const pick = (request) => decideSwitch(request);\n",
+    );
+    write(
+      root,
+      "packages/domains/runtime/src/submission/index.ts",
+      'import { resolveRoute } from "@acp/accounts";\nexport const compose = (r) => resolveRoute(r);\n',
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("names decideSwitch");
+    expect(output).toContain("packages/domains/runtime/src/probe/index.ts");
+  });
+
+  it("keeps the one exemption honest: submission may name resolveRoute, and must", async () => {
+    // Two halves. The exemption is lawful — ADR 0018 declares that home — and
+    // it may not outlive its reason: a submission module that stopped naming
+    // `resolveRoute` would be an exemption protecting nothing.
+    const lawful = syntheticTree();
+    write(
+      lawful,
+      "packages/domains/runtime/src/submission/index.ts",
+      'import { resolveRoute } from "@acp/accounts";\nexport const compose = (r) => resolveRoute(r);\n',
+    );
+    commitAll(lawful);
+
+    const clean = await runFenceAgainst(lawful);
+    expect(clean.output).not.toContain("names resolveRoute");
+    expect(clean.output).not.toContain("has outlived its");
+
+    const hollow = syntheticTree();
+    write(
+      hollow,
+      "packages/domains/runtime/src/submission/index.ts",
+      "export const compose = (r) => r;\n",
+    );
+    commitAll(hollow);
+
+    const stale = await runFenceAgainst(hollow);
+    expect(stale.status).not.toBe(0);
+    expect(stale.output).toContain("no longer names resolveRoute");
+  });
+
+  it("refuses a switch port composed without the lease this process holds (L-F4D-3)", async () => {
+    // A switch appended without the lease it revokes would record an
+    // enrichment naming nothing, and a lease invented at this seam rather than
+    // taken from the arbiter would forge enforcement state.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/daemon/src/index.ts",
+      [
+        "export const walk = async () => {",
+        "  const result = await runSqliteMode({",
+        "    ledger: openedLedger,",
+        "    switchPort: switchPortFor({ execution, ledger: openedLedger }),",
+        "    emittedBy: options.emittedBy,",
+        "  });",
+        "  return result;",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("composes a switch port without the lease this process holds");
+  });
+
+  it("leaves a seam that carries the real lease alone, and refuses a direct executor call", async () => {
+    const lawful = syntheticTree();
+    write(
+      lawful,
+      "packages/entrypoints/daemon/src/index.ts",
+      [
+        "export const walk = async () => {",
+        "  const result = await runSqliteMode({",
+        "    ledger: openedLedger,",
+        "    switchPort: switchPortFor({ execution, ledger: openedLedger, lease: hold.lease }),",
+        "    emittedBy: options.emittedBy,",
+        "  });",
+        "  return result;",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    commitAll(lawful);
+
+    const clean = await runFenceAgainst(lawful);
+    expect(clean.output).not.toContain("composes a switch port without the lease");
+    expect(clean.output).not.toContain("names executeSwitchPlan directly");
+
+    // The boundary itself: the daemon reaches the executor through the
+    // composed port and by no other path.
+    const direct = syntheticTree();
+    write(
+      direct,
+      "packages/entrypoints/daemon/src/index.ts",
+      [
+        "export const walk = async () => {",
+        "  const result = await runSqliteMode({",
+        "    switchPort: switchPortFor({ execution, lease: hold.lease }),",
+        "  });",
+        "  executeSwitchPlan({ ledger, plan });",
+        "  return result;",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    commitAll(direct);
+
+    const bypass = await runFenceAgainst(direct);
+    expect(bypass.status).not.toBe(0);
+    expect(bypass.output).toContain("names executeSwitchPlan directly");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The

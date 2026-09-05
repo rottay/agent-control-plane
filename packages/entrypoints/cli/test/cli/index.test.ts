@@ -2348,3 +2348,100 @@ describe("F4b N15: --account is validated by the protocol's own grammar", () => 
     expect(invocation.stderr).not.toContain("acp submission");
   });
 });
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4d — the elector emits the complete document
+// ---------------------------------------------------------------------------
+
+/**
+ * A fragment an operator merges by hand would be a second door: nothing would
+ * stop them pairing one packet's plan with another packet's route, and the
+ * daemon would admit the pair because each half parses. So the verb prints the
+ * **entire** configuration document with the authorization inside it, exactly
+ * as the re-election verb prints the whole re-elected document.
+ */
+describe("F4d: --emit-authorization prints the whole document, or refuses", () => {
+  it("adds the authorization and preserves every other byte of the config", async () => {
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_EXHAUSTED" },
+    ]);
+    const config = writeConfigDocument(dir);
+    const before = JSON.parse(readFileSync(config, "utf8")) as Record<string, unknown>;
+
+    const invocation = await invoke(
+      decisionArgv(accounts, database, [
+        "--config",
+        config,
+        "--emit-authorization",
+        "--account",
+        B7S_ACCOUNT,
+      ]),
+    );
+    expect(invocation.exitCode).toBe(EXIT_OK);
+
+    const emitted = JSON.parse(invocation.stdout) as Record<string, unknown>;
+    const execution = emitted["execution"] as Record<string, unknown>;
+    const authorization = execution["switchAuthorization"] as Record<string, unknown>;
+
+    expect(authorization["trigger"]).toBe("QUOTA_EXHAUSTED");
+    expect(authorization["decidedForAccountId"]).toBe(B7S_ACCOUNT);
+    // The identity recorded as the decider is the one the walk's events carry.
+    expect(authorization["decidedBy"]).toBe(before["emittedBy"]);
+    // The verb's single clock read, and the window it measured from.
+    expect(authorization["decidedAt"]).toBe(FIXED_NOW);
+    expect(typeof authorization["observedSince"]).toBe("string");
+    expect(typeof authorization["decidedFromEventId"]).toBe("string");
+    const plan = authorization["plan"] as Record<string, unknown>;
+    expect(plan["kind"]).toBe("SWITCH");
+    expect(plan["selectedAccountId"]).toBe(F4B_SECOND_ACCOUNT);
+
+    // Every other byte of the document is the operator's own, untouched.
+    const withoutAuthorization = {
+      ...emitted,
+      execution: Object.fromEntries(
+        Object.entries(execution).filter(([key]) => key !== "switchAuthorization"),
+      ),
+    };
+    expect(withoutAuthorization).toEqual(before);
+  });
+
+  it("refuses to emit an authorization the policy did not decide", async () => {
+    // An authorization the elector never issued would be the forged decision
+    // this whole boundary exists to prevent, so nothing is printed at all.
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT]);
+    const database = ledgerWithPressure([
+      {
+        type: "AUTH_REQUIRED_RAISED",
+        accountId: B7S_ACCOUNT,
+        pressure: "AUTH_REQUIRED",
+      },
+    ]);
+    const invocation = await invoke(
+      decisionArgv(accounts, database, [
+        "--config",
+        writeConfigDocument(dir),
+        "--emit-authorization",
+      ]),
+    );
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(invocation.stdout).toBe("");
+    expect(invocation.stderr).toContain("no switch was decided");
+  });
+
+  it("still prints the ordinary report when no authorization is asked for", async () => {
+    // The landed behaviour, unchanged: the flag adds a mode, it does not
+    // replace one.
+    const dir = b7sStage();
+    const accounts = writeSwitchAccountsFile(dir, [B7S_ACCOUNT, F4B_SECOND_ACCOUNT]);
+    const database = ledgerWithPressure([
+      { type: "QUOTA_WARNING", accountId: B7S_ACCOUNT, pressure: "QUOTA_EXHAUSTED" },
+    ]);
+    const document = JSON.parse(
+      (await invoke(decisionArgv(accounts, database))).stdout,
+    ) as DecisionDocument;
+    expect(document.accounts[0]?.decision).toBe("SWITCH");
+  });
+});

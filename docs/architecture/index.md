@@ -59,6 +59,7 @@ new records from `_template.md`, which carries the required fields.
 | 0041 | [The plane records the pressure a provider reports](0041-the-plane-records-the-pressure-a-provider-reports.md) | accepted |
 | 0042 | [The elector reads the pressure the plane recorded](0042-the-elector-reads-the-pressure-the-plane-recorded.md) | accepted |
 | 0043 | [A failed execution records what its trail already said](0043-a-failed-execution-records-what-its-trail-already-said.md) | accepted |
+| 0044 | [The walk plays a switch it did not decide](0044-the-walk-plays-a-switch-it-did-not-decide.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

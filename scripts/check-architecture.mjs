@@ -6663,6 +6663,70 @@ const V2B1F4E_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1f/F4d -- the walk plays a switch it did not decide.
+ *
+ * F4b gave the elector a decision and F4a-E made the failing walk record the
+ * pressure it observed. Between them a window opened that nothing used: at the
+ * instant a classified failure is about to settle, the task is still
+ * `RUNNING`, its INTENT is durable, its pressure rows are in the ledger, the
+ * lease is held, and nothing has settled yet. **That is the only such moment
+ * in the plane**, and it is where a switch can be played.
+ *
+ * **The walk never decides.** Routing needs an accounts file, a policy
+ * document and a `RoutingRequest`; the daemon holds none of them and D5 and
+ * ADR 0018 forbid it all three. So a decided switch arrives exactly as a route
+ * does -- as data an elector decided, an operator wrote into the configuration
+ * document, and the daemon's own door admitted by path. `L-F4D-2` is that
+ * ruling made mechanical: it extends `L-B7S` down one stratum, so the shape
+ * where the walk resolves its own route cannot return under a symbol
+ * `L-B7S`'s list has not learned.
+ *
+ * **Data crosses the door; a closure crosses into the walk.** The
+ * authorization is admitted data. The lease is a live grant this process holds
+ * and renews, and serializing it would let a second holder claim the same
+ * grant -- the shape the enforcement fence refuses. Only a closure carries
+ * both, and `L-F4D-3` asserts every seam that carries a switch also carries
+ * the real lease.
+ *
+ * **What it stops short of.** No session, no `ACCOUNT_SWITCH_COMPLETED`, no
+ * continuation: the attempt ends at `QUOTA_BLOCKED` with its INTENT open,
+ * which is precisely the state a landing packet requires. `classifyFailure` is
+ * not edited -- it is the decision both drivers ask, so editing it would move
+ * Restate's verdicts -- and `executeSwitchPlan` is called, never changed. A
+ * partial play is **not** resumed: a restart refuses visibly, settles nothing,
+ * forges no started row, and the operator's exit is the cancel verb.
+ *
+ * **Pins.** `PATH_SCOPED_LAWS` 106 -> 109, ADR corpus 43 -> 44,
+ * `RUNTIME_PUBLIC_EXPORTS` 242 -> 246, `CONTRACTS_SCHEMA_EXPORTS` 101 -> 104.
+ * `ACCOUNTS_PUBLIC_EXPORTS` stays 82 and every scope note stays where it was:
+ * no package source or test file is created.
+ *
+ * Record: `docs/architecture/0044-the-walk-plays-a-switch-it-did-not-decide.md`.
+ */
+const V2B1F4D_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/domains/runtime/src/switch-executor/index.ts",
+  "packages/domains/runtime/test/switch-executor/index.test.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0044-the-walk-plays-a-switch-it-did-not-decide.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6817,6 +6881,7 @@ const WRITE_SET = [
   ...V2B1F4A_WRITE_SET,
   ...V2B1F4B_WRITE_SET,
   ...V2B1F4E_WRITE_SET,
+  ...V2B1F4D_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7949,6 +8014,23 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the trail reaches the sinks before anything refuses",
     scope: "packages/domains/runtime/src/execution-effects/index.ts",
+  },
+  // V2-B1f/F4d. Three new path-shaped surfaces, so three new rows: the
+  // register and the `requireScope` call sites both move 106 -> 109. One keeps
+  // the admitted and decided plan one shape, one keeps the player from
+  // becoming the elector, and one keeps the real lease on every seam that
+  // plays a switch.
+  {
+    law: "the admitted plan and the decided plan are one shape",
+    scope: "contracts/.../execution-boundary/index.ts and accounts/src/switching/index.ts",
+  },
+  {
+    law: "the player never becomes the elector",
+    scope: "packages/domains/runtime/src/**",
+  },
+  {
+    law: "the switch port carries the real lease, at every seam",
+    scope: "packages/entrypoints/daemon/src/index.ts",
   },
 ];
 
@@ -13766,6 +13848,15 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "readAccountPressure",
   "AccountPressureRead",
   "PressureEventSource",
+  // V2-B1f/F4d: the seam that plays an already-decided switch. The port is a
+  // closure because the lease is a live grant that cannot be serialized; the
+  // consideration and its closed decline vocabulary are what a caller reads
+  // back. `SwitchDeclineReason` is exported because the exported consideration
+  // names it.
+  "considerSwitch",
+  "SwitchConsideration",
+  "SwitchDeclineReason",
+  "SwitchPort",
   // V2-B7R: the shared failure classification, asked by both drivers.
   "FAILURE_REFUSALS",
   "FailureDecision",
@@ -14165,6 +14256,13 @@ if (accountsIndex === null) {
   "ReconciliationReport",
   "ReconciliationVerdict",
   "ResolvedRoute",
+  // V2-B1f/F4d: a decided switch, admitted through the same door as the route
+  // it applies to. The step names live here because the fence is the only
+  // reader of both this file and the decision module that owns the same
+  // eleven, and it pins them equal.
+  "SWITCH_STEP_NAMES",
+  "SwitchAuthorization",
+  "SwitchPlanShape",
   "RoadmapVersion",
   "RoadmapVersionKind",
   "TERMINAL_STATES",
@@ -17060,6 +17158,213 @@ if (tracked.status === 0) {
           );
         }
       }
+    }
+  }
+
+  // --- V2-B1f/F4d: the walk plays a switch it did not decide --------------
+
+  // --- L-F4D-1: the admitted plan and the decided plan are one shape.
+  //
+  // A plan an operator writes into a configuration document is admitted by a
+  // schema in the contracts; the plan an elector produces is a value in the
+  // decision module. If the two vocabularies drift, a plan that parses at the
+  // door is a plan that module could never have produced -- or worse, a plan
+  // it produces stops parsing. Neither package may import the other's shape
+  // for this, so the fence is the only reader of both files, and it compares
+  // them by equality in both directions. The `L-B7T-4` / `L-V2B1F4-4`
+  // instrument, applied to four member sets.
+  const ADMITTED_PLAN_HOME = "packages/kernel/contracts/src/schemas/execution-boundary/index.ts";
+  const DECIDED_PLAN_HOME = "packages/domains/accounts/src/switching/index.ts";
+  {
+    const admitted = stripComments(readIfPresent(ADMITTED_PLAN_HOME) ?? "");
+    const decided = stripComments(readIfPresent(DECIDED_PLAN_HOME) ?? "");
+    requireScope(
+      "the admitted plan and the decided plan are one shape",
+      admitted.length === 0 || decided.length === 0 ? 0 : 2,
+    );
+    const namesIn = (text) => [...text.matchAll(/"([A-Z_]+)"/g)].map((match) => match[1] ?? "");
+    const sorted = (names) => [...new Set(names)].sort().join(",");
+
+    const shape = /export const SwitchPlanShape = z\.strictObject\(\{([\s\S]*?)\n\}\);/.exec(admitted);
+    const stepNames = /export const SWITCH_STEP_NAMES = \[([\s\S]*?)\] as const;/.exec(admitted);
+    const steps = /export const SWITCH_STEPS[^=]*=\s*Object\.freeze\(\[([\s\S]*?)\]\)/.exec(decided);
+    const plan = /export interface SwitchPlan \{([\s\S]*?)\n\}/.exec(decided);
+    const status = /export type SwitchAccountStatus =([^;]*);/.exec(decided);
+
+    if (shape === null || stepNames === null || steps === null || plan === null || status === null) {
+      fail(
+        "the admitted plan shape or the decided plan is no longer declared where this law reads" +
+          " them; the two vocabularies would drift unwatched",
+      );
+    } else {
+      const shapeBody = shape[1] ?? "";
+      const kindAdmitted = /kind: z\.enum\(\[([^\]]*)\]\)/.exec(shapeBody);
+      const statusAdmitted = /accountStatus: z\.enum\(\[([^\]]*)\]\)/.exec(shapeBody);
+      const taskAdmitted = /taskState: z\.enum\(\[([^\]]*)\]\)/.exec(shapeBody);
+      const planBody = plan[1] ?? "";
+      const kindDecided = /readonly kind:([^;]*);/.exec(planBody);
+      const taskDecided = /readonly taskState:([^;]*);/.exec(planBody);
+
+      const pairs = [
+        ["the switch steps", sorted(namesIn(stepNames[1] ?? "")), sorted(namesIn(steps[1] ?? ""))],
+        [
+          "the plan kinds",
+          sorted(namesIn(kindAdmitted?.[1] ?? "")),
+          sorted(namesIn(kindDecided?.[1] ?? "")),
+        ],
+        [
+          "the account statuses",
+          sorted(namesIn(statusAdmitted?.[1] ?? "")),
+          sorted(namesIn(status[1] ?? "")),
+        ],
+        [
+          "the task states",
+          sorted(namesIn(taskAdmitted?.[1] ?? "")),
+          sorted(namesIn(taskDecided?.[1] ?? "")),
+        ],
+      ];
+      let agreed = 0;
+      for (const [what, admittedNames, decidedNames] of pairs) {
+        if (admittedNames === "" || decidedNames === "") {
+          fail("the admitted and decided plan disagree: " + what + " could not be read from both files");
+        } else if (admittedNames !== decidedNames) {
+          fail(
+            "the admitted and decided plan disagree on " +
+              what +
+              ": the door admits (" +
+              admittedNames +
+              ") and the decision produces (" +
+              decidedNames +
+              "); a plan that parses must be a plan the decision could have made",
+          );
+        } else {
+          agreed += 1;
+        }
+      }
+      if (agreed === pairs.length) {
+        notes.push("the admitted plan and the decided plan agree on all 4 member sets, both ways");
+      }
+    }
+  }
+
+  // --- L-F4D-2: the player never becomes the elector.
+  //
+  // `L-B7S` closes the daemon's stratum against the four elector symbols. This
+  // closes the one below it: no runtime `src` file may name `decideSwitch`,
+  // `rankAccounts`, `loadPolicyRegistry` or `resolveRoute`, because a walk that
+  // named any of them would be resolving its own route -- exactly what D5 and
+  // ADR 0018 refused, and exactly the shape a switch inside a walk invites.
+  //
+  // **One home is exempt, by name.** `runtime/src/submission/index.ts` is ADR
+  // 0018's own declared home for `resolveRoute`, and it composes a submission
+  // rather than deciding one. The exemption carries a vacuity half: that file
+  // must still name `resolveRoute`, so the exemption cannot outlive its reason.
+  const SUBMISSION_HOME = "packages/domains/runtime/src/submission/index.ts";
+  const ELECTOR_SYMBOLS_BELOW = ["decideSwitch", "rankAccounts", "loadPolicyRegistry", "resolveRoute"];
+  {
+    const playerScope = tracked.status === 0
+      ? tracked.stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .filter(
+            (relativePath) =>
+              /\.tsx?$/.test(relativePath) &&
+              !relativePath.includes("/test/") &&
+              /^packages\/domains\/runtime\/src\//.test(relativePath),
+          )
+      : [];
+    requireScope("the player never becomes the elector", playerScope.length);
+    for (const relativePath of playerScope) {
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      const live = stripComments(content);
+      for (const symbol of ELECTOR_SYMBOLS_BELOW) {
+        if (relativePath === SUBMISSION_HOME && symbol === "resolveRoute") continue;
+        if (new RegExp("\\b" + symbol + "\\b").test(live)) {
+          fail(
+            relativePath +
+              " names " +
+              symbol +
+              "; the walk plays a switch it did not decide, and a stratum that resolves its own" +
+              " route is the shape D5 and ADR 0018 refused",
+          );
+        }
+      }
+    }
+    // The exemption's vacuity half: it exists for one reason, and must keep it.
+    const submission = stripComments(readIfPresent(SUBMISSION_HOME) ?? "");
+    if (submission.length === 0) {
+      fail(SUBMISSION_HOME + " is missing; the one exemption this law grants would stand over nothing");
+    } else if (!/\bresolveRoute\b/.test(submission)) {
+      fail(
+        SUBMISSION_HOME +
+          " no longer names resolveRoute, so the exemption this law grants it has outlived its" +
+          " reason and must be withdrawn rather than left standing",
+      );
+    } else {
+      notes.push(
+        "no elector symbol below the daemon, across " +
+          String(playerScope.length) +
+          " runtime sources, with one named exemption that still earns it",
+      );
+    }
+  }
+
+  // --- L-F4D-3: the port carries the real lease, at every seam.
+  //
+  // In `L-C-4c`'s per-literal shape. A switch appended without the lease it
+  // revokes would record an enrichment naming nothing, and a lease invented
+  // here rather than taken from the arbiter would forge enforcement state. So
+  // every `runSqliteMode({` literal that carries a `switchPort:` must also
+  // carry the lease this process actually holds.
+  //
+  // The second half is the boundary itself: the daemon reaches the executor
+  // through the composed port and by no other path, so it never plays a plan
+  // of its own.
+  const SWITCH_COMPOSITION_HOME = "packages/entrypoints/daemon/src/index.ts";
+  {
+    const source = stripComments(readIfPresent(SWITCH_COMPOSITION_HOME) ?? "");
+    requireScope("the switch port carries the real lease, at every seam", source.length === 0 ? 0 : 1);
+    if (source.length === 0) {
+      fail(SWITCH_COMPOSITION_HOME + " is missing; the switch composition law would stand over nothing");
+    } else {
+      const seams = [...source.matchAll(/runSqliteMode\(\{/g)].map((match) => match.index ?? -1);
+      if (seams.length === 0) {
+        fail(SWITCH_COMPOSITION_HOME + " runs no SQLite walk; the seam this law stands over has gone");
+      }
+      let carrying = 0;
+      for (const at of seams) {
+        const next = seams.find((other) => other > at);
+        const literal = source.slice(at, next === undefined ? source.length : next);
+        if (!literal.includes("switchPort:")) continue;
+        carrying += 1;
+        if (!literal.includes("hold.lease")) {
+          fail(
+            SWITCH_COMPOSITION_HOME +
+              " composes a switch port without the lease this process holds; a revocation that" +
+              " names no lease, or a lease invented here, would forge enforcement state",
+          );
+        }
+      }
+      if (carrying === 0) {
+        fail(
+          SWITCH_COMPOSITION_HOME +
+            " composes no switch port at any walk seam; the walk could never play a decided switch",
+        );
+      }
+      if (source.includes("executeSwitchPlan")) {
+        fail(
+          SWITCH_COMPOSITION_HOME +
+            " names executeSwitchPlan directly; the daemon reaches the executor through the" +
+            " composed port, so the lease and the authorization travel together or not at all",
+        );
+      }
+      notes.push(
+        "the switch port carries the real lease at all " +
+          String(carrying) +
+          " walk seam(s) that play one",
+      );
     }
   }
 

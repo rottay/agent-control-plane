@@ -48,6 +48,7 @@ import type {
   LedgerPort,
   PlanStep,
   ScenarioRoot,
+  SwitchPort,
   WorktreeObservation,
 } from "@acp/runtime";
 import {
@@ -55,6 +56,7 @@ import {
   checkWriteSetConformance,
   createExecutionEffects,
   deriveEventCoordinate,
+  considerSwitch,
   deterministicUuid,
   pressureTransitionId,
   recordProviderPressure,
@@ -329,6 +331,52 @@ export function recoverOwnStaleLock(options: {
     adoptStale: options.adoptStale,
     server,
   });
+}
+
+/**
+ * Compose the seam that plays an already-decided switch (V2-B1f/F4d).
+ *
+ * **Data crossed the door; a closure crosses into the walk.** The
+ * authorization is a value an elector decided and this daemon's own config
+ * door admitted, so it travels with the route and the bindings. The lease is a
+ * live grant this process holds and renews: serializing it would let a second
+ * holder claim the same grant, which is the shape the enforcement fence exists
+ * to refuse. Only a closure can carry both, and it is the idiom this
+ * composition already uses for spend, conformance and pressure.
+ *
+ * Returns `undefined` when the config admitted no authorization, so a walk
+ * without one is byte-identical to what it was before this packet: the
+ * supervisor's fork is gated on the port being present at all.
+ *
+ * The destinations are the bindings' own declared providers (V2-B1f/F2b), so
+ * the unlandable-destination refusal costs no import and no `describe` call.
+ */
+function switchPortFor(input: {
+  readonly execution: DaemonExecutionConfig;
+  readonly ledger: Ledger;
+  readonly lease: Lease;
+}): SwitchPort | undefined {
+  const authorization = input.execution.switchAuthorization;
+  if (authorization === undefined) return undefined;
+
+  const destinations = input.execution.bindings.map((entry) => ({
+    accountId: entry.accountId,
+    provider: entry.provider,
+  }));
+
+  return {
+    consider: (context) =>
+      Promise.resolve(
+        considerSwitch(context, {
+          authorization,
+          lease: input.lease,
+          routeAccountId: input.execution.route.accountId,
+          routeProvider: bindingForRoute(input.execution).provider,
+          destinations,
+          source: input.ledger,
+        }),
+      ),
+  };
 }
 
 /**
@@ -746,6 +794,11 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           invocation,
           effects,
           checkpoints: checkpointsFactory(invocation),
+          switchPort: switchPortFor({
+            execution: options.execution,
+            ledger: openedLedger,
+            lease: hold.lease,
+          }),
           emittedBy: options.emittedBy,
           // Today's behaviour, said out loud. The daemon supervises packets that
           // may commit locally under a receipt; a read-only packet is a policy
@@ -1040,6 +1093,11 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
               emittedBy: walk.spec.emittedBy,
               envelope: walk.envelope,
               worktreePath: walk.worktreePath,
+            }),
+            switchPort: switchPortFor({
+              execution: walk.spec.execution,
+              ledger: held.ledger,
+              lease: heldLease.hold.lease,
             }),
             emittedBy: walk.spec.emittedBy,
             commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",

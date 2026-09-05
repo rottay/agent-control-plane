@@ -39,6 +39,9 @@ import {
   InitiativeEvent,
   LIFECYCLE_STATES,
   PROVIDER_PRESSURES,
+  SWITCH_STEP_NAMES,
+  SwitchAuthorization,
+  SwitchPlanShape,
   RECONCILIATION_VERDICTS,
   RESUMABLE_VERDICTS,
   ROADMAP_CONTENT_MAX_BYTES,
@@ -2074,5 +2077,168 @@ describe("the driver capability declaration (V2-B2-1)", () => {
     for (const value of Object.values(cancelled)) {
       expect(typeof value === "number" || typeof value === "boolean").toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4d — a decided switch, admitted at a door
+// ---------------------------------------------------------------------------
+
+const F4D_PLAN = {
+  kind: "SWITCH" as const,
+  accountStatus: "EXHAUSTED" as const,
+  taskState: "QUOTA_BLOCKED" as const,
+  steps: ["MARK_ACCOUNT_DRAINING", "MARK_TASK_QUOTA_BLOCKED"],
+  selectedAccountId: "acct-second",
+  events: [
+    { type: "QUOTA_WARNING", payload: { accountId: "acct-primary" } },
+    { type: "TASK_STATE_CHANGED", payload: { toState: "QUOTA_BLOCKED" } },
+  ],
+};
+
+const F4D_AUTHORIZATION = {
+  trigger: "QUOTA_EXHAUSTED" as const,
+  decidedForAccountId: "acct-primary",
+  decidedBy: "claude/opus/implementer/01",
+  decidedAt: "2026-09-05T12:00:00.000Z",
+  decidedFromEventId: "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9b01",
+  observedSince: "2026-09-05T10:00:00.000Z",
+  plan: F4D_PLAN,
+};
+
+describe("the switch step vocabulary", () => {
+  it("declares the eleven steps here, in the order a plan selects from", () => {
+    // The order is the claim: a plan is a prefix-free selection from this list
+    // in this order, never a reordering. The decision module owns the same
+    // eleven and the fence pins the two equal in both directions.
+    expect([...SWITCH_STEP_NAMES]).toEqual([
+      "MARK_ACCOUNT_DRAINING",
+      "MARK_TASK_QUOTA_BLOCKED",
+      "FINISH_CURRENT_ATOMIC_STEP",
+      "WRITE_CHECKPOINT",
+      "RELEASE_LEASE",
+      "SELECT_ACCOUNT",
+      "READ_ONLY_HEALTH_PROBE",
+      "OPEN_FRESH_SESSION",
+      "REVALIDATE_AUTHORITY_AND_PRESTATE",
+      "REHYDRATE_CHECKPOINT",
+      "CONTINUE",
+    ]);
+    expect(new Set(SWITCH_STEP_NAMES).size).toBe(SWITCH_STEP_NAMES.length);
+  });
+});
+
+describe("SwitchAuthorization", () => {
+  it("P1: admits a complete decision and survives a JSON round trip", () => {
+    const parsed = SwitchAuthorization.parse(F4D_AUTHORIZATION);
+    expect(parsed.trigger).toBe("QUOTA_EXHAUSTED");
+    expect(parsed.plan.selectedAccountId).toBe("acct-second");
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(F4D_AUTHORIZATION);
+  });
+
+  it("P1: requires every audit field — who, when, from what, and since when", () => {
+    // The audit block is what makes a decision answerable after the fact. A
+    // shape that let any of it be omitted would admit an authorization nobody
+    // could trace to a decision or to the evidence it was taken from.
+    for (const omitted of [
+      "trigger",
+      "decidedForAccountId",
+      "decidedBy",
+      "decidedAt",
+      "decidedFromEventId",
+      "observedSince",
+      "plan",
+    ]) {
+      const candidate = Object.fromEntries(
+        Object.entries(F4D_AUTHORIZATION).filter(([key]) => key !== omitted),
+      );
+      expect({ omitted, ok: SwitchAuthorization.safeParse(candidate).success }).toEqual({
+        omitted,
+        ok: false,
+      });
+    }
+  });
+
+  it("P1: is strict — an operator-authored document cannot smuggle a field", () => {
+    expect(
+      SwitchAuthorization.safeParse({ ...F4D_AUTHORIZATION, expiresAt: "2026-09-06T00:00:00.000Z" })
+        .success,
+    ).toBe(false);
+    expect(
+      SwitchPlanShape.safeParse({ ...F4D_PLAN, credentialRef: "secret://x" }).success,
+    ).toBe(false);
+  });
+
+  it("P1: closes the trigger at the two quota members", () => {
+    // An authorization is fired by a quota trigger or by nothing. An auth
+    // requirement is a lawful observation and never a trigger, which is the
+    // fold's rule, restated where the door can enforce it.
+    for (const trigger of ["AUTH_REQUIRED", "TRANSIENT", "UNCLASSIFIED", "SWITCH"]) {
+      expect({
+        trigger,
+        ok: SwitchAuthorization.safeParse({ ...F4D_AUTHORIZATION, trigger }).success,
+      }).toEqual({ trigger, ok: false });
+    }
+    for (const trigger of ["QUOTA_EXHAUSTED", "QUOTA_WARNING"]) {
+      expect({
+        trigger,
+        ok: SwitchAuthorization.safeParse({ ...F4D_AUTHORIZATION, trigger }).success,
+      }).toEqual({ trigger, ok: true });
+    }
+  });
+
+  it("P1: refuses an instant without an offset, and an event id that is not a uuid", () => {
+    expect(
+      SwitchAuthorization.safeParse({ ...F4D_AUTHORIZATION, decidedAt: "2026-09-05T12:00:00" })
+        .success,
+    ).toBe(false);
+    expect(
+      SwitchAuthorization.safeParse({ ...F4D_AUTHORIZATION, decidedFromEventId: "not-a-uuid" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("P1: bounds every collection the plan carries", () => {
+    // The shape crosses a door an operator authors, so a plan cannot arrive
+    // with more steps than the vocabulary has or more events than steps.
+    const tooManySteps = { ...F4D_PLAN, steps: [...SWITCH_STEP_NAMES, "CONTINUE"] };
+    expect(SwitchPlanShape.safeParse(tooManySteps).success).toBe(false);
+    const tooManyEvents = {
+      ...F4D_PLAN,
+      events: Array.from({ length: SWITCH_STEP_NAMES.length + 1 }, () => ({
+        type: "QUOTA_WARNING",
+        payload: {},
+      })),
+    };
+    expect(SwitchPlanShape.safeParse(tooManyEvents).success).toBe(false);
+  });
+
+  it("P1: refuses a step the vocabulary does not name and an event type the contract does not", () => {
+    expect(SwitchPlanShape.safeParse({ ...F4D_PLAN, steps: ["INVENTED_STEP"] }).success).toBe(false);
+    expect(
+      SwitchPlanShape.safeParse({
+        ...F4D_PLAN,
+        events: [{ type: "SWITCH_INVENTED", payload: {} }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("P1: lets a plan select no account, and lets the payloads stay string-valued", () => {
+    const drain = {
+      ...F4D_PLAN,
+      kind: "DRAIN" as const,
+      accountStatus: "DRAINING" as const,
+      taskState: null,
+      selectedAccountId: null,
+    };
+    expect(SwitchPlanShape.safeParse(drain).success).toBe(true);
+    // A payload is bounded string-to-string: never a transcript, never a
+    // nested object an operator could hide something in.
+    expect(
+      SwitchPlanShape.safeParse({
+        ...F4D_PLAN,
+        events: [{ type: "QUOTA_WARNING", payload: { accountId: { nested: true } } }],
+      }).success,
+    ).toBe(false);
   });
 });

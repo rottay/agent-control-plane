@@ -22,6 +22,8 @@ import {
 } from "../../../src/core/lifecycle/index.js";
 import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
 import { ExecutionEffectError } from "../../../src/execution-effects/index.js";
+import { executeSwitchPlan } from "../../../src/switch-executor/index.js";
+import type { SwitchPort } from "../../../src/switch-executor/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -1903,4 +1905,233 @@ describe("N12: a child with no git facts has no checkpoint port, and its termina
     expect(done.eventCount).toBe(LIFECYCLE_PLAN.length);
     expect(done.headEventSha256).not.toBe(refused.headEventSha256);
   }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4d — the fork before the settle
+// ---------------------------------------------------------------------------
+
+/**
+ * The one moment a switch can be played, and what the fork must not disturb.
+ *
+ * A classified failure is offered to the switch port **before** it settles. A
+ * port that played a switch means the walk must not settle — the attempt is
+ * now blocked awaiting a landing, and a terminal event would foreclose it.
+ * `SWITCHED` means *do not settle*; it never means *do not fail*.
+ */
+
+const F4D_SUPERVISOR_TASKS = [
+  "f4d10000-0000-4000-8000-000000000001",
+  "f4d10000-0000-4000-8000-000000000002",
+  "f4d10000-0000-4000-8000-000000000003",
+  "f4d10000-0000-4000-8000-000000000004",
+] as const;
+
+function supervisorWithPort(
+  scenarioId: string,
+  taskId: string,
+  failure: ExecutionEffectError,
+  switchPort: SwitchPort | undefined,
+): { supervisor: SqliteSupervisor; ledger: Ledger } {
+  const root = scenario(scenarioId);
+  const ledger = track(openLedger(scenarioLedgerPath(root)));
+  const inv = invocationFor(taskId);
+  return {
+    supervisor: new SqliteSupervisor({
+      ledger,
+      invocation: inv,
+      effects: failingEffects(root, failure),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation: inv,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "NO_COMMIT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: TEST_ROUTE,
+      ...(switchPort === undefined ? {} : { switchPort }),
+    }),
+    ledger,
+  };
+}
+
+describe("F4d P6: the supervisor forks before it settles", () => {
+  it("SWITCHED skips the settlement, and still throws the original error", async () => {
+    const failure = new ExecutionEffectError("ROUTE_INVALID", "route.accountId");
+    let asked = 0;
+    const { supervisor, ledger } = supervisorWithPort(
+      "f4d-supervisor-switched",
+      F4D_SUPERVISOR_TASKS[0],
+      failure,
+      {
+        consider: (context) => {
+          asked += 1;
+          // The port is handed the walk's own context: its ledger, its
+          // invocation, its identity.
+          expect(context.invocation.taskId).toBe(F4D_SUPERVISOR_TASKS[0]);
+          return Promise.resolve({ kind: "SWITCHED", startedEventId: "ev-started" });
+        },
+      },
+    );
+
+    const thrown = await supervisor.runToCheckpoint().then(() => null, (error: unknown) => error);
+
+    // Failing is unchanged; settling is what a played switch suppresses.
+    expect(thrown).toBe(failure);
+    expect(asked).toBe(1);
+    const types = ledger
+      .listEvents({ taskId: F4D_SUPERVISOR_TASKS[0], limit: 200 })
+      .events.map((entry) => entry.event.type);
+    expect(types).not.toContain("TASK_FAILED");
+    expect(ledger.getTask(F4D_SUPERVISOR_TASKS[0])?.currentState).not.toBe("FAILED");
+  });
+
+  it("NOT_SWITCHED settles exactly as it did before this packet", async () => {
+    const failure = new ExecutionEffectError("ROUTE_INVALID", "route.accountId");
+    const { supervisor, ledger } = supervisorWithPort(
+      "f4d-supervisor-declined",
+      F4D_SUPERVISOR_TASKS[1],
+      failure,
+      { consider: () => Promise.resolve({ kind: "NOT_SWITCHED", reason: "NO_AUTHORIZATION" }) },
+    );
+
+    const thrown = await supervisor.runToCheckpoint().then(() => null, (error: unknown) => error);
+
+    expect(thrown).toBe(failure);
+    const failures = ledger
+      .listEvents({ taskId: F4D_SUPERVISOR_TASKS[1], limit: 200 })
+      .events.filter((entry) => entry.event.type === "TASK_FAILED");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.event.payload["reason"]).toBe("EXECUTION_FAILED");
+    expect(ledger.getTask(F4D_SUPERVISOR_TASKS[1])?.currentState).toBe("FAILED");
+  });
+
+  it("no port at all is byte-identical to a declined one", async () => {
+    // What keeps every landed construction — both drill children and every
+    // lifecycle verb — behaving exactly as it did.
+    const failure = new ExecutionEffectError("ROUTE_INVALID", "route.accountId");
+    const { supervisor, ledger } = supervisorWithPort(
+      "f4d-supervisor-no-port",
+      F4D_SUPERVISOR_TASKS[2],
+      failure,
+      undefined,
+    );
+
+    const thrown = await supervisor.runToCheckpoint().then(() => null, (error: unknown) => error);
+
+    expect(thrown).toBe(failure);
+    const failures = ledger
+      .listEvents({ taskId: F4D_SUPERVISOR_TASKS[2], limit: 200 })
+      .events.filter((entry) => entry.event.type === "TASK_FAILED");
+    expect(failures).toHaveLength(1);
+    expect(ledger.getTask(F4D_SUPERVISOR_TASKS[2])?.currentState).toBe("FAILED");
+  });
+
+  it("a failure that would not settle never reaches the port", async () => {
+    // The fork is gated on `decision.settle`, so a postcondition-unknown — the
+    // one failure that must never settle — is not offered a switch either.
+    const root = scenario("f4d-supervisor-unknown");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+    const inv = invocationFor(F4D_SUPERVISOR_TASKS[3]);
+    let asked = 0;
+
+    await expect(
+      new SqliteSupervisor({
+        ledger,
+        invocation: inv,
+        effects: {
+          apply: () => Promise.reject(new PostconditionUnknownError("op", "unknown")),
+          probe: (operation) => Promise.resolve(probeEffect(root, operation)),
+        },
+        checkpoints: drillCheckpoints({
+          ledger,
+          invocation: inv,
+          emittedBy: EMITTED_BY,
+          ledgerPath: scenarioLedgerPath(root),
+          worktree: root,
+        }),
+        emittedBy: EMITTED_BY,
+        commitPolicy: "NO_COMMIT",
+        initiativeId: TEST_INITIATIVE_ID,
+        route: TEST_ROUTE,
+        switchPort: {
+          consider: () => {
+            asked += 1;
+            return Promise.resolve({ kind: "SWITCHED", startedEventId: "ev" });
+          },
+        },
+      }).runToCheckpoint(),
+    ).rejects.toBeInstanceOf(PostconditionUnknownError);
+
+    expect(asked).toBe(0);
+  });
+});
+
+describe("F4d B4(a): a partial play is not resumed", () => {
+  it("a second run over a blocked attempt refuses PLAN, settles nothing, forges nothing", async () => {
+    // **The ruling, and its measured consequence.** A crash between the
+    // switch's rows leaves the attempt at `QUOTA_BLOCKED` with its INTENT
+    // open. On restart `nextStep` finds no step for that state and throws a
+    // plan error, which `classifyFailure` refuses to settle — so the walk
+    // stops visibly rather than settling a task a landing is still owed, and
+    // it appends no `ACCOUNT_SWITCH_STARTED` it did not earn.
+    //
+    // The operator's exit is the cancel verb, which proceeds from any
+    // non-terminal state. Resuming instead would need the executor to skip
+    // rows already durable — a behaviour change this packet does not make.
+    const failure = new ExecutionEffectError("ROUTE_INVALID", "route.accountId");
+    const { supervisor, ledger } = supervisorWithPort(
+      "f4d-partial-play",
+      F4D_SUPERVISOR_TASKS[0],
+      failure,
+      {
+        consider: (context) => {
+          // Play only the first row, then stop — the crash shape.
+          const task = context.ledger.getTask(context.invocation.taskId);
+          executeSwitchPlan({
+            ledger: context.ledger,
+            invocation: context.invocation,
+            plan: {
+              kind: "SWITCH",
+              accountStatus: "EXHAUSTED",
+              taskState: "QUOTA_BLOCKED",
+              steps: ["MARK_TASK_QUOTA_BLOCKED"],
+              selectedAccountId: "acct-second",
+              events: [{ type: "TASK_STATE_CHANGED", payload: { toState: "QUOTA_BLOCKED" } }],
+            },
+            emittedBy: EMITTED_BY,
+            lease: null,
+            taskState: task?.currentState ?? "RUNNING",
+            causedBy: null,
+          });
+          return Promise.resolve({ kind: "SWITCHED", startedEventId: "ev-partial" });
+        },
+      },
+    );
+
+    await supervisor.runToCheckpoint().then(() => null, () => null);
+    expect(ledger.getTask(F4D_SUPERVISOR_TASKS[0])?.currentState).toBe("QUOTA_BLOCKED");
+
+    // The second run: the attempt is blocked, and nothing resumes it.
+    const second = supervisorWithPort(
+      "f4d-partial-play",
+      F4D_SUPERVISOR_TASKS[0],
+      failure,
+      { consider: () => Promise.resolve({ kind: "NOT_SWITCHED", reason: "NO_AUTHORIZATION" }) },
+    );
+    const thrown = await second.supervisor
+      .runToCheckpoint()
+      .then(() => null, (error: unknown) => error);
+
+    expect(thrown).toBeInstanceOf(Error);
+    const events = ledger.listEvents({ taskId: F4D_SUPERVISOR_TASKS[0], limit: 200 }).events;
+    const types = events.map((entry) => entry.event.type);
+    // Not settled, and not forged.
+    expect(types).not.toContain("TASK_FAILED");
+    expect(types).not.toContain("ACCOUNT_SWITCH_STARTED");
+    expect(ledger.getTask(F4D_SUPERVISOR_TASKS[0])?.currentState).toBe("QUOTA_BLOCKED");
+  });
 });

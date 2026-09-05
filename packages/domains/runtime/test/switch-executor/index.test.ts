@@ -1,4 +1,9 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { AccountRecord, CONTRACT_VERSION } from "@acp/contracts";
+import type { SwitchAuthorization } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import type { Lease } from "@acp/contracts";
 import { DEFAULT_ROUTING_CONFIG, SWITCH_STEPS, decideSwitch } from "@acp/accounts";
@@ -12,7 +17,12 @@ import { LIFECYCLE_PLAN } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep } from "../../src/core/step-executor/index.js";
 import type { BeatContext } from "../../src/core/step-executor/index.js";
 import { SupervisorError } from "../../src/errors/index.js";
-import { executeSwitchPlan } from "../../src/switch-executor/index.js";
+import {
+  SWITCH_DECLINE_REASONS,
+  considerSwitch,
+  executeSwitchPlan,
+} from "../../src/switch-executor/index.js";
+import { pressureTransitionId, recordProviderPressure } from "../../src/pressure/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -723,5 +733,356 @@ describe("F1: DRAIN and ESCALATE are byte-identical to HEAD (P3)", () => {
     expect(result.appended).toBe(1);
     expect(result.events.map((event) => event.type)).toEqual(["AUTH_REQUIRED_RAISED"]);
     expect(ledger.status().eventCount).toBe(before + 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4d — the walk plays a switch it did not decide
+// ---------------------------------------------------------------------------
+
+/**
+ * `considerSwitch` is the seam the supervisor asks before it settles.
+ *
+ * Everything it compares was decided elsewhere: the elector produced the plan,
+ * the daemon's door admitted it, the recorder wrote the pressure. What these
+ * cases pin is that it **refuses** an authorization that does not match what
+ * this attempt actually recorded, and that when it does play one it hands the
+ * plan over verbatim.
+ */
+
+const F4D_TASK = "f4d00000-0000-4000-8000-000000000001";
+const F4D_LEASE = leaseFor("/tmp/acp-f4d-worktree");
+
+function authorizationFor(overrides: Partial<SwitchAuthorization> = {}): SwitchAuthorization {
+  const plan = decideSwitch({
+    trigger: "QUOTA_EXHAUSTED",
+    currentAccountId: "acct-primary",
+    routing: routing(["acct-primary", "acct-second"]),
+  });
+  if (!plan.ok) throw new Error("the fixture's own decision was refused: " + plan.reason);
+  return {
+    trigger: "QUOTA_EXHAUSTED",
+    decidedForAccountId: "acct-primary",
+    decidedBy: EMITTED_BY,
+    decidedAt: AT,
+    decidedFromEventId: deterministicUuid("f4d/decided-from"),
+    observedSince: AT,
+    plan: {
+      kind: plan.plan.kind,
+      accountStatus: plan.plan.accountStatus,
+      taskState: plan.plan.taskState,
+      steps: [...plan.plan.steps],
+      selectedAccountId: plan.plan.selectedAccountId,
+      events: plan.plan.events.map((event) => ({ type: event.type, payload: { ...event.payload } })),
+    },
+    ...overrides,
+  };
+}
+
+/** One pressure row, appended exactly as the walk's recorder would have. */
+function seedPressure(
+  ledger: Ledger,
+  invocation: DurableInvocation,
+  pressure: string,
+  trailIndex = 1,
+): void {
+  recordProviderPressure(ledger, {
+    invocation,
+    accountId: "acct-primary",
+    provider: "claude",
+    pressure: pressure as "QUOTA_EXHAUSTED",
+    transitionId: pressureTransitionId(4, trailIndex),
+    emittedBy: EMITTED_BY,
+  });
+}
+
+function contextFor(ledger: Ledger, invocation: DurableInvocation): BeatContext {
+  return {
+    ledger,
+    effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
+    invocation,
+    emittedBy: EMITTED_BY,
+    plan: LIFECYCLE_PLAN,
+    route: TEST_ROUTE,
+    initiativeId: INITIATIVE_ID,
+  };
+}
+
+function considerFor(
+  ledger: Ledger,
+  invocation: DurableInvocation,
+  overrides: Partial<Parameters<typeof considerSwitch>[1]> = {},
+) {
+  return considerSwitch(contextFor(ledger, invocation), {
+    authorization: authorizationFor(),
+    lease: F4D_LEASE,
+    routeAccountId: "acct-primary",
+    routeProvider: "claude",
+    destinations: [
+      { accountId: "acct-primary", provider: "claude" },
+      { accountId: "acct-second", provider: "claude" },
+    ],
+    source: ledger,
+    ...overrides,
+  });
+}
+
+describe("F4d P2: consider refuses in order, over the closed decline vocabulary", () => {
+  it("closes the vocabulary at seven, and every member is reachable", () => {
+    expect([...SWITCH_DECLINE_REASONS]).toEqual([
+      "NO_AUTHORIZATION",
+      "NO_PRESSURE",
+      "TRIGGER_MISMATCH",
+      "ACCOUNT_MISMATCH",
+      "NO_DESTINATION",
+      "DESTINATION_UNBOUND",
+      "DESTINATION_UNLANDABLE",
+    ]);
+    expect(new Set(SWITCH_DECLINE_REASONS).size).toBe(SWITCH_DECLINE_REASONS.length);
+  });
+
+  it("NO_AUTHORIZATION: nothing was admitted, and that is the ordinary case", () => {
+    const { ledger, invocation } = openWithTask("f4d-no-auth", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    const before = ledger.status().eventCount;
+    expect(considerFor(ledger, invocation, { authorization: undefined })).toEqual({
+      kind: "NOT_SWITCHED",
+      reason: "NO_AUTHORIZATION",
+    });
+    expect(ledger.status().eventCount).toBe(before);
+  });
+
+  it("NO_PRESSURE: this attempt recorded nothing a trigger folds from", () => {
+    const { ledger, invocation } = openWithTask("f4d-no-pressure", F4D_TASK);
+    expect(considerFor(ledger, invocation)).toEqual({
+      kind: "NOT_SWITCHED",
+      reason: "NO_PRESSURE",
+    });
+  });
+
+  it("TRIGGER_MISMATCH: the walk declines rather than re-deciding", () => {
+    // The authorization was decided for an exhaustion; this attempt observed a
+    // warning. The walk does not re-decide on the trigger it actually saw —
+    // deciding is the elector's, and this is the whole boundary.
+    const { ledger, invocation } = openWithTask("f4d-trigger-mismatch", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_WARNING");
+    expect(considerFor(ledger, invocation)).toEqual({
+      kind: "NOT_SWITCHED",
+      reason: "TRIGGER_MISMATCH",
+    });
+  });
+
+  it("ACCOUNT_MISMATCH: a decision overtaken by a re-election is not played", () => {
+    const { ledger, invocation } = openWithTask("f4d-account-mismatch", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    expect(considerFor(ledger, invocation, { routeAccountId: "acct-elsewhere" })).toEqual({
+      kind: "NOT_SWITCHED",
+      reason: "ACCOUNT_MISMATCH",
+    });
+  });
+
+  it("NO_DESTINATION: the walk will not fill in a null selection", () => {
+    // Choosing a destination is routing, and the walk may not do it. A SWITCH
+    // plan naming no account is refused, never completed from the bindings.
+    const { ledger, invocation } = openWithTask("f4d-no-destination", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    const authorization = authorizationFor();
+    expect(
+      considerFor(ledger, invocation, {
+        authorization: { ...authorization, plan: { ...authorization.plan, selectedAccountId: null } },
+      }),
+    ).toEqual({ kind: "NOT_SWITCHED", reason: "NO_DESTINATION" });
+  });
+
+  it("DESTINATION_UNBOUND: an account with no admitted binding could never be landed", () => {
+    const { ledger, invocation } = openWithTask("f4d-unbound", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    expect(
+      considerFor(ledger, invocation, {
+        destinations: [{ accountId: "acct-primary", provider: "claude" }],
+      }),
+    ).toEqual({ kind: "NOT_SWITCHED", reason: "DESTINATION_UNBOUND" });
+  });
+
+  it("DESTINATION_UNLANDABLE: a cross-provider switch is playable and never landable", () => {
+    // The session that would land it is refused before any spawn, one switch
+    // per attempt is structural, and no plan step leaves the blocked state —
+    // so starting it would park the attempt with cancellation as the only
+    // exit. A temporary refusal, lifted by the packet that lifts the framing.
+    const { ledger, invocation } = openWithTask("f4d-unlandable", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    const before = ledger.status().eventCount;
+    expect(
+      considerFor(ledger, invocation, {
+        destinations: [
+          { accountId: "acct-primary", provider: "claude" },
+          { accountId: "acct-second", provider: "codex" },
+        ],
+      }),
+    ).toEqual({ kind: "NOT_SWITCHED", reason: "DESTINATION_UNLANDABLE" });
+    expect(ledger.status().eventCount).toBe(before);
+  });
+});
+
+describe("F4d P3/P4/P5: a matching authorization is played, once", () => {
+  it("P3: appends exactly the plan's rows, carrying the given lease's identity", () => {
+    const { ledger, invocation } = openWithTask("f4d-plays", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+
+    const played = considerFor(ledger, invocation);
+    expect(played.kind).toBe("SWITCHED");
+
+    const rows = ledger
+      .listEvents({ taskId: invocation.taskId })
+      .events.map((record) => record.event)
+      .filter((event) => event.transitionId.startsWith("switch."));
+    expect(rows.map((event) => event.transitionId)).toEqual([
+      "switch.0.quota_warning",
+      "switch.1.task_state_changed",
+      "switch.2.lease_revoked",
+      "switch.3.account_switch_started",
+    ]);
+    // The state moves once, at the row that names the transition, and it moves
+    // FROM whatever the ledger currently holds — the executor is handed that
+    // state rather than assuming one. In production the catch runs while the
+    // task is `RUNNING`, which the daemon drill asserts on a real walk; here
+    // the fixture task is still at its discovery state, and the passthrough
+    // being honest about that is the point.
+    const changed = rows[1];
+    expect({ from: changed?.fromState, to: changed?.toState }).toEqual({
+      from: "DISCOVERED",
+      to: "QUOTA_BLOCKED",
+    });
+    // Every row after the transition is a passthrough at the NEW state.
+    expect(rows[2]?.fromState).toBe("QUOTA_BLOCKED");
+    expect(rows[3]?.toState).toBe("QUOTA_BLOCKED");
+    // The revocation names the real lease this process holds.
+    expect(rows[2]?.payload).toMatchObject({
+      leaseId: F4D_LEASE.leaseId,
+      worktreePath: F4D_LEASE.worktreePath,
+      holder: F4D_LEASE.holder,
+      cause: "ACCOUNT_SWITCH",
+    });
+    // And the destination authority a landing reads.
+    expect(rows[3]?.payload).toMatchObject({
+      fromAccountId: "acct-primary",
+      toAccountId: "acct-second",
+    });
+  });
+
+  it("P4: causedBy is the authorization's own decidedFromEventId", () => {
+    // The audit link, and the cross-task cause that field was designed for —
+    // not the row that satisfied the trigger match.
+    const { ledger, invocation } = openWithTask("f4d-caused-by", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    const authorization = authorizationFor();
+
+    const played = considerFor(ledger, invocation, { authorization });
+    expect(played.kind).toBe("SWITCHED");
+
+    const rows = ledger
+      .listEvents({ taskId: invocation.taskId })
+      .events.map((record) => record.event)
+      .filter((event) => event.transitionId.startsWith("switch."));
+    for (const row of rows) {
+      expect(row.causationId).toBe(authorization.decidedFromEventId);
+    }
+    if (played.kind !== "SWITCHED") return;
+    expect(played.startedEventId).toBe(
+      rows.find((event) => event.type === "ACCOUNT_SWITCH_STARTED")?.eventId,
+    );
+  });
+
+  it("P5: a played switch is not replayed — the second consider conflicts, visibly", () => {
+    // **Measured, and it is the reason a partial play is not resumed.** The
+    // rows are position-named and invocation-derived, so a replay would append
+    // nothing *if the state had not moved*. It has: the first play moved the
+    // task to `QUOTA_BLOCKED`, so rebuilding row 0 from the ledger's new
+    // current state produces a different `fromState`, a different body, and
+    // the ledger refuses it under the same idempotency key.
+    //
+    // That refusal is the mechanism, not a defect: it is what makes **one
+    // switch per attempt** structural rather than a policy this module
+    // invented, and it is why a restart after a partial play refuses rather
+    // than resuming. Nothing is appended and nothing is forged.
+    const { ledger, invocation } = openWithTask("f4d-replay", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+
+    expect(considerFor(ledger, invocation).kind).toBe("SWITCHED");
+    const after = ledger.status().eventCount;
+
+    expect(() => considerFor(ledger, invocation)).toThrow(/idempotency key/);
+    expect(ledger.status().eventCount).toBe(after);
+    // And no second destination was recorded.
+    const started = ledger
+      .listEvents({ taskId: invocation.taskId })
+      .events.filter((record) => record.event.type === "ACCOUNT_SWITCH_STARTED");
+    expect(started).toHaveLength(1);
+  });
+});
+
+describe("F4d N1-N5, N10: what the walk never does", () => {
+  it("N1/N2: the walk composes no routing and builds no plan", () => {
+    // Asserted over the module's own text: the player may not name the
+    // elector's symbols, and the plan it plays is the one it was handed.
+    const here = resolve(fileURLToPath(import.meta.url), "..");
+    const source = readFileSync(join(here, "..", "..", "src", "switch-executor", "index.ts"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    for (const symbol of ["decideSwitch", "rankAccounts", "resolveRoute", "loadPolicyRegistry"]) {
+      expect({ symbol, present: code.includes(symbol) }).toEqual({ symbol, present: false });
+    }
+    // The one fold that classifies a trigger, never a second one.
+    expect(code).toContain("foldPressureTrigger");
+  });
+
+  it("N3: a played switch reads only this attempt's own pressure rows", () => {
+    // A different attempt's rows, and rows a played plan itself wrote, must
+    // not satisfy the match: a decision may never feed its own next decision.
+    const { ledger, invocation } = openWithTask("f4d-other-attempt", F4D_TASK);
+    const other: DurableInvocation = { ...invocation, attempt: invocation.attempt + 1 };
+    seedPressure(ledger, other, "QUOTA_EXHAUSTED");
+    expect(considerFor(ledger, invocation)).toEqual({
+      kind: "NOT_SWITCHED",
+      reason: "NO_PRESSURE",
+    });
+  });
+
+  it("N4: no ACCOUNT_SWITCH_COMPLETED is ever appended", () => {
+    const { ledger, invocation } = openWithTask("f4d-no-completion", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    expect(considerFor(ledger, invocation).kind).toBe("SWITCHED");
+    const types = ledger
+      .listEvents({ taskId: invocation.taskId })
+      .events.map((record) => record.event.type);
+    expect(types).not.toContain("ACCOUNT_SWITCH_COMPLETED");
+    expect(types).toContain("ACCOUNT_SWITCH_STARTED");
+  });
+
+  it("N5: a second, different plan on one attempt conflicts rather than appending", () => {
+    // One switch per attempt is structural, enforced by the ledger's own
+    // idempotency rather than by a policy this module invented.
+    const { ledger, invocation } = openWithTask("f4d-second-plan", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    expect(considerFor(ledger, invocation).kind).toBe("SWITCHED");
+
+    const authorization = authorizationFor();
+    expect(() =>
+      considerFor(ledger, invocation, {
+        authorization: {
+          ...authorization,
+          plan: { ...authorization.plan, selectedAccountId: "acct-primary" },
+        },
+        destinations: [{ accountId: "acct-primary", provider: "claude" }],
+      }),
+    ).toThrow();
+  });
+
+  it("N10: no expiry — decidedAt is audit, not policy", () => {
+    // An authorization decided long ago still plays. Expiring one would be a
+    // routing judgement, and the walk may not make one.
+    const { ledger, invocation } = openWithTask("f4d-no-expiry", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    const ancient = authorizationFor({ decidedAt: "2020-01-01T00:00:00.000Z" });
+    expect(considerFor(ledger, invocation, { authorization: ancient }).kind).toBe("SWITCHED");
   });
 });
