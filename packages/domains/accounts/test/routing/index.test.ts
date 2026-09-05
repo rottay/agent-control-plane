@@ -912,3 +912,63 @@ describe("the module keeps its own laws", () => {
     expect(ROUTING_TERMS).toHaveLength(6);
   });
 });
+
+/**
+ * P8 — the zero-row case reaches the router, and ranks (V2-B1d).
+ *
+ * This is what makes B2 closed rather than claimed. The router gates and scores
+ * exclusively on `estimatedTokensRemaining` and says so by design — it never
+ * reads `remainingRatio` — so a fix that only moved the ratio would have left
+ * the router ranking on the same constant it always did. These accounts differ
+ * only in their published position and have no recorded rows at all, and the
+ * ranking still separates them.
+ */
+describe("published positions rank, with no recorded usage at all", () => {
+  it("P8 ranks two accounts by their published remainder, not by a shared limit", () => {
+    const rich = estimateQuota({
+      record: record("rich", {
+        quotaEstimate: {
+          remainingRatio: 0.8,
+          estimatedTokensRemaining: 800_000,
+          estimatedAt: NOW,
+          confidence: "MEDIUM",
+        },
+      }),
+      observations: [],
+      limitKey: "weekly",
+      now: NOW,
+    });
+    const lean = estimateQuota({
+      record: record("lean", {
+        quotaEstimate: {
+          remainingRatio: 0.2,
+          estimatedTokensRemaining: 200_000,
+          estimatedAt: NOW,
+          confidence: "MEDIUM",
+        },
+      }),
+      observations: [],
+      limitKey: "weekly",
+      now: NOW,
+    });
+    expect(rich.ok && lean.ok).toBe(true);
+    if (!rich.ok || !lean.ok) return;
+
+    // Neither estimated at the full limit from zero evidence, which is the
+    // defect this packet closes.
+    expect(rich.estimate.estimatedTokensRemaining).toBe(800_000);
+    expect(lean.estimate.estimatedTokensRemaining).toBe(200_000);
+
+    const outcome = rank(
+      [record("rich"), record("lean")],
+      [rich.estimate, lean.estimate],
+      [evidence("rich", 0.9), evidence("lean", 0.9)],
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.recommendation.ranked.map((entry) => entry.accountId)).toEqual([
+      "rich",
+      "lean",
+    ]);
+  });
+});

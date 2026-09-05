@@ -5,7 +5,7 @@ import {
   loadAccountsFile,
   resetCalendar,
 } from "@acp/accounts";
-import type { AccountsRefusal } from "@acp/accounts";
+import type { AccountsRefusal, QuotaObservation } from "@acp/accounts";
 import type { AccountActionRecordRow, AccountStatus } from "@acp/ledger";
 
 import { foldEffectiveState } from "../account-actions/index.js";
@@ -13,12 +13,19 @@ import { foldEffectiveState } from "../account-actions/index.js";
 /**
  * The accounts read model (P8-8F).
  *
- * The one route on this plane whose source is not the ledger. It composes the
- * landed accounts domain — `loadAccountsFile` → `buildRegistry` → per-account
- * `estimateQuota` and `resetCalendar` — and maps every possible refusal into a
- * value. **Nothing here throws for a missing or malformed owner file**: on a
- * fresh machine there is no accounts file, and a 500 would report a broken
- * server for the commonest correct state there is.
+ * The one route whose **baseline** is the owner file rather than the ledger. It
+ * composes the landed accounts domain — `loadAccountsFile` → `buildRegistry` →
+ * per-account `estimateQuota` and `resetCalendar` — and maps every possible
+ * refusal into a value. **Nothing here throws for a missing or malformed owner
+ * file**: on a fresh machine there is no accounts file, and a 500 would report a
+ * broken server for the commonest correct state there is.
+ *
+ * The ledger contributes two things on top of that baseline, and the header used
+ * to deny both. Since P8-8G it supplies the **action history** the effective
+ * state is folded from, and since V2-B1d the **recorded usage** the quota
+ * estimate subtracts. Both arrive as optional sources — `actionsFor` and
+ * `usageFor` — so a caller with no ledger still gets the owner file's own
+ * position, which is what "file only" has always meant here.
  *
  * The clock is injected, exactly as the accounts domain requires. This module
  * never reads one, so two calls with the same file and the same instant produce
@@ -150,6 +157,16 @@ export function readAccounts(
    * nobody asked about actions.
    */
   actionsFor?: (accountId: string) => readonly AccountActionRecordRow[],
+  /**
+   * The recorded-usage source, when one is available (V2-B1d).
+   *
+   * Optional exactly as `actionsFor` is, and for the same reason: this read
+   * model may be asked without a ledger, and absent means "file only" — the
+   * honest answer when nobody asked. The CLI's reader is NOT optional, because
+   * it is electing an account and must not elect on absent evidence. That
+   * asymmetry is deliberate and is recorded in ADR 0035.
+   */
+  usageFor?: (accountId: string, since: string) => readonly QuotaObservation[],
 ): AccountsOutcome {
   const loaded = loadAccountsFile(accountsFilePath);
   if (!loaded.ok) {
@@ -158,14 +175,17 @@ export function readAccounts(
 
   const registry = buildRegistry(loaded.registry.accounts);
   const items = registry.accounts.map((record) => {
-    // The quota fold is handed no observations here: this endpoint reports what
-    // the account record itself declares, and the spend-derived estimate is the
-    // ledger's story, told by the initiative plane. An estimate over an empty
-    // observation set is refused by the domain rather than returning zero, and
-    // that refusal is reported as an unknown ratio rather than as a false one.
+    // V2-B1d. The fold is handed the spend the ledger recorded since this
+    // record's own baseline was published, when a source is available. The
+    // comment here used to say no observations were supplied because "the
+    // spend-derived estimate is the ledger's story, told by the initiative
+    // plane" -- which described the split accurately and left this endpoint
+    // publishing a figure that could never move. With no source it still
+    // reports the published position, which is the same answer it always gave
+    // for a file-only read and is now stated as such rather than as a limit.
     const estimate = estimateQuota({
       record,
-      observations: [],
+      observations: usageFor?.(record.accountId, record.quotaEstimate.estimatedAt) ?? [],
       limitKey: Object.keys(record.knownLimits)[0] ?? "",
       now,
     });

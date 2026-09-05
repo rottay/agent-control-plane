@@ -48,8 +48,8 @@ import {
   loadAccountsFile,
   loadPolicyRegistry,
 } from "@acp/accounts";
-import type { CandidateEvidence, PolicyRouteRequest, RoutingRequest } from "@acp/accounts";
-import { composeSubmission } from "@acp/runtime";
+import type { CandidateEvidence, PolicyRouteRequest, QuotaObservation, RoutingRequest } from "@acp/accounts";
+import { composeSubmission, readAccountUsage } from "@acp/runtime";
 
 import {
   renderError,
@@ -1031,7 +1031,7 @@ interface SubmissionResult {
   readonly exitCode: number;
 }
 
-function runSubmission(values: ParsedValues, io: CliIo): SubmissionResult {
+function runSubmission(values: ParsedValues, io: CliIo, ledger: Ledger): SubmissionResult {
   const configPath = absolutePathOption(values, "config");
   const accountsPath = absolutePathOption(values, "accounts");
   const policyPath = absolutePathOption(values, "policy");
@@ -1082,6 +1082,23 @@ function runSubmission(values: ParsedValues, io: CliIo): SubmissionResult {
   }
 
   const registry = buildRegistry(accounts.registry.accounts);
+
+  /**
+   * The spend this account has recorded since its own baseline was published.
+   *
+   * A refusal from the reader is a refusal here: it is never coerced to zero
+   * observations, because zero observations now means "the published position
+   * stands" and a failed scan is not that fact.
+   */
+  const observationsFor = (record: (typeof registry.accounts)[number]): readonly QuotaObservation[] => {
+    const read = readAccountUsage(ledger, record.accountId, {
+      since: record.quotaEstimate.estimatedAt,
+    });
+    if (!read.ok) {
+      throw failure(EXIT_UNAVAILABLE, "LEDGER_UNAVAILABLE", "the recorded usage could not be read", read.at);
+    }
+    return read.observations;
+  };
   const evidence: CandidateEvidence[] = registry.accounts.map((record) => ({
     accountId: record.accountId,
     acceptance: EVIDENCE_ABSENT,
@@ -1090,12 +1107,14 @@ function runSubmission(values: ParsedValues, io: CliIo): SubmissionResult {
   }));
   const estimates = registry.accounts.map((record) => ({
     accountId: record.accountId,
-    // The same fold the observation plane already performs in production: no
-    // observations are supplied, so the estimate is the record's own published
-    // position. A second way of estimating would be a second answer.
+    // V2-B1d. The observations are the spend the ledger recorded since this
+    // record's own baseline was published, read exhaustively for this account.
+    // The comment here used to say none were supplied "so the estimate is the
+    // record's own published position" -- which was true, and was the defect:
+    // a router that ranks on a figure nothing can move is weighing a constant.
     outcome: estimateQuota({
       record,
-      observations: [],
+      observations: observationsFor(record),
       limitKey: Object.keys(record.knownLimits)[0] ?? "",
       now,
     }),
@@ -1247,19 +1266,6 @@ export async function run(
     );
   }
 
-  // V2-B7S. The planning verb branches here, ahead of the `--database` law and
-  // ahead of `openLedger`: it opens no ledger, so requiring one would require a
-  // thing it never touches. Every verb below this line is untouched by it.
-  if (spec.name === SUBMISSION_COMMAND) {
-    try {
-      const result = runSubmission(values, io);
-      io.stdout(renderJson(result.document));
-      return result.exitCode;
-    } catch (error: unknown) {
-      return emitFailure(error instanceof CliFailure ? error : fromUnknownError(error), format, io);
-    }
-  }
-
   const databasePath = stringOption(values, "database");
   if (databasePath === undefined || databasePath === "") {
     return emitFailure(
@@ -1344,6 +1350,25 @@ export async function run(
       return failed.exitCode;
     }
     return emitFailure(failed, format, io);
+  }
+
+  // V2-B7S, moved below the `--database` law at V2-B1d. The planning verb used
+  // to branch above it, under a comment saying it opened no ledger so requiring
+  // one would require a thing it never touches. That is no longer true: the
+  // election now weighs the usage the ledger recorded, so it needs the ledger
+  // the law is about -- and it takes the one this function already opened
+  // query-only rather than performing a bespoke open of its own. One law, one
+  // open.
+  if (spec.name === SUBMISSION_COMMAND) {
+    try {
+      const result = runSubmission(values, io, ledger);
+      io.stdout(renderJson(result.document));
+      return result.exitCode;
+    } catch (error: unknown) {
+      return emitFailure(error instanceof CliFailure ? error : fromUnknownError(error), format, io);
+    } finally {
+      ledger.close();
+    }
   }
 
   try {

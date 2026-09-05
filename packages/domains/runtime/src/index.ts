@@ -322,7 +322,8 @@ export type {
   FailurePrecheck,
   FailureVerdict,
 } from "./failure/index.js";
-export { USAGE_TOKENS_MAX, usageTransitionId } from "./usage/index.js";
+export { USAGE_TOKENS_MAX, readAccountUsage, usageTransitionId } from "./usage/index.js";
+export type { UsageEventSource } from "./usage/index.js";
 export type { UsageSample, UsageSink } from "./execution-effects/index.js";
 
 // V2-B4b stage 2: the durable tool-call receipt. The seam between the tool edge

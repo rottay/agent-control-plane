@@ -8,10 +8,12 @@ import {
   ACCOUNTS_UNAVAILABLE_REASONS,
   LEDGER_CONTRACT_VERSION,
 } from "@acp/protocol";
-import { openLedger } from "@acp/ledger";
+import { LedgerClosedError, openLedger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { readAccounts } from "../../src/accounts/index.js";
 import { buildServer } from "../../src/build-server/index.js";
+import { classifyUnexpectedError } from "../../src/errors/index.js";
 
 /**
  * Evidence for the accounts read.
@@ -308,5 +310,56 @@ describe("the authority overlay on the accounts read (P8-8G packet 2)", () => {
     expect(item.stateSource).toBe("OWNER_FILE");
     expect(item.effectiveState).toBe(item.state);
     expect(item.lastAction).toBeNull();
+  });
+});
+
+/**
+ * The recorded-usage source (V2-B1d).
+ *
+ * The read model may be asked without a ledger, so `usageFor` is optional
+ * exactly as `actionsFor` is — and absent means "file only", which is what this
+ * endpoint always answered and is now stated as such rather than as a limit.
+ */
+describe("GET /api/v1/accounts — recorded usage", () => {
+  it("N9 reports the published position when no usage source is supplied", async () => {
+    // Unchanged behaviour, asserted so the optionality is a decision rather
+    // than an accident: the figure is the record's own, not the bare limit.
+    const root = temporaryRoot();
+    const file = writeOwnerFile(root, ownerDocument([account()]));
+    const body = await get(root, file);
+    expect(body.status).toBe("READY");
+    if (body.status !== "READY") throw new Error("expected READY");
+    const item = body.items[0];
+    if (item === undefined) throw new Error("expected one account");
+    expect(item.quota.remainingRatio).toBe(0.5);
+  });
+
+  it("N10 lets a real LedgerClosedError reach the classifier, which answers 503", () => {
+    // The class matters, and the fixture constructs the real one. The route's
+    // classifier switches on `error.name`: `LedgerClosedError` maps to
+    // `LEDGER_UNAVAILABLE` (503), while a plain `Error` -- or a
+    // `LedgerQueryError` -- falls to `default` and answers 500. A fixture that
+    // threw `new Error(...)` would assert the wrong contract and pass.
+    const root = temporaryRoot();
+    const file = writeOwnerFile(root, ownerDocument([account()]));
+
+    // The read model does not swallow it: a failed scan is not "zero
+    // observations", which would silently report the published position as if
+    // the ledger had agreed.
+    expect(() =>
+      readAccounts(file, PINNED_NOW, undefined, () => {
+        throw new LedgerClosedError("the ledger is closed");
+      }),
+    ).toThrow(LedgerClosedError);
+
+    // And what the route does with it.
+    expect(classifyUnexpectedError(new LedgerClosedError("the ledger is closed"))).toMatchObject({
+      code: "LEDGER_UNAVAILABLE",
+    });
+    // Non-vacuous: a plain Error would have been a 500, so the class is doing
+    // the work rather than the assertion.
+    expect(classifyUnexpectedError(new Error("something else"))).toMatchObject({
+      code: "INTERNAL",
+    });
   });
 });

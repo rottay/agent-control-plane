@@ -13,6 +13,7 @@ import {
   TOKENS_USED_MAX,
   estimateQuota,
   resetCalendar,
+  usageObservationsFrom,
   weakerConfidence,
 } from "../../src/quota/index.js";
 import type { QuotaOutcome, QuotaRefused, ResetOutcome, QuotaObservation } from "../../src/quota/index.js";
@@ -364,7 +365,11 @@ describe("an instant must name its own offset", () => {
 });
 
 describe("an estimate is produced, or classified — never defaulted", () => {
-  it("measures usage against the named limit", () => {
+  it("measures usage against the published baseline, not the bare limit", () => {
+    // V2-B1d. The subtrahend is the owner's published position (500 of 1 000),
+    // not the declared limit: the ledger contributes spend SINCE that baseline
+    // was published, and subtracting from the limit would ignore everything the
+    // owner already accounted for.
     const outcome = estimate({}, [observed(250), observed(150)]);
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
@@ -374,8 +379,8 @@ describe("an estimate is produced, or classified — never defaulted", () => {
       limitTokens: 1_000,
       observedTokensUsed: 400,
       observationCount: 2,
-      remainingRatio: 0.6,
-      estimatedTokensRemaining: 600,
+      remainingRatio: 0.1,
+      estimatedTokensRemaining: 100,
       overBudget: false,
       confidence: "MEDIUM",
       estimatedAt: NOW,
@@ -389,12 +394,14 @@ describe("an estimate is produced, or classified — never defaulted", () => {
     });
   });
 
-  it("reports a full ratio when nothing has been used", () => {
+  it("reports the published position when nothing has been recorded", () => {
+    // Was "a full ratio", which is precisely the defect V2-B1d closes: with no
+    // evidence the answer is the owner's own figure, never the full limit.
     const outcome = estimate({}, []);
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
-    expect(outcome.estimate.remainingRatio).toBe(1);
-    expect(outcome.estimate.estimatedTokensRemaining).toBe(1_000);
+    expect(outcome.estimate.remainingRatio).toBe(0.5);
+    expect(outcome.estimate.estimatedTokensRemaining).toBe(500);
     // No observations is the weakest evidence there is, and it says so.
     expect(outcome.estimate.confidence).toBe("LOW");
   });
@@ -411,7 +418,8 @@ describe("an estimate is produced, or classified — never defaulted", () => {
   });
 
   it("distinguishes exactly empty from over budget", () => {
-    const exact = estimate({}, [observed(1_000)]);
+    // Against the baseline, which is what the delta is subtracted from.
+    const exact = estimate({}, [observed(500)]);
     expect(exact.ok).toBe(true);
     if (!exact.ok) return;
     expect({ ratio: exact.estimate.remainingRatio, over: exact.estimate.overBudget }).toEqual({
@@ -571,7 +579,20 @@ describe("the evidence has to hold together", () => {
     // 50_000 observations of 100 tokens each. If the accumulator were lossy
     // this is where it would show.
     const many = Array.from({ length: 50_000 }, () => observed(100));
-    const outcome = estimate({ knownLimits: { weekly: 10_000_000 } }, many);
+    // The baseline is published as an exact token count, so the arithmetic
+    // under test is the accumulator rather than the ratio's provenance.
+    const outcome = estimate(
+      {
+        knownLimits: { weekly: 10_000_000 },
+        quotaEstimate: {
+          remainingRatio: 1,
+          estimatedTokensRemaining: 10_000_000,
+          estimatedAt: NOW,
+          confidence: "MEDIUM",
+        },
+      },
+      many,
+    );
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.estimate.observedTokensUsed).toBe(5_000_000);
@@ -753,5 +774,295 @@ describe("the module is pure, and stays that way", () => {
     estimateQuota({ record: subject, observations, limitKey: "weekly", now: NOW });
     expect(JSON.stringify(observations)).toBe(before);
     expect(JSON.stringify(subject)).toBe(recordBefore);
+  });
+});
+
+/**
+ * The estimate is the published baseline minus recorded spend (V2-B1d).
+ *
+ * Before this packet the accumulation loop never ran — both production callers
+ * passed `[]` — so every account estimated at its full declared limit from zero
+ * evidence, and a router that ranks on that figure was ranking on a constant.
+ */
+describe("the baseline, minus what the ledger recorded since it was published", () => {
+  const AFTER = "2026-08-28T11:30:00Z";
+
+  function estimateWith(observations: readonly QuotaObservation[], overrides: Overrides = {}) {
+    return estimateQuota({
+      record: record(overrides),
+      observations,
+      limitKey: "weekly",
+      now: NOW,
+    });
+  }
+
+  it("N1 reports the published position with zero rows, in both representations", () => {
+    // Never the full limit. The published baseline is 500 of 1 000, and with no
+    // evidence that is exactly what comes back -- ratio included, because the
+    // ratio is derived from the post-delta token count rather than computed
+    // beside it.
+    const outcome = estimateWith([]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.estimate.estimatedTokensRemaining).toBe(500);
+    expect(outcome.estimate.remainingRatio).toBe(0.5);
+    expect(outcome.estimate.observationCount).toBe(0);
+    expect(outcome.estimate.confidence).toBe("LOW");
+  });
+
+  it("P1 estimates below the published baseline once usage is recorded", () => {
+    const outcome = estimateWith([{ tokensUsed: 120, observedAt: AFTER }]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.estimate.estimatedTokensRemaining).toBe(380);
+    expect(outcome.estimate.observedTokensUsed).toBe(120);
+  });
+
+  it("P9 derives the ratio from the post-delta token count, always", () => {
+    // The two published representations of one fact cannot drift apart.
+    for (const used of [0, 1, 120, 499, 500, 750]) {
+      const outcome = estimateWith(used === 0 ? [] : [{ tokensUsed: used, observedAt: AFTER }]);
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.estimate.remainingRatio).toBe(
+        outcome.estimate.estimatedTokensRemaining / outcome.estimate.limitTokens,
+      );
+      // And within the range the wire contract accepts, always.
+      expect(outcome.estimate.remainingRatio).toBeGreaterThanOrEqual(0);
+      expect(outcome.estimate.remainingRatio).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("P10 takes the exact token count as the baseline when the two disagree", () => {
+    // A count is what the router spends; a ratio is a rounding of it. This is a
+    // BASELINE rule only -- never an admission one, which N2 pins.
+    const outcome = estimateWith([], {
+      quotaEstimate: {
+        remainingRatio: 0.9,
+        estimatedTokensRemaining: 500,
+        estimatedAt: NOW,
+        confidence: "MEDIUM",
+      },
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.estimate.estimatedTokensRemaining).toBe(500);
+    expect(outcome.estimate.remainingRatio).toBe(0.5);
+  });
+
+  it("N2 refuses a null ratio whatever the token count says", () => {
+    // §3.1a. The estimator and the router admit on the same field, and this is
+    // the case where they would otherwise diverge: a published token count with
+    // no published ratio. If this ever admits, the gateway publishes a figure
+    // for an account the CLI election refuses.
+    for (const tokens of [null, 500]) {
+      const outcome = estimateWith([], {
+        quotaEstimate: {
+          remainingRatio: null,
+          estimatedTokensRemaining: tokens,
+          estimatedAt: NOW,
+          confidence: "LOW",
+        },
+      });
+      expect({ tokens, ok: outcome.ok }).toEqual({ tokens, ok: false });
+      if (outcome.ok) return;
+      expect(outcome.reason).toBe("ACCOUNT_QUOTA_UNPUBLISHED");
+      expect(outcome.at).toBe("record.quotaEstimate.remainingRatio");
+    }
+  });
+
+  it("caps a published count above the limit, so the ratio stays protocol-safe", () => {
+    // The contract bounds `estimatedTokensRemaining` only as a non-negative
+    // integer and nothing cross-checks it against `knownLimits`, so a
+    // contract-valid owner file can claim more tokens than the limit allows.
+    // Uncapped, the derived ratio exceeded 1 -- which `AccountsResponse` refuses
+    // (`remainingRatio` is `min(0).max(1)`), so an owner's typo became a 500
+    // from the accounts route rather than a figure anyone could read.
+    const outcome = estimateWith([], {
+      quotaEstimate: {
+        remainingRatio: 1,
+        estimatedTokensRemaining: 5_000,
+        estimatedAt: NOW,
+        confidence: "MEDIUM",
+      },
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // Capped at the limit, and the ratio is therefore exactly 1 rather than 5.
+    expect(outcome.estimate.estimatedTokensRemaining).toBe(1_000);
+    expect(outcome.estimate.remainingRatio).toBe(1);
+    // The bound the wire contract enforces, asserted here so the arithmetic
+    // cannot drift back out of range without this failing first.
+    expect(outcome.estimate.remainingRatio).toBeGreaterThanOrEqual(0);
+    expect(outcome.estimate.remainingRatio).toBeLessThanOrEqual(1);
+
+    // Capping is fail-safe, not fail-closed: the account still elects, with at
+    // most its own limit. And the delta is still subtracted from the capped
+    // baseline rather than from the inflated one.
+    const spent = estimateWith([{ tokensUsed: 250, observedAt: AFTER }], {
+      quotaEstimate: {
+        remainingRatio: 1,
+        estimatedTokensRemaining: 5_000,
+        estimatedAt: NOW,
+        confidence: "MEDIUM",
+      },
+    });
+    expect(spent.ok).toBe(true);
+    if (!spent.ok) return;
+    expect(spent.estimate.estimatedTokensRemaining).toBe(750);
+    expect(spent.estimate.remainingRatio).toBe(0.75);
+  });
+
+  it("keeps exact-token precedence everywhere the count is within range", () => {
+    // The cap is a ceiling, not a replacement: a count at or below the limit
+    // still beats the ratio, which is the rounding of it.
+    const outcome = estimateWith([], {
+      quotaEstimate: {
+        remainingRatio: 0.9,
+        estimatedTokensRemaining: 1_000,
+        estimatedAt: NOW,
+        confidence: "MEDIUM",
+      },
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.estimate.estimatedTokensRemaining).toBe(1_000);
+    expect(outcome.estimate.remainingRatio).toBe(1);
+  });
+
+  it("N13 clamps at zero and still reports overBudget truthfully", () => {
+    const outcome = estimateWith([{ tokensUsed: 700, observedAt: AFTER }]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.estimate.estimatedTokensRemaining).toBe(0);
+    expect(outcome.estimate.remainingRatio).toBe(0);
+    expect(outcome.estimate.overBudget).toBe(true);
+  });
+
+  it("P3 raises observationCount and confidence once rows are included", () => {
+    const outcome = estimateWith([{ tokensUsed: 10, observedAt: AFTER }]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.estimate.observationCount).toBe(1);
+    expect(outcome.estimate.confidence).toBe("MEDIUM");
+  });
+
+  it("P2 ranks two accounts by recorded usage rather than tying them", () => {
+    const light = estimateWith([{ tokensUsed: 50, observedAt: AFTER }]);
+    const heavy = estimateWith([{ tokensUsed: 300, observedAt: AFTER }]);
+    expect(light.ok && heavy.ok).toBe(true);
+    if (!light.ok || !heavy.ok) return;
+    expect(light.estimate.estimatedTokensRemaining).toBeGreaterThan(
+      heavy.estimate.estimatedTokensRemaining,
+    );
+  });
+
+  it("N11 still refuses an observation from after now", () => {
+    const outcome = estimateWith([{ tokensUsed: 10, observedAt: "2026-08-28T12:30:00Z" }]);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe("OBSERVATION_IN_FUTURE");
+  });
+
+  it("N12 leaves QUOTA_REFUSALS at thirteen members", () => {
+    expect(QUOTA_REFUSALS).toHaveLength(13);
+    expect([...QUOTA_REFUSALS]).toEqual([...QUOTA_REFUSALS].sort());
+  });
+});
+
+/**
+ * The fold: which rows are evidence, which are somebody else's, and which are
+ * a refusal (V2-B1d §3.2).
+ */
+describe("folding recorded usage rows into observations", () => {
+  const SINCE = "2026-08-28T11:00:00Z";
+  const AFTER = "2026-08-28T11:30:00Z";
+
+  function row(overrides: Record<string, unknown> = {}): never {
+    return {
+      payload: { accountId: "acct-primary", tokens: 10 },
+      occurredAt: AFTER,
+      ...overrides,
+    } as never;
+  }
+
+  it("P7 includes rows strictly after the anchor and excludes the rest", () => {
+    // The anchor is `quotaEstimate.estimatedAt`, not a derived window: the
+    // record carries the window's END and no period, so its start is not
+    // derivable. A row at the exact instant is already inside the baseline.
+    const outcome = usageObservationsFrom(
+      [
+        row({ occurredAt: "2026-08-28T10:59:59Z" }),
+        row({ occurredAt: SINCE }),
+        row({ occurredAt: AFTER }),
+      ],
+      "acct-primary",
+      SINCE,
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations).toEqual([{ tokensUsed: 10, observedAt: AFTER }]);
+  });
+
+  it("N5 excludes another account silently and refuses an unattributed row", () => {
+    // The asymmetry is deliberate: a row for somebody else is not this
+    // account's evidence, while a row that does not say whose spend it is
+    // cannot be excluded as somebody else's, because nothing says it is.
+    const other = usageObservationsFrom([row({ payload: { accountId: "acct-other", tokens: 10 } })], "acct-primary", SINCE);
+    expect(other.ok).toBe(true);
+    if (other.ok) expect(other.observations).toEqual([]);
+
+    for (const payload of [{ tokens: 10 }, { accountId: 7, tokens: 10 }, { accountId: "", tokens: 10 }]) {
+      const outcome = usageObservationsFrom([row({ payload })], "acct-primary", SINCE);
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) return;
+      expect(outcome.reason).toBe("OBSERVATION_INVALID");
+      expect(outcome.at).toBe("rows[0].payload.accountId");
+    }
+  });
+
+  it("N3 refuses a payload without an integer token count rather than skipping it", () => {
+    // Skipping under-counts, which over-reports remaining quota -- the one
+    // direction this packet exists to close.
+    for (const tokens of [undefined, "10", 1.5, -1, Number.NaN]) {
+      const outcome = usageObservationsFrom(
+        [row({ payload: { accountId: "acct-primary", tokens } })],
+        "acct-primary",
+        SINCE,
+      );
+      expect({ tokens, ok: outcome.ok }).toEqual({ tokens, ok: false });
+      if (outcome.ok) return;
+      expect(outcome.reason).toBe("OBSERVATION_INVALID");
+    }
+  });
+
+  it("N4 refuses a token count above the ceiling", () => {
+    const outcome = usageObservationsFrom(
+      [row({ payload: { accountId: "acct-primary", tokens: TOKENS_USED_MAX + 1 } })],
+      "acct-primary",
+      SINCE,
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe("OBSERVATION_OUT_OF_RANGE");
+  });
+
+  it("refuses an unreadable anchor rather than folding against nothing", () => {
+    const outcome = usageObservationsFrom([row()], "acct-primary", "not-an-instant");
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe("TIMESTAMP_INVALID");
+    expect(outcome.at).toBe("since");
+  });
+
+  it("names the input and never its value in a refusal", () => {
+    const outcome = usageObservationsFrom(
+      [row({ payload: { accountId: "acct-primary", tokens: "sk-live-do-not-log" } })],
+      "acct-primary",
+      SINCE,
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(JSON.stringify(outcome)).not.toContain("sk-live");
   });
 });

@@ -315,6 +315,30 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("token@");
   });
 
+  it("refuses an entrypoint that hands the estimator an empty observation set (L-V2B1D-1)", () => {
+    // V2-B1d's law, with a fixture that can falsify it. Before that packet both
+    // production doors passed `observations: []`, so every account estimated at
+    // its full declared limit from zero evidence and the router ranked on a
+    // constant. A law with no failing fixture is a law nobody has tested.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line rather than a nonzero exit — the
+    // same discipline the conformance probe above holds to. Asserting only
+    // "nonzero" would prove nothing about this law.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/probe/src/index.ts",
+      "export const outcome = estimateQuota({ record, observations: [], limitKey, now });\n",
+    );
+    commitAll(root);
+
+    const { status, output } = runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("hands estimateQuota an empty observation set");
+    expect(output).toContain("packages/entrypoints/probe/src/index.ts");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The

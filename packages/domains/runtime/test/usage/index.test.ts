@@ -13,7 +13,8 @@ import {
   scenarioLedgerPath,
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
-import { recordTokenObservation } from "../../src/usage/index.js";
+import { readAccountUsage, recordTokenObservation } from "../../src/usage/index.js";
+import type { UsageEventSource } from "../../src/usage/index.js";
 import type { DurableInvocation } from "../../src/contracts/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
 
@@ -267,5 +268,131 @@ describe("the causal thread (P8-8E2)", () => {
       causedBy: cause,
     });
     expect(result.event.causationId).toBe(cause);
+  });
+});
+
+/**
+ * Reading back what was recorded, for one account, exhaustively (V2-B1d).
+ *
+ * Driven through the structural `UsageEventSource` rather than a real ledger:
+ * the ceiling case needs more rows than it is reasonable to append, and the
+ * paging case needs a `hasMore` the fake can control precisely. What is under
+ * test is the pager and its refusals, not SQLite.
+ */
+describe("reading one account's recorded usage", () => {
+  const SINCE = "2026-08-28T11:00:00Z";
+  const AFTER = "2026-08-28T11:30:00Z";
+
+  function row(accountId: string, tokens: number, occurredAt = AFTER): { readonly event: never } {
+    return { event: { payload: { accountId, tokens }, occurredAt } as never };
+  }
+
+  /** A source that hands out fixed pages, and records what it was asked. */
+  function pagedSource(
+    pages: readonly (readonly { readonly event: never }[])[],
+  ): { readonly source: UsageEventSource; readonly asked: { readonly queries: unknown[] } } {
+    const queries: unknown[] = [];
+    let index = 0;
+    const source: UsageEventSource = {
+      listEvents: (query) => {
+        queries.push(query);
+        const events = pages[index] ?? [];
+        const hasMore = index < pages.length - 1;
+        index += 1;
+        return { events, nextCursor: hasMore ? index : null, hasMore };
+      },
+    };
+    return { source, asked: { queries } };
+  }
+
+  it("P4 sums across pages, following the cursor to exhaustion", () => {
+    const { source, asked } = pagedSource([
+      [row("acct-primary", 10), row("acct-primary", 20)],
+      [row("acct-primary", 30)],
+    ]);
+    const outcome = readAccountUsage(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((o) => o.tokensUsed)).toEqual([10, 20, 30]);
+    // Two pages, and the second was asked for by cursor rather than by offset.
+    expect(asked.queries).toHaveLength(2);
+    expect(asked.queries[0]).toMatchObject({ type: "TOKEN_USAGE_RECORDED", afterSequence: 0 });
+    expect(asked.queries[1]).toMatchObject({ afterSequence: 1 });
+  });
+
+  it("P5 sums only the requested account from a mixed ledger", () => {
+    const { source } = pagedSource([
+      [row("acct-primary", 10), row("acct-other", 900), row("acct-primary", 5)],
+    ]);
+    const primary = readAccountUsage(source, "acct-primary", { since: SINCE });
+    expect(primary.ok).toBe(true);
+    if (!primary.ok) return;
+    expect(primary.observations.map((o) => o.tokensUsed)).toEqual([10, 5]);
+
+    const { source: second } = pagedSource([
+      [row("acct-primary", 10), row("acct-other", 900), row("acct-primary", 5)],
+    ]);
+    const other = readAccountUsage(second, "acct-other", { since: SINCE });
+    expect(other.ok).toBe(true);
+    if (!other.ok) return;
+    expect(other.observations.map((o) => o.tokensUsed)).toEqual([900]);
+  });
+
+  it("N6 counts the ceiling per account, never plane-wide", () => {
+    // A ledger heavy with other accounts' rows must not refuse this account's
+    // election. `EventQuery` has no account filter, so a plane-wide ceiling
+    // would fail every election permanently once the ledger grew -- monotone,
+    // silent and plane-wide.
+    const noisy = Array.from({ length: 5_000 }, () => row("acct-other", 1));
+    const { source } = pagedSource([[...noisy, row("acct-primary", 7)]]);
+    const outcome = readAccountUsage(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations).toEqual([{ tokensUsed: 7, observedAt: AFTER }]);
+  });
+
+  it("N6 refuses when this account alone exceeds the ceiling, with no truncated success", () => {
+    const pages: (readonly { readonly event: never }[])[] = [];
+    for (let page = 0; page < 101; page += 1) {
+      pages.push(Array.from({ length: 1_000 }, () => row("acct-primary", 1)));
+    }
+    const { source } = pagedSource(pages);
+    const outcome = readAccountUsage(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe("OBSERVATION_COUNT_EXCEEDED");
+  });
+
+  it("N7 propagates a page read that throws, and returns no partial sum", () => {
+    let calls = 0;
+    const source: UsageEventSource = {
+      listEvents: () => {
+        calls += 1;
+        if (calls === 1) {
+          return { events: [row("acct-primary", 10)], nextCursor: 1, hasMore: true };
+        }
+        throw new Error("the ledger went away mid-scan");
+      },
+    };
+    expect(() => readAccountUsage(source, "acct-primary", { since: SINCE })).toThrow();
+  });
+
+  it("returns the fold's refusal verbatim rather than summarising it", () => {
+    const { source } = pagedSource([[row("acct-primary", -1)]]);
+    const outcome = readAccountUsage(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe("OBSERVATION_INVALID");
+    expect(outcome.at).toBe("rows[0].payload.tokens");
+  });
+
+  it("excludes rows at or before the anchor", () => {
+    const { source } = pagedSource([
+      [row("acct-primary", 10, "2026-08-28T10:00:00Z"), row("acct-primary", 20, SINCE), row("acct-primary", 30)],
+    ]);
+    const outcome = readAccountUsage(source, "acct-primary", { since: SINCE });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.observations.map((o) => o.tokensUsed)).toEqual([30]);
   });
 });

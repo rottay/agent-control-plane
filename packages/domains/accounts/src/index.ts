@@ -55,6 +55,7 @@ export {
   TOKENS_USED_MAX,
   estimateQuota,
   resetCalendar,
+  usageObservationsFrom,
   weakerConfidence,
 } from "./quota/index.js";
 

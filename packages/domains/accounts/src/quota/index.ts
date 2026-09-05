@@ -1,4 +1,4 @@
-import type { AccountRecord, ConfidenceLevel } from "@acp/contracts";
+import type { AccountRecord, ConfidenceLevel, ControlPlaneEvent } from "@acp/contracts";
 
 /**
  * Quota estimation and the reset calendar.
@@ -348,6 +348,84 @@ function evidenceConfidence(observationCount: number): ConfidenceLevel {
 }
 
 /**
+ * Fold recorded usage rows into this account's quota observations (V2-B1d).
+ *
+ * The one place `TOKEN_USAGE_RECORDED` rows become `QuotaObservation`s, which
+ * is what `L-V2B1D-1` pins. It takes a contracts-typed value and never a
+ * ledger: this package's import allowlist is `{@acp/contracts}`, and the
+ * acquisition of evidence belongs to the caller that holds a ledger.
+ *
+ * **Excluded versus refused is the distinction that matters here**, because the
+ * two failure directions are not symmetric. Skipping a row under-counts spend,
+ * which over-reports remaining quota — the one direction this packet exists to
+ * close. So:
+ *
+ * - a row for a **different** account is **excluded silently**: it is not this
+ *   account's evidence, and it is not an error;
+ * - a row with a **missing or non-string** `accountId` is **refused**: absence
+ *   of attribution is not attribution elsewhere;
+ * - a malformed or out-of-range `tokens` is **refused**, never skipped;
+ * - a row at or before `since` is **excluded silently**: it is already inside
+ *   the owner's published baseline, and counting it would double-charge.
+ *
+ * `occurredAt > now` is deliberately not checked here. `estimateQuota` owns
+ * that rule (`OBSERVATION_IN_FUTURE`), and one rule has one owner.
+ *
+ * Rows arrive in ledger `sequence` order and are not re-sorted: the ledger's
+ * order is the authority, and a second ordering here could only disagree with
+ * it.
+ */
+export function usageObservationsFrom(
+  rows: readonly ControlPlaneEvent[],
+  accountId: string,
+  since: string,
+):
+  | { readonly ok: true; readonly observations: readonly QuotaObservation[] }
+  | QuotaRefused {
+  const sinceMs = instant(since);
+  if (sinceMs === null) return refuse("TIMESTAMP_INVALID", "since");
+
+  const observations: QuotaObservation[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const at = "rows[" + String(index) + "]";
+    const row = rows[index];
+    if (row === undefined) return refuse("OBSERVATION_INVALID", at);
+
+    const payload: unknown = row.payload;
+    if (typeof payload !== "object" || payload === null) {
+      return refuse("OBSERVATION_INVALID", at + ".payload");
+    }
+    const fields = payload as Record<string, unknown>;
+
+    // Attribution first. A row that does not say whose spend it is cannot be
+    // excluded as somebody else's, because nothing says it is.
+    const rowAccount = fields["accountId"];
+    if (typeof rowAccount !== "string" || rowAccount === "") {
+      return refuse("OBSERVATION_INVALID", at + ".payload.accountId");
+    }
+    if (rowAccount !== accountId) continue;
+
+    const tokens = fields["tokens"];
+    if (typeof tokens !== "number" || !Number.isSafeInteger(tokens) || tokens < 0) {
+      return refuse("OBSERVATION_INVALID", at + ".payload.tokens");
+    }
+    if (tokens > TOKENS_USED_MAX) {
+      return refuse("OBSERVATION_OUT_OF_RANGE", at + ".payload.tokens");
+    }
+
+    const occurredMs = instant(row.occurredAt);
+    if (occurredMs === null) return refuse("OBSERVATION_INVALID", at + ".occurredAt");
+    // Strictly after. A row at the exact instant the baseline was published is
+    // already inside it.
+    if (occurredMs <= sinceMs) continue;
+
+    observations.push({ tokensUsed: tokens, observedAt: row.occurredAt });
+  }
+
+  return { ok: true, observations };
+}
+
+/**
  * Estimate what fraction of an account's quota remains.
  *
  * **What the caller owes.** `observations` are already scoped: this function
@@ -456,7 +534,43 @@ export function estimateQuota(input: QuotaEstimateInput): QuotaOutcome {
     used += tokens;
   }
 
-  const remaining = Math.max(0, limitTokens - used);
+  // The baseline, and the reason this function stopped answering `limitTokens`
+  // from zero evidence (V2-B1d).
+  //
+  // What the ledger contributes is **spend since the owner published their
+  // position**, not spend since the beginning of time. So the estimate is the
+  // published baseline minus that delta, and with no rows it is exactly the
+  // published position -- in both representations. Summing from genesis would
+  // subtract last window's spend from this window's limit for ever, which is
+  // the mirror of the defect this closes and just as silent.
+  //
+  // **The exact token count wins when both published values are non-null and
+  // disagree.** A count is the thing the router spends; a ratio is a rounding
+  // of it. This is a BASELINE rule only, never an admission one: the
+  // `remainingRatio === null` refusal above is untouched, so a record the
+  // router declines is a record this estimator declines, on the same field.
+  //
+  // **A published count above the named limit is capped, not trusted.** The
+  // contract bounds `estimatedTokensRemaining` only as a non-negative integer,
+  // and nothing cross-checks it against `knownLimits` — so a contract-valid
+  // owner file may claim more tokens remaining than the limit allows. Taking
+  // that at face value made the derived ratio exceed 1, which the wire contract
+  // refuses (`remainingRatio` is `min(0).max(1)`), turning an owner's typo into
+  // a 500 from the accounts route.
+  //
+  // Capping rather than refusing is the fail-safe direction. An account is
+  // reported with at most its own limit remaining, which can only make the
+  // router elect it less often, never more; refusing would take an account out
+  // of every election over a figure the owner may simply have overstated.
+  // Exact-token precedence is preserved everywhere the count is within range —
+  // it is the ratio's rounding that the count beats, not the limit.
+  const publishedTokens = record.quotaEstimate.estimatedTokensRemaining;
+  const baselineTokens =
+    typeof publishedTokens === "number" && Number.isSafeInteger(publishedTokens) && publishedTokens >= 0
+      ? Math.min(publishedTokens, limitTokens)
+      : Math.floor(record.quotaEstimate.remainingRatio * limitTokens);
+
+  const remaining = Math.max(0, baselineTokens - used);
   const confidence = weakerConfidence(
     reset.calendar.confidence,
     evidenceConfidence(observations.length),
@@ -470,9 +584,13 @@ export function estimateQuota(input: QuotaEstimateInput): QuotaOutcome {
       limitTokens,
       observedTokensUsed: used,
       observationCount: observations.length,
+      // Derived from the post-delta token count rather than computed beside it,
+      // so the two published representations of one fact cannot drift apart.
       remainingRatio: remaining / limitTokens,
       estimatedTokensRemaining: remaining,
-      overBudget: used > limitTokens,
+      // Truthful, and independent of the clamp above: a caller can tell
+      // "exactly empty" from "went over".
+      overBudget: used > baselineTokens,
       confidence,
       estimatedAt: now,
       reset: reset.calendar,

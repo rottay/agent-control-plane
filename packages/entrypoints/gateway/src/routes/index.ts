@@ -34,6 +34,7 @@ import {
   WorkerPageResponse,
   WorkersQuery,
 } from "@acp/protocol";
+import { readAccountUsage } from "@acp/runtime";
 import type { Ledger } from "@acp/ledger";
 
 import {
@@ -717,8 +718,22 @@ export function registerRoutes(
     // implementation of the law, so the two cannot disagree about which
     // source governs.
     const { ledger: openLedgerForActions } = requireOpen(source);
-    const outcome = readAccounts(accountsFilePath, instant(), (accountId) =>
-      openLedgerForActions.listAccountActions(accountId),
+    // V2-B1d: the recorded-usage source is handed in the same way, so the read
+    // model publishes the same figure the CLI election ranks on. A refusal from
+    // the reader throws here and is classified by `classifyUnexpectedError`,
+    // rather than being coerced to zero observations -- zero observations means
+    // "the published position stands", which a failed scan is not.
+    const outcome = readAccounts(
+      accountsFilePath,
+      instant(),
+      (accountId) => openLedgerForActions.listAccountActions(accountId),
+      (accountId, since) => {
+        const read = readAccountUsage(openLedgerForActions, accountId, { since });
+        if (!read.ok) {
+          throw new ApiRouteError("LEDGER_UNAVAILABLE", "the recorded usage could not be read", read.at);
+        }
+        return read.observations;
+      },
     );
 
     if (!outcome.ok) {

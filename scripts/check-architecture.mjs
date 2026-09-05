@@ -6103,6 +6103,55 @@ const V2B1C_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1d — the router reads the usage the ledger recorded.
+ *
+ * `estimateQuota`'s accumulation loop never ran: both production callers passed
+ * `observations: []`, so every account estimated at its full declared limit
+ * from zero evidence and the router ranked on a constant. The estimate is now
+ * the owner's published baseline minus the spend the ledger recorded since that
+ * baseline was published, anchored at `quotaEstimate.estimatedAt` with a strict
+ * `>` because the window's START is not derivable from the record.
+ *
+ * **Sixteen paths.** The brief authorized fifteen; the sixteenth,
+ * `packages/domains/accounts/src/index.ts`, was forced and separately
+ * authorized. `@acp/accounts` publishes one entry point and its barrel is an
+ * explicit named list with no `export *`, so the fold was unreachable from
+ * `@acp/runtime` -- which owns the paging because accounts may not import a
+ * ledger -- until the barrel named it. One value export, `usageObservationsFrom`,
+ * with an inline union outcome so the surface grows by exactly one.
+ *
+ * Two export pins moved with it, both inside this file:
+ * `ACCOUNTS_PUBLIC_EXPORTS` 72 -> 73 and `RUNTIME_PUBLIC_EXPORTS` 226 -> 228.
+ * The second is what the brief's own delta table expected.
+ *
+ * `--database` becomes required for `acp submission`: the verb used to branch
+ * above the law under a comment saying it opened no ledger, and the election now
+ * weighs one. No new refusal, event type, migration, route, error code or
+ * contract version; `QUOTA_REFUSALS` stays at thirteen and no capability leaves
+ * `UNKNOWN`.
+ *
+ * Record: `docs/architecture/0035-the-router-reads-recorded-usage.md`.
+ */
+const V2B1D_WRITE_SET = [
+  "packages/domains/accounts/src/quota/index.ts",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/test/quota/index.test.ts",
+  "packages/domains/accounts/test/routing/index.test.ts",
+  "packages/domains/runtime/src/usage/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/src/accounts/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/test/accounts/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0035-the-router-reads-recorded-usage.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6248,6 +6297,7 @@ const WRITE_SET = [
   ...V2L4_WRITE_SET,
   ...V2B26_WRITE_SET,
   ...V2B1C_WRITE_SET,
+  ...V2B1D_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -6963,6 +7013,7 @@ const PATH_SCOPED_LAWS = [
   { law: "the recorded route travels under one pinned key", scope: "packages/*/*/src/**" },
   { law: "the submission digest has one producer and one door", scope: "packages/*/*/src/**" },
   { law: "one producer of an execution instruction, and two named drill exceptions", scope: "packages/entrypoints/daemon/src/**, packages/domains/runtime/src/**, packages/edges/**" },
+  { law: "one fold maps recorded usage into quota observations, and no door hands the estimator an empty set", scope: "packages/domains/accounts/**/src, packages/domains/runtime/**/src, packages/entrypoints/*/src" },
   { law: "the publication hook's semantics, driven case by case", scope: ".githooks/pre-push" },
   { law: "both drivers declare their capabilities, pinned by equality", scope: "the two driver sources" },
   {
@@ -13065,6 +13116,10 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "UsageSink",
   "failurePrecheck",
   "settleFailure",
+  // V2-B1d: the exhaustive per-account usage reader, and the structural
+  // ledger surface it takes so a fake can drive the ceiling case.
+  "readAccountUsage",
+  "UsageEventSource",
   "usageTransitionId",
   // V2-B7R: the shared failure classification, asked by both drivers.
   "FAILURE_REFUSALS",
@@ -13230,6 +13285,10 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "QUOTA_REFUSALS",
   "TOKENS_USED_MAX",
   "estimateQuota",
+  // V2-B1d: the one fold that maps recorded usage rows into quota
+  // observations. `@acp/runtime` pages the ledger and calls it; this package
+  // may not import a ledger, so acquisition and arithmetic stay apart.
+  "usageObservationsFrom",
   "resetCalendar",
   "weakerConfidence",
   // P5C
@@ -15443,6 +15502,78 @@ if (tracked.status === 0) {
     }
   }
   notes.push("no non-daemon entrypoint constructs a driver inside a catch; --mode reaches the constructor");
+
+  // --- L-V2B1D-1: one fold, one reader.
+  //
+  // Exactly one production `src` file maps `TOKEN_USAGE_RECORDED` rows into the
+  // `QuotaObservation` shape, and no entrypoint `src` file hands `estimateQuota`
+  // an empty observation set. The second half is the defect this packet closed:
+  // both production callers passed `observations: []`, so every account
+  // estimated at its full declared limit from zero evidence, and a router that
+  // ranks on that figure was ranking on a constant.
+  //
+  // **The scope is stated here rather than discovered by the law's first
+  // failure.** It reads accounts, runtime and entrypoint `src` only, and
+  // therefore excludes two things deliberately:
+  //
+  // - `packages/domains/observation/**`, a lawful SECOND reader of the same
+  //   event for a different question. It folds per-task rollups, produces no
+  //   `QuotaObservation`, and must not be forced to. A law without this
+  //   exclusion fails on HEAD, which is how a law teaches its author that it
+  //   was about the wrong thing.
+  // - every `test/` tree, where fixtures legitimately construct exactly what
+  //   the law forbids in `src` -- including the negatives that prove the
+  //   estimator still refuses an empty set correctly.
+  const usageFoldScope = tracked.status === 0
+    ? tracked.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter(
+          (relativePath) =>
+            /\.tsx?$/.test(relativePath) &&
+            !relativePath.includes("/test/") &&
+            (/^packages\/domains\/accounts\/src\//.test(relativePath) ||
+              /^packages\/domains\/runtime\/src\//.test(relativePath) ||
+              /^packages\/entrypoints\/[^/]+\/src\//.test(relativePath)),
+        )
+    : [];
+  requireScope(
+    "one fold maps recorded usage into quota observations, and no door hands the estimator an empty set",
+    usageFoldScope.length,
+  );
+  const USAGE_FOLD_OWNER = "packages/domains/accounts/src/quota/index.ts";
+  const usageFolds = [];
+  for (const relativePath of usageFoldScope) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    // The mapping shape, not the word: a file that produces the observation's
+    // own two fields from a row is a mapper, wherever it lives.
+    if (/tokensUsed:\s*[^,;\n]+,?\s*\n?\s*observedAt:/.test(live)) usageFolds.push(relativePath);
+    if (/observations:\s*\[\s*\]/.test(live) && /^packages\/entrypoints\//.test(relativePath)) {
+      fail(
+        relativePath +
+          " hands estimateQuota an empty observation set; the estimate must be the published" +
+          " baseline minus the spend the ledger recorded, never the bare limit",
+      );
+    }
+  }
+  for (const relativePath of usageFolds) {
+    if (relativePath === USAGE_FOLD_OWNER) continue;
+    fail(
+      relativePath +
+        " maps recorded usage into quota observations; exactly one file does that (" +
+        USAGE_FOLD_OWNER +
+        ")",
+    );
+  }
+  if (!usageFolds.includes(USAGE_FOLD_OWNER)) {
+    fail(USAGE_FOLD_OWNER + " no longer holds the one usage fold the law names");
+  }
+  notes.push(
+    "one usage-to-observation fold over " + String(usageFoldScope.length) + " sources, and no door estimates on an empty set",
+  );
 
   // --- L-B1C-1: one producer of an execution instruction.
   //

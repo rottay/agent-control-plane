@@ -1023,9 +1023,23 @@ function writeConfigDocument(dir: string, extra: Record<string, unknown> = {}): 
   return path;
 }
 
-function submissionArgv(config: string, accounts: string, policy: string): readonly string[] {
+/**
+ * V2-B1d: `--database` is required for `submission` too.
+ *
+ * The verb used to branch above the `--database` law under a comment saying it
+ * opened no ledger. It now weighs the usage the ledger recorded, so it needs
+ * one, and every test that drives it supplies one through this helper.
+ */
+function submissionArgv(
+  config: string,
+  accounts: string,
+  policy: string,
+  database: string = emptyLedger(),
+): readonly string[] {
   return [
     "submission",
+    "--database",
+    database,
     "--config",
     config,
     "--accounts",
@@ -1243,6 +1257,8 @@ describe("the verb's refusals are closed and name no value", () => {
     const dir = b7sStage();
     const invocation = await invoke([
       "submission",
+      "--database",
+      emptyLedger(),
       "--config",
       "relative/daemon.json",
       "--accounts",
@@ -1265,6 +1281,8 @@ describe("the verb's refusals are closed and name no value", () => {
     const dir = b7sStage();
     const invocation = await invoke([
       "submission",
+      "--database",
+      emptyLedger(),
       "--config",
       writeConfigDocument(dir),
       "--accounts",
@@ -1492,5 +1510,53 @@ describe("one request schema, parsed by both doors", () => {
     if (fromFile.success && fromBody.success) {
       expect(fromFile.data).toEqual(fromBody.data);
     }
+  });
+});
+
+/**
+ * `--database` is required for `submission` too (V2-B1d).
+ *
+ * The verb weighs the usage the ledger recorded, so the law that was written
+ * for every other verb now covers it as well -- through the one law, not a
+ * second check of its own.
+ */
+describe("the planning verb obeys the database law", () => {
+  it("N15 refuses submission without --database, through the existing usage refusal", async () => {
+    const dir = b7sStage();
+    const invocation = await invoke([
+      "submission",
+      "--config",
+      writeConfigDocument(dir),
+      "--accounts",
+      writeAccountsFile(dir, ["opus"]),
+      "--policy",
+      SHIPPED_POLICY,
+      "--estimated-tokens",
+      "10000",
+      "--reserve-tokens",
+      "5000",
+      "--duration-seconds",
+      "60",
+    ]);
+    expect(invocation.exitCode).toBe(EXIT_USAGE);
+    expect(invocation.stderr).toContain("--database is required");
+  });
+
+  it("N8 maps an unopenable ledger through the per-subclass table, not a blanket code", async () => {
+    // `LEDGER_OPEN` is exit 5. The point is that the mapping is the existing
+    // `fromLedgerError` table rather than a new blanket answer invented here,
+    // and that the election does not silently fall back to the published
+    // position when the evidence could not be read.
+    const dir = b7sStage();
+    const invocation = await invoke(
+      submissionArgv(
+        writeConfigDocument(dir),
+        writeAccountsFile(dir, ["opus"]),
+        SHIPPED_POLICY,
+        join(dir, "no-such-directory", "control-plane.sqlite"),
+      ),
+    );
+    expect(invocation.exitCode).toBe(EXIT_UNAVAILABLE);
+    expect(invocation.stdout).toBe("");
   });
 });

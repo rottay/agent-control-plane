@@ -1,5 +1,10 @@
+import { OBSERVATIONS_MAX, usageObservationsFrom } from "@acp/accounts";
+import type { QuotaObservation, QuotaRefused } from "@acp/accounts";
 import { CONTRACT_VERSION, ControlPlaneEvent } from "@acp/contracts";
-import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts";
+import type {
+  ControlPlaneEvent as ControlPlaneEventType,
+  ControlPlaneEventType as ControlPlaneEventTypeName,
+} from "@acp/contracts";
 
 import type { DurableInvocation } from "../contracts/index.js";
 import { deriveEventCoordinate } from "../core/coordinates/index.js";
@@ -184,4 +189,93 @@ export function recordTokenObservation(
 
   const result = ledger.append(event);
   return { inserted: result.inserted, event: result.record.event };
+}
+
+/**
+ * The ledger surface `readAccountUsage` needs, and nothing more (V2-B1d).
+ *
+ * Structural rather than the `Ledger` class, so the paging and ceiling
+ * behaviours can be driven by a fake without appending a hundred thousand real
+ * rows. `LedgerPort` is not the seam: it has no `listEvents`, and widening it
+ * would put a read the step executor never makes into the executor's own port.
+ */
+export interface UsageEventSource {
+  listEvents(query: {
+    // The contract's own closed event-type union, not a bare string: a wider
+    // parameter here would make the real `Ledger` unassignable to this port,
+    // which is the shape a structural seam is supposed to accept.
+    readonly type?: ControlPlaneEventTypeName | undefined;
+    readonly afterSequence?: number | undefined;
+    readonly limit?: number | undefined;
+  }): {
+    readonly events: readonly { readonly event: ControlPlaneEventType }[];
+    readonly nextCursor: number | null;
+    readonly hasMore: boolean;
+  };
+}
+
+/** The ledger's own page ceiling, restated where the pager needs it. */
+const USAGE_PAGE_LIMIT = 1_000;
+
+/**
+ * Read one account's recorded usage since an instant, exhaustively (V2-B1d).
+ *
+ * The acquisition half of the quota estimate: `@acp/accounts` owns the fold and
+ * may not import a ledger, so this module — which already owns the usage
+ * vocabulary and writes the very events being read — does the paging and hands
+ * the rows to that one fold.
+ *
+ * **Exhaustive, or a refusal. There is no truncated success.** The scan follows
+ * `nextCursor` while `hasMore`, and a partial sum is never returned: it would
+ * under-count spend, which over-reports remaining quota — the single direction
+ * this whole packet exists to close. A caller that receives observations may
+ * rely on them covering every recorded row for that account since the anchor.
+ *
+ * **`OBSERVATIONS_MAX` counts filtered per-account rows, never plane-wide.**
+ * `EventQuery` has no account filter, so a plane-wide ceiling would refuse
+ * every election permanently once the ledger held that many usage rows across
+ * all accounts combined — a monotone, silent, plane-wide failure. The row scan
+ * itself is bounded only by the ledger's size, which is stated here rather than
+ * implied: the cost is one query per thousand usage events, and the correctness
+ * bound is on what is kept.
+ */
+export function readAccountUsage(
+  source: UsageEventSource,
+  accountId: string,
+  options: { readonly since: string },
+):
+  | { readonly ok: true; readonly observations: readonly QuotaObservation[] }
+  | QuotaRefused {
+  const kept: QuotaObservation[] = [];
+  let afterSequence = 0;
+
+  for (;;) {
+    const page = source.listEvents({
+      type: "TOKEN_USAGE_RECORDED",
+      afterSequence,
+      limit: USAGE_PAGE_LIMIT,
+    });
+
+    const folded = usageObservationsFrom(
+      page.events.map((record) => record.event),
+      accountId,
+      options.since,
+    );
+    // Verbatim. A refusal from the fold is the answer, not something to
+    // summarise or coerce to zero observations -- zero observations means "the
+    // published position stands", and a failed scan is not that fact.
+    if (!folded.ok) return folded;
+
+    for (const observation of folded.observations) {
+      kept.push(observation);
+      if (kept.length > OBSERVATIONS_MAX) {
+        return { ok: false, reason: "OBSERVATION_COUNT_EXCEEDED", at: "observations" };
+      }
+    }
+
+    if (!page.hasMore || page.nextCursor === null) break;
+    afterSequence = page.nextCursor;
+  }
+
+  return { ok: true, observations: kept };
 }
