@@ -81,12 +81,15 @@ function walkOf(
       emittedBy: "claude/opus/implementer/01",
       execution: {
         route: ROUTE,
-        binding: {
-          binary: worktreePath + "/fake",
-          configRoot: worktreePath,
-          workdir: worktreePath,
-          limits: { timeoutMs: 1_000, outputBudgetBytes: 1_024, interruptGraceMs: 10, termGraceMs: 10 },
-        },
+        bindings: [
+          {
+            accountId: ROUTE.accountId,
+            binary: worktreePath + "/fake",
+            configRoot: worktreePath,
+            workdir: worktreePath,
+            limits: { timeoutMs: 1_000, outputBudgetBytes: 1_024, interruptGraceMs: 10, termGraceMs: 10 },
+          },
+        ],
       },
     },
   } as unknown as ScheduledWalk;

@@ -200,17 +200,20 @@ function configFor(
       checkPorts: false,
       execution: {
         route: DRILL_ROUTE,
-        binding: {
-          binary: join(workdir, "fake-provider"),
-          configRoot: workdir,
-          workdir,
-          limits: {
-            timeoutMs: 20_000,
-            outputBudgetBytes: 65_536,
-            interruptGraceMs: 200,
-            termGraceMs: 200,
+        bindings: [
+          {
+            accountId: DRILL_ROUTE.accountId,
+            binary: join(workdir, "fake-provider"),
+            configRoot: workdir,
+            workdir,
+            limits: {
+              timeoutMs: 20_000,
+              outputBudgetBytes: 65_536,
+              interruptGraceMs: 200,
+              termGraceMs: 200,
+            },
           },
-        },
+        ],
       },
       ...overrides,
     }),
@@ -732,12 +735,15 @@ function walkEntryFor(
   const taskId = fixedTaskId ?? randomUUID();
   const execution = {
     route: DRILL_ROUTE,
-    binding: {
-      binary: join(workdir, "fake-provider"),
-      configRoot: workdir,
-      workdir,
-      limits: { timeoutMs: 90_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
-    },
+    bindings: [
+      {
+        accountId: DRILL_ROUTE.accountId,
+        binary: join(workdir, "fake-provider"),
+        configRoot: workdir,
+        workdir,
+        limits: { timeoutMs: 90_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+      },
+    ],
   };
   return {
     taskId,
@@ -775,12 +781,15 @@ function singularConfig(
 ): string {
   const execution = {
     route: DRILL_ROUTE,
-    binding: {
-      binary: join(workdir, "fake-provider"),
-      configRoot: workdir,
-      workdir,
-      limits: { timeoutMs: 90_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
-    },
+    bindings: [
+      {
+        accountId: DRILL_ROUTE.accountId,
+        binary: join(workdir, "fake-provider"),
+        configRoot: workdir,
+        workdir,
+        limits: { timeoutMs: 90_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+      },
+    ],
   };
   return JSON.stringify({
     mode: "SQLITE_SUPERVISOR",

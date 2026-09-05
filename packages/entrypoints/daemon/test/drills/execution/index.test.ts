@@ -1725,12 +1725,17 @@ function b4aExecutionConfig(binary: string, root: string): DaemonExecutionConfig
       capabilityPolicyVersion: "2026-09-03.1",
       resolvedAt: RESOLVED_AT,
     },
-    binding: {
-      binary,
-      configRoot: root,
-      workdir: root,
-      limits: { timeoutMs: 10_000, outputBudgetBytes: 64 * 1024, interruptGraceMs: 120, termGraceMs: 120 },
-    },
+    // Plural since V2-B1f/F2: the array carries the account each binding
+    // serves, and the route's own account must be among them.
+    bindings: [
+      {
+        accountId: "acct-b4a-drill",
+        binary,
+        configRoot: root,
+        workdir: root,
+        limits: { timeoutMs: 10_000, outputBudgetBytes: 64 * 1024, interruptGraceMs: 120, termGraceMs: 120 },
+      },
+    ],
   };
 }
 
@@ -1823,6 +1828,159 @@ describe("the production daemon owns and reaps its provider children (V2-B4a)", 
     const pid = Number.parseInt(readFileSync(pidFile, "utf8"), 10);
     expect(Number.isInteger(pid)).toBe(true);
     expect(isAlive(pid)).toBe(false);
+  });
+});
+
+/**
+ * Plural admitted bindings, end to end (V2-B1f/F2).
+ *
+ * The port layer was already plural; the singularity was the daemon's own
+ * config and its `executionPortFor`, which built the bindings map and set
+ * exactly one entry. A switch therefore had nowhere to land: the destination
+ * account had no binding no matter what the planner decided.
+ *
+ * **Asserted through the subject's own side file, never through a mock of the
+ * admission functions.** Each account gets its own fake provider binary and its
+ * own echo file, so "route A reached A's binary" is evidence written by the
+ * process the daemon actually spawned — not a spy's record of a call.
+ *
+ * The two entries share one `workdir` and differ in `binary` and `configRoot`,
+ * which is exactly the shape the config law admits: one worktree per packet,
+ * one credential root per account.
+ */
+describe("F2: a switch has somewhere to land -- plural bindings, end to end", () => {
+  const SECOND_ACCOUNT = "acct-b4a-second";
+
+  /** Two fake providers sharing one worktree, each with its own credential root. */
+  function twoProviders(): {
+    readonly worktree: string;
+    readonly first: { binary: string; echoFile: string; configRoot: string };
+    readonly second: { binary: string; echoFile: string; configRoot: string };
+  } {
+    const a = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const b = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    return {
+      // One worktree per packet: the route's entry supplies it and every other
+      // entry must declare the same one, so a switch cannot move the checkout.
+      worktree: a.root,
+      first: { binary: a.binary, echoFile: a.echoFile, configRoot: a.root },
+      second: { binary: b.binary, echoFile: b.echoFile, configRoot: b.root },
+    };
+  }
+
+  /** A two-entry execution config whose route names `accountId`. */
+  function pluralExecution(
+    accountId: string,
+    providers: ReturnType<typeof twoProviders>,
+  ): DaemonExecutionConfig {
+    const limits = {
+      timeoutMs: 10_000,
+      outputBudgetBytes: 64 * 1024,
+      interruptGraceMs: 120,
+      termGraceMs: 120,
+    };
+    return {
+      route: {
+        provider: "claude",
+        model: "opus",
+        accountId,
+        transportKind: "CLI_SUBSCRIPTION",
+        capabilityPolicyVersion: "2026-09-03.1",
+        resolvedAt: RESOLVED_AT,
+      },
+      bindings: [
+        {
+          accountId: "acct-b4a-drill",
+          binary: providers.first.binary,
+          configRoot: providers.first.configRoot,
+          workdir: providers.worktree,
+          limits,
+        },
+        {
+          accountId: SECOND_ACCOUNT,
+          binary: providers.second.binary,
+          configRoot: providers.second.configRoot,
+          workdir: providers.worktree,
+          limits,
+        },
+      ],
+    };
+  }
+
+  it("P1/P5/P7 routes each account to its own binding, proved by the subject's own side file", async () => {
+    const providers = twoProviders();
+
+    // Route names the FIRST account.
+    const runA = await startDaemon(
+      b4aOptions(b4aScenarioId("f2-route-a"), pluralExecution("acct-b4a-drill", providers)),
+    );
+    await stopDaemon(runA);
+
+    // The first account's subject ran; the second's did not. N7: no cross
+    // account leakage -- B's binary was bound and admitted, and still never
+    // executed, because the route did not name it.
+    expect(existsSync(providers.first.echoFile)).toBe(true);
+    expect(existsSync(providers.second.echoFile)).toBe(false);
+
+    // Route names the SECOND account, over the same two bindings.
+    const runB = await startDaemon(
+      b4aOptions(b4aScenarioId("f2-route-b"), pluralExecution(SECOND_ACCOUNT, providers)),
+    );
+    await stopDaemon(runB);
+
+    // Now the second account's own subject has run. Before F2 this was
+    // unreachable: the map held one entry, keyed by the route's account, so a
+    // route naming any other account was refused TRANSPORT_UNAVAILABLE.
+    expect(existsSync(providers.second.echoFile)).toBe(true);
+    expect(readFileSync(providers.second.echoFile, "utf8")).toBe("walk the plan");
+  });
+
+  it("P6 keeps one worktree across both accounts -- a switch does not move the checkout", async () => {
+    // The rule the whole shape turns on. Both entries declare the route's
+    // worktree, so the lease, the conformance gate and each walk's own
+    // worktreePath all derive the same directory whichever account is routed.
+    const providers = twoProviders();
+    const a = pluralExecution("acct-b4a-drill", providers);
+    const b = pluralExecution(SECOND_ACCOUNT, providers);
+
+    const worktreeOf = (execution: DaemonExecutionConfig): string => {
+      const routed = execution.bindings.find((e) => e.accountId === execution.route.accountId);
+      if (routed === undefined) throw new Error("expected the route to be bound");
+      return routed.workdir;
+    };
+
+    expect(worktreeOf(a)).toBe(providers.worktree);
+    expect(worktreeOf(b)).toBe(providers.worktree);
+    expect(worktreeOf(a)).toBe(worktreeOf(b));
+    // And the credential roots genuinely differ, so the shared worktree is not
+    // an artefact of the two entries being identical.
+    expect(providers.first.configRoot).not.toBe(providers.second.configRoot);
+
+    const run = await startDaemon(b4aOptions(b4aScenarioId("f2-one-worktree"), b));
+    await stopDaemon(run);
+    expect(existsSync(providers.second.echoFile)).toBe(true);
+  });
+
+  it("N9 names the account whose binding was refused, not just 'the' binding", async () => {
+    // With four bindings an operator told only that "the execution binding was
+    // refused" would have to guess which credential root the daemon objected
+    // to. The second entry is the broken one, so a message naming the first
+    // would be actively misleading.
+    const providers = twoProviders();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [first, second] = execution.bindings;
+    if (first === undefined || second === undefined) throw new Error("expected two entries");
+    const broken: DaemonExecutionConfig = {
+      ...execution,
+      bindings: [
+        first,
+        { ...second, binary: join(providers.second.configRoot, "no-such-binary") },
+      ],
+    };
+
+    await expect(
+      startDaemon(b4aOptions(b4aScenarioId("f2-named-refusal"), broken)),
+    ).rejects.toThrow(new RegExp("the execution binding for " + SECOND_ACCOUNT + " was refused"));
   });
 });
 

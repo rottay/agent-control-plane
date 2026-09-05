@@ -1011,12 +1011,19 @@ function writeConfigDocument(dir: string, extra: Record<string, unknown> = {}): 
           capabilityPolicyVersion: "stale",
           resolvedAt: "2026-01-01T00:00:00.000Z",
         },
-        binding: {
-          binary: realpathSync(process.execPath),
-          configRoot: dir,
-          workdir: dir,
-          limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
-        },
+        // Plural since V2-B1f/F2. The CLI validates nothing under `execution`
+        // but `route` and spreads the rest through untouched, so this fixture
+        // exists to prove the passthrough over the shape the daemon actually
+        // accepts. Left singular it would pin a document the daemon refuses.
+        bindings: [
+          {
+            accountId: B7S_ACCOUNT,
+            binary: realpathSync(process.execPath),
+            configRoot: dir,
+            workdir: dir,
+            limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+          },
+        ],
       },
       ...extra,
     }),
@@ -1077,7 +1084,7 @@ interface EmittedRoute {
 interface EmittedConfig {
   readonly submissionDigest: string;
   readonly operatorNote?: string;
-  readonly execution: { readonly route: EmittedRoute; readonly binding: Record<string, unknown> };
+  readonly execution: { readonly route: EmittedRoute; readonly bindings: readonly Record<string, unknown>[] };
   readonly [key: string]: unknown;
 }
 
@@ -1133,7 +1140,7 @@ describe("A1 (CLI leg): the elected model follows the policy document", () => {
     expect(emitted.submissionDigest).not.toBe(before.submissionDigest);
     expect(emitted.execution.route).not.toEqual(before.execution.route);
     expect(emitted.operatorNote).toBe("carried through untouched");
-    expect(emitted.execution.binding).toEqual(before.execution.binding);
+    expect(emitted.execution.bindings).toEqual(before.execution.bindings);
     for (const key of ["mode", "scenarioId", "emittedBy", "taskId", "attempt", "submittedAt", "initiativeId", "holdOpen", "checkPorts"]) {
       expect(emitted[key]).toEqual(before[key]);
     }
@@ -1248,9 +1255,9 @@ describe("N4 and N5: the verb prints no credential and no absolute path from a r
 
     // The route: no path, anywhere in it.
     expect(JSON.stringify(emitted.execution.route)).not.toContain("/");
-    // The binding: absolute by law, and untouched. Asserting this is what makes
-    // the claim above narrow and true rather than broad and false.
-    expect(JSON.stringify(emitted.execution.binding)).toContain(dir);
+    // The bindings: absolute by law, and untouched. Asserting this is what
+    // makes the claim above narrow and true rather than broad and false.
+    expect(JSON.stringify(emitted.execution.bindings)).toContain(dir);
   });
 });
 

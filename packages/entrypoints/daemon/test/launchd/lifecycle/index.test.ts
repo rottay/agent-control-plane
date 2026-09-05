@@ -257,12 +257,15 @@ function executionConfigIn(root: string): DaemonExecutionConfig {
       capabilityPolicyVersion: "2026-08-30.1",
       resolvedAt: "2026-08-27T18:46:07.000Z",
     },
-    binding: {
-      binary,
-      configRoot: worktree,
-      workdir: worktree,
-      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
-    },
+    bindings: [
+      {
+        accountId: "acct-launchd-drill",
+        binary,
+        configRoot: worktree,
+        workdir: worktree,
+        limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+      },
+    ],
   };
 }
 

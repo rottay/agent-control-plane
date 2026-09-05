@@ -497,6 +497,64 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("constructs an ACCOUNT_SWITCH_COMPLETED event");
   });
 
+  it("refuses a daemon source that reads a singular execution binding (L-B1F2-1)", async () => {
+    // V2-B1f/F2's law, with the fixture that can falsify it. The daemon's
+    // config carried one `execution.binding`, so a switch had nowhere to land:
+    // the destination account had no binding no matter what the planner decided.
+    // The break to `execution.bindings` is clean, and this law is what keeps it
+    // from being quietly undone.
+    //
+    // The fixture uses the MEMBER shape, which is the law's predicate. A probe
+    // on the bare word would test a rule nobody wrote: `const binding = ...` and
+    // `binding.release()` are lawful in the daemon today and must stay lawful.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line and the offending path.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/daemon/src/probe/index.ts",
+      "export const dir = options.execution.binding.workdir;\n",
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("names execution.binding");
+    expect(output).toContain("packages/entrypoints/daemon/src/probe/index.ts");
+  });
+
+  it("leaves the lawful binding forms alone: a bare identifier, a typed parameter, the plural", async () => {
+    // The negative control, and the half that keeps this law honest. Every form
+    // below exists lawfully in the daemon today: the signal-handler resource is
+    // called `binding`, it is typed as a parameter, it is released by method
+    // call, and the execution section's own plural member is spelled
+    // `bindings`. A law that caught any of them would be a law its author had
+    // to keep explaining.
+    //
+    // The refusal message case is here too, and it is the load-bearing one: the
+    // parser must NAME the singular key in order to refuse it, so a law that
+    // read prose would forbid its own enforcement.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/daemon/src/probe/index.ts",
+      [
+        "export const finish = (binding) => { binding.release(); };",
+        "export const held = installSignalHandlers(() => {});",
+        "export const dirs = execution.bindings.map((entry) => entry.workdir);",
+        'export const refuse = () => { throw new Error("execution.binding is no longer accepted"); };',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("names execution.binding");
+    expect(output).not.toContain("reads the singular binding member");
+    expect(output).not.toContain("authors a singular binding: key");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The

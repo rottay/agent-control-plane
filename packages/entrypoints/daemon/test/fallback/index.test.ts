@@ -216,12 +216,15 @@ function executionConfig(): DaemonExecutionConfig {
       capabilityPolicyVersion: "2026-08-30.1",
       resolvedAt: "2026-08-30T00:00:00.000Z",
     },
-    binding: {
-      binary: join(executionRoot, "fake-provider"),
-      configRoot: executionRoot,
-      workdir: executionRoot,
-      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
-    },
+    bindings: [
+      {
+        accountId: "acct-fallback-gate",
+        binary: join(executionRoot, "fake-provider"),
+        configRoot: executionRoot,
+        workdir: executionRoot,
+        limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+      },
+    ],
   };
 }
 

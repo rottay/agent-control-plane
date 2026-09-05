@@ -19,7 +19,12 @@ import { composeSubmission } from "@acp/runtime";
 // `@acp/runtime`. That these two lines need no edit is the point of the
 // re-export -- the other four daemon suites that reach for the same names are
 // untouched by this packet, `test/fallback` included.
-import { canonicalSubmission, canonicalSubmissionDigest, parseDaemonChildConfig } from "../../../src/daemon-child/index.js";
+import {
+  MAX_EXECUTION_BINDINGS,
+  canonicalSubmission,
+  canonicalSubmissionDigest,
+  parseDaemonChildConfig,
+} from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
 import { EXIT_CONFIG_CONTENT, EXIT_CONFIG_PATH, EXIT_USAGE, runPackagedEntry } from "../../../src/bin/acp-daemon/index.js";
 
@@ -86,12 +91,15 @@ function validExecution(): DaemonExecutionConfig {
       capabilityPolicyVersion: "2026-08-30.1",
       resolvedAt: "2026-08-27T18:46:07.000Z",
     },
-    binding: {
-      binary: realpathSync(process.execPath),
-      configRoot: home,
-      workdir: home,
-      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
-    },
+    bindings: [
+      {
+        accountId: "acct-config-contract",
+        binary: realpathSync(process.execPath),
+        configRoot: home,
+        workdir: home,
+        limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+      },
+    ],
   };
 }
 
@@ -209,7 +217,13 @@ describe("the config content law", () => {
       // and every binding path is absolute and canonical.
       { ...validConfig(), execution: undefined },
       { ...validConfig(), execution: { ...execution, route: { ...execution.route, provider: "acme" } } },
-      { ...validConfig(), execution: { ...execution, binding: { ...execution.binding, binary: "relative/node" } } },
+      {
+        ...validConfig(),
+        execution: {
+          ...execution,
+          bindings: [{ ...execution.bindings[0], binary: "relative/node" }],
+        },
+      },
       // V2-B1c stage 2: the digest must be the digest of THIS submission.
       // Well-formed hex is no longer enough — that shape check is what let an
       // unbound value through, and an unbound value is what let a resume adopt
@@ -521,7 +535,7 @@ describe("the envelope door admits many walks, or refuses precisely", () => {
     const execution = validExecution();
     const relative = {
       ...execution,
-      binding: { ...execution.binding, workdir: "relative/path" },
+      bindings: [{ ...execution.bindings[0], workdir: "relative/path" }],
     } as unknown as DaemonExecutionConfig;
     expect(refusalOf(walksConfig([walkEntry({ execution: relative })]))).toContain("workdir");
   });
@@ -754,12 +768,15 @@ describe("A2: an elected route survives the door", () => {
       checkPorts: false,
       execution: {
         route: composed.submission.route,
-        binding: {
-          binary: realpathSync(process.execPath),
-          configRoot: home,
-          workdir: home,
-          limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
-        },
+        bindings: [
+          {
+            accountId: composed.submission.route.accountId,
+            binary: realpathSync(process.execPath),
+            configRoot: home,
+            workdir: home,
+            limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+          },
+        ],
       },
     };
 
@@ -799,12 +816,15 @@ describe("A2: an elected route survives the door", () => {
         checkPorts: false,
         execution: {
           route: swapped,
-          binding: {
-            binary: realpathSync(process.execPath),
-            configRoot: home,
-            workdir: home,
-            limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
-          },
+          bindings: [
+            {
+              accountId: swapped.accountId,
+              binary: realpathSync(process.execPath),
+              configRoot: home,
+              workdir: home,
+              limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+            },
+          ],
         },
       }),
     ).toThrow(/submissionDigest is not the digest/);
@@ -864,5 +884,211 @@ describe("N2: a non-CLI elected transport fails closed at the port", () => {
     });
 
     expect(outcome).toMatchObject({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.transportKind" });
+  });
+});
+
+
+/**
+ * V2-B1f/F2: the execution section binds every account a switch may reach.
+ *
+ * The port layer was already plural -- `createExecutionPort` has always taken
+ * one `CliBinding` per `accountId` and always refused a route whose account it
+ * had no binding for. The singularity lived here, in the daemon's own config:
+ * one `execution.binding`, so a switch had nowhere to land no matter what the
+ * planner decided.
+ *
+ * Every refusal below is asserted **by its path**, because a refusal that names
+ * the wrong field sends an operator to the wrong line. Nothing is defaulted and
+ * nothing is inherited: an entry that omits a field is refused rather than
+ * filled from a sibling or from the route.
+ */
+describe("F2: execution.bindings is a plural, fully-admitted array", () => {
+  /** The valid plural document, with `execution` replaced wholesale. */
+  function withExecution(execution: unknown): Record<string, unknown> {
+    return { ...validConfig(), execution };
+  }
+
+  /** One well-formed entry for an arbitrary account, sharing the worktree. */
+  function entryFor(accountId: string, home: string): Record<string, unknown> {
+    return {
+      accountId,
+      binary: realpathSync(process.execPath),
+      configRoot: home,
+      workdir: home,
+      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+    };
+  }
+
+  it("P3 round-trips every entry's fields exactly, for two admitted accounts", () => {
+    const execution = validExecution();
+    const home = execution.bindings[0]?.workdir;
+    if (home === undefined) throw new Error("expected a workdir");
+    const plural = {
+      ...execution,
+      bindings: [execution.bindings[0], entryFor("acct-second", home)],
+    };
+
+    const parsed = parseDaemonChildConfig(withExecution(plural));
+    expect(parsed.execution.bindings).toHaveLength(2);
+    expect(parsed.execution.bindings.map((b) => b.accountId)).toEqual([
+      "acct-config-contract",
+      "acct-second",
+    ]);
+    // P2: each entry keeps its own fields; neither inherits the other's.
+    expect(parsed.execution.bindings[1]?.configRoot).toBe(home);
+    expect(parsed.execution.bindings[1]?.limits.timeoutMs).toBe(20_000);
+    expect(parsed.execution.bindings[0]?.accountId).toBe(parsed.execution.route.accountId);
+  });
+
+  it("P4 accepts a one-entry array, the same fact the singular key carried", () => {
+    const parsed = parseDaemonChildConfig(validConfig());
+    expect(parsed.execution.bindings).toHaveLength(1);
+    expect(parsed.execution.bindings[0]?.accountId).toBe(parsed.execution.route.accountId);
+  });
+
+  it("N5 refuses the singular binding key, and names its replacement", () => {
+    // A clean break: `binding` and `bindings` are never both accepted. The
+    // config is an internal artifact -- no contractVersion, no wire, no
+    // producer outside this repository -- so the refusal IS the migration.
+    const execution = validExecution();
+    const singular = {
+      route: execution.route,
+      binding: { ...execution.bindings[0] },
+    };
+    const message = refusalOf(withExecution(singular));
+    expect(message).toContain("execution.binding is no longer accepted");
+    expect(message).toContain("execution.bindings");
+  });
+
+  it("N4 refuses a non-array and an empty array, each by name", () => {
+    const execution = validExecution();
+    expect(refusalOf(withExecution({ ...execution, bindings: {} }))).toContain(
+      "execution.bindings must be an array",
+    );
+    expect(refusalOf(withExecution({ ...execution, bindings: [] }))).toContain(
+      "execution.bindings must name at least one account",
+    );
+  });
+
+  it("N2 refuses a repeated accountId, naming the index of the repeat", () => {
+    // Reachable only because the shape is an array. `JSON.parse` keeps the LAST
+    // duplicate key of an object silently, so a keyed shape would have made
+    // last-wins the real behaviour and this refusal unfailable.
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    const message = refusalOf(
+      withExecution({ ...execution, bindings: [first, { ...first }] }),
+    );
+    expect(message).toContain("execution.bindings[1].accountId");
+    expect(message).toContain("repeats an account already bound");
+  });
+
+  it("N3 refuses a missing or malformed field per entry, by path, defaulting nothing", () => {
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    const home = first.workdir;
+
+    for (const field of ["binary", "configRoot", "workdir"] as const) {
+      // Rebuilt without the field rather than deleted from a copy: the absence
+      // is what is under test, and constructing it directly says so.
+      const complete = entryFor("acct-second", home);
+      const broken = Object.fromEntries(
+        Object.entries(complete).filter(([key]) => key !== field),
+      );
+      const message = refusalOf(withExecution({ ...execution, bindings: [first, broken] }));
+      // The index and the field, so nothing is inherited from the sibling that
+      // does carry it.
+      expect(message).toContain("execution.bindings[1]." + field);
+    }
+
+    for (const budget of ["timeoutMs", "outputBudgetBytes", "interruptGraceMs", "termGraceMs"] as const) {
+      const broken = entryFor("acct-second", home);
+      const limits = Object.fromEntries(
+        Object.entries(broken["limits"] as Record<string, unknown>).filter(
+          ([key]) => key !== budget,
+        ),
+      );
+      const message = refusalOf(
+        withExecution({ ...execution, bindings: [first, { ...broken, limits }] }),
+      );
+      expect(message).toContain("execution.bindings[1].limits." + budget);
+    }
+
+    // A missing accountId is refused too, rather than taken from the route.
+    const withAccount = entryFor("acct-second", home);
+    const noAccount = Object.fromEntries(
+      Object.entries(withAccount).filter(([key]) => key !== "accountId"),
+    );
+    expect(refusalOf(withExecution({ ...execution, bindings: [first, noAccount] }))).toContain(
+      "execution.bindings[1].accountId",
+    );
+  });
+
+  it("N6 refuses nine entries, and never truncates to eight", () => {
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    const home = first.workdir;
+
+    // Exactly the ceiling is admitted, so the threshold is the stated number.
+    const atCeiling = [
+      first,
+      ...Array.from({ length: MAX_EXECUTION_BINDINGS - 1 }, (_, i) => entryFor("acct-" + String(i), home)),
+    ];
+    expect(parseDaemonChildConfig(withExecution({ ...execution, bindings: atCeiling })).execution.bindings)
+      .toHaveLength(MAX_EXECUTION_BINDINGS);
+
+    const overCeiling = [...atCeiling, entryFor("acct-overflow", home)];
+    const message = refusalOf(withExecution({ ...execution, bindings: overCeiling }));
+    expect(message).toContain("execution.bindings carries more than " + String(MAX_EXECUTION_BINDINGS));
+  });
+
+  it("N12 refuses entries that disagree on workdir, naming both accounts", () => {
+    // One worktree per packet. A per-binding worktree would move the checkout
+    // mid switch, which is the context loss the objective forbids.
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    // The suite's own staging convention, so teardown removes it.
+    const elsewhere = stage();
+
+    const message = refusalOf(
+      withExecution({
+        ...execution,
+        bindings: [first, { ...entryFor("acct-second", first.workdir), workdir: elsewhere }],
+      }),
+    );
+    expect(message).toContain("execution.bindings disagree on workdir");
+    expect(message).toContain("acct-second");
+    expect(message).toContain(first.accountId);
+  });
+
+  it("N12 refuses a route whose account has no entry, naming execution.route.accountId", () => {
+    // No fallback to "the first entry" and no default: running the route on
+    // somebody else's binding is the cross-account leak this packet prevents.
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    const message = refusalOf(
+      withExecution({
+        ...execution,
+        bindings: [{ ...first, accountId: "acct-somebody-else" }],
+      }),
+    );
+    expect(message).toContain("execution.route.accountId names no entry");
+  });
+
+  it("N11/N10 admits every entry without spawning a provider or reaching a network", () => {
+    // The whole suite parses documents; nothing here starts a process, opens a
+    // socket or moves a capability out of UNKNOWN.
+    const execution = validExecution();
+    const first = execution.bindings[0];
+    if (first === undefined) throw new Error("expected an entry");
+    const parsed = parseDaemonChildConfig(
+      withExecution({ ...execution, bindings: [first, entryFor("acct-second", first.workdir)] }),
+    );
+    expect(parsed.execution.bindings.every((b) => b.workdir === first.workdir)).toBe(true);
   });
 });

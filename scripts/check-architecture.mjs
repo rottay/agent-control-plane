@@ -6285,6 +6285,69 @@ const V2B1F_WRITE_SET = [
   "packages/domains/accounts/test/pilots/index.test.ts",
 ];
 
+/**
+ * V2-B1f / F2 — a switch has somewhere to land: plural admitted bindings.
+ *
+ * F1 stopped the switch claiming work it had not done. It left the switch with
+ * nowhere to go: the planner could decide to move a task from A to B, but the
+ * daemon could reach exactly one account.
+ *
+ * **The port layer was never the problem.** `createExecutionPort` has always
+ * taken `ReadonlyMap<string, CliBinding>` -- one per `accountId` -- and always
+ * refused a route whose account it holds no binding for. The singularity was the
+ * daemon's own config: one `execution.binding`, and an `executionPortFor` that
+ * built the map and set ONE entry keyed by `route.accountId`. So a switch to B
+ * produced a route the port refused, for the correct reason that nobody had
+ * bound B. **`packages/edges/providers/**` is therefore untouched.**
+ *
+ * **An array, not a keyed object.** The config is `JSON.parse`d and `JSON.parse`
+ * keeps the LAST duplicate key silently, so a repeated account could never reach
+ * the parser: last-wins would be the real behaviour and the duplicate refusal
+ * unfailable. The array makes it visible, and it is refused naming the index of
+ * the repeat.
+ *
+ * **One worktree per packet.** The binding's `workdir` is also the packet's
+ * worktree at four production sites, so every entry must declare the same
+ * `workdir` as the route's entry, and a disagreement is refused naming both
+ * accounts. A per-binding worktree would relocate the checkout mid switch --
+ * exactly the context loss the objective forbids.
+ *
+ * **A clean break.** `binding` and `bindings` are never both accepted.
+ * `DaemonChildConfig` carries no `contractVersion`, crosses no wire and has no
+ * producer outside this repository, so the singular key is refused by name and
+ * the message names the exact rewrite. A one-entry `bindings` is the same fact
+ * `binding` was; the refusal IS the migration.
+ *
+ * `MAX_EXECUTION_BINDINGS = 8`, refused and never truncated, deliberately
+ * independent of `WALK_CONCURRENCY_MAX` (4): one bounds reachable accounts, the
+ * other concurrent walks.
+ *
+ * **Fourteen paths.** Two source files and eight suites that author the shape,
+ * the CLI suite (test-only -- it authors and asserts the passthrough, and left
+ * singular it would pin a document the daemon refuses), the probes, the ADR, the
+ * index and this file. No public pin moves: `DaemonExecutionConfig` is not a
+ * public export. `PATH_SCOPED_LAWS` 95 -> 96 for `L-B1F2-1`. `G1_MOVE_MAP` stays
+ * 302 -- nothing moves.
+ *
+ * Record: `docs/architecture/0038-a-binding-for-every-account-the-switch-may-reach.md`.
+ */
+const V2B1F2_WRITE_SET = [
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/scheduler/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0038-a-binding-for-every-account-the-switch-may-reach.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6433,6 +6496,7 @@ const WRITE_SET = [
   ...V2B1D_WRITE_SET,
   ...V2B1E_WRITE_SET,
   ...V2B1F_WRITE_SET,
+  ...V2B1F2_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7493,6 +7557,13 @@ const PATH_SCOPED_LAWS = [
   {
     law: "no module constructs an ACCOUNT_SWITCH_COMPLETED event",
     scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
+  },
+  // V2-B1f/F2. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 95 -> 96. Scoped to the daemon,
+  // because the singular shape only ever existed in its config and composition.
+  {
+    law: "the daemon's execution section names no singular binding member",
+    scope: "packages/entrypoints/daemon/**/src",
   },
 ];
 
@@ -15911,6 +15982,106 @@ if (tracked.status === 0) {
   }
   notes.push(
     "no ACCOUNT_SWITCH_COMPLETED is constructed across " + String(completionScope.length) + " domain and entrypoint sources",
+  );
+
+  // --- L-B1F2-1: the daemon's execution section is plural, and stays plural.
+  //
+  // V2-B1f/F2 replaced one `execution.binding` with an array of admitted
+  // `execution.bindings`, so a switch has an account to land on. The break is
+  // clean: `binding` and `bindings` are never both accepted, because reading
+  // either would be two spellings of one fact and the day they disagreed the
+  // daemon would have to pick a winner silently.
+  //
+  // **The predicate is the MEMBER shape, not the word.** A bare `binding`
+  // identifier is lawful and must stay lawful -- `daemon-child` holds
+  // `const binding = installSignalHandlers(...)` and `binding.release()`, which
+  // are a signal-handler resource and have nothing to do with an execution
+  // binding. So the law names the three ways the singular MEMBER is reached:
+  //
+  //   - `execution.binding` not followed by another word character (so
+  //     `execution.bindings` passes);
+  //   - `.binding.` -- a member access through any receiver;
+  //   - `["binding"]` -- the bracketed read a parser uses.
+  //
+  // and the `binding:` key in an object literal, which is how one is authored.
+  //
+  // **Skips, stated here rather than discovered by the law's first failure:**
+  // bare identifiers and `binding.release()` (both lawful, both at
+  // `daemon-child`), `readonly bindings:` and every plural form, comparisons,
+  // and comments -- `stripComments` runs first, which is what lets
+  // `scheduler/index.ts` keep a docblock mentioning the old shape.
+  //
+  // **String literals are stripped too, and that exemption is load bearing.**
+  // The parser must REFUSE the singular key, and a refusal has to name what it
+  // refuses: `parseExecutionSection` tests `value["binding"]` and answers with a
+  // message containing the words `execution.binding`. Read literally, a law over
+  // raw text would fail on the one site that enforces it -- the law would forbid
+  // its own enforcement. So prose is stripped before the patterns run, exactly
+  // as comments are, and what remains is the only thing that matters: whether
+  // any daemon source READS a singular binding as data or AUTHORS one. The
+  // bracketed form is only reachable through a literal, so it is covered by the
+  // member-access and authoring clauses rather than by a pattern of its own.
+  //
+  // **There is deliberately no "no fallback" clause.** `??`, `||` and default
+  // parameters are all fallbacks and none of them is nameable by a text
+  // predicate; that property belongs to the tests, which assert that an entry
+  // missing a field is refused rather than filled from a sibling.
+  const bindingScope = tracked.status === 0
+    ? tracked.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter(
+          (relativePath) =>
+            /\.tsx?$/.test(relativePath) &&
+            !relativePath.includes("/test/") &&
+            /^packages\/entrypoints\/daemon\/src\//.test(relativePath),
+        )
+    : [];
+  requireScope("the daemon's execution section names no singular binding member", bindingScope.length);
+  for (const relativePath of bindingScope) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    // Comments, then prose: a message naming the old shape is documentation of
+    // a refusal, not a use of one.
+    const live = stripComments(content)
+      .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+      .replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+    // `execution.binding` where the next character cannot continue the word,
+    // so the plural is not caught by the singular's own pattern.
+    if (/execution\.binding(?![\w])/.test(live)) {
+      fail(
+        relativePath +
+          " names execution.binding; the daemon's execution section carries an array of" +
+          " admitted bindings, one per account a switch may reach",
+      );
+    }
+    if (/\.binding\./.test(live)) {
+      fail(
+        relativePath +
+          " reads the singular binding member; every binding is an entry of execution.bindings",
+      );
+    }
+    // The authoring shape, scoped to an `execution` object literal rather than
+    // to every `binding:` anywhere. A bare `binding:` is a lawful and common
+    // TypeScript form -- `daemon-child` types a parameter
+    // `binding: { release(): void }` for its signal-handler resource -- and a
+    // law that caught it would be a law its author had to keep explaining. What
+    // is forbidden is authoring the singular member of an execution section, so
+    // the window idiom the driver-construction law already uses applies here.
+    for (const match of live.matchAll(/execution\s*:\s*\{/g)) {
+      const window = live.slice(match.index, match.index + 400);
+      if (/(?:^|[{,\s])binding(?![\w])\s*:/m.test(window)) {
+        fail(
+          relativePath +
+            " authors a singular binding: key inside an execution literal;" +
+            " the execution section carries execution.bindings",
+        );
+      }
+    }
+  }
+  notes.push(
+    "no singular execution binding across " + String(bindingScope.length) + " daemon sources",
   );
 
   // --- L-B1C-1: one producer of an execution instruction.

@@ -57,7 +57,7 @@ import {
   LEASE_RENEW_INTERVAL_MS,
   LEASE_TTL_MS,
 } from "./constants/index.js";
-import type { DaemonExecutionConfig } from "./daemon-child/index.js";
+import type { DaemonExecutionBinding, DaemonExecutionConfig } from "./daemon-child/index.js";
 import type { DaemonErrorCode } from "./errors/index.js";
 import { ModeError, StartupError } from "./errors/index.js";
 import type { ProcessInspector, RecordedIdentity } from "./identity-probe/index.js";
@@ -495,7 +495,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         store: openedLeaseStore,
         ledger: openedLedger,
         invocation,
-        worktreePath: options.execution.binding.workdir,
+        worktreePath: bindingForRoute(options.execution).workdir,
         holder: options.emittedBy,
         identity,
         inspector,
@@ -671,7 +671,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         checkConformance: conformanceGateFor({
           ledger: openedLedger,
           invocation,
-          worktreePath: options.execution.binding.workdir,
+          worktreePath: bindingForRoute(options.execution).workdir,
           declaredWriteSet: options.envelope.writeSet,
           lease: hold.lease,
           emittedBy: options.emittedBy,
@@ -1250,27 +1250,82 @@ function conformanceGateFor(input: {
   };
 }
 
+/**
+ * The binding that serves this config's route (V2-B1f/F2).
+ *
+ * **Deliberately local, and the edge to `daemon-child` stays type-only.** That
+ * module carries the child's own entry guard -- a module-level
+ * `realpathSync(process.argv[1])` that decides whether it was invoked directly
+ * -- so importing a *value* from it would load it into this entry's graph and
+ * run that guard on import. The package's purity drill catches exactly that:
+ * importing `@acp/daemon` must create nothing, bind nothing, spawn nothing and
+ * read no argv. A type-only edge is erased at compile time and costs nothing.
+ *
+ * It is total rather than trusting: `parseExecutionSection` already refuses a
+ * config whose route names no entry, but `startDaemon` can be handed a
+ * `DaemonExecutionConfig` value directly, so this defends its own door instead
+ * of assuming the parser was the only way in.
+ */
+function bindingForRoute(execution: DaemonExecutionConfig): DaemonExecutionBinding {
+  const found = execution.bindings.find((entry) => entry.accountId === execution.route.accountId);
+  if (found === undefined) {
+    throw new StartupError(
+      "the execution route names " +
+        execution.route.accountId +
+        ", which no entry of execution.bindings serves",
+    );
+  }
+  return found;
+}
+
+/**
+ * Build the execution port over every account the config binds (V2-B1f/F2).
+ *
+ * The port layer was already plural -- `createExecutionPort` has always taken
+ * `ReadonlyMap<string, CliBinding>`, "one per accountId", and has always
+ * refused a route whose account it holds no binding for. The singularity was
+ * here: this function built that map and set exactly one entry. A switch
+ * therefore had nowhere to land, because the destination account had no
+ * binding no matter what the planner decided.
+ *
+ * Now every entry is admitted **independently**, through the same
+ * `admitBinary`/`admitConfigRoot`/`admitWorkdir` route the single binding
+ * always took. There is no default, no inheritance and no discovery: an
+ * account reaches this map because the operator wrote it down and it passed
+ * the same admission as every other, or it does not reach it at all.
+ *
+ * The name and this function's position after `conformanceGateFor` are load
+ * bearing for `L-C-4b` and stay exactly as they were.
+ */
 function executionPortFor(
   execution: DaemonExecutionConfig,
   taskId: string,
   harness: AgentHarness,
 ): ModelExecutionPort {
-  const { route, binding } = execution;
+  const { route } = execution;
   const bindings = new Map<string, CliBinding>();
   const adapter = route.transportKind === "CLI_SUBSCRIPTION" ? CLI_ADAPTERS[route.provider] : undefined;
   if (adapter !== undefined) {
     const context = { provider: route.provider, taskId };
-    try {
-      bindings.set(route.accountId, {
-        adapter,
-        binary: admitBinary(binding.binary, context),
-        configRoot: admitConfigRoot(binding.configRoot, context),
-        workdir: admitWorkdir(binding.workdir, context),
-        limits: binding.limits,
-      });
-    } catch (error: unknown) {
-      const code = error instanceof AdapterError ? error.code : "UNCLASSIFIED";
-      throw new StartupError("the execution binding was refused: " + code);
+    for (const entry of execution.bindings) {
+      try {
+        bindings.set(entry.accountId, {
+          adapter,
+          binary: admitBinary(entry.binary, context),
+          configRoot: admitConfigRoot(entry.configRoot, context),
+          workdir: admitWorkdir(entry.workdir, context),
+          limits: entry.limits,
+        });
+      } catch (error: unknown) {
+        // The account is named, so a refused SECOND binding is distinguishable
+        // from a refused first. Without it an operator holding four bindings
+        // would be told only that "the" binding was refused, and would have to
+        // guess which credential root the daemon objected to.
+        const code = error instanceof AdapterError ? error.code : "UNCLASSIFIED";
+        throw new StartupError(
+          "the execution binding for " + entry.accountId + " was refused: " + code,
+        );
+      }
     }
   }
   // The harness is the caller's, not the port's own (V2-B4a). A port that

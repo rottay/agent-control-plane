@@ -44,14 +44,18 @@ export interface DaemonExecutionLimits {
 }
 
 /**
- * The one CLI binding admission the config carries (V2-B1b, D5).
+ * One CLI binding admission the config carries (V2-B1b D5; plural since F2).
  *
  * Absolute, canonical paths -- the `config-file` manner -- checked here for
  * shape and existence. Ownership, permissions and the product-path ban are the
  * providers package's own admissions, applied by `startDaemon` when the port
  * is built, so neither law is restated in a second place.
+ *
+ * `accountId` joined the shape in V2-B1f/F2: a binding now says which account
+ * it serves, because there is more than one.
  */
 export interface DaemonExecutionBinding {
+  readonly accountId: string;
   readonly binary: string;
   readonly configRoot: string;
   readonly workdir: string;
@@ -59,15 +63,54 @@ export interface DaemonExecutionBinding {
 }
 
 /**
- * The resolved route the daemon executes, and the binding that serves it.
+ * The most accounts one daemon may be given bindings for (V2-B1f/F2).
+ *
+ * Eight covers a primary plus backups across the three CLI subscription
+ * providers, and bounds the credential roots and processes a single daemon can
+ * reach.
+ *
+ * **Deliberately independent of `WALK_CONCURRENCY_MAX` (4).** That bounds how
+ * many walks run at once; this bounds how many accounts are *reachable*. They
+ * measure different quantities, and tying them would mean a daemon could not
+ * hold a backup account for a walk it is not currently running -- which is
+ * precisely what a switch needs.
+ *
+ * Nine or more is **refused, never truncated**: silently dropping the ninth
+ * binding would leave a route that names it unservable for a reason nothing
+ * reported.
+ */
+export const MAX_EXECUTION_BINDINGS = 8;
+
+/**
+ * The resolved route the daemon executes, and the bindings that may serve it.
  *
  * The route arrives RESOLVED: the daemon does not resolve (D5). It is parsed
  * through the contracts' own schema, refinement included, so a CLI route
  * naming a provider outside the CLI vocabulary is refused at config load.
+ *
+ * **The route stays singular.** F2 gives a switch somewhere to land; it does
+ * not run two routes at once. What became plural is the set of accounts the
+ * daemon may reach, not the work it does.
  */
 export interface DaemonExecutionConfig {
   readonly route: ResolvedRoute;
-  readonly binding: DaemonExecutionBinding;
+  readonly bindings: readonly DaemonExecutionBinding[];
+}
+
+/**
+ * The binding that serves this config's route.
+ *
+ * A helper rather than four repetitions of the same lookup: the route's own
+ * entry is what every worktree derivation reads, and `parseExecutionSection`
+ * has already refused a config whose route names no entry, so this cannot
+ * return `undefined` for a parsed config.
+ */
+export function bindingForRoute(execution: DaemonExecutionConfig): DaemonExecutionBinding {
+  const found = execution.bindings.find((entry) => entry.accountId === execution.route.accountId);
+  if (found === undefined) {
+    throw new ModeError("execution.route.accountId names no entry in execution.bindings");
+  }
+  return found;
 }
 
 export interface DaemonChildConfig {
@@ -187,37 +230,110 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
     throw new ModeError(["execution.route", ...path].join(".") + " does not satisfy the contract");
   }
 
-  const binding = value["binding"];
-  if (typeof binding !== "object" || binding === null) {
-    throw new ModeError("execution.binding must be an object");
+  // **A clean break, not a compatibility layer (V2-B1f/F2).** The singular key
+  // is refused by name and the message names its replacement. `binding` and
+  // `bindings` are never both accepted: reading either would mean two spellings
+  // of one fact, and the day they disagreed the daemon would have to pick a
+  // winner silently. `DaemonChildConfig` is an internal artifact -- no
+  // `contractVersion`, no wire, no producer outside this repository -- so the
+  // break costs nothing but a rewrite, and the refusal IS the migration.
+  //
+  // A one-entry `bindings` is exactly the fact `binding` was, which is why the
+  // message can name the precise rewrite rather than gesturing at a document.
+  if (value["binding"] !== undefined) {
+    throw new ModeError(
+      "execution.binding is no longer accepted; use execution.bindings, an array whose one" +
+        " entry carries the same fields plus the accountId it serves",
+    );
   }
-  const admission = binding as Record<string, unknown>;
-  const limits = admission["limits"];
-  if (typeof limits !== "object" || limits === null) {
-    throw new ModeError("execution.binding.limits must be an object");
-  }
-  const budgets = limits as Record<string, unknown>;
 
-  return {
-    route: route.data,
-    binding: {
-      binary: admittedPath(admission["binary"], "execution.binding.binary"),
-      configRoot: admittedPath(admission["configRoot"], "execution.binding.configRoot"),
-      workdir: admittedPath(admission["workdir"], "execution.binding.workdir"),
+  const raw_bindings = value["bindings"];
+  if (!Array.isArray(raw_bindings)) {
+    throw new ModeError("execution.bindings must be an array");
+  }
+  if (raw_bindings.length === 0) {
+    throw new ModeError("execution.bindings must name at least one account");
+  }
+  // Refused, never truncated: dropping the ninth would leave a route naming it
+  // unservable for a reason nothing reported.
+  if (raw_bindings.length > MAX_EXECUTION_BINDINGS) {
+    throw new ModeError(
+      "execution.bindings carries more than " + String(MAX_EXECUTION_BINDINGS) + " entries",
+    );
+  }
+
+  const bindings: DaemonExecutionBinding[] = [];
+  const seenAccounts = new Set<string>();
+  for (const [index, entry] of raw_bindings.entries()) {
+    const at = "execution.bindings[" + String(index) + "]";
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new ModeError(at + " must be an object");
+    }
+    const admission = entry as Record<string, unknown>;
+
+    const accountId = admission["accountId"];
+    if (typeof accountId !== "string" || accountId === "") {
+      throw new ModeError(at + ".accountId must be a non-empty string");
+    }
+    // The array shape is what makes this reachable at all. A keyed object would
+    // have been collapsed by `JSON.parse`, which keeps the LAST duplicate key
+    // silently -- so last-wins would be the real behaviour and this refusal
+    // could never fire. The index named is the repeat's, not the original's.
+    if (seenAccounts.has(accountId)) {
+      throw new ModeError(at + ".accountId repeats an account already bound");
+    }
+    seenAccounts.add(accountId);
+
+    const limits = admission["limits"];
+    if (typeof limits !== "object" || limits === null) {
+      throw new ModeError(at + ".limits must be an object");
+    }
+    const budgets = limits as Record<string, unknown>;
+
+    // Every field is admitted per entry. **Nothing is defaulted and nothing is
+    // inherited**: an entry that omits a field is refused rather than filled
+    // from a sibling or from the route, because a binding assembled from two
+    // places is a binding nobody wrote down.
+    bindings.push({
+      accountId,
+      binary: admittedPath(admission["binary"], at + ".binary"),
+      configRoot: admittedPath(admission["configRoot"], at + ".configRoot"),
+      workdir: admittedPath(admission["workdir"], at + ".workdir"),
       limits: {
-        timeoutMs: positiveInteger(budgets["timeoutMs"], "execution.binding.limits.timeoutMs"),
-        outputBudgetBytes: positiveInteger(
-          budgets["outputBudgetBytes"],
-          "execution.binding.limits.outputBudgetBytes",
-        ),
-        interruptGraceMs: positiveInteger(
-          budgets["interruptGraceMs"],
-          "execution.binding.limits.interruptGraceMs",
-        ),
-        termGraceMs: positiveInteger(budgets["termGraceMs"], "execution.binding.limits.termGraceMs"),
+        timeoutMs: positiveInteger(budgets["timeoutMs"], at + ".limits.timeoutMs"),
+        outputBudgetBytes: positiveInteger(budgets["outputBudgetBytes"], at + ".limits.outputBudgetBytes"),
+        interruptGraceMs: positiveInteger(budgets["interruptGraceMs"], at + ".limits.interruptGraceMs"),
+        termGraceMs: positiveInteger(budgets["termGraceMs"], at + ".limits.termGraceMs"),
       },
-    },
-  };
+    });
+  }
+
+  // **The route must be servable.** No fallback to "the first entry" and no
+  // default: a daemon that quietly ran the route on somebody else's binding
+  // would be the cross-account leak this packet exists to prevent.
+  const routed = bindings.find((entry) => entry.accountId === route.data.accountId);
+  if (routed === undefined) {
+    throw new ModeError("execution.route.accountId names no entry in execution.bindings");
+  }
+
+  // **One worktree per packet.** A switch must not lose context, so a switch
+  // must not move the checkout: every entry declares the same `workdir` as the
+  // route's own entry. A per-binding worktree would relocate the packet mid
+  // switch, which is exactly the context loss the objective forbids. The
+  // refusal names BOTH accounts, so the operator can see which pair disagrees.
+  for (const entry of bindings) {
+    if (entry.workdir !== routed.workdir) {
+      throw new ModeError(
+        "execution.bindings disagree on workdir: " +
+          entry.accountId +
+          " and " +
+          routed.accountId +
+          " must declare the same worktree",
+      );
+    }
+  }
+
+  return { route: route.data, bindings: Object.freeze(bindings) };
 }
 
 /** Validate the child's configuration. Nothing is read from the environment. */
@@ -291,8 +407,10 @@ function parseWalks(raw: unknown, mode: DaemonMode): readonly ScheduledWalk[] {
     }
 
     const execution = parseExecutionSection(value["execution"]);
-    if (!isAbsolute(execution.binding.workdir)) {
-      throw new ModeError(at + ".execution.binding.workdir must be absolute");
+    // The route's own entry is the packet's worktree; every other entry has
+    // already been refused unless it declares the same one (V2-B1f/F2).
+    if (!isAbsolute(bindingForRoute(execution).workdir)) {
+      throw new ModeError(at + ".execution.bindings[route].workdir must be absolute");
     }
 
     // The same producer, per walk. No second spelling of the preimage.
@@ -314,7 +432,7 @@ function parseWalks(raw: unknown, mode: DaemonMode): readonly ScheduledWalk[] {
 
     walks.push({
       envelope: envelope.data,
-      worktreePath: execution.binding.workdir,
+      worktreePath: bindingForRoute(execution).workdir,
       spec: {
         scenarioId,
         taskId,
