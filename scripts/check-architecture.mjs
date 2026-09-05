@@ -6615,6 +6615,54 @@ const V2B1F4B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1f/F4a errata -- a failed execution records what its trail already said.
+ *
+ * The defect F4a left behind: `execute` built a complete, contract-validated
+ * trail and then **threw**, and `apply` reaches its drains only if `execute`
+ * returned. So an execution whose stream ended in `error` -- or ended with no
+ * terminal at all -- recorded neither the pressure nor the spend it had just
+ * observed, while an execution reporting the same pressure and exiting cleanly
+ * recorded both. **The asymmetry ran backwards**: the warning case, where the
+ * provider keeps working, recorded reliably; the exhaustion case, the one an
+ * elector exists to answer, recorded nothing. ADR 0041 is silent on it.
+ *
+ * **The fix is a result union, not an error carrying the trail.** `execute`
+ * returns `{ok:true, trail}` or `{ok:false, refusal, at, trail}`, both drains
+ * move above the refusal, and the refusal stays above the conformance gate and
+ * the marker. An `ExecutionEffectError` carrying the trail was declined on
+ * three measured grounds: it would put provider text (`text`, `toolUse`,
+ * `write`) inside an Error that travels to the daemon log; it would move
+ * **twelve** construction sites across three strata, and an optional third
+ * argument would make "the trail is carried" unprovable by construction; and
+ * nothing downstream wants the trail -- `classifyFailure` branches on the class
+ * alone.
+ *
+ * **No message is parsed and no classification re-derived.** The trail already
+ * carries what an adapter classified, as `pressure` and `authRequired` events
+ * the contract validated. The `error` terminal's `detail` is never read, and
+ * the terminal's refusal -- always `TRANSPORT_UNAVAILABLE` -- is routed around
+ * rather than repaired.
+ *
+ * **Nothing else moves.** The refusal, its `at`, the absent marker, the
+ * `NOT_DONE` probe and the `FAILED` settlement are unchanged; a refused `start`
+ * still records nothing, because no stream existed. `RUNTIME_PUBLIC_EXPORTS`
+ * stays **242** -- `ExecutionOutcome` is module-private -- and no scope note,
+ * export pin or vocabulary moves. `PATH_SCOPED_LAWS` 105 -> 106 and the ADR
+ * corpus 42 -> 43.
+ *
+ * Record: `docs/architecture/0043-a-failed-execution-records-what-its-trail-already-said.md`.
+ */
+const V2B1F4E_WRITE_SET = [
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0043-a-failed-execution-records-what-its-trail-already-said.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6768,6 +6816,7 @@ const WRITE_SET = [
   ...V2B1F2B_WRITE_SET,
   ...V2B1F4A_WRITE_SET,
   ...V2B1F4B_WRITE_SET,
+  ...V2B1F4E_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7892,6 +7941,14 @@ const PATH_SCOPED_LAWS = [
   {
     law: "one trigger vocabulary, and the fold declares no severity of its own",
     scope: "packages/domains/accounts/src/switching/index.ts",
+  },
+  // V2-B1f/F4a errata. One new path-shaped surface, so one new row: the
+  // register and the `requireScope` call sites both move 105 -> 106. Three
+  // assertions over one file, because a single window would pass vacuously
+  // over the exact defect it exists to forbid.
+  {
+    law: "the trail reaches the sinks before anything refuses",
+    scope: "packages/domains/runtime/src/execution-effects/index.ts",
   },
 ];
 
@@ -16913,6 +16970,95 @@ if (tracked.status === 0) {
           );
         }
         notes.push("the trigger fold walks SWITCH_TRIGGERS and declares no severity of its own");
+      }
+    }
+  }
+
+  // --- L-F4E-1: the trail reaches the sinks before anything refuses.
+  //
+  // V2-B1f/F4a errata. The defect was a `throw` raised between producing the
+  // trail and draining it -- specifically inside `execute`, which discarded a
+  // fully built trail on every error terminal. This law is three assertions,
+  // because a single window would pass vacuously over the exact shape it
+  // exists to forbid:
+  //
+  // 1. **The producer returns, never throws.** The original defect lived
+  //    INSIDE `execute`, ahead of any window anchored on its call site, so a
+  //    later edit reinstating it there would pass a one-window law unnoticed.
+  // 2. **Nothing refuses between the trail and the LAST drain.** The pressure
+  //    drain calls its sink twice -- once for a pressure event, once for an
+  //    auth requirement -- so a window ending at the first call would let a
+  //    throw between them through while it broke the auth half.
+  // 3. **The refusal exists, and precedes the gate and the marker.** Without a
+  //    positive half, deleting the refusal outright would satisfy both
+  //    negative halves while letting a failed execution reach the gate and the
+  //    marker, so `closeIntent` would append an OUTCOME and the plane would
+  //    record as completed an effect that failed.
+  const ERROR_PRESSURE_HOME = "packages/domains/runtime/src/execution-effects/index.ts";
+  {
+    const source = readIfPresent(ERROR_PRESSURE_HOME);
+    requireScope("the trail reaches the sinks before anything refuses", source === null ? 0 : 1);
+    if (source === null) {
+      fail(ERROR_PRESSURE_HOME + " is missing; the error-path recording law would stand over nothing");
+    } else {
+      const live = stripComments(source);
+      const producerAt = live.indexOf("async function execute(");
+      const factoryAt = live.indexOf("export function createExecutionEffects(");
+      const trailAt = live.indexOf("await execute(input)");
+      // The LAST sink call, not the first: the drain calls it once per kind.
+      const lastSinkAt = live.lastIndexOf("recordPressure({");
+      const gateAt = live.indexOf("checkConformance(");
+      const REFUSAL = "throw new ExecutionEffectError";
+
+      if (producerAt === -1 || factoryAt === -1 || trailAt === -1 || lastSinkAt === -1 || gateAt === -1) {
+        fail(
+          ERROR_PRESSURE_HOME +
+            " no longer carries the five anchors this law reads (the producer, the factory, the" +
+            " trail, the last pressure sink and the conformance gate); the law would select nothing",
+        );
+      } else if (!(producerAt < factoryAt && factoryAt < trailAt && trailAt < lastSinkAt && lastSinkAt < gateAt)) {
+        fail(
+          ERROR_PRESSURE_HOME +
+            " declares the producer, the trail, the sinks and the gate out of order; the law's" +
+            " windows are inverted and select nothing",
+        );
+      } else {
+        if (live.slice(producerAt, factoryAt).includes(REFUSAL)) {
+          fail(
+            ERROR_PRESSURE_HOME +
+              " raises a refusal inside execute; the producer returns its outcome beside the trail" +
+              " it built, because a throw there discards a fully built trail before any drain runs",
+          );
+        }
+        if (live.slice(trailAt, lastSinkAt).includes(REFUSAL)) {
+          fail(
+            ERROR_PRESSURE_HOME +
+              " raises a refusal between producing the trail and draining it; an execution that" +
+              " failed would record none of the pressure its own trail already carries",
+          );
+        }
+        const settled = live.slice(lastSinkAt, gateAt);
+        const refusals = settled.split(REFUSAL).length - 1;
+        if (refusals !== 1) {
+          fail(
+            ERROR_PRESSURE_HOME +
+              " raises " +
+              String(refusals) +
+              " refusals between the last drain and the conformance gate, not one; a failed" +
+              " execution must refuse exactly once, after recording and before the gate and the marker",
+          );
+        } else if (!settled.includes("if (!outcome.ok)")) {
+          fail(
+            ERROR_PRESSURE_HOME +
+              " refuses on something other than the execution outcome after the drains; the refusal" +
+              " this law protects is the one the producer reported",
+          );
+        } else {
+          notes.push(
+            "the trail reaches both sinks before anything refuses, and the refusal precedes the gate," +
+              " in " + ERROR_PRESSURE_HOME,
+          );
+        }
       }
     }
   }

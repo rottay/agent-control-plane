@@ -3013,3 +3013,126 @@ describe("F4: the plane records the pressure a provider reports", () => {
     }
   }, 120_000);
 });
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4a errata — a failed execution records what its trail already said
+// ---------------------------------------------------------------------------
+
+/**
+ * The discriminating drill, and it is reachable on the **shipped** parser.
+ *
+ * F4a recorded pressure only when `execute` returned, so an execution whose
+ * stream ended in `error` discarded a fully built trail — and the case that
+ * matters most is exactly that one: a provider that reports an exhaustion and
+ * then dies. The asymmetry ran backwards.
+ *
+ * The fixture is F4a's own prefix with the clean terminal replaced by a frame
+ * the adapter cannot read. `readRecord` returns `MALFORMED_EVENT`, the session
+ * fails, `finish()` reports a dead session and `terminated` yields an `error`
+ * terminal. **No test seam, no adapter injection, no providers edit and no new
+ * `fakeProviderBinary` option** — the malformed frame is one of the six ways a
+ * real stream reaches that terminal.
+ */
+
+/**
+ * F4a's prefix, then a frame that parses but cannot be expressed.
+ *
+ * **Measured while writing this, and it decided the fixture.** A line that is
+ * not a JSON record at all does *not* work: `claudeAdapter.parse` refuses the
+ * whole chunk it was handed and discards every signal it had already parsed
+ * from earlier lines in that same chunk (`claude/index.ts:253-258`), and a
+ * subject writing three lines in a row delivers them in one chunk. The
+ * `auth_required` frame would never be emitted, so there would be nothing on
+ * the trail to record and the drill would prove nothing.
+ *
+ * This frame fails one layer later instead, which is the layer that matters:
+ * the parser accepts any non-empty model, payload shaping bounds strings at
+ * 200, and `ExecutionEvent` bounds `resolvedModel` at 120 — so the third
+ * record parses, normalizes, and then **fails the contract in the port**,
+ * which throws `StreamFailure` *after* the earlier events have already been
+ * yielded. `terminated` catches it and yields an `error` terminal.
+ *
+ * It is one of the six ways a real stream reaches that terminal, it is the
+ * same mechanism the landed `b4a-reap` case uses, and it needs **no test seam,
+ * no adapter injection, no providers edit and no new `fakeProviderBinary`
+ * option**.
+ */
+const F4E_UNEXPRESSIBLE_LINES: readonly string[] = [
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "system", subtype: "auth_required" }),
+  JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
+];
+
+describe("F4a errata: a failed execution records what its trail already said", () => {
+  it("D1/D2 records the auth requirement, and the walk still fails the same way", async () => {
+    const { binary, root } = fakeProviderBinary(F4E_UNEXPRESSIBLE_LINES, { linger: false });
+    const id = b4aScenarioId("f4e-error-path-records");
+
+    // The walk fails: that is the invariant this packet must not disturb.
+    await expect(
+      startDaemon(b4aOptions(id, b4aExecutionConfig(binary, root))),
+    ).rejects.toThrow();
+
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)), { readOnly: true });
+    try {
+      const events = ledger.listEvents({ limit: 500 }).events;
+      const types = events.map((entry) => entry.event.type);
+
+      // D1: exactly one row, for the one frame the provider actually emitted
+      // before it became unreadable. Before this packet the ledger held none.
+      const raised = events.filter((entry) => entry.event.type === "AUTH_REQUIRED_RAISED");
+      expect(raised).toHaveLength(1);
+      const row = raised[0]?.event;
+      expect(row?.payload).toEqual({
+        accountId: "acct-b4a-drill",
+        provider: "claude",
+        pressure: "AUTH_REQUIRED",
+      });
+      // Still a same-state passthrough: recording evidence moves no state.
+      expect(row?.fromState).toBe(row?.toState);
+
+      // D2: the walk settled failed, for an execution reason, with no
+      // checkpoint — byte-for-byte the verdict it reached before.
+      expect(types).toContain("TASK_FAILED");
+      expect(types).not.toContain("CHECKPOINT_WRITTEN");
+      const failed = events.find((entry) => entry.event.type === "TASK_FAILED");
+      expect(failed?.event.payload["reason"]).toBe("EXECUTION_FAILED");
+
+      // D3: no transcript, no message, no path in the rows THIS packet
+      // records — F4a's own sweep over its own rows, extended with the strings
+      // this error path introduces. (The lease events carry the worktree path
+      // and always have; that is not a row this packet writes and not a claim
+      // it makes.)
+      const serialized = JSON.stringify(raised);
+      for (const secret of [
+        "auth_required",
+        "LOGIN_REQUIRED",
+        "MALFORMED_EVENT",
+        "session failed",
+        "mmmmmmmmmm",
+        "http",
+        binary,
+        root,
+      ]) {
+        expect({ secret, leaked: serialized.includes(secret) }).toEqual({ secret, leaked: false });
+      }
+    } finally {
+      ledger.close();
+    }
+  }, 120_000);
+
+  it("D2: a failed execution leaves no evidence marker behind", async () => {
+    // The other half of "the same way": a marker is what makes a step
+    // un-re-runnable, and a failed execution must not leave one. The gate that
+    // would have run before it deliberately still does not run at all.
+    const { binary, root } = fakeProviderBinary(F4E_UNEXPRESSIBLE_LINES, { linger: false });
+    const id = b4aScenarioId("f4e-no-marker");
+
+    await expect(
+      startDaemon(b4aOptions(id, b4aExecutionConfig(binary, root))),
+    ).rejects.toThrow();
+
+    const executions = join(resolveScenarioRoot(id), "executions");
+    expect(existsSync(executions) ? readdirSync(executions) : []).toEqual([]);
+  }, 120_000);
+});

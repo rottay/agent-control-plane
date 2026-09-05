@@ -780,3 +780,380 @@ describe("the evidence probe", () => {
     expect(Object.keys(probe).sort()).toEqual(["apply", "probe"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F4a errata — a failed execution records what its trail already said
+// ---------------------------------------------------------------------------
+
+/**
+ * Until this errata `execute` threw at each of its three refusal points, so a
+ * fully built, contract-validated trail was discarded before `apply` reached
+ * either drain. An execution ending in `error` — or with no terminal — recorded
+ * neither the pressure nor the spend it had just observed, while an execution
+ * that reported the same pressure and exited cleanly recorded both.
+ *
+ * These cases assert the new order and, just as importantly, that **nothing
+ * else moved**: the same refusal at the same `at`, no conformance gate, no
+ * marker, `probe → NOT_DONE`.
+ */
+
+const F4E_TASKS = [
+  "f4e00000-0000-4000-8000-000000000001",
+  "f4e00000-0000-4000-8000-000000000002",
+  "f4e00000-0000-4000-8000-000000000003",
+  "f4e00000-0000-4000-8000-000000000004",
+  "f4e00000-0000-4000-8000-000000000005",
+  "f4e00000-0000-4000-8000-000000000006",
+  "f4e00000-0000-4000-8000-000000000007",
+  "f4e00000-0000-4000-8000-000000000008",
+  "f4e00000-0000-4000-8000-000000000009",
+  "f4e00000-0000-4000-8000-00000000000a",
+] as const;
+
+/** A trail that observed pressure, spend and an auth requirement, then failed. */
+const FAILED_TRAIL: readonly ExecutionEvent[] = [
+  { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
+  { kind: "pressure", provider: "codex", pressure: "QUOTA_EXHAUSTED" },
+  { kind: "usage", stepIndex: 3, tokensUsed: TOKENS },
+  { kind: "authRequired", reason: "LOGIN_REQUIRED" },
+  { kind: "error", refusal: "CAPABILITY_UNSUPPORTED", detail: "the fake ended in error" },
+];
+
+/** The same observations, with the stream simply stopping. */
+const NO_TERMINAL_TRAIL: readonly ExecutionEvent[] = [
+  { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
+  { kind: "pressure", provider: "codex", pressure: "QUOTA_EXHAUSTED" },
+  { kind: "usage", stepIndex: 3, tokensUsed: TOKENS },
+];
+
+/** A port with every sink and the gate, so one case can watch all of them. */
+function erratumEffectsFor(
+  name: string,
+  taskId: string,
+  script: FakeScript,
+  sinks: {
+    readonly recordUsage?: UsageSink;
+    readonly recordPressure?: PressureSink;
+    readonly checkConformance?: (operationIndex: number) => void;
+  } = {},
+) {
+  const root = scenario(name);
+  const invocation = invocationFor(taskId);
+  const calls = { starts: 0 };
+  const effects = createExecutionEffects({
+    port: fakePort(script, calls),
+    route: ROUTE,
+    request: requestFor(invocation),
+    scenarioRoot: root,
+    ...(sinks.recordUsage === undefined ? {} : { recordUsage: sinks.recordUsage }),
+    ...(sinks.recordPressure === undefined ? {} : { recordPressure: sinks.recordPressure }),
+    ...(sinks.checkConformance === undefined ? {} : { checkConformance: sinks.checkConformance }),
+  });
+  const operation = operationForStep(invocation, INTENT_STEP);
+  return { root, invocation, calls, effects, operation };
+}
+
+describe("F4a-E P1/P2: a failed execution records what its trail already said", () => {
+  it("records the pressure and the spend, and still refuses identically", async () => {
+    const pressure: PressureSample[] = [];
+    const usage: UsageSample[] = [];
+    const staged = erratumEffectsFor(
+      "f4e-error-records",
+      F4E_TASKS[0],
+      { events: FAILED_TRAIL },
+      {
+        recordPressure: (sample) => {
+          pressure.push(sample);
+        },
+        recordUsage: (sample) => {
+          usage.push(sample);
+        },
+      },
+    );
+
+    // The refusal is unchanged: same name, same `at`, same class.
+    await expect(staged.effects.apply(staged.operation)).rejects.toMatchObject({
+      name: "ExecutionEffectError",
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "events.error",
+    });
+
+    // P1: the pressure the trail already carried is now recorded — one row per
+    // observed frame, the exhaustion and the auth requirement alike.
+    expect(pressure.map((sample) => sample.pressure)).toEqual([
+      "QUOTA_EXHAUSTED",
+      "AUTH_REQUIRED",
+    ]);
+    // P2: and the spend, on the ruling that the tokens were reported and the
+    // ledger may under-report but never over-report.
+    expect(usage.map((sample) => sample.tokensUsed)).toEqual([TOKENS]);
+
+    // And nothing else moved.
+    expect(markerFiles(staged.root)).toEqual([]);
+    await expect(staged.effects.probe(staged.operation)).resolves.toBe("NOT_DONE");
+  });
+
+  it("P3: a stream that ends with no terminal records, then refuses as a transport failure", async () => {
+    const pressure: PressureSample[] = [];
+    const usage: UsageSample[] = [];
+    const staged = erratumEffectsFor(
+      "f4e-no-terminal-records",
+      F4E_TASKS[1],
+      { events: NO_TERMINAL_TRAIL },
+      {
+        recordPressure: (sample) => {
+          pressure.push(sample);
+        },
+        recordUsage: (sample) => {
+          usage.push(sample);
+        },
+      },
+    );
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toMatchObject({
+      refusal: "TRANSPORT_UNAVAILABLE",
+      at: "events.terminal",
+    });
+    expect(pressure.map((sample) => sample.pressure)).toEqual(["QUOTA_EXHAUSTED"]);
+    expect(usage).toHaveLength(1);
+    expect(markerFiles(staged.root)).toEqual([]);
+  });
+
+  it("P4: the durable names are the success path's, position for position", async () => {
+    // The trail index and the reported step index are carried exactly as they
+    // are on the success path, so a resumed attempt rebuilds the same durable
+    // names and replays rather than double-recording.
+    const pressure: PressureSample[] = [];
+    const usage: UsageSample[] = [];
+    const staged = erratumEffectsFor(
+      "f4e-names",
+      F4E_TASKS[2],
+      { events: FAILED_TRAIL },
+      {
+        recordPressure: (sample) => {
+          pressure.push(sample);
+        },
+        recordUsage: (sample) => {
+          usage.push(sample);
+        },
+      },
+    );
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toThrow(ExecutionEffectError);
+
+    // The exhaustion sits at trail index 1 and the auth requirement at 3.
+    expect(pressure.map((sample) => sample.trailIndex)).toEqual([1, 3]);
+    expect(new Set(pressure.map((sample) => sample.operationIndex))).toEqual(
+      new Set([staged.operation.operationIndex]),
+    );
+    // The spend carries the provider's own reported ordinal, not its position.
+    expect(usage[0]?.stepIndex).toBe(3);
+    expect(usage[0]?.operationIndex).toBe(staged.operation.operationIndex);
+  });
+
+  it("P5: an auth requirement on the error path resolves its provider from the route", async () => {
+    const pressure: PressureSample[] = [];
+    const staged = erratumEffectsFor(
+      "f4e-auth-provider",
+      F4E_TASKS[3],
+      { events: FAILED_TRAIL },
+      {
+        recordPressure: (sample) => {
+          pressure.push(sample);
+        },
+      },
+    );
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toThrow(ExecutionEffectError);
+
+    // Exactly the success path's rule: a pressure event carries its own
+    // provider, an auth requirement carries none and takes the route's.
+    expect(pressure.map((sample) => sample.provider)).toEqual(["codex", ROUTE.provider]);
+  });
+});
+
+describe("F4a-E N1/N2: what the errata must not change", () => {
+  it("N1: a refused start still records nothing at all", async () => {
+    // The distinction that must survive: no stream existed, so there is no
+    // observation to carry. An empty trail here is the absence of an
+    // observation, never an observation of silence.
+    const pressure: PressureSample[] = [];
+    const usage: UsageSample[] = [];
+    const staged = erratumEffectsFor(
+      "f4e-refused-start",
+      F4E_TASKS[4],
+      { refuse: { ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "route.accountId" } },
+      {
+        recordPressure: (sample) => {
+          pressure.push(sample);
+        },
+        recordUsage: (sample) => {
+          usage.push(sample);
+        },
+      },
+    );
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toMatchObject({
+      refusal: "TRANSPORT_UNAVAILABLE",
+      at: "route.accountId",
+    });
+    expect({ starts: staged.calls.starts, pressure: pressure.length, usage: usage.length }).toEqual({
+      starts: 1,
+      pressure: 0,
+      usage: 0,
+    });
+    expect(markerFiles(staged.root)).toEqual([]);
+  });
+
+  it("N2: no conformance gate and no marker on the error path", async () => {
+    // The gate deliberately still does not run: it records and revokes, and a
+    // revocation here would confuse the settlement that is about to happen.
+    let gateCalls = 0;
+    const staged = erratumEffectsFor(
+      "f4e-no-gate",
+      F4E_TASKS[5],
+      { events: FAILED_TRAIL },
+      {
+        recordPressure: () => undefined,
+        checkConformance: () => {
+          gateCalls += 1;
+          throw new Error("the gate must not run on the error path");
+        },
+      },
+    );
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toMatchObject({
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "events.error",
+    });
+    expect(gateCalls).toBe(0);
+    expect(markerFiles(staged.root)).toEqual([]);
+  });
+
+  it("the sink runs before the refusal, observed rather than read off the source", async () => {
+    // At the instant the sink runs, no marker exists and the refusal has not
+    // been raised — which is the whole of the ordering this errata introduces.
+    const order: string[] = [];
+    const staged = erratumEffectsFor(
+      "f4e-order",
+      F4E_TASKS[6],
+      { events: FAILED_TRAIL },
+      {
+        recordUsage: () => {
+          order.push("usage");
+        },
+        recordPressure: () => {
+          order.push("pressure:" + String(markerFiles(staged.root).length));
+        },
+      },
+    );
+
+    await expect(staged.effects.apply(staged.operation)).rejects.toThrow(ExecutionEffectError);
+    expect(order).toEqual(["usage", "pressure:0", "pressure:0"]);
+  });
+});
+
+describe("F4a-E N3: a throwing sink preempts the refusal, and leaves nothing behind", () => {
+  it("propagates the sink's own error and writes no marker", async () => {
+    // Stated honestly, because the objective's "the settlement stays exactly
+    // as it is" is not quite true here: a recorder that throws on the error
+    // path replaces the ExecutionEffectError with its own, and
+    // `classifyFailure` refuses to settle a class it does not recognise — so
+    // the walk propagates unsettled rather than settling FAILED.
+    //
+    // That is the rule the success path already follows and it is the
+    // fail-closed direction: an unsettled walk is visible, where a silently
+    // discarded observation was not.
+    const staged = erratumEffectsFor(
+      "f4e-sink-throws",
+      F4E_TASKS[7],
+      { events: FAILED_TRAIL },
+      {
+        recordPressure: () => {
+          throw new SupervisorError("the recorder refused");
+        },
+      },
+    );
+
+    const raised = await staged.effects
+      .apply(staged.operation)
+      .then(() => null)
+      .catch((error: unknown) => error);
+
+    // The sink's error, not the execution's refusal.
+    expect(raised).toBeInstanceOf(SupervisorError);
+    expect(raised).not.toBeInstanceOf(ExecutionEffectError);
+    // No marker, and the probe still says the effect has not happened.
+    expect(markerFiles(staged.root)).toEqual([]);
+    await expect(staged.effects.probe(staged.operation)).resolves.toBe("NOT_DONE");
+  });
+});
+
+describe("F4a-E N4/N5/N6: the shapes this errata does not move", () => {
+  it("N4: absent sinks are a no-op on the error path, exactly as before", async () => {
+    // The drill children build this port with no sinks at all, which is what
+    // keeps `packages/edges/durability/**` out of this packet's write-set.
+    const staged = erratumEffectsFor("f4e-absent-sinks", F4E_TASKS[8], { events: FAILED_TRAIL });
+    await expect(staged.effects.apply(staged.operation)).rejects.toMatchObject({
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "events.error",
+    });
+    expect(markerFiles(staged.root)).toEqual([]);
+    await expect(staged.effects.probe(staged.operation)).resolves.toBe("NOT_DONE");
+  });
+
+  it("N5: the error class still carries exactly a refusal and an `at`", async () => {
+    // D1's guard. A trail on the error would be provider text one
+    // `JSON.stringify` from a log line, and it would move twelve construction
+    // sites; nothing downstream wants it, and nothing may take it.
+    const staged = erratumEffectsFor("f4e-error-shape", F4E_TASKS[9], { events: FAILED_TRAIL });
+    const raised = await staged.effects
+      .apply(staged.operation)
+      .then(() => null)
+      .catch((error: unknown) => error);
+
+    expect(raised).toBeInstanceOf(ExecutionEffectError);
+    const error = raised as ExecutionEffectError & Record<string, unknown>;
+    // `name` is the class's own identity, set in its constructor; `refusal`
+    // and `at` are the whole of what it carries about the failure.
+    expect(Object.keys(error).sort()).toEqual(["at", "name", "refusal"]);
+    for (const forbidden of ["trail", "events", "detail", "outcome"]) {
+      expect({ forbidden, present: forbidden in error }).toEqual({ forbidden, present: false });
+    }
+    // No provider text is reachable from the caught instance — the message
+    // included, since that is what reaches a log line.
+    const serialized = JSON.stringify({
+      message: error.message,
+      refusal: error.refusal,
+      at: error.at,
+      name: error.name,
+    });
+    for (const secret of ["the fake ended in error", "LOGIN_REQUIRED", "QUOTA_EXHAUSTED"]) {
+      expect({ secret, leaked: serialized.includes(secret) }).toEqual({ secret, leaked: false });
+    }
+
+    // And the constructor is still two-argument everywhere it is built.
+    const code = codeOf(MODULE);
+    for (const match of code.matchAll(/new ExecutionEffectError\(([^)]*)\)/g)) {
+      expect({ args: match[1], commas: (match[1] ?? "").split(",").length }).toEqual({
+        args: match[1],
+        commas: 2,
+      });
+    }
+  });
+
+  it("N6: no second classifier — no message parsed, no member re-derived", () => {
+    // The request's own line. The classification is already on the trail as
+    // events an adapter produced and the contract validated; this packet adds
+    // no reader of `detail` and names no vocabulary member of its own.
+    for (const file of sourceFiles(SRC)) {
+      const code = codeOf(file);
+      expect({ file, reads: code.includes(".detail") }).toEqual({ file, reads: false });
+    }
+    const effects = codeOf(MODULE);
+    // The one pressure member this module may name is the auth constant the
+    // sink supplies for an event that carries no provider of its own.
+    const members = [...effects.matchAll(/"(QUOTA_EXHAUSTED|QUOTA_WARNING|TRANSIENT|UNCLASSIFIED)"/g)];
+    expect(members.map((match) => match[1])).toEqual([]);
+  });
+});

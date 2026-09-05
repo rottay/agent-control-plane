@@ -394,6 +394,46 @@ function writeMarker(target: string, marker: EvidenceMarker): void {
 }
 
 /**
+ * What one execution produced, and whether the boundary refused it.
+ *
+ * **Module-private, and a result rather than an error carrying a trail.** Both
+ * shapes would let `apply` see what a failed execution observed; this one is
+ * right for three measured reasons.
+ *
+ * An `ExecutionEffectError` carrying the trail would put **provider output
+ * inside an Error**: `ExecutionEvent` includes `text`, `toolUse` and `write`,
+ * and errors in this plane travel to the daemon log and past
+ * `classifyFailure`, where the contract already refuses to let an exception
+ * message reach a payload. A transcript on an error object is a transcript one
+ * `JSON.stringify` from a log line. It would also move **twelve construction
+ * sites across three strata** — a required third argument breaks all twelve,
+ * and an optional one makes "the trail is carried" unprovable by construction,
+ * which is the structurally-live-behaviourally-empty shape this wave removes.
+ * And the error's job is to be *classified*, not read: nothing downstream wants
+ * the trail, and giving it one invites a future reader to take it.
+ *
+ * The union keeps the trail in `apply`'s local scope — exactly where it already
+ * lived on the success path.
+ */
+type ExecutionOutcome =
+  | { readonly ok: true; readonly trail: readonly ExecutionEvent[] }
+  | {
+      readonly ok: false;
+      readonly refusal: ExecutionRefusal;
+      readonly at: string;
+      /**
+       * Everything observed before the refusal.
+       *
+       * Empty when no stream existed — a refused `start` — **or** when a stream
+       * existed and produced nothing before it failed. The two are different
+       * facts and the sinks cannot tell them apart from this field alone; what
+       * distinguishes them is that a refused start never opened a stream at
+       * all, which the port's own refusal already says.
+       */
+      readonly trail: readonly ExecutionEvent[];
+    };
+
+/**
  * Start the execution, drain it to its terminal, and say how it ended.
  *
  * The port's terminal law guarantees exactly one terminal event, `completed`
@@ -401,10 +441,22 @@ function writeMarker(target: string, marker: EvidenceMarker): void {
  * can see it: a stream that ends without a terminal is reported as a transport
  * failure rather than as success, because "the stream stopped" is not evidence
  * that the work finished.
+ *
+ * **It returns, and never throws.** Until the errata below it threw at each of
+ * these three points, and the trail — fully built and already validated event
+ * by event by the port — was discarded by the throw, because `apply` reaches
+ * its drains only if this function returned. So an execution that ended in
+ * `error`, or with no terminal at all, recorded neither the pressure nor the
+ * spend it had just observed. Returning the refusal beside the trail is what
+ * lets the caller drain first and refuse afterwards, without any reader ever
+ * parsing a message or re-deriving a classification an adapter already made.
  */
-async function execute(input: ExecutionEffectsInput): Promise<readonly ExecutionEvent[]> {
+async function execute(input: ExecutionEffectsInput): Promise<ExecutionOutcome> {
   const started = await input.port.start(input.route, input.request);
-  if (!started.ok) throw new ExecutionEffectError(started.refusal, started.at);
+  // No stream existed, so nothing was observed and nothing is carried. The
+  // empty trail here is not an observation of silence; it is the absence of an
+  // observation, and the drains below are no-ops over it.
+  if (!started.ok) return { ok: false, refusal: started.refusal, at: started.at, trail: [] };
 
   const trail: ExecutionEvent[] = [];
   let terminal: ExecutionEvent | null = null;
@@ -413,9 +465,13 @@ async function execute(input: ExecutionEffectsInput): Promise<readonly Execution
     if (event.kind === "completed" || event.kind === "error") terminal = event;
   }
 
-  if (terminal === null) throw new ExecutionEffectError("TRANSPORT_UNAVAILABLE", "events.terminal");
-  if (terminal.kind === "error") throw new ExecutionEffectError(terminal.refusal, "events.error");
-  return trail;
+  if (terminal === null) {
+    return { ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "events.terminal", trail };
+  }
+  if (terminal.kind === "error") {
+    return { ok: false, refusal: terminal.refusal, at: "events.error", trail };
+  }
+  return { ok: true, trail };
 }
 
 /**
@@ -448,7 +504,8 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
         );
       }
 
-      const trail = await execute(input);
+      const outcome = await execute(input);
+      const trail = outcome.trail;
 
       // V2-B7T. The sink runs BEFORE the marker, and the ordering is the whole
       // of the crash-safety argument rather than a preference.
@@ -513,6 +570,30 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
           }
         }
       }
+
+      // V2-B1f/F4a errata. The refusal is raised HERE, after both drains and
+      // before the gate and the marker — and where it is raised is the whole
+      // of this errata.
+      //
+      // Until now `execute` threw at this point instead of returning, so a
+      // stream that ended in `error`, or with no terminal at all, discarded a
+      // fully built and already-validated trail: `apply` never reached either
+      // drain. The asymmetry ran exactly backwards. A provider that reported
+      // pressure and kept working recorded it reliably; a provider that
+      // reported an exhaustion and then died recorded nothing at all — and the
+      // second is the case an elector exists to answer.
+      //
+      // **Nothing else about the failure changes.** The refusal is the same
+      // name at the same `at`; no conformance gate runs; no marker is written,
+      // so `probe` still answers `NOT_DONE`; and the walk still settles
+      // `FAILED`. This packet adds evidence and changes no verdict.
+      //
+      // One honest consequence: a sink that throws on this path now preempts
+      // the refusal, so the walk propagates the sink's own error and settles
+      // nothing. That is the rule the success path already follows and the
+      // fail-closed direction — an unsettled walk is visible, where a silently
+      // discarded observation was not.
+      if (!outcome.ok) throw new ExecutionEffectError(outcome.refusal, outcome.at);
 
       // Before the marker, and after the spend: a violation must not leave a
       // marker behind, because a marker is what makes the step un-re-runnable

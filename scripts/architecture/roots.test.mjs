@@ -1183,6 +1183,153 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("folds a trigger without asking isTrigger");
   });
 
+  it("refuses a refusal raised inside the trail producer (L-F4E-1)", async () => {
+    // V2-B1f/F4a errata, first assertion. The original defect lived INSIDE
+    // `execute`: it threw on an error terminal and discarded a fully built,
+    // contract-validated trail before `apply` reached either drain. A law
+    // anchored only on the call site would never have looked here.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line and the offending path.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/execution-effects/index.ts",
+      [
+        "async function execute(input) {",
+        "  const started = await input.port.start(input.route, input.request);",
+        '  if (terminal.kind === "error") throw new ExecutionEffectError(terminal.refusal, "events.error");',
+        "  return { ok: true, trail };",
+        "}",
+        "export function createExecutionEffects(input) {",
+        "  return { async apply(operation) {",
+        "    const outcome = await execute(input);",
+        "    recordUsage({ operationIndex: operation.operationIndex });",
+        "    recordPressure({ operationIndex: operation.operationIndex });",
+        "    recordPressure({ operationIndex: operation.operationIndex });",
+        "    if (!outcome.ok) throw new ExecutionEffectError(outcome.refusal, outcome.at);",
+        "    checkConformance(operation.operationIndex);",
+        "    writeMarker(target, { eventCount: outcome.trail.length });",
+        "  } };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("raises a refusal inside execute");
+    expect(output).toContain("packages/domains/runtime/src/execution-effects/index.ts");
+  });
+
+  it("refuses a refusal raised between the trail and the last drain (L-F4E-1)", async () => {
+    // The second assertion, and the reason the window ends at the LAST sink
+    // call rather than the first: the pressure drain calls its sink once for a
+    // pressure event and once for an auth requirement, so a throw between them
+    // would break the auth half while passing a law that stopped at the first.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/execution-effects/index.ts",
+      [
+        "async function execute(input) {",
+        "  return { ok: true, trail };",
+        "}",
+        "export function createExecutionEffects(input) {",
+        "  return { async apply(operation) {",
+        "    const outcome = await execute(input);",
+        "    recordPressure({ operationIndex: operation.operationIndex });",
+        "    if (!outcome.ok) throw new ExecutionEffectError(outcome.refusal, outcome.at);",
+        "    recordPressure({ operationIndex: operation.operationIndex });",
+        "    checkConformance(operation.operationIndex);",
+        "    writeMarker(target, { eventCount: outcome.trail.length });",
+        "  } };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("raises a refusal between producing the trail and draining it");
+  });
+
+  it("refuses a composition that drains and then never refuses at all (L-F4E-1)", async () => {
+    // The positive half. Without it, deleting the refusal outright satisfies
+    // both negative halves — and a failed execution would then reach the
+    // conformance gate and the marker, so `closeIntent` would append an
+    // OUTCOME and the plane would record as completed an effect that failed.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/execution-effects/index.ts",
+      [
+        "async function execute(input) {",
+        "  return { ok: true, trail };",
+        "}",
+        "export function createExecutionEffects(input) {",
+        "  return { async apply(operation) {",
+        "    const outcome = await execute(input);",
+        "    recordPressure({ operationIndex: operation.operationIndex });",
+        "    recordPressure({ operationIndex: operation.operationIndex });",
+        "    checkConformance(operation.operationIndex);",
+        "    writeMarker(target, { eventCount: outcome.trail.length });",
+        "  } };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("raises 0 refusals between the last drain and the conformance gate");
+  });
+
+  it("leaves the lawful order alone: produce, drain both, refuse, gate, marker", async () => {
+    // The negative control, and the half that keeps this law from widening
+    // from "refuses between the trail and the sinks" to "mentions the error
+    // class". Every form below is lawful and must stay lawful: the producer
+    // returns its outcome, both sink calls run, the refusal sits between the
+    // last drain and the gate, and the file names the error class in exactly
+    // the one place it is allowed to.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/execution-effects/index.ts",
+      [
+        "async function execute(input) {",
+        "  const started = await input.port.start(input.route, input.request);",
+        '  if (!started.ok) return { ok: false, refusal: started.refusal, at: started.at, trail: [] };',
+        '  if (terminal === null) return { ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "events.terminal", trail };',
+        '  if (terminal.kind === "error") return { ok: false, refusal: terminal.refusal, at: "events.error", trail };',
+        "  return { ok: true, trail };",
+        "}",
+        "export function createExecutionEffects(input) {",
+        "  return { async apply(operation) {",
+        "    const outcome = await execute(input);",
+        "    recordUsage({ operationIndex: operation.operationIndex });",
+        "    recordPressure({ operationIndex: operation.operationIndex });",
+        "    recordPressure({ operationIndex: operation.operationIndex });",
+        "    if (!outcome.ok) throw new ExecutionEffectError(outcome.refusal, outcome.at);",
+        "    checkConformance(operation.operationIndex);",
+        "    writeMarker(target, { eventCount: outcome.trail.length });",
+        "  } };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("raises a refusal inside execute");
+    expect(output).not.toContain("raises a refusal between producing the trail and draining it");
+    expect(output).not.toContain("refusals between the last drain and the conformance gate, not one");
+    expect(output).not.toContain("refuses on something other than the execution outcome");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The
