@@ -35,9 +35,16 @@ import {
   closeIntent,
   deterministicUuid,
   planFor,
+  SHARED_PLAN_PREFIX,
   settleCancellation,
 } from "@acp/runtime";
-import type { BeatContext, DurableInvocation, FailureReason, OrchestrationDriver } from "@acp/runtime";
+import type {
+  BeatContext,
+  DurableInvocation,
+  FailureReason,
+  OrchestrationDriver,
+  PlanStep,
+} from "@acp/runtime";
 
 import { attachAdvance, cancelAdvance, resolveGate, sendAdvanceDelayed } from "../../submit/index.js";
 import {
@@ -663,12 +670,27 @@ function parseFinalSequence(body: string): number {
   return sequence;
 }
 
+/**
+ * The marker a lifecycle construction passes instead of a commit policy
+ * (V2 L2).
+ *
+ * Module-private and a symbol, so the public constructor's third parameter is
+ * still a `CommitPolicy` to every caller outside this file and still cannot be
+ * omitted. `forLifecycle` is the only way to reach the plan-free construction,
+ * which is what keeps `planFor`'s "no plan is chosen by default" law intact
+ * while giving the verbs that read no plan a way to be constructed at all.
+ */
+const LIFECYCLE_CONSTRUCTION: unique symbol = Symbol("acp.restate-driver.lifecycle");
+
+/** A commit policy, or the marker that says there is none to have. */
+type PlanSelector = CommitPolicy | typeof LIFECYCLE_CONSTRUCTION;
+
 export class RestateDriver implements OrchestrationDriver {
   readonly mode: DriverMode = RESTATE_MODE;
 
   readonly #options: RestateDriverOptions;
   readonly #beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId">;
-  readonly #commitPolicy: CommitPolicy;
+  readonly #commitPolicy: PlanSelector;
   readonly #initiativeId: string;
 
   constructor(
@@ -681,6 +703,56 @@ export class RestateDriver implements OrchestrationDriver {
     this.#beat = beat;
     this.#commitPolicy = commitPolicy;
     this.#initiativeId = initiativeId;
+  }
+
+  /**
+   * Build a driver for the lifecycle verbs, with no commit policy (V2 L2).
+   *
+   * `cancel` and `reattach` are what this construction serves, and neither
+   * needs a policy. `reattach` reads no context at all. `cancel` reads the plan
+   * in exactly three places and all three land in the prefix both plans share:
+   * the OUTCOME append threads to `plan[4]`, its causal predecessor check reads
+   * the same step, and `cancellationEvent` hands `plan.length` to a derivation
+   * that voids the argument. So a cancellation settled under this construction
+   * is byte-identical to one settled under either policy — asserted by the
+   * driver suite over a seeded ledger rather than argued for here.
+   *
+   * The alternative was for a door to pass a policy it had no evidence for.
+   * There is none to be had: the policy is in no event payload, no submission
+   * preimage and no read model, and it first becomes evident at plan step 8,
+   * by which point the task is past every state an operator cancels from.
+   *
+   * The plan-free object walks nothing, and `advance` says so.
+   */
+  static forLifecycle(
+    options: RestateDriverOptions,
+    beat: (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId">,
+    initiativeId: string,
+  ): RestateDriver {
+    const driver = new RestateDriver(
+      options,
+      beat,
+      // Read back by `#planForRun` below. The cast widens what this file may
+      // pass, never what a caller may: the constructor's own parameter type is
+      // untouched.
+      LIFECYCLE_CONSTRUCTION as unknown as CommitPolicy,
+      initiativeId,
+    );
+    return driver;
+  }
+
+  /**
+   * The plan this object's beats walk.
+   *
+   * Resolved per call rather than in the constructor, so an ordinary
+   * construction still throws where it always threw — at the verb, not at
+   * `new` — and a packet that changed when `planFor` fires would be a change
+   * this packet did not make.
+   */
+  #planForRun(): readonly PlanStep[] {
+    return this.#commitPolicy === LIFECYCLE_CONSTRUCTION
+      ? SHARED_PLAN_PREFIX
+      : planFor(this.#commitPolicy);
   }
 
   /**
@@ -812,7 +884,7 @@ export class RestateDriver implements OrchestrationDriver {
   async cancel(invocation: DurableInvocation): Promise<DriverOutcome> {
     const context: BeatContext = {
       ...this.#beat(invocation),
-      plan: planFor(this.#commitPolicy),
+      plan: this.#planForRun(),
       initiativeId: this.#initiativeId,
     };
 
@@ -1014,9 +1086,21 @@ export class RestateDriver implements OrchestrationDriver {
     // `async` so every refusal is a rejection. A promise-returning method that
     // throws synchronously makes callers write two error paths, and the one
     // they forget is the one that fires on a bad claim.
+    //
+    // A lifecycle construction refuses first, and for a different reason than
+    // the throw below: that one says this driver advances through its object
+    // handler, this one says this OBJECT has no plan to advance along. Both are
+    // refusals, and telling them apart is what stops a reader concluding the
+    // engine is the obstacle when the construction is.
+    if (this.#commitPolicy === LIFECYCLE_CONSTRUCTION) {
+      throw new SupervisorError(
+        "this driver was constructed for the lifecycle verbs and walks no plan;" +
+          " construct one with an explicit commit policy to advance",
+      );
+    }
     const context: BeatContext = {
       ...this.#beat(invocation),
-      plan: planFor(this.#commitPolicy),
+      plan: this.#planForRun(),
       initiativeId: this.#initiativeId,
     };
     assertInvocationContinuity(context);

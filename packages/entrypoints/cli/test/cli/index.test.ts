@@ -281,10 +281,16 @@ describe("usage", () => {
     expect(result.exitCode).toBe(EXIT_OK);
     expect(result.stdout).toContain("acp - Agent Control Plane observation CLI");
     // V2-B4b stage 3D narrowed the banner rather than dropping the claim: the
-    // read posture is still stated, and the one exception is named where a
-    // reader meets it.
+    // read posture is still stated, and the exceptions are named where a reader
+    // meets them. V2 L2 added the second exception and widened the sentence to
+    // say so — a banner that still claimed one writing verb would be the exact
+    // staleness stage 3D fixed by narrowing it.
     expect(result.stdout).toContain("every read verb opens the ledger query-only");
     expect(result.stdout).toContain("tool-call writes one receipt");
+    expect(result.stdout).toContain("cancel settles one cancellation");
+    // And the closing paragraph no longer claims the CLI never writes.
+    expect(result.stdout).toContain("Three verbs write, and they");
+    expect(result.stdout).not.toContain("This CLI opens the ledger read-only and never writes");
     for (const command of [
       "overview",
       "tasks",
@@ -296,6 +302,9 @@ describe("usage", () => {
       "integrity",
       "tool-calls",
       "tool-call",
+      // V2 L2.
+      "cancel",
+      "attach",
     ]) {
       expect(result.stdout).toContain(command);
     }

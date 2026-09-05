@@ -178,12 +178,16 @@ export type { BuildEventInput } from "./core/events/index.js";
 // derived plan a `NO_COMMIT` packet walks, and `planFor` is the only lawful way
 // to choose between them -- it has no default, so a caller that never said
 // which policy it runs under cannot be handed the commit-capable plan.
+// `SHARED_PLAN_PREFIX` is V2 L2's: the steps both plans share, as one name. The
+// lifecycle verbs read the plan only inside this prefix, so a driver built to
+// cancel or rejoin walks it and produces the same bytes either policy would.
 export {
   INTENT_STEP,
   LIFECYCLE_PLAN,
   OUTCOME_STEP,
   PLAN_TERMINAL_STATE,
   READ_ONLY_PLAN,
+  SHARED_PLAN_PREFIX,
   planFor,
   planStep,
   validatePlan,
@@ -201,9 +205,14 @@ export {
 export type { ScenarioRoot } from "./toy/repository/index.js";
 
 export { SqliteSupervisor } from "./drivers/sqlite-supervisor/index.js";
+// `SqliteSupervisorLifecycleOptions` is what `SqliteSupervisor.forLifecycle`
+// takes. Published for the reason the durability pin publishes
+// `GateDependencies`: a static whose parameter type the package root cannot
+// name has a surface no consumer can write against without re-declaring it.
 export type {
   FaultPoint,
   RunResult,
+  SqliteSupervisorLifecycleOptions,
   SqliteSupervisorOptions,
 } from "./drivers/sqlite-supervisor/index.js";
 
@@ -232,6 +241,12 @@ export type {
 // them as its only lawful importers.
 export { ExecutionEffectError, createExecutionEffects } from "./execution-effects/index.js";
 export type { ExecutionEffectsInput } from "./execution-effects/index.js";
+
+// V2 L2: the reader half of the port above, for the verbs that must ask whether
+// an effect happened and must never perform one. It needs no provider binding
+// and no execution request, which is what lets a door outside the daemon hold
+// it: a probe cannot perform an effect, so nothing bypasses the write-set gate.
+export { createEvidenceProbe } from "./execution-effects/index.js";
 
 
 export { recordTokenObservation } from "./usage/index.js";
@@ -354,3 +369,30 @@ export type {
   ToolClaimRecord,
   ToolClaimVerdict,
 } from "./tool-call/index.js";
+
+// V2 L2: the lifecycle operation and its recovery producer. A door arrives with
+// coordinates and nothing else; everything the drivers need was written by the
+// walk that opened the attempt, so it is read back and verified against the
+// submission digest rather than restated by an operator. One producer, both
+// doors, pinned by `L-V2L-1`.
+export {
+  LIFECYCLE_RECOVERY_REFUSALS,
+  LIFECYCLE_VERBS,
+  admitDriverMode,
+  lifecycleBeat,
+  restateInvocation,
+  runLifecycleOperation,
+} from "./lifecycle-operation/index.js";
+export type {
+  AdmittedDriverMode,
+  LifecycleOperationInput,
+  LifecycleOperationResult,
+  LifecycleRecovered,
+  LifecycleRecoveryOutcome,
+  LifecycleRecoveryPort,
+  LifecycleRecoveryRefusal,
+  LifecycleRecoveryRefused,
+  LifecycleVerb,
+  RecordedRoute,
+  RecoveredLifecycleContext,
+} from "./lifecycle-operation/index.js";

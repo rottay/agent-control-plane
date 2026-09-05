@@ -4278,6 +4278,81 @@ const V2B3C_WRITE_SET = [
 ];
 
 /**
+ * V2 L2: the lifecycle door.
+ *
+ * **Twenty-four paths, and the shape of the packet is the reason.** It was
+ * mapped at fifteen; the pre-audit rejected that ceiling and named what was
+ * missing, and every addition below is forced by a fact at HEAD rather than
+ * chosen for convenience.
+ *
+ * Eleven of them are a PREREQUISITE, and it is worth saying what it is. A door
+ * that cancels holds coordinates and nothing else, and both drivers demanded a
+ * `CommitPolicy` in order to be constructed. That value is recoverable from
+ * nothing: it is in no event payload, no submission preimage and no read model,
+ * and the two plans first diverge at step 8 — by which point the task is past
+ * every state an operator cancels from. So rather than let a door invent one,
+ * the drivers gained a lifecycle-shaped construction that takes none, and the
+ * inertness that makes it honest is measured: a cancellation settled under the
+ * shared prefix produces byte-identical events to one settled under either
+ * policy, asserted over a seeded ledger in the driver suite.
+ *
+ * `packages/domains/runtime/src/execution-effects/index.ts` is forced by the
+ * same kind of fact. `settleCancellation` probes, and the only production probe
+ * is module-private inside the execution port — a port that needs a
+ * `ModelExecutionPort` from `@acp/providers`, which the CLI may not import and
+ * must not. The module therefore exports a probe-only port whose `apply`
+ * throws, and `L-V2L-3` below pins that no entrypoint outside the daemon
+ * constructs anything else.
+ *
+ * `packages/entrypoints/cli/src/tool-call/index.ts` gains exactly one keyword.
+ * `L-B4B-11` admits one writable `openLedger(` in the CLI tree, checked over
+ * OPENINGS; a second door with its own open would fail it, and a second door
+ * that copied the two guards around it would be a second answer to "may this
+ * file be written". So `openForWrite` is exported and called.
+ *
+ * `pnpm-lock.yaml` is mechanically forced by the manifest edit, exactly as
+ * V2-B7S recorded: a workspace edge is materialized as a symlink under the
+ * consuming package's own `node_modules`, and `tsc --build` reports `TS2307`
+ * without it. Measured again here: three insertions, zero deletions, one
+ * `link:` entry.
+ *
+ * `vitest.config.ts` was authorized as a bounded allowance and was **not**
+ * written. The `cli` project resolves `@acp/runtime` from `dist` today and
+ * `@acp/durability` resolves the same way, which is the status quo rather than
+ * a regression; source resolution was not needed. The ceiling is a bound, not
+ * a quota.
+ */
+const V2L2_WRITE_SET = [
+  // The prerequisite: a lifecycle-shaped construction and the recovery producer.
+  "packages/domains/runtime/src/core/lifecycle/index.ts",
+  "packages/domains/runtime/src/lifecycle-operation/index.ts",
+  "packages/domains/runtime/test/lifecycle-operation/index.test.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/edges/durability/src/drivers/restate-driver/index.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/edges/durability/test/lifecycle-operation/index.test.ts",
+  // The door.
+  "packages/entrypoints/cli/src/lifecycle/index.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/index.ts",
+  "packages/entrypoints/cli/src/tool-call/index.ts",
+  "packages/entrypoints/cli/package.json",
+  "packages/entrypoints/cli/README.md",
+  "packages/entrypoints/cli/test/lifecycle/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "pnpm-lock.yaml",
+  "vitest.config.ts",
+  // Both.
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0029-the-lifecycle-door.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * V2-B7S: the plane composes its own submission.
  *
  * **Twelve paths, and the twelfth is `pnpm-lock.yaml`.** The packet was mapped
@@ -5832,6 +5907,7 @@ const WRITE_SET = [
   ...V2B3A_WRITE_SET,
   ...V2B3B_WRITE_SET,
   ...V2B3C_WRITE_SET,
+  ...V2L2_WRITE_SET,
   ...V2B7S_WRITE_SET,
   ...V2B7T_WRITE_SET,
   ...V2B7R_WRITE_SET,
@@ -6894,6 +6970,22 @@ const PATH_SCOPED_LAWS = [
     law: "the claim row is bounded, and carries no argument or content",
     scope: "packages/domains/runtime/src/tool-call/index.ts",
   },
+  // V2 L2. Three new path-shaped surfaces, so three new rows: the register and
+  // the `requireScope` call sites both move 88 -> 91. All three select the
+  // entrypoints other than the daemon, because the daemon composes at
+  // submission and these laws are about recovery.
+  {
+    law: "one producer recovers an invocation, and no door composes one",
+    scope: "packages/entrypoints/{cli,gateway,console}/src/** (every entrypoint but the daemon)",
+  },
+  {
+    law: "the door does not choose the driver",
+    scope: "packages/entrypoints/{cli,gateway,console}/src/** (every entrypoint but the daemon)",
+  },
+  {
+    law: "outside the daemon, a door's effect port can only read",
+    scope: "packages/entrypoints/{cli,gateway,console}/src/** (every entrypoint but the daemon)",
+  },
 ];
 
 /**
@@ -7681,8 +7773,16 @@ const P1B_DEPENDENCY_LAW = [
     // V2-B4b stage 3D adds `@acp/tools`: the one writing verb composes an
     // operation scope over it, exactly as the API door does. A workspace edge
     // the DT authorized by name, not a widening of what the CLI may reach.
+    // V2 L2 adds `@acp/durability` on the same terms: the lifecycle door
+    // constructs the Restate driver, which is the one thing a door must do
+    // that no domain can do for it. Six here, six in `CLI_ALLOWED_PACKAGES`,
+    // six in the manifest and six `link:` entries in the lockfile importer
+    // block — a manifest edge the import scan refuses is a dependency that
+    // exists on paper, and the reverse is one that exists in code and not in
+    // the graph.
     dependencies: [
       "@acp/accounts",
+      "@acp/durability",
       "@acp/protocol",
       "@acp/ledger",
       "@acp/runtime",
@@ -12118,7 +12218,15 @@ const PROTOCOL_TEST_ONLY_IMPORTS = new Set(["vitest", "node:fs", "node:path", "n
 // producer moved to a domain precisely so it would not have to.
 const CLI_ALLOWED_PACKAGES = new Set(["@acp/accounts", "@acp/ledger", "@acp/protocol", "@acp/runtime",
   // V2-B4b stage 3D: the tool-call verb composes the operation scope.
-  "@acp/tools"]);
+  "@acp/tools",
+  // V2 L2: the lifecycle door constructs a `RestateDriver`. One edge, and the
+  // only entrypoint edge this packet adds. It is a CONSTRUCTION and not a
+  // widening of what the CLI may reach: the operation it calls lives in
+  // `@acp/runtime`, the settlement policy lives there too, and nothing here
+  // reaches `@acp/daemon` or `@acp/providers`. The door names no engine
+  // concept of its own — it hands the driver an invocation it recovered from
+  // the ledger and prints the ledger coordinate that comes back.
+  "@acp/durability"]);
 const CLI_ALLOWED_BUILTINS = new Set([
   "node:crypto",
   "node:fs",
@@ -12307,6 +12415,10 @@ const TEST_ONLY_DOMAINS = {
   ],
   durability: [
     { domain: "drivers/drills", why: "the Restate drills and the driver-equivalence proof" },
+    {
+      domain: "lifecycle-operation",
+      why: "the real-engine cancel and attach proofs: cancelling twice appends once, a SIGKILL between the engine call and the settlement, and an attach after a door death; the operation itself is a runtime module and this edge owns no source for it",
+    },
   ],
   ledger: [
     { domain: "concurrent-writer-worker", why: "a spawned-fixture entry point, run as a child process" },
@@ -12669,6 +12781,45 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "ToolClaimPort",
   "ToolClaimRecord",
   "ToolClaimVerdict",
+  // V2 L2: the lifecycle operation, its recovery producer, the probe-only
+  // effect port and the plan prefix the lifecycle constructions walk.
+  // Twenty names, appended as a group rather than sorted into the head of the
+  // list, because this pin mirrors the barrel section by section.
+  //
+  // The type-heavy tail is deliberate and follows the durability pin's own
+  // precedent for `GateDependencies`: `restateInvocation`'s port and outcome,
+  // `runLifecycleOperation`'s input and result, and
+  // `SqliteSupervisor.forLifecycle`'s options are all parameter or return
+  // types of exported functions, and a surface whose parameter types the
+  // package root cannot name is one no consumer can write against without
+  // re-declaring it by hand.
+  //
+  // What is deliberately ABSENT: no name from `@acp/contracts` is re-exported
+  // here. `admitDriverMode` exists precisely so the CLI can admit a mode
+  // through the contract's own enum without importing a package it may not
+  // reach, and `AdmittedDriverMode` is derived from that function rather than
+  // aliased from the contract, so this stratum still publishes no contract
+  // vocabulary of its own.
+  "SHARED_PLAN_PREFIX",
+  "SqliteSupervisorLifecycleOptions",
+  "createEvidenceProbe",
+  "LIFECYCLE_RECOVERY_REFUSALS",
+  "LIFECYCLE_VERBS",
+  "admitDriverMode",
+  "lifecycleBeat",
+  "restateInvocation",
+  "runLifecycleOperation",
+  "AdmittedDriverMode",
+  "LifecycleOperationInput",
+  "LifecycleOperationResult",
+  "LifecycleRecovered",
+  "LifecycleRecoveryOutcome",
+  "LifecycleRecoveryPort",
+  "LifecycleRecoveryRefusal",
+  "LifecycleRecoveryRefused",
+  "LifecycleVerb",
+  "RecordedRoute",
+  "RecoveredLifecycleContext",
 ];
 
 /**
@@ -14847,6 +14998,157 @@ if (tracked.status === 0) {
   requireScope("the CLI holds exactly one writable ledger open, in the tool-call verb", cliOpensScanned);
   notes.push(
     "the CLI opens one writable ledger, in the tool-call verb, and every other open is query-only",
+  );
+}
+
+// --- V2 L2: the lifecycle door's three laws --------------------------------
+//
+// The subject of all three is the same: a door that acts on a durable
+// invocation holds coordinates and must not invent anything else. The first
+// says it recovers rather than composes, the second that it does not choose an
+// engine for itself, the third that the port it hands the settlement can only
+// read.
+//
+// All three are scoped to the entrypoints OTHER than the daemon, and the
+// exclusion is load-bearing rather than convenient. The daemon composes a beat
+// context at submission, from a route it has just had elected and a policy that
+// arrived with its packet; that is a different act from recovering one, and a
+// law that forbade both would forbid the production walk.
+{
+  const nonDaemonEntrypointSources = tracked.status === 0
+    ? tracked.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter(
+          (relativePath) =>
+            /^packages\/entrypoints\/(?!daemon\/)[^/]+\/src\//.test(relativePath) &&
+            /\.tsx?$/.test(relativePath),
+        )
+    : [];
+
+  // --- L-V2L-1: one producer recovers an invocation, and no door composes one.
+  //
+  // `restateInvocation` is the only function that builds a `DurableInvocation`
+  // and a beat attribution out of a ledger. A door that did it itself would be
+  // composing an identity out of parts, which is the shape that lets two doors
+  // disagree about which attempt they are acting on -- and the CLI door and the
+  // API door are exactly the two whose agreement L3 will have to prove.
+  //
+  // Anchored on symbols rather than on field names, on the pre-audit's
+  // correction. `taskId`, `attempt`, `submittedAt` and `initiativeId` are
+  // ordinary names: the CLI's own `submission` verb composes all four into
+  // `composeSubmission` coordinates, lawfully, and a law that forbade the words
+  // would fail on HEAD. What is forbidden is the two reads a hand-rolled
+  // recovery cannot avoid -- the ledger's route projection and the digest
+  // recomputation that would have to check it -- and the beat-context literal
+  // itself, which is `lifecycleBeat`'s to build.
+  const RECOVERY_SYMBOLS = ["getExecutionRoute(", "canonicalSubmissionDigest(", "canonicalSubmission("];
+  requireScope("one producer recovers an invocation, and no door composes one", nonDaemonEntrypointSources.length);
+  for (const relativePath of nonDaemonEntrypointSources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    for (const symbol of RECOVERY_SYMBOLS) {
+      if (live.includes(symbol)) {
+        fail(
+          relativePath +
+            " names " +
+            symbol +
+            "; recovering an attempt's identity from a ledger belongs to restateInvocation in" +
+            " @acp/runtime, and a door that recovered for itself would be a second account of" +
+            " which attempt is being acted on",
+        );
+      }
+    }
+    // The beat-context literal: `invocation:` and `effects:` as sibling keys.
+    // `lifecycleBeat` is the one producer outside the daemon, and it lives in
+    // the domain rather than at a door for the same reason the recovery does.
+    if (/\beffects\s*:/.test(live) && /\binvocation\s*:/.test(live)) {
+      fail(
+        relativePath +
+          " builds a beat context of its own; outside the daemon the only producer is" +
+          " lifecycleBeat, so the two doors cannot come to disagree about what a beat carries",
+      );
+    }
+  }
+  notes.push(
+    nonDaemonEntrypointSources.length +
+      " non-daemon entrypoint sources compose no invocation and no beat context of their own",
+  );
+
+  // --- L-V2L-2: the door does not choose the driver.
+  //
+  // `--mode` reaches the constructor, and no source makes one driver contingent
+  // on another's failure. Drill D4 certifies that a driver never fails over on
+  // its own; this preserves the same property one layer up, where a door could
+  // otherwise reintroduce it in three lines of `try`/`catch` and turn an
+  // unreachable engine into a silently different execution plane.
+  //
+  // Measured over the text between a `catch` and the next construction, which
+  // is coarse on purpose: it cannot tell which driver is being built, and it
+  // does not need to. Any construction reachable from a catch is the shape
+  // this law refuses.
+  const DRIVER_CONSTRUCTIONS = /(?:new\s+RestateDriver|RestateDriver\.forLifecycle|new\s+SqliteSupervisor|SqliteSupervisor\.forLifecycle)/;
+  requireScope("the door does not choose the driver", nonDaemonEntrypointSources.length);
+  for (const relativePath of nonDaemonEntrypointSources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    for (const match of live.matchAll(/catch\b/g)) {
+      const window = live.slice(match.index, match.index + 600);
+      if (DRIVER_CONSTRUCTIONS.test(window)) {
+        fail(
+          relativePath +
+            " constructs a driver inside a catch; a door that fell back to the other engine when" +
+            " one failed would be the failover drill D4 refuses, moved one layer up",
+        );
+      }
+    }
+  }
+  notes.push("no non-daemon entrypoint constructs a driver inside a catch; --mode reaches the constructor");
+
+  // --- L-V2L-3: outside the daemon, a door's effect port can only read.
+  //
+  // `L-C-4c` asserts that every `createExecutionEffects({` in the daemon passes
+  // a conformance gate, and it is scoped to the daemon composition site alone.
+  // That leaves a question it was never asked: what may an entrypoint that is
+  // NOT the daemon construct? This answers it, and answers it narrowly.
+  //
+  // `createEvidenceProbe` is the only effect port a door outside the daemon may
+  // build. It reads execution evidence and its `apply` throws, so nothing that
+  // holds it can perform an effect and no production path bypasses the gate --
+  // which is why widening `L-C-4c` would have been the wrong instrument. It
+  // would have pinned a composition site that must never exist: the full port
+  // needs a `ModelExecutionPort` from `@acp/providers`, a package the CLI may
+  // not import and must not.
+  //
+  // `.advance(` is forbidden beside it. A door that walked a plan would be a
+  // door that ran work, and the lifecycle constructions have no plan to walk.
+  const FORBIDDEN_AT_DOORS = ["createExecutionEffects(", ".advance("];
+  requireScope("outside the daemon, a door's effect port can only read", nonDaemonEntrypointSources.length);
+  let evidenceProbes = 0;
+  for (const relativePath of nonDaemonEntrypointSources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    evidenceProbes += (live.match(/createEvidenceProbe\(/g) ?? []).length;
+    for (const symbol of FORBIDDEN_AT_DOORS) {
+      if (live.includes(symbol)) {
+        fail(
+          relativePath +
+            " names " +
+            symbol +
+            "; outside the daemon the only effect port a door constructs is createEvidenceProbe," +
+            " whose apply throws, and no door advances a plan",
+        );
+      }
+    }
+  }
+  notes.push(
+    "outside the daemon, " +
+      evidenceProbes +
+      " effect port construction(s), all of them the read-only evidence probe",
   );
 }
 

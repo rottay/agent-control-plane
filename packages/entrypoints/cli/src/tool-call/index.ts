@@ -221,8 +221,16 @@ export interface ToolCallVerbResult {
  * path that is not already a regular file, and the read-only open refuses an
  * unapplied migration with the identical words every read verb produces. Only
  * then is a writable handle taken.
+ *
+ * **Exported, and exported rather than repeated (V2 L2).** The lifecycle door
+ * appends too, so it needs a writable handle. `L-B4B-11` admits exactly one
+ * writable `openLedger(` in this package's source tree and this is it; a second
+ * door with its own open would fail that law, and a second door that copied
+ * these two guards would be a second answer to "may this file be written",
+ * which is the shape the law exists to prevent. So the opening stays here, at
+ * one site, and the other door calls it.
  */
-function openForWrite(databasePath: string): Ledger {
+export function openForWrite(databasePath: string): Ledger {
   let stats;
   try {
     stats = statSync(databasePath);

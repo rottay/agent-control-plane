@@ -23,10 +23,15 @@ export {
   // same reason the six above it are: a caller that scripts this CLI branches
   // on the number, and a number it cannot import is a number it will hardcode.
   EXIT_CLAIM_HELD,
+  // V2 L2. An eighth answer: this engine does not serve the verb. On the barrel
+  // for the same reason, and taken up front rather than as the after-the-fact
+  // amendment the seventh needed — a caller that scripts this CLI branches on
+  // the number, and a number it cannot import is a number it will hardcode.
+  EXIT_CAPABILITY_UNSUPPORTED,
   LEDGER_SCHEMA_VERSION,
   run,
 } from "./cli/index.js";
-export type { CliIo } from "./cli/index.js";
+export type { CliIo, CliSeams } from "./cli/index.js";
 
 export { OUTPUT_FORMATS, isOutputFormat } from "./format/index.js";
 export type { OutputFormat } from "./format/index.js";

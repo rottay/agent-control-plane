@@ -14,7 +14,7 @@ import { canonicalJsonStringify } from "@acp/ledger";
 import type { OperationCoordinate, PostconditionVerdict } from "../contracts/index.js";
 import { operationDigest } from "../core/coordinates/index.js";
 import type { EffectPort } from "../core/step-executor/index.js";
-import { PostconditionUnknownError } from "../errors/index.js";
+import { PostconditionUnknownError, SupervisorError } from "../errors/index.js";
 // The scenario-root brand is taken type-only through this package's own entry
 // point rather than from `toy/repository` by path. The brand is the toy
 // module's, but the module's *specifier* is what the toy-binding law counts,
@@ -429,6 +429,59 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
         trailSha256: sha256(canonicalJsonStringify(trail)),
         eventCount: trail.length,
       });
+    },
+
+    probe(operation: OperationCoordinate): Promise<PostconditionVerdict> {
+      const existing = readMarker(markerPath(scenarioRoot, operation));
+      if (existing.kind === "ABSENT") return Promise.resolve("NOT_DONE");
+      if (existing.kind === "MARKER" && verifies(existing.marker, operation)) {
+        return Promise.resolve("DONE");
+      }
+      return Promise.resolve("UNKNOWN");
+    },
+  };
+}
+
+
+/**
+ * A port that can read this module's evidence and can perform nothing (V2 L2).
+ *
+ * The lifecycle verbs need a probe. `settleCancellation` asks one question of
+ * an open intent — did the effect happen? — and answers `DONE` by closing the
+ * intent, `NOT_DONE` by cancelling cleanly, and `UNKNOWN` by appending nothing
+ * at all. It never calls `apply`, because a cancellation that performed the
+ * effect would do the work it was asked to abandon.
+ *
+ * So the door that cancels needs the reader half of `createExecutionEffects`
+ * and must not have the other half. It cannot have it in any case: the full
+ * port requires a `ModelExecutionPort` from `@acp/providers`, a package the CLI
+ * may not import and must not, and an `ExecutionRequest` naming work nobody is
+ * asking for. A door that had to invent both in order to ask a read-only
+ * question would be inventing a provider binding to cancel a task.
+ *
+ * **`apply` throws rather than resolving.** A no-op `apply` would be a port
+ * that silently reports success for an effect it never performed, and the one
+ * caller that would meet it — `closeIntent`'s repair branch — would then append
+ * an OUTCOME for work that did not happen. Throwing makes the misuse loud at
+ * the first call rather than durable in the ledger.
+ *
+ * **The reader is shared, not re-implemented.** `markerPath`, `readMarker` and
+ * `verifies` are this module's own, and this port calls exactly the ones the
+ * full port's `probe` calls, in the same order. A second reader of one evidence
+ * format is how two answers to one question come to disagree, and the format
+ * here is the one that decides whether an effect happened.
+ */
+export function createEvidenceProbe(scenarioRoot: ScenarioRoot): EffectPort {
+  return {
+    apply(operation: OperationCoordinate): Promise<void> {
+      return Promise.reject(
+        new SupervisorError(
+          "this port reads execution evidence and performs no effect; the" +
+            " operation " +
+            operation.operationIndex.toString() +
+            " was not started and nothing was recorded",
+        ),
+      );
     },
 
     probe(operation: OperationCoordinate): Promise<PostconditionVerdict> {

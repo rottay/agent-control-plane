@@ -1461,3 +1461,91 @@ describe("classified step failure settles (V2-B7R)", () => {
     expect(ledger.listEvents({ limit: 200 }).events.map((e) => e.event.type)).not.toContain("TASK_FAILED");
   });
 });
+
+/**
+ * The lifecycle construction (V2 L2).
+ *
+ * A door that cancels holds no commit policy and has no evidence for one, so
+ * the driver it constructs must not demand one. What is proved here is that the
+ * narrowing costs nothing an operator could observe: the object is the real
+ * class, it declares what it always declared, it refuses what it always
+ * refused — and it will not walk a plan, because it has none.
+ */
+describe("a supervisor built for the lifecycle verbs", () => {
+  function lifecycleSubject(name: string): SqliteSupervisor {
+    const root = scenario(name);
+    return SqliteSupervisor.forLifecycle({
+      ledger: track(openLedger(scenarioLedgerPath(root))),
+      invocation: INVOCATION_FOR_CAPABILITIES,
+      effects: toyEffects(root),
+      emittedBy: EMITTED_BY,
+      initiativeId: TEST_INITIATIVE_ID,
+      route: TEST_ROUTE,
+    });
+  }
+
+  it("is the real driver: same class, same mode, same declaration", () => {
+    const subject = lifecycleSubject("lifecycle-real-object");
+    expect(subject).toBeInstanceOf(SqliteSupervisor);
+    expect(subject.mode).toBe("SQLITE_SUPERVISOR");
+    expect(subject.capabilities()).toEqual(capabilitySubject().capabilities());
+  });
+
+  /** The four verbs, observed on the object a door actually constructs. */
+  const observedOn = async (driver: OrchestrationDriver) => ({
+    CANCEL: await driver.cancel(INVOCATION_FOR_CAPABILITIES),
+    REATTACH: await driver.reattach(INVOCATION_FOR_CAPABILITIES),
+    SIGNAL: await driver.signal(INVOCATION_FOR_CAPABILITIES),
+    TIMER: await driver.timer(INVOCATION_FOR_CAPABILITIES, 1_000),
+  });
+
+  it("satisfies the correspondence law, so the refusal a door meets is honest", async () => {
+    const subject = lifecycleSubject("lifecycle-correspondence");
+    expect(driverCapabilityMismatches(subject.capabilities(), await observedOn(subject))).toEqual([]);
+  });
+
+  it("is non-vacuous: a declaration claiming CANCEL is supported is caught", async () => {
+    const subject = lifecycleSubject("lifecycle-correspondence-lying");
+    const declared = subject.capabilities();
+    const lying = { ...declared, verbs: { ...declared.verbs, CANCEL: "SUPPORTED" as const } };
+    expect(driverCapabilityMismatches(lying, await observedOn(subject))).toEqual([
+      "CANCEL: declared SUPPORTED but refused",
+    ]);
+  });
+
+  it("refuses both lifecycle verbs by their own names, and appends nothing", async () => {
+    const subject = lifecycleSubject("lifecycle-refusals");
+    await expect(subject.cancel()).resolves.toEqual({
+      ok: false,
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "cancel",
+    });
+    await expect(subject.reattach()).resolves.toEqual({
+      ok: false,
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "reattach",
+    });
+  });
+
+  it("walks no plan, and says so rather than running out of one", async () => {
+    const subject = lifecycleSubject("lifecycle-no-walk");
+    await expect(subject.advance(INVOCATION_FOR_CAPABILITIES, "DISCOVERED")).rejects.toThrow(
+      SupervisorError,
+    );
+    await expect(subject.runToCheckpoint()).rejects.toThrow(SupervisorError);
+  });
+
+  it("takes no commit policy, which is the whole of the narrowing", () => {
+    // One argument, and nothing in it names a policy. A construction that
+    // accepted one would be a door inventing a value at the seam where commit
+    // capability is decided.
+    expect(SqliteSupervisor.forLifecycle.length).toBe(1);
+    const code = readFileSync(
+      resolve(PACKAGE_ROOT, "src", "drivers", "sqlite-supervisor", "index.ts"),
+      "utf8",
+    );
+    const declaration = /export interface SqliteSupervisorLifecycleOptions \{([\s\S]*?)\n\}/.exec(code);
+    expect(declaration).not.toBeNull();
+    expect(declaration?.[1] ?? "").not.toContain("commitPolicy");
+  });
+});

@@ -21,8 +21,12 @@ import { operationForStep } from "../../src/core/events/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep, closeIntent } from "../../src/core/step-executor/index.js";
 import type { BeatContext } from "../../src/core/step-executor/index.js";
-import { PostconditionUnknownError } from "../../src/errors/index.js";
-import { ExecutionEffectError, createExecutionEffects } from "../../src/execution-effects/index.js";
+import { PostconditionUnknownError, SupervisorError } from "../../src/errors/index.js";
+import {
+  ExecutionEffectError,
+  createEvidenceProbe,
+  createExecutionEffects,
+} from "../../src/execution-effects/index.js";
 import type { UsageSample, UsageSink } from "../../src/execution-effects/index.js";
 import {
   removeScenarioRoot,
@@ -346,10 +350,11 @@ describe("the module keeps its own laws", () => {
     }
   });
 
-  it("is exported from the barrel as exactly five names", () => {
-    // Three until V2-B7T; the usage sink added exactly two, both types. Pinned
-    // by equality in both directions, so a name that arrives in the barrel
-    // without arriving here fails, and so does the reverse.
+  it("is exported from the barrel as exactly six names", () => {
+    // Three until V2-B7T; the usage sink added exactly two, both types, and
+    // V2 L2 added the reader half of the port. Pinned by equality in both
+    // directions, so a name that arrives in the barrel without arriving here
+    // fails, and so does the reverse.
     const barrel = codeOf(BARREL);
     expect(barrel).toContain("ExecutionEffectError");
     expect(barrel).toContain("createExecutionEffects");
@@ -362,6 +367,7 @@ describe("the module keeps its own laws", () => {
       "ExecutionEffectsInput",
       "UsageSample",
       "UsageSink",
+      "createEvidenceProbe",
       "createExecutionEffects",
     ]);
   });
@@ -493,5 +499,68 @@ describe("the usage sink (V2-B7T)", () => {
     for (const forbidden of ["openLedger", "recordTokenObservation", "LedgerPort", ".append("]) {
       expect({ forbidden, present: code.includes(forbidden) }).toEqual({ forbidden, present: false });
     }
+  });
+});
+
+describe("the evidence probe", () => {
+  it("reads the same evidence the full port writes, and agrees with it verdict for verdict", async () => {
+    const staged = effectsFor("evidence-probe-agrees", "10101010-1010-4101-8101-202020202091");
+    const probe = createEvidenceProbe(staged.root);
+
+    // Absent: both say NOT_DONE, and neither creates anything to say it.
+    expect(await probe.probe(staged.operation)).toBe("NOT_DONE");
+    expect(await staged.effects.probe(staged.operation)).toBe("NOT_DONE");
+    expect(existsSync(join(staged.root, "executions"))).toBe(false);
+
+    // Written by the full port, read by this one. One evidence format, one
+    // reader: the probe is not a second opinion about what a marker means.
+    await staged.effects.apply(staged.operation);
+    expect(await probe.probe(staged.operation)).toBe("DONE");
+    expect(await staged.effects.probe(staged.operation)).toBe("DONE");
+  });
+
+  it("says UNKNOWN for somebody else's marker rather than ABSENT", async () => {
+    const staged = effectsFor("evidence-probe-foreign", "10101010-1010-4101-8101-202020202092");
+    const probe = createEvidenceProbe(staged.root);
+
+    mkdirSync(join(staged.root, "executions"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(staged.root, "executions", staged.operation.operationId + ".json"),
+      canonicalJsonStringify({
+        operationId: staged.operation.operationId,
+        operationDigest: "b".repeat(64),
+        trailSha256: "c".repeat(64),
+        eventCount: 1,
+      }),
+      "utf8",
+    );
+
+    // Not ABSENT, because absence would invite the caller to perform the effect
+    // a second time; the cancellation path turns this into "append nothing".
+    expect(await probe.probe(staged.operation)).toBe("UNKNOWN");
+    expect(await staged.effects.probe(staged.operation)).toBe("UNKNOWN");
+  });
+
+  it("refuses to perform an effect, loudly and without recording one", async () => {
+    const staged = effectsFor("evidence-probe-apply", "10101010-1010-4101-8101-202020202093");
+    const probe = createEvidenceProbe(staged.root);
+
+    await expect(probe.apply(staged.operation)).rejects.toThrow(SupervisorError);
+
+    // A no-op `apply` would have been a port that reports success for work it
+    // never did. Nothing was started and nothing was written.
+    expect(staged.calls.starts).toBe(0);
+    expect(existsSync(join(staged.root, "executions"))).toBe(false);
+    expect(await probe.probe(staged.operation)).toBe("NOT_DONE");
+  });
+
+  it("needs no provider binding, no request and no route to be built", () => {
+    // The measurement behind the CLI's whole claim to hold this port: its only
+    // argument is the branded scenario root. A door that had to assemble a
+    // `ModelExecutionPort` in order to ask a read-only question would be
+    // assembling a provider binding to cancel a task.
+    const probe = createEvidenceProbe(scenario("evidence-probe-arity"));
+    expect(createEvidenceProbe.length).toBe(1);
+    expect(Object.keys(probe).sort()).toEqual(["apply", "probe"]);
   });
 });

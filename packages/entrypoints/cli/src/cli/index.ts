@@ -66,6 +66,8 @@ import {
 } from "../format/index.js";
 import type { OutputFormat } from "../format/index.js";
 import { ToolCallRefused, runToolCallVerb } from "../tool-call/index.js";
+import { LifecycleRefused, runLifecycleVerb } from "../lifecycle/index.js";
+import type { LifecycleDriverFactory, LifecycleOutcome } from "../lifecycle/index.js";
 import {
   buildEventPage,
   buildIntegrity,
@@ -107,6 +109,23 @@ export const EXIT_INTEGRITY = 6;
  * winner is recording the receipt, so read it.
  */
 export const EXIT_CLAIM_HELD = 7;
+/**
+ * This engine does not serve the verb that was asked for (V2 L2).
+ *
+ * Its own code, and the distinction it draws is the one an operator's script
+ * most needs. A cancellation refused because the SQLite supervisor declares
+ * `CANCEL` unsupported and a cancellation that could not be delivered because
+ * the engine is unreachable are opposite facts: the first will never succeed
+ * however often it is retried, and the second is exactly what a retry is for.
+ * Collapsing them into `EXIT_UNAVAILABLE` would make a wrapper retry the one
+ * answer that cannot change, and collapsing them into `EXIT_USAGE` would tell
+ * an operator to fix arguments that are already correct.
+ *
+ * It is defined here rather than in `@acp/protocol` by that package's own rule:
+ * `EXIT_OK` and `EXIT_USAGE` are shared, and "codes beyond these two stay with
+ * the entrypoint that defines them".
+ */
+export const EXIT_CAPABILITY_UNSUPPORTED = 8;
 
 /** The ledger schema version this build is compiled against. */
 export const LEDGER_SCHEMA_VERSION: number = LEDGER_MIGRATIONS.reduce(
@@ -152,6 +171,9 @@ const OPTIONS = {
   "duration-seconds": { type: "string" },
   request: { type: "string" },
   "tool-servers": { type: "string" },
+  attempt: { type: "string" },
+  mode: { type: "string" },
+  scenario: { type: "string" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean", short: "V" },
 } as const;
@@ -174,6 +196,16 @@ export const SUBMISSION_COMMAND = "submission";
  * so it is worth having exactly one of.
  */
 export const TOOL_CALL_COMMAND = "tool-call";
+
+/**
+ * The two lifecycle verbs' names, as literals (V2 L2).
+ *
+ * Named for the reason the two above are: the table declares them and `run`
+ * branches on them, and two spellings of one verb is how a branch and a table
+ * come to disagree about which command was asked for.
+ */
+export const CANCEL_COMMAND = "cancel";
+export const ATTACH_COMMAND = "attach";
 
 type OptionName = keyof typeof OPTIONS;
 type ParsedValues = Partial<Record<OptionName, string | boolean>>;
@@ -263,6 +295,22 @@ const COMMANDS: readonly CommandSpec[] = [
     options: ["request", "tool-servers"],
     summary: "execute one explicit tool call and record what it did",
   },
+  // V2 L2. The two lifecycle verbs. They append through the same writable open
+  // the tool call owns, and they recover everything else they need from the
+  // ledger: the only things an operator states are which attempt, which engine
+  // and which scenario's evidence.
+  {
+    name: CANCEL_COMMAND,
+    positional: null,
+    options: ["task", "attempt", "mode", "scenario"],
+    summary: "stop a durable invocation and settle the ledger once",
+  },
+  {
+    name: ATTACH_COMMAND,
+    positional: null,
+    options: ["task", "attempt", "mode", "scenario"],
+    summary: "rejoin a durable invocation already in flight",
+  },
 ];
 
 const USAGE = ((): string => {
@@ -277,7 +325,11 @@ const USAGE = ((): string => {
   });
   return [
     "acp - Agent Control Plane observation CLI",
-    "  every read verb opens the ledger query-only; " + TOOL_CALL_COMMAND + " writes one receipt",
+    "  every read verb opens the ledger query-only; " +
+      TOOL_CALL_COMMAND +
+      " writes one receipt and " +
+      CANCEL_COMMAND +
+      " settles one cancellation",
     "",
     "Usage:",
     "  acp <command> --database <path> [options]",
@@ -303,6 +355,12 @@ const USAGE = ((): string => {
     "  --limit <n>           Page size, 1 to 200.",
     "  --skip-integrity      overview: report counts without verifying the chain.",
     "",
+    "Lifecycle (V2 L2):",
+    "  --task <task-id>           The task whose attempt is being acted on.",
+    "  --attempt <n>              The attempt. Must be the task's latest.",
+    "  --mode <driver-mode>       SQLITE_SUPERVISOR or RESTATE. Required, never inferred.",
+    "  --scenario <id>            The scenario whose execution evidence is probed.",
+    "",
     "Submission planning (V2-B7S):",
     "  --config <path>            Daemon config document to re-elect. Absolute.",
     "  --accounts <path>          Owner accounts file. Absolute.",
@@ -311,11 +369,12 @@ const USAGE = ((): string => {
     "  --reserve-tokens <n>       Tokens held back for checkpoint and verification.",
     "  --duration-seconds <n>     Wall-clock seconds the next atomic step may take.",
     "",
-    "This CLI opens the ledger read-only and never writes. It prints no absolute",
-    "path and no event payload value. `acp submission` opens no ledger at all: it",
-    "reads three documents, elects a route and prints one document to stdout. It",
-    "creates and modifies no file, so the CLI plans as well as observes and still",
-    "never writes.",
+    "Every read verb opens the ledger query-only. Three verbs write, and they",
+    "share one writable open: `" + TOOL_CALL_COMMAND + "` records one receipt, and `" + CANCEL_COMMAND + "` appends",
+    "one cancellation (`" + ATTACH_COMMAND + "` takes the same handle and appends nothing). The CLI",
+    "prints no absolute path and no event payload value. `acp submission` opens no",
+    "ledger at all: it reads three documents, elects a route and prints one",
+    "document to stdout, creating and modifying no file.",
     "",
   ].join("\n");
 })();
@@ -397,6 +456,66 @@ function fromToolCallError(error: unknown): CliFailure {
     default:
       // Everything else is a document that never became a request.
       return failure(EXIT_USAGE, error.code, error.message, error.at);
+  }
+}
+
+/**
+ * Map the lifecycle door's refusal onto this package's exit-code table.
+ *
+ * The same shape as `fromToolCallError`, and for the same reason: the verb
+ * module names a reason and a field, and the code is chosen here, where the
+ * table lives. A refusal that never became an operation exits non-zero; a
+ * driver's own answer does not reach this function at all, because it is a
+ * document rather than a failure.
+ */
+function fromLifecycleError(error: unknown): CliFailure {
+  if (error instanceof LedgerError) return fromLedgerError(error);
+  if (!(error instanceof LifecycleRefused)) return fromUnknownError(error);
+  switch (error.code) {
+    case "NOT_FOUND":
+      return failure(EXIT_NOT_FOUND, "NOT_FOUND", error.message, error.at);
+    case "LEDGER_UNAVAILABLE":
+    case "CONTRACT_VERSION_MISMATCH":
+      // Including every throw from a driver. An engine this attempt could not
+      // reach is a failure of the channel, and it must stay distinguishable
+      // from `EXIT_CAPABILITY_UNSUPPORTED`, which says the engine answered and
+      // the answer was no.
+      return failure(EXIT_UNAVAILABLE, error.code, error.message, error.at);
+    case "WRITE_REFUSED":
+      // The ledger disagrees with itself about this attempt. Not a usage error
+      // — nothing about the invocation was wrong — and not a retry either.
+      return failure(EXIT_INTEGRITY, "WRITE_REFUSED", error.message, error.at);
+    case "INTERNAL":
+      return failure(EXIT_INTERNAL, "INTERNAL", error.message, error.at);
+    default:
+      return failure(EXIT_USAGE, error.code, error.message, error.at);
+  }
+}
+
+/**
+ * The exit code a driver's own answer earns.
+ *
+ * Written as a table rather than as branches so the three refusals cannot drift
+ * apart, and stated here rather than in the verb module because this is where
+ * every other code in this package is chosen.
+ *
+ * - `CAPABILITY_UNSUPPORTED` — this engine does not serve the verb. Its own
+ *   code, because no retry will change it.
+ * - `POSTCONDITION_UNKNOWN` — the plane could not establish whether the effect
+ *   happened, so it appended nothing and left the intent open. `UNAVAILABLE`:
+ *   the answer is not available, and looking again is the right next move.
+ * - `TASK_TERMINAL` — the task had already ended. The coordinates were the
+ *   wrong ones to ask about, which is what `EXIT_USAGE` says.
+ */
+function lifecycleExitCode(outcome: LifecycleOutcome): number {
+  if (outcome.ok) return EXIT_OK;
+  switch (outcome.refusal) {
+    case "CAPABILITY_UNSUPPORTED":
+      return EXIT_CAPABILITY_UNSUPPORTED;
+    case "POSTCONDITION_UNKNOWN":
+      return EXIT_UNAVAILABLE;
+    case "TASK_TERMINAL":
+      return EXIT_USAGE;
   }
 }
 
@@ -1023,7 +1142,25 @@ function runSubmission(values: ParsedValues, io: CliIo): SubmissionResult {
  * Separated from the entry point so the whole surface can be tested in process,
  * and so importing this module never runs anything and never opens a database.
  */
-export async function run(argv: readonly string[], io: CliIo = defaultIo): Promise<number> {
+/**
+ * Seams the command surface accepts, and production supplies none of.
+ *
+ * One member, and it exists because of the port topology rather than for
+ * convenience: the `cli` vitest project runs in the default parallel group and
+ * binds no ports, so a door that could only be exercised against a live engine
+ * would have no suite in its own package. The real-engine proofs live in the
+ * durability project over the same construction. Optional, defaulted, and never
+ * passed by the process entry point.
+ */
+export interface CliSeams {
+  readonly makeDriver?: LifecycleDriverFactory | undefined;
+}
+
+export async function run(
+  argv: readonly string[],
+  io: CliIo = defaultIo,
+  seams: CliSeams = {},
+): Promise<number> {
   let values: ParsedValues;
   let positionals: readonly string[];
 
@@ -1143,6 +1280,31 @@ export async function run(argv: readonly string[], io: CliIo = defaultIo): Promi
       return EXIT_OK;
     } catch (error: unknown) {
       return emitFailure(fromToolCallError(error), format, io);
+    }
+  }
+
+  // V2 L2. The two lifecycle verbs branch beside the tool call and for the same
+  // reasons: below the `--database` law because they need a ledger, and above
+  // the read-only open because they take the writable handle the tool-call
+  // module owns. Every verb below this line still opens query-only.
+  if (spec.name === CANCEL_COMMAND || spec.name === ATTACH_COMMAND) {
+    try {
+      const result = await runLifecycleVerb({
+        verb: spec.name === CANCEL_COMMAND ? "CANCEL" : "ATTACH",
+        databasePath,
+        scenarioId: stringOption(values, "scenario") ?? "",
+        taskId: stringOption(values, "task") ?? "",
+        attempt: stringOption(values, "attempt") ?? "",
+        mode: stringOption(values, "mode") ?? "",
+        makeDriver: seams.makeDriver,
+      });
+      // JSON regardless of `--format`, on the tool call's precedent: a human
+      // renderer for a lifecycle document would be a second place a driver's
+      // answer gets formatted, and the only safe number of those is one.
+      io.stdout(renderJson(result.document));
+      return lifecycleExitCode(result.outcome);
+    } catch (error: unknown) {
+      return emitFailure(fromLifecycleError(error), format, io);
     }
   }
 

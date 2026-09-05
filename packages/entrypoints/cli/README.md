@@ -3,19 +3,20 @@
 The observation CLI of the Agent Control Plane.
 
 `acp` answers questions about a ledger. **Every read verb opens it query-only;
-exactly one named verb, `tool-call`, opens a short-lived writable handle and
-appends exactly one receipt through the shared operation.** That narrowing is
-V2-B4b stage 3D's, and it is stated rather than softened: what changed is not
-"this CLI now writes", it is that one named verb does and every other one still
-cannot.
+three named verbs — `tool-call`, `cancel` and `attach` — share one short-lived
+writable handle, and between them append at most one row each: `tool-call` a
+receipt, `cancel` a cancellation, `attach` nothing at all.** The first narrowing
+is V2-B4b stage 3D's and the second is V2 L2's, and both are stated rather than
+softened: what changed is not "this CLI now writes", it is that three named
+verbs do and every other one still cannot.
 
-For every verb but that one, the posture is unchanged and structural rather
+For every verb but those three, the posture is unchanged and structural rather
 than promised: the ledger is opened with `readOnly: true`, which puts SQLite
 itself into query-only mode. Nothing in this package calls `append()` or
-`rebuildReadModel()` — the single receipt is appended by `@acp/runtime`'s
-operation, which is the one authority on what a tool call may be. A CLI that
-could repair a ledger would still be a CLI that could rewrite recorded history,
-and this one cannot.
+`rebuildReadModel()` — every row that lands is appended by `@acp/runtime`,
+which is the one authority on what a tool call or a cancellation may be. A CLI
+that could repair a ledger would still be a CLI that could rewrite recorded
+history, and this one cannot.
 
 Scope note. This is the CLI of the P1 observation plane. It observes a ledger
 and nothing else. There is no daemon, no orchestrator, no lease engine, no
@@ -80,14 +81,14 @@ acp integrity --database ./control-plane.sqlite
 search of the working directory. A tool that guesses which ledger it is reading
 is a tool that eventually reads the wrong one and reports confidently about it.
 
-### 2. Read only for every verb but one, structurally
+### 2. Read only for every verb but three, structurally
 
 `openLedger(path, { readOnly: true })` is how this package opens a ledger for
-every verb except `tool-call`. The handle refuses mutation, SQLite refuses
-mutation, and the append-only triggers in the schema refuse mutation. The suite
-drives every read verb and asserts the event count and the applied-migration set
-are unchanged afterwards — a claim about every read verb, checked by running
-every read verb.
+every verb except `tool-call`, `cancel` and `attach`. The handle refuses
+mutation, SQLite refuses mutation, and the append-only triggers in the schema
+refuse mutation. The suite drives every read verb and asserts the event count
+and the applied-migration set are unchanged afterwards — a claim about every
+read verb, checked by running every read verb.
 
 `tool-call` is the exception the DT granted, and it is bounded three ways. It
 takes the **only** writable open in this package, and the architecture fence
@@ -97,7 +98,28 @@ nor migrate one — it executes, and migrating is not executing. And what it
 appends is one receipt, written by the shared operation rather than by any code
 here.
 
-**One bound it does not have: nothing serializes two runs of it.** A tool call
+`cancel` and `attach` are V2 L2's exceptions, and they take **the same** open
+rather than a second one: `openForWrite` is exported from the tool-call module
+and called by the lifecycle door, so the fence law that admits exactly one
+writable `openLedger(` in this tree is still satisfied by counting openings, not
+by counting verbs.
+
+They are bounded further than `tool-call` is, in one way that is worth stating.
+An operator supplies four coordinates — `--task`, `--attempt`, `--mode` and
+`--scenario` — and nothing else. Everything the drivers need is **recovered**
+from the ledger by `restateInvocation` and verified against the submission
+digest that rides every event of the attempt: the invocation identity, the
+instant, the emitting worker, the initiative and the route. There is no flag for
+any of them, because a flag would be a second authority for a value the log
+already holds. `--mode` is the one thing that cannot be recovered and is
+therefore required and never inferred — probing an engine and falling back to
+the other one is precisely what drill D4 refuses.
+
+An attempt that has not yet reached `RUN_STARTED` has recorded no route, so
+there is nothing to recover and the verbs refuse, naming `attempt.route`. That
+window is a daemon-internal one, and it is refused rather than guessed.
+
+**One bound `tool-call` does not have: nothing serializes two runs of it.** A tool call
 spends its coordinate by recording *after* the tool answers, so two overlapping
 invocations for the same coordinate both find it unspent and both run the tool.
 The API door closes that inside one gateway process; a CLI invocation is a new
@@ -152,14 +174,28 @@ envelope on stderr.
 | ---- | ----------------------------------------------------------- |
 | `0`  | The question was answered.                                   |
 | `1`  | Internal failure, including a response that failed to parse. |
-| `2`  | The request was malformed: bad command, option, or filter.    |
+| `2`  | The request was malformed: bad command, option, or filter — or it named an attempt that had already ended (`TASK_TERMINAL`, printed as a document). |
 | `4`  | The task or worker asked for is not recorded.                 |
-| `5`  | The ledger could not be read.                                 |
+| `5`  | The ledger could not be read, the engine could not be reached, or the effect's postcondition could not be established (`POSTCONDITION_UNKNOWN`, printed as a document, nothing appended). |
 | `6`  | The ledger is not trustworthy: integrity check failed.        |
+| `7`  | Another caller holds this tool coordinate.                    |
+| `8`  | This engine does not serve the lifecycle verb that was asked. |
 
 The codes are closed and distinct on purpose. A script that cannot tell "I asked
 wrongly" from "the ledger cannot be read" from "the ledger is not trustworthy"
 will retry an integrity failure as if it were a typo.
+
+`7` and `8` are the two that exist because a collapse would make a wrapper retry
+the one answer that cannot change. A lost tool claim (`7`) says the winner is
+recording the receipt, so read it rather than repeating the call. A capability
+gap (`8`) says this engine will never serve this verb, however often it is
+asked — which is the opposite of `5`, where the engine could not be reached and
+a retry is exactly the right response. (`7` predates V2 L2 and was missing from
+this table; it is stated here now.)
+
+A driver refusal is printed as the JSON document on stdout with its closed
+`refusal` name, while a door refusal is the `ApiError` envelope on stderr, so the
+two are told apart by structure rather than by exit code alone.
 
 `acp overview` is the one command that answers without a readable ledger: it
 reports `UNAVAILABLE` and exits `5`. `EMPTY` and `UNAVAILABLE` are different

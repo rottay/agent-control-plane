@@ -1,5 +1,5 @@
 import { DriverCapabilities } from "@acp/contracts";
-import type { DriverOutcome } from "@acp/contracts";
+import type { CommitPolicy, DriverOutcome } from "@acp/contracts";
 import {
   ExecutionEffectError,
   PostconditionUnknownError,
@@ -2023,5 +2023,196 @@ describe("P7: both drivers settle a classified failure identically", () => {
     expect(fromA?.event.transitionId).toBe("failed");
     expect(fromA?.event.toState).toBe("FAILED");
     expect(fromA?.event.payload["reason"]).toBe("EXECUTION_FAILED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2 L2: the lifecycle construction, and the inertness that justifies it
+// ---------------------------------------------------------------------------
+
+/**
+ * A driver constructed for `cancel` and `reattach`, with no commit policy.
+ *
+ * The claim under test is narrow and mechanical: on the cancel path the plan is
+ * INERT, so refusing to guess a policy costs nothing a reader of the log could
+ * detect. That is worth measuring rather than arguing, because it is the whole
+ * reason the door may recover its context from ledger evidence alone — the
+ * policy is the one value that is nowhere in the evidence.
+ */
+describe("a driver built for the lifecycle verbs", () => {
+  /**
+   * The same fixture as `capabilitySubject`, with the construction as a
+   * parameter.
+   *
+   * Written out rather than folded into that helper: this file's other suites
+   * pin a construction that must not move, and a shared helper that grew a
+   * selector would let a later edit change what they are constructing without
+   * saying so.
+   */
+  function subjectFor(
+    name: string,
+    construction: "LIFECYCLE" | CommitPolicy,
+    probe: () => Promise<PostconditionVerdict>,
+  ): CapabilitySubject {
+    const root = scenario("lifecycle-" + name);
+    const ledger = openLedger(scenarioLedgerPath(root));
+    ledgers.push(ledger);
+
+    const beat = (candidate: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
+      ledger,
+      effects: {
+        apply: () => {
+          throw new SupervisorError("the lifecycle fixture never performs an effect");
+        },
+        probe,
+      },
+      invocation: candidate,
+      emittedBy: EMITTED_BY,
+      route: TEST_ROUTE,
+    });
+
+    const context: BeatContext = {
+      ...beat(INVOCATION_FOR_CAPABILITIES),
+      plan: LIFECYCLE_PLAN,
+      initiativeId: TEST_INITIATIVE_ID,
+    };
+    for (const step of LIFECYCLE_PLAN.slice(0, INTENT_STEP.index + 1)) {
+      if (step.beat === "OUTCOME") continue;
+      appendPlanStep(context, step);
+    }
+
+    const options = {
+      ledger,
+      invocation: INVOCATION_FOR_CAPABILITIES,
+      emittedBy: EMITTED_BY,
+      ingressUrl: "http://127.0.0.1:8080",
+      adminUrl: "http://127.0.0.1:9070",
+    };
+
+    return {
+      ledger,
+      driver:
+        construction === "LIFECYCLE"
+          ? RestateDriver.forLifecycle(options, beat, TEST_INITIATIVE_ID)
+          : new RestateDriver(options, beat, construction, TEST_INITIATIVE_ID),
+    };
+  }
+
+  /** One attach the engine answers, and the ledger head it names. */
+  const ATTACHED_SEQUENCE = 7;
+  const ATTACHED_REPLY = {
+    status: 200,
+    body: JSON.stringify({ finalSequence: ATTACHED_SEQUENCE }),
+  };
+
+  /** Every event of the capability task, canonicalized, in order. */
+  function trail(ledger: Ledger): readonly string[] {
+    return ledger
+      .listEvents({ limit: 200 })
+      .events.filter((record) => record.event.taskId === INVOCATION_FOR_CAPABILITIES.taskId)
+      .map((record) => record.canonicalJson);
+  }
+
+  it("settles a cancellation byte-identically to either commit policy", async () => {
+    const probe = (): Promise<PostconditionVerdict> => Promise.resolve("DONE");
+    const trails: string[][] = [];
+
+    // `DONE` on purpose: it is the branch that reads the most plan. The open
+    // intent is closed first, so an OUTCOME is built from `plan[4]` and its
+    // causal predecessor is verified against the same step, and only then is
+    // the cancellation appended at `plan.length`.
+    for (const construction of ["LIFECYCLE", "NO_COMMIT", "LOCAL_COMMIT_WITH_RECEIPT"] as const) {
+      const subject = subjectFor(construction.toLowerCase().replace(/_/g, "-"), construction, probe);
+      const { result } = await withEngineAnswering(ENGINE_CANCELS, subject.ledger, () =>
+        subject.driver.cancel(INVOCATION_FOR_CAPABILITIES),
+      );
+      expect(result).toEqual({ ok: true, finalSequence: subject.ledger.status().headSequence });
+      trails.push([...trail(subject.ledger)]);
+    }
+
+    // The measurement. Not "equivalent", not "the same shape": the same bytes,
+    // which is the only claim a ledger's hash chain actually cares about.
+    expect(trails[0]).toEqual(trails[1]);
+    expect(trails[0]).toEqual(trails[2]);
+
+    // And the trail is the one the walk would have written: an outcome, then a
+    // cancellation. A fixture that appended neither would make the equality
+    // above true and vacuous.
+    const types = (trails[0] ?? []).map((json) => (JSON.parse(json) as { type: string }).type);
+    expect(types.slice(-2)).toEqual(["ATOMIC_STEP_COMPLETED", "TASK_CANCELLED"]);
+  });
+
+  it("refuses an UNKNOWN probe with zero appends, exactly as a policy-bound driver does", async () => {
+    const probe = (): Promise<PostconditionVerdict> => Promise.resolve("UNKNOWN");
+    const subject = subjectFor("unknown", "LIFECYCLE", probe);
+    const before = subject.ledger.status();
+
+    const { result } = await withEngineAnswering(ENGINE_CANCELS, subject.ledger, () =>
+      subject.driver.cancel(INVOCATION_FOR_CAPABILITIES),
+    );
+
+    expect(result).toEqual({ ok: false, refusal: "POSTCONDITION_UNKNOWN", at: "cancel" });
+    expect(subject.ledger.status().eventCount).toBe(before.eventCount);
+    expect(subject.ledger.status().headEventSha256).toBe(before.headEventSha256);
+  });
+
+  it("rejoins without reading any context at all", async () => {
+    const subject = subjectFor(
+      "attach",
+      "LIFECYCLE",
+      (): Promise<PostconditionVerdict> => Promise.resolve("NOT_DONE"),
+    );
+    const before = subject.ledger.status();
+
+    const { result, asked } = await withAttachAnswering(ATTACHED_REPLY, () =>
+      subject.driver.reattach(INVOCATION_FOR_CAPABILITIES),
+    );
+
+    expect(result).toEqual({ ok: true, finalSequence: ATTACHED_SEQUENCE });
+    expect(asked).toHaveLength(1);
+    expect(subject.ledger.status().eventCount).toBe(before.eventCount);
+  });
+
+  it("walks no plan, and refuses in its own words rather than the handler's", async () => {
+    const subject = subjectFor(
+      "no-walk",
+      "LIFECYCLE",
+      (): Promise<PostconditionVerdict> => Promise.resolve("NOT_DONE"),
+    );
+
+    // Both constructions refuse `advance`, and the two refusals are different
+    // facts. A reader who cannot tell them apart concludes the engine is the
+    // obstacle when the construction is.
+    await expect(
+      subject.driver.advance(INVOCATION_FOR_CAPABILITIES, "RUNNING"),
+    ).rejects.toThrow(/constructed for the lifecycle verbs/);
+
+    const bound = subjectFor(
+      "no-walk-bound",
+      "LOCAL_COMMIT_WITH_RECEIPT",
+      (): Promise<PostconditionVerdict> => Promise.resolve("NOT_DONE"),
+    );
+    await expect(
+      bound.driver.advance(INVOCATION_FOR_CAPABILITIES, "RUNNING"),
+    ).rejects.toThrow(/advances through its object handler/);
+  });
+
+  it("declares what it always declared, so a door meets no different capability", () => {
+    const lifecycle = subjectFor(
+      "capabilities",
+      "LIFECYCLE",
+      (): Promise<PostconditionVerdict> => Promise.resolve("NOT_DONE"),
+    );
+    const bound = subjectFor(
+      "capabilities-bound",
+      "LOCAL_COMMIT_WITH_RECEIPT",
+      (): Promise<PostconditionVerdict> => Promise.resolve("NOT_DONE"),
+    );
+    expect(lifecycle.driver.capabilities()).toEqual(bound.driver.capabilities());
+    expect(lifecycle.driver.mode).toBe(RESTATE_MODE);
+  });
+
+  it("takes three arguments and not a policy among them", () => {
+    expect(RestateDriver.forLifecycle.length).toBe(3);
   });
 });

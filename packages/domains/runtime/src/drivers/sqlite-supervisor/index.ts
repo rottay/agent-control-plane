@@ -16,7 +16,7 @@ import type { Ledger } from "@acp/ledger";
 import { DATA_ROOT_DRILLS } from "../../constants/index.js";
 import type { DurableInvocation, OrchestrationDriver } from "../../contracts/index.js";
 import { deriveEventCoordinate } from "../../core/coordinates/index.js";
-import { PLAN_TERMINAL_STATE, planFor } from "../../core/lifecycle/index.js";
+import { PLAN_TERMINAL_STATE, SHARED_PLAN_PREFIX, planFor } from "../../core/lifecycle/index.js";
 import type { PlanStep } from "../../core/lifecycle/index.js";
 import {
   appendPlanStep,
@@ -117,6 +117,46 @@ function unsupported(at: string): DriverRefused {
   return { ok: false, refusal: "CAPABILITY_UNSUPPORTED", at };
 }
 
+/**
+ * What a lifecycle-shaped construction supplies (V2 L2).
+ *
+ * Every field `SqliteSupervisorOptions` requires except `commitPolicy`, and the
+ * omission is the point rather than a convenience. `cancel` and `reattach` are
+ * the only verbs this construction serves, both are declared `UNSUPPORTED` by
+ * this driver, and neither reads a plan — so there is no policy for the caller
+ * to supply and nothing it could truthfully mean. Requiring one anyway would
+ * make a door invent a value at the one seam in this package where commit
+ * capability is decided, which is the defect `planFor`'s throw exists to catch.
+ */
+export interface SqliteSupervisorLifecycleOptions {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly effects: EffectPort;
+  readonly emittedBy: string;
+  readonly initiativeId: string;
+  readonly route: ResolvedRoute;
+}
+
+/**
+ * The marker a lifecycle construction passes instead of a commit policy.
+ *
+ * A module-private symbol, so it is unspellable from outside this file: the
+ * public constructor still takes `SqliteSupervisorOptions` and a caller still
+ * cannot omit `commitPolicy` or pass anything the contract's enum does not
+ * admit. The only way to reach the plan-free construction is `forLifecycle`,
+ * which is what keeps "no default plan" true while giving the verbs that read
+ * no plan a way to exist.
+ */
+const LIFECYCLE_CONSTRUCTION: unique symbol = Symbol("acp.sqlite-supervisor.lifecycle");
+
+/** A commit policy, or the marker that says there is none to have. */
+type PlanSelector = CommitPolicy | typeof LIFECYCLE_CONSTRUCTION;
+
+/** The options as this file reads them, marker included. Never public. */
+interface SupervisorConstruction extends Omit<SqliteSupervisorOptions, "commitPolicy"> {
+  readonly commitPolicy: PlanSelector;
+}
+
 export class SqliteSupervisor implements OrchestrationDriver {
   readonly mode: DriverMode = "SQLITE_SUPERVISOR";
 
@@ -129,17 +169,45 @@ export class SqliteSupervisor implements OrchestrationDriver {
   readonly #route: ResolvedRoute;
   readonly #faultPoint: FaultPoint | undefined;
   readonly #onFault: (() => void) | undefined;
+  /** True when this object was built for the lifecycle verbs and may not walk. */
+  readonly #lifecycleOnly: boolean;
 
   constructor(options: SqliteSupervisorOptions) {
     this.#ledger = options.ledger;
     this.#invocation = options.invocation;
     this.#effects = options.effects;
     this.#emittedBy = options.emittedBy;
-    this.#plan = planFor(options.commitPolicy);
+    // The cast reads the marker `forLifecycle` may have put here. It widens
+    // what this file sees, never what a caller may pass: the parameter type
+    // above is unchanged, so `commitPolicy` is still required and still a
+    // `CommitPolicy` to everyone outside this module.
+    const selector = options.commitPolicy as PlanSelector;
+    this.#lifecycleOnly = selector === LIFECYCLE_CONSTRUCTION;
+    this.#plan = this.#lifecycleOnly ? SHARED_PLAN_PREFIX : planFor(selector as CommitPolicy);
     this.#initiativeId = options.initiativeId;
     this.#route = options.route;
     this.#faultPoint = options.__faultPoint;
     this.#onFault = options.__onFault;
+  }
+
+  /**
+   * Build a supervisor for the lifecycle verbs, with no commit policy (V2 L2).
+   *
+   * The object is the real one — same class, same capability declaration, same
+   * refusals — because a narrower stand-in would be simulated parity, and the
+   * correspondence law that compares a driver's declaration against its
+   * behaviour would then be checking something no door ever constructs.
+   *
+   * What it cannot do is walk. `#plan` is the prefix both plans share, which
+   * has no closing step, so `advance` refuses rather than running out of plan
+   * somewhere less legible.
+   */
+  static forLifecycle(options: SqliteSupervisorLifecycleOptions): SqliteSupervisor {
+    const construction: SupervisorConstruction = {
+      ...options,
+      commitPolicy: LIFECYCLE_CONSTRUCTION,
+    };
+    return new SqliteSupervisor(construction as SqliteSupervisorOptions);
   }
 
   // -------------------------------------------------------------------------
@@ -288,6 +356,18 @@ export class SqliteSupervisor implements OrchestrationDriver {
   ): Promise<ControlPlaneEvent | null> {
     // `async` so a refused claim is a rejection rather than a synchronous throw
     // from a promise-returning method.
+    //
+    // A lifecycle construction has no commit policy, so it has no plan to walk
+    // and refuses before it reads anything. The refusal is not a capability
+    // statement — this driver's `advance` is perfectly able — it is a statement
+    // about this object: it was built to cancel or rejoin, and walking one
+    // would be walking a plan nobody chose.
+    if (this.#lifecycleOnly) {
+      throw new SupervisorError(
+        "this supervisor was constructed for the lifecycle verbs and walks no" +
+          " plan; construct one with an explicit commit policy to advance",
+      );
+    }
     const context = this.#beat(invocation);
     assertInvocationContinuity(context);
 
@@ -310,6 +390,15 @@ export class SqliteSupervisor implements OrchestrationDriver {
    * progress terminates with a classified error instead of spinning.
    */
   async runToCheckpoint(): Promise<RunResult> {
+    // Same refusal as `advance`, and for the same reason: a lifecycle
+    // construction holds the shared prefix, which has no closing step. Refusing
+    // at the door is legible; running out of plan at index 7 is not.
+    if (this.#lifecycleOnly) {
+      throw new SupervisorError(
+        "this supervisor was constructed for the lifecycle verbs and walks no" +
+          " plan; construct one with an explicit commit policy to run",
+      );
+    }
     let appended = 0;
     let replayed = 0;
 

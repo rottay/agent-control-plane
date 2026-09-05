@@ -63,6 +63,32 @@ export const LIFECYCLE_PLAN: readonly PlanStep[] = Object.freeze([
 ] as const);
 
 /**
+ * The steps every plan walks, whatever its commit policy (V2 L2).
+ *
+ * Steps 0-7 are the same frozen objects in both plans — `READ_ONLY_PLAN` below
+ * is built from this array rather than from a second `slice`, so the identity
+ * the lifecycle test asserts (`READ_ONLY_PLAN[i] === LIFECYCLE_PLAN[i]`) is a
+ * property of the construction and not of two expressions that happen to agree.
+ *
+ * It is exported because the lifecycle verbs need a plan and have no commit
+ * policy to choose one with. `cancel` and `reattach` read the plan in exactly
+ * three places and all three land inside this prefix: `buildEvent` threads an
+ * OUTCOME append to `plan[4]`, `appendPlanStep` verifies the same predecessor,
+ * and `cancellationEvent` passes `plan.length` to `deriveEventCoordinate`,
+ * which voids the argument. So a driver constructed for those verbs walks this
+ * prefix and produces byte-identical events to one constructed under either
+ * policy — the property `forLifecycle`'s drill asserts rather than assumes.
+ *
+ * It is deliberately NOT a fourth plan. It has no closing step, so nothing can
+ * walk it to a terminal state: `nextStep` runs out of plan at index 7 and
+ * `stepAfter` throws. A construction that took this prefix must therefore
+ * refuse `advance`, and both drivers do.
+ */
+export const SHARED_PLAN_PREFIX: readonly PlanStep[] = Object.freeze(
+  LIFECYCLE_PLAN.slice(0, 8),
+);
+
+/**
  * The read-only plan, for a `NO_COMMIT` packet.
  *
  * Derived, never duplicated: steps 0-7 are the writer plan's own frozen objects
@@ -76,7 +102,7 @@ export const LIFECYCLE_PLAN: readonly PlanStep[] = Object.freeze([
  * step that could produce one.
  */
 export const READ_ONLY_PLAN: readonly PlanStep[] = Object.freeze([
-  ...LIFECYCLE_PLAN.slice(0, 8),
+  ...SHARED_PLAN_PREFIX,
   {
     index: 8,
     transitionId: requireStep(10).transitionId,
