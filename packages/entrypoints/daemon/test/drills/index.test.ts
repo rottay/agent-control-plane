@@ -61,6 +61,17 @@ function initWorktree(directory: string): void {
   git("init", "--quiet");
   git("config", "user.email", "drill@example.invalid");
   git("config", "user.name", "drill");
+  // V2-B1f/F3. The worktree holds every path its envelope declares.
+  //
+  // A write-set is a declaration, and `checkWriteSetConformance` compares it as
+  // an exact string: it never required a declared entry to EXIST, so a drill
+  // could declare `src/**` and have a gate that matched nothing. The checkpoint
+  // digests the declared set against this worktree, so a declaration naming
+  // nothing is now visible as `PATH_MISSING` -- which is the honest answer, and
+  // the fixture is what has to change. Committed, so an unmodified declared
+  // path is not itself an observed change.
+  mkdirSync(join(directory, "src"), { recursive: true });
+  writeFileSync(join(directory, "src", "walk.ts"), "export const walked = true;\n", "utf8");
   git("add", "-A");
   git("commit", "--allow-empty", "-q", "-m", "fixture base");
 }
@@ -73,7 +84,7 @@ function initWorktree(directory: string): void {
  * touches: the point of the gate is that a walk writing outside its declaration
  * is caught, so a drill that is not testing that must declare honestly.
  */
-function envelopeFor(taskId: string, initiativeId: string, writeSet: readonly string[] = ["src/**"]): TaskEnvelope {
+function envelopeFor(taskId: string, initiativeId: string, writeSet: readonly string[] = ["src/walk.ts"]): TaskEnvelope {
   return {
     contractVersion: CONTRACT_VERSION,
     taskId,

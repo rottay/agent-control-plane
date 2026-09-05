@@ -16,7 +16,9 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { openLedger } from "@acp/ledger";
+import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
+import type { Checkpoint } from "@acp/contracts";
+import { createCheckpointStore, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
@@ -31,6 +33,8 @@ import {
   RUNTIME_SERVICE_PORT,
   SqliteSupervisor,
   applyEffect,
+  deriveEventCoordinate,
+  deterministicUuid,
   probeEffect,
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -38,6 +42,9 @@ import {
 } from "@acp/runtime";
 import type {
   BeatContext,
+  CheckpointPort,
+  CheckpointRefused,
+  CheckpointSource,
   DurableInvocation,
   EffectPort,
   PostconditionVerdict,
@@ -255,6 +262,143 @@ function toyEffects(root: ScenarioRoot): EffectPort {
   };
 }
 
+// ---------------------------------------------------------------------------
+// V2-B1f/F3: the checkpoint a terminal now has to write
+// ---------------------------------------------------------------------------
+
+/**
+ * Make this scenario a real repository, and report what it actually holds.
+ *
+ * The four git facts a `Checkpoint` carries are observed, never invented: a
+ * fabricated head would put a fiction in a drill ledger, which is the one thing
+ * a drill may never do. The repository is created once per scenario and the
+ * observation is taken at assembly time, so `isDirty` is what the worktree
+ * looked like when the terminal ran rather than when the fixture was built.
+ */
+function checkpointFactsFor(worktree: string): {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
+} {
+  const git = (...args: string[]): string =>
+    spawnSync("/usr/bin/git", args, { cwd: worktree, encoding: "utf8" }).stdout;
+  if (!existsSync(join(worktree, ".git"))) {
+    git("init", "--quiet");
+    git("config", "user.email", "drill@example.invalid");
+    git("config", "user.name", "drill");
+    git("commit", "--allow-empty", "-q", "-m", "checkpoint fixture");
+  }
+  return {
+    worktreePath: worktree,
+    head: git("rev-parse", "HEAD").trim(),
+    branch: git("rev-parse", "--abbrev-ref", "HEAD").trim(),
+    isDirty: git("status", "--porcelain", "--untracked-files=all").trim() !== "",
+  };
+}
+
+/**
+ * A checkpoint source for a suite that builds its construction directly.
+ *
+ * The twin of the production source in the daemon and of the two drill
+ * children's, and declared here rather than imported for the reason
+ * `initToyRepository` is declared in each suite that needs one: a test-tree
+ * helper shared across packages would have to leave a pinned barrel, and the
+ * barrel's names are pinned by equality.
+ *
+ * Every field still comes from something real: the coordinates this walk
+ * derived, the `run.outcome` row it already appended, and a repository the
+ * scenario really has. The digest arrays are `[]` because these fixtures carry
+ * no envelope, which is the honest answer rather than a placeholder.
+ */
+function createDrillCheckpointSource(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointSource {
+  const { ledger, invocation, worktree } = input;
+  return {
+    assemble(step): Checkpoint | CheckpointRefused {
+      const recorded = ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({
+          taskId: invocation.taskId,
+          attempt: invocation.attempt,
+          transitionId: OUTCOME_STEP.transitionId,
+        }),
+      );
+      if (recorded === null) {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep" };
+      }
+      const parsed: unknown = JSON.parse(recorded.canonicalJson);
+      const completedAt =
+        typeof parsed === "object" && parsed !== null && "occurredAt" in parsed
+          ? (parsed as { readonly occurredAt: unknown }).occurredAt
+          : undefined;
+      if (typeof completedAt !== "string") {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep.completedAt" };
+      }
+      const facts = checkpointFactsFor(worktree);
+      const coordinate = deriveEventCoordinate(invocation, step.transitionId, step.index);
+      return {
+        contractVersion: CONTRACT_VERSION,
+        checkpointId: deterministicUuid(
+          "checkpoint/" +
+            invocation.invocationId +
+            "/" +
+            invocation.taskId +
+            "/" +
+            String(invocation.attempt) +
+            "/" +
+            step.transitionId,
+        ),
+        taskId: invocation.taskId,
+        attempt: invocation.attempt,
+        worker: input.emittedBy,
+        createdAt: coordinate.occurredAt,
+        lastAtomicStep: {
+          index: OUTCOME_STEP.index,
+          label: OUTCOME_STEP.transitionId,
+          completedAt,
+        },
+        git: {
+          head: facts.head,
+          branch: facts.branch,
+          worktreePath: facts.worktreePath,
+          isDirty: facts.isDirty,
+        },
+        authorityDigest: [],
+        readSetDigest: [],
+        writeSetDigest: [],
+        receipts: [],
+        artifacts: [],
+        pendingWork: [],
+        // The §2.4 literal, quoted verbatim rather than imported: a drift in any
+        // one of the sources that produce it fails here rather than propagating.
+        nextSafeAction: "Await the next owner-authorized action.",
+        notes: null,
+      };
+    },
+  };
+}
+
+/** One source, one store, one root rule: the port a walking construction binds. */
+function drillCheckpoints(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** Where the artifacts resolve: this scenario's own ledger path. */
+  readonly ledgerPath: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointPort {
+  return createCheckpointStore({
+    ledgerPath: input.ledgerPath,
+    source: createDrillCheckpointSource(input),
+  });
+}
+
 function beatFactory(root: ScenarioRoot, ledger: Ledger) {
   return (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
     ledger,
@@ -268,6 +412,13 @@ function beatFactory(root: ScenarioRoot, ledger: Ledger) {
     invocation,
     emittedBy: EMITTED_BY,
     route: drillRoute(invocation),
+    checkpoints: drillCheckpoints({
+      ledger,
+      invocation,
+      emittedBy: EMITTED_BY,
+      ledgerPath: scenarioLedgerPath(root),
+      worktree: root,
+    }),
   });
 }
 
@@ -294,6 +445,14 @@ function startChild(
   effect: "TOY" | "EXECUTION" = "TOY",
   /** V2-B7R: make the INTENT effect fail the way a port classifies a failure. */
   failEffect = false,
+  /**
+   * The worktree whose facts the child is handed (V2-B1f/F3).
+   *
+   * Defaults to the child's own scenario root, which every drill but the
+   * equivalence one wants. That drill hands BOTH legs the same worktree,
+   * because two legs handed different inputs cannot be compared byte for byte.
+   */
+  checkpointWorktree: string = resolveScenarioRoot(scenarioId),
 ): Promise<ChildProcess> {
   const config = JSON.stringify({
     scenarioId,
@@ -307,6 +466,9 @@ function startChild(
     port: RUNTIME_SERVICE_PORT,
     effect,
     failEffect,
+    // The child observes no git of its own: the SUITE observes the repository
+    // and passes what it saw as data.
+    checkpointFacts: checkpointFactsFor(checkpointWorktree),
   });
   return new Promise<ChildProcess>((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [CHILD_ENTRY, config], {
@@ -1425,6 +1587,15 @@ describe("driver equivalence", () => {
     const taskId = "e0e0e0e0-e0e0-4e0e-8e0e-e0e0e0e0e001";
     const invocation = deriveInvocation(taskId, 1, "2026-08-27T12:00:00.000Z", "e".repeat(64));
 
+    // One worktree for BOTH legs (V2-B1f/F3).
+    //
+    // The checkpoint carries the worktree it was taken over, so two legs
+    // observing two different directories would assemble two different
+    // checkpoints and the byte equality this drill exists to prove would fail
+    // for a reason that has nothing to do with the drivers. The equivalence is
+    // over identical inputs, and the worktree is one of them.
+    const equivalenceWorktree = scenario("equiv-worktree");
+
     // Scenario A: the supervisor, on its own fresh ledger.
     const rootA = scenario("equiv-supervisor");
     const ledgerA = track(openLedger(scenarioLedgerPath(rootA)));
@@ -1432,6 +1603,13 @@ describe("driver equivalence", () => {
       ledger: ledgerA,
       invocation,
       effects: toyEffects(rootA),
+      checkpoints: drillCheckpoints({
+        ledger: ledgerA,
+        invocation,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(rootA),
+        worktree: equivalenceWorktree,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -1447,7 +1625,7 @@ describe("driver equivalence", () => {
     const rootB = scenario(idB);
     const ledgerB = track(openLedger(scenarioLedgerPath(rootB)));
     const server = trackServer(await startServer(rootB));
-    await startChild(idB, invocation, null);
+    await startChild(idB, invocation, null, null, "TOY", false, equivalenceWorktree);
     await registerDeployment(server.adminUrl, "http://" + LOOPBACK_HOST + ":" + String(RUNTIME_SERVICE_PORT));
     await submitAdvance(server.ingressUrl, invocation, 120_000);
     expect(await waitForCheckpoint(ledgerB, taskId)).toBe(true);
@@ -1469,6 +1647,15 @@ describe("driver equivalence", () => {
       ledger: ledgerC,
       invocation: other,
       effects: toyEffects(rootC),
+      // The same worktree as both legs above: the control differs by its
+      // INVOCATION and by nothing else, or it would not discriminate.
+      checkpoints: drillCheckpoints({
+        ledger: ledgerC,
+        invocation: other,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(rootC),
+        worktree: equivalenceWorktree,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,

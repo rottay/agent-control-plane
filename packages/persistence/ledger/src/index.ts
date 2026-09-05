@@ -54,10 +54,31 @@ export {
   ARTIFACT_MAX_BYTES,
   ARTIFACT_REFUSALS,
   artifactDigest,
+  // V2-B1f/F3: the one artifact-root rule, moved here from the gateway's
+  // roadmap-write seam and deleted there. `ARTIFACT_DIRECTORY` stays
+  // module-private, so exactly one new name leaves this package for it: three
+  // packages that may not import an entrypoint now resolve a digest through the
+  // same helper the roadmap write publishes through.
+  artifactRootFor,
   hasArtifact,
   publishArtifact,
   readArtifact,
 } from "./artifact-store/index.js";
+
+/**
+ * V2-B1f/F3: the checkpoint store.
+ *
+ * The Checkpoint law's other half. The artifact store above holds the bytes a
+ * digest names; this factory is what turns an assembled `Checkpoint` into one
+ * of those objects — parse, canonically serialize, publish — so the terminal
+ * beat can append an event naming a digest the store already holds.
+ *
+ * One name leaves the package for it. The source, the step type and the
+ * refusal vocabulary are all the caller's: `@acp/runtime` sits above this
+ * package and may never be imported from it, so they travel as type parameters
+ * rather than as a second set of declarations here.
+ */
+export { createCheckpointStore } from "./checkpoint-store/index.js";
 
 export type { LedgerErrorCode, LedgerValidationIssue } from "./errors/index.js";
 

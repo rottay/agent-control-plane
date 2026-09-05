@@ -1,6 +1,6 @@
 import type { CommitPolicy, ResolvedRoute } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
-import type { DurableInvocation, EffectPort } from "@acp/runtime";
+import type { CheckpointPort, DurableInvocation, EffectPort } from "@acp/runtime";
 import { SqliteSupervisor } from "@acp/runtime";
 
 import { ModeError } from "../errors/index.js";
@@ -54,6 +54,17 @@ export interface SqliteModeInput {
    * the execution runs cannot be two different values.
    */
   readonly route: ResolvedRoute;
+  /**
+   * Where this walk's checkpoint is persisted (V2-B1f/F3).
+   *
+   * Passed through for the same reason the policy, the initiative and the route
+   * are: the daemon composes the source and the store at its own call site, in
+   * one place a reader can find, and this mode never invents one. Optional
+   * rather than required because a construction without one truthfully cannot
+   * write a checkpoint, and the terminal beat refuses on it -- which is a
+   * better answer than a mode inventing a port on the caller's behalf.
+   */
+  readonly checkpoints?: CheckpointPort | undefined;
 }
 
 export interface SqliteModeResult {
@@ -73,6 +84,7 @@ export async function runSqliteMode(input: SqliteModeInput): Promise<SqliteModeR
     commitPolicy: input.commitPolicy,
     initiativeId: input.initiativeId,
     route: input.route,
+    checkpoints: input.checkpoints,
   });
 
   const report = await supervisor.reconcile();

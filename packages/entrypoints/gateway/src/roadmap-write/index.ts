@@ -1,8 +1,6 @@
-import { dirname, join } from "node:path";
-
 import { LEDGER_CONTRACT_VERSION } from "@acp/protocol";
 import type { RoadmapVersionWriteRequest } from "@acp/protocol";
-import { LedgerError, openLedger, publishArtifact } from "@acp/ledger";
+import { LedgerError, artifactRootFor, openLedger, publishArtifact } from "@acp/ledger";
 import type { Ledger, RoadmapVersionReadModel } from "@acp/ledger";
 import { ROADMAP_VERSION_REFUSALS, decideRoadmapVersion } from "@acp/ledger";
 import type { RoadmapVersionRefusal } from "@acp/ledger";
@@ -36,19 +34,19 @@ import type { RoadmapVersionRefusal } from "@acp/ledger";
  * the same digest and writes nothing the second time.
  */
 
-/** Where the artifacts live, relative to the ledger the server was given. */
-export const ARTIFACT_DIRECTORY = "artifacts";
-
 /**
- * The artifact root for a ledger path.
+ * The artifact root rule is `@acp/ledger`'s, and this seam is now a caller of
+ * it (V2-B1f/F3).
  *
- * A sibling of the database rather than a separate configured root: the ledger
- * owns the data root, and a second configurable location would be a second
- * answer to "where does a digest in this ledger resolve?".
+ * It was declared here — `ARTIFACT_DIRECTORY` and `artifactRootFor` — while a
+ * roadmap document was the only artifact anyone published. It is not any more:
+ * the checkpoint store resolves through the same rule, and `@acp/runtime`,
+ * `@acp/durability` and the daemon may not import this package. Re-stating the
+ * rule on the ledger side would have been the *"second answer to where a digest
+ * in this ledger resolves"* the note below warns against, so the declaration
+ * MOVED rather than being copied, and this module imports it like every other
+ * consumer.
  */
-export function artifactRootFor(ledgerPath: string): string {
-  return join(dirname(ledgerPath), ARTIFACT_DIRECTORY);
-}
 
 export interface RoadmapWriteInput {
   /** The read-only handle, used to fold the head. Never appended through. */

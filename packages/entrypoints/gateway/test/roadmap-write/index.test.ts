@@ -12,11 +12,23 @@ import {
   RoadmapVersionWriteRequest,
   RoadmapVersionWriteResponse,
 } from "@acp/protocol";
-import { ROADMAP_VERSION_REFUSALS, openLedger, publishArtifact, readArtifact } from "@acp/ledger";
+// `artifactRootFor` now comes from the package that owns the store it governs
+// (V2-B1f/F3): one home, and this suite reads the checkpoint side of the same
+// rule in P9 below.
+import {
+  ROADMAP_VERSION_REFUSALS,
+  artifactRootFor,
+  hasArtifact,
+  openLedger,
+  publishArtifact,
+  readArtifact,
+} from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildServer } from "../../src/build-server/index.js";
-import { ROADMAP_WRITE_REFUSALS, artifactRootFor, recordRoadmapVersion } from "../../src/roadmap-write/index.js";
+import { ROADMAP_WRITE_REFUSALS, recordRoadmapVersion } from "../../src/roadmap-write/index.js";
+// The whole seam, so P9 can ask what it actually exports.
+import * as writeSeam from "../../src/roadmap-write/index.js";
 
 /**
  * Evidence for the plane's first write route.
@@ -607,5 +619,45 @@ describe("R2: one ceiling, one unit — the schema and the store agree at the by
     expect(twiceTheBytes.length).toBe(ROADMAP_CONTENT_MAX_BYTES);
     expect(Buffer.byteLength(twiceTheBytes, "utf8")).toBe(ROADMAP_CONTENT_MAX_BYTES * 2);
     expect(RoadmapVersionWriteRequest.safeParse(requestBody(twiceTheBytes)).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P9 — one artifact-root rule, read from the gateway's side (V2-B1f/F3)
+// ---------------------------------------------------------------------------
+
+describe("the artifact root this seam publishes through is the ledger's own", () => {
+  it("comes from @acp/ledger, and this package declares no second one", () => {
+    // The rule moved into the package that owns the store it governs, and the
+    // copy that used to live in `roadmap-write` was deleted rather than
+    // duplicated. What keeps that true is that this suite, the route and the
+    // write seam now all reach the SAME helper: there is no gateway export to
+    // import instead, so a second answer to "where does a digest in this
+    // ledger resolve?" cannot be written without adding one back.
+    const seam: Record<string, unknown> = writeSeam;
+    expect(Object.keys(seam)).not.toContain("artifactRootFor");
+    expect(Object.keys(seam)).not.toContain("ARTIFACT_DIRECTORY");
+  });
+
+  it("resolves a roadmap write and a checkpoint into one store, from one rule", () => {
+    const { path } = seed();
+    const root = artifactRootFor(path);
+
+    // The roadmap document, published through the seam's own store call.
+    const document = publishArtifact(root, "# Roadmap\n\nOne version.\n");
+    expect(document.ok).toBe(true);
+
+    // A checkpoint's canonical bytes, published through the same helper from
+    // the same ledger path — which is what the daemon and the drill children
+    // do on the other side of the plane. One home, both consumers.
+    const checkpoint = publishArtifact(root, '{"contractVersion":"2.2.0"}');
+    expect(checkpoint.ok).toBe(true);
+    if (!document.ok || !checkpoint.ok) return;
+
+    expect(hasArtifact(root, document.digest)).toBe(true);
+    expect(hasArtifact(root, checkpoint.digest)).toBe(true);
+    expect(document.digest).not.toBe(checkpoint.digest);
+    // And both resolve from the ledger path alone, with nothing configured.
+    expect(artifactRootFor(path)).toBe(root);
   });
 });

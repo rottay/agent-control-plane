@@ -35,6 +35,10 @@ import {
   WorkersQuery,
 } from "@acp/protocol";
 import { readAccountUsage } from "@acp/runtime";
+// The artifact root rule moved into the package that owns the store it governs
+// (V2-B1f/F3). This route resolves a digest through the same one helper the
+// roadmap write publishes through, and there is no second one to reach for.
+import { artifactRootFor } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 
 import {
@@ -67,7 +71,7 @@ import { readAccounts } from "../accounts/index.js";
 import { recordAccountAction } from "../account-actions/index.js";
 import { loadBearerGuard } from "../bearer/index.js";
 import type { BearerLoadOutcome } from "../bearer/index.js";
-import { artifactRootFor, recordRoadmapVersion } from "../roadmap-write/index.js";
+import { recordRoadmapVersion } from "../roadmap-write/index.js";
 import {
   initiativeDetailDto,
   initiativeSummary,

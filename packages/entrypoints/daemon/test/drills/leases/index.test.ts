@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { LEDGER_ACCOUNT_CONTRACT_VERSION, openLeaseStore, openLedger } from "@acp/ledger";
@@ -35,13 +35,23 @@ import { logFilePath, resolveDaemonRoot } from "../../../src/paths/index.js";
  *
  * A temporary directory, never this repository (stop 3).
  */
-function initWorktree(directory: string): void {
+function initWorktree(directory: string, holds: readonly string[] = []): void {
   const git = (...args: string[]): void => {
     spawnSync("/usr/bin/git", args, { cwd: directory, encoding: "utf8" });
   };
   git("init", "--quiet");
   git("config", "user.email", "drill@example.invalid");
   git("config", "user.name", "drill");
+  // V2-B1f/F3. Every declared path exists before the commit, so the write-set
+  // the envelope declares is one this worktree really holds. A write-set is a
+  // declaration and `checkWriteSetConformance` compares it as an exact string,
+  // so a declared path that never existed matched nothing and cost nothing;
+  // the checkpoint digests the declared set, so it is now visible.
+  for (const declared of holds) {
+    const full = join(directory, declared);
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, "declared by the fixture\n", "utf8");
+  }
   git("add", "-A");
   git("commit", "--allow-empty", "-q", "-m", "fixture base");
 }
@@ -136,6 +146,19 @@ function scenario(name: string): string {
   return id;
 }
 
+/**
+ * Every repo-relative path this file's envelopes declare (V2-B1f/F3).
+ *
+ * One list, applied to every fixture worktree, so a walk's declared write-set
+ * is one its worktree really holds whichever drill declared it. A write-set is
+ * a declaration and `checkWriteSetConformance` compares it as an exact string,
+ * so a declared path that never existed matched nothing and cost nothing; the
+ * checkpoint digests the declared set against the worktree, so it is now
+ * visible. The conformance drills below declare `declared.txt` and
+ * `declared-only.txt` instead, and those are written by the walk itself.
+ */
+const DECLARED_FIXTURE_PATHS: readonly string[] = ["a/one.ts", "b/two.ts", "shared/file.ts"];
+
 /** A distinct worktree, owner-only, carrying its own copy of the fake binary. */
 function worktree(): string {
   // Realpath, because /tmp is a symlink on macOS and the config door refuses
@@ -150,7 +173,7 @@ function worktree(): string {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
-  initWorktree(created);
+  initWorktree(created, DECLARED_FIXTURE_PATHS);
   worktrees.push(created);
   return created;
 }
@@ -626,7 +649,7 @@ function barrierWorktree(mine: string, theirs: string, gate: string): string {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
-  initWorktree(created);
+  initWorktree(created, DECLARED_FIXTURE_PATHS);
   worktrees.push(created);
   return created;
 }
@@ -652,7 +675,7 @@ function heldWorktree(name: string, gate: string): string {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
-  initWorktree(created);
+  initWorktree(created, DECLARED_FIXTURE_PATHS);
   worktrees.push(created);
   return created;
 }
@@ -1128,7 +1151,7 @@ function writingWorktree(fileName: string): string {
       "process.exit(0);\n",
     { mode: 0o700 },
   );
-  initWorktree(created);
+  initWorktree(created, DECLARED_FIXTURE_PATHS);
   worktrees.push(created);
   return created;
 }

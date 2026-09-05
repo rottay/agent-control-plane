@@ -2,15 +2,21 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CommitPolicy, ResolvedRoute } from "@acp/contracts";
+import { CONTRACT_VERSION, CommitPolicy, ResolvedRoute, buildIdempotencyKey } from "@acp/contracts";
 import type {
+  Checkpoint,
   ExecutionEvent,
   ExecutionRequest,
   ModelExecutionPort,
 } from "@acp/contracts";
-import { openLedger } from "@acp/ledger";
+import { createCheckpointStore, openLedger } from "@acp/ledger";
+import type { Ledger } from "@acp/ledger";
 
+import type { CheckpointRefused, CheckpointSource } from "../../checkpoint/index.js";
 import type { DurableInvocation } from "../../contracts/index.js";
+import { deriveEventCoordinate, deterministicUuid } from "../../core/coordinates/index.js";
+import { OUTCOME_STEP } from "../../core/lifecycle/index.js";
+import type { PlanStep } from "../../core/lifecycle/index.js";
 import { SupervisorError } from "../../errors/index.js";
 import {
   applyEffect,
@@ -85,6 +91,31 @@ interface ChildConfig {
    * effect and its outcome.
    */
   readonly effect: "TOY" | "EXECUTION";
+  /**
+   * What the SPAWNING SUITE observed about this scenario's worktree (V2-B1f/F3).
+   *
+   * **Facts, as data.** This child creates no `GitReadPort` and executes no
+   * git: `RUNTIME_ALLOWED_BUILTINS` is crypto, fs, path and url, so it could
+   * not spawn one, and giving a drill child an observer would put a second
+   * production-shaped git caller in a package whose whole enforcement story is
+   * that it observes nothing itself. The suite has a real repository
+   * (`initToyRepository`), observes it with its own `spawnGit`, and passes what
+   * it saw.
+   *
+   * **Absent means absent, not empty.** A config without this field yields no
+   * checkpoint port, and the terminal beat refuses exactly as production does
+   * when its observation cannot be taken. Inventing a head here would put a
+   * fiction in a drill ledger, which is the one thing a drill may never do.
+   */
+  readonly checkpointFacts: CheckpointFacts | null;
+}
+
+/** The four git facts a checkpoint carries, observed by the spawning suite. */
+interface CheckpointFacts {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
 }
 
 /**
@@ -144,6 +175,31 @@ export function parseChildConfig(raw: unknown): ChildConfig {
     throw new SupervisorError("effect must be TOY or EXECUTION");
   }
 
+  // V2-B1f/F3. Absent is lawful and means no checkpoint port; present is
+  // checked field by field, exactly like the invocation below, because every
+  // one of these values reaches a persisted artifact.
+  const rawFacts = value["checkpointFacts"] ?? null;
+  let checkpointFacts: CheckpointFacts | null = null;
+  if (rawFacts !== null) {
+    if (typeof rawFacts !== "object") {
+      throw new SupervisorError("checkpointFacts must be null or an object");
+    }
+    const facts = rawFacts as Record<string, unknown>;
+    const worktreePath = facts["worktreePath"];
+    const head = facts["head"];
+    const branch = facts["branch"];
+    const isDirty = facts["isDirty"];
+    if (
+      typeof worktreePath !== "string" ||
+      typeof head !== "string" ||
+      typeof branch !== "string" ||
+      typeof isDirty !== "boolean"
+    ) {
+      throw new SupervisorError("child config carries malformed checkpointFacts");
+    }
+    checkpointFacts = { worktreePath, head, branch, isDirty };
+  }
+
   const taskId = inv["taskId"];
   const attempt = inv["attempt"];
   const invocationId = inv["invocationId"];
@@ -172,7 +228,106 @@ export function parseChildConfig(raw: unknown): ChildConfig {
     initiativeId,
     faultPoint: faultPoint as FaultPoint | null,
     effect,
+    checkpointFacts,
     invocation: { taskId, attempt, invocationId, submittedAt, submissionDigest },
+  };
+}
+
+/**
+ * The one next safe action a terminal ever names (V2-B1f/F3, §2.4).
+ *
+ * A module constant, never composed and never varied. It is declared here and,
+ * identically, in `restate-child` and in the daemon's production source, for
+ * the reason `DRILL_INSTRUCTION` and `EXECUTION_STARTS` are declared twice:
+ * unifying it would mean widening the runtime barrel, and the barrel's names
+ * are pinned by equality. The tests quote the literal verbatim rather than
+ * importing it, so a drift in any one of the three fails rather than
+ * propagating.
+ */
+const NEXT_SAFE_ACTION = "Await the next owner-authorized action.";
+
+/**
+ * Assemble a drill-labelled checkpoint from facts this process was handed.
+ *
+ * Every field still comes from something real: the coordinates this child
+ * derived, the events it already appended, and the worktree its suite actually
+ * observed. What it does NOT do is observe anything itself — that is the
+ * difference between this and the daemon's production source, and it is the
+ * whole reason the facts travel as config.
+ *
+ * The digest arrays are `[]` because this child's config carries no envelope,
+ * so there is no authority, read-set or write-set it could truthfully digest.
+ * An empty array is the honest answer; a fabricated one would be a fiction in a
+ * drill ledger.
+ */
+function drillCheckpointSource(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  readonly facts: CheckpointFacts;
+}): CheckpointSource {
+  return {
+    assemble(step: PlanStep): Checkpoint | CheckpointRefused {
+      // The last OUTCOME append, read from the ledger rather than remembered:
+      // both plans pass through it, and its own `occurredAt` is when the last
+      // atomic step actually completed.
+      const recorded = input.ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({
+          taskId: input.invocation.taskId,
+          attempt: input.invocation.attempt,
+          transitionId: OUTCOME_STEP.transitionId,
+        }),
+      );
+      if (recorded === null) {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep" };
+      }
+      const parsed: unknown = JSON.parse(recorded.canonicalJson);
+      const completedAt =
+        typeof parsed === "object" && parsed !== null && "occurredAt" in parsed
+          ? (parsed as { readonly occurredAt: unknown }).occurredAt
+          : undefined;
+      if (typeof completedAt !== "string") {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep.completedAt" };
+      }
+
+      const coordinate = deriveEventCoordinate(input.invocation, step.transitionId, step.index);
+      return {
+        contractVersion: CONTRACT_VERSION,
+        checkpointId: deterministicUuid(
+          "checkpoint/" +
+            input.invocation.invocationId +
+            "/" +
+            input.invocation.taskId +
+            "/" +
+            String(input.invocation.attempt) +
+            "/" +
+            step.transitionId,
+        ),
+        taskId: input.invocation.taskId,
+        attempt: input.invocation.attempt,
+        worker: input.emittedBy,
+        createdAt: coordinate.occurredAt,
+        lastAtomicStep: {
+          index: OUTCOME_STEP.index,
+          label: OUTCOME_STEP.transitionId,
+          completedAt,
+        },
+        git: {
+          head: input.facts.head,
+          branch: input.facts.branch,
+          worktreePath: input.facts.worktreePath,
+          isDirty: input.facts.isDirty,
+        },
+        authorityDigest: [],
+        readSetDigest: [],
+        writeSetDigest: [],
+        receipts: [],
+        artifacts: [],
+        pendingWork: [],
+        nextSafeAction: NEXT_SAFE_ACTION,
+        notes: null,
+      };
+    },
   };
 }
 
@@ -336,6 +491,21 @@ export async function runChild(config: ChildConfig): Promise<void> {
         config.effect === "EXECUTION"
           ? executionDrillRoute(config.invocation)
           : drillRoute(config.invocation),
+      // V2-B1f/F3. Composed here, from a source over the facts the suite
+      // observed and the store the ledger this child already opened resolves.
+      // No facts, no member, and the terminal refuses -- as production does.
+      checkpoints:
+        config.checkpointFacts === null
+          ? undefined
+          : createCheckpointStore({
+              ledgerPath: scenarioLedgerPath(scenarioRoot),
+              source: drillCheckpointSource({
+                ledger,
+                invocation: config.invocation,
+                emittedBy: config.emittedBy,
+                facts: config.checkpointFacts,
+              }),
+            }),
       __faultPoint: config.faultPoint ?? undefined,
       // A real signal, not an exception. SIGKILL cannot be caught, so nothing
       // in this process gets a chance to flush, close or tidy up, which is the

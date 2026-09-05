@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { ROADMAP_CONTENT_MAX_BYTES } from "@acp/contracts";
 
@@ -97,6 +97,41 @@ export type ReadOutcome = ArtifactRead | ArtifactRefused;
  * cheaper than making every one of them learn a document's name.
  */
 export { ROADMAP_CONTENT_MAX_BYTES as ARTIFACT_MAX_BYTES } from "@acp/contracts";
+
+/**
+ * Where the artifacts live, relative to the ledger the store was given.
+ *
+ * Module-private, so exactly one new name leaves this package: the directory is
+ * an implementation detail of the rule below, and a second export would be a
+ * second way to spell the same fact.
+ */
+const ARTIFACT_DIRECTORY = "artifacts";
+
+/**
+ * The artifact root for a ledger path (V2-B1f/F3).
+ *
+ * A sibling of the database rather than a separate configured root: the ledger
+ * owns the data root, and a second configurable location would be a second
+ * answer to "where does a digest in this ledger resolve?".
+ *
+ * **It lives here, beside the store it governs, and it lives here only.** The
+ * rule was written in `@acp/gateway`'s roadmap-write seam, which was the only
+ * consumer while the only artifact was a roadmap document. It is not any more:
+ * the checkpoint store resolves through the same rule, and `@acp/runtime`,
+ * `@acp/durability` and the daemon may not import the gateway — so the adapter
+ * could not have been written without re-stating it, and a re-statement is
+ * exactly the second answer that warning names. The gateway's copy was deleted
+ * rather than duplicated; `L-F3-1`'s companion assertion keeps a second from
+ * returning.
+ *
+ * It is deliberately in `artifact-store` and not in `checkpoint-store`: the
+ * rule governs where *artifacts* resolve, so the store that owns them is its
+ * home, and putting it beside the checkpoints would make a roadmap write import
+ * the checkpoint module.
+ */
+export function artifactRootFor(ledgerPath: string): string {
+  return join(dirname(ledgerPath), ARTIFACT_DIRECTORY);
+}
 
 /** The digest of some content, as the store names it. */
 export function artifactDigest(content: string): string {

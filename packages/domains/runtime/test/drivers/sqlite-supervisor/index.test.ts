@@ -4,17 +4,22 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { openLedger } from "@acp/ledger";
+import { artifactRootFor, createCheckpointStore, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { DriverCapabilities } from "@acp/contracts";
-import type { DriverOutcome } from "@acp/contracts";
+import { CONTRACT_VERSION, DriverCapabilities, buildIdempotencyKey } from "@acp/contracts";
+import type { Checkpoint, DriverOutcome } from "@acp/contracts";
 import type { DurableInvocation, OrchestrationDriver } from "../../../src/contracts/index.js";
 import { driverCapabilityMismatches } from "../../../src/contracts/index.js";
 import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
 import { applyEffect, probeEffect } from "../../../src/toy/repository/index.js";
-import { INTENT_STEP, LIFECYCLE_PLAN, READ_ONLY_PLAN } from "../../../src/core/lifecycle/index.js";
+import {
+  INTENT_STEP,
+  LIFECYCLE_PLAN,
+  OUTCOME_STEP,
+  READ_ONLY_PLAN,
+} from "../../../src/core/lifecycle/index.js";
 import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
 import { ExecutionEffectError } from "../../../src/execution-effects/index.js";
 import {
@@ -25,8 +30,13 @@ import {
 import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
 import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
 import type { FaultPoint } from "../../../src/drivers/sqlite-supervisor/index.js";
-import { deterministicUuid } from "../../../src/core/coordinates/index.js";
+import { deriveEventCoordinate, deterministicUuid } from "../../../src/core/coordinates/index.js";
 import type { EffectPort } from "../../../src/core/step-executor/index.js";
+import type {
+  CheckpointPort,
+  CheckpointRefused,
+  CheckpointSource,
+} from "../../../src/checkpoint/index.js";
 
 
 /**
@@ -113,6 +123,169 @@ function toyEffects(root: ScenarioRoot): EffectPort {
   };
 }
 
+// ---------------------------------------------------------------------------
+// V2-B1f/F3: the checkpoint a terminal now has to write
+// ---------------------------------------------------------------------------
+
+/**
+ * Make this scenario a real repository, and report what it actually holds.
+ *
+ * The four git facts a `Checkpoint` carries are observed, never invented: a
+ * fabricated head would put a fiction in a drill ledger, which is the one thing
+ * a drill may never do. The repository is created once per scenario and the
+ * observation is taken at assembly time, so `isDirty` is what the worktree
+ * looked like when the terminal ran rather than when the fixture was built.
+ */
+function checkpointFactsFor(worktree: string): {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
+} {
+  const git = (...args: string[]): string =>
+    spawnSync("/usr/bin/git", args, { cwd: worktree, encoding: "utf8" }).stdout;
+  if (!existsSync(join(worktree, ".git"))) {
+    git("init", "--quiet");
+    git("config", "user.email", "drill@example.invalid");
+    git("config", "user.name", "drill");
+    git("commit", "--allow-empty", "-q", "-m", "checkpoint fixture");
+  }
+  return {
+    worktreePath: worktree,
+    head: git("rev-parse", "HEAD").trim(),
+    branch: git("rev-parse", "--abbrev-ref", "HEAD").trim(),
+    isDirty: git("status", "--porcelain", "--untracked-files=all").trim() !== "",
+  };
+}
+
+/**
+ * A checkpoint source for a suite that builds its construction directly.
+ *
+ * The twin of the production source in the daemon and of the two drill
+ * children's, and declared here rather than imported for the reason
+ * `initToyRepository` is declared in each suite that needs one: a test-tree
+ * helper shared across packages would have to leave a pinned barrel, and the
+ * barrel's names are pinned by equality.
+ *
+ * Every field still comes from something real: the coordinates this walk
+ * derived, the `run.outcome` row it already appended, and a repository the
+ * scenario really has. The digest arrays are `[]` because these fixtures carry
+ * no envelope, which is the honest answer rather than a placeholder.
+ */
+function createDrillCheckpointSource(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointSource {
+  const { ledger, invocation, worktree } = input;
+  return {
+    assemble(step): Checkpoint | CheckpointRefused {
+      const recorded = ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({
+          taskId: invocation.taskId,
+          attempt: invocation.attempt,
+          transitionId: OUTCOME_STEP.transitionId,
+        }),
+      );
+      if (recorded === null) {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep" };
+      }
+      const parsed: unknown = JSON.parse(recorded.canonicalJson);
+      const completedAt =
+        typeof parsed === "object" && parsed !== null && "occurredAt" in parsed
+          ? (parsed as { readonly occurredAt: unknown }).occurredAt
+          : undefined;
+      if (typeof completedAt !== "string") {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep.completedAt" };
+      }
+      const facts = checkpointFactsFor(worktree);
+      const coordinate = deriveEventCoordinate(invocation, step.transitionId, step.index);
+      return {
+        contractVersion: CONTRACT_VERSION,
+        checkpointId: deterministicUuid(
+          "checkpoint/" +
+            invocation.invocationId +
+            "/" +
+            invocation.taskId +
+            "/" +
+            String(invocation.attempt) +
+            "/" +
+            step.transitionId,
+        ),
+        taskId: invocation.taskId,
+        attempt: invocation.attempt,
+        worker: input.emittedBy,
+        createdAt: coordinate.occurredAt,
+        lastAtomicStep: {
+          index: OUTCOME_STEP.index,
+          label: OUTCOME_STEP.transitionId,
+          completedAt,
+        },
+        git: {
+          head: facts.head,
+          branch: facts.branch,
+          worktreePath: facts.worktreePath,
+          isDirty: facts.isDirty,
+        },
+        authorityDigest: [],
+        readSetDigest: [],
+        writeSetDigest: [],
+        receipts: [],
+        artifacts: [],
+        pendingWork: [],
+        // The §2.4 literal, quoted verbatim rather than imported: a drift in any
+        // one of the sources that produce it fails here rather than propagating.
+        nextSafeAction: "Await the next owner-authorized action.",
+        notes: null,
+      };
+    },
+  };
+}
+
+/**
+ * The digest the walk's terminal actually recorded, read back from the ledger.
+ *
+ * Not re-derived: the whole property under test is that the event names what
+ * the store holds, and a test that recomputed the digest would be comparing two
+ * derivations rather than reading one recorded fact.
+ */
+function recordedCheckpointDigest(ledger: Ledger, invocation: DurableInvocation): string {
+  const terminal = LIFECYCLE_PLAN[LIFECYCLE_PLAN.length - 1];
+  if (terminal === undefined) throw new Error("no terminal step");
+  const recorded = ledger.getEventByIdempotencyKey(
+    buildIdempotencyKey({
+      taskId: invocation.taskId,
+      attempt: invocation.attempt,
+      transitionId: terminal.transitionId,
+    }),
+  );
+  if (recorded === null) throw new Error("the terminal event is not in the ledger");
+  const parsed = JSON.parse(recorded.canonicalJson) as {
+    readonly payload: { readonly checkpointDigest?: unknown };
+  };
+  const digest = parsed.payload.checkpointDigest;
+  if (typeof digest !== "string") throw new Error("the terminal event names no checkpoint digest");
+  return digest;
+}
+
+/** One source, one store, one root rule: the port a walking construction binds. */
+function drillCheckpoints(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** Where the artifacts resolve: this scenario's own ledger path. */
+  readonly ledgerPath: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointPort {
+  return createCheckpointStore({
+    ledgerPath: input.ledgerPath,
+    source: createDrillCheckpointSource(input),
+  });
+}
+
 afterEach(() => {
   for (const ledger of openLedgers.splice(0)) {
     try {
@@ -158,6 +331,14 @@ function runChildProcess(
   invocation: DurableInvocation,
   faultPoint: FaultPoint | null,
   effect: "TOY" | "EXECUTION" = "TOY",
+  /**
+   * Whether the spawning suite hands the child its git facts (V2-B1f/F3).
+   *
+   * `"OBSERVED"` is what every drill above wants and stays the default.
+   * `"OMITTED"` spawns a child whose config carries no `checkpointFacts` at
+   * all — the shape N12 is about, and the one the parser answers with `null`.
+   */
+  checkpointFacts: "OBSERVED" | "OMITTED" = "OBSERVED",
 ): Promise<ChildOutcome> {
   const config = JSON.stringify({
     scenarioId,
@@ -169,6 +350,12 @@ function runChildProcess(
     route: TEST_ROUTE,
     faultPoint,
     effect,
+    // V2-B1f/F3. The child observes no git of its own: the SUITE observes the
+    // repository this scenario really has and passes what it saw as data.
+    // Omitting the key entirely is lawful, and means no checkpoint port.
+    ...(checkpointFacts === "OBSERVED"
+      ? { checkpointFacts: checkpointFactsFor(resolveScenarioRoot(scenarioId)) }
+      : {}),
   });
   return new Promise<ChildOutcome>((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [CHILD_ENTRY, config], {
@@ -321,6 +508,13 @@ function supervisorFor(
       ledger,
       invocation,
       effects: toyEffects(root),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -353,8 +547,20 @@ describe("the supervisor", () => {
     expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
 
     // Re-appending every plan event directly must be an exact replay.
+    //
+    // The terminal is rebuilt with the digest the walk recorded (V2-B1f/F3).
+    // `buildEvent` alone no longer produces the terminal's bytes: since the
+    // checkpoint is really written, the event names the store's own digest, and
+    // an event rebuilt without it would be a DIFFERENT body under the same key
+    // -- which the ledger correctly refuses. Reading the digest back out of the
+    // recorded row rather than re-deriving it is the point: the replay is
+    // proved against what the walk actually wrote.
     for (const step of LIFECYCLE_PLAN) {
-      const event = buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN, route: TEST_ROUTE });
+      const built = buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan: LIFECYCLE_PLAN, route: TEST_ROUTE });
+      const event =
+        step.eventType === "CHECKPOINT_WRITTEN"
+          ? { ...built, payload: { ...built.payload, checkpointDigest: recordedCheckpointDigest(ledger, invocation) } }
+          : built;
       expect(step.transitionId + ":" + String(ledger.append(event).inserted)).toBe(
         step.transitionId + ":false",
       );
@@ -455,6 +661,13 @@ describe("the supervisor", () => {
       ledger,
       invocation: invocationFor(taskId),
       effects: toyEffects(root),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation: invocationFor(taskId),
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -634,6 +847,13 @@ describe("the supervisor", () => {
         ledger,
         invocation: mutate(invocation),
         effects: toyEffects(root),
+        checkpoints: drillCheckpoints({
+          ledger,
+          invocation: mutate(invocation),
+          emittedBy: EMITTED_BY,
+          ledgerPath: scenarioLedgerPath(root),
+          worktree: root,
+        }),
         emittedBy: EMITTED_BY,
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
         initiativeId: TEST_INITIATIVE_ID,
@@ -692,6 +912,13 @@ describe("the supervisor", () => {
       ledger,
       invocation,
       effects: toyEffects(root),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: "5b5b5b5b-5b5b-4b5b-8b5b-5b5b5b5b5b01",
@@ -735,6 +962,13 @@ describe("the supervisor", () => {
       ledger,
       invocation: { ...invocation },
       effects: toyEffects(root),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -816,6 +1050,13 @@ describe("the plan comes from the packet's commit policy", () => {
       ledger,
       invocation,
       effects: toyEffects(root),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy,
       initiativeId: TEST_INITIATIVE_ID,
@@ -1261,6 +1502,13 @@ describe("SQLite does not serialize per task, and says so", () => {
         ledger,
         invocation,
         effects: countingEffects(),
+        checkpoints: drillCheckpoints({
+          ledger,
+          invocation,
+          emittedBy: EMITTED_BY,
+          ledgerPath: scenarioLedgerPath(root),
+          worktree: root,
+        }),
         emittedBy: EMITTED_BY,
         commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
         initiativeId: TEST_INITIATIVE_ID,
@@ -1317,6 +1565,13 @@ describe("terminal settlement (V2-B7T)", () => {
       ledger,
       invocation: inv,
       effects: toyEffects(root),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation: inv,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "NO_COMMIT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -1347,6 +1602,13 @@ describe("terminal settlement (V2-B7T)", () => {
         ledger,
         invocation: inv,
         effects: stubborn,
+        checkpoints: drillCheckpoints({
+          ledger,
+          invocation: inv,
+          emittedBy: EMITTED_BY,
+          ledgerPath: scenarioLedgerPath(root),
+          worktree: root,
+        }),
         emittedBy: EMITTED_BY,
         commitPolicy: "NO_COMMIT",
         initiativeId: TEST_INITIATIVE_ID,
@@ -1392,6 +1654,13 @@ describe("classified step failure settles (V2-B7R)", () => {
       ledger,
       invocation: inv,
       effects: failingEffects(root, failure),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation: inv,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "NO_COMMIT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -1420,6 +1689,13 @@ describe("classified step failure settles (V2-B7R)", () => {
         ledger,
         invocation: inv,
         effects: failingEffects(root, new PostconditionUnknownError("op", "unknown")),
+        checkpoints: drillCheckpoints({
+          ledger,
+          invocation: inv,
+          emittedBy: EMITTED_BY,
+          ledgerPath: scenarioLedgerPath(root),
+          worktree: root,
+        }),
         emittedBy: EMITTED_BY,
         commitPolicy: "NO_COMMIT",
         initiativeId: TEST_INITIATIVE_ID,
@@ -1443,6 +1719,13 @@ describe("classified step failure settles (V2-B7R)", () => {
     // A first walk establishes step 0 under one submission...
     await new SqliteSupervisor({
       ledger, invocation: inv, effects: toyEffects(root), emittedBy: EMITTED_BY,
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation: inv,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       commitPolicy: "NO_COMMIT", initiativeId: TEST_INITIATIVE_ID, route: TEST_ROUTE,
     }).runToCheckpoint();
     const before = ledger.status();
@@ -1548,4 +1831,76 @@ describe("a supervisor built for the lifecycle verbs", () => {
     expect(declaration).not.toBeNull();
     expect(declaration?.[1] ?? "").not.toContain("commitPolicy");
   });
+});
+
+// ---------------------------------------------------------------------------
+// N12 — a child spawned without checkpointFacts refuses at its terminal
+// ---------------------------------------------------------------------------
+
+describe("N12: a child with no git facts has no checkpoint port, and its terminal refuses", () => {
+  it("exits non-zero naming the absent port, appends no CHECKPOINT_WRITTEN, and leaves the head where the walk stopped", async () => {
+    // The production law, drilled in a real child process rather than read off
+    // the source. `checkpointFacts` is omitted from the config entirely — the
+    // shape a caller that never observed a worktree would produce — so the
+    // parser yields `null`, the composition binds no member, and the terminal
+    // beat refuses exactly as the production daemon does when its observation
+    // cannot be taken.
+    ensureChildBuilt();
+    const taskId = "55555555-5555-4555-8555-555555555501";
+    TASK_ID_IN_PLAY = taskId;
+    const invocation = invocationFor(taskId);
+    const id = "f3-n12-no-facts";
+    const root = scenario(id);
+    const ledgerPath = scenarioLedgerPath(root);
+
+    let message = "";
+    try {
+      await runChildProcess(id, invocation, null, "TOY", "OMITTED");
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    // The child died on the refusal, and the refusal names what was missing.
+    expect(message).toContain("this walk has no checkpoint port");
+    expect(message).toContain("checkpointed");
+
+    const refused = snapshot(ledgerPath);
+    // Nine steps happened; the tenth did not.
+    const ledger = track(openLedger(ledgerPath, { readOnly: true }));
+    const types = ledger.listEvents({ limit: 200 }).events.map((entry) => entry.event.type);
+    expect(types).not.toContain("CHECKPOINT_WRITTEN");
+    // The head IS the pre-terminal event: the plan's penultimate step, and
+    // nothing after it.
+    const penultimate = LIFECYCLE_PLAN[LIFECYCLE_PLAN.length - 2];
+    const head = ledger.listEvents({ limit: 200 }).events.at(-1);
+    expect(head?.event.transitionId).toBe(penultimate?.transitionId);
+    expect(refused.state).not.toBe("CHECKPOINTED");
+    expect(refused.eventCount).toBe(LIFECYCLE_PLAN.length - 1);
+
+    // Nothing was published either: the artifact root under this ledger does
+    // not exist, so no digest was written that no event names.
+    expect(existsSync(artifactRootFor(ledgerPath))).toBe(false);
+
+    // And the refusal is stable: a second run of the same child appends
+    // nothing more and leaves the head exactly where the first one did.
+    let second = "";
+    try {
+      await runChildProcess(id, invocation, null, "TOY", "OMITTED");
+    } catch (error: unknown) {
+      second = error instanceof Error ? error.message : String(error);
+    }
+    expect(second).toContain("this walk has no checkpoint port");
+    const again = snapshot(ledgerPath);
+    expect(again.eventCount).toBe(refused.eventCount);
+    expect(again.headEventSha256).toBe(refused.headEventSha256);
+
+    // The control that makes all of the above mean something: the SAME child,
+    // the SAME coordinates, spawned WITH the facts, finishes the walk.
+    const completed = await runChildProcess(id, invocation, null, "TOY", "OBSERVED");
+    expect(completed.code).toBe(0);
+    const done = snapshot(ledgerPath);
+    expect(done.state).toBe("CHECKPOINTED");
+    expect(done.eventCount).toBe(LIFECYCLE_PLAN.length);
+    expect(done.headEventSha256).not.toBe(refused.headEventSha256);
+  }, 120_000);
 });

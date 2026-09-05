@@ -163,10 +163,41 @@ interface ChildOutcome {
   readonly signal: NodeJS.Signals | null;
 }
 
+/**
+ * What this suite observed about the toy repository (V2-B1f/F3).
+ *
+ * Taken with the drill's OWN `spawnGit`, over the repository the scenario
+ * really has, and handed to the child as data. The child creates no
+ * `GitReadPort` and executes no git: it is not a production observer, and a
+ * fabricated head would put a fiction in a drill ledger.
+ */
+function checkpointFactsFor(
+  worktree: string,
+  spawnGit: SpawnGit,
+): {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
+} {
+  const read = (...args: string[]): string => {
+    const result = spawnGit(args);
+    expect(result.status).toBe(0);
+    return result.stdout.trim();
+  };
+  return {
+    worktreePath: worktree,
+    head: read("rev-parse", "HEAD"),
+    branch: read("rev-parse", "--abbrev-ref", "HEAD"),
+    isDirty: read("status", "--porcelain", "--untracked-files=all") !== "",
+  };
+}
+
 function runChildProcess(
   scenarioId: string,
   invocation: DurableInvocation,
   faultPoint: FaultPoint | null,
+  checkpointFacts: ReturnType<typeof checkpointFactsFor>,
 ): Promise<ChildOutcome> {
   const config = JSON.stringify({
     scenarioId,
@@ -176,6 +207,9 @@ function runChildProcess(
     commitPolicy: "NO_COMMIT",
     initiativeId: PILOT_INITIATIVE_ID,
     faultPoint,
+    // Without this the child has no checkpoint port and its terminal refuses,
+    // which is exactly the production behaviour and is asserted below.
+    checkpointFacts,
   });
   return new Promise<ChildOutcome>((resolvePromise, rejectPromise) => {
     const child = spawn(process.execPath, [CHILD_ENTRY, config], {
@@ -253,7 +287,8 @@ describe("kill and restart of the NO_COMMIT walk, 3/3", () => {
         expect((secondHolder as EnforcementRefused).reason).toBe("LEASE_HELD_BY_ANOTHER");
 
         // 1. Run until the fault point and die by a real signal.
-        const killed = await runChildProcess(fixture.id, invocation, fixture.fault);
+        const facts = checkpointFactsFor(toyDir, spawnGit);
+        const killed = await runChildProcess(fixture.id, invocation, fixture.fault, facts);
         expect(killed.signal).toBe("SIGKILL");
         expect(killed.code).toBeNull();
 
@@ -261,7 +296,7 @@ describe("kill and restart of the NO_COMMIT walk, 3/3", () => {
         expect(afterCrash.state).not.toBe("CHECKPOINTED");
 
         // 2. Restart with no fault. This must finish the work.
-        const restarted = await runChildProcess(fixture.id, invocation, null);
+        const restarted = await runChildProcess(fixture.id, invocation, null, facts);
         expect(restarted.signal).toBeNull();
         expect(restarted.code).toBe(0);
 
@@ -271,7 +306,7 @@ describe("kill and restart of the NO_COMMIT walk, 3/3", () => {
         expect(countEffectMarkers(root)).toBe(1);
 
         // 3. A third run must be a pure replay: nothing appended, head unmoved.
-        const replayed = await runChildProcess(fixture.id, invocation, null);
+        const replayed = await runChildProcess(fixture.id, invocation, null, facts);
         expect(replayed.code).toBe(0);
         const afterReplay = readLedgerSnapshot(ledgerPath, fixture.taskId);
         expect(afterReplay.eventCount).toBe(afterRestart.eventCount);

@@ -11,6 +11,7 @@ import {
   ARTIFACT_MAX_BYTES,
   ARTIFACT_REFUSALS,
   artifactDigest,
+  artifactRootFor,
   hasArtifact,
   publishArtifact,
   readArtifact,
@@ -322,5 +323,46 @@ describe("the artifact store's laws hold over arbitrary content (G9)", () => {
       expect(artifactDigest(text)).toBe(artifactDigest(text));
       expect(artifactDigest(text)).toMatch(/^[0-9a-f]{64}$/);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P9 — one artifact-root rule, and it lives here (V2-B1f/F3)
+// ---------------------------------------------------------------------------
+
+describe("the artifact root a ledger path resolves to", () => {
+  it("is the ledger's own sibling, and never a configured second location", () => {
+    expect(artifactRootFor("/data/scenario/ledger.sqlite3")).toBe("/data/scenario/artifacts");
+    // The directory is derived from the ledger and from nothing else: a second
+    // ledger in a second directory resolves to a second root, and two ledgers
+    // in one directory resolve to one.
+    expect(artifactRootFor("/data/other/ledger.sqlite3")).toBe("/data/other/artifacts");
+    expect(artifactRootFor("/data/scenario/second.sqlite3")).toBe(
+      artifactRootFor("/data/scenario/ledger.sqlite3"),
+    );
+  });
+
+  it("reads no environment and takes no default: the answer is a pure function of its argument", () => {
+    const before = artifactRootFor("/data/scenario/ledger.sqlite3");
+    process.env["ACP_ARTIFACT_ROOT"] = "/somewhere/else";
+    try {
+      expect(artifactRootFor("/data/scenario/ledger.sqlite3")).toBe(before);
+    } finally {
+      delete process.env["ACP_ARTIFACT_ROOT"];
+    }
+  });
+
+  it("is the root the store actually publishes into, so the rule and the store agree", () => {
+    // The half that makes this more than a string assertion: content published
+    // through the helper's answer is found through the helper's answer. One
+    // home, and the same one both consumers reach for.
+    const directory = root();
+    const path = join(directory, "ledger.sqlite3");
+    const published = publishArtifact(artifactRootFor(path), "a checkpoint's canonical bytes");
+
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+    expect(hasArtifact(artifactRootFor(path), published.digest)).toBe(true);
+    expect(readdirSync(join(directory, "artifacts"))).toEqual([published.digest.slice(0, 2)]);
   });
 });

@@ -1,7 +1,13 @@
 import type { CommitPolicy, ResolvedRoute } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import type { EndpointHandle, SafeServerHandle } from "@acp/durability";
-import type { BeatContext, DurableInvocation, EffectPort, ScenarioRoot } from "@acp/runtime";
+import type {
+  BeatContext,
+  CheckpointPort,
+  DurableInvocation,
+  EffectPort,
+  ScenarioRoot,
+} from "@acp/runtime";
 import {
   attachAdvance,
   createAcpGateWorkflow,
@@ -52,6 +58,17 @@ export interface RestateModeInput {
   readonly initiativeId: string;
   /** The side effect the beats perform, passed through: see `SqliteModeInput.effects`. */
   readonly effects: EffectPort;
+  /**
+   * Where a walk's checkpoint is persisted (V2-B1f/F3).
+   *
+   * **A factory per invocation, not one port.** The endpoint this mode starts
+   * serves whatever invocation is submitted to it, and a checkpoint is
+   * assembled from an invocation's own coordinates and its own last atomic
+   * step. One port bound at construction would answer every task with the
+   * first task's facts, so the member is built where the beat context is --
+   * once per invocation, from that invocation.
+   */
+  readonly checkpoints?: ((invocation: DurableInvocation) => CheckpointPort) | undefined;
   /** The route the walk was admitted on, passed through: see `SqliteModeInput.route`. */
   readonly route: ResolvedRoute;
   readonly stack: UnwindStack;
@@ -113,6 +130,7 @@ export function beatFor(
   emittedBy: string,
   effects: EffectPort,
   route: ResolvedRoute,
+  checkpoints: ((invocation: DurableInvocation) => CheckpointPort) | undefined,
 ): (invocation: DurableInvocation) => Omit<BeatContext, "plan" | "initiativeId"> {
   return (invocation: DurableInvocation): Omit<BeatContext, "plan" | "initiativeId"> => ({
     ledger,
@@ -120,6 +138,10 @@ export function beatFor(
     invocation,
     emittedBy,
     route,
+    // Built HERE, from this invocation, for the reason stated on the input:
+    // the endpoint serves more than one, and a checkpoint assembled from
+    // another task's coordinates would name work this walk did not do.
+    checkpoints: checkpoints?.(invocation),
   });
 }
 
@@ -208,7 +230,13 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
   const endpoint = await startEndpoint({
     services: [
       createAcpTaskObject({
-        beat: beatFor(input.ledger, input.emittedBy, input.effects, input.route),
+        beat: beatFor(
+          input.ledger,
+          input.emittedBy,
+          input.effects,
+          input.route,
+          input.checkpoints,
+        ),
         commitPolicy: input.commitPolicy,
         initiativeId: input.initiativeId,
         ledger: input.ledger,

@@ -232,6 +232,19 @@ export type {
   LedgerPort,
 } from "./core/step-executor/index.js";
 
+// V2-B1f/F3: the checkpoint the walk claims is one it wrote. Two injected
+// surfaces and one closed refusal vocabulary — a source that assembles a
+// `Checkpoint` from facts the plane actually holds, and a port that persists
+// one before the event naming it is appended. The domain declares and never
+// implements: `RUNTIME_ALLOWED_BUILTINS` cannot spawn git, and the store the
+// digest resolves in belongs to `@acp/ledger`.
+export { CHECKPOINT_REFUSALS } from "./checkpoint/index.js";
+export type {
+  CheckpointPort,
+  CheckpointRefused,
+  CheckpointSource,
+} from "./checkpoint/index.js";
+
 // V2-B1b, stage 2: the execution-backed effect port. The beats' side effect
 // becomes a real execution on the owned `ModelExecutionPort`, injected -- the
 // providers factory never enters this stratum -- with digest-keyed completion

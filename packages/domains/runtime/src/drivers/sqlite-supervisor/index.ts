@@ -28,6 +28,7 @@ import {
   nextStep as executorNextStep,
 } from "../../core/step-executor/index.js";
 import type { BeatContext, BeatResult, EffectPort } from "../../core/step-executor/index.js";
+import type { CheckpointPort } from "../../checkpoint/index.js";
 import { SupervisorError } from "../../errors/index.js";
 import { classifyFailure, settleFailure } from "../../failure/index.js";
 
@@ -88,6 +89,18 @@ export interface SqliteSupervisorOptions {
    * log that nothing chose.
    */
   readonly route: ResolvedRoute;
+  /**
+   * Where this run's checkpoint is persisted (V2-B1f/F3).
+   *
+   * Optional and never defaulted, unlike the four fields above, and the
+   * difference is deliberate: a missing policy, initiative or route would be a
+   * value silently invented, whereas a missing checkpoint port is a
+   * construction that truthfully cannot write one — and the terminal beat
+   * refuses on it rather than appending a `CHECKPOINT_WRITTEN` with nothing
+   * behind it. `forLifecycle` binds none, because a lifecycle construction
+   * walks the shared prefix and never reaches a terminal.
+   */
+  readonly checkpoints?: CheckpointPort | undefined;
   /**
    * Deliberate interruption seam, for the kill/restart drills only.
    *
@@ -167,6 +180,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
   readonly #plan: readonly PlanStep[];
   readonly #initiativeId: string;
   readonly #route: ResolvedRoute;
+  readonly #checkpoints: CheckpointPort | undefined;
   readonly #faultPoint: FaultPoint | undefined;
   readonly #onFault: (() => void) | undefined;
   /** True when this object was built for the lifecycle verbs and may not walk. */
@@ -186,6 +200,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
     this.#plan = this.#lifecycleOnly ? SHARED_PLAN_PREFIX : planFor(selector as CommitPolicy);
     this.#initiativeId = options.initiativeId;
     this.#route = options.route;
+    this.#checkpoints = options.checkpoints;
     this.#faultPoint = options.__faultPoint;
     this.#onFault = options.__onFault;
   }
@@ -469,6 +484,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
       plan: this.#plan,
       initiativeId: this.#initiativeId,
       route: this.#route,
+      checkpoints: this.#checkpoints,
     };
   }
 

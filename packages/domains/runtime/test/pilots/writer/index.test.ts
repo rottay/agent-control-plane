@@ -1,10 +1,11 @@
-import type { ResolvedRoute } from "@acp/contracts";
+import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
+import type { Checkpoint, ResolvedRoute } from "@acp/contracts";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
-import { openLedger } from "@acp/ledger";
+import { createCheckpointStore, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -21,7 +22,7 @@ import type {
 } from "../../../src/commit-authorization/index.js";
 import { checkAdmission } from "../../../src/conflict-graph/index.js";
 import type { DurableInvocation } from "../../../src/contracts/index.js";
-import { LIFECYCLE_PLAN, planStep } from "../../../src/core/lifecycle/index.js";
+import { LIFECYCLE_PLAN, OUTCOME_STEP, planStep } from "../../../src/core/lifecycle/index.js";
 import type { PlanStep } from "../../../src/core/lifecycle/index.js";
 import {
   appendPlanStep,
@@ -29,6 +30,12 @@ import {
   currentState as executorCurrentState,
 } from "../../../src/core/step-executor/index.js";
 import type { BeatContext, EffectPort } from "../../../src/core/step-executor/index.js";
+import { deriveEventCoordinate, deterministicUuid } from "../../../src/core/coordinates/index.js";
+import type {
+  CheckpointPort,
+  CheckpointRefused,
+  CheckpointSource,
+} from "../../../src/checkpoint/index.js";
 import { GIT_READ_VERBS, acquireLease, checkWriteSetConformance, verifyPrestate } from "../../../src/enforcement/index.js";
 import type { EnforcementRefused, LeaseGranted } from "../../../src/enforcement/index.js";
 import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
@@ -204,12 +211,150 @@ function spawnGitDirect(toyDir: string, args: readonly string[]): { status: numb
 // re-instantiated from the P7A idiom (step 0 is the one step advance() refuses).
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// V2-B1f/F3: the checkpoint a terminal now has to write
+// ---------------------------------------------------------------------------
+
+/**
+ * Make this scenario a real repository, and report what it actually holds.
+ *
+ * The four git facts a `Checkpoint` carries are observed, never invented: a
+ * fabricated head would put a fiction in a drill ledger, which is the one thing
+ * a drill may never do. The repository is created once per scenario and the
+ * observation is taken at assembly time, so `isDirty` is what the worktree
+ * looked like when the terminal ran rather than when the fixture was built.
+ */
+function checkpointFactsFor(worktree: string): {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
+} {
+  const git = (...args: string[]): string =>
+    spawnSync("/usr/bin/git", args, { cwd: worktree, encoding: "utf8" }).stdout;
+  if (!existsSync(join(worktree, ".git"))) {
+    git("init", "--quiet");
+    git("config", "user.email", "drill@example.invalid");
+    git("config", "user.name", "drill");
+    git("commit", "--allow-empty", "-q", "-m", "checkpoint fixture");
+  }
+  return {
+    worktreePath: worktree,
+    head: git("rev-parse", "HEAD").trim(),
+    branch: git("rev-parse", "--abbrev-ref", "HEAD").trim(),
+    isDirty: git("status", "--porcelain", "--untracked-files=all").trim() !== "",
+  };
+}
+
+/**
+ * A checkpoint source for a suite that builds its construction directly.
+ *
+ * The twin of the production source in the daemon and of the two drill
+ * children's, and declared here rather than imported for the reason
+ * `initToyRepository` is declared in each suite that needs one: a test-tree
+ * helper shared across packages would have to leave a pinned barrel, and the
+ * barrel's names are pinned by equality.
+ *
+ * Every field still comes from something real: the coordinates this walk
+ * derived, the `run.outcome` row it already appended, and a repository the
+ * scenario really has. The digest arrays are `[]` because these fixtures carry
+ * no envelope, which is the honest answer rather than a placeholder.
+ */
+function createDrillCheckpointSource(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointSource {
+  const { ledger, invocation, worktree } = input;
+  return {
+    assemble(step): Checkpoint | CheckpointRefused {
+      const recorded = ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({
+          taskId: invocation.taskId,
+          attempt: invocation.attempt,
+          transitionId: OUTCOME_STEP.transitionId,
+        }),
+      );
+      if (recorded === null) {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep" };
+      }
+      const parsed: unknown = JSON.parse(recorded.canonicalJson);
+      const completedAt =
+        typeof parsed === "object" && parsed !== null && "occurredAt" in parsed
+          ? (parsed as { readonly occurredAt: unknown }).occurredAt
+          : undefined;
+      if (typeof completedAt !== "string") {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep.completedAt" };
+      }
+      const facts = checkpointFactsFor(worktree);
+      const coordinate = deriveEventCoordinate(invocation, step.transitionId, step.index);
+      return {
+        contractVersion: CONTRACT_VERSION,
+        checkpointId: deterministicUuid(
+          "checkpoint/" +
+            invocation.invocationId +
+            "/" +
+            invocation.taskId +
+            "/" +
+            String(invocation.attempt) +
+            "/" +
+            step.transitionId,
+        ),
+        taskId: invocation.taskId,
+        attempt: invocation.attempt,
+        worker: input.emittedBy,
+        createdAt: coordinate.occurredAt,
+        lastAtomicStep: {
+          index: OUTCOME_STEP.index,
+          label: OUTCOME_STEP.transitionId,
+          completedAt,
+        },
+        git: {
+          head: facts.head,
+          branch: facts.branch,
+          worktreePath: facts.worktreePath,
+          isDirty: facts.isDirty,
+        },
+        authorityDigest: [],
+        readSetDigest: [],
+        writeSetDigest: [],
+        receipts: [],
+        artifacts: [],
+        pendingWork: [],
+        // The §2.4 literal, quoted verbatim rather than imported: a drift in any
+        // one of the sources that produce it fails here rather than propagating.
+        nextSafeAction: "Await the next owner-authorized action.",
+        notes: null,
+      };
+    },
+  };
+}
+
+/** One source, one store, one root rule: the port a walking construction binds. */
+function drillCheckpoints(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** Where the artifacts resolve: this scenario's own ledger path. */
+  readonly ledgerPath: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointPort {
+  return createCheckpointStore({
+    ledgerPath: input.ledgerPath,
+    source: createDrillCheckpointSource(input),
+  });
+}
+
 function beatContext(
   scenarioRoot: ScenarioRoot,
   ledger: Ledger,
   invocation: DurableInvocation,
   emittedBy: string,
   plan: readonly PlanStep[],
+  worktree: string,
 ): BeatContext {
   return {
     ledger,
@@ -225,6 +370,13 @@ function beatContext(
     plan,
     initiativeId: PILOT_INITIATIVE_ID,
     route: TEST_ROUTE,
+    checkpoints: drillCheckpoints({
+      ledger,
+      invocation,
+      emittedBy,
+      ledgerPath: scenarioLedgerPath(scenarioRoot),
+      worktree,
+    }),
     };
 }
 
@@ -319,7 +471,7 @@ describe("the writer packet, walked end to end", () => {
 
     // 4. Steps 0-7: step 0 by hand, then the real SqliteSupervisor drives
     // steps 1-7 one at a time. The task stands at AUDITING.
-    const context = beatContext(root, ledger, inv, PILOT_WRITER, LIFECYCLE_PLAN);
+    const context = beatContext(root, ledger, inv, PILOT_WRITER, LIFECYCLE_PLAN, toyDir);
     appendStepZero(context);
     expect(executorCurrentState(context)).toBe("DISCOVERED");
 
@@ -327,6 +479,13 @@ describe("the writer packet, walked end to end", () => {
       ledger,
       invocation: inv,
       effects: toyEffects(root),
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation: inv,
+        emittedBy: PILOT_WRITER,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: toyDir,
+      }),
       emittedBy: PILOT_WRITER,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: PILOT_INITIATIVE_ID,

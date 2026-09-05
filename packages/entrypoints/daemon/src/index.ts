@@ -18,10 +18,14 @@
  * P2D is not P2 completion, and it is no product adoption.
  */
 
-import type { Lease, ModelExecutionPort, TaskEnvelope } from "@acp/contracts";
-import { CONTRACT_VERSION } from "@acp/contracts";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import type { Checkpoint, Lease, ModelExecutionPort, TaskEnvelope } from "@acp/contracts";
+import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
 import type { Ledger, LeaseStore } from "@acp/ledger";
-import { openLeaseStore, openLedger } from "@acp/ledger";
+import { createCheckpointStore, openLeaseStore, openLedger } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
 import type { AgentHarness, CliBinding, ProviderAdapter } from "@acp/providers";
 import {
@@ -36,11 +40,22 @@ import {
   createExecutionPort,
   kimiAdapter,
 } from "@acp/providers";
-import type { DurableInvocation, LedgerPort, ScenarioRoot } from "@acp/runtime";
+import type {
+  CheckpointPort,
+  CheckpointRefused,
+  CheckpointSource,
+  DurableInvocation,
+  LedgerPort,
+  PlanStep,
+  ScenarioRoot,
+  WorktreeObservation,
+} from "@acp/runtime";
 import {
+  OUTCOME_STEP,
   checkWriteSetConformance,
   createExecutionEffects,
   deriveEventCoordinate,
+  deterministicUuid,
   recordTokenObservation,
   resolveScenarioRoot,
   scenarioLedgerPath,
@@ -682,12 +697,28 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         }),
       });
 
+      // V2-B1f/F3. A factory per invocation, not one port: the SQLite leg walks
+      // exactly this invocation, and the Restate endpoint serves whatever is
+      // submitted to it, so the source is built where the invocation is known.
+      // The worktree is the leased one the conformance gate observes, and the
+      // store resolves under the ledger this daemon opened.
+      const checkpointsFactory = (candidate: DurableInvocation): CheckpointPort =>
+        checkpointsFor({
+          ledger: openedLedger,
+          ledgerPath: scenarioLedgerPath(scenarioRoot),
+          invocation: candidate,
+          emittedBy: options.emittedBy,
+          envelope: options.envelope,
+          worktreePath: bindingForRoute(options.execution).workdir,
+        });
+
       if (options.mode === "SQLITE_SUPERVISOR") {
         // S8. No S4-S7: this mode binds nothing and spawns nothing of its own.
         const result = await runSqliteMode({
           ledger: openedLedger,
           invocation,
           effects,
+          checkpoints: checkpointsFactory(invocation),
           emittedBy: options.emittedBy,
           // Today's behaviour, said out loud. The daemon supervises packets that
           // may commit locally under a receipt; a read-only packet is a policy
@@ -713,6 +744,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
           initiativeId: options.initiativeId,
           effects,
+          checkpoints: checkpointsFactory,
           route,
           stack,
           onPhase: async (phase, pid) => {
@@ -958,6 +990,17 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
             ledger: held.ledger,
             invocation: held.invocation,
             effects,
+            // The same composition, per walk: this walk's ledger, this walk's
+            // envelope, this walk's admitted worktree. One law, two call sites,
+            // exactly as the conformance gate above.
+            checkpoints: checkpointsFor({
+              ledger: held.ledger,
+              ledgerPath: scenarioLedgerPath(walkRoot),
+              invocation: held.invocation,
+              emittedBy: walk.spec.emittedBy,
+              envelope: walk.envelope,
+              worktreePath: walk.worktreePath,
+            }),
             emittedBy: walk.spec.emittedBy,
             commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
             initiativeId: walk.spec.initiativeId,
@@ -1248,6 +1291,212 @@ function conformanceGateFor(input: {
     input.onViolation();
     throw new StartupError("WRITE_SET_VIOLATION_DETECTED: the walk wrote outside its declared set");
   };
+}
+
+/**
+ * The one next safe action a terminal ever names (V2-B1f/F3, §2.4).
+ *
+ * A module constant, never composed and never varied. Declared here and,
+ * identically, in the two drill children, for the reason `DRILL_INSTRUCTION` is
+ * declared twice: unifying it would mean widening the runtime barrel, whose
+ * names are pinned by equality. The tests quote the literal verbatim rather
+ * than importing it, so a drift in any one of the three fails rather than
+ * propagating.
+ */
+const NEXT_SAFE_ACTION = "Await the next owner-authorized action.";
+
+/** The digest of no bytes: what a tracked deletion is worth (§2.3). */
+function sha256Of(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * The production checkpoint source (V2-B1f/F3).
+ *
+ * Every field comes from a fact this process actually holds, and none of them
+ * is a literal here:
+ *
+ * - the identity and the instant from `deriveEventCoordinate`, so no clock and
+ *   no random source participates and a replayed walk assembles the same bytes;
+ * - the last atomic step from the ledger's own `run.outcome` row, read rather
+ *   than remembered;
+ * - the four git facts from ONE `observeWorktree` over the leased worktree,
+ *   plus one further read of the branch through the same `GitReadPort` --
+ *   `rev-parse` is in the closed verb set, and `WorktreeObservation` is not
+ *   widened to carry a fifth field three other consumers do not need;
+ * - the authority digests copied from the envelope, which already holds them as
+ *   `PathDigest[]`, never re-derived;
+ * - the read-set and write-set digested against the leased worktree.
+ *
+ * **Two honest refusals, and no third.** `Checkpoint.git.head` is a 40
+ * character object id while an observation's head is nullable, so an unborn
+ * HEAD refuses `GIT_HEAD_UNBORN`; and an observation that could not be taken
+ * refuses `GIT_UNOBSERVABLE` rather than becoming a null, because an
+ * observation that could not be taken says nothing at all.
+ *
+ * **`receipts`, `artifacts` and `pendingWork` are `[]`, and that is the truth
+ * rather than a placeholder.** The plane produces no reference at a terminal
+ * today and has no pending-work list to draw from; a fabricated entry would be
+ * the checkpoint claiming something the plane does not hold, which is the exact
+ * defect this packet exists to remove.
+ */
+function checkpointSourceFor(input: {
+  readonly ledger: LedgerPort;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  readonly envelope: TaskEnvelope;
+  readonly worktreePath: string;
+}): CheckpointSource {
+  // Built once, exactly as the conformance gate builds its own: the observer is
+  // a closure over the worktree, and the walk observes the tree it writes into.
+  const observer = createGitObserver(input.worktreePath);
+
+  const refuse = (reason: CheckpointRefused["reason"], at: string): CheckpointRefused => ({
+    ok: false,
+    reason,
+    at,
+  });
+
+  /**
+   * The digest of a declared path, or null when the worktree does not hold it.
+   *
+   * `allowTrackedDeletion` is §2.3's single exception and is passed only for
+   * the write-set: a path git reports as changed and the filesystem no longer
+   * holds is a deletion, and the observer's own rule digests the empty string
+   * for it. Every other absence is a `PATH_MISSING`, because a digest nobody
+   * observed is an invented one.
+   */
+  const digestOfDeclared = (
+    path: string,
+    observation: WorktreeObservation,
+    allowTrackedDeletion: boolean,
+  ): string | null => {
+    try {
+      return sha256Of(readFileSync(join(input.worktreePath, path)));
+    } catch (error: unknown) {
+      if ((error as { code?: unknown }).code !== "ENOENT") return null;
+      if (!allowTrackedDeletion) return null;
+      const tracked = observation.trackedChanges.some((entry) => entry.path === path);
+      return tracked ? sha256Of(Buffer.alloc(0)) : null;
+    }
+  };
+
+  return {
+    assemble(step: PlanStep): Checkpoint | CheckpointRefused {
+      const seen = observeWorktree(observer, input.worktreePath);
+      if (!seen.ok) return refuse("GIT_UNOBSERVABLE", "worktree");
+      const observation = seen.observation;
+      if (observation.head === null) return refuse("GIT_HEAD_UNBORN", "git.head");
+
+      // One further read through the SAME port. The observation is not widened
+      // to carry a branch: three consumers share its shape and none of the
+      // other two has any use for one.
+      const branch = observer({ verb: "rev-parse", args: ["--abbrev-ref", "HEAD"] });
+      if (!branch.ok) return refuse("GIT_UNOBSERVABLE", "git.branch");
+      const branchName = branch.stdout.trim();
+      if (branchName === "") return refuse("GIT_UNOBSERVABLE", "git.branch");
+
+      const recorded = input.ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({
+          taskId: input.invocation.taskId,
+          attempt: input.invocation.attempt,
+          transitionId: OUTCOME_STEP.transitionId,
+        }),
+      );
+      if (recorded === null) return refuse("CHECKPOINT_INVALID", "lastAtomicStep");
+      const parsed: unknown = JSON.parse(recorded.canonicalJson);
+      const completedAt =
+        typeof parsed === "object" && parsed !== null && "occurredAt" in parsed
+          ? (parsed as { readonly occurredAt: unknown }).occurredAt
+          : undefined;
+      if (typeof completedAt !== "string") {
+        return refuse("CHECKPOINT_INVALID", "lastAtomicStep.completedAt");
+      }
+
+      const readSetDigest: { path: string; sha256: string }[] = [];
+      for (const path of input.envelope.readSet) {
+        const digest = digestOfDeclared(path, observation, false);
+        if (digest === null) return refuse("PATH_MISSING", "readSet:" + path);
+        readSetDigest.push({ path, sha256: digest });
+      }
+
+      const writeSetDigest: { path: string; sha256: string }[] = [];
+      for (const path of input.envelope.writeSet) {
+        const digest = digestOfDeclared(path, observation, true);
+        if (digest === null) return refuse("PATH_MISSING", "writeSet:" + path);
+        writeSetDigest.push({ path, sha256: digest });
+      }
+
+      const coordinate = deriveEventCoordinate(input.invocation, step.transitionId, step.index);
+      return {
+        contractVersion: CONTRACT_VERSION,
+        checkpointId: deterministicUuid(
+          "checkpoint/" +
+            input.invocation.invocationId +
+            "/" +
+            input.invocation.taskId +
+            "/" +
+            String(input.invocation.attempt) +
+            "/" +
+            step.transitionId,
+        ),
+        taskId: input.invocation.taskId,
+        attempt: input.invocation.attempt,
+        worker: input.emittedBy,
+        createdAt: coordinate.occurredAt,
+        lastAtomicStep: {
+          index: OUTCOME_STEP.index,
+          label: OUTCOME_STEP.transitionId,
+          completedAt,
+        },
+        git: {
+          head: observation.head,
+          branch: branchName,
+          worktreePath: input.worktreePath,
+          isDirty: observation.trackedChanges.length > 0 || observation.untrackedPaths.length > 0,
+        },
+        // Copied, never re-derived: the envelope already carries authority as
+        // path-plus-digest, and a second derivation would be a second opinion
+        // about what granted this packet its authority.
+        authorityDigest: input.envelope.authority.map((entry) => ({ ...entry })),
+        readSetDigest,
+        writeSetDigest,
+        receipts: [],
+        artifacts: [],
+        pendingWork: [],
+        nextSafeAction: NEXT_SAFE_ACTION,
+        notes: null,
+      };
+    },
+  };
+}
+
+/**
+ * The production checkpoint port: one source, one store, one root rule.
+ *
+ * The ledger path is the one the daemon already opened through
+ * `scenarioLedgerPath`, and the artifacts resolve as its sibling through
+ * `@acp/ledger`'s own `artifactRootFor`. There is no configurable root and no
+ * second helper to reach for.
+ */
+function checkpointsFor(input: {
+  readonly ledger: LedgerPort;
+  readonly ledgerPath: string;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  readonly envelope: TaskEnvelope;
+  readonly worktreePath: string;
+}): CheckpointPort {
+  return createCheckpointStore({
+    ledgerPath: input.ledgerPath,
+    source: checkpointSourceFor({
+      ledger: input.ledger,
+      invocation: input.invocation,
+      emittedBy: input.emittedBy,
+      envelope: input.envelope,
+      worktreePath: input.worktreePath,
+    }),
+  });
 }
 
 /**

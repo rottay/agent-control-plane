@@ -158,6 +158,36 @@ function ensureChildBuilt(): void {
   }
 }
 
+/**
+ * Make this scenario a real repository, and report what it actually holds.
+ *
+ * The four git facts a `Checkpoint` carries are observed, never invented: a
+ * fabricated head would put a fiction in a drill ledger. The child creates no
+ * `GitReadPort` and executes no git -- it is not a production observer -- so
+ * the SPAWNING suite takes the observation and hands it over as data.
+ */
+function checkpointFactsFor(worktree: string): {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
+} {
+  const git = (...args: string[]): string =>
+    spawnSync("/usr/bin/git", args, { cwd: worktree, encoding: "utf8" }).stdout;
+  if (!existsSync(join(worktree, ".git"))) {
+    git("init", "--quiet");
+    git("config", "user.email", "drill@example.invalid");
+    git("config", "user.name", "drill");
+    git("commit", "--allow-empty", "-q", "-m", "checkpoint fixture");
+  }
+  return {
+    worktreePath: worktree,
+    head: git("rev-parse", "HEAD").trim(),
+    branch: git("rev-parse", "--abbrev-ref", "HEAD").trim(),
+    isDirty: git("status", "--porcelain", "--untracked-files=all").trim() !== "",
+  };
+}
+
 /** Spawn one drill child in the given role and wait for its own handshake. */
 function startRole(
   scenarioId: string,
@@ -176,6 +206,10 @@ function startRole(
     port: RUNTIME_SERVICE_PORT,
     effect: "TOY",
     role,
+    // V2-B1f/F3. The child observes no git of its own: this suite observes the
+    // repository the scenario really has and passes what it saw as data.
+    // Without it the child has no checkpoint port and its terminal refuses.
+    checkpointFacts: checkpointFactsFor(resolveScenarioRoot(scenarioId)),
   });
   const handshake =
     role === "ENDPOINT" ? '"ready":true' : role === "ATTACH" ? '"attaching":true' : '"cancelling":true';

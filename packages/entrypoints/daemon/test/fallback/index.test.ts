@@ -1,7 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,17 @@ function initWorktree(directory: string): void {
   git("init", "--quiet");
   git("config", "user.email", "drill@example.invalid");
   git("config", "user.name", "drill");
+  // V2-B1f/F3. The worktree holds every path its envelope declares.
+  //
+  // A write-set is a declaration, and `checkWriteSetConformance` compares it as
+  // an exact string: it never required a declared entry to EXIST, so a drill
+  // could declare `src/**` and have a gate that matched nothing. The checkpoint
+  // digests the declared set against this worktree, so a declaration naming
+  // nothing is now visible as `PATH_MISSING` -- which is the honest answer, and
+  // the fixture is what has to change. Committed, so an unmodified declared
+  // path is not itself an observed change.
+  mkdirSync(join(directory, "src"), { recursive: true });
+  writeFileSync(join(directory, "src", "walk.ts"), "export const walked = true;\n", "utf8");
   git("add", "-A");
   git("commit", "--allow-empty", "-q", "-m", "fixture base");
 }
@@ -66,7 +77,7 @@ function envelopeFor(taskId: string, initiativeId: string): Record<string, unkno
     issuedAt: SUBMITTED_AT,
     authority: [],
     readSet: [],
-    writeSet: ["src/**"],
+    writeSet: ["src/walk.ts"],
     conflictKeys: [],
     allowedCommands: [],
     forbiddenActions: [],

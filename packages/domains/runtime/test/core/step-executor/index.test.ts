@@ -1,5 +1,10 @@
-import type { ResolvedRoute } from "@acp/contracts";
-import { openLedger } from "@acp/ledger";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
+import type { Checkpoint, ResolvedRoute } from "@acp/contracts";
+import { artifactRootFor, createCheckpointStore, hasArtifact, readArtifact, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -14,7 +19,13 @@ import {
 } from "../../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
 import { operationForStep } from "../../../src/core/events/index.js";
-import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, planStep } from "../../../src/core/lifecycle/index.js";
+import {
+  INTENT_STEP,
+  LIFECYCLE_PLAN,
+  OUTCOME_STEP,
+  READ_ONLY_PLAN,
+  planStep,
+} from "../../../src/core/lifecycle/index.js";
 import {
   appendPlanStep,
   applyIntentEffect,
@@ -25,7 +36,12 @@ import {
   nextStep,
 } from "../../../src/core/step-executor/index.js";
 import type { BeatContext, EffectPort } from "../../../src/core/step-executor/index.js";
-import { deterministicUuid } from "../../../src/core/coordinates/index.js";
+import { deriveEventCoordinate, deterministicUuid } from "../../../src/core/coordinates/index.js";
+import type {
+  CheckpointPort,
+  CheckpointRefused,
+  CheckpointSource,
+} from "../../../src/checkpoint/index.js";
 
 
 /**
@@ -92,6 +108,143 @@ function recordingEffects(root: ScenarioRoot, log: string[]): EffectPort {
   };
 }
 
+// ---------------------------------------------------------------------------
+// V2-B1f/F3: the checkpoint a terminal now has to write
+// ---------------------------------------------------------------------------
+
+/**
+ * Make this scenario a real repository, and report what it actually holds.
+ *
+ * The four git facts a `Checkpoint` carries are observed, never invented: a
+ * fabricated head would put a fiction in a drill ledger, which is the one thing
+ * a drill may never do. The repository is created once per scenario and the
+ * observation is taken at assembly time, so `isDirty` is what the worktree
+ * looked like when the terminal ran rather than when the fixture was built.
+ */
+function checkpointFactsFor(worktree: string): {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
+} {
+  const git = (...args: string[]): string =>
+    spawnSync("/usr/bin/git", args, { cwd: worktree, encoding: "utf8" }).stdout;
+  if (!existsSync(join(worktree, ".git"))) {
+    git("init", "--quiet");
+    git("config", "user.email", "drill@example.invalid");
+    git("config", "user.name", "drill");
+    git("commit", "--allow-empty", "-q", "-m", "checkpoint fixture");
+  }
+  return {
+    worktreePath: worktree,
+    head: git("rev-parse", "HEAD").trim(),
+    branch: git("rev-parse", "--abbrev-ref", "HEAD").trim(),
+    isDirty: git("status", "--porcelain", "--untracked-files=all").trim() !== "",
+  };
+}
+
+/**
+ * A checkpoint source for a suite that builds its construction directly.
+ *
+ * The twin of the production source in the daemon and of the two drill
+ * children's, and declared here rather than imported for the reason
+ * `initToyRepository` is declared in each suite that needs one: a test-tree
+ * helper shared across packages would have to leave a pinned barrel, and the
+ * barrel's names are pinned by equality.
+ *
+ * Every field still comes from something real: the coordinates this walk
+ * derived, the `run.outcome` row it already appended, and a repository the
+ * scenario really has. The digest arrays are `[]` because these fixtures carry
+ * no envelope, which is the honest answer rather than a placeholder.
+ */
+function createDrillCheckpointSource(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointSource {
+  const { ledger, invocation, worktree } = input;
+  return {
+    assemble(step): Checkpoint | CheckpointRefused {
+      const recorded = ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({
+          taskId: invocation.taskId,
+          attempt: invocation.attempt,
+          transitionId: OUTCOME_STEP.transitionId,
+        }),
+      );
+      if (recorded === null) {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep" };
+      }
+      const parsed: unknown = JSON.parse(recorded.canonicalJson);
+      const completedAt =
+        typeof parsed === "object" && parsed !== null && "occurredAt" in parsed
+          ? (parsed as { readonly occurredAt: unknown }).occurredAt
+          : undefined;
+      if (typeof completedAt !== "string") {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep.completedAt" };
+      }
+      const facts = checkpointFactsFor(worktree);
+      const coordinate = deriveEventCoordinate(invocation, step.transitionId, step.index);
+      return {
+        contractVersion: CONTRACT_VERSION,
+        checkpointId: deterministicUuid(
+          "checkpoint/" +
+            invocation.invocationId +
+            "/" +
+            invocation.taskId +
+            "/" +
+            String(invocation.attempt) +
+            "/" +
+            step.transitionId,
+        ),
+        taskId: invocation.taskId,
+        attempt: invocation.attempt,
+        worker: input.emittedBy,
+        createdAt: coordinate.occurredAt,
+        lastAtomicStep: {
+          index: OUTCOME_STEP.index,
+          label: OUTCOME_STEP.transitionId,
+          completedAt,
+        },
+        git: {
+          head: facts.head,
+          branch: facts.branch,
+          worktreePath: facts.worktreePath,
+          isDirty: facts.isDirty,
+        },
+        authorityDigest: [],
+        readSetDigest: [],
+        writeSetDigest: [],
+        receipts: [],
+        artifacts: [],
+        pendingWork: [],
+        // The §2.4 literal, quoted verbatim rather than imported: a drift in any
+        // one of the sources that produce it fails here rather than propagating.
+        nextSafeAction: "Await the next owner-authorized action.",
+        notes: null,
+      };
+    },
+  };
+}
+
+/** One source, one store, one root rule: the port a walking construction binds. */
+function drillCheckpoints(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** Where the artifacts resolve: this scenario's own ledger path. */
+  readonly ledgerPath: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointPort {
+  return createCheckpointStore({
+    ledgerPath: input.ledgerPath,
+    source: createDrillCheckpointSource(input),
+  });
+}
+
 function contextFor(name: string, taskId: string, log: string[]): {
   context: BeatContext;
   ledger: Ledger;
@@ -111,6 +264,13 @@ function contextFor(name: string, taskId: string, log: string[]): {
       plan: LIFECYCLE_PLAN,
       route: TEST_ROUTE,
       initiativeId: TEST_INITIATIVE_ID,
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
     },
     ledger,
     root,
@@ -359,5 +519,195 @@ describe("the producer guard: a broken causal chain refuses before any append (C
       expect({ index, inserted: result.inserted }).toEqual({ index, inserted: true });
     }
     expect(ledger.status().eventCount).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F3 — the terminal appends only what it has already written
+// ---------------------------------------------------------------------------
+
+/** Walk every step up to, but not including, the terminal. */
+function walkToTerminal(context: BeatContext): void {
+  for (const step of context.plan.slice(0, -1)) {
+    if (step.beat === "OUTCOME") continue;
+    appendPlanStep(context, step);
+    if (step.beat === "INTENT") appendPlanStep(context, OUTCOME_STEP);
+  }
+}
+
+/** The plan's own terminal step, whichever plan is being walked. */
+function terminalOf(plan: readonly { readonly eventType: string }[]): (typeof LIFECYCLE_PLAN)[number] {
+  const step = plan[plan.length - 1] as (typeof LIFECYCLE_PLAN)[number] | undefined;
+  if (step === undefined) throw new Error("the plan has no terminal step");
+  return step;
+}
+
+describe("P3: the terminal appends only after a successful persist, digest in the payload", () => {
+  it("writes the checkpoint first, then names the store's own digest", () => {
+    const { context, ledger, root, invocation } = contextFor(
+      "f3-p3-order",
+      "30303030-3030-4030-8030-303030303001",
+      [],
+    );
+    walkToTerminal(context);
+
+    const before = ledger.status().eventCount;
+    const result = appendPlanStep(context, terminalOf(context.plan));
+    expect(result.inserted).toBe(true);
+    expect(ledger.status().eventCount).toBe(before + 1);
+
+    const digest = result.event?.payload["checkpointDigest"];
+    expect(typeof digest).toBe("string");
+    if (typeof digest !== "string") return;
+
+    // The store holds the digest the event names. That is the whole packet:
+    // before F3 the event was appended and nothing was ever written.
+    expect(hasArtifact(artifactRootFor(scenarioLedgerPath(root)), digest)).toBe(true);
+
+    // And what it holds re-parses as this walk's own checkpoint.
+    const read = readArtifact(artifactRootFor(scenarioLedgerPath(root)), digest);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    const stored = JSON.parse(read.content) as Checkpoint;
+    expect({ taskId: stored.taskId, attempt: stored.attempt, worker: stored.worker }).toEqual({
+      taskId: invocation.taskId,
+      attempt: invocation.attempt,
+      worker: EMITTED_BY,
+    });
+  });
+});
+
+describe("P4: both plans terminate through the same guard", () => {
+  for (const [label, slug, plan] of [
+    ["LIFECYCLE_PLAN", "writer", LIFECYCLE_PLAN],
+    ["READ_ONLY_PLAN", "read-only", READ_ONLY_PLAN],
+  ] as const) {
+    it("persists a checkpoint at " + label + "'s closing step", () => {
+      const { context, ledger, root } = contextFor(
+        "f3-p4-" + slug,
+        label === "LIFECYCLE_PLAN"
+          ? "30303030-3030-4030-8030-303030303002"
+          : "30303030-3030-4030-8030-303030303003",
+        [],
+      );
+      // The plan is the context's, so the read-only walk really walks the
+      // read-only plan rather than a prefix of the writer's.
+      const walking: BeatContext = { ...context, plan };
+      walkToTerminal(walking);
+
+      const result = appendPlanStep(walking, terminalOf(plan));
+      const digest = result.event?.payload["checkpointDigest"];
+      expect({ plan: label, terminal: result.event?.type, hasDigest: typeof digest === "string" }).toEqual({
+        plan: label,
+        terminal: "CHECKPOINT_WRITTEN",
+        hasDigest: true,
+      });
+      expect(ledger.getTask(walking.invocation.taskId)?.currentState).toBe("CHECKPOINTED");
+      if (typeof digest !== "string") return;
+      expect(hasArtifact(artifactRootFor(scenarioLedgerPath(root)), digest)).toBe(true);
+    });
+  }
+});
+
+describe("N5: a replayed terminal appends once and publishes once", () => {
+  it("returns inserted:false the second time, with the head unmoved", () => {
+    const { context, ledger, root } = contextFor(
+      "f3-n5-replay",
+      "30303030-3030-4030-8030-303030303004",
+      [],
+    );
+    walkToTerminal(context);
+
+    const first = appendPlanStep(context, terminalOf(context.plan));
+    expect(first.inserted).toBe(true);
+    const head = ledger.status().headEventSha256;
+    const count = ledger.status().eventCount;
+
+    // The same walk again. Determinism is what makes this safe: identical
+    // bytes publish to the same digest with `written:false`, so the rebuilt
+    // event is byte-identical and the ledger reads it as an exact replay.
+    const second = appendPlanStep(context, terminalOf(context.plan));
+    expect(second.inserted).toBe(false);
+    expect(ledger.status().eventCount).toBe(count);
+    expect(ledger.status().headEventSha256).toBe(head);
+
+    const digest = first.event?.payload["checkpointDigest"];
+    if (typeof digest !== "string") return;
+    expect(hasArtifact(artifactRootFor(scenarioLedgerPath(root)), digest)).toBe(true);
+  });
+});
+
+describe("N6/N9: no CHECKPOINT_WRITTEN is reachable without a persisted artifact", () => {
+  it("an absent member refuses, the head does not move, and the task is not CHECKPOINTED", () => {
+    const { context, ledger } = contextFor(
+      "f3-n6-absent",
+      "30303030-3030-4030-8030-303030303005",
+      [],
+    );
+    walkToTerminal(context);
+    const portless: BeatContext = { ...context, checkpoints: undefined };
+
+    const before = ledger.status();
+    expect(() => appendPlanStep(portless, terminalOf(context.plan))).toThrow(SupervisorError);
+    // Nothing at all: not an event, not a state change.
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    expect(ledger.getTask(context.invocation.taskId)?.currentState).not.toBe("CHECKPOINTED");
+  });
+
+  it("a refusing persist refuses too, with the same zero delta", () => {
+    const { context, ledger, root } = contextFor(
+      "f3-n6-refusing",
+      "30303030-3030-4030-8030-303030303006",
+      [],
+    );
+    walkToTerminal(context);
+
+    const refusal: CheckpointRefused = { ok: false, reason: "GIT_UNOBSERVABLE", at: "worktree" };
+    const refusing: BeatContext = {
+      ...context,
+      checkpoints: {
+        persist: () => refusal,
+        read: () => refusal,
+      },
+    };
+
+    const before = ledger.status();
+    let message = "";
+    try {
+      appendPlanStep(refusing, terminalOf(context.plan));
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : "";
+    }
+    // The refusal is reported by its own reason, so an operator reading the
+    // failure learns which fact was missing rather than only that one was.
+    expect(message).toContain("GIT_UNOBSERVABLE");
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    expect(ledger.getTask(context.invocation.taskId)?.currentState).not.toBe("CHECKPOINTED");
+    // Publishing never happened either: nothing was written under this ledger.
+    expect(existsSync(artifactRootFor(scenarioLedgerPath(root)))).toBe(false);
+  });
+});
+
+describe("N10: no checkpoint content reaches an event payload", () => {
+  it("the terminal payload carries a digest and the plan's own fields, nothing more", () => {
+    const { context } = contextFor("f3-n10", "30303030-3030-4030-8030-303030303007", []);
+    walkToTerminal(context);
+    const result = appendPlanStep(context, terminalOf(context.plan));
+
+    const payload = result.event?.payload ?? {};
+    expect(Object.keys(payload).sort()).toEqual([
+      "beat",
+      "checkpointDigest",
+      "planIndex",
+      "submissionDigest",
+    ]);
+    // Every value is a coordinate or a digest: no path, no branch name, no
+    // worktree, nothing a checkpoint carries as content.
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain("worktreePath");
+    expect(serialized).not.toContain("nextSafeAction");
+    expect(serialized).not.toContain("Await the next owner-authorized action.");
   });
 });

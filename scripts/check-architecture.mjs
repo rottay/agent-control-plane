@@ -6348,6 +6348,90 @@ const V2B1F2_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1f/F3 — the checkpoint the walk claims is one it wrote.
+ *
+ * **The measured void.** `CHECKPOINT_WRITTEN` was a `PLAIN` beat like any
+ * other. Both plans terminated in it -- `LIFECYCLE_PLAN` index 10 and
+ * `READ_ONLY_PLAN`'s closing step -- both appended it, and **no
+ * `Checkpoint.parse` existed anywhere in `src`**. Every completed walk, under
+ * either commit policy, recorded "checkpointed" with nothing behind it.
+ *
+ * **What closes it.** A `CheckpointSource` assembles a real `Checkpoint` from
+ * facts the plane actually holds, a `CheckpointPort` persists it, and the
+ * terminal guard calls `persist` **before** the append and puts the store's own
+ * digest in the payload. Absent member, or a refusing persist, appends nothing
+ * at all: an append is a claim, and a log that only grows cannot retract one.
+ *
+ * **The domain declares and never implements.** `RUNTIME_ALLOWED_BUILTINS` is
+ * crypto, fs, path and url, so `@acp/runtime` cannot spawn `git`; the store the
+ * digest resolves in belongs to `@acp/ledger`. So the production source lives
+ * in the daemon, over the observer it already builds, and the two drill
+ * children receive git facts as **data** from their spawning suite --
+ * `DaemonChildConfig` gains nothing and stays outside this set.
+ *
+ * **One artifact-root rule.** `artifactRootFor` moved out of the gateway's
+ * `roadmap-write` seam into `artifact-store`, beside the store it governs, and
+ * the gateway's copy was **deleted** rather than duplicated: three packages
+ * that may not import an entrypoint now resolve a digest through the same
+ * helper. `ARTIFACT_DIRECTORY` stays module-private, so exactly one new name
+ * leaves the ledger for it. `L-F3-2` below keeps a second copy from returning.
+ *
+ * **Thirty-eight paths.** The brief's table named thirty-six; §5's own
+ * enumeration rule -- *every suite whose walk reaches `CHECKPOINTED` by any
+ * route is in the set and is edited* -- reaches two more, and both were
+ * admitted by adjudication rather than improvised:
+ * `runtime/test/cancellation` (direct `BeatContext`, terminal at `:200-203`)
+ * and `daemon/test/launchd/lifecycle` (a real daemon under launchd, whose
+ * envelope declares a write-set the production source digests).
+ *
+ * `RUNTIME_PUBLIC_EXPORTS` 230 -> **234**, exactly four names and no fifth.
+ * The ledger barrel gains `createCheckpointStore` and `artifactRootFor`, with
+ * no pin behind either. `PATH_SCOPED_LAWS` 96 -> **97** for `L-F3-1`.
+ *
+ * Record: `docs/architecture/0039-the-checkpoint-the-walk-claims-is-one-it-wrote.md`.
+ */
+const V2B1F3_WRITE_SET = [
+  "packages/domains/runtime/src/checkpoint/index.ts",
+  "packages/domains/runtime/test/checkpoint/index.test.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/persistence/ledger/src/checkpoint-store/index.ts",
+  "packages/persistence/ledger/test/checkpoint-store/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/test/pilots/index.test.ts",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "packages/edges/durability/test/drivers/drills/index.test.ts",
+  "packages/edges/durability/test/drivers/restate-driver/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/domains/runtime/test/pilots/recovery/index.test.ts",
+  "packages/edges/durability/test/lifecycle-operation/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0039-the-checkpoint-the-walk-claims-is-one-it-wrote.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+  "packages/persistence/ledger/src/artifact-store/index.ts",
+  "packages/persistence/ledger/test/artifact-store/index.test.ts",
+  "packages/entrypoints/gateway/src/roadmap-write/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/domains/runtime/test/cancellation/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6497,6 +6581,7 @@ const WRITE_SET = [
   ...V2B1E_WRITE_SET,
   ...V2B1F_WRITE_SET,
   ...V2B1F2_WRITE_SET,
+  ...V2B1F3_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7564,6 +7649,16 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the daemon's execution section names no singular binding member",
     scope: "packages/entrypoints/daemon/**/src",
+  },
+  // V2-B1f/F3. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 96 -> 97. Scoped to the domains and
+  // the entrypoints, because that is where a walk's events are built; the
+  // providers stratum is outside it by construction, which is why the
+  // provider's own `"checkpoint.emitted" -> "CHECKPOINT_WRITTEN"` mapping needs
+  // no exemption to stay lawful.
+  {
+    law: "only the plan and the terminal guard construct a CHECKPOINT_WRITTEN event",
+    scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
   },
 ];
 
@@ -13164,6 +13259,10 @@ if (tracked.status === 0) {
 const RUNTIME_PUBLIC_EXPORTS = [
   "ACP_UUID_NAMESPACE",
   "AUTHORIZATION_REFUSALS",
+  "CHECKPOINT_REFUSALS",
+  "CheckpointPort",
+  "CheckpointRefused",
+  "CheckpointSource",
   "AdmissionRequest",
   "AuthorizationEvent",
   "AuthorizationEventType",
@@ -16083,6 +16182,125 @@ if (tracked.status === 0) {
   notes.push(
     "no singular execution binding across " + String(bindingScope.length) + " daemon sources",
   );
+
+  // --- L-F3-1: the terminal event has exactly two producers.
+  //
+  // `CHECKPOINT_WRITTEN` is the one event whose whole meaning is that an
+  // artifact exists. V2-B1f/F3 made that true by persisting the checkpoint
+  // before the append; this law is what keeps a THIRD producer from appearing
+  // beside the plan and the guard and appending one without writing anything --
+  // which is precisely the void the packet closed.
+  //
+  // **Two permitted homes, and they are named rather than pattern-matched:**
+  // the plan module, which declares the step, and the terminal guard, which is
+  // the one place a persist happens before an append.
+  //
+  // **Constructor shapes only.** `eventType: "CHECKPOINT_WRITTEN"` and
+  // `type: "CHECKPOINT_WRITTEN"` -- the two forms that actually BUILD one.
+  // Deliberately NOT a ban on the string: `case "..."`, `=== "..."`, membership
+  // in an array or a frozen enum, and a refusal that must name what it refuses
+  // are all lawful and all stay. `stripComments` runs first, so prose naming
+  // the event is documentation rather than a use of it.
+  //
+  // **The provider signal is a different thing, and it is outside this scope by
+  // construction.** `packages/edges/providers/src/events/index.ts` maps
+  // `"checkpoint.emitted" -> "CHECKPOINT_WRITTEN"` as a NAME IN A MAPPING
+  // TABLE; the execution port turns it into `ExecutionEvent{kind:"checkpoint"}`,
+  // an execution-trail fact that never reaches a ledger append. The edges
+  // stratum is not selected here, so no exemption list is needed to spare it --
+  // which is the difference between a scope that is reasoned about and one that
+  // is patched.
+  const CHECKPOINT_EVENT_HOMES = new Set([
+    "packages/domains/runtime/src/core/lifecycle/index.ts",
+    "packages/domains/runtime/src/core/step-executor/index.ts",
+  ]);
+  const checkpointScope = tracked.status === 0
+    ? tracked.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter(
+          (relativePath) =>
+            /\.tsx?$/.test(relativePath) &&
+            !relativePath.includes("/test/") &&
+            (/^packages\/domains\/[^/]+\/src\//.test(relativePath) ||
+              /^packages\/entrypoints\/[^/]+\/src\//.test(relativePath)),
+        )
+    : [];
+  requireScope("only the plan and the terminal guard construct a CHECKPOINT_WRITTEN event", checkpointScope.length);
+  let checkpointHomesSeen = 0;
+  for (const relativePath of checkpointScope) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    const constructs =
+      /eventType:\s*"CHECKPOINT_WRITTEN"/.test(live) || /type:\s*"CHECKPOINT_WRITTEN"/.test(live);
+    if (!constructs) continue;
+    if (!CHECKPOINT_EVENT_HOMES.has(relativePath)) {
+      fail(
+        relativePath +
+          " constructs a CHECKPOINT_WRITTEN event; only the plan and the terminal guard may," +
+          " and the guard persists the checkpoint before it appends one",
+      );
+    }
+    checkpointHomesSeen += 1;
+  }
+  // Non-vacuous: the plan really does declare the step. A law whose permitted
+  // sites had all gone away would pass while proving nothing.
+  if (checkpointHomesSeen === 0) {
+    fail(
+      "the plan module no longer declares the terminal step's event type; a law whose" +
+        " permitted producer has gone away passes vacuously",
+    );
+  }
+  notes.push(
+    "CHECKPOINT_WRITTEN is constructed at " +
+      String(checkpointHomesSeen) +
+      " named site(s) across " +
+      String(checkpointScope.length) +
+      " domain and entrypoint sources",
+  );
+
+  // --- L-F3-2 (N13): one artifact-root rule, and no second one may return.
+  //
+  // Not a path-scoped law and deliberately not registered as one: it is a
+  // whole-tree assertion over the same `src` selection the law above already
+  // built, so it adds no `requireScope` site and `PATH_SCOPED_LAWS` does not
+  // move for it. What it forbids is the shape the gateway used to hold --
+  // composing an artifacts directory from a ledger path -- anywhere but in the
+  // store that owns it. `roadmap-write` warned that a second configurable
+  // location would be *"a second answer to where a digest in this ledger
+  // resolves"*; after F3 the rule has one home, and this is what keeps it.
+  const ARTIFACT_ROOT_HOME = "packages/persistence/ledger/src/artifact-store/index.ts";
+  for (const relativePath of checkpointScope) {
+    if (relativePath === ARTIFACT_ROOT_HOME) continue;
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    // Declaring the helper, or naming the directory as a literal beside a
+    // `dirname`/`join` of a ledger path. Calling the one helper is lawful and
+    // is what every consumer now does.
+    if (/(?:function|const)\s+artifactRootFor\b/.test(live)) {
+      fail(
+        relativePath +
+          " declares a second artifactRootFor; the artifact-root rule lives in " +
+          ARTIFACT_ROOT_HOME +
+          " and is imported, never restated",
+      );
+    }
+    if (/["']artifacts["']/.test(live) && /\bdirname\s*\(/.test(live)) {
+      fail(
+        relativePath +
+          " composes an artifacts directory from a path; that rule has one home," +
+          " and a second answer to where a digest resolves is what it exists to prevent",
+      );
+    }
+  }
+  const artifactRootHome = readIfPresent(ARTIFACT_ROOT_HOME);
+  if (artifactRootHome === null || !/export function artifactRootFor\(/.test(stripComments(artifactRootHome))) {
+    fail(ARTIFACT_ROOT_HOME + " no longer declares artifactRootFor; the rule this law protects has moved");
+  }
+  notes.push("one artifact-root rule, declared once in " + ARTIFACT_ROOT_HOME);
 
   // --- L-B1C-1: one producer of an execution instruction.
   //

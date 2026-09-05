@@ -1,17 +1,28 @@
 import { spawnSync } from "node:child_process";
 import type { TaskEnvelope } from "@acp/contracts";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_ROUTING_CONFIG, EVIDENCE_ABSENT, loadPolicyRegistry, resolveRoute } from "@acp/accounts";
 import type { CandidateEvidence, PolicyRegistry, PolicyRouteRequest, QuotaEstimate, QuotaOutcome, RoutingRequest } from "@acp/accounts";
-import { AccountRecord, CONTRACT_VERSION, ExecutionEvent, TERMINAL_STATES } from "@acp/contracts";
-import type { ExecutionRequest, ModelExecutionPort, ResolvedRoute } from "@acp/contracts";
+import {
+  AccountRecord,
+  CONTRACT_VERSION,
+  ExecutionEvent,
+  TERMINAL_STATES,
+  buildIdempotencyKey,
+} from "@acp/contracts";
+import type {
+  Checkpoint,
+  ExecutionRequest,
+  ModelExecutionPort,
+  ResolvedRoute,
+} from "@acp/contracts";
 import { deriveInvocation } from "@acp/durability";
-import { openLedger } from "@acp/ledger";
+import { artifactRootFor, createCheckpointStore, openLedger, readArtifact } from "@acp/ledger";
 import type { ExecutionRouteReadModel, Ledger } from "@acp/ledger";
 import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort } from "@acp/providers";
 import type { ApiStreamChunk, ApiStreamingClient, CliBinding, ProviderAdapter, SessionDescriptor, SessionRequest } from "@acp/providers";
@@ -21,8 +32,11 @@ import {
   LIFECYCLE_PLAN,
   SqliteSupervisor,
   USAGE_TOKENS_MAX,
+  OUTCOME_STEP,
   buildEvent,
   createExecutionEffects,
+  deriveEventCoordinate,
+  deterministicUuid,
   operationForStep,
   recordTokenObservation,
   removeScenarioRoot,
@@ -31,12 +45,156 @@ import {
   settleFailure,
   usageTransitionId,
 } from "@acp/runtime";
-import type { DurableInvocation, ScenarioRoot, UsageSample } from "@acp/runtime";
+import type {
+  CheckpointPort,
+  CheckpointRefused,
+  CheckpointSource,
+  DurableInvocation,
+  ScenarioRoot,
+  UsageSample,
+} from "@acp/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { canonicalSubmission, canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
 import { startDaemon, stopDaemon } from "../../../src/index.js";
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F3: the checkpoint a terminal now has to write
+// ---------------------------------------------------------------------------
+
+/**
+ * Make this scenario a real repository, and report what it actually holds.
+ *
+ * The four git facts a `Checkpoint` carries are observed, never invented: a
+ * fabricated head would put a fiction in a drill ledger, which is the one thing
+ * a drill may never do. The repository is created once per scenario and the
+ * observation is taken at assembly time, so `isDirty` is what the worktree
+ * looked like when the terminal ran rather than when the fixture was built.
+ */
+function checkpointFactsFor(worktree: string): {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
+} {
+  const git = (...args: string[]): string =>
+    spawnSync("/usr/bin/git", args, { cwd: worktree, encoding: "utf8" }).stdout;
+  if (!existsSync(join(worktree, ".git"))) {
+    git("init", "--quiet");
+    git("config", "user.email", "drill@example.invalid");
+    git("config", "user.name", "drill");
+    git("commit", "--allow-empty", "-q", "-m", "checkpoint fixture");
+  }
+  return {
+    worktreePath: worktree,
+    head: git("rev-parse", "HEAD").trim(),
+    branch: git("rev-parse", "--abbrev-ref", "HEAD").trim(),
+    isDirty: git("status", "--porcelain", "--untracked-files=all").trim() !== "",
+  };
+}
+
+/**
+ * A checkpoint source for a suite that builds its construction directly.
+ *
+ * The twin of the production source in the daemon and of the two drill
+ * children's, and declared here rather than imported for the reason
+ * `initToyRepository` is declared in each suite that needs one: a test-tree
+ * helper shared across packages would have to leave a pinned barrel, and the
+ * barrel's names are pinned by equality.
+ *
+ * Every field still comes from something real: the coordinates this walk
+ * derived, the `run.outcome` row it already appended, and a repository the
+ * scenario really has. The digest arrays are `[]` because these fixtures carry
+ * no envelope, which is the honest answer rather than a placeholder.
+ */
+function createDrillCheckpointSource(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointSource {
+  const { ledger, invocation, worktree } = input;
+  return {
+    assemble(step): Checkpoint | CheckpointRefused {
+      const recorded = ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({
+          taskId: invocation.taskId,
+          attempt: invocation.attempt,
+          transitionId: OUTCOME_STEP.transitionId,
+        }),
+      );
+      if (recorded === null) {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep" };
+      }
+      const parsed: unknown = JSON.parse(recorded.canonicalJson);
+      const completedAt =
+        typeof parsed === "object" && parsed !== null && "occurredAt" in parsed
+          ? (parsed as { readonly occurredAt: unknown }).occurredAt
+          : undefined;
+      if (typeof completedAt !== "string") {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep.completedAt" };
+      }
+      const facts = checkpointFactsFor(worktree);
+      const coordinate = deriveEventCoordinate(invocation, step.transitionId, step.index);
+      return {
+        contractVersion: CONTRACT_VERSION,
+        checkpointId: deterministicUuid(
+          "checkpoint/" +
+            invocation.invocationId +
+            "/" +
+            invocation.taskId +
+            "/" +
+            String(invocation.attempt) +
+            "/" +
+            step.transitionId,
+        ),
+        taskId: invocation.taskId,
+        attempt: invocation.attempt,
+        worker: input.emittedBy,
+        createdAt: coordinate.occurredAt,
+        lastAtomicStep: {
+          index: OUTCOME_STEP.index,
+          label: OUTCOME_STEP.transitionId,
+          completedAt,
+        },
+        git: {
+          head: facts.head,
+          branch: facts.branch,
+          worktreePath: facts.worktreePath,
+          isDirty: facts.isDirty,
+        },
+        authorityDigest: [],
+        readSetDigest: [],
+        writeSetDigest: [],
+        receipts: [],
+        artifacts: [],
+        pendingWork: [],
+        // The §2.4 literal, quoted verbatim rather than imported: a drift in any
+        // one of the sources that produce it fails here rather than propagating.
+        nextSafeAction: "Await the next owner-authorized action.",
+        notes: null,
+      };
+    },
+  };
+}
+
+/** One source, one store, one root rule: the port a walking construction binds. */
+function drillCheckpoints(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  /** Where the artifacts resolve: this scenario's own ledger path. */
+  readonly ledgerPath: string;
+  /** A repository this scenario really has. */
+  readonly worktree: string;
+}): CheckpointPort {
+  return createCheckpointStore({
+    ledgerPath: input.ledgerPath,
+    source: createDrillCheckpointSource(input),
+  });
+}
 
 /**
  * Make a fixture directory an actual worktree.
@@ -56,6 +214,17 @@ function initWorktree(directory: string): void {
   git("init", "--quiet");
   git("config", "user.email", "drill@example.invalid");
   git("config", "user.name", "drill");
+  // V2-B1f/F3. The worktree holds every path its envelope declares.
+  //
+  // A write-set is a declaration, and `checkWriteSetConformance` compares it as
+  // an exact string: it never required a declared entry to EXIST, so a drill
+  // could declare `src/**` and have a gate that matched nothing. The checkpoint
+  // digests the declared set against this worktree, so a declaration naming
+  // nothing is now visible as `PATH_MISSING` -- which is the honest answer, and
+  // the fixture is what has to change. Committed, so an unmodified declared
+  // path is not itself an observed change.
+  mkdirSync(join(directory, "src"), { recursive: true });
+  writeFileSync(join(directory, "src", "walk.ts"), "export const walked = true;\n", "utf8");
   git("add", "-A");
   git("commit", "--allow-empty", "-q", "-m", "fixture base");
 }
@@ -68,7 +237,7 @@ function initWorktree(directory: string): void {
  * touches: the point of the gate is that a walk writing outside its declaration
  * is caught, so a drill that is not testing that must declare honestly.
  */
-function envelopeFor(taskId: string, initiativeId: string, writeSet: readonly string[] = ["src/**"]): TaskEnvelope {
+function envelopeFor(taskId: string, initiativeId: string, writeSet: readonly string[] = ["src/walk.ts"]): TaskEnvelope {
   return {
     contractVersion: CONTRACT_VERSION,
     taskId,
@@ -434,7 +603,21 @@ interface Walk {
   readonly eventsCarryingRoute: number;
 }
 
-async function walk(name: string, port: ModelExecutionPort, route: ResolvedRoute): Promise<Walk> {
+async function walk(
+  name: string,
+  port: ModelExecutionPort,
+  route: ResolvedRoute,
+  /**
+   * The worktree the checkpoint describes (V2-B1f/F3).
+   *
+   * Defaults to this walk's own scenario root, which is what every single-leg
+   * case wants. The two-leg comparison below hands BOTH legs the same one: a
+   * checkpoint carries the worktree it was taken over, so two legs observing
+   * two directories would assemble two different checkpoints and the body
+   * equality would fail for a reason that has nothing to do with the transports.
+   */
+  worktree?: string,
+): Promise<Walk> {
   const root = scenario(name);
   const ledger = openLedger(scenarioLedgerPath(root));
   ledgers.push(ledger);
@@ -450,6 +633,13 @@ async function walk(name: string, port: ModelExecutionPort, route: ResolvedRoute
     ledger,
     invocation: inv,
     effects,
+    checkpoints: drillCheckpoints({
+      ledger,
+      invocation: inv,
+      emittedBy: EMITTED_BY,
+      ledgerPath: scenarioLedgerPath(root),
+      worktree: worktree ?? root,
+    }),
     emittedBy: EMITTED_BY,
     commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
     initiativeId: INITIATIVE_ID,
@@ -539,8 +729,11 @@ describe("the route is resolved over the repository's real policy", () => {
 describe("one scenario through both legs of the assembled path", () => {
   it("produces the same normalized trail and the same checkpointed ledger from the CLI and API legs", async () => {
     const route = resolvedCliRoute();
-    const cli = await walk("b1b-execution-cli", cliPort(), route);
-    const api = await walk("b1b-execution-api", apiPort(), { ...route, transportKind: "API_KEY" });
+    // One worktree for both legs (V2-B1f/F3): the equivalence is over identical
+    // inputs, and the worktree the checkpoint describes is one of them.
+    const shared = scenario("b1b-execution-worktree");
+    const cli = await walk("b1b-execution-cli", cliPort(), route, shared);
+    const api = await walk("b1b-execution-api", apiPort(), { ...route, transportKind: "API_KEY" }, shared);
 
     // The trail assertion, made once and applied to both legs: the kinds and
     // their order, every event's contract validity, the measurement, exactly
@@ -713,6 +906,13 @@ describe("one scenario through both legs of the assembled path", () => {
       ledger,
       invocation: inv,
       effects,
+      checkpoints: drillCheckpoints({
+        ledger,
+        invocation: inv,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(root),
+        worktree: root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: INITIATIVE_ID,
@@ -1226,6 +1426,13 @@ async function walkRecording(
     ledger,
     invocation: inv,
     effects,
+    checkpoints: drillCheckpoints({
+      ledger,
+      invocation: inv,
+      emittedBy: EMITTED_BY,
+      ledgerPath: scenarioLedgerPath(root),
+      worktree: root,
+    }),
     emittedBy: EMITTED_BY,
     commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
     initiativeId: INITIATIVE_ID,
@@ -1385,6 +1592,13 @@ describe("V2-B7T: the walk records what it spends", () => {
     const resumed = await new SqliteSupervisor({
       ledger: walked.ledger,
       invocation: walked.inv,
+      checkpoints: drillCheckpoints({
+        ledger: walked.ledger,
+        invocation: walked.inv,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(walked.root),
+        worktree: walked.root,
+      }),
       effects: createExecutionEffects({
         port: createExecutionPort({ bindings: new Map([[ACCOUNT, cliBinding(B7T_TWO_USAGE_LINES)]]) }),
         route,
@@ -1509,6 +1723,13 @@ describe("V2-B7T: the walk records what it spends", () => {
       ledger: walked.ledger,
       invocation: walked.inv,
       effects: resumedEffects,
+      checkpoints: drillCheckpoints({
+        ledger: walked.ledger,
+        invocation: walked.inv,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(walked.root),
+        worktree: walked.root,
+      }),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: INITIATIVE_ID,
@@ -1710,6 +1931,13 @@ function fakeProviderBinary(
         : "setTimeout(() => process.exit(0), 250);\n"),
     { mode: 0o700 },
   );
+  // V2-B1f/F3. The declared `child.pid` is committed here, so the worktree
+  // holds it whichever account is routed. The subject overwrites it with its
+  // real pid when it runs; when the ROUTE names the other account's binding,
+  // that subject writes into its own root and this worktree keeps the
+  // committed file. A declaration naming a path only one of two routes
+  // creates is a declaration the checkpoint cannot digest.
+  writeFileSync(pidFile, "0", "utf8");
   temporaries.push(root);
   initWorktree(root);
   return { binary, root, pidFile, echoFile };
@@ -1832,6 +2060,72 @@ describe("the production daemon owns and reaps its provider children (V2-B4a)", 
 });
 
 /**
+ * Two fake providers sharing one worktree, each with its own credential root.
+ *
+ * Hoisted to module scope so both the F2 switch drills below and P7's
+ * clean-worktree case can build the same composition: routing the SECOND
+ * account runs a subject whose script writes into its OWN root, which is the
+ * only shape in this file that leaves the checkpointed worktree untouched.
+ */
+const SECOND_ACCOUNT = "acct-b4a-second";
+
+/** Two fake providers sharing one worktree, each with its own credential root. */
+function twoProviders(): {
+  readonly worktree: string;
+  readonly first: { binary: string; echoFile: string; configRoot: string };
+  readonly second: { binary: string; echoFile: string; configRoot: string };
+} {
+  const a = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+  const b = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+  return {
+    // One worktree per packet: the route's entry supplies it and every other
+    // entry must declare the same one, so a switch cannot move the checkout.
+    worktree: a.root,
+    first: { binary: a.binary, echoFile: a.echoFile, configRoot: a.root },
+    second: { binary: b.binary, echoFile: b.echoFile, configRoot: b.root },
+  };
+}
+
+/** A two-entry execution config whose route names `accountId`. */
+function pluralExecution(
+  accountId: string,
+  providers: ReturnType<typeof twoProviders>,
+): DaemonExecutionConfig {
+  const limits = {
+    timeoutMs: 10_000,
+    outputBudgetBytes: 64 * 1024,
+    interruptGraceMs: 120,
+    termGraceMs: 120,
+  };
+  return {
+    route: {
+      provider: "claude",
+      model: "opus",
+      accountId,
+      transportKind: "CLI_SUBSCRIPTION",
+      capabilityPolicyVersion: "2026-09-03.1",
+      resolvedAt: RESOLVED_AT,
+    },
+    bindings: [
+      {
+        accountId: "acct-b4a-drill",
+        binary: providers.first.binary,
+        configRoot: providers.first.configRoot,
+        workdir: providers.worktree,
+        limits,
+      },
+      {
+        accountId: SECOND_ACCOUNT,
+        binary: providers.second.binary,
+        configRoot: providers.second.configRoot,
+        workdir: providers.worktree,
+        limits,
+      },
+    ],
+  };
+}
+
+/**
  * Plural admitted bindings, end to end (V2-B1f/F2).
  *
  * The port layer was already plural; the singularity was the daemon's own
@@ -1849,63 +2143,6 @@ describe("the production daemon owns and reaps its provider children (V2-B4a)", 
  * one credential root per account.
  */
 describe("F2: a switch has somewhere to land -- plural bindings, end to end", () => {
-  const SECOND_ACCOUNT = "acct-b4a-second";
-
-  /** Two fake providers sharing one worktree, each with its own credential root. */
-  function twoProviders(): {
-    readonly worktree: string;
-    readonly first: { binary: string; echoFile: string; configRoot: string };
-    readonly second: { binary: string; echoFile: string; configRoot: string };
-  } {
-    const a = fakeProviderBinary(CLAUDE_LINES, { linger: false });
-    const b = fakeProviderBinary(CLAUDE_LINES, { linger: false });
-    return {
-      // One worktree per packet: the route's entry supplies it and every other
-      // entry must declare the same one, so a switch cannot move the checkout.
-      worktree: a.root,
-      first: { binary: a.binary, echoFile: a.echoFile, configRoot: a.root },
-      second: { binary: b.binary, echoFile: b.echoFile, configRoot: b.root },
-    };
-  }
-
-  /** A two-entry execution config whose route names `accountId`. */
-  function pluralExecution(
-    accountId: string,
-    providers: ReturnType<typeof twoProviders>,
-  ): DaemonExecutionConfig {
-    const limits = {
-      timeoutMs: 10_000,
-      outputBudgetBytes: 64 * 1024,
-      interruptGraceMs: 120,
-      termGraceMs: 120,
-    };
-    return {
-      route: {
-        provider: "claude",
-        model: "opus",
-        accountId,
-        transportKind: "CLI_SUBSCRIPTION",
-        capabilityPolicyVersion: "2026-09-03.1",
-        resolvedAt: RESOLVED_AT,
-      },
-      bindings: [
-        {
-          accountId: "acct-b4a-drill",
-          binary: providers.first.binary,
-          configRoot: providers.first.configRoot,
-          workdir: providers.worktree,
-          limits,
-        },
-        {
-          accountId: SECOND_ACCOUNT,
-          binary: providers.second.binary,
-          configRoot: providers.second.configRoot,
-          workdir: providers.worktree,
-          limits,
-        },
-      ],
-    };
-  }
 
   it("P1/P5/P7 routes each account to its own binding, proved by the subject's own side file", async () => {
     const providers = twoProviders();
@@ -2034,4 +2271,372 @@ describe("the packet's objective reaches the model (V2-B1c)", () => {
       ledger.close();
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F3 — the PRODUCTION checkpoint source, over a real worktree
+// ---------------------------------------------------------------------------
+
+/**
+ * Every case below drives `startDaemon`, and that is the point.
+ *
+ * The production source lives inside `packages/entrypoints/daemon/src/index.ts`
+ * and is deliberately not exported: `DAEMON_PUBLIC_EXPORTS` is pinned by
+ * equality, and widening a closed surface to make it testable would be the
+ * defect in a different place. So it is proved the only honest way — a real
+ * daemon walks a real plan over a real git worktree, and the artifact the
+ * terminal names is read back out of the store and asserted field by field.
+ */
+
+/** Read the checkpoint a completed walk actually persisted. */
+function persistedCheckpoint(scenarioId: string): {
+  readonly checkpoint: Checkpoint;
+  readonly digest: string;
+  readonly terminal: { readonly occurredAt: string };
+  readonly outcome: { readonly occurredAt: string };
+  readonly taskId: string;
+  readonly attempt: number;
+} {
+  const root = resolveScenarioRoot(scenarioId);
+  const ledger = openLedger(scenarioLedgerPath(root), { readOnly: true });
+  try {
+    const events = ledger.listEvents({ limit: 500 }).events;
+    const terminal = events.find((entry) => entry.event.type === "CHECKPOINT_WRITTEN");
+    const outcome = events.find((entry) => entry.event.transitionId === OUTCOME_STEP.transitionId);
+    if (terminal === undefined || outcome === undefined) {
+      throw new Error("the walk did not reach its terminal");
+    }
+    const digest = terminal.event.payload["checkpointDigest"];
+    if (typeof digest !== "string") throw new Error("the terminal names no checkpoint digest");
+
+    const read = readArtifact(artifactRootFor(scenarioLedgerPath(root)), digest);
+    if (!read.ok) throw new Error("the store does not hold " + digest + ": " + read.reason);
+    return {
+      checkpoint: JSON.parse(read.content) as Checkpoint,
+      digest,
+      terminal: { occurredAt: terminal.event.occurredAt },
+      outcome: { occurredAt: outcome.event.occurredAt },
+      taskId: terminal.event.taskId,
+      attempt: terminal.event.attempt,
+    };
+  } finally {
+    ledger.close();
+  }
+}
+
+/** The suite's own reading of a worktree, taken independently of the daemon's. */
+function observeIndependently(worktree: string): {
+  readonly head: string;
+  readonly branch: string;
+  readonly dirty: boolean;
+} {
+  const git = (...args: string[]): string =>
+    spawnSync("/usr/bin/git", args, { cwd: worktree, encoding: "utf8" }).stdout;
+  return {
+    head: git("rev-parse", "HEAD").trim(),
+    branch: git("rev-parse", "--abbrev-ref", "HEAD").trim(),
+    dirty: git("status", "--porcelain", "--untracked-files=all").trim() !== "",
+  };
+}
+
+describe("P5: every checkpoint field comes from a fact the plane holds", () => {
+  it("asserts each one against its own source, and none against a literal in the source", async () => {
+    const { binary, root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const id = b4aScenarioId("f3-p5-fields");
+    const options = b4aOptions(id, b4aExecutionConfig(binary, root));
+    await stopDaemon(await startDaemon(options));
+
+    const seen = persistedCheckpoint(id);
+    const value = seen.checkpoint;
+    const observed = observeIndependently(root);
+
+    // Identity and coordinates: derived, never read from a clock.
+    expect(value.contractVersion).toBe(CONTRACT_VERSION);
+    expect(value.taskId).toBe(seen.taskId);
+    expect(value.attempt).toBe(seen.attempt);
+    expect(value.worker).toBe(EMITTED_BY);
+    expect(value.createdAt).toBe(seen.terminal.occurredAt);
+
+    // The last atomic step is the ledger's own `run.outcome` row.
+    expect(value.lastAtomicStep).toEqual({
+      index: OUTCOME_STEP.index,
+      label: OUTCOME_STEP.transitionId,
+      completedAt: seen.outcome.occurredAt,
+    });
+
+    // The git facts, compared against an observation this suite took itself
+    // rather than against the one the daemon reported to itself.
+    expect(value.git.head).toBe(observed.head);
+    expect(value.git.branch).toBe(observed.branch);
+    expect(value.git.worktreePath).toBe(root);
+    expect(value.git.isDirty).toBe(observed.dirty);
+
+    // Authority is copied from the envelope, never re-derived.
+    expect(value.authorityDigest).toEqual(options.envelope.authority);
+
+    // The declared sets are digested against the worktree, and the digests are
+    // the real bytes' — checked here against an independent read.
+    expect(value.writeSetDigest.map((entry) => entry.path)).toEqual([...options.envelope.writeSet]);
+    for (const entry of value.writeSetDigest) {
+      expect({ path: entry.path, sha256: entry.sha256 }).toEqual({
+        path: entry.path,
+        sha256: createHash("sha256").update(readFileSync(join(root, entry.path))).digest("hex"),
+      });
+    }
+    expect(value.readSetDigest.map((entry) => entry.path)).toEqual([...options.envelope.readSet]);
+
+    // The plane produces no reference at a terminal today, and says so.
+    expect({ receipts: value.receipts, artifacts: value.artifacts, pendingWork: value.pendingWork }).toEqual({
+      receipts: [],
+      artifacts: [],
+      pendingWork: [],
+    });
+    // The §2.4 literal, quoted verbatim rather than imported.
+    expect(value.nextSafeAction).toBe("Await the next owner-authorized action.");
+    expect(value.notes).toBeNull();
+  }, 120_000);
+});
+
+describe("P7: isDirty is derived from the observation, not assumed", () => {
+  it("is true for a tracked change the walk made", async () => {
+    // The subject overwrites the committed `child.pid` with its own pid, which
+    // git reports as a modification of a tracked file.
+    const dirty = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const id = b4aScenarioId("f3-p7-tracked");
+    await stopDaemon(await startDaemon(b4aOptions(id, b4aExecutionConfig(dirty.binary, dirty.root))));
+
+    const seen = persistedCheckpoint(id);
+    const independent = observeIndependently(dirty.root);
+    expect(independent.dirty).toBe(true);
+    expect(seen.checkpoint.git.isDirty).toBe(true);
+    // The checkpoint's reading and this suite's own reading agree, which is
+    // what makes `isDirty` an observation rather than an assumption.
+    expect(seen.checkpoint.git.isDirty).toBe(independent.dirty);
+  }, 120_000);
+
+  it("is true for an untracked path, which is a different observation entirely", async () => {
+    // A tracked modification and an untracked file are two different fields of
+    // the observation (`trackedChanges` and `untrackedPaths`), and `isDirty` is
+    // the disjunction of both. A drill that only ever produced the first would
+    // leave half the derivation unexercised.
+    const provider = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const id = b4aScenarioId("f3-p7-untracked");
+    const options = b4aOptions(id, b4aExecutionConfig(provider.binary, provider.root));
+
+    // Declared as well as created: an undeclared untracked file is a write-set
+    // violation and the gate would refuse the walk before its terminal, so the
+    // only way to observe an untracked path AT the terminal is to declare it.
+    // The conformance gate is left exactly as strict as it was.
+    writeFileSync(join(provider.root, "untracked.txt"), "written outside the index\n", "utf8");
+    const declared = { ...options.envelope, writeSet: ["child.pid", "untracked.txt"] };
+
+    await stopDaemon(await startDaemon({ ...options, envelope: declared }));
+    const seen = persistedCheckpoint(id);
+    const independent = observeIndependently(provider.root);
+
+    // The file really is untracked, not merely present.
+    expect(
+      spawnSync("/usr/bin/git", ["status", "--porcelain", "--untracked-files=all"], {
+        cwd: provider.root,
+        encoding: "utf8",
+      }).stdout,
+    ).toContain("?? untracked.txt");
+    expect(independent.dirty).toBe(true);
+    expect(seen.checkpoint.git.isDirty).toBe(true);
+    expect(seen.checkpoint.git.isDirty).toBe(independent.dirty);
+  }, 120_000);
+
+  it("is false over a worktree the walk really left clean", async () => {
+    // The clean half, and it needs a walk that genuinely writes nothing into
+    // the worktree it is checkpointing. `twoProviders()` gives two subjects
+    // with two credential roots and ONE shared worktree — the first provider's.
+    // Routing the SECOND account runs the second subject, whose script writes
+    // its pid into its own root, so the shared worktree is observed exactly as
+    // the fixture committed it.
+    const providers = twoProviders();
+    const id = b4aScenarioId("f3-p7-clean");
+    const before = observeIndependently(providers.worktree);
+    expect(before.dirty).toBe(false);
+
+    await stopDaemon(
+      await startDaemon(b4aOptions(id, pluralExecution(SECOND_ACCOUNT, providers))),
+    );
+
+    // The second subject ran, and it ran somewhere else.
+    expect(existsSync(providers.second.echoFile)).toBe(true);
+
+    const seen = persistedCheckpoint(id);
+    const independent = observeIndependently(providers.worktree);
+    expect(independent.dirty).toBe(false);
+    expect(seen.checkpoint.git.isDirty).toBe(false);
+    expect(seen.checkpoint.git.isDirty).toBe(independent.dirty);
+    // And the head is still the fixture's own commit: nothing moved the tree.
+    expect(seen.checkpoint.git.head).toBe(before.head);
+  }, 120_000);
+});
+
+describe("N8: a declared path the worktree does not hold refuses, and nothing is appended", () => {
+  it("refuses PATH_MISSING for a readSet entry, and the task never reaches CHECKPOINTED", async () => {
+    const { binary, root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const id = b4aScenarioId("f3-n8-readset");
+    const options = b4aOptions(id, b4aExecutionConfig(binary, root));
+    // A read-set entry nothing ever created. The conformance gate does not
+    // look at the read-set, so the walk reaches its terminal and the checkpoint
+    // is the first thing that asks whether the declaration is true.
+    const envelope = { ...options.envelope, readSet: ["docs/never-written.md"] };
+
+    let message = "";
+    try {
+      await stopDaemon(await startDaemon({ ...options, envelope }));
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("PATH_MISSING");
+    expect(message).toContain("docs/never-written.md");
+
+    // No digest was invented, and the terminal was never appended.
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)), { readOnly: true });
+    try {
+      const types = ledger.listEvents({ limit: 500 }).events.map((entry) => entry.event.type);
+      expect(types).not.toContain("CHECKPOINT_WRITTEN");
+      expect(ledger.getTask(options.taskId)?.currentState).not.toBe("CHECKPOINTED");
+    } finally {
+      ledger.close();
+    }
+    expect(existsSync(artifactRootFor(scenarioLedgerPath(resolveScenarioRoot(id))))).toBe(false);
+  }, 120_000);
+});
+
+describe("N7: an unborn HEAD is refused rather than reported as a commit", () => {
+  it("refuses GIT_HEAD_UNBORN over a repository with no commit, and appends nothing", async () => {
+    const { binary, root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const id = b4aScenarioId("f3-n7-unborn");
+    const options = b4aOptions(id, b4aExecutionConfig(binary, root));
+
+    // Back to a repository at its initial commit: the history is removed, the
+    // worktree and its files are not. `git status` still succeeds, so the
+    // observation is real and its `head` is honestly null — which is exactly
+    // the case `Checkpoint.git.head`'s 40-character contract cannot represent.
+    rmSync(join(root, ".git"), { recursive: true, force: true });
+    spawnSync("/usr/bin/git", ["init", "--quiet"], { cwd: root, encoding: "utf8" });
+    spawnSync("/usr/bin/git", ["config", "user.email", "drill@example.invalid"], { cwd: root, encoding: "utf8" });
+    spawnSync("/usr/bin/git", ["config", "user.name", "drill"], { cwd: root, encoding: "utf8" });
+
+    // With no commit, every file in the worktree is untracked, so the
+    // conformance gate would refuse first and the walk would never reach its
+    // terminal. Declaring exactly what is there is what lets the walk get far
+    // enough for the checkpoint to be the thing that refuses -- which is the
+    // property under test, and the gate is left doing its own job unchanged.
+    const present = spawnSync("/usr/bin/git", ["status", "--porcelain", "--untracked-files=all"], {
+      cwd: root,
+      encoding: "utf8",
+    })
+      .stdout.split("\n")
+      .map((line) => line.slice(3).trim())
+      .filter((entry) => entry !== "");
+    expect(present.length).toBeGreaterThan(0);
+
+    let message = "";
+    try {
+      await stopDaemon(await startDaemon({ ...options, envelope: { ...options.envelope, writeSet: present } }));
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("GIT_HEAD_UNBORN");
+
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)), { readOnly: true });
+    try {
+      expect(ledger.listEvents({ limit: 500 }).events.map((entry) => entry.event.type)).not.toContain(
+        "CHECKPOINT_WRITTEN",
+      );
+    } finally {
+      ledger.close();
+    }
+  }, 120_000);
+});
+
+describe("P8: a tracked deletion digests the empty string, and only a tracked deletion does", () => {
+  it("digests the empty string for a deleted declared path, and real bytes for one that is there", async () => {
+    const { binary, root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const id = b4aScenarioId("f3-p8-deletion");
+    const options = b4aOptions(id, b4aExecutionConfig(binary, root));
+
+    // Two declared paths, both committed by the fixture, and they differ in
+    // exactly the way this property is about:
+    //
+    //   `child.pid`   -- the subject REWRITES it at process start, so at the
+    //                    terminal the worktree holds it and the digest must be
+    //                    of its real bytes;
+    //   `src/walk.ts` -- nothing rewrites it, so deleting it here leaves the
+    //                    state git reports as a tracked deletion, and the
+    //                    digest must be of NO bytes.
+    //
+    // Deleting the one the subject recreates would have measured the wrong
+    // branch: the source would have taken its `readFileSync` path and the
+    // assertion would have been true without the deletion rule ever running.
+    rmSync(join(root, "src", "walk.ts"), { force: true });
+    expect(existsSync(join(root, "src", "walk.ts"))).toBe(false);
+    // Still in the index, which is what makes it a DELETION rather than an
+    // absence: git reports a status line for it, and the observer's own rule
+    // answers that line with the digest of no bytes.
+    expect(
+      spawnSync("/usr/bin/git", ["status", "--porcelain", "--untracked-files=all"], {
+        cwd: root,
+        encoding: "utf8",
+      }).stdout,
+    ).toContain("src/walk.ts");
+
+    const declared = { ...options.envelope, writeSet: ["child.pid", "src/walk.ts"] };
+    await stopDaemon(await startDaemon({ ...options, envelope: declared }));
+    const seen = persistedCheckpoint(id);
+
+    const EMPTY_SHA256 = createHash("sha256").update(Buffer.alloc(0)).digest("hex");
+    // Stated as a literal too, so this cannot pass by sharing a mistake with
+    // the expression that produced it.
+    expect(EMPTY_SHA256).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+
+    const deleted = seen.checkpoint.writeSetDigest.find((entry) => entry.path === "src/walk.ts");
+    expect(deleted?.sha256).toBe(EMPTY_SHA256);
+    // And the file really did stay deleted through the walk, so the digest
+    // above is the deletion branch's answer and not a coincidence.
+    expect(existsSync(join(root, "src", "walk.ts"))).toBe(false);
+
+    const present = seen.checkpoint.writeSetDigest.find((entry) => entry.path === "child.pid");
+    expect(existsSync(join(root, "child.pid"))).toBe(true);
+    expect(present?.sha256).toBe(
+      createHash("sha256").update(readFileSync(join(root, "child.pid"))).digest("hex"),
+    );
+    // The two answers differ, which is the whole point: one path was read and
+    // the other was observed absent, in the same walk.
+    expect(present?.sha256).not.toBe(deleted?.sha256);
+  }, 120_000);
+
+  it("and only a tracked deletion does: a declared path that never existed refuses instead", async () => {
+    // The other half of "only a tracked deletion does". A path git has never
+    // heard of produces no status line, so there is nothing for the deletion
+    // rule to answer and the source refuses rather than inventing the same
+    // empty digest. This is N8's law on the write-set side.
+    const { binary, root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const id = b4aScenarioId("f3-p8-never-existed");
+    const options = b4aOptions(id, b4aExecutionConfig(binary, root));
+    const declared = { ...options.envelope, writeSet: ["child.pid", "src/never-created.ts"] };
+
+    let message = "";
+    try {
+      await stopDaemon(await startDaemon({ ...options, envelope: declared }));
+    } catch (error: unknown) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("PATH_MISSING");
+    expect(message).toContain("src/never-created.ts");
+
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)), { readOnly: true });
+    try {
+      expect(ledger.listEvents({ limit: 500 }).events.map((entry) => entry.event.type)).not.toContain(
+        "CHECKPOINT_WRITTEN",
+      );
+    } finally {
+      ledger.close();
+    }
+  }, 120_000);
 });

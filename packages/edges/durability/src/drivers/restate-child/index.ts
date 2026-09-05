@@ -2,21 +2,37 @@ import { appendFileSync, existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CommitPolicy, ResolvedRoute } from "@acp/contracts";
-import type { ExecutionEvent, ExecutionRequest, ModelExecutionPort } from "@acp/contracts";
-import { openLedger } from "@acp/ledger";
+import { CONTRACT_VERSION, CommitPolicy, ResolvedRoute, buildIdempotencyKey } from "@acp/contracts";
+import type {
+  Checkpoint,
+  ExecutionEvent,
+  ExecutionRequest,
+  ModelExecutionPort,
+} from "@acp/contracts";
+import { createCheckpointStore, openLedger } from "@acp/ledger";
+import type { Ledger } from "@acp/ledger";
 
 import {
   INTENT_STEP,
+  OUTCOME_STEP,
   RESTATE_INGRESS_URL,
   RUNTIME_SERVICE_PORT,
   SupervisorError,
   applyEffect,
+  deriveEventCoordinate,
+  deterministicUuid,
   probeEffect,
   resolveScenarioRoot,
   scenarioLedgerPath,
 } from "@acp/runtime";
-import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import type {
+  BeatContext,
+  CheckpointRefused,
+  CheckpointSource,
+  DurableInvocation,
+  PlanStep,
+  ScenarioRoot,
+} from "@acp/runtime";
 import { ExecutionEffectError, RESTATE_ADMIN_URL, createExecutionEffects } from "@acp/runtime";
 import {
   RestateDriver,
@@ -150,6 +166,28 @@ export interface RestateChildConfig {
    * settles inside one tick and so leaves no interval for a restart to land in.
    */
   readonly effect: "TOY" | "EXECUTION";
+  /**
+   * What the SPAWNING SUITE observed about this scenario's worktree (V2-B1f/F3).
+   *
+   * **Facts, as data.** This child creates no `GitReadPort` and executes no
+   * git, exactly as `sqlite-supervisor-child` does not: a drill child is not a
+   * production observer, and giving it one would put a second git caller where
+   * the plane has deliberately kept exactly one. The suite has a real
+   * repository, observes it with its own `spawnGit`, and passes what it saw.
+   *
+   * **Absent means absent, not empty.** No facts, no checkpoint port, and the
+   * terminal beat refuses exactly as production does when its observation
+   * cannot be taken.
+   */
+  readonly checkpointFacts: CheckpointFacts | null;
+}
+
+/** The four git facts a checkpoint carries, observed by the spawning suite. */
+interface CheckpointFacts {
+  readonly worktreePath: string;
+  readonly head: string;
+  readonly branch: string;
+  readonly isDirty: boolean;
 }
 
 /**
@@ -321,6 +359,31 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
     throw new SupervisorError("port must be an integer");
   }
 
+  // V2-B1f/F3. Absent is lawful and means no checkpoint port; present is
+  // checked field by field, exactly like the invocation below, because every
+  // one of these values reaches a persisted artifact.
+  const rawFacts = value["checkpointFacts"] ?? null;
+  let checkpointFacts: CheckpointFacts | null = null;
+  if (rawFacts !== null) {
+    if (typeof rawFacts !== "object") {
+      throw new SupervisorError("checkpointFacts must be null or an object");
+    }
+    const facts = rawFacts as Record<string, unknown>;
+    const worktreePath = facts["worktreePath"];
+    const head = facts["head"];
+    const branch = facts["branch"];
+    const isDirty = facts["isDirty"];
+    if (
+      typeof worktreePath !== "string" ||
+      typeof head !== "string" ||
+      typeof branch !== "string" ||
+      typeof isDirty !== "boolean"
+    ) {
+      throw new SupervisorError("child config carries malformed checkpointFacts");
+    }
+    checkpointFacts = { worktreePath, head, branch, isDirty };
+  }
+
   const taskId = inv["taskId"];
   const attempt = inv["attempt"];
   const invocationId = inv["invocationId"];
@@ -352,8 +415,125 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
     port: rawPort,
     effect,
     role,
+    checkpointFacts,
     invocation: { taskId, attempt, invocationId, submittedAt, submissionDigest },
   };
+}
+
+/**
+ * The one next safe action a terminal ever names (V2-B1f/F3, §2.4).
+ *
+ * A module constant, never composed and never varied. Declared here and,
+ * identically, in `sqlite-supervisor-child` and in the daemon's production
+ * source, for the reason `DRILL_INSTRUCTION` is declared twice: unifying it
+ * would mean widening the runtime barrel, whose names are pinned by equality.
+ * The tests quote the literal verbatim rather than importing it.
+ */
+const NEXT_SAFE_ACTION = "Await the next owner-authorized action.";
+
+/**
+ * Assemble a drill-labelled checkpoint from facts this process was handed.
+ *
+ * The twin of `sqlite-supervisor-child`'s, and duplicated for the same reason
+ * `drillRoute` and `executionDrillRoute` are: one lives in `@acp/runtime` and
+ * one in `@acp/durability`, and unifying them would widen a pinned barrel.
+ *
+ * Every field still comes from something real: the coordinates this child
+ * derived, the events it already appended, and the worktree its suite actually
+ * observed. The digest arrays are `[]` because this child's config carries no
+ * envelope, so there is no authority, read-set or write-set it could truthfully
+ * digest.
+ */
+function drillCheckpointSource(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly emittedBy: string;
+  readonly facts: CheckpointFacts;
+}): CheckpointSource {
+  return {
+    assemble(step: PlanStep): Checkpoint | CheckpointRefused {
+      const recorded = input.ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({
+          taskId: input.invocation.taskId,
+          attempt: input.invocation.attempt,
+          transitionId: OUTCOME_STEP.transitionId,
+        }),
+      );
+      if (recorded === null) {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep" };
+      }
+      const parsed: unknown = JSON.parse(recorded.canonicalJson);
+      const completedAt =
+        typeof parsed === "object" && parsed !== null && "occurredAt" in parsed
+          ? (parsed as { readonly occurredAt: unknown }).occurredAt
+          : undefined;
+      if (typeof completedAt !== "string") {
+        return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep.completedAt" };
+      }
+
+      const coordinate = deriveEventCoordinate(input.invocation, step.transitionId, step.index);
+      return {
+        contractVersion: CONTRACT_VERSION,
+        checkpointId: deterministicUuid(
+          "checkpoint/" +
+            input.invocation.invocationId +
+            "/" +
+            input.invocation.taskId +
+            "/" +
+            String(input.invocation.attempt) +
+            "/" +
+            step.transitionId,
+        ),
+        taskId: input.invocation.taskId,
+        attempt: input.invocation.attempt,
+        worker: input.emittedBy,
+        createdAt: coordinate.occurredAt,
+        lastAtomicStep: {
+          index: OUTCOME_STEP.index,
+          label: OUTCOME_STEP.transitionId,
+          completedAt,
+        },
+        git: {
+          head: input.facts.head,
+          branch: input.facts.branch,
+          worktreePath: input.facts.worktreePath,
+          isDirty: input.facts.isDirty,
+        },
+        authorityDigest: [],
+        readSetDigest: [],
+        writeSetDigest: [],
+        receipts: [],
+        artifacts: [],
+        pendingWork: [],
+        nextSafeAction: NEXT_SAFE_ACTION,
+        notes: null,
+      };
+    },
+  };
+}
+
+/**
+ * The checkpoint port for one beat context, or none at all.
+ *
+ * One producer for both roles below, so the endpoint and the cancel client
+ * cannot come to disagree about where a checkpoint resolves.
+ */
+function checkpointsFor(
+  config: RestateChildConfig,
+  ledger: Ledger,
+  scenarioRoot: ScenarioRoot,
+  invocation: DurableInvocation,
+): BeatContext["checkpoints"] {
+  if (config.checkpointFacts === null) return undefined;
+  return createCheckpointStore({
+    ledgerPath: scenarioLedgerPath(scenarioRoot),
+    source: drillCheckpointSource({
+      ledger,
+      invocation,
+      emittedBy: config.emittedBy,
+      facts: config.checkpointFacts,
+    }),
+  });
 }
 
 /** The file whose appearance releases a paused child. */
@@ -491,6 +671,7 @@ async function runCancelClient(config: RestateChildConfig): Promise<void> {
     emittedBy: config.emittedBy,
     route:
       config.effect === "EXECUTION" ? executionDrillRoute(invocation) : drillRoute(invocation),
+    checkpoints: checkpointsFor(config, ledger, scenarioRoot, invocation),
   });
 
   const driver = new RestateDriver(
@@ -568,6 +749,7 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
     emittedBy: config.emittedBy,
     route:
       config.effect === "EXECUTION" ? executionDrillRoute(invocation) : drillRoute(invocation),
+    checkpoints: checkpointsFor(config, ledger, scenarioRoot, invocation),
   });
 
   const onBeat = async (point: string, taskId: string): Promise<void> => {

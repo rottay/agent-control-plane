@@ -6,6 +6,7 @@ import type {
   OperationCoordinate,
   PostconditionVerdict,
 } from "../../contracts/index.js";
+import type { CheckpointPort } from "../../checkpoint/index.js";
 import { deriveEventCoordinate } from "../coordinates/index.js";
 import { buildIdempotencyKey } from "@acp/contracts";
 
@@ -99,6 +100,23 @@ export interface BeatContext {
    * domain holds no routing authority.
    */
   readonly route: ResolvedRoute;
+  /**
+   * Where this walk's checkpoint is persisted (V2-B1f/F3).
+   *
+   * **Optional, and the optionality is the refusal rather than a default.** A
+   * construction that does not bind one is a construction whose terminal beat
+   * cannot write a checkpoint, and the terminal therefore refuses instead of
+   * appending a `CHECKPOINT_WRITTEN` with nothing behind it — which is exactly
+   * what every walk did before this packet. The alternative, a required member,
+   * would have forced every lifecycle-verb construction that never reaches a
+   * terminal to invent one, and an invented port at that seam is the defect in
+   * a different place.
+   *
+   * It is a port and not a source: assembling the checkpoint and storing it are
+   * two different authorities, and this domain holds neither. The daemon and
+   * the drill children compose the two and hand the result in.
+   */
+  readonly checkpoints?: CheckpointPort | undefined;
 }
 
 /** What one durable beat did. Small, canonical, and safe to journal. */
@@ -273,8 +291,80 @@ export function appendPlanStep(context: BeatContext, step: PlanStep): BeatResult
 
   assertCausalPredecessor(context, step, event.causationId);
 
+  if (step.eventType === "CHECKPOINT_WRITTEN") {
+    const persisted = persistCheckpoint(context, step);
+    const result = context.ledger.append({
+      ...event,
+      payload: { ...event.payload, [CHECKPOINT_DIGEST_KEY]: persisted.digest },
+    });
+    return { event: result.inserted ? result.record.event : null, inserted: result.inserted };
+  }
+
   const result = context.ledger.append(event);
   return { event: result.inserted ? result.record.event : null, inserted: result.inserted };
+}
+
+/**
+ * The payload key the persisted checkpoint's digest travels under.
+ *
+ * A literal in this module, exactly as `initiativeId` and the recorded route
+ * are literals in the event builder: a payload key is a fact about what an
+ * event carries, not a contract shape, and `ControlPlaneEvent` already admits
+ * the payload as a bounded record.
+ */
+const CHECKPOINT_DIGEST_KEY = "checkpointDigest";
+
+/**
+ * Persist the terminal's checkpoint, or refuse before anything is appended.
+ *
+ * **The whole point of the packet is in the order.** `CHECKPOINT_WRITTEN` was a
+ * `PLAIN` beat like any other, so both plans appended it and nothing was ever
+ * written: every completed walk, under either commit policy, recorded
+ * "checkpointed" with nothing behind it. The persist happens here, before the
+ * append, in the shape `assertCausalPredecessor` already establishes — an
+ * append is a claim, and a log that only grows cannot retract one.
+ *
+ * Three cases and no fourth:
+ *
+ * - **no member** — this construction cannot write a checkpoint, so it refuses
+ *   rather than appending an event whose whole meaning is that one exists;
+ * - **the port refuses** — the refusal is reported verbatim and nothing is
+ *   appended;
+ * - **the port succeeds** — the store's own digest goes into the payload and
+ *   the append follows.
+ *
+ * The refusal is a `SupervisorError`, which `classifyFailure` does not settle.
+ * That is deliberate and is what makes "appends nothing" true of the whole
+ * walk: a settled failure would append a settlement, and the ledger head would
+ * move for a task that never reached its terminal.
+ */
+function persistCheckpoint(
+  context: BeatContext,
+  step: PlanStep,
+): { readonly ok: true; readonly digest: string; readonly bytes: number } {
+  const port = context.checkpoints;
+  if (port === undefined) {
+    throw new SupervisorError(
+      "refusing to append " +
+        step.transitionId +
+        ": this walk has no checkpoint port, so the event would claim a" +
+        " checkpoint no store holds",
+    );
+  }
+
+  const persisted = port.persist(step);
+  if (!persisted.ok) {
+    throw new SupervisorError(
+      "refusing to append " +
+        step.transitionId +
+        ": the checkpoint was not persisted (" +
+        persisted.reason +
+        " at " +
+        persisted.at +
+        "), so the event would name a digest the store does not hold",
+    );
+  }
+  return persisted;
 }
 
 /**

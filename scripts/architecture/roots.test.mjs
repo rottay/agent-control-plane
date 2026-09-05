@@ -555,6 +555,103 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("authors a singular binding: key");
   });
 
+  it("refuses a domain source that constructs a CHECKPOINT_WRITTEN event (L-F3-1)", async () => {
+    // V2-B1f/F3's law, with a fixture that can falsify it. Before that packet
+    // the terminal appended the event and nothing was ever written, so a third
+    // producer beside the plan and the guard would have been indistinguishable
+    // from the two that are lawful. This is what keeps one from appearing.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line and the offending path.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/probe/index.ts",
+      'export const forged = { type: "CHECKPOINT_WRITTEN", payload: {} };\n',
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "packages/domains/runtime/src/probe/index.ts constructs a CHECKPOINT_WRITTEN event",
+    );
+  });
+
+  it("leaves the lawful CHECKPOINT_WRITTEN forms alone: a case, a comparison, a member, a message", async () => {
+    // The negative control, and the half that keeps the law honest. Every form
+    // below is lawful and must stay lawful: the terminal guard compares the
+    // step's event type, the frozen contract vocabularies list the name, a
+    // status renderer switches on it, and a refusal has to name what it
+    // refuses. A law that caught any of them would be a law its author had to
+    // keep explaining -- and the last one is load bearing, because the guard
+    // that enforces this packet must be able to say the word.
+    //
+    // The provider mapping is here too. `"checkpoint.emitted" ->
+    // "CHECKPOINT_WRITTEN"` is a name in a table, and the edges stratum is
+    // outside the law's scope by construction rather than by exemption; the
+    // form is included so a future re-scoping cannot quietly catch it.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/probe/index.ts",
+      [
+        'export const TYPES = ["TASK_DISCOVERED", "CHECKPOINT_WRITTEN"];',
+        'export const isTerminal = (t) => t === "CHECKPOINT_WRITTEN";',
+        'export const label = (t) => { switch (t) { case "CHECKPOINT_WRITTEN": return "checkpointed"; default: return t; } };',
+        'export const persist = (step) => { if (step.eventType === "CHECKPOINT_WRITTEN") throw new Error("refusing to append CHECKPOINT_WRITTEN without a persisted checkpoint"); };',
+        'export const SIGNAL = { "checkpoint.emitted": "CHECKPOINT_WRITTEN" };',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("index.ts constructs a CHECKPOINT_WRITTEN event");
+  });
+
+  it("refuses a second artifact-root rule anywhere but the store that owns it (L-F3-2)", async () => {
+    // N13, mechanically. The rule used to live in the gateway's roadmap-write
+    // seam and was DELETED when it moved into `artifact-store`; this is what
+    // keeps a second copy from coming back into any `src` the law scans.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/gateway/src/probe/index.ts",
+      [
+        'import { dirname, join } from "node:path";',
+        'export function artifactRootFor(ledgerPath) { return join(dirname(ledgerPath), "artifacts"); }',
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("declares a second artifactRootFor");
+    expect(output).toContain("packages/entrypoints/gateway/src/probe/index.ts");
+  });
+
+  it("leaves a lawful consumer of the one rule alone: importing and calling it", async () => {
+    // The negative control for L-F3-2. Every consumer now imports the helper
+    // and calls it, which is exactly what "one home" is supposed to look like.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/entrypoints/gateway/src/probe/index.ts",
+      [
+        'import { artifactRootFor, publishArtifact } from "@acp/ledger";',
+        "export const publish = (ledgerPath, content) => publishArtifact(artifactRootFor(ledgerPath), content);",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("declares a second artifactRootFor");
+    expect(output).not.toContain("composes an artifacts directory");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The
