@@ -176,7 +176,7 @@ describe("the switch decision, cross-checked against the router", () => {
 // ---------------------------------------------------------------------------
 
 describe("the switch chain, played as the executor over a real ledger", () => {
-  it("appends the plan's five events verbatim, in order, then survives a close and reopen", () => {
+  it("appends the plan's four events verbatim, in order, then survives a close and reopen", () => {
     const taskId = "8c8c8c8c-8c8c-4c8c-8c8c-8c8c8c8c8c01";
     const attempt = 1;
     const ledgerPath = freshLedgerPath();
@@ -191,17 +191,15 @@ describe("the switch chain, played as the executor over a real ledger", () => {
       "TASK_STATE_CHANGED",
       "LEASE_REVOKED",
       "ACCOUNT_SWITCH_STARTED",
-      "ACCOUNT_SWITCH_COMPLETED",
     ]);
-    const [quotaWarning, quotaBlocked, leaseRevoked, switchStarted, switchCompleted] = plan.events;
+    const [quotaWarning, quotaBlocked, leaseRevoked, switchStarted] = plan.events;
     if (
       quotaWarning === undefined ||
       quotaBlocked === undefined ||
       leaseRevoked === undefined ||
-      switchStarted === undefined ||
-      switchCompleted === undefined
+      switchStarted === undefined
     ) {
-      throw new Error("expected exactly five switch events");
+      throw new Error("expected exactly four switch events");
     }
 
     const ledger = track(openLedger(ledgerPath));
@@ -239,8 +237,9 @@ describe("the switch chain, played as the executor over a real ledger", () => {
     );
     expect(running.inserted).toBe(true);
 
-    // The plan's own five events, in the order decideSwitch returned them,
-    // payloads verbatim -- never re-derived.
+    // The plan's own four events, in the order decideSwitch returned them,
+    // payloads verbatim -- never re-derived. The plan ends at the switch's
+    // start: a completion would be a claim about work no step here performs.
     const quotaWarningAppend = ledger.append(
       buildSwitchLedgerEvent({
         envelope: envelopeFor(taskId, "quota.warning"),
@@ -310,23 +309,7 @@ describe("the switch chain, played as the executor over a real ledger", () => {
     expect(switchStartedAppend.inserted).toBe(true);
     expect(switchStartedAppend.record.event.payload).toEqual(switchStarted.payload);
 
-    const switchCompletedAppend = ledger.append(
-      buildSwitchLedgerEvent({
-        envelope: envelopeFor(taskId, "account-switch.completed"),
-        taskId,
-        attempt,
-        transitionId: "account-switch.completed",
-        type: switchCompleted.type,
-        fromState: "QUOTA_BLOCKED",
-        toState: "QUOTA_BLOCKED",
-        emittedBy: SWITCH_PILOT_WRITER,
-        payload: switchCompleted.payload,
-      }),
-    );
-    expect(switchCompletedAppend.inserted).toBe(true);
-    expect(switchCompletedAppend.record.event.payload).toEqual(switchCompleted.payload);
-
-    // Seven events total: the harness's two, then the plan's five, in
+    // Six events total: the harness's two, then the plan's four, in
     // append order.
     const appendOrder = ledger.listEvents({ limit: 200 }).events.map((record) => record.event.type);
     expect(appendOrder).toEqual([
@@ -336,7 +319,6 @@ describe("the switch chain, played as the executor over a real ledger", () => {
       "TASK_STATE_CHANGED",
       "LEASE_REVOKED",
       "ACCOUNT_SWITCH_STARTED",
-      "ACCOUNT_SWITCH_COMPLETED",
     ]);
     expect(ledger.getTask(taskId)?.currentState).toBe("QUOTA_BLOCKED");
 
@@ -359,7 +341,7 @@ describe("the switch chain, played as the executor over a real ledger", () => {
     const reopened = track(openLedger(ledgerPath));
     const rehydrated = reopened.listEvents({ limit: 200 });
     expect(rehydrated.events.map((record) => record.event.type)).toEqual(appendOrder);
-    expect(rehydrated.events.map((record) => record.sequence)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(rehydrated.events.map((record) => record.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(reopened.getTask(taskId)?.currentState).toBe("QUOTA_BLOCKED");
     const reopenedIntegrity = reopened.verifyIntegrity();
     expect(reopenedIntegrity.ok).toBe(true);
@@ -383,8 +365,8 @@ describe("the switch chain, played as the executor over a real ledger", () => {
     );
     expect(continued.inserted).toBe(true);
     expect(continued.record.sequence).toBe(rehydrated.events.length + 1);
-    expect(reopened.status().eventCount).toBe(8);
-    expect(reopened.status().headSequence).toBe(8);
+    expect(reopened.status().eventCount).toBe(7);
+    expect(reopened.status().headSequence).toBe(7);
     expect(reopened.getTask(taskId)?.currentState).toBe("RUNNING");
     const continuedIntegrity = reopened.verifyIntegrity();
     expect(continuedIntegrity.ok).toBe(true);

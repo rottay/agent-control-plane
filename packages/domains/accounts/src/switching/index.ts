@@ -352,15 +352,29 @@ export function decideSwitch(request: SwitchRequest): SwitchOutcome {
         "CONTINUE",
       ]),
       selectedAccountId: chosen.accountId,
+      // The events end where the decision ends (V2-B1f/F1).
+      //
+      // The plan declares all eleven steps, and it always will: the steps are
+      // what the control plane *must* do, and shortening them would foreclose
+      // the sessions F5 opens. What this list may carry is narrower — a record
+      // of what has actually happened by the time the plan is handed over.
+      //
+      // `ACCOUNT_SWITCH_COMPLETED` used to sit here, beside `..._STARTED`,
+      // emitted in the same breath and before any of steps 6-11 had happened
+      // or *could* happen: nothing had selected an account, probed it, opened a
+      // session, revalidated authority or rehydrated a checkpoint. A completion
+      // is a claim about the end of a switch, and this module runs at its
+      // beginning. Only the session-opener that finishes the switch may append
+      // it, and until F5 builds one, nothing may.
+      //
+      // `ACCOUNT_SWITCH_STARTED` stays, and its `toAccountId` is not a claim
+      // that `SELECT_ACCOUNT` was performed: `rankAccounts` chose that account
+      // above, so the field records a decision this module has genuinely made.
       events: Object.freeze([
         event("QUOTA_WARNING", { accountId: currentAccountId }),
         event("TASK_STATE_CHANGED", { toState: "QUOTA_BLOCKED" }),
         event("LEASE_REVOKED", { accountId: currentAccountId }),
         event("ACCOUNT_SWITCH_STARTED", {
-          fromAccountId: currentAccountId,
-          toAccountId: chosen.accountId,
-        }),
-        event("ACCOUNT_SWITCH_COMPLETED", {
           fromAccountId: currentAccountId,
           toAccountId: chosen.accountId,
         }),

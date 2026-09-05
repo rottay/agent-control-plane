@@ -230,6 +230,109 @@ describe("law 1 and C2: it recommends, and it invents no vocabulary", () => {
   });
 });
 
+/**
+ * V2-B1f/F1: the planner records the decision, and claims no work.
+ *
+ * There was no pin on the `SWITCH` plan's event list before this packet, which
+ * is how a fabricated `ACCOUNT_SWITCH_COMPLETED` sat beside `..._STARTED` for
+ * as long as it did: every existing law checked the events against the frozen
+ * vocabulary, the state enums and the step order, and all of those passed for
+ * an event that was simply not true yet. A list nothing enumerates is a list
+ * nothing defends.
+ */
+describe("F1: a SWITCH plan's events end at the decision", () => {
+  it("P1 emits exactly the four types, in order, ending at ACCOUNT_SWITCH_STARTED", () => {
+    const outcome = decideSwitch(request());
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    expect(outcome.plan.events.map((candidate) => candidate.type)).toEqual([
+      "QUOTA_WARNING",
+      "TASK_STATE_CHANGED",
+      "LEASE_REVOKED",
+      "ACCOUNT_SWITCH_STARTED",
+    ]);
+  });
+
+  it("never emits ACCOUNT_SWITCH_COMPLETED, for any trigger", () => {
+    // The defect by name. A completion is a claim about the end of a switch,
+    // and this module runs at its beginning; only the session-opener F5 builds
+    // may append one. Asserted across every trigger so a later branch cannot
+    // reintroduce it somewhere this suite was not looking.
+    for (const trigger of SWITCH_TRIGGERS) {
+      const outcome = decideSwitch(request({ trigger }));
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.plan.events.map((candidate) => candidate.type)).not.toContain(
+        "ACCOUNT_SWITCH_COMPLETED",
+      );
+    }
+  });
+
+  it("P4 still declares all eleven steps: F1 narrows what may be claimed, not what the plan states", () => {
+    // The steps are what the control plane must do; the events are what has
+    // happened so far. Shortening the steps to match the events would foreclose
+    // the sessions F5 opens, and is exactly what this packet must not do.
+    const outcome = decideSwitch(request());
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    expect(outcome.plan.steps).toHaveLength(11);
+    expect([...outcome.plan.steps]).toEqual([...SWITCH_STEPS]);
+    expect(outcome.plan.steps).toContain("CONTINUE");
+    expect(outcome.plan.steps).toContain("SELECT_ACCOUNT");
+  });
+
+  it("keeps ACCOUNT_SWITCH_STARTED, whose toAccountId records the router's own choice", () => {
+    // Not a claim that SELECT_ACCOUNT (step 6) was performed: `rankAccounts`
+    // made that choice while the plan was being built, so the field records a
+    // decision this module genuinely made.
+    const outcome = decideSwitch(request());
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    const started = outcome.plan.events.find((c) => c.type === "ACCOUNT_SWITCH_STARTED");
+    expect(started?.payload).toEqual({ fromAccountId: "a", toAccountId: "b" });
+    expect(outcome.plan.selectedAccountId).toBe("b");
+  });
+
+  it("P3 leaves the DRAIN trail byte-identical, asserted against literals", () => {
+    // Literals rather than a re-run of the planner: comparing the planner to
+    // itself would pass no matter what it emitted. These are the values HEAD
+    // produced before F1, written out.
+    const outcome = decideSwitch(request({ trigger: "QUOTA_WARNING" }));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    expect(outcome.plan.kind).toBe("DRAIN");
+    expect(outcome.plan.accountStatus).toBe("DRAINING");
+    expect(outcome.plan.taskState).toBeNull();
+    expect(outcome.plan.selectedAccountId).toBeNull();
+    expect([...outcome.plan.steps]).toEqual([
+      "MARK_ACCOUNT_DRAINING",
+      "FINISH_CURRENT_ATOMIC_STEP",
+      "WRITE_CHECKPOINT",
+    ]);
+    expect(outcome.plan.events.map((c) => c.type)).toEqual(["QUOTA_WARNING"]);
+    expect(outcome.plan.events[0]?.payload).toEqual({ accountId: "a" });
+  });
+
+  it("P3 leaves the ESCALATE trail byte-identical, asserted against literals", () => {
+    const outcome = decideSwitch(
+      request({ routing: routing(["a", "b"], { records: [authRequired("a"), record("b")] }) }),
+    );
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    expect(outcome.plan.kind).toBe("ESCALATE");
+    expect(outcome.plan.accountStatus).toBe("AUTH_REQUIRED");
+    expect(outcome.plan.taskState).toBe("AUTH_REQUIRED");
+    expect(outcome.plan.selectedAccountId).toBeNull();
+    expect([...outcome.plan.steps]).toEqual([]);
+    expect(outcome.plan.events.map((c) => c.type)).toEqual(["AUTH_REQUIRED_RAISED"]);
+  });
+});
+
 describe("law 4: the account states are honored", () => {
   it("escalates an AUTH_REQUIRED account to the owner and touches no credential", () => {
     const outcome = decideSwitch(

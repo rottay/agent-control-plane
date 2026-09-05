@@ -52,6 +52,7 @@ new records from `_template.md`, which carries the required fields.
 | 0034 | [The instruction channel: what the plane asks a model, and the two transports it may not ask yet](0034-the-instruction-channel.md) | accepted |
 | 0035 | [The router reads the usage the ledger recorded](0035-the-router-reads-recorded-usage.md) | accepted |
 | 0036 | [A recorded operator action reaches the election](0036-operator-state-reaches-the-election.md) | accepted |
+| 0037 | [The switch records only what happened](0037-the-switch-records-only-what-happened.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

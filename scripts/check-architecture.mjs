@@ -6213,6 +6213,78 @@ const V2B1E_WRITE_SET = [
   "scripts/architecture/roots.test.mjs",
 ];
 
+/**
+ * V2-B1f / F1 — the switch records only what happened.
+ *
+ * `decideSwitch`'s `SWITCH` branch emitted five events, and the fifth was
+ * `ACCOUNT_SWITCH_COMPLETED` sitting beside `ACCOUNT_SWITCH_STARTED` -- emitted
+ * in the same breath, before any of steps 6-11 had happened or could happen.
+ * Nothing had selected an account, probed it, opened a session, revalidated
+ * authority or rehydrated a checkpoint. A completion is a claim about the end of
+ * a switch, produced at its beginning.
+ *
+ * The executor could not catch it because it never looked: `executeSwitchPlan`
+ * iterated `plan.events` and never read `plan.steps` at all. Its three guards
+ * were real and stay so, but none asks whether the work an event CLAIMS was
+ * performed.
+ *
+ * **F1 removes the producer, never the type.** `ACCOUNT_SWITCH_COMPLETED` stays
+ * in the frozen contracts and protocol vocabularies and in every read model that
+ * renders it; the session-opener a later packet builds will append it.
+ *
+ * **The executor becomes step-aware**, with a module-private table classifying
+ * every event as step-independent (`QUOTA_WARNING`, `AUTH_REQUIRED_RAISED`,
+ * `ACCOUNT_SWITCH_STARTED`) or step-claiming, and a **claimable prefix** of
+ * steps 1-5. The word is exact: the executor performs no step, it appends
+ * events, so the honest question is what may be RECORDED rather than what was
+ * done. Within 1-5 only steps 2 and 5 have a claiming event; 1, 3 and 4 have
+ * none and F1 claims none. Three refusals fire before any append.
+ *
+ * Event and step names are deliberately not in correspondence -- a `DRAIN` plan
+ * has three steps and one event naming none of them, and `ESCALATE` has zero
+ * steps -- so a name-matching guard would refuse two lawful plan kinds. The
+ * table is what makes the rule true instead of merely plausible.
+ *
+ * **Nine paths: seven briefed, two adjudicated.** The brief authorized seven and
+ * the writer stopped at that boundary twice rather than improvising an eighth;
+ * each addition was ruled a mechanical omission by an independent adjudication,
+ * and neither changed a substantive decision.
+ *
+ *   - `scripts/architecture/roots.test.mjs` -- the brief's own N8 places the
+ *     `L-B1F-1` probe and its negative control in the `scripts/architecture`
+ *     suite, and `runFenceAgainst`/`syntheticTree` are module-private to that
+ *     one file, which the seven did not list. Two halves of one accepted
+ *     document disagreed about where a probe runs. Without it the law would
+ *     ship enforced and **unfalsified**: after F1 it has no permitted site, so
+ *     the probe is its only positive evidence.
+ *   - `packages/domains/accounts/test/pilots/index.test.ts` -- the only consumer
+ *     of `decideSwitch`'s event list outside the set. It pinned five events and
+ *     hand-appended the completion through its own harness, so the accepted 5->4
+ *     change made it red. Realignment of coverage to a decision already taken,
+ *     not new coverage: the `COMPLETED`-absent negative stays in the switching
+ *     suite, and this pilot asserts nothing new.
+ *
+ * `SWITCH_STEPS` stays 11: the steps are what the plane must do, and shortening
+ * them would foreclose the later packets. Nothing is exported: the table and the
+ * prefix are module-private and the executor already imported from
+ * `@acp/accounts`, so `ACCOUNTS_PUBLIC_EXPORTS` stays 76 and
+ * `RUNTIME_PUBLIC_EXPORTS` stays 230. `PATH_SCOPED_LAWS` 94 -> 95 for
+ * `L-B1F-1`. `G1_MOVE_MAP` stays 302 -- nothing moves.
+ *
+ * Record: `docs/architecture/0037-the-switch-records-only-what-happened.md`.
+ */
+const V2B1F_WRITE_SET = [
+  "packages/domains/accounts/src/switching/index.ts",
+  "packages/domains/accounts/test/switching/index.test.ts",
+  "packages/domains/runtime/src/switch-executor/index.ts",
+  "packages/domains/runtime/test/switch-executor/index.test.ts",
+  "docs/architecture/0037-the-switch-records-only-what-happened.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "packages/domains/accounts/test/pilots/index.test.ts",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6360,6 +6432,7 @@ const WRITE_SET = [
   ...V2B1C_WRITE_SET,
   ...V2B1D_WRITE_SET,
   ...V2B1E_WRITE_SET,
+  ...V2B1F_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7412,6 +7485,14 @@ const PATH_SCOPED_LAWS = [
   {
     law: "one fold derives an account's effective state, and no door derives a second",
     scope: "packages/domains/accounts/**/src, packages/domains/runtime/**/src, packages/entrypoints/*/src",
+  },
+  // V2-B1f/F1. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 94 -> 95. The kernel vocabularies are
+  // outside this scope by construction, which is why the law needs no exemption
+  // list to leave the frozen event enums alone.
+  {
+    law: "no module constructs an ACCOUNT_SWITCH_COMPLETED event",
+    scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
   },
 ];
 
@@ -15770,6 +15851,66 @@ if (tracked.status === 0) {
   }
   notes.push(
     "one operator-state fold over " + String(operatorStateScope.length) + " sources, and no door derives a second",
+  );
+
+  // --- L-B1F-1: nobody constructs a completion the switch has not earned.
+  //
+  // `decideSwitch` emitted `ACCOUNT_SWITCH_COMPLETED` beside
+  // `ACCOUNT_SWITCH_STARTED`, before any of the steps it names could have
+  // happened. V2-B1f/F1 removed that producer. This law is what keeps it
+  // removed: within the domains and the entrypoints, no module may CONSTRUCT
+  // such an event.
+  //
+  // **The type is not forbidden -- constructing one is.** The event stays in the
+  // frozen contracts and protocol vocabularies, and every read model that
+  // renders it keeps working; the session-opener a later packet builds will
+  // append it, and that packet moves this law rather than working around it.
+  // The kernel vocabularies sit outside the scope **by construction**, so no
+  // exemption list is needed to spare them, which is the difference between a
+  // scope that is reasoned about and one that is patched.
+  //
+  // **Constructor shapes only.** The two forms that actually build an event:
+  // `type: "ACCOUNT_SWITCH_COMPLETED"` and `event("ACCOUNT_SWITCH_COMPLETED"`.
+  // Deliberately NOT a ban on the string: `case "ACCOUNT_SWITCH_COMPLETED":`,
+  // `=== "ACCOUNT_SWITCH_COMPLETED"`, membership in an array or enum, and the
+  // executor's own refusal -- which must name what it refuses -- are all lawful
+  // and all stay. A law that caught them would be a law its author had to keep
+  // explaining, and `stripComments` removes the prose case before either
+  // pattern is applied.
+  //
+  // **After F1 the law has no permitted site**, so the probe is its only
+  // positive evidence; a negative control beside it asserts the skipped forms do
+  // not trip it. Both live in `scripts/architecture/roots.test.mjs`.
+  const completionScope = tracked.status === 0
+    ? tracked.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter(
+          (relativePath) =>
+            /\.tsx?$/.test(relativePath) &&
+            !relativePath.includes("/test/") &&
+            (/^packages\/domains\/[^/]+\/src\//.test(relativePath) ||
+              /^packages\/entrypoints\/[^/]+\/src\//.test(relativePath)),
+        )
+    : [];
+  requireScope("no module constructs an ACCOUNT_SWITCH_COMPLETED event", completionScope.length);
+  for (const relativePath of completionScope) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    const live = stripComments(content);
+    // The object-literal constructor, and the `event(...)` helper the switching
+    // module uses. Both name the type in the position that BUILDS one.
+    if (/type:\s*"ACCOUNT_SWITCH_COMPLETED"/.test(live) || /event\(\s*"ACCOUNT_SWITCH_COMPLETED"\s*,/.test(live)) {
+      fail(
+        relativePath +
+          " constructs an ACCOUNT_SWITCH_COMPLETED event; only the session-opener that" +
+          " finishes a switch may append one, and nothing opens a session yet",
+      );
+    }
+  }
+  notes.push(
+    "no ACCOUNT_SWITCH_COMPLETED is constructed across " + String(completionScope.length) + " domain and entrypoint sources",
   );
 
   // --- L-B1C-1: one producer of an execution instruction.

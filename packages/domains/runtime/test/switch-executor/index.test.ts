@@ -1,8 +1,8 @@
 import { AccountRecord, CONTRACT_VERSION } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import type { Lease } from "@acp/contracts";
-import { DEFAULT_ROUTING_CONFIG, decideSwitch } from "@acp/accounts";
-import type { RoutingRequest } from "@acp/accounts";
+import { DEFAULT_ROUTING_CONFIG, SWITCH_STEPS, decideSwitch } from "@acp/accounts";
+import type { RoutingRequest, SwitchEvent, SwitchPlan } from "@acp/accounts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
@@ -461,5 +461,267 @@ describe("the causal thread, and the cross-task edge it produces (P8-8E2, C1)", 
     expect(edge.event.taskId).toBe(switching.taskId);
     expect(eventIdToTaskId.get(triggerEvent.event.eventId)).toBe(triggering.taskId);
     expect(edge.event.taskId).not.toBe(triggering.taskId);
+  });
+});
+
+
+/**
+ * V2-B1f/F1: the executor reads the steps, not only the events.
+ *
+ * Before this packet `executeSwitchPlan` iterated `plan.events` and never
+ * consulted `plan.steps`, so it would faithfully append a completion for a
+ * switch that had not happened. Each refusal below is asserted **twice**: that
+ * it throws, and that the ledger is untouched afterwards — a guard that fired
+ * after a partial append would record part of a switch it then called unlawful.
+ *
+ * Nothing here spawns a process, opens a socket, reaches a provider or spends
+ * (N7); the fixtures are a local SQLite ledger and plain values.
+ */
+
+/** The real plan, with one field replaced. Everything else stays the planner's. */
+function planWith(base: SwitchPlan, overrides: Partial<SwitchPlan>): SwitchPlan {
+  return Object.freeze({ ...base, ...overrides });
+}
+
+const completedEvent: SwitchEvent = {
+  type: "ACCOUNT_SWITCH_COMPLETED",
+  payload: { fromAccountId: "current", toAccountId: "spare" },
+};
+
+describe("F1: the executor refuses a claim the switch has not earned", () => {
+  /** A ledger, an invocation and the post-F1 plan, for one refusal drill. */
+  function drill(id: string, taskId: string): {
+    ledger: Ledger;
+    invocation: DurableInvocation;
+    plan: SwitchPlan;
+    before: number;
+  } {
+    const { ledger, invocation } = openWithTask(id, taskId);
+    const outcome = switchPlan();
+    if (!outcome.ok) throw new Error("expected a switch plan");
+    return { ledger, invocation, plan: outcome.plan, before: ledger.status().eventCount };
+  }
+
+  function run(ledger: Ledger, invocation: DurableInvocation, plan: SwitchPlan): void {
+    executeSwitchPlan({
+      ledger,
+      invocation,
+      plan,
+      emittedBy: EMITTED_BY,
+      lease: leaseFor("/tmp/acp-p8w-worktree"),
+      taskState: ledger.getTask(invocation.taskId)?.currentState ?? "DISCOVERED",
+    });
+  }
+
+  it("N1 refuses ACCOUNT_SWITCH_COMPLETED by name, and appends nothing", () => {
+    const { ledger, invocation, plan, before } = drill(
+      "switch-f1-completed",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c21",
+    );
+    const fabricated = planWith(plan, { events: Object.freeze([...plan.events, completedEvent]) });
+
+    expect(() => {
+      run(ledger, invocation, fabricated);
+    }).toThrow(SupervisorError);
+    // The message names who may append it, so the refusal teaches the rule
+    // rather than only enforcing it.
+    expect(() => {
+      run(ledger, invocation, fabricated);
+    }).toThrow(/only the session-opener may append it/);
+    expect(ledger.status().eventCount).toBe(before);
+  });
+
+  it("N1 refuses it even when it is the only event, and even first in the list", () => {
+    // So the guard cannot be passing for a positional reason.
+    const { ledger, invocation, plan, before } = drill(
+      "switch-f1-completed-only",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c22",
+    );
+    const only = planWith(plan, { events: Object.freeze([completedEvent]) });
+    const first = planWith(plan, { events: Object.freeze([completedEvent, ...plan.events]) });
+
+    expect(() => {
+      run(ledger, invocation, only);
+    }).toThrow(SupervisorError);
+    expect(() => {
+      run(ledger, invocation, first);
+    }).toThrow(SupervisorError);
+    expect(ledger.status().eventCount).toBe(before);
+  });
+
+  it("N2 refuses an event claiming a step the plan does not declare", () => {
+    // `LEASE_REVOKED` claims `RELEASE_LEASE`. Strip that step and the event is
+    // a claim about work the plan itself never said would happen.
+    const { ledger, invocation, plan, before } = drill(
+      "switch-f1-undeclared",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c23",
+    );
+    const stripped = planWith(plan, {
+      steps: Object.freeze(plan.steps.filter((step) => step !== "RELEASE_LEASE")),
+    });
+
+    expect(() => {
+      run(ledger, invocation, stripped);
+    }).toThrow(SupervisorError);
+    expect(() => {
+      run(ledger, invocation, stripped);
+    }).toThrow(/does not declare/);
+    expect(ledger.status().eventCount).toBe(before);
+  });
+
+  it("N3 refuses an event claiming a declared step outside the claimable prefix", () => {
+    // The step is declared -- `CONTINUE` is step 11 of every SWITCH plan -- so
+    // this is not N2 in disguise. What makes it unlawful is that nothing opens
+    // a session yet, so no record may claim one. The event type is renamed onto
+    // a step-claiming type that maps past the prefix, which is exactly the
+    // shape a premature F5 would produce.
+    const { ledger, invocation, plan, before } = drill(
+      "switch-f1-beyond-prefix",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c24",
+    );
+    expect(plan.steps).toContain("CONTINUE");
+
+    const beyond = planWith(plan, { events: Object.freeze([completedEvent]) });
+    expect(() => {
+      run(ledger, invocation, beyond);
+    }).toThrow(SupervisorError);
+    expect(ledger.status().eventCount).toBe(before);
+  });
+
+  it("N4 refuses an event type in neither set, rather than playing it silently", () => {
+    // Fail-closed on the vocabulary. A type added to the contracts enum and
+    // emitted by a later planner arrives here unclassified, and is refused
+    // until somebody decides which set it belongs to.
+    const { ledger, invocation, plan, before } = drill(
+      "switch-f1-unclassified",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c25",
+    );
+    // A genuine member of the frozen contracts vocabulary that the table
+    // classifies in neither set -- which is exactly the shape a later planner
+    // would produce, rather than a type that could never typecheck.
+    const unclassified = planWith(plan, {
+      events: Object.freeze<readonly SwitchEvent[]>([
+        { type: "LEASE_ACQUIRED", payload: { accountId: "current" } },
+      ]),
+    });
+
+    expect(() => {
+      run(ledger, invocation, unclassified);
+    }).toThrow(SupervisorError);
+    expect(() => {
+      run(ledger, invocation, unclassified);
+    }).toThrow(/cannot(.|\n)*classify/);
+    expect(ledger.status().eventCount).toBe(before);
+  });
+
+  it("P4 leaves all eleven steps declared: F1 narrows what may be claimed, not what the plan states", () => {
+    const outcome = switchPlan();
+    if (!outcome.ok) throw new Error("expected a switch plan");
+    expect([...outcome.plan.steps]).toEqual([...SWITCH_STEPS]);
+    expect(outcome.plan.steps).toHaveLength(11);
+  });
+
+  it("P2 plays the post-F1 plan: four events, all admitted, nothing refused", () => {
+    const { ledger, invocation, plan, before } = drill(
+      "switch-f1-happy",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c26",
+    );
+
+    expect(plan.events.map((candidate) => candidate.type)).toEqual([
+      "QUOTA_WARNING",
+      "TASK_STATE_CHANGED",
+      "LEASE_REVOKED",
+      "ACCOUNT_SWITCH_STARTED",
+    ]);
+
+    run(ledger, invocation, plan);
+    expect(ledger.status().eventCount).toBe(before + 4);
+  });
+});
+
+describe("F1: DRAIN and ESCALATE are byte-identical to HEAD (P3)", () => {
+  it("plays a DRAIN plan's single step-independent event, unchanged", () => {
+    // A DRAIN plan declares three steps and emits one event that names none of
+    // them. It passes the new guard because `QUOTA_WARNING` is step-independent,
+    // and it needs no lease and names no state change, so the three older guards
+    // are satisfied too. Literals, not a re-run of the planner.
+    const { ledger, invocation } = openWithTask(
+      "switch-f1-drain",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c27",
+    );
+    const outcome = decideSwitch({
+      trigger: "QUOTA_WARNING",
+      currentAccountId: "current",
+      routing: routing(["current", "spare"]),
+    });
+    if (!outcome.ok) throw new Error("expected a drain plan");
+    expect(outcome.plan.kind).toBe("DRAIN");
+    expect(outcome.plan.events.map((c) => c.type)).toEqual(["QUOTA_WARNING"]);
+
+    const before = ledger.status().eventCount;
+    const result = executeSwitchPlan({
+      ledger,
+      invocation,
+      plan: outcome.plan,
+      emittedBy: EMITTED_BY,
+      // A DRAIN plan revokes no lease and changes no task state, so neither is
+      // supplied -- which is the point: the older guards stay unmoved.
+      lease: null,
+      taskState: ledger.getTask(invocation.taskId)?.currentState ?? "DISCOVERED",
+    });
+
+    expect(result.appended).toBe(1);
+    expect(result.events.map((event) => event.type)).toEqual(["QUOTA_WARNING"]);
+    expect(ledger.status().eventCount).toBe(before + 1);
+  });
+
+  it("plays an ESCALATE plan, which declares zero steps and still executes", () => {
+    // The case a name-correspondence guard would have broken: zero steps, one
+    // event. It executes because `AUTH_REQUIRED_RAISED` is step-independent.
+    const { ledger, invocation } = openWithTask(
+      "switch-f1-escalate",
+      "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c28",
+    );
+    // The current account needs a human at an auth prompt. Built here rather
+    // than by widening the shared `record` helper, which every other fixture
+    // in this file depends on staying exactly as it is.
+    const base = routing(["current", "spare"]);
+    const authRequired = AccountRecord.safeParse({
+      ...base.records[0],
+      status: "AUTH_REQUIRED",
+      quotaEstimate: {
+        remainingRatio: null,
+        estimatedTokensRemaining: null,
+        estimatedAt: AT,
+        confidence: "MEDIUM",
+      },
+    });
+    if (!authRequired.success) throw new Error("the fixture must satisfy the contract");
+
+    // The trigger stays the classified quota one: it is the account's own
+    // AUTH_REQUIRED status that escalates, not the trigger.
+    const outcome = decideSwitch({
+      trigger: "QUOTA_EXHAUSTED",
+      currentAccountId: "current",
+      routing: { ...base, records: [authRequired.data, ...base.records.slice(1)] },
+    });
+    if (!outcome.ok) throw new Error("expected an escalate plan");
+    expect(outcome.plan.kind).toBe("ESCALATE");
+    expect([...outcome.plan.steps]).toEqual([]);
+    expect(outcome.plan.events.map((c) => c.type)).toEqual(["AUTH_REQUIRED_RAISED"]);
+
+    const before = ledger.status().eventCount;
+    const result = executeSwitchPlan({
+      ledger,
+      invocation,
+      plan: outcome.plan,
+      emittedBy: EMITTED_BY,
+      lease: null,
+      taskState: ledger.getTask(invocation.taskId)?.currentState ?? "DISCOVERED",
+    });
+
+    expect(result.appended).toBe(1);
+    expect(result.events.map((event) => event.type)).toEqual(["AUTH_REQUIRED_RAISED"]);
+    expect(ledger.status().eventCount).toBe(before + 1);
   });
 });

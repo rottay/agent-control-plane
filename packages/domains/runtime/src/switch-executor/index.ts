@@ -5,7 +5,7 @@ import type {
   Lease,
   TaskState,
 } from "@acp/contracts";
-import type { SwitchPlan } from "@acp/accounts";
+import type { SwitchPlan, SwitchStep } from "@acp/accounts";
 
 import type { DurableInvocation } from "../contracts/index.js";
 import { deriveEventCoordinate } from "../core/coordinates/index.js";
@@ -78,11 +78,90 @@ export interface SwitchExecutionResult {
 }
 
 /**
+ * Which events claim a step, and which merely record a decision (V2-B1f/F1).
+ *
+ * **Event and step names are deliberately not in correspondence**, and a guard
+ * that assumed they were would refuse plans that are perfectly lawful today. Two
+ * measured facts force the shape below: a `DRAIN` plan declares three steps and
+ * emits one event, `QUOTA_WARNING`, which names none of them; and an `ESCALATE`
+ * plan declares **zero** steps while emitting `AUTH_REQUIRED_RAISED`. A naive
+ * "every event needs a step of the same name" rule refuses both.
+ *
+ * So each event type is classified exactly once, and an event type in neither
+ * set is refused rather than played — a later addition to the vocabulary cannot
+ * slip through unclassified.
+ */
+
+/**
+ * Events that record a decision, not a claim that work was done.
+ *
+ * `ACCOUNT_SWITCH_STARTED` belongs here although it carries `toAccountId`, and
+ * that is worth stating because it looks like the exception. The field records a
+ * choice `rankAccounts` had **already made** when the plan was built; it is not
+ * a claim that `SELECT_ACCOUNT` (step 6) was performed. A switch that has been
+ * decided on has, by then, genuinely chosen an account.
+ */
+const STEP_INDEPENDENT_EVENTS: readonly string[] = Object.freeze([
+  "QUOTA_WARNING",
+  "AUTH_REQUIRED_RAISED",
+  "ACCOUNT_SWITCH_STARTED",
+]);
+
+/** Events that claim a step, each mapping to exactly one declared step. */
+const STEP_CLAIMING_EVENTS: Readonly<Record<string, SwitchStep>> = Object.freeze({
+  TASK_STATE_CHANGED: "MARK_TASK_QUOTA_BLOCKED",
+  LEASE_REVOKED: "RELEASE_LEASE",
+  ACCOUNT_SWITCH_COMPLETED: "CONTINUE",
+});
+
+/**
+ * The steps this executor may **claim**, and the word is exact.
+ *
+ * **This executor performs no step.** It appends events and does nothing else —
+ * no account is drained here, no checkpoint written, no lease released. So the
+ * question a guard can honestly ask is not "was the step performed" but "may a
+ * record of this step be appended yet", and the answer is a prefix of the
+ * declared eleven.
+ *
+ * Within steps 1-5, only two have a claiming event at all:
+ *
+ *   1 `MARK_ACCOUNT_DRAINING`      — no event; the plan's `accountStatus` is
+ *                                    never appended here and the plan vocabulary
+ *                                    has no account-state event. Where that
+ *                                    transition gets recorded is F4/F5's question.
+ *   2 `MARK_TASK_QUOTA_BLOCKED`    — `TASK_STATE_CHANGED`. Claimed.
+ *   3 `FINISH_CURRENT_ATOMIC_STEP` — no event, no artifact. Nothing is claimed.
+ *   4 `WRITE_CHECKPOINT`           — no event and no artifact; nothing calls
+ *                                    `Checkpoint.parse` anywhere in `src`. F3
+ *                                    produces one. Nothing is claimed.
+ *   5 `RELEASE_LEASE`              — `LEASE_REVOKED`. Claimed.
+ *
+ * Steps 6-11 need a session that nothing opens yet, so a record claiming them
+ * would be a record of work no code performs. **The prefix is data**, so the
+ * packet that builds the session-opener widens one list rather than rewriting a
+ * condition.
+ */
+const CLAIMABLE_STEPS: readonly SwitchStep[] = Object.freeze([
+  "MARK_ACCOUNT_DRAINING",
+  "MARK_TASK_QUOTA_BLOCKED",
+  "FINISH_CURRENT_ATOMIC_STEP",
+  "WRITE_CHECKPOINT",
+  "RELEASE_LEASE",
+]);
+
+/**
  * Play a switch plan against the ledger.
  *
  * Every event is appended in plan order under a durable transition id derived
  * from its position, so replaying the same plan for the same invocation
  * appends nothing the second time.
+ *
+ * **Step-awareness (V2-B1f/F1).** The executor used to iterate `plan.events` and
+ * never read `plan.steps` at all, so it would faithfully append a completion for
+ * a switch that had not happened. It now checks, **before any append**, that each
+ * event either is step-independent or claims a declared step inside the claimable
+ * prefix. Every refusal throws `SupervisorError` ahead of the loop, exactly as the
+ * three existing guards do, so a refused plan leaves the ledger untouched.
  */
 export function executeSwitchPlan(input: SwitchExecutionInput): SwitchExecutionResult {
   const { ledger, invocation, plan, emittedBy, lease, taskState, causedBy } = input;
@@ -111,6 +190,71 @@ export function executeSwitchPlan(input: SwitchExecutionInput): SwitchExecutionR
       "refusing to execute a switch plan whose events change the task state" +
         " while the plan names no state to change it to",
     );
+  }
+
+  // --- V2-B1f/F1: the executor reads the steps, not only the events. -------
+  //
+  // All three refusals sit here, ahead of the append loop, for the same reason
+  // the three guards above do: a plan that is going to be refused must leave
+  // the ledger exactly as it found it. A guard that fired mid-loop would have
+  // already recorded part of a switch it then declared unlawful.
+
+  // Refusal 1: the completion, by name.
+  //
+  // Redundant under refusal 3 -- `ACCOUNT_SWITCH_COMPLETED` maps to `CONTINUE`,
+  // step 11, which is outside the claimable prefix -- and kept deliberately
+  // anyway. The defect this packet removes was a fabricated completion, and a
+  // refusal that names it makes the defect unrepeatable by name rather than
+  // only by arithmetic. If the prefix ever widens far enough to admit
+  // `CONTINUE`, this guard is what still stands in the way, and whoever widens
+  // it has to delete this line on purpose.
+  if (plan.events.some((candidate) => candidate.type === "ACCOUNT_SWITCH_COMPLETED")) {
+    throw new SupervisorError(
+      "refusing to execute a switch plan that appends ACCOUNT_SWITCH_COMPLETED;" +
+        " only the session-opener may append it, once the switch it names has happened",
+    );
+  }
+
+  for (const candidate of plan.events) {
+    if (STEP_INDEPENDENT_EVENTS.includes(candidate.type)) continue;
+
+    const claimed = STEP_CLAIMING_EVENTS[candidate.type];
+
+    // Refusal 2a: an event the table does not classify.
+    //
+    // Fail-closed on the vocabulary rather than on a list of the forbidden: a
+    // type added to the contracts enum and emitted by a later planner reaches
+    // this line unclassified, and is refused until somebody decides which of
+    // the two sets it belongs to.
+    if (claimed === undefined) {
+      throw new SupervisorError(
+        "refusing to execute a switch plan carrying an event this executor cannot" +
+          " classify as step-independent or step-claiming: " +
+          candidate.type,
+      );
+    }
+
+    // Refusal 2b: a claim about a step the plan never declared.
+    if (!plan.steps.includes(claimed)) {
+      throw new SupervisorError(
+        "refusing to execute a switch plan whose " +
+          candidate.type +
+          " claims the step " +
+          claimed +
+          ", which the plan does not declare",
+      );
+    }
+
+    // Refusal 3: a claim about a step nothing performs yet.
+    if (!CLAIMABLE_STEPS.includes(claimed)) {
+      throw new SupervisorError(
+        "refusing to execute a switch plan whose " +
+          candidate.type +
+          " claims the step " +
+          claimed +
+          ", which lies beyond what this executor may record",
+      );
+    }
   }
 
   const appended: ParsedControlPlaneEvent[] = [];

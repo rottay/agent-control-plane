@@ -431,6 +431,72 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("assigns effectiveState from a recorded action");
   });
 
+  it("refuses a module that constructs an ACCOUNT_SWITCH_COMPLETED event (L-B1F-1)", async () => {
+    // V2-B1f/F1's law, with the fixture that can falsify it. The planner used to
+    // emit a completion beside `ACCOUNT_SWITCH_STARTED`, before any of the steps
+    // it names could have happened; F1 removed that producer and this law is
+    // what keeps it removed.
+    //
+    // **After F1 the law has no permitted site anywhere in `src`.** That is what
+    // makes this probe the law's only positive evidence: nothing in the tree
+    // exercises it, so without a synthetic failure the law would ship enforced
+    // and unfalsified -- passing over a hundred and thirty sources while proving
+    // nothing about any of them.
+    //
+    // The fixture uses the **constructor** shape, which is the law's predicate.
+    // A probe that merely mentioned the type would pass while testing a rule
+    // nobody wrote: naming the type is lawful and stays lawful, since the event
+    // remains in the frozen vocabularies and every read model that renders it.
+    //
+    // A minimal synthetic tree trips several fail-closed `requireScope` laws at
+    // once, so this asserts the SPECIFIC line and the offending path.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/probe/src/index.ts",
+      'export const completion = { type: "ACCOUNT_SWITCH_COMPLETED", payload: {} };\n',
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("constructs an ACCOUNT_SWITCH_COMPLETED event");
+    expect(output).toContain("packages/domains/probe/src/index.ts");
+  });
+
+  it("leaves the lawful ACCOUNT_SWITCH_COMPLETED forms alone: a case, a comparison, a member", async () => {
+    // The negative control, and the half that keeps the law honest. Every form
+    // below exists lawfully in the tree today -- the frozen contracts and
+    // protocol vocabularies list the type, read models switch and compare on it,
+    // and the executor's own refusal must name what it refuses. A law that
+    // caught these would be a law its author had to keep explaining.
+    //
+    // If the predicate ever widens from "constructs one" to "mentions one",
+    // this fails and names the line.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/probe/src/index.ts",
+      [
+        'export const TYPES = ["ACCOUNT_SWITCH_STARTED", "ACCOUNT_SWITCH_COMPLETED"];',
+        'export const isDone = (t) => t === "ACCOUNT_SWITCH_COMPLETED";',
+        "export function render(t) {",
+        "  switch (t) {",
+        '    case "ACCOUNT_SWITCH_COMPLETED":',
+        '      return "done";',
+        "    default:",
+        "      return null;",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).not.toContain("constructs an ACCOUNT_SWITCH_COMPLETED event");
+  });
+
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {
     // Relabelled: this exercises the conformance law — a path outside every
     // declared write-set — which is a different law from the epoch below. The
