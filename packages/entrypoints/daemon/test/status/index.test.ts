@@ -12,6 +12,8 @@ const BASE: DaemonStatusDocument = {
   scenarioId: "daemon-status",
   pid: 4242,
   serverPid: null,
+  serverStartToken: null,
+  serverArgvDigest: null,
   ledgerHeadSequence: 11,
   ledgerHeadSha256: "a".repeat(64),
   errorCode: null,
@@ -31,7 +33,18 @@ describe("what a status document may carry", () => {
   it("carries process ids, which are not secrets", () => {
     // An operator and a drill both need these to terminate exactly the right
     // process rather than pattern-matching across the machine.
-    expect(() => { assertPublishable({ ...BASE, serverPid: 5150 }); }).not.toThrow();
+    //
+    // Since V2-B2-6 a server pid travels with the identity that proves it, so
+    // the pid is supplied here as the whole triple rather than alone: a pid on
+    // its own is the half-identity the document now refuses.
+    expect(() => {
+      assertPublishable({
+        ...BASE,
+        serverPid: 5150,
+        serverStartToken: "Wed Aug 27 18:46:07 2026",
+        serverArgvDigest: "c".repeat(64),
+      });
+    }).not.toThrow();
   });
 
   it("refuses anything that looks like a path where the scenario belongs", () => {
@@ -144,5 +157,75 @@ describe("publishing the status", () => {
     clearStatus(root);
     expect(readStatusFrom(root)).toBeNull();
     clearStatus(root);
+  });
+});
+
+describe("the server identity a status may carry (V2-B2-6)", () => {
+  const START_TOKEN = "Wed Aug 27 18:46:07 2026";
+  const IDENTIFIED: DaemonStatusDocument = {
+    ...BASE,
+    mode: "RESTATE",
+    serverPid: 4243,
+    serverStartToken: START_TOKEN,
+    serverArgvDigest: "b".repeat(64),
+  };
+
+  it("P4 accepts the full triple, in the probe's own rendering", () => {
+    // The token grammar is the probe's five-field C-locale `lstart` form, not
+    // any text that happens to be a date: both sides of the later comparison
+    // come from `ps`, so the document may only carry what `ps` renders.
+    expect(() => { assertPublishable(IDENTIFIED); }).not.toThrow();
+  });
+
+  it("P4 keeps the triple atomic — a half-identity is malformed, not partial", () => {
+    // A pid without an identity proves nothing about the process now holding
+    // it, and an identity without a pid names nothing to probe. Recovery must
+    // never have to decide what half a proof means, so the document refuses to
+    // carry one.
+    const halves: readonly Partial<DaemonStatusDocument>[] = [
+      { serverPid: 4243, serverStartToken: null, serverArgvDigest: null },
+      { serverPid: 4243, serverStartToken: START_TOKEN, serverArgvDigest: null },
+      { serverPid: 4243, serverStartToken: null, serverArgvDigest: "b".repeat(64) },
+      { serverPid: null, serverStartToken: START_TOKEN, serverArgvDigest: "b".repeat(64) },
+      { serverPid: null, serverStartToken: START_TOKEN, serverArgvDigest: null },
+    ];
+    for (const half of halves) {
+      expect(() => { assertPublishable({ ...IDENTIFIED, ...half }); }).toThrow();
+    }
+    // All three null is the SQLITE_SUPERVISOR shape, and is not a half.
+    expect(() => {
+      assertPublishable({
+        ...IDENTIFIED,
+        serverPid: null,
+        serverStartToken: null,
+        serverArgvDigest: null,
+      });
+    }).not.toThrow();
+  });
+
+  it("P4 bounds both fields rather than accepting any string", () => {
+    for (const token of ["", "2026-08-27T18:46:07Z", "Wed Aug 27 18:46:07", "x".repeat(200)]) {
+      expect(() => {
+        assertPublishable({ ...IDENTIFIED, serverStartToken: token });
+      }).toThrow();
+    }
+    for (const digest of ["", "B".repeat(64), "b".repeat(63), "/etc/passwd"]) {
+      expect(() => {
+        assertPublishable({ ...IDENTIFIED, serverArgvDigest: digest });
+      }).toThrow();
+    }
+  });
+
+  it("P4 refuses a pre-packet document, so an older status vouches for nothing", () => {
+    // The migration row, stated rather than discovered: widening the key set
+    // makes a status written by an older binary fail validation, `readStatusFrom`
+    // returns null, and recovery reclaims the lock and signals nothing. That is
+    // the correct direction — a document from a binary that never recorded a
+    // server identity cannot be evidence about one.
+    const older: Record<string, unknown> = { ...BASE };
+    delete older["serverStartToken"];
+    delete older["serverArgvDigest"];
+    writeFileSync(statusPath(resolveDaemonRoot()), JSON.stringify(older), "utf8");
+    expect(readStatusFrom(resolveDaemonRoot())).toBeNull();
   });
 });

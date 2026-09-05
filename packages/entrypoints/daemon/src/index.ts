@@ -69,6 +69,7 @@ import type { DaemonRoot } from "./paths/index.js";
 import { existingDaemonRoot, redactPath, resolveDaemonRoot } from "./paths/index.js";
 import { runSqliteMode } from "./mode-sqlite/index.js";
 import { startRestateMode, superviseRestate } from "./mode-restate/index.js";
+import type { RecordedServer } from "./singleton/index.js";
 import { acquireSingleton, recoverStaleLock, releaseSingleton } from "./singleton/index.js";
 import type { DaemonPhase, DaemonStatusDocument } from "./status/index.js";
 import { clearStatus, readStatusFrom, writeStatus } from "./status/index.js";
@@ -259,8 +260,33 @@ export function recoverOwnStaleLock(options: {
       detail: "there is no daemon root, so there is no lock to recover",
     });
   }
+  // The observation is read HERE, where reading it is lawful, and crosses into
+  // the decision as a closed value it cannot re-read (V2-B2-6). A lifecycle
+  // decision may not consult the status document — the moment it does, the
+  // document becomes a second authority that can disagree with the ledger — so
+  // this function lifts a validated observation into a struct and does nothing
+  // else with it: no comparison, no probe, no signal.
+  //
+  // `readStatusFrom` returns null for a document that fails `validateStatus`,
+  // so a pre-packet document (refused on its key set) and a half-identity
+  // (refused on atomicity) both arrive as `null` without a second validator.
+  const status = readStatusFrom(root);
+  const server: RecordedServer | null =
+    status?.serverPid != null &&
+    status.serverStartToken !== null &&
+    status.serverArgvDigest !== null
+      ? {
+          statusPid: status.pid,
+          identity: {
+            pid: status.serverPid,
+            startToken: status.serverStartToken,
+            argvDigest: status.serverArgvDigest,
+          },
+        }
+      : null;
   return recoverStaleLock(root, options.inspector ?? createPsInspector(), {
     adoptStale: options.adoptStale,
+    server,
   });
 }
 
@@ -295,6 +321,11 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
   const ledgers = new Map<string, { ledger: Ledger; invocation: DurableInvocation }>();
   let walkOutcomes: readonly WalkOutcome[] = [];
   let serverPid: number | null = null;
+  // The identity of the server this daemon spawned, recorded so that a LATER
+  // recovery can prove the process holding a pid is still that server before it
+  // signals anything (V2-B2-6). Moves with `serverPid` and never separately.
+  let serverStartToken: string | null = null;
+  let serverArgvDigest: string | null = null;
   let terminal: Promise<string> | null = null;
 
   const publish = (phase: DaemonPhase, errorCode: DaemonStatusDocument["errorCode"]): void => {
@@ -320,6 +351,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         scenarioId: options.scenarioId,
         pid: process.pid,
         serverPid,
+        serverStartToken,
+        serverArgvDigest,
         ledgerHeadSequence: head?.headSequence ?? null,
         ledgerHeadSha256: head?.headEventSha256 ?? null,
         errorCode,
@@ -657,11 +690,32 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           effects,
           route,
           stack,
-          onPhase: (phase, pid) => {
+          onPhase: async (phase, pid) => {
             // Published where it happens, in the order it happens. Deferring
             // SERVER_UP until this call returned made the recorded sequence
             // disagree with the actual one.
-            if (pid !== undefined) serverPid = pid;
+            if (pid !== undefined) {
+              serverPid = pid;
+              // Recorded at the instant the pid first exists, which is why this
+              // callback is awaited (V2-B2-6). Capturing at READY instead would
+              // leave a daemon killed during registration -- the window the
+              // recorded orphan incident sat in -- with a pid and no identity,
+              // and recovery would then refuse to signal it.
+              //
+              // Asked of `ps`, never digested from `process.argv`: the two are
+              // not the same string, and recording one to observe the other
+              // would make every live server look indeterminate.
+              //
+              // A `ps` failure here throws and refuses the start, which is the
+              // posture the startup already takes -- `ownIdentity` makes `ps` a
+              // startup dependency one phase earlier -- and the stack already
+              // holds the server resource, so the unwind stops what was spawned.
+              const facts = await inspector.inspect(pid);
+              if (facts !== null) {
+                serverStartToken = facts.startToken;
+                serverArgvDigest = facts.argvDigest;
+              }
+            }
             publish(phase, null);
           },
         });

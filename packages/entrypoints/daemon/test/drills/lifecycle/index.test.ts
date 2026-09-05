@@ -258,7 +258,9 @@ async function startPlane(name: string, invocation: DurableInvocation): Promise<
     effects: effects.port,
     route: TEST_ROUTE,
     stack,
-    onPhase: (phase) => phases.push(phase),
+    onPhase: (phase) => {
+      phases.push(phase);
+    },
   });
 
   const driver = new RestateDriver(
@@ -931,7 +933,9 @@ describe("V2-B2-5G: the production endpoint serves the durable gate", () => {
       effects: effects.port,
       route: TEST_ROUTE,
       stack,
-      onPhase: (phase) => phases.push(phase),
+      onPhase: (phase) => {
+        phases.push(phase);
+      },
     }).then(
       () => null,
       (error: unknown) => error,

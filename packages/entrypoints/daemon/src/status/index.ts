@@ -42,6 +42,20 @@ export interface DaemonStatusDocument {
   readonly scenarioId: string;
   readonly pid: number;
   readonly serverPid: number | null;
+  /**
+   * The identity of the server this daemon spawned, recorded at the instant its
+   * pid first existed (V2-B2-6).
+   *
+   * A pid alone answers nothing, because pids are reused. These two fields are
+   * what let explicit recovery prove that the process now holding a pid is the
+   * same server this daemon started, before it signals anything.
+   *
+   * **Atomic with `serverPid`: all three null, or all three set.** A document
+   * carrying a pid without an identity is a pre-packet document, and recovery
+   * treats it as no evidence at all.
+   */
+  readonly serverStartToken: string | null;
+  readonly serverArgvDigest: string | null;
   readonly ledgerHeadSequence: number | null;
   readonly ledgerHeadSha256: string | null;
   /** A classified code, never a rendered exception. */
@@ -54,6 +68,18 @@ export interface DaemonStatusDocument {
 export const STATUS_MAX_BYTES = 2_048;
 
 const SHA256_HEX = new RegExp("^[0-9a-f]{64}$");
+/**
+ * The probe's five-field C-locale `lstart` rendering, e.g. "Wed Aug 27
+ * 18:46:07 2026".
+ *
+ * Bounded here for the same reason every other field is: a status document is
+ * an observation surface, and an unbounded string is where a path or a payload
+ * arrives. It mirrors the probe's own line grammar rather than accepting any
+ * text that happens to be a date.
+ */
+const PS_START_TOKEN = new RegExp(
+  "^\\S+\\s+\\S+\\s+\\d+\\s+\\d{2}:\\d{2}:\\d{2}\\s+\\d{4}$",
+);
 const SCENARIO_ID = new RegExp("^[a-z0-9-]{1,64}$");
 const ISO_TIMESTAMP = new RegExp(
   "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,3})?Z$",
@@ -98,6 +124,8 @@ const STATUS_KEYS: readonly string[] = Object.freeze([
   "scenarioId",
   "pid",
   "serverPid",
+  "serverStartToken",
+  "serverArgvDigest",
   "ledgerHeadSequence",
   "ledgerHeadSha256",
   "errorCode",
@@ -134,6 +162,23 @@ export function validateStatus(value: unknown): string | null {
   if (!isPid(record["pid"])) return "pid is not a positive integer";
   if (record["serverPid"] !== null && !isPid(record["serverPid"])) {
     return "serverPid is not null or a positive integer";
+  }
+  const startToken = record["serverStartToken"];
+  if (startToken !== null && (typeof startToken !== "string" || !PS_START_TOKEN.test(startToken))) {
+    return "serverStartToken is not null or a ps start token";
+  }
+  const argvDigest = record["serverArgvDigest"];
+  if (argvDigest !== null && (typeof argvDigest !== "string" || !SHA256_HEX.test(argvDigest))) {
+    return "serverArgvDigest is not null or 64 lowercase hex";
+  }
+  // The triple is atomic. A pid without an identity cannot prove anything about
+  // the process now holding it, and an identity without a pid names nothing to
+  // probe -- so a half-identity is a malformed document rather than a partial
+  // one, and recovery never has to decide what half of a proof means.
+  const identityFields = [record["serverPid"], startToken, argvDigest];
+  const present = identityFields.filter((field) => field !== null).length;
+  if (present !== 0 && present !== identityFields.length) {
+    return "server identity is partial: serverPid, serverStartToken and serverArgvDigest move together";
   }
   const sequence = record["ledgerHeadSequence"];
   if (sequence !== null && (typeof sequence !== "number" || !Number.isInteger(sequence) || sequence < 0)) {

@@ -5987,6 +5987,53 @@ const V2L4_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B2-6 — the daemon reaps the engine it started.
+ *
+ * A `RESTATE` daemon spawns `restate-server` undetached with no reaper, so a
+ * `SIGKILL` leaves the server holding the reserved ports and the next daemon
+ * cannot start. Recovery held the pid all along and declined to look at it,
+ * correctly: a pid alone is not something to signal, because pids are reused.
+ * This packet records the server's IDENTITY where the pid first exists and lets
+ * explicit recovery verify it — twice — before it stops anything.
+ *
+ * **Twelve paths.** The brief's eleven plus
+ * `packages/entrypoints/daemon/test/drills/lifecycle/index.test.ts`, which was
+ * forced and authorized on measurement: widening `onPhase` from `void` to
+ * `void | Promise<void>` withdraws TypeScript's void-return bivariance, so two
+ * expression-bodied `phases.push(phase)` callbacks in that file became type
+ * errors. The edit there is those two arrows and nothing else — a type-only
+ * touch in a file this packet otherwise has no business in, and a sibling of
+ * L4's seventeenth path rather than the same file.
+ *
+ * **No fence law moved, and one was deliberately kept.** The law forbidding
+ * lifecycle decisions from importing the status observation refused the obvious
+ * implementation. Rather than exempt `singleton`, the observation is read in the
+ * top-level entry point — where reading it is already lawful — and crosses into
+ * the decision as a closed value it cannot re-read. No exemption, no new law,
+ * no thirteenth path.
+ *
+ * `packages/edges/durability/**` is untouched by design: the `ProcessInspector`
+ * lives in the daemon, and an edge importing an entrypoint is a stratum
+ * violation this fence rejects.
+ *
+ * Record: `docs/architecture/0033-the-daemon-reaps-the-engine-it-started.md`.
+ */
+const V2B26_WRITE_SET = [
+  "packages/entrypoints/daemon/src/status/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/src/mode-restate/index.ts",
+  "packages/entrypoints/daemon/src/singleton/index.ts",
+  "packages/entrypoints/daemon/test/singleton/index.test.ts",
+  "packages/entrypoints/daemon/test/status/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/lifecycle/index.test.ts",
+  "docs/operations/runbook.md",
+  "docs/architecture/0033-the-daemon-reaps-the-engine-it-started.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6130,6 +6177,7 @@ const WRITE_SET = [
   ...V2DOCSAUDIT_WRITE_SET,
   ...V2L3_WRITE_SET,
   ...V2L4_WRITE_SET,
+  ...V2B26_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */

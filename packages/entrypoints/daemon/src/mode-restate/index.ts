@@ -63,11 +63,22 @@ export interface RestateModeInput {
    * before it could publish. Waiting reordered the published sequence: the
    * server appeared to come up after the endpoint, the registration and the
    * reconciliation, which is not the order anything actually happened in.
+   *
+   * The return widened to `void | Promise<void>` at V2-B2-6 and `SERVER_UP` is
+   * awaited below, because the caller now records the server's identity — a `ps`
+   * probe — at the instant the pid first exists. Capturing later would leave a
+   * daemon killed during registration with a pid and no identity, which is the
+   * window the recorded orphan incident sat in. Only `SERVER_UP` is awaited and
+   * no phase moved, so the published order this docblock protects is unchanged.
+   *
+   * The other four calls are marked `void` rather than awaited, which is the
+   * design and not a lint concession: awaiting them would reintroduce exactly
+   * the deferral this seam exists to prevent.
    */
   readonly onPhase: (
     phase: "BINARY_VERIFIED" | "SERVER_UP" | "ENDPOINT_UP" | "DEPLOYMENT_REGISTERED" | "RECONCILED",
     serverPid?: number,
-  ) => void;
+  ) => void | Promise<void>;
   /**
    * How to decide whether the pinned binary may be started.
    *
@@ -168,12 +179,12 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
       "RESTATE was requested but the pinned server is not verified: " + availability.reason,
     );
   }
-  input.onPhase("BINARY_VERIFIED");
+  void input.onPhase("BINARY_VERIFIED");
 
   // S5.
   const server = await startVerifiedServer(input.scenarioRoot);
   input.stack.push(serverResource(server));
-  input.onPhase("SERVER_UP", server.pid);
+  await input.onPhase("SERVER_UP", server.pid);
 
   // S6. Two services, and the second one is what this packet adds.
   //
@@ -207,7 +218,7 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
     port: RUNTIME_SERVICE_PORT,
   });
   input.stack.push(endpointResource(endpoint));
-  input.onPhase("ENDPOINT_UP");
+  void input.onPhase("ENDPOINT_UP");
 
   // S7, in two acts, and the second one is not optional.
   //
@@ -256,7 +267,7 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
         " service set and the capabilities this driver declares would not hold",
     );
   }
-  input.onPhase("DEPLOYMENT_REGISTERED");
+  void input.onPhase("DEPLOYMENT_REGISTERED");
 
   // S8. Readiness is here, not at S5.
   const report = await reconcile({
@@ -267,7 +278,7 @@ export async function startRestateMode(input: RestateModeInput): Promise<Restate
   if (!report.safeToResume) {
     throw new ModeError("reconciliation refused to resume in RESTATE mode: " + report.verdict);
   }
-  input.onPhase("RECONCILED");
+  void input.onPhase("RECONCILED");
 
   return { server, endpoint, verdict: report.verdict };
 }

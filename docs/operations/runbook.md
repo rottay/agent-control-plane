@@ -254,8 +254,12 @@ moved would pass its own drills and then not be where anything expects it.
 
 Stop the server or daemon with `SIGTERM`, not `SIGKILL`. The daemon's supervised
 shutdown is what reaps the Restate server it started; killing it outright
-bypasses that and leaves the server behind with nothing owning it. If you need
-to confirm afterwards:
+bypasses that and leaves the server behind with nothing owning it. Explicit
+recovery now reaps such a server when it can prove the identity the killed
+daemon recorded — it never signals a pid it cannot verify twice — so the manual
+check below remains for what recovery reports it could not prove: a daemon
+killed before its server came up recorded no identity, and there is nothing to
+verify. If you need to confirm afterwards:
 
 ```sh
 ps -Ao pid=,command= | grep 'restate-server-1.7.7/restate-server' | grep -v grep

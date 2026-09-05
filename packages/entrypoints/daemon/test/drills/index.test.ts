@@ -41,7 +41,7 @@ import { daemonRootPath, pidfilePath, resolveDaemonRoot, statusPath } from "../.
 import { recoverStaleLock } from "../../src/singleton/index.js";
 import { readStatusFrom } from "../../src/status/index.js";
 import { createPsInspector } from "../../src/identity-probe/index.js";
-import { startDaemon } from "../../src/index.js";
+import { recoverOwnStaleLock, startDaemon } from "../../src/index.js";
 
 /**
  * Make a fixture directory an actual worktree.
@@ -778,6 +778,149 @@ describe("signals", () => {
     await second.ready;
     expect((await closed(second.child)).code).toBe(0);
   });
+});
+
+/**
+ * V2-B2-6 — the daemon reaps the engine it started.
+ *
+ * A `RESTATE` daemon spawns `restate-server` undetached, into its own process
+ * group, with no reaper. The graceful unwind stops it; a `SIGKILL` does not,
+ * and the next daemon then cannot bind the reserved ports. These drills prove
+ * the loop closes: the identity is recorded where the pid first exists,
+ * explicit recovery verifies it and stops the orphan, and a second daemon
+ * starts with the port check ON — which is the headline claim.
+ */
+describe("reaping a Restate server a killed daemon left behind", () => {
+  it("P1/P2/P3 records the identity, reaps the orphan, and lets the next daemon start", async () => {
+    const id = scenario("daemon-restate-sigkill-reap");
+    const root = resolveDaemonRoot();
+    const { child, ready } = startChild(
+      configFor(id, { mode: "RESTATE", checkPorts: true }).config,
+    );
+    const announced = await ready;
+    expect(announced.serverPid).not.toBeNull();
+    const serverPid = announced.serverPid ?? -1;
+
+    // P1. SIGKILL cannot be caught, so no unwind runs and the server outlives
+    // the daemon -- the orphan class the recorded incident described.
+    child.kill("SIGKILL");
+    expect((await closed(child)).signal).toBe("SIGKILL");
+    expect(isAlive(serverPid)).toBe(true);
+    expect(existsSync(pidfilePath(root))).toBe(true);
+
+    // The status names the server, and names it with an identity rather than a
+    // bare pid: a pid alone proves nothing, because pids are reused.
+    const status = readStatusFrom(root);
+    expect(status).not.toBeNull();
+    expect(status?.serverPid).toBe(serverPid);
+    expect(status?.serverStartToken).not.toBeNull();
+    expect(status?.serverArgvDigest).not.toBeNull();
+
+    // P2. Explicit recovery -- the same act that already reclaims the lock --
+    // now verifies that identity and stops the orphan. Driven through
+    // `recoverOwnStaleLock`, which is the only path production takes and the
+    // only proof that the status-to-decision lift is actually wired.
+    const recovered = await recoverOwnStaleLock({ adoptStale: true });
+    expect(recovered).toMatchObject({ recovered: true, verdict: "NOT_SAME" });
+    expect(recovered.reaped).toBe(true);
+    expect(recovered.serverExit).toBe("STOPPED");
+    expect(isAlive(serverPid)).toBe(false);
+    expect(existsSync(pidfilePath(root))).toBe(false);
+
+    // P3. The headline claim: a real second daemon, with the port check ON.
+    const second = startChild(
+      configFor(scenario("daemon-restate-after-reap"), {
+        mode: "RESTATE",
+        checkPorts: true,
+        holdOpen: false,
+      }).config,
+    );
+    const secondReady = await second.ready;
+    expect(secondReady.serverPid).not.toBeNull();
+    expect((await closed(second.child)).code).toBe(0);
+  }, 300_000);
+
+  it("N9 reaps a daemon killed during registration, before it was ever READY", async () => {
+    // B1(a)'s whole point. Capturing the identity at READY would leave exactly
+    // this window -- after SERVER_UP, before the deployment is registered --
+    // with a pid and no identity, and recovery would refuse to signal it. The
+    // kill is aimed at the moment the phase log shows SERVER_UP and not yet
+    // READY, which is the window the recorded incident sat in.
+    const id = scenario("daemon-restate-killed-registering");
+    const root = resolveDaemonRoot();
+    const started = startChild(configFor(id, { mode: "RESTATE", checkPorts: true }).config);
+    // This daemon is killed before readiness on purpose, so its readiness
+    // promise will reject. Observed here, or the rejection escapes the run as
+    // an unhandled error and fails a suite whose assertions all passed.
+    const neverReady = started.ready.then(
+      () => null,
+      () => null,
+    );
+
+    const deadline = Date.now() + 120_000;
+    let serverPid = -1;
+    while (Date.now() < deadline) {
+      const status = readStatusFrom(root);
+      if (status?.serverPid != null && status.phase !== "READY" && status.phase !== "SUPERVISING") {
+        serverPid = status.serverPid;
+        break;
+      }
+      if (status?.phase === "READY" || status?.phase === "SUPERVISING") break;
+      await sleep(50);
+    }
+    expect(serverPid).toBeGreaterThan(0);
+    trackPid(serverPid);
+
+    started.child.kill("SIGKILL");
+    expect((await closed(started.child)).signal).toBe("SIGKILL");
+    await neverReady;
+    expect(isAlive(serverPid)).toBe(true);
+
+    // The identity was recorded at SERVER_UP, so it exists even though the
+    // daemon never reached READY.
+    const status = readStatusFrom(root);
+    expect(status?.serverPid).toBe(serverPid);
+    expect(status?.serverStartToken).not.toBeNull();
+
+    const recovered = await recoverOwnStaleLock({ adoptStale: true });
+    expect(recovered.reaped).toBe(true);
+    expect(isAlive(serverPid)).toBe(false);
+
+    // And the next daemon starts, with the port check on.
+    const second = startChild(
+      configFor(scenario("daemon-restate-after-registering-reap"), {
+        mode: "RESTATE",
+        checkPorts: true,
+        holdOpen: false,
+      }).config,
+    );
+    await second.ready;
+    expect((await closed(second.child)).code).toBe(0);
+  }, 300_000);
+
+  it("N6 finds nothing to do after a graceful shutdown", async () => {
+    // The reap is for the path that skipped the unwind. A SIGTERM shutdown
+    // removes lock, status and server itself, so recovery has nothing to reclaim
+    // and nothing to signal.
+    const id = scenario("daemon-restate-graceful-then-recover");
+    const root = resolveDaemonRoot();
+    const { child, ready } = startChild(
+      configFor(id, { mode: "RESTATE", checkPorts: true }).config,
+    );
+    const announced = await ready;
+    const serverPid = announced.serverPid ?? -1;
+
+    child.kill("SIGTERM");
+    expect((await closed(child)).code).toBe(0);
+    expect(isAlive(serverPid)).toBe(false);
+    expect(existsSync(pidfilePath(root))).toBe(false);
+    expect(existsSync(statusPath(root))).toBe(false);
+
+    const recovered = await recoverOwnStaleLock({ adoptStale: true });
+    expect(recovered.recovered).toBe(false);
+    expect(recovered.verdict).toBe("ABSENT");
+    expect(recovered.reaped ?? false).toBe(false);
+  }, 240_000);
 });
 
 // ---------------------------------------------------------------------------
