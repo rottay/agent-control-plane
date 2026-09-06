@@ -563,43 +563,96 @@ describe("only a ledger row carries an id, and the id is its sequence", () => {
 // ---------------------------------------------------------------------------
 
 describe("a reconnect loses nothing and repeats nothing", () => {
-  it("covers 1..N exactly once across a broken connection, measured against the ledger", async () => {
-    const { path, headSequence } = seed();
+  /**
+   * Append `count` rows for a brand-new task, with the connection closed.
+   *
+   * A NEW task is what makes this cheap: the ledger enforces lifecycle
+   * continuity, so continuing an existing task after the fact would mean
+   * rebuilding the per-task state `seed()` tracks internally and then discards
+   * when it closes. A task whose first event declares `fromState: null` needs
+   * none of that. The idiom is the one the late-append drill below already
+   * uses; it is named here because two reconnect tests need it.
+   *
+   * Payloads stay empty. These rows travel over SSE, and the gate criterion on
+   * this plane is that no secret, prompt or tool argument ever does.
+   */
+  function appendAwayWindow(path: string, count: number): void {
+    const ledger = openLedger(path);
+    const taskId = randomUUID();
+    for (let index = 0; index < count; index += 1) {
+      const transitionId = "away-" + String(index);
+      ledger.append({
+        contractVersion: LEDGER_CONTRACT_VERSION,
+        eventId: randomUUID(),
+        taskId,
+        attempt: 1,
+        transitionId,
+        idempotencyKey: taskId + "/1/" + transitionId,
+        type: "TASK_DISCOVERED",
+        fromState: index === 0 ? null : "DISCOVERED",
+        toState: "DISCOVERED",
+        emittedBy: WORKER,
+        occurredAt: "2026-09-03T00:00:00.000Z",
+        recordedAt: "2026-09-03T00:00:00.000Z",
+        correlationId: null,
+        causationId: null,
+        payload: {},
+      });
+    }
+    ledger.close();
+  }
+
+  it("delivers exactly the rows appended while it was away, measured against the ledger", async () => {
+    // **The away window is what makes this test causal.**
+    //
+    // The predecessor of this test resumed leg two from wherever leg one
+    // happened to stop, and then waited for `headSequence - resumeFrom` rows.
+    // Leg one drains the whole log without sleeping between rows, so it
+    // normally reached the head before the abort crossed the loopback: the
+    // remainder was zero and the wait was satisfied by the `hello` alone.
+    // Measured over eight runs of that test, unmodified, leg two received zero
+    // rows in six of them. A server that replayed a from-zero anchor correctly
+    // and then delivered NOTHING after the `hello` on a resumed connection
+    // passed it.
+    //
+    // Creating the remainder AFTER the disconnect removes the timing from the
+    // question. The rows below exist only because nobody was connected when
+    // they were written, so a resumed connection that delivers them cannot
+    // have done anything but replay.
+    const { path, headSequence } = seed({ perTask: 6 });
+    expect(headSequence).toBe(6);
     const running = await serve(path);
 
-    // First connection: anchored at zero, so it replays the whole log. It is
-    // killed part-way through, at a sequence it has genuinely received.
+    // Leg one: anchored at zero, so it replays the whole log, and it is held
+    // until it has all of it. Waiting for the exact count rather than a floor
+    // is what makes `resumeFrom` a known value instead of a race.
     const first = await openStream(running.port, STREAM_PATH, { "last-event-id": "0" });
     expect(first.status).toBe(200);
-    await first.waitUntil(() => eventIds(first).length >= 5, "five rows");
+    await first.waitUntil(() => eventIds(first).length === 6, "the whole seeded log");
     const firstIds = eventIds(first);
     first.abort();
+    expect(firstIds).toEqual([1, 2, 3, 4, 5, 6]);
 
     const resumeFrom = firstIds[firstIds.length - 1];
-    expect(resumeFrom).toBeGreaterThan(0);
+    if (resumeFrom === undefined) throw new Error("leg one must have received rows");
 
-    // Second connection: resumed from exactly where the first one got to.
-    //
-    // Since B3c this connection opens with a `hello` before the replay, which
-    // is exactly the frame the client needs in order to know it is still
-    // reading the same ledger. It carries no `id:`, so it moves no cursor and
-    // the coverage claim below is measured on rows rather than on frames.
+    // The away window: three rows that exist only because they were appended
+    // with no connection open.
+    appendAwayWindow(path, 3);
+    expect(sequencesInLedger(path)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    // The anti-vacuity guard, and it is the whole reason this file changed. If
+    // a future edit ever restores the state where leg two is allowed to be
+    // empty, this line fails before any coverage assertion can pass vacuously.
+    expect(resumeFrom).toBeLessThan(9);
+
     const second = await openStream(running.port, STREAM_PATH, {
       "last-event-id": String(resumeFrom),
     });
-    // Both conditions, and the first one is not redundant. The first
-    // connection waits for five rows but may well have drained the whole log
-    // before it was aborted, in which case `headSequence - resumeFrom` is ZERO
-    // and a row-count predicate is satisfied before this connection has
-    // received anything at all. Waiting for the `hello` too is what makes the
-    // assertion below deterministic: it is the one frame every open produces,
-    // whatever the anchor turned out to be.
-    await second.waitUntil(
-      () =>
-        parsedFrames(second).length >= 1 &&
-        eventIds(second).length >= headSequence - (resumeFrom ?? 0),
-      "the hello and the tail after the anchor",
-    );
+    // The wait names ROWS and an EXACT count. A `>=` form would silently
+    // restore the defect, and a frame-count form is satisfied by the `hello`,
+    // which carries no id and moves no cursor.
+    await second.waitUntil(() => eventIds(second).length === 3, "exactly the three missed rows");
     const opening = parsedFrames(second)[0];
     expect(opening?.kind).toBe("hello");
     if (opening?.kind !== "hello") throw new Error("expected a hello");
@@ -607,12 +660,79 @@ describe("a reconnect loses nothing and repeats nothing", () => {
     const secondIds = eventIds(second);
     second.abort();
 
-    // The oracle is the ledger, not a fixture: what the two connections saw
-    // together must be exactly what the database holds.
+    // Exact equality, not a floor: a prefix, a superset and a repeat all fail
+    // here, which is what "no gaps, no duplicates" actually asserts.
+    expect(secondIds).toEqual([7, 8, 9]);
+
+    // The oracle stays the ledger rather than a fixture: what the two
+    // connections saw together must be exactly what the database holds.
     const union = [...firstIds, ...secondIds];
     expect(union).toEqual([...union].sort((a, b) => a - b));
     expect(new Set(union).size).toBe(union.length);
     expect(union).toEqual(sequencesInLedger(path));
+  });
+
+  it("does not repeat the anchor row when the anchor came from a broken connection", async () => {
+    // The fresh-anchor case is proved below, on a connection that never
+    // disconnected. This is the reconnect case, and it is a different one: an
+    // off-by-one that only appeared on resume would satisfy that test and
+    // double-count one row on every real reconnection.
+    const { path } = seed({ perTask: 6 });
+    const running = await serve(path);
+
+    const first = await openStream(running.port, STREAM_PATH, { "last-event-id": "0" });
+    await first.waitUntil(() => eventIds(first).length === 6, "the whole seeded log");
+    const resumeFrom = eventIds(first)[5];
+    first.abort();
+    if (resumeFrom === undefined) throw new Error("leg one must have received rows");
+
+    appendAwayWindow(path, 2);
+
+    const second = await openStream(running.port, STREAM_PATH, {
+      "last-event-id": String(resumeFrom),
+    });
+    await second.waitUntil(() => eventIds(second).length === 2, "the two missed rows");
+    const secondIds = eventIds(second);
+    second.abort();
+
+    // The cursor is exclusive across a reconnect too.
+    expect(secondIds[0]).toBe(7);
+    expect(secondIds).not.toContain(resumeFrom);
+  });
+
+  it("sends nothing on a further reconnect when nothing was appended", async () => {
+    // The duplicate half, stated positively. A server that re-sent the away
+    // window on every reconnect would satisfy the exact-remainder assertion
+    // above on its first resume and corrupt every one after it.
+    const { path } = seed({ perTask: 6 });
+    const running = await serve(path);
+
+    const first = await openStream(running.port, STREAM_PATH, { "last-event-id": "0" });
+    await first.waitUntil(() => eventIds(first).length === 6, "the whole seeded log");
+    first.abort();
+
+    appendAwayWindow(path, 3);
+
+    const second = await openStream(running.port, STREAM_PATH, { "last-event-id": "6" });
+    await second.waitUntil(() => eventIds(second).length === 3, "the three missed rows");
+    second.abort();
+
+    // Third leg: caught up, and nothing has been appended since.
+    const third = await openStream(running.port, STREAM_PATH, { "last-event-id": "9" });
+    await third.waitForFrames(1);
+    const opening = parsedFrames(third)[0];
+    expect(opening?.kind).toBe("hello");
+    if (opening?.kind !== "hello") throw new Error("expected a hello");
+
+    // It opens truthfully — the anchor it was given and the head it found —
+    // and it says so with values rather than by omission.
+    expect(opening.resumedFrom).toBe(9);
+    expect(opening.headSequence).toBe(9);
+    // And it delivers no row at all. Asserted after the `hello` has arrived,
+    // so this is "nothing followed the opening frame" rather than "nothing has
+    // happened yet".
+    expect(eventIds(third)).toEqual([]);
+    third.abort();
   });
 
   it("resumes without repeating the anchor row itself", async () => {
