@@ -33,6 +33,16 @@ import type { ControlPlaneEvent } from "@acp/contracts";
  * not throw and it may not lie by silence, so the count is what stands between
  * those two failures.
  *
+ * **The tree is folded from the causal columns, and from nothing else.** A
+ * `traceId` is the normalized hex of `correlationId`; a `spanId` is the head of
+ * `eventId`; and a `parentSpanId` is drawn only where `causationId` names an
+ * event this same batch emitted, in the same trace. Parentage is therefore
+ * batch-scoped, which is a real limitation and is counted rather than
+ * described. The ledger's causation is advisory by the contract's own
+ * statement, so this projection draws no edge it cannot substantiate: several
+ * roots under one trace is the honest output, and no synthetic root is minted
+ * to make it look like a tree.
+ *
  * **Refusal diagnostics carry coordinates and counts only.** A refusal names
  * the task, the attempt, the transition and the JSON paths that tripped the
  * guard, plus a classified reason from a closed set. It never carries the
@@ -61,6 +71,31 @@ export type TelemetryStatus = "UNSET" | "OK" | "ERROR";
  */
 export type TelemetryAttribute = string | number | boolean;
 
+/**
+ * Where one event sits in the tree the ledger's causal columns describe.
+ *
+ * **A top-level member, not an attribute**, and the distinction is the OTel
+ * data model's own: trace and span identity is span *context*, which every
+ * exporter reads from a different place than it reads attribute data. It is
+ * also what keeps the vendor translator flat without an edit -- that translator
+ * forwards `attributes` and nothing else, so a context expressed as attributes
+ * would have leaked a half-tree into a surface that cannot represent one.
+ *
+ * **The nesting is load-bearing.** Three sibling fields would make
+ * all-or-nothing a convention every reader has to remember; nested, it is
+ * structural. A span id without a trace id is not a span in OTel, and this
+ * shape cannot express one -- the same move the module already makes with the
+ * gate brand.
+ */
+export interface TelemetrySpanContext {
+  /** 32 lowercase hex, never all-zero. Losslessly derived from `correlationId`. */
+  readonly traceId: string;
+  /** 16 lowercase hex, never all-zero. The head of `eventId`. */
+  readonly spanId: string;
+  /** A span id in the SAME trace, or null for a root of this trace. */
+  readonly parentSpanId: string | null;
+}
+
 interface TelemetryEventFields {
   /** The span name. Stable, derived from the event type, never free text. */
   readonly name: string;
@@ -68,6 +103,15 @@ interface TelemetryEventFields {
   readonly startTime: string;
   readonly endTime: string;
   readonly status: TelemetryStatus;
+  /**
+   * The event's place in the tree, or null where it cannot be placed.
+   *
+   * Null is a degeneration and never a refusal: an event with no correlation,
+   * or with an id that folds to zero, still emits with every attribute it has.
+   * Refusing it would mis-signal the refusal count, which is the allocation
+   * this module already settled for the malformed route.
+   */
+  readonly spanContext: TelemetrySpanContext | null;
   readonly attributes: Readonly<Record<string, TelemetryAttribute>>;
 }
 
@@ -118,6 +162,23 @@ export interface TelemetryBatch {
   readonly events: readonly TelemetryEvent[];
   readonly refused: readonly TelemetryRefusal[];
   readonly refusedCount: number;
+  /**
+   * Emitted events whose causation named something this batch could not
+   * resolve into a parent.
+   *
+   * It exists for the reason `refusedCount` exists. Parentage is batch-scoped:
+   * a cause outside the page, a cause in another trace, a cause the gate
+   * refused, or an event with no trace of its own all produce a root where the
+   * ledger records a link. A tree that discarded those silently would be
+   * indistinguishable from one whose chains had no such links -- and for a real
+   * account switch, which is caused cross-task by construction, every one of
+   * its spans lands in this count.
+   *
+   * Refused records are NOT counted. A refused record projects nothing at all,
+   * so its causation is not unresolved; counting it would report one
+   * withholding under two counters.
+   */
+  readonly unresolvedCausationCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +217,24 @@ export const TELEMETRY_ATTRIBUTE_KEYS = Object.freeze({
   initiativeId: "acp.initiative.id",
   eventType: "acp.event.type",
   transitionId: "acp.event.transition_id",
+  /**
+   * The event's own id, in full, and the id of the event that caused it.
+   *
+   * Both exist because the span context is lossy in two specific ways. A span
+   * id is 64 of the event id's 128 bits, so the ledger row is not recoverable
+   * from the span alone; and `parentSpanId` is *dropped* whenever the four
+   * clauses refuse the relation, which for a real cross-task account switch is
+   * always. The causation attribute is what keeps that fact reportable after
+   * the edge is refused.
+   *
+   * There is deliberately no `acp.event.correlation_id`. `traceId` is the
+   * normalized hex of the correlation -- lossless and trivially invertible --
+   * so wherever there is a correlation to report there is already a trace id
+   * reporting it, and wherever there is no trace id there is no correlation
+   * either. A third key would be a second spelling of a fact already carried.
+   */
+  eventId: "acp.event.id",
+  causationId: "acp.event.causation_id",
   fromState: "acp.task.state.from",
   toState: "acp.task.state.to",
   emittedBy: "acp.worker.identity",
@@ -309,12 +388,22 @@ function attributesFor(event: ControlPlaneEvent): Readonly<Record<string, Teleme
   const attributes: Record<string, TelemetryAttribute> = {
     [TELEMETRY_ATTRIBUTE_KEYS.taskId]: event.taskId,
     [TELEMETRY_ATTRIBUTE_KEYS.attempt]: event.attempt,
+    [TELEMETRY_ATTRIBUTE_KEYS.eventId]: event.eventId,
     [TELEMETRY_ATTRIBUTE_KEYS.eventType]: event.type,
     [TELEMETRY_ATTRIBUTE_KEYS.transitionId]: event.transitionId,
     [TELEMETRY_ATTRIBUTE_KEYS.toState]: event.toState,
     [TELEMETRY_ATTRIBUTE_KEYS.emittedBy]: event.emittedBy,
     [TELEMETRY_ATTRIBUTE_KEYS.spanKind]: SPAN_KIND_BY_TYPE[event.type] ?? TELEMETRY_SPAN_KIND,
   };
+
+  // The causation, when there is one, and omitted when there is not -- the
+  // same rule `fromState` follows below, and for the same reason: a string
+  // spelling of null is a value a reader would have to know to disbelieve.
+  // This is the raw ledger id, never the folded span head. The relation may be
+  // refused; the fact the producer recorded is still reported.
+  if (event.causationId !== null) {
+    attributes[TELEMETRY_ATTRIBUTE_KEYS.causationId] = event.causationId;
+  }
 
   // A task's first event has no prior state, and `fromState` is null there.
   // The attribute is **omitted** rather than rendered as "null" or an empty
@@ -376,6 +465,113 @@ function attributesFor(event: ControlPlaneEvent): Readonly<Record<string, Teleme
 }
 
 // ---------------------------------------------------------------------------
+// The tree, folded from the causal columns and from nothing else
+// ---------------------------------------------------------------------------
+
+/**
+ * The all-zero ids, which OTel names invalid in both widths.
+ *
+ * Named rather than compared inline so the two guards below read as one rule.
+ * A trace of thirty-two zeroes would collect every degenerate event of every
+ * chain into one enormous fictional trace, which is worse than no trace at all.
+ */
+const ZERO_TRACE_ID = "0".repeat(32);
+const ZERO_SPAN_ID = "0".repeat(16);
+
+/** A UUID as the 32 lowercase hex characters OTel's ids are written in. */
+function uuidHex(uuid: string): string {
+  return uuid.replaceAll("-", "").toLowerCase();
+}
+
+/**
+ * The trace id of one correlation, or null where there is none to derive.
+ *
+ * Lossless: a `traceId` is the correlation with its hyphens removed, so the
+ * correlation is recoverable from the trace and no attribute needs to restate
+ * it.
+ */
+function traceIdOf(correlationId: string | null): string | null {
+  if (correlationId === null) return null;
+  const hex = uuidHex(correlationId);
+  return hex === ZERO_TRACE_ID ? null : hex;
+}
+
+/**
+ * The span id of one event id: its first eight bytes, truncated, never hashed.
+ *
+ * **Why truncation and not a digest.** A hash would buy uniform bits and cost
+ * a `node:crypto` import in a module whose whole claim is that it is a pure
+ * fold with no capability -- and it would buy them for a projection that
+ * already derives its ids deterministically. Truncation keeps the span id
+ * *inspectable*: a reader holding a span id can find its ledger row by prefix,
+ * which a digest would make impossible.
+ *
+ * **The entropy is 60 bits, not 64, and that is stated rather than hidden.**
+ * `deterministicUuid` forces the version nibble into byte 6, which is hex
+ * index 12 and inside this window, so every production span id carries a fixed
+ * `5` there. Over the tens of spans one correlation holds, the birthday
+ * probability is far below anything that would matter; over a corpus large
+ * enough to matter, this projection is the wrong tool anyway.
+ */
+function spanIdOf(eventId: string | null): string | null {
+  if (eventId === null) return null;
+  const head = uuidHex(eventId).slice(0, 16);
+  return head === ZERO_SPAN_ID ? null : head;
+}
+
+/**
+ * Where one event sits, given what this batch actually emitted.
+ *
+ * **All or nothing.** A degenerate trace or a degenerate span yields no
+ * context at all, because half a context is not a span.
+ *
+ * **The parent relation holds only where four clauses do**, and each answers a
+ * different way the ledger's advisory causation can fail to be a drawable edge:
+ *
+ * 1. the event names a cause at all, and does not name *itself* -- a self-loop
+ *    is representable in the contract and producible by no writer in this
+ *    repository, and it is an invalid edge rather than a weak one;
+ * 2. the cause is among the events this batch **emitted** -- not merely among
+ *    its inputs. A refused record has no span, so an edge to it would name a
+ *    span that does not exist and would leak a structural trace of exactly the
+ *    record the gate exists to withhold;
+ * 3. the cause carries the **same** correlation, so parent and child are in one
+ *    trace. In OTel a cross-trace parent is not a weak edge, it is a corrupt
+ *    one -- and this is production behaviour, not a hypothesis: the switch
+ *    executor threads the elector's `decidedFromEventId`, which names another
+ *    task's event and therefore another trace;
+ * 4. the cause's own id folds to a usable span.
+ *
+ * Otherwise the event is a root of its trace, and the batch counts it.
+ *
+ * **`has` before `get`, and that is not style.** A survivor may legitimately
+ * carry `correlationId: null`, so `get` returning `undefined` could not tell
+ * "not in this batch" from "in this batch with no correlation" -- which would
+ * silently conflate clause 2 with clause 3.
+ */
+function spanContextFor(
+  event: ControlPlaneEvent,
+  correlationByEventId: ReadonlyMap<string, string | null>,
+): TelemetrySpanContext | null {
+  const traceId = traceIdOf(event.correlationId);
+  const spanId = spanIdOf(event.eventId);
+  if (traceId === null || spanId === null) return null;
+
+  let parentSpanId: string | null = null;
+  if (event.causationId !== null && event.causationId !== event.eventId) {
+    if (correlationByEventId.has(event.causationId)) {
+      const causeCorrelation = correlationByEventId.get(event.causationId);
+      if (causeCorrelation === event.correlationId) {
+        const candidate = spanIdOf(event.causationId);
+        if (candidate !== null) parentSpanId = candidate;
+      }
+    }
+  }
+
+  return Object.freeze({ traceId, spanId, parentSpanId });
+}
+
+// ---------------------------------------------------------------------------
 // The gate
 // ---------------------------------------------------------------------------
 
@@ -385,9 +581,23 @@ function attributesFor(event: ControlPlaneEvent): Readonly<Record<string, Teleme
  * The only producer of `TelemetryEvent`. The guard runs here, on the payload,
  * before anything is shaped — so a refused record never becomes an event that
  * something downstream might forward.
+ *
+ * **Two passes, and the second one is not an optimisation.** Parentage must be
+ * resolved against the events this call actually **emitted**, and a single fold
+ * cannot know that set while it is still building it. The gate runs first and
+ * unchanged; the resolution index is built from the survivors alone; only then
+ * is anything shaped. A one-pass version differs from this one on exactly one
+ * case, and it is the case that matters: an event whose cause the gate refused
+ * would be given a parent naming a span that was never emitted.
+ *
+ * **Ledger-free, and it stays that way.** The signature takes contract values
+ * and nothing else -- no ledger, no resolver, no second argument. So parentage
+ * is bounded by the page the caller passed, which is a real limitation and is
+ * therefore *counted* rather than described: `unresolvedCausationCount` is what
+ * makes the boundary visible to a reader who cannot see this comment.
  */
 export function emitTelemetry(events: readonly ControlPlaneEvent[]): TelemetryBatch {
-  const out: TelemetryEvent[] = [];
+  const survivors: ControlPlaneEvent[] = [];
   const refused: TelemetryRefusal[] = [];
 
   for (const event of events) {
@@ -413,11 +623,39 @@ export function emitTelemetry(events: readonly ControlPlaneEvent[]): TelemetryBa
       continue;
     }
 
+    survivors.push(event);
+  }
+
+  // The resolution index: survivors ONLY. A refused record contributes no span
+  // and no entry, so nothing can resolve a parent onto it.
+  //
+  // The value is the correlation, which may itself be null, and that is why
+  // the lookup below asks `has` before `get`.
+  const correlationByEventId = new Map<string, string | null>();
+  for (const event of survivors) {
+    correlationByEventId.set(event.eventId, event.correlationId);
+  }
+
+  const out: TelemetryEvent[] = [];
+  let unresolvedCausationCount = 0;
+
+  for (const event of survivors) {
+    const spanContext = spanContextFor(event, correlationByEventId);
+    // Counted here rather than inside the resolution, so the predicate is one
+    // sentence a reader can check: an emitted event that names a cause and
+    // emits no parent for it. That covers every way the four clauses fail, and
+    // the case where the event has no context of its own at all.
+    const parentSpanId = spanContext === null ? null : spanContext.parentSpanId;
+    if (event.causationId !== null && parentSpanId === null) {
+      unresolvedCausationCount += 1;
+    }
+
     const fields: TelemetryEventFields = {
       name: telemetrySpanName(event.type),
       startTime: event.occurredAt,
       endTime: event.recordedAt,
       status: statusFor(event),
+      spanContext,
       attributes: attributesFor(event),
     };
     // The one mint site. The brand is what makes "gated" a type rather than a
@@ -429,5 +667,6 @@ export function emitTelemetry(events: readonly ControlPlaneEvent[]): TelemetryBa
     events: Object.freeze(out),
     refused: Object.freeze(refused),
     refusedCount: refused.length,
+    unresolvedCausationCount,
   });
 }

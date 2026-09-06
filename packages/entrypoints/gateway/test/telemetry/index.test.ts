@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { openLedger } from "@acp/ledger";
 import type { LedgerEventRecord } from "@acp/ledger";
 import { TELEMETRY_SPAN_KIND, computeTokenRollups, emitTelemetry } from "@acp/observation";
-import type { BuildEventInput } from "@acp/runtime";
+import type { BuildEventInput, SwitchExecutionInput } from "@acp/runtime";
 import {
   LIFECYCLE_PLAN,
   acquireLease,
@@ -13,6 +13,7 @@ import {
   checkWriteSetConformance,
   deriveEventCoordinate,
   deterministicUuid,
+  executeSwitchPlan,
   recordProviderPressure,
   recordTokenObservation,
   revokeLease,
@@ -272,6 +273,11 @@ describe("the route the walk writes reaches the projection", () => {
     expect(first.attributes).toEqual({
       "acp.task.id": TASK_ID,
       "acp.task.attempt": 1,
+      // The event's own id, and the id of the plan step that caused it. The
+      // span context carries only the first eight bytes of each, so the
+      // ledger rows they name stay recoverable from the attributes.
+      "acp.event.id": runStarted.eventId,
+      "acp.event.causation_id": runStarted.causationId,
       "acp.event.type": "RUN_STARTED",
       "acp.event.transition_id": "run.started",
       "acp.task.state.from": "RESERVED",
@@ -419,7 +425,12 @@ describe("the allowlist is not a payload mirror", () => {
     for (const emitted of batch.events) {
       expect(Object.hasOwn(emitted.attributes, "acp.audit.verdict")).toBe(false);
     }
-    const serialized = JSON.stringify(batch.events);
+    // Asserted over the ATTRIBUTES rather than over the whole event: a root
+    // of a trace carries `parentSpanId: null` as a structural member, and
+    // that null is the honest absence of a parent rather than a value spelled
+    // into an attribute. The claim this test makes has always been about the
+    // attribute surface.
+    const serialized = JSON.stringify(batch.events.map((emitted) => emitted.attributes));
     expect(serialized).not.toContain("acp.audit.verdict");
     expect(serialized).not.toContain("unknown");
     expect(serialized).not.toContain("null");
@@ -598,5 +609,536 @@ describe("the projection stays a pure function of the chain", () => {
     if (emitted === undefined) throw new Error("expected one telemetry event");
     expect(emitted.attributes["acp.pressure.provider"]).toBe(ROUTE.provider);
     expect(Object.hasOwn(emitted.attributes, "acp.route.provider")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C12 - C21: the trace tree, driven from the real emitters (V2-B5/R10)
+// ---------------------------------------------------------------------------
+
+/**
+ * The fold, restated here so an assertion computes rather than recalls.
+ *
+ * A pasted vector would prove the run agreed with a transcription. This agrees
+ * with the rule, over ids the real emitters derived.
+ */
+function uuidHex(uuid: string): string {
+  return uuid.replaceAll("-", "").toLowerCase();
+}
+
+/** The span context of one emitted event, by the event id it carries. */
+type SpanContext = ReturnType<typeof emitTelemetry>["events"][number]["spanContext"];
+
+function contextByEventId(events: readonly ControlPlaneEvent[]): Map<string, SpanContext> {
+  const table = new Map<string, SpanContext>();
+  const batch = emitTelemetry(events);
+  for (const emitted of batch.events) {
+    table.set(String(emitted.attributes["acp.event.id"]), emitted.spanContext);
+  }
+  return table;
+}
+
+/** A second task in the same ledger, so a cross-task cause is a REAL row. */
+const FOREIGN_TASK_ID = "5f5f5f5f-5f5f-4f5f-8f5f-5f5f5f5f5f04";
+
+const FOREIGN_INVOCATION = {
+  taskId: FOREIGN_TASK_ID,
+  attempt: 1,
+  invocationId: deterministicUuid("inv/telemetry-drill-foreign"),
+  submittedAt: "2026-09-06T08:00:00.000Z",
+  submissionDigest: "d".repeat(64),
+};
+
+/** Attempt two of the same task. A different invocation, so a different trace. */
+const SECOND_ATTEMPT = {
+  taskId: TASK_ID,
+  attempt: 2,
+  invocationId: deterministicUuid("inv/telemetry-drill-attempt-2"),
+  submittedAt: "2026-09-06T11:00:00.000Z",
+  submissionDigest: "e".repeat(64),
+};
+
+/** Walk a plan prefix for any invocation, through the real event builder. */
+function walkFor(ledger: Ledger, invocation: typeof INVOCATION, upToIndex: number): void {
+  for (const step of LIFECYCLE_PLAN) {
+    if (step.index > upToIndex) break;
+    ledger.append(
+      buildEvent({
+        invocation,
+        step,
+        emittedBy: EMITTED_BY,
+        initiativeId: INITIATIVE_ID,
+        plan: LIFECYCLE_PLAN,
+        route: ROUTE,
+      }),
+    );
+  }
+}
+
+/** Every event of one task, off the handle that is already open. */
+function eventsOf(ledger: Ledger, taskId: string): readonly ControlPlaneEvent[] {
+  return ledger.listEvents({ taskId, limit: 1_000 }).events.map((record) => record.event);
+}
+
+/** Every event of one task, read back out of a CLOSED ledger in ledger order. */
+function readBackTask(path: string, taskId: string): readonly ControlPlaneEvent[] {
+  const ledger = openLedger(path, { readOnly: true });
+  try {
+    return ledger.listEvents({ taskId, limit: 1_000 }).events.map((record) => record.event);
+  } finally {
+    ledger.close();
+  }
+}
+
+/**
+ * A switch plan the executor admits: three decisions, no claimed step.
+ *
+ * The type is derived from the executor's own input rather than restated, for
+ * the reason the two contract types above are: this package may not name the
+ * contracts package, and a second declaration could drift from the first.
+ */
+const SWITCH_PLAN: SwitchExecutionInput["plan"] = {
+  kind: "DRAIN",
+  accountStatus: "DRAINING",
+  taskState: null,
+  steps: [],
+  selectedAccountId: null,
+  events: [
+    { type: "QUOTA_WARNING", payload: { accountId: ROUTE.accountId, provider: ROUTE.provider } },
+    { type: "AUTH_REQUIRED_RAISED", payload: { accountId: ROUTE.accountId } },
+    { type: "ACCOUNT_SWITCH_STARTED", payload: { toAccountId: "acct-drill-b" } },
+  ],
+};
+
+describe("the tree the ledger resolves, driven causally", () => {
+  it("C12: one walk is one trace, and each step parents the one before it", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+    ledger.close();
+
+    const events = readBack(path);
+    const batch = emitTelemetry(events);
+    expect(batch.refusedCount).toBe(0);
+    expect(batch.events.length).toBe(events.length);
+
+    // One trace for the whole attempt, and it IS the invocation the walk ran
+    // under -- not a value this projection minted for itself.
+    const traces = new Set(batch.events.map((emitted) => emitted.spanContext?.traceId));
+    expect([...traces]).toEqual([uuidHex(INVOCATION.invocationId)]);
+
+    // Step i's parent is step i-1's span, over the whole plan. The walk
+    // derives its causation from the plan's previous step, so this is the
+    // agreement between what the builder wrote and what the projection reads.
+    for (const [index, emitted] of batch.events.entries()) {
+      const previous = batch.events[index - 1];
+      expect(emitted.spanContext?.parentSpanId).toBe(
+        index === 0 ? null : (previous?.spanContext?.spanId ?? null),
+      );
+    }
+    expect(batch.unresolvedCausationCount).toBe(0);
+  });
+
+  it("C13: an interleaved lease event does not become anybody's parent", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 4);
+
+    // A real lease decision, appended BETWEEN two causally adjacent plan
+    // steps. Ledger order is now not plan order, so "the previous element"
+    // and "the cause" part company for the first time.
+    const granted = acquireLease({ leases: [], now: "2026-09-06T09:00:00.000Z", candidate: LEASE });
+    if (!granted.ok) throw new Error("the lease fixture must be grantable");
+    for (const event of granted.events) {
+      appendEnforcementEvent(ledger, "lease.acquired.01", event.type, event.payload);
+    }
+    walkFor(ledger, INVOCATION, 6);
+    ledger.close();
+
+    const events = readBack(path);
+    const contexts = contextByEventId(events);
+    const spanOf = (transitionId: string): string => {
+      const found = events.find((event) => event.transitionId === transitionId);
+      if (found === undefined) throw new Error("no " + transitionId + " in the chain");
+      const context = contexts.get(found.eventId);
+      if (context === null || context === undefined) throw new Error("no span context for " + transitionId);
+      return context.spanId;
+    };
+
+    // The lease event really did land between them.
+    const order = events.map((event) => event.transitionId);
+    expect(order.indexOf("lease.acquired.01")).toBeGreaterThan(order.indexOf("run.started"));
+    expect(order.indexOf("lease.acquired.01")).toBeLessThan(order.indexOf("verified"));
+
+    // And the plan step after it still parents to the plan step before it.
+    const verified = events.find((event) => event.transitionId === "verified");
+    if (verified === undefined) throw new Error("no verified step in the chain");
+    expect(contexts.get(verified.eventId)?.parentSpanId).toBe(spanOf("run.outcome"));
+
+    // The lease event carries no causation at all, so it is a root of the
+    // trace it rides -- not a link in the plan's chain.
+    const lease = events.find((event) => event.transitionId === "lease.acquired.01");
+    if (lease === undefined) throw new Error("no lease event in the chain");
+    expect(lease.causationId).toBe(null);
+    expect(contexts.get(lease.eventId)?.parentSpanId).toBe(null);
+  });
+
+  it("C14: reversing a real chain changes no span context", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+    ledger.close();
+
+    const events = readBack(path);
+    const forward = contextByEventId(events);
+    // The table must be a real one first. Keyed on an attribute that did not
+    // exist and valued on a field that did not either, the comparison below
+    // would be `{} === {}`, and a test that cannot fail is not evidence.
+    expect(forward.size).toBe(events.length);
+    expect([...forward.keys()].sort()).toEqual(events.map((event) => event.eventId).sort());
+    expect([...forward.values()].every((context) => context !== null)).toBe(true);
+
+    // Ledger order is plan order, so a `parentSpanId = previousElement` fold
+    // passes C12. Reversed, the previous element is the successor.
+    expect(Object.fromEntries(contextByEventId([...events].reverse()))).toEqual(
+      Object.fromEntries(forward),
+    );
+  });
+
+  it("C15: the roots of a real chain are exactly the events nothing caused", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+
+    const granted = acquireLease({ leases: [], now: "2026-09-06T09:00:00.000Z", candidate: LEASE });
+    if (!granted.ok) throw new Error("the lease fixture must be grantable");
+    for (const event of granted.events) {
+      appendEnforcementEvent(ledger, "lease.acquired.01", event.type, event.payload);
+    }
+    const released = revokeLease({
+      leases: [LEASE],
+      now: "2026-09-06T09:30:00.000Z",
+      leaseId: LEASE_ID,
+      cause: "RELEASED",
+    });
+    if (!released.ok) throw new Error("the revocation fixture must be grantable");
+    for (const event of released.events) {
+      appendEnforcementEvent(ledger, "lease.released.01", event.type, event.payload);
+    }
+    const violated = checkWriteSetConformance({
+      declaredWriteSet: ["packages/domains/observation/src/telemetry/index.ts"],
+      lease: LEASE,
+      observation: { head: "a".repeat(40), trackedChanges: [], untrackedPaths: [VIOLATING_PATH] },
+    });
+    if (!violated.ok) throw new Error("the conformance fixture must return a verdict");
+    let index = 0;
+    for (const event of violated.events) {
+      index += 1;
+      appendEnforcementEvent(ledger, "conformance.0" + String(index), event.type, event.payload);
+    }
+    recordProviderPressure(ledger, {
+      invocation: INVOCATION,
+      accountId: ROUTE.accountId,
+      provider: ROUTE.provider,
+      pressure: "QUOTA_WARNING",
+      transitionId: "pressure.drill.01",
+      emittedBy: EMITTED_BY,
+    });
+    ledger.close();
+
+    const events = readBack(path);
+    const batch = emitTelemetry(events);
+
+    // A trace is a forest and this one has several roots. The count is
+    // asserted EXACTLY, so a later move to a synthetic root is a named change
+    // rather than a drift nobody notices.
+    const roots = batch.events.filter((emitted) => emitted.spanContext?.parentSpanId === null);
+    const uncaused = events.filter((event) => event.causationId === null);
+    expect(roots.length).toBe(uncaused.length);
+    expect(roots.length).toBe(6);
+    expect(roots.map((root) => String(root.attributes["acp.event.type"])).sort()).toEqual([
+      "LEASE_ACQUIRED",
+      // Two revocations: the clean release, and the one the conformance
+      // verdict carries beside its violation.
+      "LEASE_REVOKED",
+      "LEASE_REVOKED",
+      "QUOTA_WARNING",
+      "TASK_DISCOVERED",
+      "WRITE_SET_VIOLATION_DETECTED",
+    ]);
+    // Several roots, one trace. That is the correct output, not a degradation.
+    expect(new Set(batch.events.map((emitted) => emitted.spanContext?.traceId)).size).toBe(1);
+  });
+
+  it("C16: one plan's events are siblings under one parent, with distinct spans", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 4);
+    const runStarted = only(eventsOf(ledger, TASK_ID), "RUN_STARTED");
+
+    // The cause is a REAL row of the SAME invocation, so the four clauses all
+    // hold and the edge is drawn.
+    executeSwitchPlan({
+      ledger,
+      invocation: INVOCATION,
+      plan: SWITCH_PLAN,
+      emittedBy: EMITTED_BY,
+      lease: null,
+      taskState: "RUNNING",
+      causedBy: runStarted.eventId,
+    });
+    ledger.close();
+
+    const events = readBack(path);
+    const contexts = contextByEventId(events);
+    const switched = events.filter((event) => event.transitionId.startsWith("switch."));
+    expect(switched.length).toBe(3);
+
+    const expected = uuidHex(runStarted.eventId).slice(0, 16);
+    for (const event of switched) {
+      expect(contexts.get(event.eventId)?.parentSpanId).toBe(expected);
+    }
+    // Three children of one parent, each its own span. Siblings need no rule.
+    expect(new Set(switched.map((event) => contexts.get(event.eventId)?.spanId)).size).toBe(3);
+    expect(emitTelemetry(events).unresolvedCausationCount).toBe(0);
+  });
+
+  it("C17: a cross-task cause is preserved as an attribute and refused as a parent", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 4);
+    // A second task's own walk, in the same ledger. This is the real shape:
+    // `switch-executor` threads `authorization.decidedFromEventId`, which the
+    // elector recorded against whichever task reported the pressure.
+    walkFor(ledger, FOREIGN_INVOCATION, 4);
+    const foreign = eventsOf(ledger, FOREIGN_TASK_ID);
+    const foreignCause = foreign[foreign.length - 1];
+    if (foreignCause === undefined) throw new Error("the foreign task must have events");
+
+    executeSwitchPlan({
+      ledger,
+      invocation: INVOCATION,
+      plan: SWITCH_PLAN,
+      emittedBy: EMITTED_BY,
+      lease: null,
+      taskState: "RUNNING",
+      causedBy: foreignCause.eventId,
+    });
+    ledger.close();
+
+    // Both tasks projected together, which is the strongest form of the
+    // question: the cause is genuinely IN the batch, and still may not be a
+    // parent, because it is in another trace.
+    const events = [...readBackTask(path, TASK_ID), ...readBackTask(path, FOREIGN_TASK_ID)];
+    const batch = emitTelemetry(events);
+    const switched = events.filter((event) => event.transitionId.startsWith("switch."));
+    expect(switched.length).toBe(3);
+    expect(foreignCause.taskId).not.toBe(TASK_ID);
+    expect(foreignCause.correlationId).not.toBe(INVOCATION.invocationId);
+
+    const contexts = contextByEventId(events);
+    const attributesByEventId = new Map(
+      batch.events.map((emitted) => [String(emitted.attributes["acp.event.id"]), emitted.attributes]),
+    );
+    for (const event of switched) {
+      expect(contexts.get(event.eventId)?.parentSpanId).toBe(null);
+      // The relation is refused; the fact is not. The raw id travels verbatim.
+      expect(attributesByEventId.get(event.eventId)?.["acp.event.causation_id"]).toBe(
+        foreignCause.eventId,
+      );
+    }
+    expect(batch.unresolvedCausationCount).toBe(switched.length);
+
+    // The structural half: no emitted parent anywhere in this batch names a
+    // span belonging to a different trace. In OTel a cross-trace parent is not
+    // a weak edge, it is a corrupt one.
+    const spansByTrace = new Map<string, Set<string>>();
+    for (const emitted of batch.events) {
+      const context = emitted.spanContext;
+      if (context === null) continue;
+      const seen = spansByTrace.get(context.traceId) ?? new Set<string>();
+      seen.add(context.spanId);
+      spansByTrace.set(context.traceId, seen);
+    }
+    expect(spansByTrace.size).toBe(2);
+    for (const emitted of batch.events) {
+      const context = emitted.spanContext;
+      if (context === null) continue;
+      if (context.parentSpanId === null) continue;
+      expect(spansByTrace.get(context.traceId)?.has(context.parentSpanId)).toBe(true);
+    }
+  });
+
+  it("C18: two attempts of one task are two disjoint traces", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+
+    // Attempt 2 cannot re-walk the plan: the ledger holds the task at
+    // CHECKPOINTED and refuses an event declaring `fromState: null`. So the
+    // second attempt is built from the recorders that DO ride a finished
+    // task's thread, which is how a second attempt reaches a ledger anyway.
+    recordProviderPressure(ledger, {
+      invocation: SECOND_ATTEMPT,
+      accountId: ROUTE.accountId,
+      provider: ROUTE.provider,
+      pressure: "QUOTA_WARNING",
+      transitionId: "pressure.attempt2.01",
+      emittedBy: EMITTED_BY,
+    });
+    const pressure = eventsOf(ledger, TASK_ID).find(
+      (event) => event.transitionId === "pressure.attempt2.01",
+    );
+    if (pressure === undefined) throw new Error("the attempt-2 pressure event must exist");
+    // A real edge INSIDE trace two, so the containment half below is asserted
+    // of both traces rather than only of the walked one.
+    recordTokenObservation(ledger, {
+      invocation: SECOND_ATTEMPT,
+      kind: "USAGE",
+      accountId: ROUTE.accountId,
+      tokens: 3_333,
+      transitionId: "usage.attempt2.01",
+      emittedBy: EMITTED_BY,
+      causedBy: pressure.eventId,
+    });
+    ledger.close();
+
+    const events = readBack(path);
+    const batch = emitTelemetry(events);
+    const spansByAttempt = new Map<number, Set<string>>([
+      [1, new Set<string>()],
+      [2, new Set<string>()],
+    ]);
+    const parentsByTrace = new Map<string, Set<string>>();
+    for (const [index, emitted] of batch.events.entries()) {
+      const context = emitted.spanContext;
+      if (context === null) throw new Error("every event of a real chain must carry a span context");
+      const source = events[index];
+      if (source === undefined) throw new Error("expected a source event");
+      spansByAttempt.get(source.attempt)?.add(context.spanId);
+      if (context.parentSpanId !== null) {
+        const seen = parentsByTrace.get(context.traceId) ?? new Set<string>();
+        seen.add(context.parentSpanId);
+        parentsByTrace.set(context.traceId, seen);
+      }
+    }
+
+    const first = spansByAttempt.get(1) ?? new Set<string>();
+    const second = spansByAttempt.get(2) ?? new Set<string>();
+    // Uniqueness is claimed per (taskId, attempt) within one ledger and no
+    // further. This is that claim as a set operation rather than a sample:
+    // the two attempts share the task and share not one span id.
+    expect({ first: first.size, second: second.size }).toEqual({ first: 11, second: 2 });
+    expect([...first].filter((spanId) => second.has(spanId))).toEqual([]);
+
+    const traceOne = uuidHex(INVOCATION.invocationId);
+    const traceTwo = uuidHex(SECOND_ATTEMPT.invocationId);
+    expect(new Set(batch.events.map((emitted) => emitted.spanContext?.traceId))).toEqual(
+      new Set([traceOne, traceTwo]),
+    );
+
+    // Both traces carry real edges, and no parent in either reaches into the
+    // other. Without the second half the first would pass vacuously on a
+    // projection that emitted no parents at all.
+    expect([...parentsByTrace.keys()].sort()).toEqual([traceOne, traceTwo].sort());
+    for (const [traceId, parents] of parentsByTrace) {
+      const own = traceId === traceOne ? first : second;
+      const foreign = traceId === traceOne ? second : first;
+      for (const parent of parents) {
+        expect(own.has(parent)).toBe(true);
+        expect(foreign.has(parent)).toBe(false);
+      }
+    }
+  });
+
+  it("C19: a causation reaching back into attempt 1 is counted, not drawn", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+    const firstAttempt = only(eventsOf(ledger, TASK_ID), "RUN_STARTED");
+
+    // A real recorder, on attempt 2, naming an attempt-1 event as its cause.
+    recordTokenObservation(ledger, {
+      invocation: SECOND_ATTEMPT,
+      kind: "USAGE",
+      accountId: ROUTE.accountId,
+      tokens: 2_222,
+      transitionId: "usage.attempt2.01",
+      emittedBy: EMITTED_BY,
+      causedBy: firstAttempt.eventId,
+    });
+    ledger.close();
+
+    const events = readBack(path);
+    const usage = events.find((event) => event.transitionId === "usage.attempt2.01");
+    if (usage === undefined) throw new Error("no attempt-2 usage event in the chain");
+    expect(usage.causationId).toBe(firstAttempt.eventId);
+
+    const batch = emitTelemetry(events);
+    const contexts = contextByEventId(events);
+    // The cause is in the batch and in the ledger, and it is in another trace.
+    expect(contexts.get(usage.eventId)?.parentSpanId).toBe(null);
+    expect(batch.unresolvedCausationCount).toBe(1);
+  });
+
+  it("C20: a refused record's span id appears nowhere in the batch", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+    ledger.close();
+
+    const secret = "sk-drill-do-not-emit-0123456789";
+    const events = readBack(path);
+    // The dirty record is a REAL link in the chain: the step after it names it
+    // as its cause, so refusing it is exactly the case where a one-pass fold
+    // would publish a parent naming a span that does not exist.
+    const dirtyIndex = 4;
+    const dirtySource = events[dirtyIndex];
+    const childSource = events[dirtyIndex + 1];
+    if (dirtySource === undefined || childSource === undefined) throw new Error("expected a walked chain");
+    expect(childSource.causationId).toBe(dirtySource.eventId);
+
+    const chain = events.map((event, index) =>
+      index === dirtyIndex ? { ...event, payload: { ...event.payload, apiKey: secret } } : event,
+    );
+    const batch = emitTelemetry(chain);
+    expect(batch.refusedCount).toBe(1);
+    expect(batch.events.length).toBe(events.length - 1);
+
+    const orphanSpan = uuidHex(dirtySource.eventId).slice(0, 16);
+    for (const emitted of batch.events) {
+      expect(emitted.spanContext?.parentSpanId).not.toBe(orphanSpan);
+      expect(emitted.spanContext?.spanId).not.toBe(orphanSpan);
+    }
+    expect(batch.unresolvedCausationCount).toBe(1);
+
+    const serialized = JSON.stringify(batch);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("sk-");
+    // A withheld record must leave no structural handle either. A span id
+    // naming a row the gate refused is exactly such a handle.
+    expect(serialized).not.toContain(orphanSpan);
+  });
+
+  it("C21: the tree is a pure function of the chain, attribute order included", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+    executeSwitchPlan({
+      ledger,
+      invocation: INVOCATION,
+      plan: SWITCH_PLAN,
+      emittedBy: EMITTED_BY,
+      lease: null,
+      taskState: "CHECKPOINTED",
+      causedBy: null,
+    });
+    ledger.close();
+
+    const events = readBack(path);
+    // Serialized rather than deep-equalled, so the span context's own key
+    // order is compared alongside the attributes'.
+    expect(JSON.stringify(emitTelemetry(events))).toBe(JSON.stringify(emitTelemetry(events)));
+    expect(JSON.stringify(emitTelemetry(events))).toContain("spanContext");
   });
 });

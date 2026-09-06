@@ -111,6 +111,9 @@ describe("the ledger's events become OTel-shaped values", () => {
     expect(first.attributes).toEqual({
       "acp.task.id": TASK,
       "acp.task.attempt": 1,
+      // The event's own id, in full. The span id is its first eight bytes, so
+      // the ledger row is not recoverable from the span context alone.
+      "acp.event.id": "00000000-0000-4000-8000-000000000001",
       "acp.event.type": "TOKEN_USAGE_RECORDED",
       "acp.event.transition_id": "usage.01",
       "acp.task.state.from": "RUNNING",
@@ -150,6 +153,7 @@ describe("the ledger's events become OTel-shaped values", () => {
     expect(first.attributes).toEqual({
       "acp.task.id": TASK,
       "acp.task.attempt": 1,
+      "acp.event.id": "00000000-0000-4000-8000-000000000001",
       "acp.event.type": "RUN_STARTED",
       "acp.event.transition_id": "run.01",
       "acp.task.state.from": "RESERVED",
@@ -386,6 +390,439 @@ describe("the ledger's events become OTel-shaped values", () => {
     expect(telemetrySpanName("TASK_DISCOVERED")).toBe("acp.task_discovered");
     expect(emitTelemetry([]).events).toEqual([]);
     expect(emitTelemetry([]).refusedCount).toBe(0);
+  });
+});
+// ---------------------------------------------------------------------------
+// The trace tree (V2-B5/R10)
+// ---------------------------------------------------------------------------
+
+/**
+ * Collision-free fixtures, and why the file needs a second builder.
+ *
+ * `event()` above mints every id as `"00000000-0000-4000-8000-0000000000" +
+ * two digits`, so every fixture in this file shares its first eight bytes.
+ * Under an eight-byte fold they are indistinguishable, and a tree suite built
+ * on that helper would assert nothing: every span would carry the same id and
+ * every parent lookup would resolve to whichever event was indexed last.
+ *
+ * So the ids below differ in their FIRST byte, which is the half the span id
+ * is taken from, and `causal()` takes the three causal columns as arguments
+ * rather than writing nulls into all of them.
+ */
+const CORRELATION_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+const CORRELATION_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+const EVENT_1 = "11111111-2222-4333-8444-555555555551";
+const EVENT_2 = "21111111-2222-4333-8444-555555555552";
+const EVENT_3 = "31111111-2222-4333-8444-555555555553";
+const EVENT_4 = "41111111-2222-4333-8444-555555555554";
+const EVENT_5 = "51111111-2222-4333-8444-555555555555";
+const ABSENT_EVENT = "e1111111-2222-4333-8444-55555555550e";
+
+/** The nil UUID. `z.uuid()` admits it; every derived id carries a version. */
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+/**
+ * An id whose first eight bytes are zero without being the nil UUID.
+ *
+ * Measured against `zod@4.1.13`: `z.uuid()` REFUSES this one, because hex
+ * index 12 is the version nibble and only the nil UUID may leave it zero. So
+ * the case is reachable only from a value that never passed
+ * `ControlPlaneEvent.parse` -- a hand-built or foreign record, exactly like
+ * the malformed route two sections above. The guard is implemented anyway,
+ * because the TypeScript value space this module is total over admits it.
+ */
+const ZERO_HEAD_EVENT = "00000000-0000-0000-8444-555555555559";
+
+interface CausalInput {
+  readonly eventId: string;
+  readonly correlationId: string | null;
+  readonly causationId: string | null;
+  readonly transitionId: string;
+  readonly type?: ControlPlaneEventType;
+  readonly taskId?: string;
+  readonly payload?: Record<string, unknown>;
+}
+
+function causal(input: CausalInput): ControlPlaneEvent {
+  const taskId = input.taskId ?? TASK;
+  const attempt = 1;
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: input.eventId,
+    taskId,
+    attempt,
+    transitionId: input.transitionId,
+    idempotencyKey: buildIdempotencyKey({ taskId, attempt, transitionId: input.transitionId }),
+    type: input.type ?? "ATOMIC_STEP_COMPLETED",
+    fromState: "RUNNING",
+    toState: "RUNNING",
+    emittedBy: EMITTER,
+    occurredAt: OCCURRED,
+    recordedAt: RECORDED,
+    correlationId: input.correlationId,
+    causationId: input.causationId,
+    payload: input.payload ?? {},
+  };
+}
+
+/** The fold, restated in the test so the assertion computes rather than recalls. */
+function uuidHex(uuid: string): string {
+  return uuid.replaceAll("-", "").toLowerCase();
+}
+
+/** A resolvable three-step chain in one correlation, in causal order. */
+function chain(): readonly ControlPlaneEvent[] {
+  return [
+    causal({ eventId: EVENT_1, correlationId: CORRELATION_A, causationId: null, transitionId: "one.01" }),
+    causal({ eventId: EVENT_2, correlationId: CORRELATION_A, causationId: EVENT_1, transitionId: "two.01" }),
+    causal({ eventId: EVENT_3, correlationId: CORRELATION_A, causationId: EVENT_2, transitionId: "three.01" }),
+  ];
+}
+
+describe("a span is parented only where the ledger resolves it", () => {
+  it("U1: derives a span context from the correlation and the event id", () => {
+    const [first] = emitTelemetry([
+      causal({ eventId: EVENT_1, correlationId: CORRELATION_A, causationId: null, transitionId: "one.01" }),
+    ]).events;
+    if (first === undefined) throw new Error("expected one event");
+
+    const context = first.spanContext;
+    if (context === null) throw new Error("expected a span context");
+    // Shape before value: a 32-hex trace and a 16-hex span, both lower-cased,
+    // are what the OTel data model calls a span context. Anything else is not
+    // one, however plausible it reads.
+    expect(context.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(context.spanId).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("U2: the fold is the normalized hex, and its head — computed, not recalled", () => {
+    const [first] = emitTelemetry([
+      causal({ eventId: EVENT_2, correlationId: CORRELATION_B, causationId: null, transitionId: "two.01" }),
+    ]).events;
+    if (first === undefined) throw new Error("expected one event");
+
+    // Computed from the fixture ids rather than pasted as literals: a pasted
+    // vector proves the run agreed with a transcription, not with the rule.
+    expect(first.spanContext).toEqual({
+      traceId: uuidHex(CORRELATION_B),
+      spanId: uuidHex(EVENT_2).slice(0, 16),
+      parentSpanId: null,
+    });
+  });
+
+  it("U3: a correlation-less event gets no context, and is not a refusal", () => {
+    const batch = emitTelemetry([
+      causal({ eventId: EVENT_1, correlationId: null, causationId: null, transitionId: "one.01" }),
+      // The same case carrying a causation, so the counter is pinned here too:
+      // an event with no trace has no parent to resolve, and that is exactly
+      // an unresolved causation rather than a second silent drop.
+      causal({ eventId: EVENT_2, correlationId: null, causationId: EVENT_1, transitionId: "two.01" }),
+    ]);
+
+    // A span this projection cannot place is not a record it must withhold.
+    // Refusing here would mis-signal the refusal count, which is the module's
+    // own settled allocation for the malformed route.
+    expect(batch.events.map((telemetry) => telemetry.spanContext)).toEqual([null, null]);
+    expect(batch.refusedCount).toBe(0);
+    expect(batch.unresolvedCausationCount).toBe(1);
+  });
+
+  it("U4: a nil correlation is a degeneration, not a trace of zeroes", () => {
+    const batch = emitTelemetry([
+      causal({ eventId: EVENT_1, correlationId: NIL_UUID, causationId: null, transitionId: "one.01" }),
+    ]);
+
+    // `z.uuid()` admits the nil UUID, so this guard is required rather than
+    // decorative. A trace id of thirty-two zeroes is not a trace: OTel names
+    // the all-zero id invalid, and emitting it would put every degenerate
+    // event of every chain in one enormous fictional trace.
+    expect(batch.events[0]?.spanContext).toBe(null);
+    expect(batch.refusedCount).toBe(0);
+  });
+
+  it("U5: an event id whose head folds to zero yields no span, and no refusal", () => {
+    const batch = emitTelemetry([
+      causal({
+        eventId: ZERO_HEAD_EVENT,
+        correlationId: CORRELATION_A,
+        causationId: null,
+        transitionId: "one.01",
+      }),
+    ]);
+
+    // The correlation is usable and the event id is not. All or nothing: a
+    // span id without a trace id is not a span, and a trace id without a span
+    // id is not one either, so the whole context is absent rather than half
+    // present.
+    expect(batch.events[0]?.spanContext).toBe(null);
+    expect(batch.refusedCount).toBe(0);
+  });
+
+  it("U6: an uncaused event is a root of its trace, and stays one", () => {
+    const [first] = emitTelemetry([
+      causal({ eventId: EVENT_1, correlationId: CORRELATION_A, causationId: null, transitionId: "one.01" }),
+    ]).events;
+    if (first === undefined) throw new Error("expected one event");
+
+    // A trace is honestly a forest. No synthetic root is minted to make the
+    // shape look like a tree, because a span that names no ledger row is a
+    // fact this projection would be inventing.
+    expect(first.spanContext?.parentSpanId).toBe(null);
+    expect(first.spanContext?.traceId).toBe(uuidHex(CORRELATION_A));
+  });
+
+  it("U7: a causation naming an event outside the batch is counted, not drawn", () => {
+    const batch = emitTelemetry([
+      causal({
+        eventId: EVENT_1,
+        correlationId: CORRELATION_A,
+        causationId: ABSENT_EVENT,
+        transitionId: "one.01",
+      }),
+    ]);
+
+    // The contract's own sentence: the consumer refuses to draw an edge it
+    // cannot resolve. Parentage is batch-scoped, and a cause outside the page
+    // is a fact this projection cannot substantiate.
+    expect(batch.events[0]?.spanContext?.parentSpanId).toBe(null);
+    expect(batch.unresolvedCausationCount).toBe(1);
+    expect(batch.refusedCount).toBe(0);
+  });
+
+  it("U8: a cause in a different correlation is not a parent edge", () => {
+    const batch = emitTelemetry([
+      causal({ eventId: EVENT_1, correlationId: CORRELATION_B, causationId: null, transitionId: "one.01" }),
+      causal({
+        eventId: EVENT_2,
+        correlationId: CORRELATION_A,
+        causationId: EVENT_1,
+        transitionId: "two.01",
+      }),
+    ]);
+
+    // Cross-trace causation is not a weak parent edge, it is a corrupt one:
+    // in OTel a parent must be in the same trace. The relation is refused and
+    // counted, and the raw id still travels as an attribute.
+    const [, child] = batch.events;
+    if (child === undefined) throw new Error("expected two events");
+    expect(child.spanContext?.parentSpanId).toBe(null);
+    expect(child.attributes[TELEMETRY_ATTRIBUTE_KEYS.causationId]).toBe(EVENT_1);
+    expect(batch.unresolvedCausationCount).toBe(1);
+
+    // The structural half, over the whole batch: no emitted parent may name a
+    // span in another trace.
+    const spansByTrace = new Map<string, Set<string>>();
+    for (const emitted of batch.events) {
+      const context = emitted.spanContext;
+      if (context === null) continue;
+      const seen = spansByTrace.get(context.traceId) ?? new Set<string>();
+      seen.add(context.spanId);
+      spansByTrace.set(context.traceId, seen);
+    }
+    for (const emitted of batch.events) {
+      const context = emitted.spanContext;
+      if (context === null) continue;
+      if (context.parentSpanId === null) continue;
+      expect(spansByTrace.get(context.traceId)?.has(context.parentSpanId)).toBe(true);
+    }
+  });
+
+  it("U9: siblings need no rule — one cause, three children, three distinct spans", () => {
+    const batch = emitTelemetry([
+      causal({ eventId: EVENT_1, correlationId: CORRELATION_A, causationId: null, transitionId: "one.01" }),
+      causal({ eventId: EVENT_2, correlationId: CORRELATION_A, causationId: EVENT_1, transitionId: "two.01" }),
+      causal({ eventId: EVENT_3, correlationId: CORRELATION_A, causationId: EVENT_1, transitionId: "three.01" }),
+      causal({ eventId: EVENT_4, correlationId: CORRELATION_A, causationId: EVENT_1, transitionId: "four.01" }),
+    ]);
+
+    // Exactly what `executeSwitchPlan` writes: every event of one plan takes
+    // the same `causedBy`. Ordinary OTel, and no sibling rule is needed to
+    // express it.
+    const children = batch.events.slice(1);
+    expect(children.map((child) => child.spanContext?.parentSpanId)).toEqual([
+      uuidHex(EVENT_1).slice(0, 16),
+      uuidHex(EVENT_1).slice(0, 16),
+      uuidHex(EVENT_1).slice(0, 16),
+    ]);
+    expect(new Set(children.map((child) => child.spanContext?.spanId)).size).toBe(3);
+    expect(batch.unresolvedCausationCount).toBe(0);
+  });
+
+  it("U10: a refused cause has no span, so nothing may name it as a parent", () => {
+    const secret = "sk-p87-do-not-emit-0123456789";
+    const batch = emitTelemetry([
+      causal({
+        eventId: EVENT_1,
+        correlationId: CORRELATION_A,
+        causationId: null,
+        transitionId: "one.01",
+        payload: { apiKey: secret },
+      }),
+      causal({
+        eventId: EVENT_2,
+        correlationId: CORRELATION_A,
+        causationId: EVENT_1,
+        transitionId: "two.01",
+      }),
+    ]);
+
+    // The half a one-pass fold gets wrong. The cause is present among the
+    // INPUTS and absent from what the batch EMITTED, so an index built while
+    // shaping would resolve a parent that names a span which does not exist --
+    // and would leak a structural trace of a record the gate exists to
+    // withhold.
+    expect(batch.refusedCount).toBe(1);
+    expect(batch.events.length).toBe(1);
+    expect(batch.events[0]?.spanContext?.parentSpanId).toBe(null);
+    expect(batch.unresolvedCausationCount).toBe(1);
+
+    const serialized = JSON.stringify(batch);
+    expect(serialized).not.toContain(uuidHex(EVENT_1).slice(0, 16));
+    expect(serialized).not.toContain(secret);
+  });
+
+  it("U11: the two id attributes, and the correlation attribute that is absent", () => {
+    const [child] = emitTelemetry([
+      causal({
+        eventId: EVENT_2,
+        correlationId: CORRELATION_A,
+        causationId: EVENT_1,
+        transitionId: "two.01",
+        type: "TASK_DISCOVERED",
+      }),
+    ]).events;
+    if (child === undefined) throw new Error("expected one event");
+
+    // The whole surface by equality, so a third id attribute added without
+    // anyone deciding to fails here. `acp.event.id` exists because a span id
+    // is 64 of the event id's 128 bits, so the ledger row is not recoverable
+    // from the span alone; `acp.event.causation_id` exists because the parent
+    // relation is DROPPED whenever the four clauses refuse it, which for a
+    // real account switch is always.
+    expect(child.attributes).toEqual({
+      "acp.task.id": TASK,
+      "acp.task.attempt": 1,
+      "acp.event.id": EVENT_2,
+      "acp.event.causation_id": EVENT_1,
+      "acp.event.type": "TASK_DISCOVERED",
+      "acp.event.transition_id": "two.01",
+      "acp.task.state.from": "RUNNING",
+      "acp.task.state.to": "RUNNING",
+      "acp.worker.identity": EMITTER,
+      "openinference.span.kind": TELEMETRY_SPAN_KIND,
+    });
+
+    // No `acp.event.correlation_id`, on any event. The trace id IS the
+    // correlation, losslessly and invertibly, so a third attribute would be a
+    // second spelling of a fact the output already carries.
+    const uncaused = emitTelemetry([
+      causal({ eventId: EVENT_1, correlationId: CORRELATION_A, causationId: null, transitionId: "one.01" }),
+    ]).events[0];
+    if (uncaused === undefined) throw new Error("expected one event");
+    expect(Object.hasOwn(uncaused.attributes, "acp.event.causation_id")).toBe(false);
+    expect(uncaused.attributes["acp.event.id"]).toBe(EVENT_1);
+    expect(JSON.stringify(emitTelemetry(chain()))).not.toContain("acp.event.correlation_id");
+  });
+
+  it("U12: the counter is zero for a resolved chain and exact for a mixed one", () => {
+    // A read model that silently discarded every cross-task edge would look
+    // identical to one whose chains had no cross-task edges. The counter is
+    // what stands between those two.
+    expect(emitTelemetry(chain()).unresolvedCausationCount).toBe(0);
+
+    const mixed = emitTelemetry([
+      ...chain(),
+      causal({
+        eventId: EVENT_4,
+        correlationId: CORRELATION_A,
+        causationId: ABSENT_EVENT,
+        transitionId: "four.01",
+      }),
+      causal({
+        eventId: EVENT_5,
+        correlationId: CORRELATION_A,
+        causationId: NIL_UUID,
+        transitionId: "five.01",
+      }),
+    ]);
+    expect(mixed.unresolvedCausationCount).toBe(2);
+    expect(mixed.refusedCount).toBe(0);
+  });
+
+  it("U13: two runs, and a structurally cloned input, serialize identically", () => {
+    const events = chain();
+    expect(JSON.stringify(emitTelemetry(events))).toBe(JSON.stringify(emitTelemetry(events)));
+    // A clone shares no object identity with the original, so a fold that had
+    // quietly keyed on reference rather than on value would part company here.
+    const cloned = structuredClone(events) as ControlPlaneEvent[];
+    expect(JSON.stringify(emitTelemetry(cloned))).toBe(JSON.stringify(emitTelemetry(events)));
+    // The determinism claim is only worth making about a projection that
+    // actually carries the tree: two runs of a fold that emits no span context
+    // agree with each other perfectly and prove nothing about this packet.
+    expect(JSON.stringify(emitTelemetry(events))).toContain("spanContext");
+    expect(JSON.stringify(emitTelemetry(events))).toContain("parentSpanId");
+  });
+
+  it("U14: reversing the batch changes no span context — parent is not predecessor", () => {
+    const forward = emitTelemetry(chain()).events;
+    const reversed = emitTelemetry([...chain()].reverse()).events;
+
+    const byEventId = (events: readonly typeof forward[number][]): Record<string, unknown> => {
+      const table: Record<string, unknown> = {};
+      for (const emitted of events) {
+        table[String(emitted.attributes["acp.event.id"])] = emitted.spanContext;
+      }
+      return table;
+    };
+
+    // The table must be a real one first. Keyed on an attribute that did not
+    // exist, and valued on a field that did not either, the comparison below
+    // would be `{} === {}` -- a test that cannot fail is not evidence.
+    const table = byEventId(forward);
+    expect(Object.keys(table).sort()).toEqual([EVENT_1, EVENT_2, EVENT_3].sort());
+    expect(Object.values(table).every((context) => context !== null && context !== undefined)).toBe(true);
+
+    // On a plan-only fixture the cause IS the previous element, so a wholly
+    // wrong `parentSpanId = previousElement` implementation would satisfy a
+    // forward-order assertion. Reversed, the previous element is the
+    // SUCCESSOR, and the two agree only if the fold reads `causationId`.
+    expect(byEventId(reversed)).toEqual(table);
+  });
+
+  it("U15: an event that causes itself is not its own parent", () => {
+    const batch = emitTelemetry([
+      causal({
+        eventId: EVENT_1,
+        correlationId: CORRELATION_A,
+        causationId: EVENT_1,
+        transitionId: "one.01",
+      }),
+    ]);
+
+    // Unreachable from every production writer -- `core/events` threads the
+    // previous plan step, `switch-landing` the started event, `switch-executor`
+    // a foreign decision, and the rest write null -- but representable in the
+    // contract, and a self-parent is an invalid edge rather than a weak one.
+    // Closed inside the resolution rather than as a fifth clause.
+    expect(batch.events[0]?.spanContext?.parentSpanId).toBe(null);
+    expect(batch.unresolvedCausationCount).toBe(1);
+  });
+
+  it("the neutralization probe: with no causation, nothing is parented", () => {
+    // The suite's own falsifier. If a parent survives the removal of every
+    // causation, the implementation is deriving parentage from something else
+    // -- order, position, correlation -- and every assertion above is
+    // measuring the wrong thing.
+    const parented = emitTelemetry(chain()).events.filter(
+      (emitted) => emitted.spanContext?.parentSpanId != null,
+    );
+    expect(parented.length).toBe(2);
+
+    const neutralized = chain().map((event) => ({ ...event, causationId: null }));
+    for (const emitted of emitTelemetry(neutralized).events) {
+      expect(emitted.spanContext?.parentSpanId).toBe(null);
+    }
+    expect(emitTelemetry(neutralized).unresolvedCausationCount).toBe(0);
   });
 });
 

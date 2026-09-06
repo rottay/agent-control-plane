@@ -133,6 +133,45 @@ walk's release is not a fault — and a tool-call receipt is an OpenInference
 attributes: a projection that mirrored whatever a payload carried would export
 tomorrow's new field without anyone deciding to.
 
+**The tree is folded from the causal columns, and from nothing else.** A
+`traceId` is `correlationId` with its hyphens removed; a `spanId` is the first
+eight bytes of `eventId`, truncated rather than hashed, so a span id stays
+findable by prefix in the ledger and this module needs no crypto to stay a pure
+fold. The truncation window contains the forced version nibble, so the entropy
+is 60 bits and not 64 — stated in ADR 0050 rather than left for a reader to
+discover. A `parentSpanId` is drawn only where `causationId` names an event this
+same batch **emitted**, in the same trace, whose id folds to a usable span, and
+which is not the event itself. Otherwise the event is a root, and a trace is
+honestly a **forest**: several roots under one `traceId` is the correct output,
+and no synthetic root is minted to make it look tidier than the chain it read. A
+degenerate context — no correlation, or an id that folds to all zeroes — emits
+`spanContext: null` and is **not** a refusal, for the malformed route's reason:
+refusing would mis-signal the refusal count.
+
+**Parentage is batch-scoped, and the limit is counted rather than described.**
+`emitTelemetry` stays pure and ledger-free, so a cause outside the page the
+caller passed cannot be resolved — and neither can a cause in another trace,
+which is what a real account switch always carries, since the switch executor
+threads the elector's cross-task `decidedFromEventId`. Both are refused as
+edges, kept as the `acp.event.causation_id` attribute, and counted in
+`unresolvedCausationCount`. That counter exists for `refusedCount`'s reason: a
+tree that discarded every cross-task edge in silence would be
+indistinguishable from one whose chains had none. Resolution runs over what the
+batch **emitted**, never over what it was handed, so an event whose cause the
+gate refused is never given a parent naming a span that does not exist.
+
+**Uniqueness is claimed per `(taskId, attempt)`, within one ledger, and no
+further.** Two ledgers walking the same coordinate derive the same ids, because
+`deterministicUuid` is pure over the coordinate and knows nothing about which
+ledger it writes into. No ledger salt was invented and `submissionDigest` was
+not folded in: cross-ledger identity is R3's question and the isolation row is
+R17's.
+
+**The vendor trace stays flat.** The span context is a top-level field rather
+than an attribute — which is what the OTel data model calls it — and
+`toLangfuseTrace` forwards attributes and nothing else, so the tree reaches the
+neutral surface and stops there. The translator needed no edit and got none.
+
 **No production sink exists, and that is a declared state rather than an
 oversight.** `emitTelemetry` has zero callers in any `src/`: this package
 aligns the keys and adds no exporter, no port and no edge. A sink is owed to

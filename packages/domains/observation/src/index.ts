@@ -91,6 +91,7 @@ export type {
   TelemetryEvent,
   TelemetryRefusal,
   TelemetryRefusalReason,
+  TelemetrySpanContext,
   TelemetryStatus,
 } from "./telemetry/index.js";
 export {

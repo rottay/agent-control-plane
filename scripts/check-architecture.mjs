@@ -6995,6 +6995,74 @@ const V2BE_R1_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * Old-V2 B5, R10: a span is parented only where the ledger resolves it.
+ *
+ * R9 made the telemetry projection read the route the walk writes. It still
+ * read none of the three causal columns: `grep` over the whole observation
+ * source for `eventId`, `correlationId` or `causationId` returned **zero**
+ * matches. So every event became a free-standing span, a chain of eleven plan
+ * steps projected as eleven unrelated spans, and the OTel half of "neutral
+ * events first" was a list rather than a trace.
+ *
+ * The projection now folds a span context out of those three columns and out
+ * of nothing else: `traceId` is the normalized hex of `correlationId`,
+ * `spanId` the first eight bytes of `eventId`, and `parentSpanId` is drawn only
+ * where `causationId` names an event this same batch EMITTED, in the same
+ * trace, whose own id folds to a usable span -- and which is not the event
+ * itself. Two passes, because resolution must run over what actually emitted:
+ * a one-pass fold would give an event whose cause the gate refused a parent
+ * naming a span that was never emitted, which is a structural handle on a
+ * withheld record.
+ *
+ * **The limits are counted, not described.** Parentage is batch-scoped and
+ * `emitTelemetry` stays pure and ledger-free, so a cause outside the page
+ * cannot be resolved; a cross-task cause -- which is what a real account switch
+ * always carries -- is refused as a parent and kept as an attribute. Both land
+ * in `unresolvedCausationCount`, for the reason `refusedCount` exists: a tree
+ * that discarded every cross-task edge silently would look identical to one
+ * whose chains had none.
+ *
+ * **A trace is honestly a forest.** Every `causationId: null` event is a root
+ * and no synthetic root is minted. A degenerate context is a `null`
+ * `spanContext`, never a refusal -- the same allocation the malformed route
+ * already settled, because refusing would mis-signal the refusal count.
+ *
+ * **Pins that move.** ADR corpus 49 -> 50; `OBSERVATION_PUBLIC_EXPORTS` 64 ->
+ * 65 (`TelemetrySpanContext`); `PATH_SCOPED_LAWS` and the `requireScope` call
+ * sites 111 -> 112; `TELEMETRY_ATTRIBUTE_KEYS` 16 -> 18 (`acp.event.id`,
+ * `acp.event.causation_id`).
+ *
+ * **Pins that do not.** `CONTROL_PLANE_EVENT_TYPES` stays 24 -- this packet
+ * reads ids, it mints no vocabulary. `TELEMETRY_REFUSAL_REASONS` stays 2,
+ * `TELEMETRY_SPAN_KIND` and its one exception are untouched, and so is the
+ * three-declarer route law: R10 adds a reader of ids, not of the route.
+ * `API_CONTRACT_VERSION`, `TEST_ONLY_DOMAINS`, `GATEWAY_TS_REFERENCES`, every
+ * manifest and the lockfile do not move -- there is no dependency here, and the
+ * span id is a truncation precisely so that there is no `node:crypto` either.
+ *
+ * **What this packet does not do.** No sink: `emitTelemetry` keeps zero callers
+ * in any `src/`, and the exporter stays owed to R11 and to the owner's
+ * dependency answer. No producer changes -- it reads what the walk, the
+ * recorders and the switch executor already write. No Langfuse edit: the span
+ * context is a top-level field rather than an attribute, so the vendor
+ * translator forwards nothing new and the vendor trace stays a flat observation
+ * list. No span links, and no ledger salt: cross-task context and cross-ledger
+ * isolation stay with R17 and R3.
+ *
+ * Record: `docs/architecture/0050-a-span-is-parented-only-where-the-ledger-resolves-it.md`.
+ */
+const V2B5R10_WRITE_SET = [
+  "packages/domains/observation/src/telemetry/index.ts",
+  "packages/domains/observation/src/index.ts",
+  "packages/domains/observation/test/telemetry/index.test.ts",
+  "packages/domains/observation/README.md",
+  "packages/entrypoints/gateway/test/telemetry/index.test.ts",
+  "docs/architecture/0050-a-span-is-parented-only-where-the-ledger-resolves-it.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7155,6 +7223,7 @@ const WRITE_SET = [
   ...V2B5R13_WRITE_SET,
   ...V2B5R9_WRITE_SET,
   ...V2BE_R1_WRITE_SET,
+  ...V2B5R10_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -8325,6 +8394,15 @@ const PATH_SCOPED_LAWS = [
   {
     law: "no module selects a switch destination by position",
     scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
+  },
+  // V2-B5/R10. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 111 -> 112. It keeps the span
+  // context a fold of the three causal columns -- and of nothing else: no
+  // clock, no randomness, no environment, no crypto, and a parent resolved
+  // against what the batch emitted rather than against what it was handed.
+  {
+    law: "the span context is derived from the causal columns",
+    scope: "packages/domains/observation/src/**/*.ts",
   },
 ];
 
@@ -10788,6 +10866,125 @@ if (tracked.status === 0) {
       }
     }
 
+  // --- L-V2B5R10: the span context is a fold of the causal columns.
+  //
+  // R10 gives the projection a tree. The failure this law exists to make
+  // impossible is the quiet one: a parentage that looks right on the fixture
+  // everybody runs and is derived from something the ledger never said --
+  // batch position, arrival order, or the correlation alone. Each arm below
+  // fails loudly instead, and each names a different way that could happen.
+  //
+  // Asserted against the COMMENT-STRIPPED source, for the reason P2C learned
+  // once: this module necessarily names the things it does not do in order to
+  // explain why it does not do them.
+  {
+    const observationSources = present.filter(
+      (relativePath) =>
+        /^packages\/domains\/observation\/src\/.*\.tsx?$/.test(relativePath),
+    );
+    requireScope("the span context is derived from the causal columns", observationSources.length);
+
+    const TREE_HOME = "packages/domains/observation/src/telemetry/index.ts";
+    const home = stripComments(readIfPresent(TREE_HOME) ?? "");
+    if (home === "") {
+      fail(TREE_HOME + " is missing; the span context has no home to be derived in");
+    } else {
+      // (a) All three columns are read. A projection that quietly stopped
+      // reading one would still emit a plausible tree -- dropping
+      // `causationId` gives every event a root, dropping `correlationId` gives
+      // every event of every run one trace -- and no other check in this
+      // repository would notice.
+      for (const column of ["event.eventId", "event.correlationId", "event.causationId"]) {
+        if (!home.includes(column)) {
+          fail(
+            TREE_HOME +
+              " no longer reads " +
+              column +
+              "; the span context is a fold of all three causal columns, and a fold that" +
+              " stopped reading one would still emit a plausible tree",
+          );
+        }
+      }
+
+      // (b) No capability, so "two runs are byte-identical" stays a property
+      // rather than a claim. `node:crypto` is named here with the rest and not
+      // only as a dependency question: the span id is a TRUNCATION on purpose,
+      // and a digest would be a different derivation reached by importing.
+      for (const capability of [
+        /\bnew Date\b/,
+        /\bDate\.now\s*\(/,
+        /\bMath\.random\s*\(/,
+        /\bprocess\.env\b/,
+        /["']node:fs["']/,
+        /["']node:crypto["']/,
+      ]) {
+        if (capability.test(home)) {
+          fail(
+            TREE_HOME +
+              " reaches for " +
+              String(capability) +
+              "; the telemetry fold has no clock, no randomness, no environment," +
+              " no filesystem and no crypto -- the span id is a truncation, not a digest",
+          );
+        }
+      }
+
+      // (c) The resolution is named code, and it resolves against what the
+      // batch EMITTED. Deleting the survivors-only index, or the
+      // correlation-equality gate, is a named failure here rather than a
+      // silent regression -- and those two are exactly the clauses a plausible
+      // wrong implementation drops.
+      if (!/function spanContextFor\s*\(/.test(home)) {
+        fail(TREE_HOME + " no longer declares spanContextFor; the four-clause resolution must be named code");
+      }
+      if (!/for \(const event of survivors\)[\s\S]{0,200}correlationByEventId\.set\(/.test(home)) {
+        fail(
+          TREE_HOME +
+            " no longer builds its resolution index from the SURVIVORS; a parent resolved against" +
+            " the inputs would name the span of a record the gate refused",
+        );
+      }
+      if (!home.includes("correlationByEventId.has(")) {
+        fail(
+          TREE_HOME +
+            " no longer asks whether the cause is in the batch before reading its correlation;" +
+            " `get` alone cannot tell an absent cause from one carrying a null correlation",
+        );
+      }
+      if (!/causeCorrelation === event\.correlationId/.test(home)) {
+        fail(
+          TREE_HOME +
+            " no longer gates the parent relation on correlation equality; a cross-trace parent" +
+            " is not a weak edge in OTel, it is a corrupt one",
+        );
+      }
+
+      // (d) One home for the derivation. A second module folding ids would be
+      // a second answer to "where does this span sit".
+      const strays = observationSources.filter((relativePath) => {
+        if (relativePath === TREE_HOME) return false;
+        const content = readIfPresent(relativePath);
+        if (content === null) return false;
+        return /function (traceIdOf|spanIdOf|spanContextFor)\s*\(/.test(stripComments(content));
+      });
+      if (strays.length > 0) {
+        fail(
+          "the span-context fold is declared outside " +
+            TREE_HOME +
+            " (" +
+            strays.join(", ") +
+            "); one derivation, one home",
+        );
+      }
+      notes.push(
+        "the span context folds all three causal columns in one home, with no clock, randomness," +
+          " environment, filesystem or crypto, across " +
+          String(observationSources.length) +
+          " observation sources",
+      );
+    }
+  }
+
   // V2-B1c stage 2: the submission digest binds the admitted route, and the
   // door is the only place that decides it.
   //
@@ -13040,6 +13237,7 @@ const OBSERVATION_PUBLIC_EXPORTS = [
   "TelemetryEvent",
   "TelemetryRefusal",
   "TelemetryRefusalReason",
+  "TelemetrySpanContext",
   "TelemetryStatus",
   "TELEMETRY_ATTRIBUTE_KEYS",
   "TELEMETRY_REFUSAL_REASONS",
