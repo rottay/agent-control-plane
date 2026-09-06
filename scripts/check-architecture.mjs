@@ -6856,7 +6856,7 @@ const V2B1F5_WRITE_SET = [
  * `L-F4D-2` already forbids runtime sources naming `loadPolicyRegistry`, and
  * `policyDocumentPath` is already the single literal here.
  *
- * **Pins.** `POLICY_VERSION_DIGESTS` rows 1 -> 2, with the `2026-08-30.1` row
+ * **Pins.** the policy version pin's rows 1 -> 2, with the `2026-08-30.1` row
  * kept because the versions it published are still recorded in routes;
  * `ACCOUNTS_PUBLIC_EXPORTS` 82 -> 85; ADR corpus 46 -> 47. `PATH_SCOPED_LAWS`
  * stays at 111, `CONTRACT_VERSION` at `2.2.0` and `API_CONTRACT_VERSION` at
@@ -6921,7 +6921,7 @@ const V2B5R13_WRITE_SET = [
  * (members move, no export name does), `PATH_SCOPED_LAWS` stays 111,
  * `CONTROL_PLANE_EVENT_TYPES` stays 24 -- two dead literals leave a table, and
  * nothing is minted into the vocabulary -- and `GATEWAY_TS_REFERENCES`, the
- * observation manifest surface and `POLICY_VERSION_DIGESTS` do not move.
+ * observation manifest surface and the policy version pin do not move.
  *
  * **What this packet does not do.** It adds no production sink: the projection
  * keeps zero production callers, and a sink is owed to R11 and to the owner's
@@ -7061,6 +7061,59 @@ const V2B5R10_WRITE_SET = [
   "docs/architecture/0050-a-span-is-parented-only-where-the-ledger-resolves-it.md",
   "docs/architecture/index.md",
   "scripts/check-architecture.mjs",
+];
+
+/**
+ * Old-V2 B5, R14: the policy version pin is data, not code.
+ *
+ * The capability registry's editorial law pinned each published policy version
+ * to a content digest, and it did so from a `const` inside this file, which ADR
+ * 0051 names. So publishing a policy meant editing the fence, and ADR 0018's
+ * consequence that the elected model changes "with a byte-identical source
+ * tree" was false as written, because `scripts/` is source. The boundary audit
+ * caught it at row 11.
+ *
+ * The table moves to `scripts/policy-version-digests.json`: tracked, bound to
+ * this write-set, reviewed, and read by the fence alone. A re-cut now edits the
+ * policy document and the pin data, and no `.mjs` at all. The precedent is not
+ * invented here — `scripts/restate-server.pin.json` has had exactly this
+ * standing for a binary the package manager never sees.
+ *
+ * **The relocation is only worth anything fail-closed.** A law that skipped a
+ * missing or malformed pin would be weaker than the literal it replaced while
+ * still printing green, which is the one way to get this packet badly wrong. So
+ * seven degenerate states refuse: withheld, malformed, empty, misdirected,
+ * malformed digest, unpinned version, digest mismatch. An eighth closes a gap
+ * the old law actually had — `if (policyDocument !== null)` meant a deleted
+ * registry attested nothing and said nothing about it. Eight synthetic probes
+ * in `scripts/architecture/roots.test.mjs` drive all of them through the real
+ * fence, each asserting its own law's message, with a positive control so the
+ * seven negatives cannot pass on some other law's failure.
+ *
+ * **The pin data is deliberately not digest-pinned in JavaScript.** Doing so
+ * would rebuild the wall this packet demolishes.
+ *
+ * **Pins.** ADR corpus 50 -> 51; the write-set gains one path. `PATH_SCOPED_LAWS`
+ * stays at 112 — this is a single-file law, not a path-scoped one, so it
+ * registers no scope and calls no `requireScope`.
+ *
+ * **What this packet does not do.** It does not bump a policy version: the
+ * shipped `capability-policy.json` stays byte-identical, and its digest is the
+ * one the relocated table already carried. It changes no runtime behaviour, no
+ * wire, no export, no dependency and no contract version; the accounts loader
+ * is untouched, because a document that attested itself would be no
+ * attestation. It extracts no general validator and generalizes to no "pin
+ * registry": the Restate pin stays its own law.
+ *
+ * Record: `docs/architecture/0051-the-policy-version-pin-is-data.md`.
+ */
+const V2B5R14_WRITE_SET = [
+  "scripts/policy-version-digests.json",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0051-the-policy-version-pin-is-data.md",
+  "docs/architecture/index.md",
+  "packages/domains/accounts/README.md",
 ];
 
 const WRITE_SET = [
@@ -7224,6 +7277,7 @@ const WRITE_SET = [
   ...V2B5R9_WRITE_SET,
   ...V2BE_R1_WRITE_SET,
   ...V2B5R10_WRITE_SET,
+  ...V2B5R14_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -13423,50 +13477,129 @@ if (tracked.status === 0) {
 // version to the digest of the content published under it: change the bytes
 // without changing the version and the digest stops matching that version's
 // pin; change the version and a new row has to be added deliberately.
-const POLICY_VERSION_DIGESTS = {
-  "2026-08-30.1": "6fee0b392f19e44ebcd01b29d83d23ee09941e839d1f13c9243a141613d83922",
-  // V2-B5/R13: the selection rule became a document fact (ADR 0047). Content
-  // moved, so the version moved with it. The row above stays: the versions a
-  // registry published are what routes and events already recorded, and a pin
-  // that was deleted once the document moved on would stop being able to say
-  // what was in force when they were written.
-  "2026-09-06.1": "1112b310314acc3a8bf54d19fe94151514e3cfb3cbb5bc3946e0eace1c50976b",
-};
-
+//
+// **V2-B5/R14: the pin is data, and this law is what validates it.** The table
+// used to be a `const` here, so publishing a policy meant editing the fence —
+// which made ADR 0018's "the elected model changes with a byte-identical source
+// tree" false as written, since `scripts/` is source. It now lives in
+// `scripts/policy-version-digests.json`, tracked, write-set-bound and reviewed,
+// exactly as `scripts/restate-server.pin.json` already does for a binary.
+//
+// **Relocation is only safe fail-closed, and that is the whole difficulty.** A
+// law that skipped a missing or malformed pin would be weaker than the literal
+// it replaced *and would still print green*, which is the way to get this
+// packet wrong. So every degenerate state below refuses: withheld, malformed,
+// empty, misdirected, unpinned, mismatched, and — closing a real gap in the
+// previous law — a policy document that is not there at all. The old code read
+// `if (policyDocument !== null)`, so a deleted registry attested nothing and
+// said nothing about it.
+//
+// **The data file is deliberately NOT digest-pinned here.** A digest of the pin
+// in JavaScript would rebuild the wall this packet removes: re-cutting a policy
+// would once again mean editing `.mjs`. Its integrity comes from being tracked,
+// bound to the write-set, reviewed and shape-checked — the same standing the
+// Restate pin has.
+const POLICY_PIN_PATH = "scripts/policy-version-digests.json";
+const POLICY_PIN_DIGEST = /^[0-9a-f]{64}$/;
 const policyDocumentPath = "packages/domains/accounts/policy/capability-policy.json";
+const policyPinSource = readIfPresent(POLICY_PIN_PATH);
 const policyDocument = readIfPresent(policyDocumentPath);
-if (policyDocument !== null) {
+
+// L1. Withheld. As a `const` the table could not go missing; as data it can.
+if (policyPinSource === null) {
+  fail(POLICY_PIN_PATH + " is missing");
+} else if (policyDocument === null) {
+  // L6. The document itself. A registry that is not there is not a registry
+  // whose editorial law is satisfied.
+  fail(policyDocumentPath + " is missing, so the policy version pin attests nothing");
+} else {
+  let policyPin = null;
+  try {
+    policyPin = JSON.parse(policyPinSource);
+  } catch {
+    // L2.
+    fail(POLICY_PIN_PATH + " is not valid JSON");
+  }
+
   let policy = null;
   try {
     policy = JSON.parse(policyDocument);
   } catch {
     fail(policyDocumentPath + " is not JSON");
   }
-  if (policy !== null) {
-    const version = policy.policyVersion;
-    if (typeof version !== "string" || version === "") {
-      fail(policyDocumentPath + " declares no policyVersion");
+
+  if (policyPin !== null && policy !== null) {
+    const versions = policyPin.versions;
+    const pinnedVersions =
+      versions !== null && typeof versions === "object" ? Object.keys(versions) : [];
+
+    // L5. Data may not redirect the read. The document this law attests is a
+    // literal here and is compared against the pin's declaration; a pin that
+    // could name its own subject would be able to attest something nobody
+    // ships and report green about it.
+    if (policyPin.document !== policyDocumentPath) {
+      fail(
+        "the policy version pin names a document it does not attest: " +
+          String(policyPin.document) +
+          " rather than " +
+          policyDocumentPath,
+      );
+    } else if (pinnedVersions.length === 0) {
+      // L3. Present but empty pins nothing, and would otherwise satisfy every
+      // structural check on the way past.
+      fail("the policy version pin establishes no version, so it pins nothing");
     } else {
-      const digest = createHash("sha256").update(policyDocument, "utf8").digest("hex");
-      const pinned = Object.hasOwn(POLICY_VERSION_DIGESTS, version)
-        ? POLICY_VERSION_DIGESTS[version]
-        : null;
-      if (pinned === null) {
-        fail(
-          policyDocumentPath +
-            " publishes policyVersion " +
-            version +
-            ", which POLICY_VERSION_DIGESTS does not pin; add its digest in the same commit",
-        );
-      } else if (pinned !== digest) {
-        fail(
-          policyDocumentPath +
-            " changed content under an unchanged policyVersion " +
-            version +
-            "; a content change requires a version change",
-        );
-      } else {
-        notes.push("the capability policy " + version + " matches its pinned digest");
+      // L4. Shape before comparison, for the Restate pin's reason: there is no
+      // trust-on-first-use here, so a value that is not a digest cannot be
+      // treated as one.
+      let established = true;
+      for (const pinnedVersion of pinnedVersions) {
+        const pinnedDigest = versions[pinnedVersion];
+        if (typeof pinnedDigest !== "string" || !POLICY_PIN_DIGEST.test(pinnedDigest)) {
+          fail(
+            "the policy version pin's " +
+              pinnedVersion +
+              " is not an established 64-lowercase-hex digest; there is no " +
+              "trust-on-first-use here",
+          );
+          established = false;
+        }
+      }
+
+      if (established) {
+        // L7-L9 are the previous law, unchanged in meaning: the version the
+        // document publishes must be pinned, and pinned to these bytes.
+        const version = policy.policyVersion;
+        if (typeof version !== "string" || version === "") {
+          fail(policyDocumentPath + " declares no policyVersion");
+        } else {
+          const digest = createHash("sha256").update(policyDocument, "utf8").digest("hex");
+          const pinned = Object.hasOwn(versions, version) ? versions[version] : null;
+          if (pinned === null) {
+            fail(
+              policyDocumentPath +
+                " publishes policyVersion " +
+                version +
+                ", which the policy version pin does not pin; add its digest in the same commit",
+            );
+          } else if (pinned !== digest) {
+            fail(
+              policyDocumentPath +
+                " changed content under an unchanged policyVersion " +
+                version +
+                "; a content change requires a version change",
+            );
+          } else {
+            // L10.
+            notes.push(
+              "the capability policy " +
+                version +
+                " matches its pinned digest, one of " +
+                String(pinnedVersions.length) +
+                " versions the pin carries",
+            );
+          }
+        }
       }
     }
   }

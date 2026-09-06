@@ -144,6 +144,21 @@ never requires an orchestration change. It lives at
 `policy/capability-policy.json` — data, not source — and this package carries
 its schema, its loader and the one seam that reads it.
 
+**The version pin is data too, and it lives with the authority that polices it.**
+A published version is bound to the digest of the content published under it, so
+the same version can never appear over different bytes: every
+`capabilityPolicyVersion` a route or event already recorded would otherwise
+become a lie about what was in force. That pin is `scripts/policy-version-digests.json`
+and the architecture fence is its only reader — never this package's loader, since
+a document that attested itself would be no attestation. **So re-cutting a policy
+is a two-file edit and both files are data:** change
+`policy/capability-policy.json` with a new `policyVersion`, then append that
+version and the document's SHA-256 to the pin. No orchestration source is touched,
+which is what ADR 0018 promised and ADR 0051 made true. Rows are append-only — a
+version a route already recorded keeps its pin forever — and the fence refuses a
+pin that is missing, malformed, empty, misdirected, carries a value that is not a
+digest, omits the published version, or disagrees with the document's bytes.
+
 Each entry states the eleven things law 4 names: the model's release, the roles
 it is eligible for, measured quality, latency, context, modality and tool
 support, the transports it is reachable through, the confidence in that

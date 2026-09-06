@@ -66,6 +66,7 @@ new records from `_template.md`, which carries the required fields.
 | 0048 | [Telemetry reads the route the walk writes](0048-telemetry-reads-the-route-the-walk-writes.md) | accepted |
 | 0049 | [One map names what each door answers](0049-one-map-names-what-each-door-answers.md) | accepted |
 | 0050 | [A span is parented only where the ledger resolves it](0050-a-span-is-parented-only-where-the-ledger-resolves-it.md) | accepted |
+| 0051 | [The policy version pin is data, not code](0051-the-policy-version-pin-is-data.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

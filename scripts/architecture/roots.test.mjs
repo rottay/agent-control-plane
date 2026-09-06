@@ -23,6 +23,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -126,7 +127,7 @@ function landingHome(root) {
  * Run the real fence against a synthetic tree. Never against the real one.
  *
  * **Asynchronous on purpose, and it is the runner that requires it.** This file
- * spawns the whole fence fifteen times, and the fence takes seconds per run. A
+ * spawns the whole fence once per probe, and the fence takes seconds per run. A
  * `spawnSync` here blocks the vitest worker's event loop for essentially the
  * file's entire duration, so the worker cannot answer the runner's `onTaskUpdate`
  * RPC; past a certain number of probes the runner gives up on it and the project
@@ -1980,5 +1981,192 @@ describe("the six barrel pin laws parse through one helper (V2-B6-fence)", () =>
     // own body. Neither is one of the six.
     const inlineSites = [...FENCE_SOURCE.matchAll(/matchAll\(\/export\\s/g)].length;
     expect(inlineSites).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The policy version pin, as data the fence validates (V2-B5/R14)
+// ---------------------------------------------------------------------------
+
+/**
+ * Probes for the relocated capability-policy version pin.
+ *
+ * The pin moved out of a `const` in the fence and into
+ * `scripts/policy-version-digests.json`, so a policy re-cut edits data rather
+ * than code. Relocation is only safe if the fence reads that data **fail-closed**
+ * — a law that skipped a missing or malformed pin would be weaker than the
+ * literal it replaced while still printing green, which is the way to get this
+ * packet wrong.
+ *
+ * **Every fixture below declares a version the old literal never pinned.** That
+ * is deliberate and it is what makes these probes evidence: a fixture reusing a
+ * historical version would be answered by the hardcoded table too, so the probe
+ * would pass before the packet as well as after, and prove nothing about where
+ * the fence read its row. Declaring `2099-01-01.1` means only a fence that
+ * genuinely consults the data file can produce the expected message.
+ *
+ * Each probe asserts a nonzero exit **and its own law's message**: a synthetic
+ * tree trips many unrelated laws, so the exit code alone identifies nothing.
+ */
+const POLICY_PATH = "packages/domains/accounts/policy/capability-policy.json";
+const PIN_PATH = "scripts/policy-version-digests.json";
+const PROBE_VERSION = "2099-01-01.1";
+
+/** A policy document, and the digest the fence will compute over its bytes. */
+function writePolicyDocument(root, version) {
+  const document = JSON.stringify({ policyVersion: version, capabilities: {} }, null, 2) + "\n";
+  write(root, POLICY_PATH, document);
+  return createHash("sha256").update(document, "utf8").digest("hex");
+}
+
+function writePin(root, pin) {
+  write(root, PIN_PATH, JSON.stringify(pin, null, 2) + "\n");
+}
+
+describe("the policy version pin is data, and the fence validates it (V2-B5/R14)", () => {
+  it("N1: refuses a tree whose policy document is shipped with no pin file", async () => {
+    const root = syntheticTree();
+    writePolicyDocument(root, PROBE_VERSION);
+    landingHome(root);
+    commitAll(root);
+
+    // Withheld, not malformed. Before this packet the table travelled inside
+    // the fence and could not go missing; as data it can, and a law that
+    // tolerated its absence would attest nothing at all.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("scripts/policy-version-digests.json is missing");
+  });
+
+  it("N2: refuses a pin file that is not valid JSON", async () => {
+    const root = syntheticTree();
+    writePolicyDocument(root, PROBE_VERSION);
+    write(root, PIN_PATH, "{\n");
+    landingHome(root);
+    commitAll(root);
+
+    // Path-qualified on purpose: the Restate pin law owns a message of the same
+    // shape, so an unqualified assertion could be satisfied by the wrong law.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("scripts/policy-version-digests.json is not valid JSON");
+  });
+
+  it("N3: refuses a pin that establishes no version", async () => {
+    const root = syntheticTree();
+    writePolicyDocument(root, PROBE_VERSION);
+    writePin(root, { document: POLICY_PATH, versions: {} });
+    landingHome(root);
+    commitAll(root);
+
+    // A present-but-empty table is the shape that would otherwise pass every
+    // structural check while pinning nothing.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the policy version pin establishes no version, so it pins nothing");
+  });
+
+  it("N4: refuses a published version the pin does not carry", async () => {
+    const root = syntheticTree();
+    writePolicyDocument(root, PROBE_VERSION);
+    writePin(root, {
+      document: POLICY_PATH,
+      versions: { "2026-08-30.1": "6fee0b392f19e44ebcd01b29d83d23ee09941e839d1f13c9243a141613d83922" },
+    });
+    landingHome(root);
+    commitAll(root);
+
+    // The old law's own words were "which POLICY_VERSION_DIGESTS does not pin".
+    // Asserting the NEW wording is what makes this probe fail before the packet
+    // and pass after it, rather than being answered by the literal it replaces.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "which the policy version pin does not pin; add its digest in the same commit",
+    );
+  });
+
+  it("N5: refuses content that changed under an unchanged version", async () => {
+    const root = syntheticTree();
+    writePolicyDocument(root, PROBE_VERSION);
+    // The row exists and is well-formed; it simply is not this document's
+    // digest. Only a fence reading the data file can reach this verdict for a
+    // version the old literal never carried.
+    writePin(root, {
+      document: POLICY_PATH,
+      versions: { [PROBE_VERSION]: "a".repeat(64) },
+    });
+    landingHome(root);
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "changed content under an unchanged policyVersion " + PROBE_VERSION,
+    );
+  });
+
+  it("N6: refuses a row whose value is not an established digest", async () => {
+    const root = syntheticTree();
+    writePolicyDocument(root, PROBE_VERSION);
+    writePin(root, { document: POLICY_PATH, versions: { [PROBE_VERSION]: "not-a-digest" } });
+    landingHome(root);
+    commitAll(root);
+
+    // Shape before comparison. A pin whose value is not a digest cannot attest
+    // anything, and there is no trust-on-first-use here either.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the policy version pin's " + PROBE_VERSION + " is not an established 64-lowercase-hex digest",
+    );
+  });
+
+  it("N7: refuses a pin that names a document it does not attest", async () => {
+    const root = syntheticTree();
+    const digest = writePolicyDocument(root, PROBE_VERSION);
+    writePin(root, {
+      document: "packages/domains/accounts/policy/some-other-document.json",
+      versions: { [PROBE_VERSION]: digest },
+    });
+    landingHome(root);
+    commitAll(root);
+
+    // Data may not redirect the read. The fence compares the declared document
+    // against its own fixed path, so a pin cannot quietly attest something else
+    // and report green about it.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the policy version pin names a document it does not attest");
+  });
+
+  it("P1: accepts a document its pin attests, and says so", async () => {
+    const root = syntheticTree();
+    const digest = writePolicyDocument(root, PROBE_VERSION);
+    writePin(root, {
+      document: POLICY_PATH,
+      versions: {
+        "2026-08-30.1": "6fee0b392f19e44ebcd01b29d83d23ee09941e839d1f13c9243a141613d83922",
+        "2026-09-06.1": "1112b310314acc3a8bf54d19fe94151514e3cfb3cbb5bc3946e0eace1c50976b",
+        [PROBE_VERSION]: digest,
+      },
+    });
+    landingHome(root);
+    commitAll(root);
+
+    // The neutralization control. Without it the seven negatives above could
+    // all be passing on some other law's failure text, and nothing would show
+    // that the pin law can reach a verdict of its own.
+    //
+    // The exit stays nonzero — a synthetic tree trips laws this packet is not
+    // about, and a probe demanding exit 0 would be asserting the whole fence
+    // rather than this law. What is asserted is that the law's own green note
+    // is present and its own refusals are absent.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the capability policy " + PROBE_VERSION + " matches its pinned digest");
+    expect(output).not.toContain("scripts/policy-version-digests.json is missing");
+    expect(output).not.toContain("the policy version pin names a document it does not attest");
+    expect(output).not.toContain("which the policy version pin does not pin");
   });
 });

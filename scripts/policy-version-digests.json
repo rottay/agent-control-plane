@@ -1,0 +1,15 @@
+{
+  "comment": [
+    "Published capability-policy versions, pinned by content digest.",
+    "A content change to the registry requires a version change: same content",
+    "under a new version is a lawful re-cut, same version under different",
+    "content makes every recorded capabilityPolicyVersion a lie about what was",
+    "in force. Rows are append-only — a version a route already recorded keeps",
+    "its pin forever. docs/architecture/0051 records why this is data."
+  ],
+  "document": "packages/domains/accounts/policy/capability-policy.json",
+  "versions": {
+    "2026-08-30.1": "6fee0b392f19e44ebcd01b29d83d23ee09941e839d1f13c9243a141613d83922",
+    "2026-09-06.1": "1112b310314acc3a8bf54d19fe94151514e3cfb3cbb5bc3946e0eace1c50976b"
+  }
+}
