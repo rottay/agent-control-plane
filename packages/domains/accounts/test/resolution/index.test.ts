@@ -83,7 +83,12 @@ function entry(model: string, overrides: Entry = {}): Entry {
 }
 
 function registryOf(models: readonly Entry[], policyVersion = "test.1"): PolicyRegistry {
-  const outcome = buildPolicyRegistry({ policyVersion, evaluatedAt: NOW, models });
+  const outcome = buildPolicyRegistry({
+    policyVersion,
+    evaluatedAt: NOW,
+    selection: { by: "DOCUMENT_ORDER" },
+    models,
+  });
   if (!outcome.ok) throw new Error("fixture is not a valid registry: " + outcome.reason);
   return outcome.registry;
 }

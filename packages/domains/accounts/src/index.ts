@@ -122,6 +122,13 @@ export {
 // producer of `capabilityPolicyVersion` — `rankAccounts` still knows nothing
 // about a policy, and anything that later builds a `ResolvedRoute` takes the
 // version from the seam's outcome rather than reading the registry again.
+//
+// V2-B5: the selection rule is a document fact too (ADR 0047), so a switch from
+// document order to measured quality is an edit to the document and to nothing
+// else. The rule vocabulary is exported because a producer of documents — the
+// evaluation loop that will eventually write a score — needs the closed set
+// without reaching into the module, and `PolicySelection` is exported because
+// `PolicyRegistry` already names it.
 export type {
   PolicyConfidence,
   PolicyEntry,
@@ -132,11 +139,14 @@ export type {
   PolicyRouteChoice,
   PolicyRouteOutcome,
   PolicyRouteRequest,
+  PolicySelection,
+  PolicySelectionRule,
   PolicySupport,
 } from "./policy/index.js";
 export {
   POLICY_FILE_MAX_BYTES,
   POLICY_REFUSALS,
+  POLICY_SELECTION_RULES,
   buildPolicyRegistry,
   loadPolicyRegistry,
   routeWithPolicy,

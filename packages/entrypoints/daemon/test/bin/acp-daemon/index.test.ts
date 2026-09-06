@@ -786,7 +786,7 @@ describe("A2: an elected route survives the door", () => {
     const parsed = parseDaemonChildConfig(document);
     expect(parsed.submissionDigest).toBe(composed.submissionDigest);
     expect(parsed.execution.route).toEqual(composed.submission.route);
-    expect(parsed.execution.route.capabilityPolicyVersion).toBe("2026-08-30.1");
+    expect(parsed.execution.route.capabilityPolicyVersion).toBe("2026-09-06.1");
   });
 
   it("refuses the same document when the elected route is swapped underneath the digest", () => {

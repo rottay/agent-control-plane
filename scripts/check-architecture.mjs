@@ -6826,6 +6826,59 @@ const V2B1F5_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B5/R13 -- the policy decides on what it measures.
+ *
+ * Law 4 asks for a versioned registry outside application code whose update
+ * changes the elected model with no source change, and it names "measured
+ * quality" among the eleven fields the registry carries. The registry has
+ * carried `quality.score` since P8-5 and no decision has ever read it:
+ * `routeWithPolicy` takes the first eligible entry in document order, so the
+ * one axis the old-V2 draft calls adaptive routing is write-only.
+ *
+ * This packet makes the ordering rule a document fact. `selection` becomes a
+ * fourth document key under the loader's existing exact-key law, discriminated
+ * so that `DOCUMENT_ORDER` carries no confidence floor and `QUALITY_SCORE`
+ * requires one. Under a measuring rule an entry the registry never measured,
+ * or measured below the floor, is not a candidate -- not defaulted to a number
+ * and not tailed after the measured ones -- and `POLICY_NO_MEASURED_MODEL`
+ * refuses when eligibility admits entries and the rule admits none. Ties break
+ * on document position, so the comparator stays total.
+ *
+ * **The shipped document changes rule-carrier and not behaviour.** It publishes
+ * `DOCUMENT_ORDER` under a new immutable version, so the elected model at every
+ * door is exactly the one HEAD elects; the three tests that read the shipped
+ * version follow the literal, and the nine hand-built route fixtures that carry
+ * `2026-08-30.1` as a past shape do not move.
+ *
+ * **No fence law is added.** "No second registry" lands as a source scan in the
+ * package's own suite: the barrel is already pinned by equality both ways,
+ * `L-F4D-2` already forbids runtime sources naming `loadPolicyRegistry`, and
+ * `policyDocumentPath` is already the single literal here.
+ *
+ * **Pins.** `POLICY_VERSION_DIGESTS` rows 1 -> 2, with the `2026-08-30.1` row
+ * kept because the versions it published are still recorded in routes;
+ * `ACCOUNTS_PUBLIC_EXPORTS` 82 -> 85; ADR corpus 46 -> 47. `PATH_SCOPED_LAWS`
+ * stays at 111, `CONTRACT_VERSION` at `2.2.0` and `API_CONTRACT_VERSION` at
+ * `0.13.0`: the explanation lands on the choice value and never on the wire.
+ *
+ * Record: `docs/architecture/0047-the-policy-decides-on-what-it-measures.md`.
+ */
+const V2B5R13_WRITE_SET = [
+  "packages/domains/accounts/policy/capability-policy.json",
+  "packages/domains/accounts/src/policy/index.ts",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/test/policy/index.test.ts",
+  "packages/domains/accounts/test/resolution/index.test.ts",
+  "packages/domains/accounts/README.md",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "docs/architecture/0047-the-policy-decides-on-what-it-measures.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6983,6 +7036,7 @@ const WRITE_SET = [
   ...V2B1F4D_WRITE_SET,
   ...V2B1F4C_WRITE_SET,
   ...V2B1F5_WRITE_SET,
+  ...V2B5R13_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -13030,6 +13084,12 @@ if (tracked.status === 0) {
 // pin; change the version and a new row has to be added deliberately.
 const POLICY_VERSION_DIGESTS = {
   "2026-08-30.1": "6fee0b392f19e44ebcd01b29d83d23ee09941e839d1f13c9243a141613d83922",
+  // V2-B5/R13: the selection rule became a document fact (ADR 0047). Content
+  // moved, so the version moved with it. The row above stays: the versions a
+  // registry published are what routes and events already recorded, and a pin
+  // that was deleted once the document moved on would stop being able to say
+  // what was in force when they were written.
+  "2026-09-06.1": "1112b310314acc3a8bf54d19fe94151514e3cfb3cbb5bc3946e0eace1c50976b",
 };
 
 const policyDocumentPath = "packages/domains/accounts/policy/capability-policy.json";
@@ -14241,6 +14301,10 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "PolicySupport",
   "POLICY_FILE_MAX_BYTES",
   "POLICY_REFUSALS",
+  // V2-B5/R13: the selection rule and its closed vocabulary (ADR 0047).
+  "PolicySelection",
+  "PolicySelectionRule",
+  "POLICY_SELECTION_RULES",
   "buildPolicyRegistry",
   "loadPolicyRegistry",
   "routeWithPolicy",

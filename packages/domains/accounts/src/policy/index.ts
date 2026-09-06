@@ -2,7 +2,9 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 import { TransportKind } from "@acp/contracts";
+import type { ConfidenceLevel } from "@acp/contracts";
 
+import { CONFIDENCE_ORDER } from "../quota/index.js";
 import type { RoutingRecommendation, RoutingRefused, RoutingRequest } from "../routing/index.js";
 import { rankAccounts } from "../routing/index.js";
 
@@ -18,10 +20,23 @@ import { rankAccounts } from "../routing/index.js";
  * must record which version of the policy chose it.
  *
  * So the registry is a JSON document, this module is the schema and the loader,
- * and `routeWithPolicy` is the seam that reads it. Preference is expressed as
- * document order: the first eligible entry a candidate account can actually
- * serve is the one chosen. Reordering the array is a policy update; it is also
- * the entire diff.
+ * and `routeWithPolicy` is the seam that reads it. **How preference is
+ * expressed is itself a document fact**, carried by `selection`. Under
+ * `DOCUMENT_ORDER` the first eligible entry a candidate account can actually
+ * serve is the one chosen, and reordering the array is a policy update that is
+ * also the entire diff. Under `QUALITY_SCORE` the eligible entries this
+ * registry has actually measured, at or above a declared confidence floor, are
+ * ordered by that measurement. Changing which rule answers is an edit to the
+ * document and to nothing else, which is what law 4 asks of a model switch.
+ *
+ * **An unmeasured entry is not orderable under a measuring rule.** It is not
+ * defaulted to a number and not tailed after the measured ones: it is not a
+ * candidate at all, and when a measuring rule finds eligible entries and can
+ * measure none of them the seam refuses with `POLICY_NO_MEASURED_MODEL` rather
+ * than relaxing to document order. A model has no position on an axis it was
+ * never measured on -- the same fail-closed reading `CAPABILITY_UNKNOWN`
+ * already takes in the router, and deliberately not the `UNKNOWN_TERM`
+ * convention, which is a neutral value inside a mean and not a measurement.
  *
  * **The editorial law.** A content change to the registry **requires** a
  * version change. Same content under a new version is lawful — a re-cut, when
@@ -66,6 +81,12 @@ export type PolicyRefusal =
   | "POLICY_FALLBACK_UNKNOWN"
   // the registry cannot answer the question asked of it
   | "POLICY_NO_ELIGIBLE_MODEL"
+  // eligible entries exist, and the measuring rule in force measured none of
+  // them. Distinct from the line above on purpose: "the registry has nothing
+  // for this role and transport" and "the registry has candidates it never
+  // measured" are different facts about the document, and collapsing them
+  // would hide which one a reader has to fix.
+  | "POLICY_NO_MEASURED_MODEL"
   // the request is not an object at all (F4, V2-B1b D9)
   | "POLICY_REQUEST_INVALID"
   // the request names a transport the kernel does not know (F2, V2-B1b D8)
@@ -82,6 +103,7 @@ export const POLICY_REFUSALS: readonly PolicyRefusal[] = Object.freeze([
   "POLICY_FILE_NOT_REGULAR",
   "POLICY_FILE_TOO_LARGE",
   "POLICY_NO_ELIGIBLE_MODEL",
+  "POLICY_NO_MEASURED_MODEL",
   "POLICY_REQUEST_INVALID",
   "POLICY_TRANSPORT_UNKNOWN",
   "POLICY_UNKNOWN_KEY",
@@ -131,7 +153,42 @@ const ENTRY_KEYS: readonly string[] = Object.freeze([
   "transports",
 ]);
 
-const DOCUMENT_KEYS: readonly string[] = Object.freeze(["evaluatedAt", "models", "policyVersion"]);
+const DOCUMENT_KEYS: readonly string[] = Object.freeze([
+  "evaluatedAt",
+  "models",
+  "policyVersion",
+  "selection",
+]);
+
+/**
+ * How the document says its own preference is to be read.
+ *
+ * Two members, and an enum member is earned by the drill that needs it: there
+ * is no `LATENCY`, `COST` or `CONTEXT` rule because nothing in this repository
+ * measures those, and a rule nothing can feed is a promise rather than a
+ * capability.
+ */
+export type PolicySelectionRule = "DOCUMENT_ORDER" | "QUALITY_SCORE";
+
+export const POLICY_SELECTION_RULES: readonly PolicySelectionRule[] = Object.freeze([
+  "DOCUMENT_ORDER",
+  "QUALITY_SCORE",
+]);
+
+/**
+ * The selection block, discriminated so no field rides under a rule that never
+ * reads it.
+ *
+ * `DOCUMENT_ORDER` carries no floor, because there is no measurement to floor;
+ * `QUALITY_SCORE` requires one, because "measured" without a threshold is a
+ * claim about the document rather than a rule. The floor is `ConfidenceLevel`
+ * and not `PolicyConfidence`: `UNKNOWN` is unrepresentable as a floor by type,
+ * since a floor of `UNKNOWN` would admit exactly the unmeasured claims the
+ * rule exists to exclude.
+ */
+export type PolicySelection =
+  | { readonly by: "DOCUMENT_ORDER" }
+  | { readonly by: "QUALITY_SCORE"; readonly minimumConfidence: ConfidenceLevel };
 
 /**
  * One model, as the policy knows it.
@@ -168,7 +225,17 @@ export interface PolicyEntry {
 export interface PolicyRegistry {
   readonly policyVersion: string;
   readonly evaluatedAt: string;
-  /** Preference order. The first entry a candidate can serve is the one chosen. */
+  /** How the entries below are to be ordered. A document fact, not a default. */
+  readonly selection: PolicySelection;
+  /**
+   * The entries, in document order.
+   *
+   * Document order is the editor's declared preference, and it is what
+   * `DOCUMENT_ORDER` reads directly and what `QUALITY_SCORE` falls to when two
+   * qualifying measurements tie. It is never an ordering of measurements on its
+   * own: a document that has measured nothing states no preference beyond the
+   * order it is written in, and says so by publishing `DOCUMENT_ORDER`.
+   */
   readonly models: readonly PolicyEntry[];
 }
 
@@ -199,6 +266,38 @@ function unknownKeys(record: Record<string, unknown>, allowed: readonly string[]
     if (!Object.hasOwn(record, key)) return key;
   }
   return null;
+}
+
+/**
+ * Read the selection block, refusing by name at every step.
+ *
+ * The order is deliberate: the rule is established first, because the exact
+ * keys a lawful block carries depend on which rule it names. A floor under
+ * `DOCUMENT_ORDER` and a missing floor under `QUALITY_SCORE` are then both
+ * `POLICY_UNKNOWN_KEY` at the field itself -- the loader's standing law that a
+ * key it would silently ignore and a key it would silently invent are the same
+ * kind of defect.
+ */
+function readSelection(raw: unknown, at: string): PolicySelection | PolicyRefused {
+  if (!isRecord(raw)) return deny("POLICY_FILE_INVALID", at);
+
+  const by = raw["by"];
+  if (typeof by !== "string" || !(POLICY_SELECTION_RULES as readonly string[]).includes(by)) {
+    return deny("POLICY_FILE_INVALID", at + ".by");
+  }
+  const rule = by as PolicySelectionRule;
+
+  const allowed = rule === "QUALITY_SCORE" ? ["by", "minimumConfidence"] : ["by"];
+  const stray = unknownKeys(raw, allowed);
+  if (stray !== null) return deny("POLICY_UNKNOWN_KEY", at + "." + stray);
+
+  if (rule === "DOCUMENT_ORDER") return Object.freeze({ by: rule });
+
+  const floor = raw["minimumConfidence"];
+  if (typeof floor !== "string" || !(CONFIDENCE_ORDER as readonly string[]).includes(floor)) {
+    return deny("POLICY_FILE_INVALID", at + ".minimumConfidence");
+  }
+  return Object.freeze({ by: rule, minimumConfidence: floor as ConfidenceLevel });
 }
 
 function readEntry(raw: unknown, at: string): PolicyEntry | PolicyRefused {
@@ -311,6 +410,9 @@ export function buildPolicyRegistry(parsed: unknown): PolicyLoadOutcome {
   if (!isNonEmptyString(parsed["policyVersion"])) return deny("POLICY_FILE_INVALID", "policyVersion");
   if (!isNonEmptyString(parsed["evaluatedAt"])) return deny("POLICY_FILE_INVALID", "evaluatedAt");
 
+  const selection = readSelection(parsed["selection"], "selection");
+  if ("ok" in selection) return selection;
+
   const rawModels = parsed["models"];
   if (!Array.isArray(rawModels) || rawModels.length === 0) return deny("POLICY_FILE_INVALID", "models");
 
@@ -340,6 +442,7 @@ export function buildPolicyRegistry(parsed: unknown): PolicyLoadOutcome {
     registry: Object.freeze({
       policyVersion: parsed["policyVersion"],
       evaluatedAt: parsed["evaluatedAt"],
+      selection,
       models: Object.freeze(models),
     }),
   });
@@ -426,6 +529,27 @@ export interface PolicyRouteChoice {
   readonly capabilityPolicyVersion: string;
   /** Set when the chosen model came from another entry's declared fallbacks. */
   readonly viaFallbackFrom: string | null;
+  /**
+   * Why this entry, in the registry's own terms.
+   *
+   * The rule the document published, and the measurement and confidence of the
+   * entry actually elected -- after a fallback, the fallback's own, never the
+   * parent's. Under `DOCUMENT_ORDER` the measurement is whatever the entry
+   * carries, which for an unmeasured registry is `null` with `UNKNOWN`: that
+   * is the truth about the choice and not a gap in it.
+   *
+   * It stops here. `ResolvedRoute` is a closed six-field shape whose digest
+   * rides every event, every ledger row and every resume, so a seventh field
+   * would cascade through the contracts, the beats, the projection and the
+   * continuity check and cost a `CONTRACT_VERSION` bump -- to carry a value
+   * that is already recoverable, because the version names the document and
+   * the document names the rule and the score.
+   */
+  readonly selectedBy: {
+    readonly rule: PolicySelectionRule;
+    readonly measurement: number | null;
+    readonly confidence: PolicyConfidence;
+  };
   readonly recommendation: RoutingRecommendation;
 }
 
@@ -437,6 +561,22 @@ function eligible(entry: PolicyEntry, role: string, transportKind: string): bool
 }
 
 /**
+ * Has this entry been measured well enough for a measuring rule to order it?
+ *
+ * One ladder, imported rather than written again: `CONFIDENCE_ORDER` is
+ * exported from the quota module for exactly this reason, and a second table
+ * here would be a second authority on one ordering. `score === null` is
+ * checked on its own, because a null score under `HIGH` confidence is a
+ * document defect and not a confident zero.
+ */
+function measured(entry: PolicyEntry, minimumConfidence: ConfidenceLevel): boolean {
+  if (entry.quality.score === null) return false;
+  const { confidence } = entry.quality;
+  if (confidence === "UNKNOWN") return false;
+  return CONFIDENCE_ORDER.indexOf(confidence) >= CONFIDENCE_ORDER.indexOf(minimumConfidence);
+}
+
+/**
  * Choose a model from the policy, then rank accounts for it.
  *
  * The order of operations is the design. The policy chooses **which model**,
@@ -444,11 +584,21 @@ function eligible(entry: PolicyEntry, role: string, transportKind: string): bool
  * change; the router chooses **which account**, because that is a quota and
  * capability question the policy cannot see. Neither reaches into the other.
  *
- * A model is tried when the role and the transport make it eligible. If the
- * router refuses it for every account, the entry's declared fallbacks are tried
- * in order — and the choice records which entry the fallback came from, so a
- * fallback is never silent. If nothing is left, the seam refuses rather than
- * relaxing the policy it was given.
+ * A model is tried when the role and the transport make it eligible. Those two
+ * gates fire first and alone: `POLICY_NO_ELIGIBLE_MODEL` keeps meaning "the
+ * registry has nothing for this role and transport", computed on eligibility
+ * and never on measurement. The document's `selection` rule then orders what
+ * survived — document order as written, or measured quality descending with
+ * document order as the tie-break, which keeps the comparator total.
+ *
+ * If the router refuses a model for every account, the entry's declared
+ * fallbacks are tried immediately after it and before the next entry in the
+ * order — and the choice records which entry the fallback came from, so a
+ * fallback is never silent. A fallback must be eligible in its own right, and
+ * under a measuring rule it must qualify in its own right too: a declared
+ * fallback is a permission the document granted, never an exemption from the
+ * rule the document published. If nothing is left, the seam refuses rather
+ * than relaxing the policy it was given.
  */
 export function routeWithPolicy(
   request: PolicyRouteRequest,
@@ -474,39 +624,74 @@ export function routeWithPolicy(
   }
 
   const byModel = new Map(registry.models.map((entry) => [entry.model, entry]));
-  const attempts: { readonly model: string; readonly from: string | null }[] = [];
-  for (const entry of registry.models) {
-    if (!eligible(entry, role, transportKind)) continue;
-    attempts.push({ model: entry.model, from: null });
+
+  // Eligibility first, and on its own. `POLICY_NO_ELIGIBLE_MODEL` is a fact
+  // about roles and transports; folding the selection rule into it would make
+  // "the document measured nothing" indistinguishable from "the document has
+  // no entry for this role", which are different edits to different lines.
+  const admitted = registry.models.filter((entry) => eligible(entry, role, transportKind));
+  if (admitted.length === 0) return deny("POLICY_NO_ELIGIBLE_MODEL", "models");
+
+  const { selection } = registry;
+  const qualifies = (entry: PolicyEntry): boolean =>
+    selection.by === "DOCUMENT_ORDER" || measured(entry, selection.minimumConfidence);
+
+  let ordered: readonly PolicyEntry[] = admitted;
+  if (selection.by === "QUALITY_SCORE") {
+    // The score is carried out of the filter rather than read again inside the
+    // comparator, so no branch here can reach a null and no null is ever
+    // substituted with a number to make one sortable.
+    const ranked: { readonly entry: PolicyEntry; readonly index: number; readonly score: number }[] = [];
+    for (const [index, entry] of admitted.entries()) {
+      const { score } = entry.quality;
+      if (score === null || !qualifies(entry)) continue;
+      ranked.push({ entry, index, score });
+    }
+    if (ranked.length === 0) return deny("POLICY_NO_MEASURED_MODEL", "models");
+    // Total by construction: two distinct entries always differ in index, so
+    // the comparator never returns 0 for them and the sort does not depend on
+    // the engine's stability. Ties break on document position -- the editor's
+    // declared preference -- and never on the model's name.
+    ranked.sort((left, right) => right.score - left.score || left.index - right.index);
+    ordered = ranked.map((row) => row.entry);
+  }
+
+  const attempts: { readonly entry: PolicyEntry; readonly from: string | null }[] = [];
+  for (const entry of ordered) {
+    attempts.push({ entry, from: null });
     for (const fallback of entry.allowedFallbacks) {
       const target = byModel.get(fallback);
       // A fallback still has to be eligible in its own right. Falling back onto
       // a model the role may not use would let a fallback quietly widen a
-      // permission the policy withheld.
-      if (target !== undefined && eligible(target, role, transportKind)) {
-        attempts.push({ model: fallback, from: entry.model });
+      // permission the policy withheld -- and under a measuring rule, onto a
+      // model the registry never measured would do the same to the rule.
+      if (target !== undefined && eligible(target, role, transportKind) && qualifies(target)) {
+        attempts.push({ entry: target, from: entry.model });
       }
     }
   }
 
-  if (attempts.length === 0) return deny("POLICY_NO_ELIGIBLE_MODEL", "models");
-
   let lastRefusal: RoutingRefused | null = null;
   const tried = new Set<string>();
   for (const attempt of attempts) {
-    if (tried.has(attempt.model)) continue;
-    tried.add(attempt.model);
+    if (tried.has(attempt.entry.model)) continue;
+    tried.add(attempt.entry.model);
 
     const outcome = rankAccounts({
       ...routing,
-      task: { ...routing.task, model: attempt.model },
+      task: { ...routing.task, model: attempt.entry.model },
     });
     if (outcome.ok) {
       return Object.freeze({
         ok: true as const,
-        model: attempt.model,
+        model: attempt.entry.model,
         capabilityPolicyVersion: registry.policyVersion,
         viaFallbackFrom: attempt.from,
+        selectedBy: Object.freeze({
+          rule: selection.by,
+          measurement: attempt.entry.quality.score,
+          confidence: attempt.entry.quality.confidence,
+        }),
         recommendation: outcome.recommendation,
       });
     }

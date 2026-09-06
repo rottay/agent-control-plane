@@ -252,7 +252,7 @@ describe("A1: the elected model follows the policy document", () => {
     expect(first.ok).toBe(true);
     if (!first.ok) throw new Error("the first election refused: " + first.reason);
     expect(first.submission.route.model).toBe("opus");
-    expect(first.submission.route.capabilityPolicyVersion).toBe("2026-08-30.1");
+    expect(first.submission.route.capabilityPolicyVersion).toBe("2026-09-06.1");
 
     // Edit ONLY the copy: drop the first-preference entry and move the version.
     // No source file, no code and no fixture below this line changes.

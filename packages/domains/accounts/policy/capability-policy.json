@@ -1,6 +1,7 @@
 {
-  "policyVersion": "2026-08-30.1",
+  "policyVersion": "2026-09-06.1",
   "evaluatedAt": "2026-08-30T00:00:00.000Z",
+  "selection": { "by": "DOCUMENT_ORDER" },
   "models": [
     {
       "model": "opus",

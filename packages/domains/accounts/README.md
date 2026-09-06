@@ -148,9 +148,32 @@ Each entry states the eleven things law 4 names: the model's release, the roles
 it is eligible for, measured quality, latency, context, modality and tool
 support, the transports it is reachable through, the confidence in that
 account's quota and reset picture, cost where it applies, the date it was
-evaluated, and the fallbacks it is allowed. Preference is document order: the
-first eligible entry a candidate account can actually serve is the one chosen.
-Reordering the array is a policy update, and it is also the entire diff.
+evaluated, and the fallbacks it is allowed.
+
+**How preference is read is itself a field of the document.** `selection` names
+the rule. Under `DOCUMENT_ORDER` the first eligible entry a candidate account
+can actually serve is the one chosen, and reordering the array is a policy
+update that is also the entire diff. Under `QUALITY_SCORE` the eligible entries
+this registry has actually measured, at or above the declared
+`minimumConfidence`, are ordered by that measurement, with document position as
+the tie-break so the comparator stays total. `DOCUMENT_ORDER` carries no floor
+and `QUALITY_SCORE` requires one; both a floor under the first and a missing
+floor under the second are refused by name at load, and a document with no
+`selection` key is refused rather than defaulted, because a default would be a
+rule no version records.
+
+Under a measuring rule, an entry the registry never measured is **not a
+candidate**. It is not defaulted to a number and not tailed after the measured
+ones: a model has no position on an axis it was never measured on. Role and
+transport still decide eligibility first and alone, so
+`POLICY_NO_ELIGIBLE_MODEL` keeps meaning "nothing here serves this role and
+transport"; when eligibility admits entries and the rule measures none of them,
+`POLICY_NO_MEASURED_MODEL` refuses instead. It never relaxes back to document
+order. A declared fallback is tried immediately after the entry that declared
+it and must qualify in its own right — a fallback is a permission the document
+granted, not an exemption from the rule the document published. Why an entry
+won is on the choice: `selectedBy` carries the rule, the elected entry's own
+measurement and its confidence. See ADR 0047.
 
 The seed is deliberately conservative. Every measurement is `null` with
 confidence `UNKNOWN`, because none of them has been measured — the same
@@ -164,7 +187,9 @@ under a new version is lawful — a re-cut, when an evaluation is repeated and
 nothing moved. Same version under different content is invalid, because every
 `capabilityPolicyVersion` already written into a route or an event becomes a
 lie about what was in force when it was chosen. The current document is
-`policyVersion` `2026-08-30.1`. A loader sees one document and cannot know its
+`policyVersion` `2026-09-06.1`, which publishes `DOCUMENT_ORDER` and elects
+exactly what `2026-08-30.1` elected: the rule became a document fact, and no
+measurement moved. A loader sees one document and cannot know its
 history, so the architecture fence enforces this instead: it pins each
 published version to the digest of the content published under it, and changing
 bytes without changing the version fails the build.

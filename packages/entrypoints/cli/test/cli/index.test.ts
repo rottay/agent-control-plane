@@ -1105,7 +1105,7 @@ describe("A1 (CLI leg): the elected model follows the policy document", () => {
     expect(first.exitCode).toBe(EXIT_OK);
     const firstDocument = JSON.parse(first.stdout) as EmittedConfig;
     expect(firstDocument.execution.route.model).toBe("opus");
-    expect(firstDocument.execution.route.capabilityPolicyVersion).toBe("2026-08-30.1");
+    expect(firstDocument.execution.route.capabilityPolicyVersion).toBe("2026-09-06.1");
 
     // The only edit in this test. No source file, no flag and no fixture moves.
     const document = JSON.parse(readFileSync(policy, "utf8")) as {

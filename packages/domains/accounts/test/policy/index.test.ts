@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import {
   POLICY_REFUSALS,
+  POLICY_SELECTION_RULES,
   buildPolicyRegistry,
   loadPolicyRegistry,
   routeWithPolicy,
@@ -82,12 +83,35 @@ function entry(model: string, overrides: Entry = {}): Entry {
   };
 }
 
-function document(models: readonly Entry[], policyVersion = "test.1"): Readonly<Record<string, unknown>> {
-  return { policyVersion, evaluatedAt: NOW, models };
+/** The rule a document publishes. Document order unless a drill says otherwise. */
+type Selection = Readonly<Record<string, unknown>>;
+
+const ORDERED: Selection = { by: "DOCUMENT_ORDER" };
+
+/** A measuring rule at a named floor. `LOW` admits every real confidence. */
+function measuring(minimumConfidence = "LOW"): Selection {
+  return { by: "QUALITY_SCORE", minimumConfidence };
 }
 
-function registryOf(models: readonly Entry[], policyVersion = "test.1"): PolicyRegistry {
-  const outcome = buildPolicyRegistry(document(models, policyVersion));
+/** A measured quality, for the entries a measuring rule is allowed to order. */
+function scored(score: number, confidence = "HIGH"): Entry {
+  return { quality: { score, confidence } };
+}
+
+function document(
+  models: readonly Entry[],
+  policyVersion = "test.1",
+  selection: Selection = ORDERED,
+): Readonly<Record<string, unknown>> {
+  return { policyVersion, evaluatedAt: NOW, selection, models };
+}
+
+function registryOf(
+  models: readonly Entry[],
+  policyVersion = "test.1",
+  selection: Selection = ORDERED,
+): PolicyRegistry {
+  const outcome = buildPolicyRegistry(document(models, policyVersion, selection));
   if (!outcome.ok) throw new Error("fixture is not a valid registry: " + outcome.reason);
   return outcome.registry;
 }
@@ -96,7 +120,11 @@ function registryOf(models: readonly Entry[], policyVersion = "test.1"): PolicyR
 // Routing fixtures — the shape `rankAccounts` already takes
 // ---------------------------------------------------------------------------
 
-function record(accountId: string, enabledModels: readonly string[]): AccountRecord {
+function record(
+  accountId: string,
+  enabledModels: readonly string[],
+  status = "AVAILABLE",
+): AccountRecord {
   const parsed = AccountRecord.safeParse({
     contractVersion: CONTRACT_VERSION,
     accountId,
@@ -117,7 +145,7 @@ function record(accountId: string, enabledModels: readonly string[]): AccountRec
     },
     lastHealthProbe: null,
     lastClassifiedError: null,
-    status: "AVAILABLE",
+    status,
     isolatedConfigRoot: "/tmp/acp-p85-" + accountId,
     contextSwitchCost: { estimatedTokens: 1_000, estimatedSeconds: 10 },
   });
@@ -153,6 +181,29 @@ function absent(accountId: string): CandidateEvidence {
     acceptance: EVIDENCE_ABSENT,
     contextAffinity: EVIDENCE_ABSENT,
     capabilities: { known: false },
+  };
+}
+
+/** Several accounts, each enabling exactly the models named. */
+function routingOf(
+  accounts: readonly { readonly accountId: string; readonly models: readonly string[]; readonly status?: string }[],
+): RoutingRequest {
+  return {
+    records: accounts.map((account) => record(account.accountId, account.models, account.status)),
+    estimates: accounts.map((account) => ({
+      accountId: account.accountId,
+      outcome: { ok: true, estimate: estimate(account.accountId) } as QuotaOutcome,
+    })),
+    evidence: accounts.map((account) => absent(account.accountId)),
+    task: {
+      model: "never-chosen-by-policy",
+      estimatedTokens: 10_000,
+      estimatedDurationSeconds: 60,
+      reserveTokens: 5_000,
+      requiredCapabilities: [],
+    },
+    config: DEFAULT_ROUTING_CONFIG,
+    now: NOW,
   };
 }
 
@@ -521,5 +572,523 @@ describe("a policy update changes the chosen model with no source change", () =>
     expect(cut1.model).toBe(cut2.model);
     expect(cut1.capabilityPolicyVersion).toBe("2026-08-30.1");
     expect(cut2.capabilityPolicyVersion).toBe("2026-08-31.1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-B5/R13 — the selection rule is a document fact (ADR 0047)
+// ---------------------------------------------------------------------------
+
+const SRC = resolve(HERE, "../../src");
+const POLICY_MODULE = join(SRC, "policy", "index.ts");
+
+/** Comment-stripped source, for the assertions about what a module names. */
+function codeOf(path: string): string {
+  return readFileSync(path, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+}
+
+function sourcesUnder(root: string): string[] {
+  const found: string[] = [];
+  for (const item of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, item.name);
+    if (item.isDirectory()) found.push(...sourcesUnder(path));
+    else if (item.name.endsWith(".ts")) found.push(path);
+  }
+  return found.sort();
+}
+
+describe("the document says how its own preference is read", () => {
+  it("elects a different model when only a score changes, and stamps the new version", () => {
+    // The law-4 criterion, run on the axis this packet opens: one request, one
+    // account that can serve either model, and two documents whose only
+    // differences are one `quality.score` and the version. No source
+    // difference between the two runs, and none between the two documents
+    // beyond the number the rule reads.
+    const request = {
+      role: "implementer" as const,
+      routing: routing("acct-a", ["opus", "sonnet"]),
+      transportKind: "CLI_SUBSCRIPTION" as const,
+    };
+
+    const first = registryOf(
+      [entry("opus", scored(0.5)), entry("sonnet", scored(0.9))],
+      "measured.1",
+      measuring(),
+    );
+    const second = registryOf(
+      [entry("opus", scored(0.95)), entry("sonnet", scored(0.9))],
+      "measured.2",
+      measuring(),
+    );
+
+    const before = routeWithPolicy(request, first);
+    const after = routeWithPolicy(request, second);
+    if (!("model" in before) || !("model" in after)) throw new Error("expected two choices");
+
+    expect({ model: before.model, version: before.capabilityPolicyVersion }).toEqual({
+      model: "sonnet",
+      version: "measured.1",
+    });
+    expect({ model: after.model, version: after.capabilityPolicyVersion }).toEqual({
+      model: "opus",
+      version: "measured.2",
+    });
+    expect(before.model).not.toBe(after.model);
+
+    // The choice explains itself in the registry's own terms: which rule, and
+    // the elected entry's own measurement rather than the document's.
+    expect(before.selectedBy).toEqual({ rule: "QUALITY_SCORE", measurement: 0.9, confidence: "HIGH" });
+    expect(after.selectedBy).toEqual({ rule: "QUALITY_SCORE", measurement: 0.95, confidence: "HIGH" });
+  });
+
+  it("elects document-first under DOCUMENT_ORDER for the same pair, which is the non-vacuity leg", () => {
+    // The same two documents under the other rule. If the drill above passed
+    // because of the order the entries are written in rather than because of
+    // the score, this leg would disagree with itself.
+    const request = {
+      role: "implementer" as const,
+      routing: routing("acct-a", ["opus", "sonnet"]),
+      transportKind: "CLI_SUBSCRIPTION" as const,
+    };
+
+    const first = routeWithPolicy(
+      request,
+      registryOf([entry("opus", scored(0.5)), entry("sonnet", scored(0.9))], "ordered.1"),
+    );
+    const second = routeWithPolicy(
+      request,
+      registryOf([entry("opus", scored(0.95)), entry("sonnet", scored(0.9))], "ordered.2"),
+    );
+    if (!("model" in first) || !("model" in second)) throw new Error("expected two choices");
+
+    expect([first.model, second.model]).toEqual(["opus", "opus"]);
+    expect(first.selectedBy).toEqual({ rule: "DOCUMENT_ORDER", measurement: 0.5, confidence: "HIGH" });
+    expect(second.selectedBy).toEqual({ rule: "DOCUMENT_ORDER", measurement: 0.95, confidence: "HIGH" });
+  });
+
+  it("breaks ties on document position and never on the model's name", () => {
+    const request = {
+      role: "implementer" as const,
+      routing: routing("acct-a", ["opus", "sonnet"]),
+      transportKind: "CLI_SUBSCRIPTION" as const,
+    };
+    const forward = registryOf([entry("opus", scored(0.8)), entry("sonnet", scored(0.8))], "tie.1", measuring());
+    const reversed = registryOf([entry("sonnet", scored(0.8)), entry("opus", scored(0.8))], "tie.2", measuring());
+
+    const first = routeWithPolicy(request, forward);
+    const second = routeWithPolicy(request, reversed);
+    if (!("model" in first) || !("model" in second)) throw new Error("expected two choices");
+
+    // Byte-identical scores, so the tie-break decides. Reversing the array
+    // reverses the answer: an implementation that tied on the model name would
+    // pass the first leg and fail this one.
+    expect(first.model).toBe("opus");
+    expect(second.model).toBe("sonnet");
+
+    // And it is an answer, not a distribution.
+    const answers = new Set<string>();
+    for (let run = 0; run < 100; run += 1) {
+      const outcome = routeWithPolicy(request, forward);
+      if (!("model" in outcome)) throw new Error("expected a choice");
+      answers.add(outcome.model);
+    }
+    expect([...answers]).toEqual(["opus"]);
+  });
+
+  it("never attempts an unmeasured entry under a measuring rule, even as a declared fallback", () => {
+    // `opus` is measured and declares the unmeasured `sonnet` as its fallback.
+    // The account cannot serve `opus`, so the router refuses it — and the
+    // fallback is not reached, because a fallback is a permission the document
+    // granted and not an exemption from the rule the document published.
+    const registry = registryOf(
+      [entry("opus", { ...scored(0.7), allowedFallbacks: ["sonnet"] }), entry("sonnet")],
+      "measured.3",
+      measuring(),
+    );
+    const refused = routeWithPolicy(
+      { role: "implementer", routing: routing("acct-a", ["sonnet"]), transportKind: "CLI_SUBSCRIPTION" },
+      registry,
+    );
+    expect("model" in refused).toBe(false);
+    if ("model" in refused) throw new Error("expected a refusal");
+    // The router's own refusal, about the account — not a policy refusal, and
+    // certainly not an election of the model nobody measured.
+    expect("rejected" in refused).toBe(true);
+
+    // Non-vacuity: with an account that can serve it, the measured entry is
+    // elected from the very same document.
+    const elected = routeWithPolicy(
+      { role: "implementer", routing: routing("acct-b", ["opus"]), transportKind: "CLI_SUBSCRIPTION" },
+      registry,
+    );
+    if (!("model" in elected)) throw new Error("expected a choice");
+    expect(elected.model).toBe("opus");
+  });
+
+  it("refuses by its own name when eligible entries exist and none is measured", () => {
+    const request = {
+      role: "implementer" as const,
+      routing: routing("acct-a", ["opus", "sonnet"]),
+      transportKind: "CLI_SUBSCRIPTION" as const,
+    };
+
+    // (b) every entry unmeasured. Asserted by equality: not
+    // `POLICY_NO_ELIGIBLE_MODEL`, which would say the registry has nothing for
+    // this role, and not a quiet relaxation to document order.
+    expect(
+      routeWithPolicy(request, registryOf([entry("opus"), entry("sonnet")], "measured.4", measuring())),
+    ).toEqual({ ok: false, reason: "POLICY_NO_MEASURED_MODEL", at: "models" });
+
+    // (c) a number without an evaluation behind it is not a measurement.
+    expect(
+      routeWithPolicy(
+        request,
+        registryOf([entry("opus", scored(0.9, "UNKNOWN"))], "measured.5", measuring()),
+      ),
+    ).toEqual({ ok: false, reason: "POLICY_NO_MEASURED_MODEL", at: "models" });
+
+    // (d) measured, but below the floor the document declared.
+    expect(
+      routeWithPolicy(
+        request,
+        registryOf([entry("opus", scored(0.9, "LOW"))], "measured.6", measuring("HIGH")),
+      ),
+    ).toEqual({ ok: false, reason: "POLICY_NO_MEASURED_MODEL", at: "models" });
+
+    // The floor is a floor and not an equality: `HIGH` clears a `MEDIUM` floor.
+    const cleared = routeWithPolicy(
+      request,
+      registryOf([entry("opus", scored(0.9, "HIGH"))], "measured.7", measuring("MEDIUM")),
+    );
+    expect("model" in cleared).toBe(true);
+  });
+
+  it("tries a qualifying fallback immediately after the entry that declared it", () => {
+    // Three measured entries; the account can serve neither the top-scored one
+    // nor nothing else. The question the drill settles is precedence: does the
+    // top entry's declared fallback come before the next entry in score order,
+    // or does score order ignore fallbacks entirely?
+    const request = {
+      role: "implementer" as const,
+      routing: routing("acct-a", ["sonnet", "haiku"]),
+      transportKind: "CLI_SUBSCRIPTION" as const,
+    };
+
+    // Written deliberately against the score order, so document position and
+    // measurement disagree and only one of them can be answering.
+    const withFallback = routeWithPolicy(
+      request,
+      registryOf(
+        [
+          entry("sonnet", scored(0.8)),
+          entry("haiku", scored(0.5)),
+          entry("opus", { ...scored(0.9), allowedFallbacks: ["haiku"] }),
+        ],
+        "fallback.1",
+        measuring(),
+      ),
+    );
+    if (!("model" in withFallback)) throw new Error("expected a choice");
+    // The declared fallback wins over the better-scored entry that was not
+    // declared: the document said `opus` may fall back to `haiku`, and that
+    // permission is read where it was written.
+    expect({ model: withFallback.model, from: withFallback.viaFallbackFrom }).toEqual({
+      model: "haiku",
+      from: "opus",
+    });
+    expect(withFallback.selectedBy).toEqual({
+      rule: "QUALITY_SCORE",
+      measurement: 0.5,
+      confidence: "HIGH",
+    });
+
+    // Remove the declaration and change nothing else: score order answers, and
+    // the choice says it followed no fallback.
+    const withoutFallback = routeWithPolicy(
+      request,
+      registryOf(
+        [entry("sonnet", scored(0.8)), entry("haiku", scored(0.5)), entry("opus", scored(0.9))],
+        "fallback.2",
+        measuring(),
+      ),
+    );
+    if (!("model" in withoutFallback)) throw new Error("expected a choice");
+    expect({ model: withoutFallback.model, from: withoutFallback.viaFallbackFrom }).toEqual({
+      model: "sonnet",
+      from: null,
+    });
+  });
+});
+
+describe("the selection block is closed, and refuses by name", () => {
+  it("refuses a document that carries no selection at all", () => {
+    // The pre-packet three-key shape. No default is invented: a default would
+    // be a rule no version records.
+    expect(buildPolicyRegistry({ policyVersion: "test.1", evaluatedAt: NOW, models: [entry("opus")] })).toEqual({
+      ok: false,
+      reason: "POLICY_UNKNOWN_KEY",
+      at: "<root>.selection",
+    });
+  });
+
+  it("refuses a rule it does not know, and a block that is not a record", () => {
+    expect(buildPolicyRegistry(document([entry("opus")], "test.1", { by: "COST" }))).toEqual({
+      ok: false,
+      reason: "POLICY_FILE_INVALID",
+      at: "selection.by",
+    });
+    expect(
+      buildPolicyRegistry(document([entry("opus")], "test.1", "DOCUMENT_ORDER" as unknown as Selection)),
+    ).toEqual({ ok: false, reason: "POLICY_FILE_INVALID", at: "selection" });
+  });
+
+  it("puts the floor exactly where the rule reads it, in both directions", () => {
+    // A floor under a rule that never reads confidence is a field the loader
+    // would silently ignore; a missing floor under the rule that needs one is
+    // a default the loader would silently invent. Both are refused, by name.
+    expect(
+      buildPolicyRegistry(
+        document([entry("opus")], "test.1", { by: "DOCUMENT_ORDER", minimumConfidence: "HIGH" }),
+      ),
+    ).toEqual({ ok: false, reason: "POLICY_UNKNOWN_KEY", at: "selection.minimumConfidence" });
+
+    expect(buildPolicyRegistry(document([entry("opus")], "test.1", { by: "QUALITY_SCORE" }))).toEqual({
+      ok: false,
+      reason: "POLICY_UNKNOWN_KEY",
+      at: "selection.minimumConfidence",
+    });
+  });
+
+  it("refuses UNKNOWN as a floor, which would admit what the rule excludes", () => {
+    expect(buildPolicyRegistry(document([entry("opus")], "test.1", measuring("UNKNOWN")))).toEqual({
+      ok: false,
+      reason: "POLICY_FILE_INVALID",
+      at: "selection.minimumConfidence",
+    });
+    expect(buildPolicyRegistry(document([entry("opus")], "test.1", measuring("SOMEWHAT")))).toEqual({
+      ok: false,
+      reason: "POLICY_FILE_INVALID",
+      at: "selection.minimumConfidence",
+    });
+  });
+
+  it("keeps the rule vocabulary closed, sorted and unique", () => {
+    expect([...POLICY_SELECTION_RULES]).toEqual(["DOCUMENT_ORDER", "QUALITY_SCORE"]);
+    expect([...POLICY_SELECTION_RULES]).toEqual([...POLICY_SELECTION_RULES].sort());
+    expect(POLICY_REFUSALS).toContain("POLICY_NO_MEASURED_MODEL");
+    expect([...POLICY_REFUSALS]).toEqual([...POLICY_REFUSALS].sort());
+    expect(new Set(POLICY_REFUSALS).size).toBe(POLICY_REFUSALS.length);
+  });
+});
+
+describe("eligibility is decided before measurement, and refuses in its own words", () => {
+  it("does not elect a top-scored entry the role may not use", () => {
+    const outcome = routeWithPolicy(
+      { role: "implementer", routing: routing("acct-a", ["opus", "sonnet"]), transportKind: "CLI_SUBSCRIPTION" },
+      registryOf(
+        [
+          entry("opus", { ...scored(0.99), eligibleRoles: ["verifier"] }),
+          entry("sonnet", scored(0.2)),
+        ],
+        "eligible.1",
+        measuring(),
+      ),
+    );
+    if (!("model" in outcome)) throw new Error("expected a choice");
+    expect(outcome.model).toBe("sonnet");
+  });
+
+  it("says NO_ELIGIBLE when the role admits nothing, not NO_MEASURED", () => {
+    // Both entries are measured, and neither is for this role. The refusal has
+    // to name the gate that actually fired, or the reader fixes the wrong line.
+    expect(
+      routeWithPolicy(
+        { role: "coordinator", routing: routing("acct-a", ["opus"]), transportKind: "CLI_SUBSCRIPTION" },
+        registryOf([entry("opus", scored(0.9)), entry("sonnet", scored(0.8))], "eligible.2", measuring()),
+      ),
+    ).toEqual({ ok: false, reason: "POLICY_NO_ELIGIBLE_MODEL", at: "models" });
+  });
+
+  it("refuses an unknown transport before it scans or scores anything", () => {
+    expect(TRANSPORT_KINDS as readonly string[]).not.toContain("SMOKE_SIGNAL");
+    const unknown = "SMOKE_SIGNAL" as unknown as TransportKind;
+    // No records at all, so ranking would refuse if it ran, and every entry is
+    // unmeasured, so the measuring rule would refuse if it ran. Neither does.
+    const noRecords = { ...routing("acct-a", ["opus"]), records: [] };
+    expect(
+      routeWithPolicy(
+        { role: "implementer", routing: noRecords, transportKind: unknown },
+        registryOf([entry("opus", { transports: ["SMOKE_SIGNAL"] })], "eligible.3", measuring()),
+      ),
+    ).toEqual({ ok: false, reason: "POLICY_TRANSPORT_UNKNOWN", at: "request.transportKind" });
+  });
+
+  it("will not let a measured fallback widen a permission the policy withheld", () => {
+    const outcome = routeWithPolicy(
+      { role: "implementer", routing: routing("acct-a", ["sonnet"]), transportKind: "CLI_SUBSCRIPTION" },
+      registryOf(
+        [
+          entry("opus", { ...scored(0.9), allowedFallbacks: ["sonnet"] }),
+          entry("sonnet", { ...scored(0.95), eligibleRoles: ["verifier"] }),
+        ],
+        "eligible.4",
+        measuring(),
+      ),
+    );
+    expect("model" in outcome).toBe(false);
+  });
+});
+
+describe("account pressure moves which account answers, never which model", () => {
+  it("attempts the next model only after the router refuses every account of this one", () => {
+    // Two accounts, neither able to serve the top-scored model. The model order
+    // is the score's; the account axis is the router's; and when nothing is
+    // left the router's own refusal travels rather than being reclassified.
+    const registry = registryOf(
+      [entry("haiku", scored(0.5)), entry("sonnet", scored(0.8)), entry("opus", scored(0.9))],
+      "pressure.1",
+      measuring(),
+    );
+
+    // Neither account can serve the top-scored `opus`; both can serve the two
+    // written before it. Score order attempts `opus`, is refused on the account
+    // axis, and lands on `sonnet` — document order would have stopped at
+    // `haiku` without ever asking about `opus`.
+    const served = routeWithPolicy(
+      {
+        role: "implementer",
+        routing: routingOf([
+          { accountId: "acct-a", models: ["sonnet", "haiku"] },
+          { accountId: "acct-b", models: ["sonnet", "haiku"] },
+        ]),
+        transportKind: "CLI_SUBSCRIPTION",
+      },
+      registry,
+    );
+    if (!("model" in served)) throw new Error("expected a choice");
+    expect({ model: served.model, from: served.viaFallbackFrom }).toEqual({ model: "sonnet", from: null });
+
+    const exhausted = routeWithPolicy(
+      {
+        role: "implementer",
+        routing: routingOf([{ accountId: "acct-a", models: ["enabled-nowhere-in-the-document"] }]),
+        transportKind: "CLI_SUBSCRIPTION",
+      },
+      registry,
+    );
+    expect("model" in exhausted).toBe(false);
+    if ("model" in exhausted) throw new Error("expected a refusal");
+    expect(exhausted.reason).not.toBe("POLICY_NO_ELIGIBLE_MODEL");
+    expect(exhausted.reason).not.toBe("POLICY_NO_MEASURED_MODEL");
+    expect("rejected" in exhausted).toBe(true);
+  });
+
+  it("changes the account and not the model when one account is draining", () => {
+    const registry = registryOf(
+      [entry("sonnet", scored(0.8)), entry("opus", scored(0.9))],
+      "pressure.2",
+      measuring(),
+    );
+    const request = (drained: boolean) => ({
+      role: "implementer" as const,
+      routing: routingOf([
+        { accountId: "acct-a", models: ["opus", "sonnet"], status: drained ? "DRAINING" : "AVAILABLE" },
+        { accountId: "acct-b", models: ["opus", "sonnet"] },
+      ]),
+      transportKind: "CLI_SUBSCRIPTION" as const,
+    });
+
+    const before = routeWithPolicy(request(false), registry);
+    const after = routeWithPolicy(request(true), registry);
+    if (!("model" in before) || !("model" in after)) throw new Error("expected two choices");
+
+    expect(before.recommendation.ranked.map((candidate) => candidate.accountId)).toEqual([
+      "acct-a",
+      "acct-b",
+    ]);
+    expect(after.recommendation.ranked.map((candidate) => candidate.accountId)).toEqual(["acct-b"]);
+    expect(after.recommendation.rejected.map((candidate) => candidate.accountId)).toEqual(["acct-a"]);
+    // Pressure is an account fact. The elected model does not move with it.
+    expect(after.model).toBe(before.model);
+    expect(after.model).toBe("opus");
+  });
+});
+
+describe("versions are immutable, and there is exactly one registry", () => {
+  it("elects differently per version, and identically across a re-cut", () => {
+    const request = {
+      role: "implementer" as const,
+      routing: routing("acct-a", ["opus", "sonnet"]),
+      transportKind: "CLI_SUBSCRIPTION" as const,
+    };
+    const models = [entry("opus", scored(0.4)), entry("sonnet", scored(0.6))];
+
+    const cut1 = routeWithPolicy(request, registryOf(models, "measured.8", measuring()));
+    const cut2 = routeWithPolicy(request, registryOf(models, "measured.9", measuring()));
+    const moved = routeWithPolicy(
+      request,
+      registryOf([entry("opus", scored(0.7)), entry("sonnet", scored(0.6))], "measured.10", measuring()),
+    );
+    if (!("model" in cut1) || !("model" in cut2) || !("model" in moved)) {
+      throw new Error("expected three choices");
+    }
+
+    // Same content, new version: the same election, each stamping its own.
+    expect([cut1.model, cut2.model]).toEqual(["sonnet", "sonnet"]);
+    expect([cut1.capabilityPolicyVersion, cut2.capabilityPolicyVersion]).toEqual([
+      "measured.8",
+      "measured.9",
+    ]);
+    // New content, new version: a different election, and the version says so.
+    expect(moved.model).toBe("opus");
+    expect(moved.capabilityPolicyVersion).toBe("measured.10");
+  });
+
+  it("keeps the loader and the seam in one module, so there is no second registry", () => {
+    // Restriction 6 in one assertion: the evaluations produce immutable
+    // versions of the one registry, never a second one. Nothing outside the
+    // policy module and the barrel may load a registry, build one, or read a
+    // version off a document.
+    const owners = [POLICY_MODULE, join(SRC, "index.ts")];
+    const offenders: string[] = [];
+    for (const path of sourcesUnder(SRC)) {
+      if (owners.includes(path)) continue;
+      const code = codeOf(path);
+      for (const token of ["loadPolicyRegistry", "buildPolicyRegistry", ".policyVersion"]) {
+        if (code.includes(token)) offenders.push(path + " names " + token);
+      }
+    }
+    expect(offenders).toEqual([]);
+    // Non-vacuity: the scan walked real files, and the owner does name them.
+    expect(sourcesUnder(SRC).length).toBeGreaterThan(5);
+    expect(codeOf(POLICY_MODULE).includes("loadPolicyRegistry")).toBe(true);
+  });
+
+  it("reads no clock and rolls no dice, and reaches for no ledger", () => {
+    // The filesystem is deliberately absent from this list: this module *is*
+    // the loader, and `node:fs` is a lawful import here. What must stay absent
+    // is anything that would make one document elect two different models.
+    const code = codeOf(POLICY_MODULE);
+    for (const token of [
+      "Date.now",
+      "new Date(",
+      "Date.parse",
+      "performance.now",
+      "Math.random",
+      "process.env",
+      ["@acp", "ledger"].join("/"),
+      ".append(",
+    ]) {
+      expect({ token, present: code.includes(token) }).toEqual({ token, present: false });
+    }
+  });
+
+  it("publishes DOCUMENT_ORDER in the shipped document, loaded rather than built", () => {
+    const outcome = loadPolicyRegistry(SHIPPED);
+    if (!outcome.ok) throw new Error("the shipped registry did not load: " + outcome.reason);
+    expect(outcome.registry.selection).toEqual({ by: "DOCUMENT_ORDER" });
+    expect(outcome.registry.policyVersion).toBe("2026-09-06.1");
   });
 });
