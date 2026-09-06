@@ -27,7 +27,7 @@ import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
 import type { Ledger, LeaseStore } from "@acp/ledger";
 import { createCheckpointStore, openLeaseStore, openLedger } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
-import type { AgentHarness, CliBinding, ProviderAdapter } from "@acp/providers";
+import type { AgentHarness, ApiKeyBinding, ApiStreamingClient, CliBinding, ProviderAdapter } from "@acp/providers";
 import {
   AdapterError,
   admitBinary,
@@ -220,6 +220,25 @@ export interface DaemonOptions {
    * as the code moves.
    */
   readonly walks?: readonly ScheduledWalk[] | undefined;
+  /**
+   * The streaming client an API_KEY account is served by, if any (V2-BE/R6).
+   *
+   * Optional and additive, the fourth use of the `harness?` / `recordUsage?` /
+   * `walks?` precedent above: every existing caller keeps compiling and keeps
+   * its behaviour byte for byte.
+   *
+   * **There is no default, and that is the whole control.** No factory, or a
+   * factory that returns `undefined` for an account, leaves that account
+   * unbound — and an unbound account is a refusal at `route.accountId`, not a
+   * fallback to somebody else's binding. A default of any kind would open this
+   * transport for every operator who never asked for it, which is exactly what
+   * "subscription operation does not depend on an API key" forbids.
+   *
+   * The daemon never sees a credential: the factory returns a client that has
+   * already closed over its own, so nothing reaches the config, the bindings,
+   * the ledger or the marker.
+   */
+  readonly apiClientFor?: ((accountId: string) => ApiStreamingClient | undefined) | undefined;
 }
 
 export interface StopResult {
@@ -377,7 +396,11 @@ function switchPortFor(input: {
   const authorization = input.execution.switchAuthorization;
   if (authorization === undefined) return undefined;
 
-  const destinations = input.execution.bindings.map((entry) => ({
+  // Only CLI entries are switch destinations: a destination is named by the
+  // provider it speaks, and an API entry declares none (D3). The elector's
+  // vocabulary is unchanged; what changed is that the array can now hold a
+  // shape that was never a destination.
+  const destinations = cliBindingsOf(input.execution).map((entry) => ({
     accountId: entry.accountId,
     provider: entry.provider,
   }));
@@ -389,7 +412,7 @@ function switchPortFor(input: {
           authorization,
           lease: input.lease,
           routeAccountId: input.execution.route.accountId,
-          routeProvider: bindingForRoute(input.execution).provider,
+          routeProvider: routeProviderOf(input.execution),
           destinations,
           source: input.ledger,
         }),
@@ -444,7 +467,7 @@ async function landingFor(input: {
     ledger: input.ledger,
     invocation: input.invocation,
     route: input.execution.route,
-    bindings: input.execution.bindings.map((entry) => ({
+    bindings: cliBindingsOf(input.execution).map((entry) => ({
       accountId: entry.accountId,
       provider: entry.provider,
     })),
@@ -803,7 +826,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
       // second answer to "did the prestate move"; building a second port would
       // be a second admission of the same bindings. Both are the same values
       // the seam has always been given, named a few lines earlier.
-      const port = executionPortFor(options.execution, options.taskId, harness);
+      const port = executionPortFor(options.execution, options.taskId, harness, options.apiClientFor);
       const gate = conformanceGateFor({
         ledger: openedLedger,
         invocation,
@@ -1808,13 +1831,54 @@ function bindingForRoute(execution: DaemonExecutionConfig): DaemonExecutionBindi
  * The name and this function's position after `conformanceGateFor` are load
  * bearing for `L-C-4b` and stay exactly as they were.
  */
+/**
+ * The CLI entries of a config, which are the only ones a switch can name.
+ *
+ * A destination is identified by the provider it speaks, and an API entry
+ * declares none — the injected client does (D3). So the account-switch plane
+ * reads this rather than the whole array: an API entry is not a destination
+ * missing a field, it is a different shape.
+ */
+function cliBindingsOf(
+  execution: DaemonExecutionConfig,
+): readonly Extract<DaemonExecutionBinding, { transportKind: "CLI_SUBSCRIPTION" }>[] {
+  return execution.bindings.filter(
+    (entry): entry is Extract<DaemonExecutionBinding, { transportKind: "CLI_SUBSCRIPTION" }> =>
+      entry.transportKind === "CLI_SUBSCRIPTION",
+  );
+}
+
+/**
+ * The provider the routed entry speaks, for the switch elector.
+ *
+ * The parser refuses a config whose routed entry disagrees with the route's
+ * transport, so a CLI route is served by a CLI entry by the time this runs.
+ * The fallback is the route's own provider rather than a throw: this is read
+ * only when a switch authorization exists, and an API route reaching it would
+ * mean the elector was handed a plan for a transport it cannot switch — which
+ * `considerSwitch` refuses on its own terms rather than by crashing here.
+ */
+function routeProviderOf(execution: DaemonExecutionConfig): string {
+  const routed = bindingForRoute(execution);
+  return routed.transportKind === "CLI_SUBSCRIPTION" ? routed.provider : execution.route.provider;
+}
+
 function executionPortFor(
   execution: DaemonExecutionConfig,
   taskId: string,
   harness: AgentHarness,
+  apiClientFor?: (accountId: string) => ApiStreamingClient | undefined,
 ): ModelExecutionPort {
   const { route } = execution;
   const bindings = new Map<string, CliBinding>();
+  // **Built for every route, not only an API one (V2-BE/R6).** The map is
+  // always passed, so the port's own `apiBindings === undefined` refusal at
+  // `route.transportKind` stops being the daemon's answer and the honest one
+  // takes its place: an account nobody gave a client for is unbound, and
+  // `admitApiRoute` refuses it at `route.accountId`. Handing an absent map
+  // would report "this daemon has no API transport" for an operator who
+  // configured one and forgot the factory.
+  const apiBindings = new Map<string, ApiKeyBinding>();
   // **The outer guard is the transport, not the adapter (V2-B1f/F2b).** The
   // previous `if (adapter !== undefined)` conflated "this is not a CLI route"
   // with "no adapter exists for this provider" and answered both with an empty
@@ -1822,8 +1886,23 @@ function executionPortFor(
   // for byte -- the map stays empty and the port refuses at
   // `route.transportKind` -- while the missing adapter becomes a refusal, which
   // is what failing closed at admission means.
+  for (const entry of execution.bindings) {
+    if (entry.transportKind !== "API_KEY") continue;
+    // **No factory, no binding, and no substitute.** `apiClientFor` is absent
+    // by default (D2a), so this loop leaves the account unbound and the port
+    // refuses it. A daemon that invented a client here would be opening a
+    // transport nobody asked it to open.
+    const client = apiClientFor?.(entry.accountId);
+    if (client === undefined) continue;
+    apiBindings.set(entry.accountId, { client });
+  }
+
   if (route.transportKind === "CLI_SUBSCRIPTION") {
     for (const entry of execution.bindings) {
+      // The CLI arm reads CLI entries only. An API entry in the same array is
+      // not a CLI binding that lost its fields; it is a different shape, and
+      // the discriminant is what says so.
+      if (entry.transportKind !== "CLI_SUBSCRIPTION") continue;
       // `Object.hasOwn` before the index, because `CLI_ADAPTERS` is a plain
       // object typed by string: an entry naming `constructor` would otherwise
       // resolve to an inherited member rather than to `undefined` and slip past
@@ -1883,7 +1962,7 @@ function executionPortFor(
   // built its own would still hold the children correctly; what the daemon
   // would lose is the ability to reap them at its unwind, which is the whole
   // point of owning them.
-  return createExecutionPort({ bindings, harness });
+  return createExecutionPort({ bindings, apiBindings, harness });
 }
 
 /** The lock is released last, because everything else was acquired under it. */

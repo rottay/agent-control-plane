@@ -7116,6 +7116,79 @@ const V2B5R14_WRITE_SET = [
   "packages/domains/accounts/README.md",
 ];
 
+/**
+ * Old-V2 B1, R6: the daemon binds a transport it was given a client for.
+ *
+ * The execution port has served API_KEY end to end since B7s, and the daemon
+ * could not reach it. `executionPortFor` gated its whole binding loop on
+ * `transportKind === "CLI_SUBSCRIPTION"` and called `createExecutionPort`
+ * without `apiBindings`, so the port answered every API route with
+ * `TRANSPORT_UNAVAILABLE` at `route.transportKind` -- "this port has no API
+ * transport", which was true of the port it had been handed and false of the
+ * one it could have built. The config could not express the binding either:
+ * `provider` was typed to the closed CLI vocabulary and every entry had to
+ * carry a binary and a credential root.
+ *
+ * **One array, two shapes, one reading.** `execution.bindings` stays a single
+ * array and every entry now declares `transportKind` REQUIRED. A CLI entry
+ * carries binary, configRoot, provider, workdir, limits; an API entry carries
+ * workdir and limits and **refuses** the other three rather than ignoring them
+ * -- an operator who wrote a binary for an API binding believed something, and
+ * a refusal is the correction. The discriminant is required precisely so this
+ * is not the conditionally-required field F2b refused by name: no reader and no
+ * compiler ever has to infer which shape it is holding.
+ *
+ * **The client is injected and absent by default.** `DaemonOptions.apiClientFor`
+ * follows the `harness?` / `recordUsage?` / `walks?` precedent. No factory, or a
+ * factory that declines an account, leaves that account unbound -- and unbound
+ * is a refusal at `route.accountId`, never a fallback to a sibling's binding.
+ * There is no default of any kind, which is what keeps this transport closed for
+ * every operator who did not open it. The daemon never holds a credential: the
+ * factory returns a client that has already closed over its own.
+ *
+ * **The API entry declares neither provider nor models (D3).** The client
+ * declares both and `admitApiRoute` refuses the route against them. A second
+ * spelling in a file could disagree with the thing that answers the call.
+ *
+ * **Thirteen paths, and five of them are one line each.** Making the
+ * discriminant required governs every object literal assigned to
+ * `DaemonExecutionBinding`, and those literals do not name the type -- they
+ * inherit it from context. Five fixture files outside the original eight build
+ * them and would have failed `tsc`. The first writer measured that, hit STOP-2
+ * and implemented nothing; the DT widened the set rather than relaxing the
+ * type. In those five files the only permitted edit is adding
+ * `transportKind: "CLI_SUBSCRIPTION"`, and the staged diff is seven added lines
+ * and nothing else.
+ *
+ * **Pins.** ADR corpus 51 -> 52; the write-set gains one path (the ADR).
+ * `PATH_SCOPED_LAWS` stays at 112, `DAEMON_PUBLIC_EXPORTS` and
+ * `PROVIDERS_PUBLIC_EXPORTS` do not move: the union widens under the name it
+ * already published, the two arms are unexported, `ApiStreamingClient` is
+ * reused from `@acp/providers`, and `executionPortFor` stays private.
+ *
+ * **What this packet does not do.** It invents no transport behaviour: the port
+ * and the API adapter are untouched, and this is composition rather than
+ * capability. No probe, no discovery, no health check -- capabilities stay
+ * UNKNOWN. No SDK, no dependency, no network egress, no contract version.
+ *
+ * Record: `docs/architecture/0052-the-daemon-binds-a-transport-it-was-given-a-client-for.md`.
+ */
+const V2BE_R6_WRITE_SET = [
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/README.md",
+  "docs/architecture/0052-the-daemon-binds-a-transport-it-was-given-a-client-for.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/scheduler/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7278,6 +7351,7 @@ const WRITE_SET = [
   ...V2BE_R1_WRITE_SET,
   ...V2B5R10_WRITE_SET,
   ...V2B5R14_WRITE_SET,
+  ...V2BE_R6_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */

@@ -1980,6 +1980,7 @@ function b4aExecutionConfig(binary: string, root: string): DaemonExecutionConfig
     bindings: [
       {
         accountId: "acct-b4a-drill",
+        transportKind: "CLI_SUBSCRIPTION",
         provider: "claude",
         binary,
         configRoot: root,
@@ -2148,6 +2149,7 @@ function pluralExecution(
     bindings: [
       {
         accountId: "acct-b4a-drill",
+        transportKind: "CLI_SUBSCRIPTION",
         provider: mix.first,
         binary: providers.first.binary,
         configRoot: providers.first.configRoot,
@@ -2156,6 +2158,7 @@ function pluralExecution(
       },
       {
         accountId: SECOND_ACCOUNT,
+        transportKind: "CLI_SUBSCRIPTION",
         provider: mix.second,
         binary: providers.second.binary,
         configRoot: providers.second.configRoot,
@@ -2252,7 +2255,13 @@ describe("F2: a switch has somewhere to land -- plural bindings, end to end", ()
       ...execution,
       bindings: [
         first,
-        { ...second, binary: join(providers.second.configRoot, "no-such-binary") },
+        {
+          ...second,
+          transportKind: "CLI_SUBSCRIPTION" as const,
+          provider: second.transportKind === "CLI_SUBSCRIPTION" ? second.provider : "claude",
+          configRoot: second.transportKind === "CLI_SUBSCRIPTION" ? second.configRoot : providers.second.configRoot,
+          binary: join(providers.second.configRoot, "no-such-binary"),
+        },
       ],
     };
 
@@ -2344,7 +2353,13 @@ describe("F2b: a binding declares the provider it serves", () => {
       ...execution,
       bindings: [
         first,
-        { ...second, binary: join(providers.second.configRoot, "no-such-binary") },
+        {
+          ...second,
+          transportKind: "CLI_SUBSCRIPTION" as const,
+          provider: second.transportKind === "CLI_SUBSCRIPTION" ? second.provider : "claude",
+          configRoot: second.transportKind === "CLI_SUBSCRIPTION" ? second.configRoot : providers.second.configRoot,
+          binary: join(providers.second.configRoot, "no-such-binary"),
+        },
       ],
     };
 
@@ -3749,6 +3764,7 @@ describe("F5: the switch lands on the account it chose (trigger seeded)", () => 
       bindings: [
         {
           accountId: "acct-b4a-companion",
+          transportKind: "CLI_SUBSCRIPTION",
           provider: "claude",
           binary: companion.binary,
           configRoot: companion.root,
@@ -3909,7 +3925,7 @@ describe("F5: the switch lands on the account it chose (trigger seeded)", () => 
         route: execution.route,
         bindings: execution.bindings.map((entry) => ({
           accountId: entry.accountId,
-          provider: entry.provider,
+          provider: entry.transportKind === "CLI_SUBSCRIPTION" ? entry.provider : execution.route.provider,
         })),
         port: {
           healthProbe: () =>
@@ -4016,7 +4032,7 @@ describe("F5: the switch lands on the account it chose (trigger seeded)", () => 
         route: execution.route,
         bindings: execution.bindings.map((entry) => ({
           accountId: entry.accountId,
-          provider: entry.provider,
+          provider: entry.transportKind === "CLI_SUBSCRIPTION" ? entry.provider : execution.route.provider,
         })),
         port: {
           healthProbe: () =>
@@ -4315,4 +4331,201 @@ describe("F5: the switch lands on the account it chose (trigger seeded)", () => 
     expect(readRows(id).map((event) => event.type)).toContain("TASK_FAILED");
     expect(readState(id, taskId)).toBe("FAILED");
   }, 300_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-BE/R6: the daemon binds a transport it was given a client for
+// ---------------------------------------------------------------------------
+
+const R6_ACCOUNT = "acct-r6-api";
+
+/** The API route this packet composes. Same shape as the CLI leg's, one field apart. */
+function r6ApiRoute(): ResolvedRoute {
+  return { ...resolvedCliRoute(), accountId: R6_ACCOUNT, transportKind: "API_KEY" };
+}
+
+/**
+ * An execution config whose route is API_KEY and whose one binding declares it.
+ *
+ * The CLI fields are absent, not empty: an API entry has no binary and no
+ * credential root, and D1a refuses them rather than ignoring them.
+ */
+function r6ApiExecution(workdir: string): DaemonExecutionConfig {
+  return {
+    route: r6ApiRoute(),
+    bindings: [
+      {
+        accountId: R6_ACCOUNT,
+        transportKind: "API_KEY",
+        workdir,
+        limits: { timeoutMs: 10_000, outputBudgetBytes: 64 * 1024, interruptGraceMs: 120, termGraceMs: 120 },
+      },
+    ],
+  };
+}
+
+/** Start the daemon over an API config, with whatever factory the case is about. */
+async function r6Run(
+  scenarioId: string,
+  apiClientFor?: (accountId: string) => ApiStreamingClient | undefined,
+): Promise<void> {
+  const { root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+  const options = { ...b4aOptions(scenarioId, r6ApiExecution(root)), apiClientFor };
+  const run = await startDaemon(options);
+  await stopDaemon(run);
+}
+
+/** Every event of a scenario's ledger, read back independently. */
+function r6Events(scenarioId: string): readonly { type: string; payload: Record<string, unknown> }[] {
+  const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(scenarioId)), { readOnly: true });
+  try {
+    return ledger
+      .listEvents({ limit: 500 })
+      .events.map((entry) => ({ type: entry.event.type, payload: entry.event.payload }));
+  } finally {
+    ledger.close();
+  }
+}
+
+/**
+ * Drive the daemon over a config it must refuse, and prove how it refused.
+ *
+ * Two observables, and both are real rather than invented. `startDaemon`
+ * rejects with the `ExecutionEffectError` the effect raised, which carries the
+ * port's own `refusal` and `at` verbatim — so the typed diagnosis IS reachable
+ * from the composition root, and is asserted here rather than only at the port.
+ * The ledger carries the other half: the walk settled failed for a closed
+ * reason and wrote no checkpoint.
+ */
+async function r6RefusedAtDaemon(
+  scenarioId: string,
+  expected: { readonly refusal: string; readonly at: string },
+  apiClientFor?: (accountId: string) => ApiStreamingClient | undefined,
+): Promise<void> {
+  await expect(r6Run(scenarioId, apiClientFor)).rejects.toMatchObject(expected);
+  const events = r6Events(scenarioId);
+  const types = events.map((event) => event.type);
+  expect(types).toContain("TASK_FAILED");
+  expect(types).not.toContain("CHECKPOINT_WRITTEN");
+  expect(events.find((event) => event.type === "TASK_FAILED")?.payload["reason"]).toBe("EXECUTION_FAILED");
+}
+
+/** A port holding exactly the bindings the composition would have produced. */
+function r6Port(apiBindings: Map<string, { client: ApiStreamingClient }>): ModelExecutionPort {
+  return createExecutionPort({ bindings: new Map(), apiBindings });
+}
+
+function r6Start(port: ModelExecutionPort): Promise<unknown> {
+  return port.start(r6ApiRoute(), {
+    taskId: randomUUID(),
+    attempt: 1,
+    identity: EMITTED_BY,
+    instructions: "start the packet",
+    reattach: null,
+  });
+}
+
+describe("R6: the daemon binds a transport it was given a client for", () => {
+  it("P1: composes the API transport through the real seam and keeps the route API_KEY", async () => {
+    // The parity fixture proves the PORT serves both legs; this proves the
+    // DAEMON composes the API one, through `startDaemon` -- the composition
+    // root -- because `executionPortFor` is private and stays private.
+    const scenarioId = b4aScenarioId("r6-api-compose");
+    await r6Run(scenarioId, (accountId) =>
+      accountId === R6_ACCOUNT ? fakeClient(API_SCENARIO, SECRET) : undefined,
+    );
+
+    const events = r6Events(scenarioId);
+    const types = events.map((event) => event.type);
+    expect(types).toContain("CHECKPOINT_WRITTEN");
+    expect(types).not.toContain("TASK_FAILED");
+
+    // The anti-vacuity control. A composed API leg that silently fell back to a
+    // CLI binding would satisfy every assertion above; the recorded route is
+    // what tells them apart.
+    const recorded = events.find((event) => event.payload["route"] !== undefined)?.payload["route"];
+    expect((recorded as { transportKind?: string } | undefined)?.transportKind).toBe("API_KEY");
+  });
+
+  it("N1: no factory leaves the account unbound, at the port and at the daemon", async () => {
+    // The most important assertion in the packet: an operator who never opened
+    // this transport keeps it closed. Absence of a factory is not a
+    // configuration error -- it is the default -- so the refusal must name the
+    // ACCOUNT, not the transport.
+    expect(await r6Start(r6Port(new Map()))).toMatchObject({
+      ok: false,
+      refusal: "TRANSPORT_UNAVAILABLE",
+      at: "route.accountId",
+    });
+
+    await r6RefusedAtDaemon(b4aScenarioId("r6-no-factory"), {
+      refusal: "TRANSPORT_UNAVAILABLE",
+      at: "route.accountId",
+    });
+  });
+
+  it("N2: a factory that declines the account leaves it unbound too", async () => {
+    // Declining is not failing. A factory that knows nothing about this account
+    // returns `undefined`, and the account stays unbound -- never filled from a
+    // sibling and never defaulted.
+    expect(await r6Start(r6Port(new Map()))).toMatchObject({
+      ok: false,
+      refusal: "TRANSPORT_UNAVAILABLE",
+      at: "route.accountId",
+    });
+
+    await r6RefusedAtDaemon(
+      b4aScenarioId("r6-factory-declines"),
+      { refusal: "TRANSPORT_UNAVAILABLE", at: "route.accountId" },
+      () => undefined,
+    );
+  });
+
+  it("N3: a client speaking another provider is refused at route.provider", async () => {
+    const wrong: ApiStreamingClient = { ...fakeClient(API_SCENARIO, SECRET), provider: "codex" };
+    expect(await r6Start(r6Port(new Map([[R6_ACCOUNT, { client: wrong }]])))).toMatchObject({
+      ok: false,
+      refusal: "ROUTE_INVALID",
+      at: "route.provider",
+    });
+
+    await r6RefusedAtDaemon(
+      b4aScenarioId("r6-wrong-provider"),
+      { refusal: "ROUTE_INVALID", at: "route.provider" },
+      () => wrong,
+    );
+  });
+
+  it("N4: a client that does not serve the model is refused at route.model", async () => {
+    // D3: the client is the sole declaration of the models, and a client that
+    // cannot serve the named one refuses rather than substituting a neighbour.
+    const narrow: ApiStreamingClient = { ...fakeClient(API_SCENARIO, SECRET), models: ["haiku"] };
+    expect(await r6Start(r6Port(new Map([[R6_ACCOUNT, { client: narrow }]])))).toMatchObject({
+      ok: false,
+      refusal: "CAPABILITY_UNSUPPORTED",
+      at: "route.model",
+    });
+
+    await r6RefusedAtDaemon(
+      b4aScenarioId("r6-wrong-model"),
+      { refusal: "CAPABILITY_UNSUPPORTED", at: "route.model" },
+      () => narrow,
+    );
+  });
+
+  it("N8: the client's secret reaches no trail, marker, serialization or preimage", async () => {
+    // The canary lives in the fake's closure, where a real implementation holds
+    // its key. The composed leg must be as clean as the direct one already is.
+    const scenarioId = b4aScenarioId("r6-redaction");
+    await r6Run(scenarioId, () => fakeClient(API_SCENARIO, SECRET));
+
+    const events = r6Events(scenarioId);
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain(SECRET);
+    expect(serialized).not.toContain("sk-");
+    // The config the child was handed is the other surface a credential could
+    // have reached: it is written to a file, and it carries a client for
+    // nothing -- the factory closed over the key, and the factory is not in it.
+    expect(JSON.stringify(r6ApiExecution("/tmp/x"))).not.toContain(SECRET);
+  });
 });

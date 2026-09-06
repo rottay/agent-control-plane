@@ -91,15 +91,61 @@ function isCliSubscriptionProvider(value: unknown): value is CliSubscriptionProv
  * conditionally-required field would give the config two shapes, which is the
  * second-spelling defect F2 refused by name.
  */
-export interface DaemonExecutionBinding {
+
+/**
+ * What every binding carries, whatever transport it speaks (V2-BE/R6).
+ *
+ * `workdir` and `limits` are here rather than in one arm because they are not
+ * CLI facts: the workdir locates the WALK, and the limits bound what the daemon
+ * will wait for and read back. A transport that needed neither would not be a
+ * transport this daemon can run.
+ */
+interface DaemonExecutionBindingBase {
   readonly accountId: string;
+  readonly workdir: string;
+  readonly limits: DaemonExecutionLimits;
+}
+
+/** A binding served by spawning a subscription CLI. */
+interface DaemonCliExecutionBinding extends DaemonExecutionBindingBase {
+  readonly transportKind: "CLI_SUBSCRIPTION";
   /** The CLI subscription provider this account's transport speaks (V2-B1f/F2b). */
   readonly provider: CliSubscriptionProvider;
   readonly binary: string;
   readonly configRoot: string;
-  readonly workdir: string;
-  readonly limits: DaemonExecutionLimits;
 }
+
+/**
+ * A binding served by an injected streaming client.
+ *
+ * **It declares neither `provider` nor `models`, and that is D3 rather than an
+ * omission.** The client is the sole declaration of both: it says which provider
+ * it speaks and which models it will serve, and `admitApiRoute` refuses the
+ * route against those. A second spelling in the config would be a fact that
+ * could disagree with the thing that actually answers the call.
+ *
+ * It carries no credential either. The client closes over its own key; the
+ * config is written to a file and handed to a child process, so a credential
+ * here would be a credential on disk.
+ */
+interface DaemonApiExecutionBinding extends DaemonExecutionBindingBase {
+  readonly transportKind: "API_KEY";
+}
+
+/**
+ * One binding, discriminated by the transport it speaks (V2-BE/R6).
+ *
+ * **One array, two shapes, one reading.** The discriminant is REQUIRED on every
+ * entry, which is what separates this from the conditionally-required field F2b
+ * refused by name: a reader never has to infer which shape it is holding, and
+ * neither does the compiler. An entry that declares CLI must carry the CLI
+ * fields; an entry that declares API must carry none of them.
+ *
+ * The two arms are deliberately not exported. `DaemonExecutionBinding` is the
+ * name this package already published and the only one a consumer needs, so the
+ * union widens without adding a public name.
+ */
+export type DaemonExecutionBinding = DaemonCliExecutionBinding | DaemonApiExecutionBinding;
 
 /**
  * The most accounts one daemon may be given bindings for (V2-B1f/F2).
@@ -338,6 +384,58 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
     }
     seenAccounts.add(accountId);
 
+    // **The transport is declared, never inferred (V2-BE/R6).** It is required
+    // on every entry, so a reader and the compiler both know which shape they
+    // are holding before any other field is read. The two refusals are separate
+    // operator mistakes -- a forgotten field, and a transport this daemon has no
+    // composition for -- and neither echoes a value.
+    const transportKind = admission["transportKind"];
+    if (typeof transportKind !== "string" || transportKind === "") {
+      throw new ModeError(at + ".transportKind must be a non-empty string");
+    }
+    if (transportKind !== "CLI_SUBSCRIPTION" && transportKind !== "API_KEY") {
+      throw new ModeError(at + ".transportKind names no transport this daemon composes");
+    }
+
+    const limits = admission["limits"];
+    if (typeof limits !== "object" || limits === null) {
+      throw new ModeError(at + ".limits must be an object");
+    }
+    const budgets = limits as Record<string, unknown>;
+
+    // Every field is admitted per entry. **Nothing is defaulted and nothing is
+    // inherited**: an entry that omits a field is refused rather than filled
+    // from a sibling or from the route, because a binding assembled from two
+    // places is a binding nobody wrote down.
+    const admittedLimits = {
+      timeoutMs: positiveInteger(budgets["timeoutMs"], at + ".limits.timeoutMs"),
+      outputBudgetBytes: positiveInteger(budgets["outputBudgetBytes"], at + ".limits.outputBudgetBytes"),
+      interruptGraceMs: positiveInteger(budgets["interruptGraceMs"], at + ".limits.interruptGraceMs"),
+      termGraceMs: positiveInteger(budgets["termGraceMs"], at + ".limits.termGraceMs"),
+    };
+    // `workdir` is admitted for BOTH transports (D4). It locates the walk, not
+    // the CLI, and six sites read it without asking which transport served it.
+    const workdir = admittedPath(admission["workdir"], at + ".workdir");
+
+    if (transportKind === "API_KEY") {
+      // **Refused, not ignored (D1a).** An API entry carrying a binary or a
+      // credential root is an operator who believes this transport spawns
+      // something. Ignoring the field would let that belief survive; naming it
+      // is the correction. The path is the diagnosis -- the value never travels.
+      for (const absent of ["binary", "configRoot"] as const) {
+        if (admission[absent] !== undefined) {
+          throw new ModeError(at + "." + absent + " is not a field of an API_KEY binding");
+        }
+      }
+      // Nor `provider`: the injected client declares it, and a second spelling
+      // here could disagree with the thing that answers the call (D3).
+      if (admission["provider"] !== undefined) {
+        throw new ModeError(at + ".provider is not a field of an API_KEY binding");
+      }
+      bindings.push({ accountId, transportKind, workdir, limits: admittedLimits });
+      continue;
+    }
+
     // **The provider is declared, never derived (V2-B1f/F2b).** The shape
     // refusal and the vocabulary refusal are separate because they are separate
     // operator mistakes: an entry that forgot the field, and an entry that named
@@ -351,28 +449,14 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
       throw new ModeError(at + ".provider names no CLI subscription provider");
     }
 
-    const limits = admission["limits"];
-    if (typeof limits !== "object" || limits === null) {
-      throw new ModeError(at + ".limits must be an object");
-    }
-    const budgets = limits as Record<string, unknown>;
-
-    // Every field is admitted per entry. **Nothing is defaulted and nothing is
-    // inherited**: an entry that omits a field is refused rather than filled
-    // from a sibling or from the route, because a binding assembled from two
-    // places is a binding nobody wrote down.
     bindings.push({
       accountId,
+      transportKind,
       provider,
       binary: admittedPath(admission["binary"], at + ".binary"),
       configRoot: admittedPath(admission["configRoot"], at + ".configRoot"),
-      workdir: admittedPath(admission["workdir"], at + ".workdir"),
-      limits: {
-        timeoutMs: positiveInteger(budgets["timeoutMs"], at + ".limits.timeoutMs"),
-        outputBudgetBytes: positiveInteger(budgets["outputBudgetBytes"], at + ".limits.outputBudgetBytes"),
-        interruptGraceMs: positiveInteger(budgets["interruptGraceMs"], at + ".limits.interruptGraceMs"),
-        termGraceMs: positiveInteger(budgets["termGraceMs"], at + ".limits.termGraceMs"),
-      },
+      workdir,
+      limits: admittedLimits,
     });
   }
 
@@ -397,7 +481,21 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
   // non-CLI config unloadable and silently delete a documented behaviour -- the
   // port's own `TRANSPORT_UNAVAILABLE` at `route.transportKind`. The
   // unconditional rule was considered and declined for exactly that reason.
-  if (route.data.transportKind === "CLI_SUBSCRIPTION" && routed.provider !== route.data.provider) {
+  // **The routed entry must speak the route's transport (V2-BE/R6).** The
+  // discriminant makes this checkable at the door rather than at session time,
+  // where an API route served by a CLI entry would surface as a spawn nobody
+  // asked for. It is also what narrows `routed` for the provider check below:
+  // only a CLI entry has a provider to compare.
+  if (routed.transportKind !== route.data.transportKind) {
+    throw new ModeError(
+      "execution.route.transportKind is " +
+        route.data.transportKind +
+        " but the entry serving it declares " +
+        routed.transportKind +
+        "; the routed entry must declare the transport the route names",
+    );
+  }
+  if (route.data.transportKind === "CLI_SUBSCRIPTION" && routed.transportKind === "CLI_SUBSCRIPTION" && routed.provider !== route.data.provider) {
     throw new ModeError(
       "execution.route.provider is " +
         route.data.provider +
@@ -481,7 +579,14 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
       // as well as in the walk, so an operator learns it at the door rather
       // than from a parked attempt. Temporary, and lifted by the packet that
       // lifts the provider-framing refusal.
-      if (destination.provider !== routed.provider) {
+      // Only CLI entries carry a provider to compare, and only a CLI route can
+      // reach this branch: the transport check above already refused a routed
+      // entry whose transport differs from the route's.
+      if (
+        destination.transportKind === "CLI_SUBSCRIPTION" &&
+        routed.transportKind === "CLI_SUBSCRIPTION" &&
+        destination.provider !== routed.provider
+      ) {
         throw new ModeError(
           "execution.switchAuthorization.plan.selectedAccountId names a " +
             destination.provider +

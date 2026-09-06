@@ -110,6 +110,33 @@ strings — `process.argv` is what this runtime parsed, `ps` is the operating
 system's own rendering of the command line — and recording one while later
 observing the other would make every live daemon look indeterminate.
 
+## The transports it composes
+
+`execution.bindings` is one array whose every entry declares the transport it
+speaks. A `CLI_SUBSCRIPTION` entry carries a binary, a credential root, a
+provider, a workdir and limits; an `API_KEY` entry carries a workdir and limits
+and **refuses** the other three rather than ignoring them — an operator who
+wrote a binary for an API binding believed this transport spawns something, and
+a refusal is the correction. The discriminant is required on every entry, so
+neither a reader nor the compiler ever infers which shape it is holding.
+
+An `API_KEY` entry declares **neither provider nor models**. The injected client
+declares both, and the port refuses the route against them. A second spelling in
+this file could disagree with the thing that answers the call.
+
+**The API transport is closed unless you open it.** The daemon binds an account
+only where `DaemonOptions.apiClientFor` returns a client for it. There is no
+default: no factory, or a factory that declines the account, leaves it unbound,
+and an unbound account is refused at `route.accountId` — never served from a
+sibling's binding. The daemon holds no credential either; the factory returns a
+client that has already closed over its own, and nothing reaches the config,
+which is written to a file and handed to a child process.
+
+Composing a transport is not probing one. The daemon performs no discovery, no
+health check and no capability claim at startup: capabilities stay UNKNOWN, and
+what a client can serve is answered when the route is admitted. ADR 0052 records
+the whole of it.
+
 ## Bounds
 
 Logs are capped three ways: total bytes, file count, and a single line. All

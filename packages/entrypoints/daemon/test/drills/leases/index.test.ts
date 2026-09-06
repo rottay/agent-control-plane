@@ -226,6 +226,7 @@ function configFor(
         bindings: [
           {
             accountId: DRILL_ROUTE.accountId,
+            transportKind: "CLI_SUBSCRIPTION",
             provider: DRILL_ROUTE.provider,
             binary: join(workdir, "fake-provider"),
             configRoot: workdir,
@@ -762,6 +763,7 @@ function walkEntryFor(
     bindings: [
       {
         accountId: DRILL_ROUTE.accountId,
+        transportKind: "CLI_SUBSCRIPTION",
         provider: DRILL_ROUTE.provider,
         binary: join(workdir, "fake-provider"),
         configRoot: workdir,
@@ -809,6 +811,7 @@ function singularConfig(
     bindings: [
       {
         accountId: DRILL_ROUTE.accountId,
+        transportKind: "CLI_SUBSCRIPTION",
         provider: DRILL_ROUTE.provider,
         binary: join(workdir, "fake-provider"),
         configRoot: workdir,

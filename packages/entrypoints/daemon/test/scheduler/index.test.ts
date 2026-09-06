@@ -84,6 +84,7 @@ function walkOf(
         bindings: [
           {
             accountId: ROUTE.accountId,
+            transportKind: "CLI_SUBSCRIPTION",
             provider: ROUTE.provider,
             binary: worktreePath + "/fake",
             configRoot: worktreePath,

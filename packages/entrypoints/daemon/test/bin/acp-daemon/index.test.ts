@@ -25,7 +25,7 @@ import {
   canonicalSubmissionDigest,
   parseDaemonChildConfig,
 } from "../../../src/daemon-child/index.js";
-import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
+import type { DaemonExecutionBinding, DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
 import { EXIT_CONFIG_CONTENT, EXIT_CONFIG_PATH, EXIT_USAGE, runPackagedEntry } from "../../../src/bin/acp-daemon/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
@@ -94,6 +94,7 @@ function validExecution(): DaemonExecutionConfig {
     bindings: [
       {
         accountId: "acct-config-contract",
+        transportKind: "CLI_SUBSCRIPTION",
         provider: "claude",
         binary: realpathSync(process.execPath),
         configRoot: home,
@@ -142,6 +143,23 @@ function writeConfig(dir: string, body: unknown, mode = 0o600): string {
   chmodSync(path, mode);
   return path;
 }
+
+/**
+ * A parsed binding, read as the CLI shape it declares (V2-BE/R6).
+ *
+ * `DaemonExecutionBinding` is a discriminated union since R6, so the CLI fields
+ * are reachable only after the discriminant is checked. These assertions are
+ * about CLI configs; the check is the narrowing, and a binding that turned out
+ * to be an API one fails here rather than reading `undefined`.
+ */
+function cli(binding: DaemonExecutionBinding | undefined): Extract<DaemonExecutionBinding, { transportKind: "CLI_SUBSCRIPTION" }> {
+  if (binding === undefined) throw new Error("expected a CLI_SUBSCRIPTION binding");
+  if (binding.transportKind !== "CLI_SUBSCRIPTION") {
+    throw new Error("expected a CLI_SUBSCRIPTION binding");
+  }
+  return binding;
+}
+
 
 describe("the config path law", () => {
   it("accepts a canonical, owned, owner-only file", () => {
@@ -772,6 +790,7 @@ describe("A2: an elected route survives the door", () => {
         bindings: [
           {
             accountId: composed.submission.route.accountId,
+            transportKind: "CLI_SUBSCRIPTION",
             provider: composed.submission.route.provider,
             binary: realpathSync(process.execPath),
             configRoot: home,
@@ -821,6 +840,7 @@ describe("A2: an elected route survives the door", () => {
           bindings: [
             {
               accountId: swapped.accountId,
+              transportKind: "CLI_SUBSCRIPTION",
               provider: swapped.provider,
               binary: realpathSync(process.execPath),
               configRoot: home,
@@ -915,6 +935,7 @@ describe("F2: execution.bindings is a plural, fully-admitted array", () => {
   function entryFor(accountId: string, home: string): Record<string, unknown> {
     return {
       accountId,
+      transportKind: "CLI_SUBSCRIPTION",
       provider: "claude",
       binary: realpathSync(process.execPath),
       configRoot: home,
@@ -939,7 +960,7 @@ describe("F2: execution.bindings is a plural, fully-admitted array", () => {
       "acct-second",
     ]);
     // P2: each entry keeps its own fields; neither inherits the other's.
-    expect(parsed.execution.bindings[1]?.configRoot).toBe(home);
+    expect(cli(parsed.execution.bindings[1]).configRoot).toBe(home);
     expect(parsed.execution.bindings[1]?.limits.timeoutMs).toBe(20_000);
     expect(parsed.execution.bindings[0]?.accountId).toBe(parsed.execution.route.accountId);
   });
@@ -1120,6 +1141,7 @@ describe("F2b: every execution binding declares its own provider", () => {
   function entryFor(accountId: string, provider: string, home: string): Record<string, unknown> {
     return {
       accountId,
+      transportKind: "CLI_SUBSCRIPTION",
       provider,
       binary: realpathSync(process.execPath),
       configRoot: home,
@@ -1148,12 +1170,12 @@ describe("F2b: every execution binding declares its own provider", () => {
     );
 
     expect(parsed.execution.bindings).toHaveLength(2);
-    expect(parsed.execution.bindings.map((b) => b.provider)).toEqual(["claude", "codex"]);
+    expect(parsed.execution.bindings.map((b) => cli(b).provider)).toEqual(["claude", "codex"]);
     // One worktree, two credential roots: the switch lands without moving the
     // checkout, and neither account borrows the other's configuration.
     expect(parsed.execution.bindings.every((b) => b.workdir === first.workdir)).toBe(true);
-    expect(parsed.execution.bindings[1]?.configRoot).toBe(elsewhere);
-    expect(parsed.execution.bindings[0]?.configRoot).not.toBe(elsewhere);
+    expect(cli(parsed.execution.bindings[1]).configRoot).toBe(elsewhere);
+    expect(cli(parsed.execution.bindings[0]).configRoot).not.toBe(elsewhere);
   });
 
   it("P3 round-trips each entry's provider, and neither inherits the other's", () => {
@@ -1172,7 +1194,7 @@ describe("F2b: every execution binding declares its own provider", () => {
       }),
     );
 
-    expect(parsed.execution.bindings.map((b) => [b.accountId, b.provider])).toEqual([
+    expect(parsed.execution.bindings.map((b) => [b.accountId, cli(b).provider])).toEqual([
       ["acct-config-contract", "claude"],
       ["acct-second", "codex"],
       ["acct-third", "kimi"],
@@ -1254,8 +1276,8 @@ describe("F2b: every execution binding declares its own provider", () => {
         bindings: [first, entryFor("acct-second", "codex", first.workdir)],
       }),
     );
-    expect(parsed.execution.bindings[0]?.provider).toBe(parsed.execution.route.provider);
-    expect(parsed.execution.bindings[1]?.provider).toBe("codex");
+    expect(cli(parsed.execution.bindings[0]).provider).toBe(parsed.execution.route.provider);
+    expect(cli(parsed.execution.bindings[1]).provider).toBe("codex");
   });
 
   it("N9 leaves F2's invariants exactly as they were, with the field present", () => {
@@ -1338,7 +1360,7 @@ function twoBindingExecution(): DaemonExecutionConfig {
   if (routed === undefined) throw new Error("the fixture declares no binding");
   return {
     ...base,
-    bindings: [routed, { ...routed, accountId: "acct-second", provider: "claude" }],
+    bindings: [routed, { ...cli(routed), accountId: "acct-second", provider: "claude" as const }],
   };
 }
 
@@ -1449,7 +1471,7 @@ describe("F4d: the switch authorization is admitted at the same door as the rout
     if (routed === undefined) throw new Error("the fixture declares no binding");
     const execution: DaemonExecutionConfig = {
       ...validExecution(),
-      bindings: [routed, { ...routed, accountId: "acct-second", provider: "codex" }],
+      bindings: [routed, { ...cli(routed), accountId: "acct-second", provider: "codex" as const }],
     };
     const taskId = base["taskId"] as string;
     const refusal = refusalOf({
@@ -1503,5 +1525,131 @@ describe("F4d: the switch authorization is admitted at the same door as the rout
       ]),
     );
     expect(parsed.walks?.[0]?.spec.execution.switchAuthorization?.trigger).toBe("QUOTA_EXHAUSTED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V2-BE/R6: the parser admits a second transport, and refuses its confusions
+// ---------------------------------------------------------------------------
+
+describe("R6: an API_KEY binding is a shape of its own", () => {
+  /** A config whose one binding is the API shape, with `patch` merged over it. */
+  function apiConfig(patch: Record<string, unknown> = {}): Record<string, unknown> {
+    const home = realpathSync(tmpdir());
+    const config = validConfig();
+    const execution = config["execution"] as Record<string, unknown>;
+    const route = { ...(execution["route"] as { accountId: string }), transportKind: "API_KEY" };
+    return {
+      ...config,
+      // Recomputed, never restated: the route is inside the submission
+      // preimage, so changing the transport changes the digest the door checks.
+      submissionDigest: canonicalSubmissionDigest({
+        taskId: config["taskId"] as string,
+        attempt: 1,
+        submittedAt: SUBMITTED_AT,
+        initiativeId: CONFIG_INITIATIVE_ID,
+        route: route as unknown as DaemonExecutionConfig["route"],
+      }),
+      execution: {
+        ...execution,
+        route,
+        bindings: [
+          {
+            accountId: route.accountId,
+            transportKind: "API_KEY",
+            workdir: home,
+            limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+            ...patch,
+          },
+        ],
+      },
+    };
+  }
+
+  it("admits an API entry that carries only what that transport needs", () => {
+    // The positive, so the refusals below are about the fields named and not
+    // about the shape being unloadable in the first place.
+    const parsed = parseDaemonChildConfig(apiConfig());
+    const binding = parsed.execution.bindings[0];
+    expect(binding?.transportKind).toBe("API_KEY");
+    // D3: neither is a field of this shape, so neither can disagree with the
+    // client that actually answers the call.
+    expect(Object.hasOwn(binding ?? {}, "provider")).toBe(false);
+    expect(Object.hasOwn(binding ?? {}, "binary")).toBe(false);
+  });
+
+  it("N5: refuses an API entry carrying binary or configRoot, naming the path", () => {
+    // Refused, not ignored. An API entry carrying a binary is an operator who
+    // believes this transport spawns something; ignoring the field would let
+    // that belief survive a green start.
+    expect(() => parseDaemonChildConfig(apiConfig({ binary: realpathSync(process.execPath) }))).toThrow(
+      "execution.bindings[0].binary is not a field of an API_KEY binding",
+    );
+    expect(() => parseDaemonChildConfig(apiConfig({ configRoot: realpathSync(tmpdir()) }))).toThrow(
+      "execution.bindings[0].configRoot is not a field of an API_KEY binding",
+    );
+    // And `provider`, for D3's reason rather than for the spawn's.
+    expect(() => parseDaemonChildConfig(apiConfig({ provider: "claude" }))).toThrow(
+      "execution.bindings[0].provider is not a field of an API_KEY binding",
+    );
+  });
+
+  it("N6: refuses an API entry with no workdir", () => {
+    // D4: the workdir locates the WALK, not the CLI. Every transport carries
+    // it, and an entry without one is refused rather than defaulted from a
+    // sibling.
+    expect(() => parseDaemonChildConfig(apiConfig({ workdir: undefined }))).toThrow(
+      "execution.bindings[0].workdir",
+    );
+  });
+
+  it("N7: refuses a ninth binding of any transport, never truncating", () => {
+    // The bound is on accounts reachable, and it does not care which transport
+    // reaches them. Nine is refused whole: silently dropping the ninth would
+    // leave a route naming it unservable for a reason nothing reported.
+    const home = realpathSync(tmpdir());
+    const config = apiConfig();
+    const execution = config["execution"] as Record<string, unknown>;
+    const first = (execution["bindings"] as Record<string, unknown>[])[0];
+    const nine = Array.from({ length: 9 }, (_unused, index) => ({
+      ...first,
+      accountId: "acct-r6-" + String(index),
+      workdir: home,
+    }));
+    expect(() =>
+      parseDaemonChildConfig({ ...config, execution: { ...execution, bindings: nine } }),
+    ).toThrow("execution.bindings carries more than 8 entries");
+  });
+
+  it("refuses a routed entry that declares a different transport than the route", () => {
+    // The check the discriminant made possible, and the one that narrows the
+    // provider comparison below it. An API route served by a CLI entry would
+    // otherwise surface at session time as a spawn nobody asked for; refused
+    // at the door, the operator learns it before anything runs.
+    const home = realpathSync(tmpdir());
+    const config = apiConfig();
+    const execution = config["execution"] as Record<string, unknown>;
+    const route = execution["route"] as { accountId: string };
+    const cliEntry = {
+      accountId: route.accountId,
+      transportKind: "CLI_SUBSCRIPTION",
+      provider: "claude",
+      binary: realpathSync(process.execPath),
+      configRoot: home,
+      workdir: home,
+      limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+    };
+    expect(() =>
+      parseDaemonChildConfig({ ...config, execution: { ...execution, bindings: [cliEntry] } }),
+    ).toThrow("the routed entry must declare the transport the route names");
+  });
+
+  it("refuses an entry whose transport this daemon does not compose", () => {
+    // Fail-closed on the vocabulary rather than on a list of the forbidden: a
+    // transport added to the contract and named here reaches this line
+    // unclassified, and is refused until somebody composes it.
+    expect(() => parseDaemonChildConfig(apiConfig({ transportKind: "LOCAL" }))).toThrow(
+      "execution.bindings[0].transportKind names no transport this daemon composes",
+    );
   });
 });

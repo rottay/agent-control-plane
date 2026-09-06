@@ -590,6 +590,7 @@ function executionConfig(): DaemonExecutionConfig {
     bindings: [
       {
         accountId: "acct-daemon-drill",
+        transportKind: "CLI_SUBSCRIPTION",
         provider: "claude",
         binary: join(executionRoot, "fake-provider"),
         configRoot: executionRoot,
