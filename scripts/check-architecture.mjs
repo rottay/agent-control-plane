@@ -6772,6 +6772,60 @@ const V2B1F4C_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2-B1f/F5 -- the switch lands on the account it chose.
+ *
+ * F1 removed the fabricated completion, F4d gave the walk a player, and F4c
+ * moved the account-action door down a stratum. What none of them could do is
+ * FINISH a switch: the plan's steps 6-11 have an executor for none of them,
+ * `QUOTA_BLOCKED` has no outbound plan step, and nothing anywhere in `src` may
+ * construct an `ACCOUNT_SWITCH_COMPLETED`. A played switch therefore parks the
+ * attempt at a visible stop with a destination nobody can route to.
+ *
+ * This packet builds the landing: a restart-time interposition at BOTH of the
+ * daemon's route bindings -- the single-walk form and the per-walk form -- that
+ * reads the durable started row, admits the destination the config already
+ * carries, calls the seam's own conformance gate once, and appends exactly one
+ * completion. It opens no session, takes no lease, decides no route, adds no
+ * config field and creates no second door.
+ *
+ * **`L-B1F-1` moves rather than being worked around.** The law that forbade
+ * every producer gains exactly one named permitted site, in `L-F3-1`'s shipped
+ * shape: a named literal, a non-vacuity guard, and a note that prints both the
+ * site count and the scope. Its failure message is rewritten, because "nothing
+ * opens a session yet" stops being true and the landing is not a session-opener
+ * either.
+ *
+ * **`L-F5-1` is new**, and it keeps the destination a read rather than a
+ * position: no source may select a binding by index, and the landing must name
+ * the durable field it selects from. The three lawful `find`s on account
+ * identity -- two `bindingForRoute`s and the player's own `destinations.find`
+ * -- serve the route or the decided destination and are the law's negative
+ * control.
+ *
+ * **Pins.** `PATH_SCOPED_LAWS` 110 -> 111, ADR corpus 45 -> 46,
+ * `RUNTIME_PUBLIC_EXPORTS` 249 -> 255, tracked files 516 -> 519, package files
+ * two levels down 418 -> 420, and the three 134-scoped laws -> 135 together.
+ * The three seam counts stay at 2: the landing composes nothing new, and R3's
+ * switch-port suppression is a runtime condition inside `switchPortFor` rather
+ * than a deleted literal.
+ *
+ * Record: `docs/architecture/0046-the-switch-lands-on-the-account-it-chose.md`.
+ */
+const V2B1F5_WRITE_SET = [
+  "packages/domains/runtime/src/switch-landing/index.ts",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/src/usage/index.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/0046-the-switch-lands-on-the-account-it-chose.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -6928,6 +6982,7 @@ const WRITE_SET = [
   ...V2B1F4E_WRITE_SET,
   ...V2B1F4D_WRITE_SET,
   ...V2B1F4C_WRITE_SET,
+  ...V2B1F5_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -7985,8 +8040,11 @@ const PATH_SCOPED_LAWS = [
   // `requireScope` call sites both move 94 -> 95. The kernel vocabularies are
   // outside this scope by construction, which is why the law needs no exemption
   // list to leave the frozen event enums alone.
+  // V2-B1f/F5 moved this law to exactly one permitted site rather than working
+  // around it: the landing is the only module that may build a completion, and
+  // the law fails both when a second source builds one and when that site stops.
   {
-    law: "no module constructs an ACCOUNT_SWITCH_COMPLETED event",
+    law: "only the landing constructs an ACCOUNT_SWITCH_COMPLETED event",
     scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
   },
   // V2-B1f/F2. One new path-shaped surface, so one new row: the register and
@@ -8084,6 +8142,16 @@ const PATH_SCOPED_LAWS = [
   // status no verb implies.
   {
     law: "one door appends an account action, and no source invents a status",
+    scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
+  },
+  // V2-B1f/F5. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 110 -> 111. It keeps a switch
+  // destination a durable READ rather than a position in a list, in both
+  // directions: nothing selects a binding by index, and the landing must name
+  // the field it selects from -- because a landing that quietly fell back to
+  // the route's own account would satisfy the first half vacuously.
+  {
+    law: "no module selects a switch destination by position",
     scope: "packages/domains/*/src/**, packages/entrypoints/*/src/**",
   },
 ];
@@ -13934,6 +14002,17 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "SwitchConsideration",
   "SwitchDeclineReason",
   "SwitchPort",
+  // V2-B1f/F5: the landing that finishes a played switch. Six names, in a
+  // block disjoint from every other: the verb, its closed refusal vocabulary
+  // and the one-per-attempt ceiling as values, and the input, outcome and
+  // refusal shapes as types. Nothing here names an account action, a session
+  // opener or a route resolver.
+  "landAccountSwitch",
+  "SWITCH_LANDINGS_MAX",
+  "SWITCH_LANDING_REFUSALS",
+  "SwitchLandingInput",
+  "SwitchLandingOutcome",
+  "SwitchLandingRefusal",
   // V2-B7R: the shared failure classification, asked by both drivers.
   "FAILURE_REFUSALS",
   "FailureDecision",
@@ -16521,8 +16600,9 @@ if (tracked.status === 0) {
   //
   // **The type is not forbidden -- constructing one is.** The event stays in the
   // frozen contracts and protocol vocabularies, and every read model that
-  // renders it keeps working; the session-opener a later packet builds will
-  // append it, and that packet moves this law rather than working around it.
+  // renders it keeps working. V2-B1f/F5 is the packet that promised to move
+  // this law rather than work around it, and it did: the landing that finishes
+  // a switch is now the one named site, and everything else still may not.
   // The kernel vocabularies sit outside the scope **by construction**, so no
   // exemption list is needed to spare them, which is the difference between a
   // scope that is reasoned about and one that is patched.
@@ -16536,9 +16616,21 @@ if (tracked.status === 0) {
   // explaining, and `stripComments` removes the prose case before either
   // pattern is applied.
   //
-  // **After F1 the law has no permitted site**, so the probe is its only
-  // positive evidence; a negative control beside it asserts the skipped forms do
-  // not trip it. Both live in `scripts/architecture/roots.test.mjs`.
+  // **V2-B1f/F5 moves the law rather than working around it.** F1 left it with
+  // no permitted site at all, and said so in its own failure message: "nothing
+  // opens a session yet". F5 builds the landing, so there is exactly ONE
+  // permitted site now -- and the message is rewritten, because the landing is
+  // deliberately not a session-opener either. It admits a destination and
+  // appends; the session is opened later by the resumed walk, and only if the
+  // effect's own probe says the work is not already done.
+  //
+  // The shape is `L-F3-1`'s, which is the shipped template for a law with a
+  // named producer: a named literal, a `homesSeen` counter, an explicit
+  // vacuity guard, and a note printing both the site count and the scope. The
+  // vacuity half is what stops the law degrading into a rule nothing exercises
+  // -- a permitted site that stopped constructing one would leave the law
+  // passing over a hundred and thirty-five sources while proving nothing.
+  const COMPLETION_HOME = "packages/domains/runtime/src/switch-landing/index.ts";
   const completionScope = tracked.status === 0
     ? tracked.stdout
         .split("\n")
@@ -16552,23 +16644,40 @@ if (tracked.status === 0) {
               /^packages\/entrypoints\/[^/]+\/src\//.test(relativePath)),
         )
     : [];
-  requireScope("no module constructs an ACCOUNT_SWITCH_COMPLETED event", completionScope.length);
+  requireScope("only the landing constructs an ACCOUNT_SWITCH_COMPLETED event", completionScope.length);
+  let completionHomesSeen = 0;
   for (const relativePath of completionScope) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
     const live = stripComments(content);
     // The object-literal constructor, and the `event(...)` helper the switching
     // module uses. Both name the type in the position that BUILDS one.
-    if (/type:\s*"ACCOUNT_SWITCH_COMPLETED"/.test(live) || /event\(\s*"ACCOUNT_SWITCH_COMPLETED"\s*,/.test(live)) {
+    if (!(/type:\s*"ACCOUNT_SWITCH_COMPLETED"/.test(live) || /event\(\s*"ACCOUNT_SWITCH_COMPLETED"\s*,/.test(live))) {
+      continue;
+    }
+    if (relativePath !== COMPLETION_HOME) {
       fail(
         relativePath +
-          " constructs an ACCOUNT_SWITCH_COMPLETED event; only the session-opener that" +
-          " finishes a switch may append one, and nothing opens a session yet",
+          " constructs an ACCOUNT_SWITCH_COMPLETED event; only the landing that finishes" +
+          " a switch may append one, and it appends after the gate",
       );
     }
+    completionHomesSeen += 1;
+  }
+  // Non-vacuous: the permitted site must still be a producer.
+  if (completionHomesSeen === 0) {
+    fail(
+      COMPLETION_HOME +
+        " no longer builds the completion a landed switch earns; a law whose permitted" +
+        " producer has gone away passes vacuously",
+    );
   }
   notes.push(
-    "no ACCOUNT_SWITCH_COMPLETED is constructed across " + String(completionScope.length) + " domain and entrypoint sources",
+    "ACCOUNT_SWITCH_COMPLETED is constructed at " +
+      String(completionHomesSeen) +
+      " named site(s) across " +
+      String(completionScope.length) +
+      " domain and entrypoint sources",
   );
 
   // --- L-B1F2-1: the daemon's execution section is plural, and stays plural.
@@ -17531,6 +17640,101 @@ if (tracked.status === 0) {
         "one account-action append door across " +
           String(appendScope.length) +
           " domain and entrypoint sources, and no invented account status",
+      );
+    }
+  }
+
+  // --- L-F5-1: a switch destination is a durable read, never a position.
+  //
+  // The landing consumes a record rather than a decision: the account it lands
+  // on is the one `ACCOUNT_SWITCH_STARTED` names, and nothing else. The failure
+  // this law exists to make impossible is the quiet one -- a landing that,
+  // finding no destination it liked, reached for `bindings[0]` or for the
+  // route's own account and finished the switch on the wrong account with a
+  // completion that looks exactly like a correct one.
+  //
+  // **Two halves, and the second is what makes the first non-vacuous.**
+  //
+  // 1. **No positional selection.** Within the domains and the entrypoints, no
+  //    source may index a binding or a destination list by zero. Nothing
+  //    lawful does today, so the law starts clean; what it prevents is the
+  //    shortcut arriving later, inside a module nobody re-reads.
+  // 2. **The landing names what it selects from.** A landing that fell back to
+  //    `route.accountId` passes half 1 vacuously -- it indexes nothing at all
+  //    -- so the law also requires the landing to name the durable payload
+  //    field it reads. That doubles as the vacuity guard `L-F3-1` established:
+  //    if the landing goes away, or stops reading the started row, the law
+  //    fails instead of passing over a hundred and thirty-five sources.
+  //
+  // **Literals are blanked for half 1 and NOT for half 2**, deliberately, and
+  // for `L-F4C-1`'s reason: half 1 is about an INDEXING EXPRESSION, so a
+  // mention inside a message must not count; half 2 is about a field name that
+  // is read out of a payload, and blanking would blank the evidence.
+  //
+  // The three lawful `find`s on account identity -- `bindingForRoute` in the
+  // config door, `bindingForRoute` in the daemon's own composition, and the
+  // player's `destinations.find` -- all serve the route or the DECIDED
+  // destination rather than a position, and none of them may trip this. The
+  // roots probe carries all three as its negative control.
+  const SWITCH_DESTINATION_HOME = "packages/domains/runtime/src/switch-landing/index.ts";
+  const STARTED_DESTINATION_FIELD = "toAccountId";
+  const POSITIONAL_SELECTION = [
+    /\bbindings\s*\[\s*0\s*\]/,
+    /\bbindings\s*\.\s*at\s*\(\s*0\s*\)/,
+    /\bdestinations\s*\.\s*at\s*\(\s*0\s*\)/,
+  ];
+  {
+    const destinationScope = tracked.status === 0
+      ? tracked.stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .filter(
+            (relativePath) =>
+              /\.tsx?$/.test(relativePath) &&
+              !relativePath.includes("/test/") &&
+              (/^packages\/domains\/[^/]+\/src\//.test(relativePath) ||
+                /^packages\/entrypoints\/[^/]+\/src\//.test(relativePath)),
+          )
+      : [];
+    requireScope("no module selects a switch destination by position", destinationScope.length);
+    let landingSeen = false;
+    for (const relativePath of destinationScope) {
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      const stripped = stripComments(content);
+      const live = stripped
+        .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
+        .replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
+      for (const pattern of POSITIONAL_SELECTION) {
+        if (pattern.test(live)) {
+          fail(
+            relativePath +
+              " selects a binding or a destination by position; a switch lands on the account" +
+              " the started row names, and a positional shortcut would finish the switch on" +
+              " the wrong account with a completion that looks correct",
+          );
+        }
+      }
+      if (relativePath === SWITCH_DESTINATION_HOME && stripped.includes(STARTED_DESTINATION_FIELD)) {
+        landingSeen = true;
+      }
+    }
+    // Half 2, which is also the vacuity guard: the landing must still name the
+    // durable field it selects the destination from.
+    if (!landingSeen) {
+      fail(
+        SWITCH_DESTINATION_HOME +
+          " no longer names " +
+          STARTED_DESTINATION_FIELD +
+          "; a landing that stopped reading the started row would satisfy the positional half" +
+          " vacuously while landing on whatever account the route already carried",
+      );
+    } else {
+      notes.push(
+        "the switch destination is read from the started row, never a position, across " +
+          String(destinationScope.length) +
+          " domain and entrypoint sources",
       );
     }
   }

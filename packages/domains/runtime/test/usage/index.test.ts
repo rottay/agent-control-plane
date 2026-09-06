@@ -13,7 +13,7 @@ import {
   scenarioLedgerPath,
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
-import { readAccountUsage, recordTokenObservation } from "../../src/usage/index.js";
+import { readAccountUsage, recordTokenObservation, usageTransitionId } from "../../src/usage/index.js";
 import type { UsageEventSource } from "../../src/usage/index.js";
 import type { DurableInvocation } from "../../src/contracts/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
@@ -394,5 +394,63 @@ describe("reading one account's recorded usage", () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.observations.map((o) => o.tokensUsed)).toEqual([30]);
+  });
+});
+
+describe("the durable name a usage row is recorded under", () => {
+  it("V2-B1f/F5: spells the generation, the operation and the step, in that order", () => {
+    // The call form, not a literal. Every production caller passes a landing
+    // generation now, and an unlanded walk passes zero uniformly — no caller
+    // special-cases it, which is what keeps the two spellings from drifting.
+    //
+    // **One arity, and it is three.** The two-component form is gone rather
+    // than overloaded: an optional generation would make "every caller states
+    // one" unprovable by construction, and a default of zero would silently
+    // re-key a landed walk's rows onto the source's. The compiler is what finds
+    // a caller that did not move, and it found all four.
+    expect(usageTransitionId.length).toBe(3);
+    expect(usageTransitionId(0, 4, 0)).toBe("usage.0.4.0");
+    expect(usageTransitionId(0, 4, 1)).toBe("usage.0.4.1");
+    expect(usageTransitionId(1, 4, 0)).toBe("usage.1.4.0");
+
+    // The whole point of the third component: one operation, one step, two
+    // accounts — and two names rather than one collision.
+    expect(usageTransitionId(0, 4, 0)).not.toBe(usageTransitionId(1, 4, 0));
+
+    // And every form still satisfies the contract's transition-id grammar.
+    for (const generation of [0, 1]) {
+      for (const step of [0, 9]) {
+        expect(usageTransitionId(generation, 4, step)).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+      }
+    }
+  });
+
+  it("V2-B1f/F5: the name a recorded row carries is the one the producer built", () => {
+    const { ledger, invocation } = openWithTask(
+      "usage-generation",
+      "8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a09",
+    );
+    const source = recordTokenObservation(ledger, {
+      invocation,
+      kind: "USAGE",
+      accountId: "acct-primary",
+      tokens: 10,
+      transitionId: usageTransitionId(0, 4, 0),
+      emittedBy: EMITTED_BY,
+    });
+    const destination = recordTokenObservation(ledger, {
+      invocation,
+      kind: "USAGE",
+      accountId: "acct-destination",
+      tokens: 20,
+      transitionId: usageTransitionId(1, 4, 0),
+      emittedBy: EMITTED_BY,
+    });
+
+    expect(source.event.transitionId).toBe("usage.0.4.0");
+    expect(destination.event.transitionId).toBe("usage.1.4.0");
+    expect(source.inserted).toBe(true);
+    expect(destination.inserted).toBe(true);
+    expect(ledger.status().eventCount).toBe(3);
   });
 });

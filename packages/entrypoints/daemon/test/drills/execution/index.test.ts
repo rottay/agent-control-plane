@@ -22,9 +22,9 @@ import type {
   ResolvedRoute,
 } from "@acp/contracts";
 import { deriveInvocation } from "@acp/durability";
-import { artifactRootFor, createCheckpointStore, openLedger, readArtifact } from "@acp/ledger";
+import { artifactRootFor, createCheckpointStore, openLedger, openLeaseStore, readArtifact } from "@acp/ledger";
 import type { ExecutionRouteReadModel, Ledger } from "@acp/ledger";
-import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort } from "@acp/providers";
+import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort, executionSessionId } from "@acp/providers";
 import type { ApiStreamChunk, ApiStreamingClient, CliBinding, ProviderAdapter, SessionDescriptor, SessionRequest } from "@acp/providers";
 import {
   ExecutionEffectError,
@@ -37,6 +37,8 @@ import {
   createExecutionEffects,
   deriveEventCoordinate,
   deterministicUuid,
+  executeSwitchPlan,
+  landAccountSwitch,
   appendPlanStep,
   operationForStep,
   pressureTransitionId,
@@ -58,8 +60,11 @@ import type {
 } from "@acp/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { leaseStorePath } from "../../../src/arbiter/index.js";
 import { canonicalSubmission, canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
+import { resolveDaemonRoot } from "../../../src/paths/index.js";
+import type { ScheduledWalk } from "../../../src/scheduler/index.js";
 import { startDaemon, stopDaemon } from "../../../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -1419,7 +1424,7 @@ async function walkRecording(
           kind: "USAGE",
           accountId: route.accountId,
           tokens: sample.tokensUsed,
-          transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+          transitionId: usageTransitionId(0, sample.operationIndex, sample.stepIndex),
           emittedBy: EMITTED_BY,
         });
       }),
@@ -1504,7 +1509,7 @@ describe("V2-B7T: the walk records what it spends", () => {
     expect(ids.every((id) => id.startsWith("usage."))).toBe(true);
     expect(ids).toEqual(
       entries.map((event) =>
-        usageTransitionId(operationForStep(walked.inv, INTENT_STEP).operationIndex, event.stepIndex),
+        usageTransitionId(0, operationForStep(walked.inv, INTENT_STEP).operationIndex, event.stepIndex),
       ),
     );
   });
@@ -1569,7 +1574,7 @@ describe("V2-B7T: the walk records what it spends", () => {
           kind: "USAGE" as const,
           accountId: route.accountId,
           tokens: sample.tokensUsed,
-          transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+          transitionId: usageTransitionId(0, sample.operationIndex, sample.stepIndex),
           emittedBy: EMITTED_BY,
         };
         results.push(recordTokenObservation(replayLedger!, observation).inserted);
@@ -1717,7 +1722,7 @@ describe("V2-B7T: the walk records what it spends", () => {
           kind: "USAGE",
           accountId: route.accountId,
           tokens: sample.tokensUsed,
-          transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+          transitionId: usageTransitionId(0, sample.operationIndex, sample.stepIndex),
           emittedBy: EMITTED_BY,
         });
       },
@@ -3508,4 +3513,806 @@ describe("F4d: the walk plays a switch it did not decide (trigger seeded)", () =
     expect(existsSync(providers.second.envFile)).toBe(false);
     expect(readFileSync(providers.second.pidFile, "utf8")).toBe("0");
   }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// V2-B1f/F5 — the switch lands on the account it chose
+// ---------------------------------------------------------------------------
+
+/**
+ * The landing, on a real daemon, a real lease, a real ledger and the real
+ * executor — restarted, because a landing has nowhere else to happen.
+ *
+ * **The trigger is seeded, and every title says so.** At this HEAD no shipped
+ * parser can produce a quota classification, so a walk cannot observe an
+ * exhaustion end to end and a drill that pretended otherwise would assert an
+ * invention. What is real here is everything after the observation: the door
+ * that admits a decided switch, the executor that plays it under this daemon's
+ * own lease, the restart that finds the durable prestate, the landing that
+ * appends exactly one completion, and the walk that then runs on the account
+ * the switch chose.
+ *
+ * **Two windows are constructed rather than signalled, and the titles say
+ * that too.** `DaemonOptions` carries no fault passthrough, and adding one
+ * would be a production change made to serve a drill. So D3's window is
+ * produced by calling the landing itself against the real ledger before the
+ * daemon starts, and D5's by driving the supervisor's own declared fault seam
+ * over the same scenario. No process is signalled in this section.
+ */
+
+const F5_DRILL_TASKS = [
+  "f5dd0000-0000-4000-8000-000000000001",
+  "f5dd0000-0000-4000-8000-000000000002",
+  "f5dd0000-0000-4000-8000-000000000003",
+  "f5dd0000-0000-4000-8000-000000000004",
+  "f5dd0000-0000-4000-8000-000000000005",
+  "f5dd0000-0000-4000-8000-000000000006",
+  "f5dd0000-0000-4000-8000-000000000007",
+  "f5dd0000-0000-4000-8000-000000000008",
+  "f5dd0000-0000-4000-8000-000000000009",
+  "f5dd0000-0000-4000-8000-00000000000a",
+  "f5dd0000-0000-4000-8000-00000000000b",
+] as const;
+
+/** A subject that spends, then fails the contract in the port (V2-B1f/F4a-E). */
+const F5_SPENDING_UNEXPRESSIBLE_LINES: readonly string[] = [
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
+  JSON.stringify({ type: "system", subtype: "auth_required" }),
+  JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
+];
+
+/** Two claude bindings whose routed subject spends before it fails. */
+function twoProvidersSpendingRoute(): ReturnType<typeof twoProviders> {
+  const a = fakeProviderBinary(F5_SPENDING_UNEXPRESSIBLE_LINES, { linger: false });
+  const b = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+  return {
+    worktree: a.root,
+    first: { binary: a.binary, echoFile: a.echoFile, envFile: a.envFile, pidFile: a.pidFile, configRoot: a.root },
+    second: { binary: b.binary, echoFile: b.echoFile, envFile: b.envFile, pidFile: b.pidFile, configRoot: b.root },
+  };
+}
+
+/**
+ * A subject that fails the contract in the port and reports NO pressure.
+ *
+ * `F4E_UNEXPRESSIBLE_LINES` raises an auth requirement on its way to failing,
+ * which the pressure recorder writes under `pressure.<operation>.<trail>` —
+ * and that name carries no landing generation (it is the sibling exposure the
+ * record names and this packet deliberately leaves alone). A source and a
+ * destination that both raised one would collide on that key rather than on
+ * the thing D7 is about, so the subjects here fail without saying anything
+ * about their account.
+ */
+const F5_UNEXPRESSIBLE_LINES: readonly string[] = [
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
+];
+
+/** Two claude bindings where BOTH subjects fail, so a landed walk still fails. */
+function twoFailingProviders(): ReturnType<typeof twoProviders> {
+  const a = fakeProviderBinary(F5_UNEXPRESSIBLE_LINES, { linger: false });
+  const b = fakeProviderBinary(F5_UNEXPRESSIBLE_LINES, { linger: false });
+  return {
+    worktree: a.root,
+    first: { binary: a.binary, echoFile: a.echoFile, envFile: a.envFile, pidFile: a.pidFile, configRoot: a.root },
+    second: { binary: b.binary, echoFile: b.echoFile, envFile: b.envFile, pidFile: b.pidFile, configRoot: b.root },
+  };
+}
+
+/** The config a switched drill runs under: the plan the elector decided. */
+function f5Authorized(
+  execution: DaemonExecutionConfig,
+  fromAccountId: string,
+  toAccountId: string,
+  decidedFromEventId: string,
+): DaemonExecutionConfig {
+  return {
+    ...execution,
+    switchAuthorization: drillAuthorization(fromAccountId, toAccountId, { decidedFromEventId }),
+  } as DaemonExecutionConfig;
+}
+
+/** The decided plan inside a drill authorization, as the executor takes it. */
+function planOf(execution: DaemonExecutionConfig): Parameters<typeof executeSwitchPlan>[0]["plan"] {
+  const authorization = execution.switchAuthorization as unknown as {
+    readonly plan: Parameters<typeof executeSwitchPlan>[0]["plan"];
+  };
+  return authorization.plan;
+}
+
+/** The invocation the daemon derives for one of these drills. */
+function f5Invocation(taskId: string, route: ResolvedRoute): DurableInvocation {
+  return deriveInvocation(
+    taskId,
+    1,
+    SUBMITTED_AT,
+    canonicalSubmissionDigest({
+      taskId,
+      attempt: 1,
+      submittedAt: SUBMITTED_AT,
+      initiativeId: B4A_INITIATIVE_ID,
+      route,
+    }),
+  );
+}
+
+/** The event id of the row that started this switch, as the ledger holds it. */
+function readStartedEventId(scenarioId: string): string | null {
+  const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(scenarioId)), { readOnly: true });
+  try {
+    const found = ledger
+      .listEvents({ limit: 500 })
+      .events.find((entry) => entry.event.transitionId === "switch.3.account_switch_started");
+    return found?.event.eventId ?? null;
+  } finally {
+    ledger.close();
+  }
+}
+
+function readState(scenarioId: string, taskId: string): string | null {
+  const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(scenarioId)), { readOnly: true });
+  try {
+    return ledger.getTask(taskId)?.currentState ?? null;
+  } finally {
+    ledger.close();
+  }
+}
+
+/** Everything the worktree tracks, hashed, so "unmoved" is a measurement. */
+function worktreeDigest(directory: string): string {
+  const listed = spawnSync("/usr/bin/git", ["ls-files"], { cwd: directory, encoding: "utf8" });
+  const files = listed.stdout.split("\n").map((line) => line.trim()).filter(Boolean).sort();
+  const hash = createHash("sha256");
+  for (const file of files) {
+    hash.update(file);
+    hash.update(readFileSync(join(directory, file)));
+  }
+  return hash.digest("hex");
+}
+
+/** The lease this worktree is recorded under right now, or null. */
+function leaseRowFor(worktreePath: string): { readonly fence: number; readonly holder: string | null } | null {
+  const store = openLeaseStore(leaseStorePath(resolveDaemonRoot()));
+  try {
+    const row = store.read(worktreePath);
+    return row === null ? null : { fence: row.fence, holder: row.holder };
+  } finally {
+    store.close();
+  }
+}
+
+describe("F5: the switch lands on the account it chose (trigger seeded)", () => {
+  it("D1: daemon 2 lands the played switch and the walk checkpoints on the destination", async () => {
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f5-d1");
+    const taskId = F5_DRILL_TASKS[0];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    // Daemon 1 plays the switch and unwinds: the play rethrows the original
+    // error, so there is no in-process continuation to interpose on.
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+    expect(readState(id, taskId)).toBe("QUOTA_BLOCKED");
+
+    // Daemon 2, same config, same scenario. This is the whole packet.
+    const run = await startDaemon(f4dOptions(id, authorized, taskId));
+    await stopDaemon(run);
+
+    const rows = readRows(id);
+    const landed = rows.filter((event) => event.transitionId === "switch.landed.1");
+    expect(landed).toHaveLength(1);
+    expect({ from: landed[0]?.fromState, to: landed[0]?.toState }).toEqual({
+      from: "QUOTA_BLOCKED",
+      to: "RUNNING",
+    });
+    expect(landed[0]?.type).toBe("ACCOUNT_SWITCH_COMPLETED");
+    expect(landed[0]?.payload).toMatchObject({
+      fromAccountId: routed.accountId,
+      toAccountId: second.accountId,
+      generation: 1,
+    });
+    // Its causation is the started row this plane actually appended — a real,
+    // durably-present predecessor rather than a name nothing resolves.
+    const startedEventId = readStartedEventId(id);
+    expect(startedEventId).not.toBeNull();
+    expect(landed[0]?.causationId).toBe(startedEventId);
+
+    // The walk ran on the DESTINATION account's own subject, and reached the
+    // terminal — so F3's checkpoint assembles, because run.outcome is durable.
+    expect(existsSync(providers.second.echoFile)).toBe(true);
+    expect(readState(id, taskId)).toBe("CHECKPOINTED");
+    expect(rows.map((event) => event.type)).toContain("CHECKPOINT_WRITTEN");
+  }, 240_000);
+
+  it("D1 (walks form): a switched walk under concurrency lands exactly as a single walk does", async () => {
+    // The interposition is at BOTH route bindings, so a switched walk under
+    // `options.walks` is landable. Landing only the singular form would leave
+    // this one permanently unlandable, and silently.
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+
+    const companion = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+    const companionWorktree = drillRoot();
+    const companionExecution: DaemonExecutionConfig = {
+      route: { ...execution.route, accountId: "acct-b4a-companion" },
+      bindings: [
+        {
+          accountId: "acct-b4a-companion",
+          provider: "claude",
+          binary: companion.binary,
+          configRoot: companion.root,
+          workdir: companionWorktree,
+          limits: {
+            timeoutMs: 10_000,
+            outputBudgetBytes: 64 * 1024,
+            interruptGraceMs: 120,
+            termGraceMs: 120,
+          },
+        },
+      ],
+    };
+
+    const id = b4aScenarioId("f5-d1-walks");
+    const companionId = b4aScenarioId("f5-d1-walks-companion");
+    const taskId = F5_DRILL_TASKS[1];
+    const companionTask = F5_DRILL_TASKS[2];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    const walkFor = (
+      scenarioId: string,
+      walkTask: string,
+      walkExecution: DaemonExecutionConfig,
+      worktreePath: string,
+      writeSet: readonly string[],
+    ): ScheduledWalk => ({
+      envelope: envelopeFor(walkTask, INITIATIVE_ID, writeSet),
+      worktreePath,
+      spec: {
+        scenarioId,
+        taskId: walkTask,
+        attempt: 1,
+        submittedAt: SUBMITTED_AT,
+        submissionDigest: canonicalSubmissionDigest({
+          taskId: walkTask,
+          attempt: 1,
+          submittedAt: SUBMITTED_AT,
+          initiativeId: B4A_INITIATIVE_ID,
+          route: walkExecution.route,
+        }),
+        initiativeId: B4A_INITIATIVE_ID,
+        emittedBy: EMITTED_BY,
+        execution: walkExecution,
+      },
+    });
+
+    const walks = [
+      walkFor(id, taskId, authorized, providers.worktree, ["child.pid"]),
+      walkFor(companionId, companionTask, companionExecution, companionWorktree, ["src/walk.ts"]),
+    ];
+    const options = { ...f4dOptions(id, authorized, taskId), walks };
+
+    // Daemon 1: the scheduler runs both walks, and the switched one plays.
+    const first = await startDaemon(options);
+    await stopDaemon(first);
+    expect(readState(id, taskId)).toBe("QUOTA_BLOCKED");
+    expect(
+      readRows(id)
+        .filter((event) => event.transitionId.startsWith("switch."))
+        .map((event) => event.transitionId),
+    ).toEqual([
+      "switch.0.quota_warning",
+      "switch.1.task_state_changed",
+      "switch.2.lease_revoked",
+      "switch.3.account_switch_started",
+    ]);
+
+    // Daemon 2: the same two walks, and the switched one lands.
+    const second2 = await startDaemon(options);
+    await stopDaemon(second2);
+
+    const landed = readRows(id).filter((event) => event.transitionId === "switch.landed.1");
+    expect(landed).toHaveLength(1);
+    expect(landed[0]?.payload).toMatchObject({
+      fromAccountId: routed.accountId,
+      toAccountId: second.accountId,
+      generation: 1,
+    });
+    expect(readState(id, taskId)).toBe("CHECKPOINTED");
+    expect(existsSync(providers.second.echoFile)).toBe(true);
+    // The companion walk is untouched by any of it.
+    expect(
+      readRows(companionId).filter((event) => event.transitionId.startsWith("switch.")),
+    ).toEqual([]);
+  }, 240_000);
+
+  it("D2: no fake completion — the window between the play and the landing holds none", async () => {
+    // The window where a false completion would be most tempting: the switch
+    // is played, the destination is named, and nothing has finished it.
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f5-d2");
+    const taskId = F5_DRILL_TASKS[3];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+
+    // The prestate, measured: four played rows, a named destination, and no
+    // completion anywhere.
+    const played = readRows(id);
+    expect(played.map((event) => event.type)).not.toContain("ACCOUNT_SWITCH_COMPLETED");
+    expect(played.filter((event) => event.transitionId.startsWith("switch.landed."))).toEqual([]);
+    expect(played.find((event) => event.transitionId === "switch.3.account_switch_started")?.payload)
+      .toMatchObject({ fromAccountId: routed.accountId, toAccountId: second.accountId });
+    expect(readState(id, taskId)).toBe("QUOTA_BLOCKED");
+
+    // And the next start lands from exactly that prestate, appending one.
+    const run = await startDaemon(f4dOptions(id, authorized, taskId));
+    await stopDaemon(run);
+    expect(
+      readRows(id).filter((event) => event.type === "ACCOUNT_SWITCH_COMPLETED"),
+    ).toHaveLength(1);
+  }, 240_000);
+
+  it("D3: a durable completion is found, not re-appended, and the found-durable walk resumes on the destination (window constructed)", async () => {
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f5-d3");
+    const taskId = F5_DRILL_TASKS[4];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+
+    // The window: the completion is durable and the walk has not started. It
+    // is CONSTRUCTED by calling the landing itself against the real ledger,
+    // because no fault point in the daemon exposes this instant and adding one
+    // would be a production change made to serve a drill.
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)));
+    let appended: Awaited<ReturnType<typeof landAccountSwitch>>;
+    let refound: Awaited<ReturnType<typeof landAccountSwitch>>;
+    try {
+      const input = {
+        ledger,
+        invocation: f5Invocation(taskId, execution.route),
+        route: execution.route,
+        bindings: execution.bindings.map((entry) => ({
+          accountId: entry.accountId,
+          provider: entry.provider,
+        })),
+        port: {
+          healthProbe: () =>
+            Promise.resolve({
+              status: "UNKNOWN" as const,
+              checkedAt: RESOLVED_AT,
+              latencyMs: null,
+              classifiedError: null,
+            }),
+        },
+        checkConformance: (): void => undefined,
+        sessionIdFor: (accountId: string): string => executionSessionId(taskId, 1, accountId),
+        emittedBy: EMITTED_BY,
+      };
+      appended = await landAccountSwitch(input);
+      refound = await landAccountSwitch(input);
+    } finally {
+      ledger.close();
+    }
+
+    expect(appended.ok && appended.inserted).toBe(true);
+    expect(refound.ok && refound.inserted).toBe(false);
+    expect(refound.ok && refound.route.accountId).toBe(second.accountId);
+    expect(readState(id, taskId)).toBe("RUNNING");
+
+    // Now the daemon starts, with the stale authorization still in the config.
+    const run = await startDaemon(f4dOptions(id, authorized, taskId));
+    await stopDaemon(run);
+
+    // One completion, and no second row under `switch.`: the restart found the
+    // landing rather than appending a second one, and resumed on the account
+    // the switch chose.
+    //
+    // **What this drill does NOT prove**, and the case below does: that the
+    // restart composed no switch port. This walk succeeds, and the only
+    // consumer of a switch port is the supervisor's catch — so no port,
+    // composed or not, is ever consulted here, and every assertion below would
+    // hold equally under a reading of R3 that derived "landed" from `inserted`
+    // rather than from "a completion exists, appended or found".
+    const switched = readRows(id)
+      .filter((event) => event.transitionId.startsWith("switch."))
+      .map((event) => event.transitionId);
+    expect(switched).toEqual([
+      "switch.0.quota_warning",
+      "switch.1.task_state_changed",
+      "switch.2.lease_revoked",
+      "switch.3.account_switch_started",
+      "switch.landed.1",
+    ]);
+    expect(readState(id, taskId)).toBe("CHECKPOINTED");
+    expect(existsSync(providers.second.echoFile)).toBe(true);
+  }, 240_000);
+
+  it("D3 (R3 half): a found-durable landing with the stale authorization composes no switch port — the failing destination settles (window constructed)", async () => {
+    // The half D3 above cannot falsify, in D7's landed-branch shape over D3's
+    // constructed window.
+    //
+    // **The definition of "landed" is what is on trial.** R3 suppresses the
+    // switch port on a walk this process landed, and "landed" means *a
+    // completion exists for this attempt, appended now or found durable*. A
+    // reading that derived it from `inserted` instead would compose a port on
+    // exactly this restart — the one where the completion was appended by a
+    // process that died before the walk started — and only `ACCOUNT_MISMATCH`
+    // would stand in the way, which is the accidental safety the ruling names
+    // as not the invariant.
+    //
+    // **Why this drill discriminates and D3 does not.** The only consumer of a
+    // switch port is the supervisor's catch, so a port is observable only on a
+    // walk that FAILS. Both subjects here fail, so the catch is reached. Had a
+    // port been composed, `considerSwitch` would have matched this attempt's
+    // own seeded pressure and the config route's account, and
+    // `executeSwitchPlan` would have replayed `switch.0` and `switch.1` and
+    // then met the ledger's guards at `switch.2`, whose payload carries this
+    // process's own — different — lease. The walk would have ended in a raised
+    // conflict with nothing settled. It settles, so no port was composed.
+    const providers = twoFailingProviders();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f5-d3-no-port");
+    const taskId = F5_DRILL_TASKS[10];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    // Daemon 1 plays the switch and unwinds.
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+    expect(readState(id, taskId)).toBe("QUOTA_BLOCKED");
+
+    // The same constructed window as D3: the completion is durable and the
+    // walk has not started, produced by calling the landing itself against the
+    // real ledger rather than by signalling a process.
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(id)));
+    let appended: Awaited<ReturnType<typeof landAccountSwitch>>;
+    let refound: Awaited<ReturnType<typeof landAccountSwitch>>;
+    try {
+      const input = {
+        ledger,
+        invocation: f5Invocation(taskId, execution.route),
+        route: execution.route,
+        bindings: execution.bindings.map((entry) => ({
+          accountId: entry.accountId,
+          provider: entry.provider,
+        })),
+        port: {
+          healthProbe: () =>
+            Promise.resolve({
+              status: "UNKNOWN" as const,
+              checkedAt: RESOLVED_AT,
+              latencyMs: null,
+              classifiedError: null,
+            }),
+        },
+        checkConformance: (): void => undefined,
+        sessionIdFor: (accountId: string): string => executionSessionId(taskId, 1, accountId),
+        emittedBy: EMITTED_BY,
+      };
+      appended = await landAccountSwitch(input);
+      refound = await landAccountSwitch(input);
+    } finally {
+      ledger.close();
+    }
+    expect(appended.ok && appended.inserted).toBe(true);
+    expect(refound.ok && refound.inserted).toBe(false);
+    expect(readState(id, taskId)).toBe("RUNNING");
+
+    // The restart, with the stale authorization still in the config. It finds
+    // the completion rather than appending one, composes no switch port, and
+    // its failing destination settles.
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+
+    const switched = readRows(id)
+      .filter((event) => event.transitionId.startsWith("switch."))
+      .map((event) => event.transitionId);
+    expect(switched).toEqual([
+      "switch.0.quota_warning",
+      "switch.1.task_state_changed",
+      "switch.2.lease_revoked",
+      "switch.3.account_switch_started",
+      "switch.landed.1",
+    ]);
+    expect(readRows(id).map((event) => event.type)).toContain("TASK_FAILED");
+    expect(readState(id, taskId)).toBe("FAILED");
+  }, 300_000);
+
+  it("D4: the destination's usage is keyed by the generation, so no key collides with the source's", async () => {
+    const providers = twoProvidersSpendingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f5-d4");
+    const taskId = F5_DRILL_TASKS[5];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    // Daemon 1: the source spends, then fails, then plays the switch.
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+    const spent = readRows(id).filter((event) => event.type === "TOKEN_USAGE_RECORDED");
+    expect(spent).toHaveLength(1);
+    expect(spent[0]?.transitionId.startsWith("usage.0.")).toBe(true);
+    expect(spent[0]?.payload["accountId"]).toBe(routed.accountId);
+
+    // Daemon 2: the landing, then the destination re-executes the SAME
+    // operation at the same step index. Without the generation this append
+    // would collide with the row above under one idempotency key.
+    const run = await startDaemon(f4dOptions(id, authorized, taskId));
+    await stopDaemon(run);
+
+    const usage = readRows(id).filter((event) => event.type === "TOKEN_USAGE_RECORDED");
+    expect(usage).toHaveLength(2);
+    const byAccount = new Map(usage.map((event) => [String(event.payload["accountId"]), event]));
+    expect(byAccount.get(routed.accountId)?.transitionId.startsWith("usage.0.")).toBe(true);
+    expect(byAccount.get(second.accountId)?.transitionId.startsWith("usage.1.")).toBe(true);
+    expect(new Set(usage.map((event) => event.transitionId)).size).toBe(2);
+    expect(readState(id, taskId)).toBe("CHECKPOINTED");
+  }, 240_000);
+
+  it("D5: a verified source marker means zero destination executions (window constructed)", async () => {
+    // The window — the effect completed, its marker verifies, and the process
+    // died before the OUTCOME was appended — is not reachable from
+    // `DaemonOptions`: the supervisor's fault points are AFTER_INTENT,
+    // AFTER_EFFECT and AFTER_OUTCOME and none of them crosses the daemon's
+    // option surface. It is CONSTRUCTED here over the same scenario, with the
+    // plan's own steps, the real effects and the real switch executor, and no
+    // process is signalled.
+    const providers = twoProviders();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f5-d5");
+    const taskId = F5_DRILL_TASKS[6];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    const root = resolveScenarioRoot(id);
+    const ledger = openLedger(scenarioLedgerPath(root));
+    const invocation = f5Invocation(taskId, execution.route);
+    try {
+      const effects = createExecutionEffects({
+        port: createExecutionPort({
+          bindings: new Map([[execution.route.accountId, cliBinding(CLAUDE_LINES)]]),
+        }),
+        route: execution.route,
+        request: {
+          taskId,
+          attempt: 1,
+          identity: EMITTED_BY,
+          instructions: DRILL_OBJECTIVE,
+          reattach: null,
+        },
+        scenarioRoot: root,
+      });
+      await expect(
+        new SqliteSupervisor({
+          ledger,
+          invocation,
+          effects,
+          emittedBy: EMITTED_BY,
+          commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+          initiativeId: B4A_INITIATIVE_ID,
+          route: execution.route,
+          __faultPoint: "AFTER_EFFECT",
+          __onFault: () => {
+            throw new Error("the process ended after the effect and before the outcome");
+          },
+        }).runToCheckpoint(),
+      ).rejects.toThrow();
+
+      // The effect happened and its marker verifies; the outcome does not exist.
+      expect(await effects.probe(operationForStep(invocation, INTENT_STEP))).toBe("DONE");
+      expect(ledger.getTask(taskId)?.currentState).toBe("RUNNING");
+
+      // And then the switch is played, by the real executor, from RUNNING.
+      executeSwitchPlan({
+        ledger,
+        invocation,
+        plan: planOf(authorized),
+        emittedBy: EMITTED_BY,
+        lease: {
+          leaseId: deterministicUuid("f5/d5/lease"),
+          worktreePath: providers.worktree,
+          holder: EMITTED_BY,
+          acquiredAt: SUBMITTED_AT,
+          expiresAt: RESOLVED_AT,
+        },
+        taskState: "RUNNING",
+        causedBy: seeded.crossTaskEventId,
+      });
+    } finally {
+      ledger.close();
+    }
+    expect(readState(id, taskId)).toBe("QUOTA_BLOCKED");
+
+    // The daemon lands and resumes. `closeIntent` probes DONE and appends the
+    // outcome from the evidence that already exists, so the destination's own
+    // subject is never invoked.
+    const run = await startDaemon(f4dOptions(id, authorized, taskId));
+    await stopDaemon(run);
+
+    expect(readRows(id).filter((event) => event.transitionId === "switch.landed.1")).toHaveLength(1);
+    expect(readState(id, taskId)).toBe("CHECKPOINTED");
+    // Zero destination executions: no echo file, no environment file, and the
+    // committed pid untouched — the F2b idiom.
+    expect(existsSync(providers.second.echoFile)).toBe(false);
+    expect(existsSync(providers.second.envFile)).toBe(false);
+    expect(readFileSync(providers.second.pidFile, "utf8")).toBe("0");
+  }, 240_000);
+
+  it("D6: a new lease is granted over the same worktree, and the worktree does not move", async () => {
+    const providers = twoProvidersWithFailingRoute();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f5-d6");
+    const taskId = F5_DRILL_TASKS[7];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+
+    // Daemon 1's own lease is what the revocation names — not one this drill
+    // invented, and not a lease the executor made up.
+    const revoked = readRows(id).find((event) => event.transitionId === "switch.2.lease_revoked");
+    expect(typeof revoked?.payload["leaseId"]).toBe("string");
+    expect(revoked?.payload["cause"]).toBe("ACCOUNT_SWITCH");
+    expect(revoked?.payload["worktreePath"]).toBe(providers.worktree);
+
+    const beforeDigest = worktreeDigest(providers.worktree);
+    const beforeFence = leaseRowFor(providers.worktree)?.fence ?? 0;
+
+    // Daemon 2 acquires a lease on the SAME worktree. A refused acquisition is
+    // a StartupError naming another writer, so reaching a checkpoint at all is
+    // the acquisition — the recorded revocation does not block a successor.
+    const run = await startDaemon(f4dOptions(id, authorized, taskId));
+    await stopDaemon(run);
+
+    expect(readState(id, taskId)).toBe("CHECKPOINTED");
+    expect(leaseRowFor(providers.worktree)?.fence ?? 0).toBeGreaterThan(beforeFence);
+    // One worktree per packet: a switch must not lose context, so a switch
+    // must not move the checkout. The destination wrote into its own root.
+    expect(worktreeDigest(providers.worktree)).toBe(beforeDigest);
+  }, 240_000);
+
+  it("D7: a landed walk composes no switch port, while an unlanded walk still composes one (R3)", async () => {
+    // Branch one, the control: no landing, so the port is composed and a
+    // decided switch is played. The walk does not settle — the attempt is
+    // blocked awaiting a landing, and a terminal event would foreclose it.
+    const control = twoFailingProviders();
+    const controlExecution = pluralExecution("acct-b4a-drill", control);
+    const [controlRouted, controlSecond] = controlExecution.bindings;
+    if (controlRouted === undefined || controlSecond === undefined) {
+      throw new Error("expected two entries");
+    }
+    const controlId = b4aScenarioId("f5-d7-unlanded");
+    const controlTask = F5_DRILL_TASKS[8];
+    const controlSeed = seedExhaustion(
+      controlId,
+      controlTask,
+      controlRouted.accountId,
+      controlExecution.route,
+    );
+    await expect(
+      startDaemon(
+        f4dOptions(
+          controlId,
+          f5Authorized(
+            controlExecution,
+            controlRouted.accountId,
+            controlSecond.accountId,
+            controlSeed.crossTaskEventId,
+          ),
+          controlTask,
+        ),
+      ),
+    ).rejects.toThrow();
+    expect(
+      readRows(controlId)
+        .filter((event) => event.transitionId.startsWith("switch."))
+        .map((event) => event.transitionId),
+    ).toEqual([
+      "switch.0.quota_warning",
+      "switch.1.task_state_changed",
+      "switch.2.lease_revoked",
+      "switch.3.account_switch_started",
+    ]);
+    expect(readRows(controlId).map((event) => event.type)).not.toContain("TASK_FAILED");
+
+    // Branch two: the same daemon, restarted, with the authorization still in
+    // the config and both subjects failing — so the supervisor's catch is
+    // reached on the landed walk too.
+    //
+    // **What a composed port would have done.** `considerSwitch` would match
+    // this attempt's own seeded pressure and the config route's account, and
+    // `executeSwitchPlan` would replay `switch.0` and then meet the ledger's
+    // own contiguity guard at `switch.2` — the walk would end in a raised
+    // conflict rather than a settlement. It settles, so no port was composed.
+    const providers = twoFailingProviders();
+    const execution = pluralExecution("acct-b4a-drill", providers);
+    const [routed, second] = execution.bindings;
+    if (routed === undefined || second === undefined) throw new Error("expected two entries");
+    const id = b4aScenarioId("f5-d7-landed");
+    const taskId = F5_DRILL_TASKS[9];
+    const seeded = seedExhaustion(id, taskId, routed.accountId, execution.route);
+    const authorized = f5Authorized(
+      execution,
+      routed.accountId,
+      second.accountId,
+      seeded.crossTaskEventId,
+    );
+
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+    await expect(startDaemon(f4dOptions(id, authorized, taskId))).rejects.toThrow();
+
+    const switched = readRows(id)
+      .filter((event) => event.transitionId.startsWith("switch."))
+      .map((event) => event.transitionId);
+    expect(switched).toEqual([
+      "switch.0.quota_warning",
+      "switch.1.task_state_changed",
+      "switch.2.lease_revoked",
+      "switch.3.account_switch_started",
+      "switch.landed.1",
+    ]);
+    expect(readRows(id).map((event) => event.type)).toContain("TASK_FAILED");
+    expect(readState(id, taskId)).toBe("FAILED");
+  }, 300_000);
 });

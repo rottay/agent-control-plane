@@ -59,19 +59,40 @@ export const USAGE_TOKENS_MAX = 10_000_000;
 /**
  * The durable name one execution-trail usage entry is recorded under.
  *
- * Derived from the operation's own plan index and the trail entry's own step
- * index, so it is unique within the attempt, stable across replay, and carries
- * no clock and no counter. A resumed attempt that re-executes rebuilds exactly
- * this name, which is why the second append is an exact replay rather than a
- * second row — the ledger recognises the key, and nothing anywhere has to
- * remember that it already recorded this.
+ * Derived from the landing generation, the operation's own plan index and the
+ * trail entry's own step index, so it is unique within the attempt, stable
+ * across replay, and carries no clock and no counter. A resumed attempt that
+ * re-executes rebuilds exactly this name, which is why the second append is an
+ * exact replay rather than a second row — the ledger recognises the key, and
+ * nothing anywhere has to remember that it already recorded this.
  *
- * Both components are non-negative integers, so the result always satisfies the
- * contract's transition-id grammar (`/^[A-Za-z0-9][A-Za-z0-9._:-]*$/`, at most
- * 120 characters) with room to spare.
+ * **The generation is the switch landing's, and it is why this name carries
+ * three components rather than two (V2-B1f/F5).** After a landing the
+ * destination re-executes the SAME operation: `operationName` is built from
+ * the invocation, the task, the attempt, the transition id and the plan index,
+ * and it names no account at all. So the destination emits usage entries at
+ * the same step indices the source did, under the same two-component name,
+ * with a different account in the payload — and the ledger fails closed on
+ * that second append, because one idempotency key may not carry two sets of
+ * bytes. The generation is what separates them, and it is spelled uniformly:
+ * an unlanded walk passes `0`, and no caller special-cases it.
+ *
+ * **Stated cost.** A ledger written before this packet carries the
+ * two-component spelling, so a walk resumed across it re-appends its usage
+ * rows under new keys. Nothing is in operation and every ledger in the tree is
+ * a drill ledger, so the cost is recorded rather than migrated around.
+ *
+ * All three components are non-negative integers, so the result always
+ * satisfies the contract's transition-id grammar
+ * (`/^[A-Za-z0-9][A-Za-z0-9._:-]*$/`, at most 120 characters) with room to
+ * spare.
  */
-export function usageTransitionId(operationIndex: number, stepIndex: number): string {
-  return "usage." + String(operationIndex) + "." + String(stepIndex);
+export function usageTransitionId(
+  generation: number,
+  operationIndex: number,
+  stepIndex: number,
+): string {
+  return "usage." + String(generation) + "." + String(operationIndex) + "." + String(stepIndex);
 }
 
 /** Which of the two usage facts an observation carries. */

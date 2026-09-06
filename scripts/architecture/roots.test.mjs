@@ -100,6 +100,29 @@ function commitAll(root) {
 }
 
 /**
+ * The one permitted producer of a switch completion, as a minimal fixture.
+ *
+ * Two laws carry a vacuity half that names this exact path — `L-B1F-1`, which
+ * permits it to construct an `ACCOUNT_SWITCH_COMPLETED`, and `L-F5-1`, which
+ * requires it to name the durable field it selects a destination from. A
+ * synthetic tree that omitted it would fail both for a reason no probe here is
+ * about, so any fixture that wants a quiet baseline writes it.
+ */
+function landingHome(root) {
+  write(
+    root,
+    "packages/domains/runtime/src/switch-landing/index.ts",
+    [
+      "export function land(started) {",
+      "  const toAccountId = started.payload.toAccountId;",
+      '  return { type: "ACCOUNT_SWITCH_COMPLETED", payload: { toAccountId } };',
+      "}",
+      "",
+    ].join("\n"),
+  );
+}
+
+/**
  * Run the real fence against a synthetic tree. Never against the real one.
  *
  * **Asynchronous on purpose, and it is the runner that requires it.** This file
@@ -431,17 +454,17 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(output).not.toContain("assigns effectiveState from a recorded action");
   });
 
-  it("refuses a module that constructs an ACCOUNT_SWITCH_COMPLETED event (L-B1F-1)", async () => {
+  it("refuses a SECOND module that constructs an ACCOUNT_SWITCH_COMPLETED event (L-B1F-1)", async () => {
     // V2-B1f/F1's law, with the fixture that can falsify it. The planner used to
     // emit a completion beside `ACCOUNT_SWITCH_STARTED`, before any of the steps
     // it names could have happened; F1 removed that producer and this law is
     // what keeps it removed.
     //
-    // **After F1 the law has no permitted site anywhere in `src`.** That is what
-    // makes this probe the law's only positive evidence: nothing in the tree
-    // exercises it, so without a synthetic failure the law would ship enforced
-    // and unfalsified -- passing over a hundred and thirty sources while proving
-    // nothing about any of them.
+    // **V2-B1f/F5 moved the law rather than working around it**, so it now has
+    // exactly ONE permitted site: the landing that finishes a switch. This
+    // probe is therefore about the SECOND producer -- the fixture writes the
+    // permitted site as well, so what trips the law is the second one and not
+    // the absence of the first.
     //
     // The fixture uses the **constructor** shape, which is the law's predicate.
     // A probe that merely mentioned the type would pass while testing a rule
@@ -451,6 +474,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     // A minimal synthetic tree trips several fail-closed `requireScope` laws at
     // once, so this asserts the SPECIFIC line and the offending path.
     const root = syntheticTree();
+    landingHome(root);
     write(
       root,
       "packages/domains/probe/src/index.ts",
@@ -462,6 +486,35 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     expect(status).not.toBe(0);
     expect(output).toContain("constructs an ACCOUNT_SWITCH_COMPLETED event");
     expect(output).toContain("packages/domains/probe/src/index.ts");
+    // And the permitted site is not what it named.
+    expect(output).not.toContain(
+      "packages/domains/runtime/src/switch-landing/index.ts constructs an ACCOUNT_SWITCH_COMPLETED",
+    );
+  });
+
+  it("keeps the permitted completion producer honest: a landing that stops building one (L-B1F-1)", async () => {
+    // The vacuity half V2-B1f/F5 added, in `L-F3-1`'s shipped shape. A law
+    // whose permitted producer has gone away passes over a hundred and
+    // thirty-five sources while proving nothing about any of them, so the site
+    // must still be a site. The fixture keeps the module -- and the field
+    // `L-F5-1` requires of it -- and takes away only the constructor.
+    const root = syntheticTree();
+    write(
+      root,
+      "packages/domains/runtime/src/switch-landing/index.ts",
+      [
+        "export function land(started) {",
+        "  const toAccountId = started.payload.toAccountId;",
+        "  return { landed: false, toAccountId };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("no longer builds the completion a landed switch earns");
   });
 
   it("leaves the lawful ACCOUNT_SWITCH_COMPLETED forms alone: a case, a comparison, a member", async () => {
@@ -474,6 +527,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     // If the predicate ever widens from "constructs one" to "mentions one",
     // this fails and names the line.
     const root = syntheticTree();
+    landingHome(root);
     write(
       root,
       "packages/domains/probe/src/index.ts",
@@ -495,6 +549,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
 
     const { output } = await runFenceAgainst(root);
     expect(output).not.toContain("constructs an ACCOUNT_SWITCH_COMPLETED event");
+    expect(output).not.toContain("no longer builds the completion a landed switch earns");
   });
 
   it("refuses a daemon source that reads a singular execution binding (L-B1F2-1)", async () => {
@@ -1617,6 +1672,92 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const value = await runFenceAgainst(lawful);
     expect(value.output).not.toContain("resultingState is a literal EXHAUSTED or COOLDOWN");
     expect(value.output).not.toContain("no longer appends an account action");
+  });
+
+  it("refuses a module that selects a switch destination by position (L-F5-1)", async () => {
+    // V2-B1f/F5's law, with the fixture that can falsify it. The failure it
+    // exists to make impossible is the quiet one: a landing that, finding no
+    // destination it liked, reached for the first admitted binding and finished
+    // the switch on the wrong account with a completion that looks exactly like
+    // a correct one. Nothing lawful selects by position today, so without a
+    // synthetic failure the law would ship enforced and unfalsified.
+    //
+    // The permitted landing site is written too, so what trips the law is the
+    // positional selection rather than either vacuity half.
+    const root = syntheticTree();
+    landingHome(root);
+    write(
+      root,
+      "packages/entrypoints/probe/src/index.ts",
+      [
+        "export function destinationFor(execution) {",
+        "  return execution.bindings[0];",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("selects a binding or a destination by position");
+    expect(output).toContain("packages/entrypoints/probe/src/index.ts");
+  });
+
+  it("keeps the destination read honest, and leaves all three lawful finds alone (L-F5-1)", async () => {
+    // Two halves, driven separately.
+    //
+    // Half 2, the vacuity guard: a landing that stopped naming the field it
+    // selects from would satisfy the positional half vacuously — it indexes
+    // nothing at all — while landing on whatever account the route carried.
+    const hollow = syntheticTree();
+    write(
+      hollow,
+      "packages/domains/runtime/src/switch-landing/index.ts",
+      [
+        "export function land(route) {",
+        '  return { type: "ACCOUNT_SWITCH_COMPLETED", payload: { account: route.accountId } };',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    commitAll(hollow);
+
+    const gone = await runFenceAgainst(hollow);
+    expect(gone.status).not.toBe(0);
+    expect(gone.output).toContain("no longer names toAccountId");
+
+    // The negative control, and the law is worth little without it. There are
+    // THREE lawful `find`s on account identity in the tree — `bindingForRoute`
+    // exists twice with a byte-identical predicate, in the config door and in
+    // the daemon's own composition, and the player has its own
+    // `destinations.find` — and every one of them serves the route or the
+    // DECIDED destination rather than a position. A law that caught these would
+    // have widened from "selects by position" to "selects at all".
+    const lawful = syntheticTree();
+    landingHome(lawful);
+    write(
+      lawful,
+      "packages/entrypoints/probe/src/index.ts",
+      [
+        "export function bindingForRoute(execution) {",
+        "  return execution.bindings.find((entry) => entry.accountId === execution.route.accountId);",
+        "}",
+        "export function alsoBindingForRoute(execution) {",
+        "  return execution.bindings.find((entry) => entry.accountId === execution.route.accountId);",
+        "}",
+        "export function destinationFor(destinations, decided) {",
+        "  return destinations.find((entry) => entry.accountId === decided);",
+        "}",
+        "export const history = (rows) => rows.at(-1);",
+        "",
+      ].join("\n"),
+    );
+    commitAll(lawful);
+
+    const kept = await runFenceAgainst(lawful);
+    expect(kept.output).not.toContain("selects a binding or a destination by position");
+    expect(kept.output).not.toContain("no longer names toAccountId");
   });
 
   it("refuses a tracked file that no write-set declares (write-set conformance)", async () => {

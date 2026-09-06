@@ -22,7 +22,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Checkpoint, Lease, ModelExecutionPort, TaskEnvelope } from "@acp/contracts";
+import type { Checkpoint, Lease, ModelExecutionPort, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
 import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
 import type { Ledger, LeaseStore } from "@acp/ledger";
 import { createCheckpointStore, openLeaseStore, openLedger } from "@acp/ledger";
@@ -58,6 +58,7 @@ import {
   deriveEventCoordinate,
   considerSwitch,
   deterministicUuid,
+  landAccountSwitch,
   pressureTransitionId,
   recordProviderPressure,
   recordTokenObservation,
@@ -348,6 +349,20 @@ export function recoverOwnStaleLock(options: {
  * without one is byte-identical to what it was before this packet: the
  * supervisor's fork is gated on the port being present at all.
  *
+ * **And `undefined` again when this process landed a switch (V2-B1f/F5).** One
+ * landed attempt may not initiate a second switch, and that is the deliberate
+ * invariant rather than a happy accident: before the landing existed, a stale
+ * authorization left in the config was stopped only by `considerSwitch`
+ * declining `ACCOUNT_MISMATCH`, because the route had been re-elected. That is
+ * accidental safety — it holds for a reason that is about routing rather than
+ * about landings. After a landing, no port is composed at all, so there is
+ * nothing to decline. An UNLANDED walk keeps its port exactly as it was.
+ *
+ * **A runtime condition, never a deleted literal.** The suppression is this
+ * early return; both `runSqliteMode({` call sites keep their `switchPort:`
+ * member and the lease beside it, which is the shape the enforcement law reads
+ * and the reason it is still able to read it.
+ *
  * The destinations are the bindings' own declared providers (V2-B1f/F2b), so
  * the unlandable-destination refusal costs no import and no `describe` call.
  */
@@ -355,7 +370,10 @@ function switchPortFor(input: {
   readonly execution: DaemonExecutionConfig;
   readonly ledger: Ledger;
   readonly lease: Lease;
+  /** Whether a completion exists for this attempt, appended now or found. */
+  readonly landed: boolean;
 }): SwitchPort | undefined {
+  if (input.landed) return undefined;
   const authorization = input.execution.switchAuthorization;
   if (authorization === undefined) return undefined;
 
@@ -377,6 +395,86 @@ function switchPortFor(input: {
         }),
       ),
   };
+}
+
+/**
+ * What the landing dispatch decided for one walk (V2-B1f/F5).
+ *
+ * Three facts, and every one of them is read off the ledger rather than
+ * configured: which route this walk runs on, which generation its usage rows
+ * are named under, and whether a switch has been landed for this attempt.
+ */
+interface WalkLanding {
+  readonly route: ResolvedRoute;
+  readonly generation: number;
+  readonly landed: boolean;
+}
+
+/**
+ * Finish a switch this plane already played, before the walk's route is bound.
+ *
+ * **A restart-time interposition, and it runs at both walk forms.** A played
+ * switch throws out of the supervisor's catch and unwinds the process, so
+ * there is no in-process continuation to interpose on: the landing belongs to
+ * the NEXT start, before the seam is composed, which is the only place the
+ * route can still be bound to the account the switch chose. `startDaemon`
+ * binds a route twice — once for the single walk and once per scheduled walk —
+ * so this is called twice, exactly as the conformance gate and the two
+ * recorders already are. Landing only the first form would leave a switched
+ * walk under concurrency permanently unlandable, and silently.
+ *
+ * **The dispatch has three answers, and the module gives them.** A completion
+ * durable for this attempt means the walk is landed, whether this process
+ * appended it or found it; `NOT_BLOCKED` means nothing was owed, which is what
+ * every ordinary walk gets and is byte-identical to what it did before this
+ * packet; anything else is a refusal to finish a switch that WAS owed, and it
+ * stops the start rather than resuming on a route nobody authorized.
+ */
+async function landingFor(input: {
+  readonly ledger: Ledger;
+  readonly invocation: DurableInvocation;
+  readonly execution: DaemonExecutionConfig;
+  readonly port: ModelExecutionPort;
+  readonly checkConformance: (operationIndex: number) => void;
+  readonly taskId: string;
+  readonly attempt: number;
+  readonly emittedBy: string;
+}): Promise<WalkLanding> {
+  const outcome = await landAccountSwitch({
+    ledger: input.ledger,
+    invocation: input.invocation,
+    route: input.execution.route,
+    bindings: input.execution.bindings.map((entry) => ({
+      accountId: entry.accountId,
+      provider: entry.provider,
+    })),
+    port: input.port,
+    checkConformance: input.checkConformance,
+    // The one producer of an execution's durable name, closed over the
+    // coordinates this walk already holds. The runtime stratum may not import
+    // it, and restating the scheme there would be a second naming scheme for
+    // one fact, so the answer crosses instead of the function.
+    sessionIdFor: (accountId: string): string =>
+      executionSessionId(input.taskId, input.attempt, accountId),
+    emittedBy: input.emittedBy,
+  });
+
+  if (outcome.ok) {
+    return { route: outcome.route, generation: outcome.generation, landed: true };
+  }
+  // Nothing was owed. The task never switched — it has no history yet, or it
+  // is not blocked — so the source route stands, the switch port is composed
+  // exactly as it was, and the usage rows keep generation zero.
+  if (outcome.reason === "NOT_BLOCKED") {
+    return { route: input.execution.route, generation: 0, landed: false };
+  }
+  // A switch WAS owed and could not be finished. The visible stop, by name:
+  // the task stays at QUOTA_BLOCKED, the ledger head has not moved, and an
+  // operator learns which condition disagreed rather than watching a walk
+  // resume on an account nothing authorized.
+  throw new StartupError(
+    "a played switch could not be landed: " + outcome.reason + " at " + outcome.at,
+  );
 }
 
 /**
@@ -524,11 +622,13 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
       // never from new config (D5). Both modes receive this same port, and a
       // refused admission stops here, inside the unwind, classified by code.
       // One binding, read twice (V2-B1c). The effect port executes this route
-      // and the walk records this route; destructuring once here is what makes
-      // "the route recorded is the route executed" true by construction rather
-      // than by two call sites agreeing. It is the value the config door already
-      // admitted through `ResolvedRoute`; nothing re-resolves it.
-      const { route } = options.execution;
+      // and the walk records this route; binding it once is what makes "the
+      // route recorded is the route executed" true by construction rather than
+      // by two call sites agreeing. It is the value the config door already
+      // admitted through `ResolvedRoute` — or, when this attempt has a switch
+      // to finish, that same value with the account the switch chose
+      // (V2-B1f/F5). Bound below, once the landing has answered: the landing
+      // needs the lease, the harness and the port, and none of them exists yet.
 
       // S3a (V2 concurrency C2). One daemon holds one fenced lease on the
       // worktree it is about to write into, in BOTH modes and before either one
@@ -696,8 +796,43 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         },
       });
 
+      // V2-B1f/F5. Both hoisted out of the literal below, because the landing
+      // needs them BEFORE the seam exists: it probes the destination's
+      // transport through the port, and it calls this seam's own conformance
+      // gate once before its append. Building a second gate here would be a
+      // second answer to "did the prestate move"; building a second port would
+      // be a second admission of the same bindings. Both are the same values
+      // the seam has always been given, named a few lines earlier.
+      const port = executionPortFor(options.execution, options.taskId, harness);
+      const gate = conformanceGateFor({
+        ledger: openedLedger,
+        invocation,
+        worktreePath: bindingForRoute(options.execution).workdir,
+        declaredWriteSet: options.envelope.writeSet,
+        lease: hold.lease,
+        emittedBy: options.emittedBy,
+        onViolation: () => {
+          hold.release("WRITE_SET_VIOLATION_DETECTED");
+          heldArbiter.flush();
+        },
+      });
+
+      // The interposition: finish a switch this plane already played, if one
+      // is owed, and bind the route from the answer.
+      const landing = await landingFor({
+        ledger: openedLedger,
+        invocation,
+        execution: options.execution,
+        port,
+        checkConformance: gate,
+        taskId: options.taskId,
+        attempt: options.attempt,
+        emittedBy: options.emittedBy,
+      });
+      const route = landing.route;
+
       const effects = createExecutionEffects({
-        port: executionPortFor(options.execution, options.taskId, harness),
+        port,
         route,
         request: {
           taskId: options.taskId,
@@ -725,7 +860,12 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
             kind: "USAGE",
             accountId: route.accountId,
             tokens: sample.tokensUsed,
-            transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+            // The landing generation leads the name (V2-B1f/F5). A destination
+            // re-executes the same operation at the same step indices, so
+            // without it the second walk's first usage row would collide with
+            // the first walk's under one idempotency key and the ledger would
+            // fail closed. An unlanded walk passes zero, uniformly.
+            transitionId: usageTransitionId(landing.generation, sample.operationIndex, sample.stepIndex),
             emittedBy: options.emittedBy,
           });
         },
@@ -758,18 +898,10 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         // exactly as the scheduler path is: same builder, same five steps, its
         // own envelope's declared write-set. A production path without this is
         // the bypass the ruling forbids.
-        checkConformance: conformanceGateFor({
-          ledger: openedLedger,
-          invocation,
-          worktreePath: bindingForRoute(options.execution).workdir,
-          declaredWriteSet: options.envelope.writeSet,
-          lease: hold.lease,
-          emittedBy: options.emittedBy,
-          onViolation: () => {
-            hold.release("WRITE_SET_VIOLATION_DETECTED");
-            heldArbiter.flush();
-          },
-        }),
+        //
+        // The same closure the landing above already called, not a second one:
+        // one gate per seam, whoever asks it (V2-B1f/F5).
+        checkConformance: gate,
       });
 
       // V2-B1f/F3. A factory per invocation, not one port: the SQLite leg walks
@@ -798,6 +930,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
             execution: options.execution,
             ledger: openedLedger,
             lease: hold.lease,
+            landed: landing.landed,
           }),
           emittedBy: options.emittedBy,
           // Today's behaviour, said out loud. The daemon supervises packets that
@@ -1028,9 +1161,40 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
             throw new StartupError("a walk was run before its ledger, lease and harness existed");
           }
           const walkRoot: ScenarioRoot = resolveScenarioRoot(walk.spec.scenarioId);
-          const { route } = walk.spec.execution;
+          // The same two hoists, per walk, and for the same reason: the
+          // landing needs this walk's port and this walk's own gate before the
+          // seam that would otherwise build them exists (V2-B1f/F5).
+          const walkPort = executionPortFor(walk.spec.execution, walk.spec.taskId, harness);
+          const walkGate = conformanceGateFor({
+            ledger: held.ledger,
+            invocation: held.invocation,
+            worktreePath: walk.worktreePath,
+            declaredWriteSet: walk.envelope.writeSet,
+            lease: heldLease.hold.lease,
+            emittedBy: walk.spec.emittedBy,
+            onViolation: () => {
+              stopBeat(walk.spec.taskId);
+              heldLease.hold.release("WRITE_SET_VIOLATION_DETECTED");
+              heldLease.arbiter.flush();
+            },
+          });
+          // The same interposition, per walk. One law, two call sites, exactly
+          // as the conformance gate and the two recorders already are — and a
+          // switched walk under concurrency is landable precisely because this
+          // is here rather than only at the single-walk form.
+          const landing = await landingFor({
+            ledger: held.ledger,
+            invocation: held.invocation,
+            execution: walk.spec.execution,
+            port: walkPort,
+            checkConformance: walkGate,
+            taskId: walk.spec.taskId,
+            attempt: walk.spec.attempt,
+            emittedBy: walk.spec.emittedBy,
+          });
+          const route = landing.route;
           const effects = createExecutionEffects({
-            port: executionPortFor(walk.spec.execution, walk.spec.taskId, harness),
+            port: walkPort,
             route,
             request: {
               taskId: walk.spec.taskId,
@@ -1046,7 +1210,9 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
                 kind: "USAGE",
                 accountId: route.accountId,
                 tokens: sample.tokensUsed,
-                transitionId: usageTransitionId(sample.operationIndex, sample.stepIndex),
+                // The landing generation leads the name at this seam too: one
+                // law, two call sites (V2-B1f/F5).
+                transitionId: usageTransitionId(landing.generation, sample.operationIndex, sample.stepIndex),
                 emittedBy: walk.spec.emittedBy,
               });
             },
@@ -1064,20 +1230,9 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
               });
             },
             // The same gate, per walk: this walk's envelope, this walk's lease,
-            // this walk's admitted worktree. One law, two call sites.
-            checkConformance: conformanceGateFor({
-              ledger: held.ledger,
-              invocation: held.invocation,
-              worktreePath: walk.worktreePath,
-              declaredWriteSet: walk.envelope.writeSet,
-              lease: heldLease.hold.lease,
-              emittedBy: walk.spec.emittedBy,
-              onViolation: () => {
-                stopBeat(walk.spec.taskId);
-                heldLease.hold.release("WRITE_SET_VIOLATION_DETECTED");
-                heldLease.arbiter.flush();
-              },
-            }),
+            // this walk's admitted worktree. One law, two call sites — and the
+            // same closure the landing above already called, never a second.
+            checkConformance: walkGate,
           });
           const result = await runSqliteMode({
             ledger: held.ledger,
@@ -1098,6 +1253,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
               execution: walk.spec.execution,
               ledger: held.ledger,
               lease: heldLease.hold.lease,
+              landed: landing.landed,
             }),
             emittedBy: walk.spec.emittedBy,
             commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",

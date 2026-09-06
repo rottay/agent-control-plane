@@ -365,6 +365,19 @@ export type { ActionEventSource } from "./actions/index.js";
 // caller that can supply one can record, including one forbidden the file.
 export { recordAccountAction } from "./actions/index.js";
 export type { AccountActionWrite, AccountActionWriteOutcome } from "./actions/index.js";
+
+// V2-B1f/F5: the switch lands on the account it chose. The plan's steps 6-11
+// had an executor for none of them and nothing could construct the completion;
+// this is the one module that may, and it appends exactly one row after the
+// walk's own conformance gate has run. It decides nothing, opens no session,
+// takes no lease and touches no account state — it reads what the plane
+// already recorded and finishes the switch the plane already played.
+export { SWITCH_LANDINGS_MAX, SWITCH_LANDING_REFUSALS, landAccountSwitch } from "./switch-landing/index.js";
+export type {
+  SwitchLandingInput,
+  SwitchLandingOutcome,
+  SwitchLandingRefusal,
+} from "./switch-landing/index.js";
 export type { UsageSample, UsageSink } from "./execution-effects/index.js";
 
 // V2-B1f: what a provider said about an account's standing, recorded once
