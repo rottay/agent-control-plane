@@ -54,7 +54,7 @@ write-capable flag stays forbidden.
 
 `baseline.ts` is a pure function over a ledger-ordered chain: no clock, no
 filesystem, no ledger, no randomness. It carries five measures — routing,
-tokens, time, rework and acceptance — each expressed with the frozen 21-type
+tokens, time, rework and acceptance — each expressed with the frozen 24-type
 event vocabulary, each artifact-supplied rather than estimated.
 
 Where the number is not there, it stops. A missing classification reason, a
@@ -109,12 +109,44 @@ OTel-shaped values, with no clock, no filesystem and no ledger of its own, so
 two runs over the same events are byte-identical.
 
 Where a convention already names a thing, its name is used
-(`gen_ai.usage.output_tokens`, `gen_ai.request.model`,
-`openinference.span.kind`); everything else is namespaced under `acp.`.
-Inventing a `gen_ai.*` key the convention has never defined would look
-standard while being ours alone. Only allowlisted payload keys become
+(`gen_ai.request.model`, `openinference.span.kind`); everything else is
+namespaced under `acp.`. Inventing a `gen_ai.*` key the convention has never
+defined would look standard while being ours alone — and so would the mirror
+of it, which is why the token count is `acp.usage.tokens` and not
+`gen_ai.usage.output_tokens`: one adapter reports output tokens, another a
+total and a third an unspecified count, and `TOKEN_USAGE_RECORDED` carries no
+provider to branch on. It is emitted for that event type alone, so a
+reservation is never reported as spend. The provider travels under two names
+because there are two facts: `acp.route.provider` is the provider the route
+named, `acp.pressure.provider` the provider that reported pressure.
+`gen_ai.system` is not emitted — the key is superseded in the conventions, and
+its well-known values are vendor identifiers while ours are adapter
+identifiers, so filling it would need a per-vendor table this projection
+refuses to hold.
+
+The route is read where the walk writes it: nested under one pinned payload
+key, parsed through the contract, and a route that does not parse projects **no
+attribute and no refusal**. Status is a function of the event rather than of
+its type alone — a lease revocation is classified on its cause, so a clean
+walk's release is not a fault — and a tool-call receipt is an OpenInference
+`TOOL` span rather than an `AGENT` one. Only allowlisted payload keys become
 attributes: a projection that mirrored whatever a payload carried would export
 tomorrow's new field without anyone deciding to.
+
+**No production sink exists, and that is a declared state rather than an
+oversight.** `emitTelemetry` has zero callers in any `src/`: this package
+aligns the keys and adds no exporter, no port and no edge. A sink is owed to
+R11 and to the owner's dependency answer, which the frozen dependency graph
+makes an owner decision rather than a writer's.
+
+**The baseline's totality is owed too.** The telemetry half of the projection
+is truthful as of this record; `computeBaseline` still demands three payload
+fields no production emitter writes and therefore still stops on the first
+event of any real chain. R9b owes that repair: the token measure read from
+`TOKEN_USAGE_RECORDED.payload.tokens`, `reason` and `verdict` absent-tolerant
+with explicit unreported counts, and `MISSING_REASON`, `MISSING_TOKENS_USED`
+and `MISSING_VERDICT` retired or documented as reachable from synthetic chains
+only.
 
 **The redaction gate is structural, not procedural.** Every record passes the
 contracts' credential and transcript guards *inside* `emitTelemetry`, and a

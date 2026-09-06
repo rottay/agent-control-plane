@@ -20,6 +20,7 @@
     { "path": "../../../domains/accounts" }, { "path": "../../../kernel/protocol" },
     { "path": "../../../persistence/ledger" },
     { "path": "../../../domains/runtime" },
+    { "path": "../../../domains/observation" },
     { "path": "../../../edges/durability" },
     { "path": "../../../edges/tools" },
     { "path": "../../cli" },

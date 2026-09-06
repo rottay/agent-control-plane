@@ -6879,6 +6879,67 @@ const V2B5R13_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * V2 old-roadmap B5, R9 key half: the telemetry projection reads the route the
+ * walk actually writes.
+ *
+ * The walk records the route nested under one pinned payload key and the
+ * projection read nine FLAT keys, so `gen_ai.request.model` and every
+ * `acp.route.*` attribute were absent from every production chain: the gen-AI
+ * half of "OTel/OpenInference como contrato" was unpopulated. Three of those
+ * flat keys had no writer at all, one named a field of a different contract,
+ * and one filled a precisely-defined conventional key with a value only one of
+ * three adapters gives that meaning.
+ *
+ * The projection now parses `payload[RECORDED_ROUTE_KEY]` through
+ * `ResolvedRoute.safeParse` and promotes the five identifying fields, exactly
+ * as the ledger projection already does -- a malformed route projects nothing
+ * and refuses nothing. The token count becomes `acp.usage.tokens`, emitted for
+ * `TOKEN_USAGE_RECORDED` alone; the flat `provider` the pressure recorder
+ * writes becomes `acp.pressure.provider`, which carries its provenance; the
+ * status becomes a function of the event rather than of its type alone, so a
+ * clean walk's `RELEASED` revocation is no longer an `ERROR`; and a tool-call
+ * receipt is stamped `TOOL` rather than `AGENT`.
+ *
+ * **The route law gains a third declarer, proved rather than tolerated.**
+ * `ROUTE_KEY_DECLARERS` goes from two to three and the telemetry module gets
+ * its own reader arm, so the new declarer must genuinely read the key through
+ * the contract. Naming "route" inline to dodge the law would be exactly the
+ * drift the law exists to refuse. The law's row and its single scope call are
+ * unchanged, so `PATH_SCOPED_LAWS` stays at 111.
+ *
+ * **The causal drill lives in the gateway.** It is the only package whose
+ * manifest already names both `@acp/observation` and `@acp/runtime`, so the
+ * emitter-to-projection agreement can be driven end to end with zero manifest,
+ * lockfile or dependency-graph change; `TEST_ONLY_DOMAINS.gateway` registers it
+ * beside `parity` for the reason `parity` is registered. The one build-graph
+ * declaration is a project reference in the gateway's TEST tsconfig, whose
+ * `references` are not fence-pinned.
+ *
+ * **Pins.** ADR corpus 47 -> 48; `ROUTE_KEY_DECLARERS` 2 -> 3;
+ * `TEST_ONLY_DOMAINS.gateway` 1 -> 2. `OBSERVATION_PUBLIC_EXPORTS` stays 64
+ * (members move, no export name does), `PATH_SCOPED_LAWS` stays 111,
+ * `CONTROL_PLANE_EVENT_TYPES` stays 24 -- two dead literals leave a table, and
+ * nothing is minted into the vocabulary -- and `GATEWAY_TS_REFERENCES`, the
+ * observation manifest surface and `POLICY_VERSION_DIGESTS` do not move.
+ *
+ * **What this packet does not do.** It adds no production sink: the projection
+ * keeps zero production callers, and a sink is owed to R11 and to the owner's
+ * dependency answer. The baseline half is owed to R9b.
+ *
+ * Record: `docs/architecture/0048-telemetry-reads-the-route-the-walk-writes.md`.
+ */
+const V2B5R9_WRITE_SET = [
+  "packages/domains/observation/src/telemetry/index.ts",
+  "packages/domains/observation/test/telemetry/index.test.ts",
+  "packages/domains/observation/README.md",
+  "packages/entrypoints/gateway/test/telemetry/index.test.ts",
+  "packages/entrypoints/gateway/test/tsconfig.json",
+  "docs/architecture/0048-telemetry-reads-the-route-the-walk-writes.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7037,6 +7098,7 @@ const WRITE_SET = [
   ...V2B1F4C_WRITE_SET,
   ...V2B1F5_WRITE_SET,
   ...V2B5R13_WRITE_SET,
+  ...V2B5R9_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -10565,9 +10627,15 @@ if (tracked.status === 0) {
     const ROUTE_KEY_DECLARERS = new Set([
       "packages/domains/runtime/src/core/events/index.ts",
       "packages/persistence/ledger/src/projection/index.ts",
+      "packages/domains/observation/src/telemetry/index.ts",
     ]);
     const ROUTE_KEY_WRITER = "packages/domains/runtime/src/core/events/index.ts";
     const ROUTE_KEY_READER = "packages/persistence/ledger/src/projection/index.ts";
+    // V2-B5/R9: the second reader. The telemetry projection reads the same key
+    // for a different purpose -- the ledger builds a read-model row, this
+    // builds OTel attributes -- and it is held to the same two obligations, so
+    // a third declarer is proved rather than merely tolerated.
+    const ROUTE_KEY_TELEMETRY_READER = "packages/domains/observation/src/telemetry/index.ts";
     const declared = new Map();
     for (const relativePath of srcSources) {
       const content = readIfPresent(relativePath);
@@ -10582,7 +10650,11 @@ if (tracked.status === 0) {
     }
     for (const relativePath of declared.keys()) {
       if (!ROUTE_KEY_DECLARERS.has(relativePath)) {
-        fail(relativePath + " declares RECORDED_ROUTE_KEY; only the producer and the projection may");
+        fail(
+          relativePath +
+            " declares RECORDED_ROUTE_KEY; only the producer, the ledger projection and the" +
+            " telemetry projection may",
+        );
       }
     }
     for (const relativePath of ROUTE_KEY_DECLARERS) {
@@ -10621,6 +10693,21 @@ if (tracked.status === 0) {
         ROUTE_KEY_READER +
           " no longer parses the recorded route through the contract; a malformed route must project" +
           " no row rather than a partial one",
+      );
+    }
+
+    // The same pair, asserted of the telemetry projection. Strip either half
+    // and the key would still be declared here while nothing read it, which is
+    // the shape a declarer set alone cannot tell apart from a live reader.
+    const telemetryReader = stripComments(readIfPresent(ROUTE_KEY_TELEMETRY_READER) ?? "");
+    if (!telemetryReader.includes("payload[RECORDED_ROUTE_KEY]")) {
+      fail(ROUTE_KEY_TELEMETRY_READER + " no longer reads the recorded route out of an event payload");
+    }
+    if (!/ResolvedRoute\.safeParse\(/.test(telemetryReader)) {
+      fail(
+        ROUTE_KEY_TELEMETRY_READER +
+          " no longer parses the recorded route through the contract; a malformed route must project" +
+          " no attribute rather than a partial set",
       );
     }
 
@@ -13688,6 +13775,10 @@ const TEST_ONLY_DOMAINS = {
   ],
   gateway: [
     { domain: "parity", why: "the three-way row-model parity proof; it tests an agreement, not a module" },
+    {
+      domain: "telemetry",
+      why: "the emitter-to-projection agreement drill; it tests an agreement between two packages the gateway already depends on, not a gateway module",
+    },
   ],
   console: [
     { domain: "live-dom", why: "the live-DOM evidence harness and its own suite" },

@@ -1,4 +1,4 @@
-import { findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
+import { ResolvedRoute, findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
 import type { ControlPlaneEvent } from "@acp/contracts";
 
 /**
@@ -128,12 +128,24 @@ export interface TelemetryBatch {
  * The attribute keys this module emits.
  *
  * Where a convention already names a thing, the convention's name is used:
- * `gen_ai.usage.output_tokens` and `gen_ai.request.model` come from the
- * OpenTelemetry generative-AI semantic conventions, and
- * `openinference.span.kind` from OpenInference. Everything the conventions do
- * not name is namespaced under `acp.`, which is the honest way to add a term:
- * inventing a `gen_ai.*` key the convention has never defined would look
- * standard while being ours alone.
+ * `gen_ai.request.model` comes from the OpenTelemetry generative-AI semantic
+ * conventions and `openinference.span.kind` from OpenInference. Everything the
+ * conventions do not name is namespaced under `acp.`, which is the honest way
+ * to add a term: inventing a `gen_ai.*` key the convention has never defined
+ * would look standard while being ours alone.
+ *
+ * The mirror of that rule governs too, and it is why the token count is
+ * `acp.usage.tokens` rather than `gen_ai.usage.output_tokens`: filling a
+ * precisely-defined conventional key with a value that does not carry that
+ * meaning looks standard and is false. `gen_ai.request.model` is kept because
+ * it is honest — the contract calls `route.model` "the routing alias the DT
+ * scheduled against, not the provider's exact resolution", which is exactly
+ * OTel's request-side model.
+ *
+ * Two provider attributes, because there are two facts. `acp.route.provider`
+ * is the provider the route named; `acp.pressure.provider` is the provider
+ * that reported pressure, as the adapter classified it. Reporting the second
+ * under the first would assert a route its event does not carry.
  *
  * Pinned as a table so an added key is a deliberate edit and a test can assert
  * the whole surface rather than sample it.
@@ -147,27 +159,108 @@ export const TELEMETRY_ATTRIBUTE_KEYS = Object.freeze({
   fromState: "acp.task.state.from",
   toState: "acp.task.state.to",
   emittedBy: "acp.worker.identity",
-  verdict: "acp.audit.verdict",
   accountId: "acp.account.id",
-  provider: "acp.route.provider",
+  pressureProvider: "acp.pressure.provider",
+  routeProvider: "acp.route.provider",
   transportKind: "acp.route.transport_kind",
   policyVersion: "acp.route.capability_policy_version",
   model: "gen_ai.request.model",
-  tokensUsed: "gen_ai.usage.output_tokens",
+  /**
+   * The count the adapter reported; its provider-specific meaning is not
+   * normalized (output-only for one adapter, total for another, unspecified
+   * for a third). `TOKEN_USAGE_RECORDED.payload` carries no provider, so the
+   * projection could not branch per provider even if a neutral projection were
+   * allowed to.
+   */
+  tokens: "acp.usage.tokens",
   spanKind: "openinference.span.kind",
 });
 
-/** The OpenInference span kind every ACP lifecycle event carries. */
+/**
+ * The OpenInference span kind an ACP lifecycle event carries by default.
+ *
+ * One event is not a lifecycle step: a tool-call receipt is what OpenInference
+ * names a `TOOL` span, and stamping it `AGENT` would make the OpenInference
+ * half of the projection false for the one event the convention has a word
+ * for. The exceptions are a table below; the default stays this.
+ */
 export const TELEMETRY_SPAN_KIND = "AGENT";
 
-/** Event types whose occurrence is an error in the OTel sense. */
+/** The events whose span kind is not the default. Unexported, and closed. */
+const SPAN_KIND_BY_TYPE: Readonly<Record<string, string>> = Object.freeze({
+  TOOL_CALL_RECORDED: "TOOL",
+});
+
+/**
+ * Event types whose occurrence is a fault, whatever else the event says.
+ *
+ * Each is produced in production and each is unambiguously a failure:
+ * `TASK_FAILED` is the walk's own, `AUTH_REQUIRED_RAISED` is the provider
+ * refusing to serve, and `WRITE_SET_VIOLATION_DETECTED` is a walk that wrote
+ * outside its declared set. Two literals that used to sit in this list --
+ * `TASK_QUARANTINED` and `COMMIT_REFUSED` -- are gone: neither is a member of
+ * the frozen 24-type vocabulary, so no event could ever have selected them.
+ * Quarantine is a state change, and it is classified as one below.
+ */
 const ERROR_TYPES: readonly string[] = Object.freeze([
-  "TASK_FAILED",
-  "TASK_QUARANTINED",
-  "COMMIT_REFUSED",
-  "LEASE_REVOKED",
   "AUTH_REQUIRED_RAISED",
+  "TASK_FAILED",
+  "WRITE_SET_VIOLATION_DETECTED",
 ]);
+
+/**
+ * The revocation causes production writes that ARE faults, and those that are
+ * not.
+ *
+ * `LEASE_REVOKED` used to be an error on every revocation, which made every
+ * successful walk end in an `ERROR` span: a clean walk releases its lease with
+ * `cause: "RELEASED"`, and a lawful account switch revokes with
+ * `cause: "ACCOUNT_SWITCH"`. Neither is a fault. The three that are -- a
+ * conformance violation, a dead holder, an expiry -- are named here.
+ *
+ * Both sets are closed and unexported, and `cause` is typed as a string rather
+ * than an enum, so a cause in neither set is **unclassified** rather than
+ * assumed either way. `UNSET` is the OTel status for exactly that, and
+ * guessing in either direction would be a claim this module cannot support.
+ */
+const FAULT_REVOCATION_CAUSES: readonly string[] = Object.freeze([
+  "EXPIRED",
+  "HOLDER_DEAD",
+  "WRITE_SET_VIOLATION_DETECTED",
+]);
+
+const CLEAN_REVOCATION_CAUSES: readonly string[] = Object.freeze([
+  "ACCOUNT_SWITCH",
+  "RELEASED",
+]);
+
+/** The state a quarantined task moves to. A state change, not an event type. */
+const QUARANTINE_STATE = "SUSPECT_WORKTREE";
+
+/**
+ * The status of one event, as a function of the event rather than of its type.
+ *
+ * A cancellation is an outcome and a warning is a warning: OTel's `ERROR` is
+ * not "not-success", and a projection that treated it that way would report a
+ * routine chain as a wall of failures.
+ */
+function statusFor(event: ControlPlaneEvent): TelemetryStatus {
+  if (ERROR_TYPES.includes(event.type)) return "ERROR";
+
+  if (event.type === "LEASE_REVOKED") {
+    const cause: unknown = event.payload["cause"];
+    if (typeof cause !== "string") return "UNSET";
+    if (FAULT_REVOCATION_CAUSES.includes(cause)) return "ERROR";
+    if (CLEAN_REVOCATION_CAUSES.includes(cause)) return "OK";
+    return "UNSET";
+  }
+
+  // What the dead `TASK_QUARANTINED` literal meant. Quarantine is reached as a
+  // state change, so the truthful replacement classifies on the state.
+  if (event.type === "TASK_STATE_CHANGED" && event.toState === QUARANTINE_STATE) return "ERROR";
+
+  return "OK";
+}
 
 /** A span name from an event type: lower-cased, dotted, never free text. */
 export function telemetrySpanName(eventType: string): string {
@@ -188,15 +281,29 @@ function isAttribute(value: unknown): value is TelemetryAttribute {
  */
 const PAYLOAD_ATTRIBUTES: Readonly<Record<string, string>> = Object.freeze({
   initiativeId: TELEMETRY_ATTRIBUTE_KEYS.initiativeId,
-  verdict: TELEMETRY_ATTRIBUTE_KEYS.verdict,
   accountId: TELEMETRY_ATTRIBUTE_KEYS.accountId,
-  provider: TELEMETRY_ATTRIBUTE_KEYS.provider,
-  transportKind: TELEMETRY_ATTRIBUTE_KEYS.transportKind,
-  capabilityPolicyVersion: TELEMETRY_ATTRIBUTE_KEYS.policyVersion,
-  model: TELEMETRY_ATTRIBUTE_KEYS.model,
-  tokens: TELEMETRY_ATTRIBUTE_KEYS.tokensUsed,
-  resolvedModel: TELEMETRY_ATTRIBUTE_KEYS.model,
+  // The pressure recorder's own key, and its only writer. `model`,
+  // `transportKind`, `capabilityPolicyVersion`, `verdict` and `resolvedModel`
+  // used to sit here and are gone: three are written nested rather than flat
+  // and are read below, one has no production writer at all, and one was never
+  // a control-plane payload key -- it is a field of the provider contract, and
+  // it collided with `model` on the way out.
+  provider: TELEMETRY_ATTRIBUTE_KEYS.pressureProvider,
 });
+
+/**
+ * The one payload key the recorded route travels under.
+ *
+ * Declared here and, identically, at the producer in `@acp/runtime` and the
+ * projection in `@acp/ledger`. Three homes for one key is a drift risk, so the
+ * fence pins all three declarations by equality and compares their literals:
+ * the key cannot be changed on one side alone, and naming `"route"` inline here
+ * to stay out of the law would be exactly the drift the law exists to refuse.
+ */
+const RECORDED_ROUTE_KEY = "route";
+
+/** The event type whose `tokens` is spend. No other type's is. */
+const TOKEN_USAGE_TYPE = "TOKEN_USAGE_RECORDED";
 
 function attributesFor(event: ControlPlaneEvent): Readonly<Record<string, TelemetryAttribute>> {
   const attributes: Record<string, TelemetryAttribute> = {
@@ -206,7 +313,7 @@ function attributesFor(event: ControlPlaneEvent): Readonly<Record<string, Teleme
     [TELEMETRY_ATTRIBUTE_KEYS.transitionId]: event.transitionId,
     [TELEMETRY_ATTRIBUTE_KEYS.toState]: event.toState,
     [TELEMETRY_ATTRIBUTE_KEYS.emittedBy]: event.emittedBy,
-    [TELEMETRY_ATTRIBUTE_KEYS.spanKind]: TELEMETRY_SPAN_KIND,
+    [TELEMETRY_ATTRIBUTE_KEYS.spanKind]: SPAN_KIND_BY_TYPE[event.type] ?? TELEMETRY_SPAN_KIND,
   };
 
   // A task's first event has no prior state, and `fromState` is null there.
@@ -221,6 +328,41 @@ function attributesFor(event: ControlPlaneEvent): Readonly<Record<string, Teleme
   for (const [key, attribute] of Object.entries(PAYLOAD_ATTRIBUTES)) {
     const value: unknown = event.payload[key];
     if (isAttribute(value)) attributes[attribute] = value;
+  }
+
+  // The token count is promoted for ONE event type, from the key the recorder
+  // writes. A `tokens` key on any other type -- a reservation above all --
+  // projects nothing: held tokens are not spent tokens, and reporting a
+  // reservation under a usage key is the fabrication this rule exists to
+  // refuse. There is no reservation attribute here either, because no
+  // production emitter writes a reservation.
+  if (event.type === TOKEN_USAGE_TYPE) {
+    const tokens: unknown = event.payload["tokens"];
+    if (isAttribute(tokens)) attributes[TELEMETRY_ATTRIBUTE_KEYS.tokens] = tokens;
+  }
+
+  // The route, read where the walk writes it.
+  //
+  // The INTENT beat is the sole writer and it writes the route NESTED, under
+  // one pinned key. Reading it flat, as this module did, meant the one event
+  // that carries a model, a provider, a transport and a policy version emitted
+  // none of them.
+  //
+  // Malformed projects **nothing**, and refuses nothing -- the same allocation
+  // of duties the ledger's own route projection makes. A bad route is not a
+  // redaction failure: refusing the event would mis-signal the refusal count,
+  // and promoting the fields that happened to parse would put a partial row
+  // where a reader expects a route.
+  const route = ResolvedRoute.safeParse(event.payload[RECORDED_ROUTE_KEY]);
+  if (route.success) {
+    attributes[TELEMETRY_ATTRIBUTE_KEYS.model] = route.data.model;
+    attributes[TELEMETRY_ATTRIBUTE_KEYS.routeProvider] = route.data.provider;
+    attributes[TELEMETRY_ATTRIBUTE_KEYS.transportKind] = route.data.transportKind;
+    attributes[TELEMETRY_ATTRIBUTE_KEYS.policyVersion] = route.data.capabilityPolicyVersion;
+    attributes[TELEMETRY_ATTRIBUTE_KEYS.accountId] = route.data.accountId;
+    // `resolvedAt` is not promoted: the instant a route was chosen at is not an
+    // identifying field, and `gen_ai.response.model` has no source at all --
+    // the provider's own `resolvedModel` never reaches the ledger.
   }
 
   // Sorted, so two runs over the same events serialize identically rather than
@@ -275,7 +417,7 @@ export function emitTelemetry(events: readonly ControlPlaneEvent[]): TelemetryBa
       name: telemetrySpanName(event.type),
       startTime: event.occurredAt,
       endTime: event.recordedAt,
-      status: ERROR_TYPES.includes(event.type) ? "ERROR" : "OK",
+      status: statusFor(event),
       attributes: attributesFor(event),
     };
     // The one mint site. The brand is what makes "gated" a type rather than a
