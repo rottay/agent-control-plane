@@ -556,6 +556,7 @@ describe("the lifecycle door fails closed", () => {
     const result = await invoke(argsFor("cancel", staged, "RESTATE"));
 
     expect(result.exitCode).toBe(EXIT_INTEGRITY);
+    expect(result.exitCode).not.toBe(EXIT_USAGE);
     expect(errorJson(result).error.code).toBe("WRITE_REFUSED");
     expect(errorJson(result).error.detail).toBe("attempt.submissionDigest");
   });

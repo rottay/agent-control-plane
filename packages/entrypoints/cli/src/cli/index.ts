@@ -466,6 +466,50 @@ function failure(
 }
 
 /**
+ * The exit code a door's refusal earns, chosen once for every door.
+ *
+ * Both write doors raise the same closed `ApiErrorCode`s for the same reasons —
+ * three of the five `WRITE_REFUSED` sites are word-for-word the gateway's — and
+ * until this function existed each door carried its own `switch` over that code.
+ * Two tables over one closed set is the shape a shared convention takes right
+ * before one of them drifts, and it had already drifted: `WRITE_REFUSED` left
+ * the lifecycle door as `EXIT_INTEGRITY` and the tool-call door as `EXIT_USAGE`,
+ * through a `default:` arm that never had a case. The API answers that refusal
+ * with one status at both of its doors (`STATUS_BY_CODE`), so a CLI that answers
+ * two numbers is not the same plane reached through a different transport.
+ *
+ * `WRITE_REFUSED` is `EXIT_INTEGRITY`, not `EXIT_USAGE`: the ledger disagrees
+ * with the coordinates the caller named, and nothing about the invocation was
+ * wrong. A `2` would tell a script to fix arguments that are already correct —
+ * the reasoning ADR 0026 already recorded for `EXIT_CLAIM_HELD`.
+ */
+function refusalExitCode(code: ApiErrorCode): number {
+  switch (code) {
+    case "NOT_FOUND":
+      return EXIT_NOT_FOUND;
+    case "LEDGER_UNAVAILABLE":
+    case "CONTRACT_VERSION_MISMATCH":
+      // Including every throw from a driver. An engine this attempt could not
+      // reach is a failure of the channel, and it must stay distinguishable
+      // from `EXIT_CAPABILITY_UNSUPPORTED`, which says the engine answered and
+      // the answer was no.
+      return EXIT_UNAVAILABLE;
+    case "WRITE_REFUSED":
+      return EXIT_INTEGRITY;
+    case "CLAIM_HELD":
+      // Not a usage error, and the distinction is the whole reason this code
+      // exists: nothing about the invocation was wrong, and repeating it is the
+      // one action that is certainly not the remedy.
+      return EXIT_CLAIM_HELD;
+    case "INTERNAL":
+      return EXIT_INTERNAL;
+    default:
+      // Everything else is a request the door refused before it became one.
+      return EXIT_USAGE;
+  }
+}
+
+/**
  * The failure a lower layer is allowed to produce.
  *
  * Only the typed error code crosses. The message never does: `LedgerOpenError`
@@ -476,10 +520,10 @@ function failure(
 /**
  * Map the tool-call verb's refusal onto this package's exit-code table.
  *
- * The verb module names a reason and a field; the exit code is decided here,
- * where the table lives, so there is one place a code is chosen rather than two
- * that could drift. A refused **call** never reaches this function: it is a
- * recorded outcome and exits `EXIT_OK`, the CLI's analogue of the API's 200.
+ * The verb module names a reason and a field; the number is `refusalExitCode`'s
+ * to choose, so one code is chosen in one place rather than in two that could
+ * drift. A refused **call** never reaches this function: it is a recorded
+ * outcome and exits `EXIT_OK`, the CLI's analogue of the API's 200.
  */
 function fromToolCallError(error: unknown): CliFailure {
   // A ledger that cannot be opened or is not migrated refuses through the same
@@ -487,56 +531,22 @@ function fromToolCallError(error: unknown): CliFailure {
   // are byte-identical to theirs rather than merely similar.
   if (error instanceof LedgerError) return fromLedgerError(error);
   if (!(error instanceof ToolCallRefused)) return fromUnknownError(error);
-  switch (error.code) {
-    case "NOT_FOUND":
-      return failure(EXIT_NOT_FOUND, "NOT_FOUND", error.message, error.at);
-    case "LEDGER_UNAVAILABLE":
-    case "CONTRACT_VERSION_MISMATCH":
-      return failure(EXIT_UNAVAILABLE, error.code, error.message, error.at);
-    case "INTERNAL":
-      return failure(EXIT_INTERNAL, "INTERNAL", error.message, error.at);
-    case "CLAIM_HELD":
-      // Not a usage error, and the distinction is the whole reason this code
-      // exists: nothing about the invocation was wrong, and repeating it is the
-      // one action that is certainly not the remedy.
-      return failure(EXIT_CLAIM_HELD, "CLAIM_HELD", error.message, error.at);
-    default:
-      // Everything else is a document that never became a request.
-      return failure(EXIT_USAGE, error.code, error.message, error.at);
-  }
+  return failure(refusalExitCode(error.code), error.code, error.message, error.at);
 }
 
 /**
  * Map the lifecycle door's refusal onto this package's exit-code table.
  *
  * The same shape as `fromToolCallError`, and for the same reason: the verb
- * module names a reason and a field, and the code is chosen here, where the
- * table lives. A refusal that never became an operation exits non-zero; a
+ * module names a reason and a field, and `refusalExitCode` names the number for
+ * both doors. A refusal that never became an operation exits non-zero; a
  * driver's own answer does not reach this function at all, because it is a
  * document rather than a failure.
  */
 function fromLifecycleError(error: unknown): CliFailure {
   if (error instanceof LedgerError) return fromLedgerError(error);
   if (!(error instanceof LifecycleRefused)) return fromUnknownError(error);
-  switch (error.code) {
-    case "NOT_FOUND":
-      return failure(EXIT_NOT_FOUND, "NOT_FOUND", error.message, error.at);
-    case "LEDGER_UNAVAILABLE":
-    case "CONTRACT_VERSION_MISMATCH":
-      // Including every throw from a driver. An engine this attempt could not
-      // reach is a failure of the channel, and it must stay distinguishable
-      // from `EXIT_CAPABILITY_UNSUPPORTED`, which says the engine answered and
-      // the answer was no.
-      return failure(EXIT_UNAVAILABLE, error.code, error.message, error.at);
-    case "WRITE_REFUSED":
-      // The ledger disagrees with itself about this attempt. Not a usage error
-      // — nothing about the invocation was wrong — and not a retry either.
-      return failure(EXIT_INTEGRITY, "WRITE_REFUSED", error.message, error.at);
-    case "INTERNAL":
-      return failure(EXIT_INTERNAL, "INTERNAL", error.message, error.at);
-    default:
-      return failure(EXIT_USAGE, error.code, error.message, error.at);
-  }
+  return failure(refusalExitCode(error.code), error.code, error.message, error.at);
 }
 
 /**

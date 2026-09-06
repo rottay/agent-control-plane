@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   EXIT_CLAIM_HELD,
+  EXIT_INTEGRITY,
   EXIT_NOT_FOUND,
   EXIT_OK,
   EXIT_UNAVAILABLE,
@@ -586,7 +587,8 @@ describe("the door's own checks, driven rather than assumed", () => {
       "json",
     );
 
-    expect(result.exitCode).toBe(EXIT_USAGE);
+    expect(result.exitCode).toBe(EXIT_INTEGRITY);
+    expect(result.exitCode).not.toBe(EXIT_USAGE);
     expect(envelope(result).error.code).toBe("WRITE_REFUSED");
     expect(pids(f.pidLog)).toHaveLength(0);
     expect(eventCount(f.databasePath)).toBe(before);
@@ -626,7 +628,8 @@ describe("the door's own checks, driven rather than assumed", () => {
       "json",
     );
 
-    expect(result.exitCode).toBe(EXIT_USAGE);
+    expect(result.exitCode).toBe(EXIT_INTEGRITY);
+    expect(result.exitCode).not.toBe(EXIT_USAGE);
     expect(envelope(result).error.code).toBe("WRITE_REFUSED");
     expect(pids(f.pidLog)).toHaveLength(0);
     expect(eventCount(f.databasePath)).toBe(before);
@@ -637,7 +640,8 @@ describe("the door's own checks, driven rather than assumed", () => {
     const before = eventCount(f.databasePath);
     const result = await call(f, requestFile(f.dir, { taskId: f.taskId, attempt: 2 }), "json");
 
-    expect(result.exitCode).toBe(EXIT_USAGE);
+    expect(result.exitCode).toBe(EXIT_INTEGRITY);
+    expect(result.exitCode).not.toBe(EXIT_USAGE);
     expect(envelope(result).error.code).toBe("WRITE_REFUSED");
     expect(pids(f.pidLog)).toHaveLength(0);
     expect(eventCount(f.databasePath)).toBe(before);

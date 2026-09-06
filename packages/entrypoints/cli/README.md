@@ -177,7 +177,7 @@ envelope on stderr.
 | `2`  | The request was malformed: bad command, option, or filter — or it named an attempt that had already ended (`TASK_TERMINAL`, printed as a document). |
 | `4`  | Nothing is there to act on, from either of two sources: the ledger holds no such task, worker or attempt (an envelope on stderr), or the ledger holds the attempt and the engine answered that it holds no invocation at its address (`INVOCATION_NOT_FOUND`, printed as a document on stdout). Not a retry loop: confirm the endpoint is registered, then ask once more — the ledger remains the authority on what the task did. |
 | `5`  | The ledger could not be read, the engine could not be reached, or the effect's postcondition could not be established (`POSTCONDITION_UNKNOWN`, printed as a document, nothing appended). |
-| `6`  | The ledger is not trustworthy: integrity check failed.        |
+| `6`  | The recorded history will not carry this write: an integrity check failed, or a write door — `tool-call` or a lifecycle verb — refused because the ledger disagrees with the coordinates the request named (`WRITE_REFUSED`). Both write doors answer with this code. Nothing about the invocation was wrong, so it is neither a `2` to argue with nor a `5` to retry. |
 | `7`  | Another caller holds this tool coordinate.                    |
 | `8`  | This engine does not serve the lifecycle verb that was asked. |
 
