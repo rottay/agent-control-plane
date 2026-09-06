@@ -92,7 +92,7 @@ export const API_ROUTE_PATTERNS: readonly ApiRoutePattern[] = Object.freeze(
  * plane, which did not change when the first write route arrived. A route that
  * accepts a write is named in `API_WRITE_ROUTES` below and is the exception the
  * table makes visible, rather than a widening of this one that would quietly
- * reclassify all nine reads.
+ * reclassify every read this table declares.
  */
 export const API_ALLOWED_METHODS = Object.freeze(["GET"] as const);
 export type ApiAllowedMethod = (typeof API_ALLOWED_METHODS)[number];
@@ -103,27 +103,27 @@ export type ApiAllowedMethod = (typeof API_ALLOWED_METHODS)[number];
  * The plane was GET-only through P8-8C, and the honest way to record its first
  * exception is a second closed list rather than a softened first one. A reader
  * asking "what can mutate?" gets one short answer here; a reader asking "is
- * this route a read?" still gets the unchanged answer above. One route is in
- * this table, and adding a second is a visible edit to a list whose whole
- * purpose is to be short.
+ * this route a read?" still gets the unchanged answer above. The table is
+ * separate **so that** growth is a visible edit rather than a method quietly
+ * appearing on a route — which is the whole of the guarantee, and it holds at
+ * any length.
+ *
+ * This block counted itself twice and was wrong both times: it said "one route
+ * is in this table" while there were three, and a second docblock stacked
+ * beneath it said "now three" over four entries. Two stale sentences describing
+ * one array is what a cardinal in a comment costs. The property is stated
+ * without one now, and the array below is the only place the members are named.
+ *
+ * The members are not alike, and the difference is worth stating where the
+ * table is read. `initiativeRoadmap` and `accountActions` record a decision the
+ * caller had already made; `taskToolCalls` makes this process start a child and
+ * speak a protocol to it, and `taskLifecycle` speaks to an execution engine
+ * about an invocation already running. That is why the API contract version
+ * moves with those two, and why they are the only places in this plane where
+ * process-start authority exists at all.
  *
  * The value is the route **name**, not the pattern, so the two tables cannot
  * disagree about a path: the pattern always comes from `API_ROUTES`.
- */
-/**
- * The write routes, frozen — now three (V2-B4b stage 3C).
- *
- * The table grows **visibly**, which is the point of keeping it separate from
- * `API_ALLOWED_METHODS`: a reader asking "what can mutate?" still gets a short
- * answer they can read in one glance, and adding to it is an edit that shows
- * up in review rather than a method quietly appearing on a route.
- *
- * The third is not like the first two, and the difference is worth stating
- * where the table is read. `initiativeRoadmap` and `accountActions` record a
- * decision the caller had already made; `taskToolCalls` makes this process
- * start a child and speak a protocol to it. That is why the API contract
- * version moves with it, and why the route is the only place in this plane
- * where process-start authority exists at all.
  */
 export const API_WRITE_ROUTES = Object.freeze([
   "initiativeRoadmap",

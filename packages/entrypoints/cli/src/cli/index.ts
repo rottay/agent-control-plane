@@ -360,6 +360,23 @@ const COMMANDS: readonly CommandSpec[] = [
   },
 ];
 
+/**
+ * The names this CLI answers to, derived from the table that declares them.
+ *
+ * Derived rather than restated (old-V2 R1). A second list of the same names is
+ * a list that goes stale in one direction only: the banner would keep printing
+ * a verb the table had dropped, or a verb added to the table would never reach
+ * whatever was checking the other copy. The suite compares this against the
+ * banner's command column and against `SURFACE_MAP`, so a command added here
+ * reaches both checks without either being edited.
+ *
+ * It is deliberately not re-exported from the package barrel: this is material
+ * for the suite and the surface map, not part of `@acp/cli`'s public surface.
+ */
+export const CLI_COMMAND_NAMES: readonly string[] = Object.freeze(
+  COMMANDS.map((command) => command.name),
+);
+
 const USAGE = ((): string => {
   const width = COMMANDS.reduce(
     (widest, command) =>

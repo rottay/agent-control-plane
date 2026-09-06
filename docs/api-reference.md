@@ -9,9 +9,16 @@ a route named here that the table does not carry fails, and a route in the
 table that this document omits fails. It also asserts that every response and
 query schema named below is exported by `@acp/protocol`.
 
-The parity suite remains the behavioral authority — it proves the gateway, the
-CLI and the console agree route by route, including ordering, pagination,
-cursors and redaction. This document is the readable form of the same table.
+The parity suite is the behavioral authority **where it reaches**, and it does
+not reach every route. Eleven of the twenty-four arms below are compared in full
+against an independently built CLI-side producer, including ordering,
+pagination, cursors and redaction; `eventStream` GET is compared in part, on one
+frame's item; `health` has no ledger content and so has no CLI build to compare
+against, and is checked as the contract's declared non-ledger exception instead.
+The remaining eleven arms — `taskLifecycle` GET, and the ten belonging to the
+eight initiative and account routes — have no CLI-side comparison at all. The
+`CLI` column below says which arms a command answers; that a command answers an
+arm is not by itself a claim that a behavioral comparison exists for it.
 
 ## Conventions
 
@@ -34,28 +41,36 @@ cursors and redaction. This document is the readable form of the same table.
 
 ## Routes
 
-| Route | Methods | Path | Path parameters | Query schema | Response schema |
-| --- | --- | --- | --- | --- | --- |
-| `health` | GET | `/api/v1/health` | — | none | `HealthResponse` |
-| `overview` | GET | `/api/v1/overview` | — | none | `OverviewResponse` |
-| `tasks` | GET | `/api/v1/tasks` | — | `TasksQuery` | `TaskPageResponse` |
-| `taskById` | GET | `/api/v1/tasks/:taskId` | `taskId` (uuid) | none | `TaskDetailResponse` |
-| `workers` | GET | `/api/v1/workers` | — | `WorkersQuery` | `WorkerPageResponse` |
-| `workerByIdentity` | GET | `/api/v1/workers/:identity` | `identity` (worker identity string) | none | `WorkerDetailResponse` |
-| `events` | GET | `/api/v1/events` | — | `EventsQuery` | `EventPageResponse` |
-| `status` | GET | `/api/v1/status` | — | none | `LedgerStatusResponse` |
-| `integrity` | GET | `/api/v1/integrity` | — | none | `IntegrityResult` |
-| `initiatives` | GET | `/api/v1/initiatives` | — | none | `InitiativePortfolioResponse` |
-| `initiativeById` | GET | `/api/v1/initiatives/:initiativeId` | `initiativeId` (uuid) | none | `InitiativeDetailResponse` |
-| `initiativeRoadmap` | GET, POST | `/api/v1/initiatives/:initiativeId/roadmap` | `initiativeId` (uuid) | none | `InitiativeRoadmapResponse` / `RoadmapVersionWriteResponse` |
-| `initiativeRoadmapContent` | GET | `/api/v1/initiatives/:initiativeId/roadmap/content` | `initiativeId` (uuid) | `RoadmapContentQuery` | `RoadmapContentResponse` |
-| `initiativeEvents` | GET | `/api/v1/initiatives/:initiativeId/events` | `initiativeId` (uuid) | none | `InitiativeTimelineResponse` |
-| `initiativeAgents` | GET | `/api/v1/initiatives/:initiativeId/agents` | `initiativeId` (uuid) | none | `InitiativeAgentsResponse` |
-| `accounts` | GET | `/api/v1/accounts` | — | none | `AccountsResponse` |
-| `accountActions` | GET, POST | `/api/v1/accounts/:accountId/actions` | `accountId` (bounded label) | none | `AccountActionsResponse` / `AccountActionWriteResponse` |
-| `eventStream` | GET | `/api/v1/events/stream` | — | `StreamQuery` | `StreamFrame` (Server-Sent Events) |
-| `taskToolCalls` | GET, POST | `/api/v1/tasks/:taskId/tool-calls` | `taskId` (uuid) | `ToolCallsQuery` | `ToolCallPageResponse` / `ToolCallExecuteResponse` |
-| `taskLifecycle` | GET, POST | `/api/v1/tasks/:taskId/lifecycle` | `taskId` (uuid) | none | `TaskLifecycleResponse` / `TaskLifecycleExecuteResponse` |
+| Route | Methods | Path | Path parameters | Query schema | Response schema | CLI |
+| --- | --- | --- | --- | --- | --- | --- |
+| `health` | GET | `/api/v1/health` | — | none | `HealthResponse` | — |
+| `overview` | GET | `/api/v1/overview` | — | none | `OverviewResponse` | `overview`:GET |
+| `tasks` | GET | `/api/v1/tasks` | — | `TasksQuery` | `TaskPageResponse` | `tasks`:GET |
+| `taskById` | GET | `/api/v1/tasks/:taskId` | `taskId` (uuid) | none | `TaskDetailResponse` | `task`:GET |
+| `workers` | GET | `/api/v1/workers` | — | `WorkersQuery` | `WorkerPageResponse` | `workers`:GET |
+| `workerByIdentity` | GET | `/api/v1/workers/:identity` | `identity` (worker identity string) | none | `WorkerDetailResponse` | `worker`:GET |
+| `events` | GET | `/api/v1/events` | — | `EventsQuery` | `EventPageResponse` | `events`:GET |
+| `status` | GET | `/api/v1/status` | — | none | `LedgerStatusResponse` | `status`:GET |
+| `integrity` | GET | `/api/v1/integrity` | — | none | `IntegrityResult` | `integrity`:GET |
+| `initiatives` | GET | `/api/v1/initiatives` | — | none | `InitiativePortfolioResponse` | — |
+| `initiativeById` | GET | `/api/v1/initiatives/:initiativeId` | `initiativeId` (uuid) | none | `InitiativeDetailResponse` | — |
+| `initiativeRoadmap` | GET, POST | `/api/v1/initiatives/:initiativeId/roadmap` | `initiativeId` (uuid) | none | `InitiativeRoadmapResponse` / `RoadmapVersionWriteResponse` | — |
+| `initiativeRoadmapContent` | GET | `/api/v1/initiatives/:initiativeId/roadmap/content` | `initiativeId` (uuid) | `RoadmapContentQuery` | `RoadmapContentResponse` | — |
+| `initiativeEvents` | GET | `/api/v1/initiatives/:initiativeId/events` | `initiativeId` (uuid) | none | `InitiativeTimelineResponse` | — |
+| `initiativeAgents` | GET | `/api/v1/initiatives/:initiativeId/agents` | `initiativeId` (uuid) | none | `InitiativeAgentsResponse` | — |
+| `accounts` | GET | `/api/v1/accounts` | — | none | `AccountsResponse` | — |
+| `accountActions` | GET, POST | `/api/v1/accounts/:accountId/actions` | `accountId` (bounded label) | none | `AccountActionsResponse` / `AccountActionWriteResponse` | — |
+| `eventStream` | GET | `/api/v1/events/stream` | — | `StreamQuery` | `StreamFrame` (Server-Sent Events) | — |
+| `taskToolCalls` | GET, POST | `/api/v1/tasks/:taskId/tool-calls` | `taskId` (uuid) | `ToolCallsQuery` | `ToolCallPageResponse` / `ToolCallExecuteResponse` | `tool-calls`:GET, `tool-call`:POST |
+| `taskLifecycle` | GET, POST | `/api/v1/tasks/:taskId/lifecycle` | `taskId` (uuid) | none | `TaskLifecycleResponse` / `TaskLifecycleExecuteResponse` | `cancel`:POST, `attach`:POST |
+
+Two commands have no row above, because they have no route. `submission`
+re-elects a daemon config's route and prints the document; `switch-decision`
+folds recorded provider pressure into a decision and prints it. Neither is
+served by this plane, and both are recorded — with the reason — in `SURFACE_MAP`
+(`packages/kernel/protocol/src/surface-map/index.ts`), which is the single place
+the CLI/API relation is declared and the table the architecture fence checks the
+`CLI` column against, both ways.
 
 ## The writes
 

@@ -60,6 +60,15 @@ than trusting this table.
 
   A reader asking "what can mutate?" gets one short answer; a reader asking
   "is this route a read?" gets the unchanged one.
+- **The CLI/API relation is declared, not assumed.** `SURFACE_MAP` names every
+  pairing between a CLI command and an arm of the route table, and every arm or
+  command that has no counterpart — each of those with the reason recorded
+  rather than left as a silence. It is a compile, test and documentation
+  contract with **no runtime role**: no dispatch, no help output and no request
+  handling reads it. `surfaceDefects` takes the tables it measures as arguments,
+  so a test can hand it a route table the map has never seen and demand the new
+  arm be named. ADR 0049 records the decision; `docs/api-reference.md` carries
+  the same relation as a `CLI` column the architecture fence checks both ways.
 - **Explicit emptiness.** The overview distinguishes `EMPTY` from `UNAVAILABLE`
   and `ACTIVE` from `DEGRADED`, and states in data that routing, accounts and
   leases do not exist in this phase.

@@ -29,16 +29,29 @@ is not adoption: nothing in this package is used by any real operation.
 acp <command> --database <path> [options]
 ```
 
-| Command             | What it answers                                              |
-| ------------------- | ------------------------------------------------------------ |
-| `overview`          | One screen: state, counts, integrity verdict and capabilities |
-| `tasks`             | Task projections, filtered and cursor paginated                |
-| `task <task-id>`    | One task with its most recent events                           |
-| `workers`           | Observed worker identities                                     |
-| `worker <identity>` | One worker with its most recent events                         |
-| `events`            | Ledger events in sequence order                                |
-| `status`            | Pragmas, applied migrations and projection metadata            |
-| `integrity`         | Hash chain, schema shape and projection verification           |
+| Command             | What it answers                                                          |
+| ------------------- | ------------------------------------------------------------------------ |
+| `overview`          | One screen: state, counts, integrity verdict and capabilities             |
+| `tasks`             | List task projections, filtered and cursor paginated                      |
+| `task <task-id>`    | One task with its most recent events                                      |
+| `workers`           | List observed worker identities                                           |
+| `worker <identity>` | One worker with its most recent events                                    |
+| `events`            | List ledger events in sequence order                                      |
+| `status`            | Ledger pragmas, applied migrations and projection metadata                |
+| `integrity`         | Verify the hash chain, the schema and the projections                     |
+| `submission`        | Re-elect a daemon config's route by policy and print the updated document |
+| `switch-decision`   | Fold recorded provider pressure into a switch decision and print it       |
+| `tool-calls`        | List the tool calls recorded against one task                             |
+| `tool-call`         | Execute one explicit tool call and record what it did                     |
+| `cancel`            | Stop a durable invocation and settle the ledger once                      |
+| `attach`            | Rejoin a durable invocation already in flight                             |
+
+The table above said eight while there were fourteen: `submission`,
+`switch-decision`, `tool-calls`, `tool-call`, `cancel` and `attach` all landed
+without it. Where each command meets the API — and which two meet nothing,
+because the plane serves no route that plans or decides — is declared in
+`SURFACE_MAP` (`packages/kernel/protocol/src/surface-map/index.ts`), the one
+place the CLI/API relation is written down.
 
 Global options:
 

@@ -81,11 +81,22 @@ export const VOLATILE_FIELDS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Every field of every one of the twelve frozen routes, bound to its source.
+ * Every field of every route `API_ROUTES` declares, bound to its source.
+ *
+ * The claim is over the frozen table, not over a count: this docblock said
+ * "twelve" from the day the table held twelve until the day it held twenty, and
+ * nothing failed, because `bindingCoversAllRoutes()` reads `API_ROUTES` itself
+ * and can never be handed a table that disagrees with it. A sentence that names
+ * the table instead of counting it cannot go stale that way.
  *
  * `health` is the only route with no ledger content, and it is declared in full
  * rather than omitted — an unlisted route would let "every route is
  * parity-proven" be true of a table that covered all but one.
+ *
+ * `SURFACE_MAP` in `../surface-map/index.js` is this contract's sibling and not
+ * part of it: this table binds a rendered field to the source it comes from,
+ * that one binds a CLI command to an arm of the route table. They share the
+ * `ApiRouteName` key and nothing else.
  */
 function bind(field: string, source: ParitySource, because?: string): FieldBinding {
   return because === undefined ? { field, source } : { field, source, because };

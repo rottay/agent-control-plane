@@ -74,6 +74,18 @@ export {
   hasObservationPrivacyViolation,
 } from "./parity/index.js";
 
+/**
+ * The CLI/API surface map (old-roadmap R1).
+ *
+ * The sibling of the parity contract above, and deliberately a sibling rather
+ * than part of it: that table binds a rendered field to its source, this one
+ * binds a command to an arm of the route table. They share only the route name.
+ *
+ * A compile, test and documentation contract with no runtime role — ADR 0049.
+ */
+export type { SurfaceEntry, SurfaceEquivalence, SurfaceMapInput } from "./surface-map/index.js";
+export { SURFACE_MAP, surfaceDefects } from "./surface-map/index.js";
+
 export {
   API_ERROR_CODES,
   ApiError,

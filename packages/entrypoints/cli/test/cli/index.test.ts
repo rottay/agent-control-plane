@@ -25,15 +25,19 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  API_ROUTES,
+  API_WRITE_ROUTES,
   EventPageResponse,
   IntegrityResult,
   LEDGER_CONTRACT_VERSION,
   LedgerStatusResponse,
   OverviewResponse,
+  SURFACE_MAP,
   TaskDetailResponse,
   TaskPageResponse,
   WorkerDetailResponse,
   WorkerPageResponse,
+  surfaceDefects,
 } from "@acp/protocol";
 import { openLedger } from "@acp/ledger";
 import { ToolCallExecuteRequest } from "@acp/protocol";
@@ -49,6 +53,7 @@ import {
 import { composeSubmission } from "@acp/runtime";
 
 import {
+  CLI_COMMAND_NAMES,
   EXIT_INTEGRITY,
   EXIT_INTERNAL,
   EXIT_NOT_FOUND,
@@ -277,6 +282,27 @@ function tamperWithStoredDigest(path: string): void {
 // Usage surface
 // ---------------------------------------------------------------------------
 
+/**
+ * The command names the usage banner actually prints, sorted.
+ *
+ * Read out of the `Commands:` block rather than searched for anywhere in the
+ * output: a name that appears in a filter description or an example is not the
+ * banner offering that command.
+ */
+function bannerCommandNames(stdout: string): readonly string[] {
+  const lines = stdout.split("\n");
+  const start = lines.indexOf("Commands:");
+  const names: string[] = [];
+  for (let index = start + 1; index < lines.length && start !== -1; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.trim().length === 0) {
+      break;
+    }
+    names.push(line.trim().split(/\s+/)[0] ?? "");
+  }
+  return names.sort();
+}
+
 describe("usage", () => {
   it("prints help on --help and exits zero", async () => {
     const result = await invoke(["--help"]);
@@ -293,23 +319,14 @@ describe("usage", () => {
     // And the closing paragraph no longer claims the CLI never writes.
     expect(result.stdout).toContain("Three verbs write, and they");
     expect(result.stdout).not.toContain("This CLI opens the ledger read-only and never writes");
-    for (const command of [
-      "overview",
-      "tasks",
-      "task",
-      "workers",
-      "worker",
-      "events",
-      "status",
-      "integrity",
-      "tool-calls",
-      "tool-call",
-      // V2 L2.
-      "cancel",
-      "attach",
-    ]) {
-      expect(result.stdout).toContain(command);
-    }
+    // Old-V2 R1, F7. This was a `toContain` sweep over twelve of the fourteen
+    // names, against the whole of stdout: `task` was satisfied by the word
+    // `tasks`, `submission` and `switch-decision` were absent from the list
+    // entirely, and a command that stopped being printed could still pass so
+    // long as its letters appeared somewhere. Replaced by set equality between
+    // the command column the banner prints and the names `COMMANDS` declares,
+    // so the two can neither diverge nor be quietly reduced.
+    expect(bannerCommandNames(result.stdout)).toEqual([...CLI_COMMAND_NAMES].sort());
   });
 
   it("reports both contract versions and the schema version", async () => {
@@ -385,6 +402,89 @@ describe("usage", () => {
 // ---------------------------------------------------------------------------
 // Read-only posture
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The CLI half of the surface map (old-V2 R1)
+// ---------------------------------------------------------------------------
+//
+// The map itself lives in `@acp/protocol`, which cannot see `COMMANDS`; the
+// protocol suite therefore checks it with `commands: null` and the CLI half is
+// checked here, where both tables are visible at once. Every probe mutates the
+// **input**, so each one proves the checker read the table it was handed rather
+// than a list it remembered.
+
+describe("the surface map names every command this CLI has", () => {
+  it("finds no defect with both halves in view", () => {
+    expect(
+      surfaceDefects({
+        entries: SURFACE_MAP,
+        routes: API_ROUTES,
+        writeRoutes: API_WRITE_ROUTES,
+        commands: CLI_COMMAND_NAMES,
+      }),
+    ).toEqual([]);
+  });
+
+  it("names a command the map has left out", () => {
+    // F6, and the direction nothing in this repository had: `submission` and
+    // `switch-decision` were absent from the old banner sweep, and no test
+    // anywhere noticed that the CLI had two verbs the documentation did not.
+    const withoutDecision = SURFACE_MAP.filter(
+      (entry) => entry.command !== "switch-decision",
+    );
+    const found = surfaceDefects({
+      entries: withoutDecision,
+      routes: API_ROUTES,
+      writeRoutes: API_WRITE_ROUTES,
+      commands: CLI_COMMAND_NAMES,
+    });
+    expect(found.some((sentence) => sentence.includes("switch-decision"))).toBe(true);
+  });
+
+  it("names a command the injected list declares and the map has never seen", () => {
+    // F7's probe, in the form a test can run: adding a command to `COMMANDS`
+    // adds it to `CLI_COMMAND_NAMES`, which is derived rather than restated, so
+    // the banner assertion follows it automatically and this assertion is the
+    // one that goes red until the map admits the new verb.
+    const found = surfaceDefects({
+      entries: SURFACE_MAP,
+      routes: API_ROUTES,
+      writeRoutes: API_WRITE_ROUTES,
+      commands: [...CLI_COMMAND_NAMES, "reconcile"],
+    });
+    expect(found.some((sentence) => sentence.includes("reconcile"))).toBe(true);
+  });
+
+  it("names a mapped command this CLI does not have", () => {
+    // F2, the CLI direction: `accounts` is a plausible verb — the route exists
+    // and the owner file is real — and it is not a command.
+    const invented = [
+      ...SURFACE_MAP,
+      {
+        command: "accounts",
+        route: "accounts",
+        method: "GET",
+        equivalence: "PROJECTION",
+      } as (typeof SURFACE_MAP)[number],
+    ];
+    const found = surfaceDefects({
+      entries: invented,
+      routes: API_ROUTES,
+      writeRoutes: API_WRITE_ROUTES,
+      commands: CLI_COMMAND_NAMES,
+    });
+    expect(found.some((sentence) => sentence.includes("accounts"))).toBe(true);
+  });
+
+  it("derives the command names rather than restating them", () => {
+    // The names are `COMMANDS.map(c => c.name)`, so the banner, the map check
+    // and this assertion cannot disagree about what the CLI offers.
+    expect(new Set(CLI_COMMAND_NAMES).size).toBe(CLI_COMMAND_NAMES.length);
+    for (const name of CLI_COMMAND_NAMES) {
+      expect(name.length).toBeGreaterThan(0);
+    }
+  });
+});
 
 describe("read-only posture", () => {
   it("opens the ledger query-only", async () => {

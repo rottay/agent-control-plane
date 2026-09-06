@@ -6940,6 +6940,61 @@ const V2B5R9_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * Old-V2 R1: the CLI/API surface map.
+ *
+ * The draft asserts `CLI/API equivalentes` and nothing checked it. This packet
+ * makes the relation a declared artifact — `SURFACE_MAP` in the one package both
+ * doors may name — and gives it three checks: the map is total over the live
+ * route table, total over the CLI's own command list, and agrees both ways with
+ * the `CLI` column this packet appends to the API reference.
+ *
+ * **Fourteen paths, three of them novel:** `surface-map/index.ts`, its mirrored
+ * test, and ADR 0049. The two new protocol modules need no build-graph
+ * declaration: `protocol/tsconfig.json` includes `src/**` and its test tsconfig
+ * includes `**` plus `../src/**`, both globs.
+ *
+ * **Pins that move.** ADR corpus 48 -> 49; the `V2*_WRITE_SET` constants 55 ->
+ * 56; `docs/api-reference.md`'s route table 6 columns -> 7; the api-reference
+ * law's `notes.push` gains the CLI-pairing count.
+ *
+ * **Pins that do not.** `API_CONTRACT_VERSION` stays `0.13.0` and that is this
+ * packet's own claim: the registry adds no route, no method, no field, no query
+ * parameter, no error code and no wire shape. `API_ROUTES` stays 20,
+ * `API_WRITE_ROUTES` 4, `PARITY_BINDINGS` 20 keys in the same order,
+ * `API_ERROR_CODES` 15, the `EXIT_*` codes 8, `PATH_SCOPED_LAWS` 111 and the
+ * `requireScope` call sites 111 — the api-reference law asserts two named files
+ * and is deliberately not path-scoped, so extending it moves neither number.
+ * `EXPIRED_LITERALS` and its printed count, `AUTHORITY_LITERALS`,
+ * `TOPOLOGY_ACTIVE_TREES`, `TEST_ONLY_DOMAINS`, the parity deep aliases, the
+ * duplication register, every manifest and the lockfile are untouched.
+ *
+ * **What this packet does not do.** `refusalExitCode` is not touched: the CLI's
+ * total answer to every API error code is owed to R1b, before backend closure.
+ * The behavioral proof that every `PROJECTION` arm has a live comparison is the
+ * closure gate's. The two adjacent CLI README claims (nothing serializes two
+ * runs of `tool-call`; every printed document is schema-parsed) are recorded as
+ * debts and left exactly as they are. No console path is in scope.
+ *
+ * Record: `docs/architecture/0049-one-map-names-what-each-door-answers.md`.
+ */
+const V2BE_R1_WRITE_SET = [
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/README.md",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "docs/api-reference.md",
+  "docs/architecture/0049-one-map-names-what-each-door-answers.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7099,6 +7154,7 @@ const WRITE_SET = [
   ...V2B1F5_WRITE_SET,
   ...V2B5R13_WRITE_SET,
   ...V2B5R9_WRITE_SET,
+  ...V2BE_R1_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -19915,10 +19971,14 @@ if (securityDoc === null) {
 // it described when it was written. Both directions, so neither a route added
 // without documentation nor a documented route that no longer exists can pass.
 //
-// The parity suite stays the behavioral authority — it proves the gateway, the
-// CLI and the console agree route by route. This law proves only that the
-// readable artifact and the frozen table name the same set, which is the part a
-// documentation reader depends on and the part no test was asserting.
+// The parity suite stays the behavioral authority where it reaches, which is
+// eleven of the twenty-four arms in full and `eventStream` GET in part; the ten
+// arms of the initiative and account routes have no CLI-side comparison, and
+// `health` has no ledger content to build one from. This law proves something
+// narrower and total: that the readable artifact and the frozen table name the
+// same set of routes, and that the CLI column agrees with `SURFACE_MAP` both
+// ways. Naming a pairing here is not a claim that it is behaviorally compared —
+// computing that is owed to a later gate, not asserted by this one.
 //
 // The route table is read out of the protocol source rather than imported: this
 // fence is dependency-free and runs before any build, so the compiled package
@@ -19991,11 +20051,106 @@ if (apiReference === null) {
           fail("docs/api-reference.md documents " + name + " as read-only; API_WRITE_ROUTES names it a write route");
         }
       }
+      // --- and the CLI column is a checked projection of SURFACE_MAP -------
+      //
+      // Old-V2 R1, Q8. The document grew a seventh column naming which command
+      // answers each arm. A column no law reads is a column that describes the
+      // CLI it was written beside, so this half asserts both directions against
+      // the one place the relation is declared — without copying the registry
+      // here or adding a second table for a reader to keep in step.
+      //
+      // Read as text, for the reason the route table above is: this fence runs
+      // before any build and cannot import the module it checks.
+      let documentedPairings = 0;
+      const surfaceSource = readIfPresent("packages/kernel/protocol/src/surface-map/index.ts");
+      if (surfaceSource === null) {
+        fail(
+          "packages/kernel/protocol/src/surface-map/index.ts is missing; the API reference's CLI column has nothing to be checked against",
+        );
+      } else {
+        const mapAnchor = "export const SURFACE_MAP: readonly SurfaceEntry[] = Object.freeze([";
+        const mapStart = surfaceSource.indexOf(mapAnchor);
+        const mapEnd = mapStart === -1 ? -1 : surfaceSource.indexOf("]);", mapStart);
+        if (mapStart === -1 || mapEnd === -1) {
+          fail(
+            "packages/kernel/protocol/src/surface-map/index.ts no longer declares SURFACE_MAP as a frozen array literal",
+          );
+        } else {
+          const entries = [
+            ...surfaceSource
+              .slice(mapStart, mapEnd)
+              .matchAll(
+                /^\s{2}entry\(\s*(null|"[^"]*")\s*,\s*(null|"[^"]*")\s*,\s*(null|"[^"]*")\s*,\s*"([A-Z_]+)"/gm,
+              ),
+          ];
+          if (entries.length === 0) {
+            // The same guard `table.size === 0` above exists for: a literal that
+            // stopped parsing would make this law agree with nothing, loudly.
+            fail("SURFACE_MAP parsed as zero entries; the API reference CLI column law would pass vacuously");
+          } else {
+            const unquote = (token) => (token === "null" ? null : token.slice(1, -1));
+            const registry = new Set();
+            for (const match of entries) {
+              const command = unquote(match[1]);
+              const route = unquote(match[2]);
+              const method = unquote(match[3]);
+              if (command !== null && route !== null && method !== null) {
+                registry.add(route + " " + command + " " + method);
+              }
+            }
+            const documentedPairs = new Set();
+            // The same row shape the bijection above uses, deliberately: this
+            // document carries a second table keyed by route name too, and a
+            // scan loose enough to read that one would take its evidence from
+            // whichever table happened to answer.
+            for (const line of apiReference.split("\n")) {
+              const named = /^\| `([A-Za-z_$][\w$]*)` \| ([^|]+) \| `([^`]+)` \|/.exec(line);
+              if (named === null || !table.has(named[1])) {
+                continue;
+              }
+              const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+              const cell = cells[cells.length - 1] ?? "";
+              const tokens = [...cell.matchAll(/`([^`]+)`:(GET|POST)/g)];
+              if (cell !== "\u2014" && tokens.length === 0) {
+                // A typo, or a row that lost the column, degrades to a failure
+                // rather than to silence.
+                fail(
+                  "docs/api-reference.md gives " +
+                    named[1] +
+                    " a CLI cell that is neither an em dash nor a `command`:METHOD list: " +
+                    cell,
+                );
+                continue;
+              }
+              for (const token of tokens) {
+                documentedPairs.add(named[1] + " " + token[1] + " " + token[2]);
+              }
+            }
+            for (const pairing of registry) {
+              if (!documentedPairs.has(pairing)) {
+                fail("docs/api-reference.md omits the CLI pairing SURFACE_MAP declares: " + pairing);
+              }
+            }
+            for (const pairing of documentedPairs) {
+              if (!registry.has(pairing)) {
+                fail(
+                  "docs/api-reference.md documents the CLI pairing " +
+                    pairing +
+                    ", which SURFACE_MAP does not carry",
+                );
+              }
+            }
+            documentedPairings = documentedPairs.size;
+          }
+        }
+      }
       notes.push(
         table.size +
           " routes documented in docs/api-reference.md, a bijection with API_ROUTES, with " +
           writes.size +
-          " write routes agreeing both ways",
+          " write routes agreeing both ways and " +
+          documentedPairings +
+          " CLI pairings agreeing with SURFACE_MAP both ways",
       );
     }
   }

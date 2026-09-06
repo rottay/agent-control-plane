@@ -140,7 +140,7 @@ function registerGet(
  * reuses the **same** `OTHER_METHODS` list, so the per-path method law is
  * byte-unchanged and the stream refuses `POST`/`PUT`/`PATCH`/`DELETE` exactly
  * as every other read does. `API_ALLOWED_METHODS` stays `["GET"]` and
- * `API_WRITE_ROUTES` stays two, because a stream is a read.
+ * `API_WRITE_ROUTES` is untouched, because a stream is a read.
  *
  * The one thing that cannot be shared is `guarded`: it sends `200` with the
  * handler's return value, and there is no return value here — the handler
@@ -850,7 +850,9 @@ export function registerRoutes(
     bearer,
   );
 
-  // The one write route. GET is unchanged; POST is the plane's first write.
+  // `initiativeRoadmap`, the plane's first write route. GET is unchanged; POST
+  // was the first POST this plane ever answered, and others have joined it
+  // since — `API_WRITE_ROUTES` is where they are all named.
   registerGetAndPost(
     app,
     API_ROUTES.initiativeRoadmap,
