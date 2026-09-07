@@ -174,11 +174,30 @@ than an attribute — which is what the OTel data model calls it — and
 `toLangfuseTrace` forwards attributes and nothing else, so the tree reaches the
 neutral surface and stops there. The translator needed no edit and got none.
 
-**No production sink exists, and that is a declared state rather than an
-oversight.** `emitTelemetry` has zero callers in any `src/`: this package
-aligns the keys and adds no exporter, no port and no edge. A sink is owed to
-R11 and to the owner's dependency answer, which the frozen dependency graph
-makes an owner decision rather than a writer's.
+**The sink exists, behind a port, in another package — and still nothing calls
+it.** R11 answered the dependency question this paragraph used to be waiting on,
+and the answer was *no dependency*: `packages/edges/telemetry` serializes
+OTLP/JSON by hand, declares this package and no external one, and posts to one
+admitted loopback endpoint behind `TelemetryExporterPort`. It types on
+`TelemetryBatch`, so the brand does its work at the one surface in this
+repository that actually sends bytes: an exporter cannot receive a record that
+skipped the gate above.
+
+The direction is the lawful one and is enforced by name. This package does not
+know an exporter exists — it names `@acp/telemetry` nowhere, its manifest
+forbids it, and so do the runtime's and the accounts'. No production source
+anywhere in the tree names it either, which is what makes "a collector falling
+over cannot affect routing, execution or recovery" a property of the import
+graph rather than a promise.
+
+**`emitTelemetry` still has zero callers in any `src/`, including the edge's.**
+The exporter is a sink with nothing pouring into it: binding one to a walk means
+deciding the batch boundary, the cadence, the backpressure and what happens to
+an unexported tail at shutdown, and the page boundary is not plumbing —
+`unresolvedCausationCount` is a direct function of it. That packet is R11b, and
+so is the drill restriction 3 really wants: a real walk with the exporter bound
+to a dead endpoint, whose ledger chain is byte-identical to the same walk with
+no exporter at all. See ADR 0055.
 
 **The baseline measures the walk that actually runs.** R9b paid the debt this
 paragraph used to record. `computeBaseline` reads spend off

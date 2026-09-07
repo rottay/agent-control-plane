@@ -90,7 +90,7 @@ const PACKAGE_STRATA = Object.freeze({
   kernel: ["contracts", "protocol"],
   persistence: ["ledger"],
   domains: ["runtime", "accounts", "observation"],
-  edges: ["providers", "durability", "tools"],
+  edges: ["providers", "durability", "tools", "telemetry"],
   entrypoints: ["daemon", "gateway", "cli", "console"],
 });
 
@@ -7327,6 +7327,101 @@ const V2B5R9B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * Old-V2 B5, R11: a vendor endpoint is an edge behind a port.
+ *
+ * Row 9 of the boundary audit, under the owner ruling of 2026-09-07. The ask
+ * that row carried — an owner authorisation for a telemetry dependency — is
+ * DISSOLVED rather than granted: the OTLP/JSON encoding is hand-rolled, on the
+ * precedent this repository already set for MCP and for two provider wire
+ * protocols, and the packet adds ZERO external packages. The absence of a
+ * lockfile package delta is part of the evidence, not an accident of it.
+ *
+ * **What lands.** `packages/edges/telemetry`: a closed contract of six export
+ * refusals, one admission that is the only URL-parsing site, one pure
+ * serializer, one fetch site, and `TelemetryExporterPort` over
+ * `@acp/observation`'s `TelemetryBatch`. The port lives in the edge rather than
+ * in the kernel, exactly as `ToolProtocolPort` does and for the reason that
+ * docblock states: a kernel port earns its place when an independent party must
+ * agree with it, and this one has none yet.
+ *
+ * **What does not land, and is said rather than left to be inferred.** The walk
+ * wiring is R11b: `emitTelemetry` keeps zero callers in any `src/`, which is a
+ * measured fact this write-set preserves rather than a law anything asserts.
+ * The dead-endpoint walk drill — a real walk with the exporter bound to a dead
+ * collector, asserting the ledger chain is byte-identical to the same walk with
+ * no exporter — is owed to that packet, because it needs a caller. And no
+ * capability is CONFIRMED: `SOCKET_EXERCISED` and `LIVE_CONFORMANCE` read NONE,
+ * `CAPABILITIES` reads UNKNOWN, and the record law below is what keeps the
+ * README from saying otherwise.
+ *
+ * **Why three gateway paths.** The serializer's unit evidence lives in the edge
+ * over typed literals projected by the real `emitTelemetry`. Its CAUSAL
+ * evidence cannot: driving `buildEvent`, `acquireLease`, `revokeLease`,
+ * `recordTokenObservation`, `recordProviderPressure`, `executeSwitchPlan` and
+ * `settleFailure` over a real disposable ledger needs `@acp/runtime` and
+ * `@acp/ledger`, and this edge is forbidden both by name — which is the
+ * checkable proof of restriction 3 and does not survive being narrowed to
+ * `src/` only. The DT adjudicated the drill into the gateway's already-registered
+ * `telemetry` test-only domain, where C1-C23 already drive exactly those
+ * emitters. The gateway gains ONE devDependency and ONE project reference; no
+ * production graph moves, and no `src/` anywhere names this package.
+ *
+ * **Pins that move.** `PACKAGE_STRATA.edges` 3 -> 4; `P1B_DEPENDENCY_LAW` 9 ->
+ * 10 rows; `PATH_SCOPED_LAWS` and the `requireScope` call sites 112 -> 117;
+ * ADR corpus 54 -> 55; `TOPOLOGY_ACTIVE_TREES` 13 -> 14; the write set gains 17
+ * distinct paths (27 entries, 10 of them duplicates of paths earlier packets
+ * already own).
+ *
+ * **Pins that do not.** `OBSERVATION_PUBLIC_EXPORTS` stays 65 — this packet
+ * adds no observation export and touches no observation source.
+ * `TELEMETRY_ATTRIBUTE_KEYS` stays 18: the exporter mints no vocabulary, it
+ * maps one. `TELEMETRY_REFUSAL_REASONS` stays 2 — export refusals are a
+ * different vocabulary, declared in the edge. `CONTROL_PLANE_EVENT_TYPES` stays
+ * 24. `GATEWAY_TS_REFERENCES` and `GATEWAY_TS_ALIASES` stay exactly where they
+ * are: the reference this packet adds is on the TEST project, whose references
+ * no law pins, and it declares no path mapping.
+ *
+ * **One pin in the probe file moves, and it was found by measurement.** The
+ * barrel-routing probe in `scripts/architecture/roots.test.mjs` pins the routed
+ * set of equality-pinned barrels by equality, and `TELEMETRY_PUBLIC_EXPORTS` is
+ * a seventh — so that set moves 6 -> 7 here, exactly as it moved 5 -> 6 when
+ * the tool edge landed. Routing this barrel through a differently-shaped
+ * expression to stay inside the old pin would slip past the wiring regex and
+ * leave the probe claiming six barrels while seven are pinned.
+ *
+ * Record: `docs/architecture/0055-a-vendor-endpoint-is-an-edge-behind-a-port.md`.
+ */
+const V2B5R11_WRITE_SET = [
+  "packages/edges/telemetry/package.json",
+  "packages/edges/telemetry/tsconfig.json",
+  "packages/edges/telemetry/test/tsconfig.json",
+  "packages/edges/telemetry/README.md",
+  "packages/edges/telemetry/src/index.ts",
+  "packages/edges/telemetry/src/contract/index.ts",
+  "packages/edges/telemetry/src/admission/index.ts",
+  "packages/edges/telemetry/src/otlp/index.ts",
+  "packages/edges/telemetry/src/http/index.ts",
+  "packages/edges/telemetry/src/port/index.ts",
+  "packages/edges/telemetry/test/testing/index.ts",
+  "packages/edges/telemetry/test/contract/index.test.ts",
+  "packages/edges/telemetry/test/admission/index.test.ts",
+  "packages/edges/telemetry/test/otlp/index.test.ts",
+  "packages/edges/telemetry/test/http/index.test.ts",
+  "packages/edges/telemetry/test/port/index.test.ts",
+  "docs/architecture/0055-a-vendor-endpoint-is-an-edge-behind-a-port.md",
+  "tsconfig.base.json",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/index.md",
+  "pnpm-lock.yaml",
+  "packages/domains/observation/README.md",
+  "packages/entrypoints/gateway/package.json",
+  "packages/entrypoints/gateway/test/tsconfig.json",
+  "packages/entrypoints/gateway/test/telemetry/index.test.ts",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7492,6 +7587,7 @@ const WRITE_SET = [
   ...V2BE_R6_WRITE_SET,
   ...V2BER1B_WRITE_SET,
   ...V2B5R9B_WRITE_SET,
+  ...V2B5R11_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -8672,6 +8768,24 @@ const PATH_SCOPED_LAWS = [
     law: "the span context is derived from the causal columns",
     scope: "packages/domains/observation/src/**/*.ts",
   },
+  // V2-B5/R11. Five new path-shaped surfaces, so five new rows: the register
+  // and the `requireScope` call sites both move 112 -> 117, and
+  // `assertPathScopedInventory` fails printing both numbers if only one side of
+  // this edit lands — which is exactly what it did while these rows were
+  // missing.
+  //
+  // The last row is repository-wide on purpose. It is the one that makes
+  // restriction 3 checkable rather than argued: no `src/` anywhere may name the
+  // exporter, so "a dead collector cannot affect routing, execution or
+  // recovery" is a property of the import graph a reader can verify.
+  { law: "the telemetry edge keeps one network authority", scope: "packages/edges/telemetry/{src,test}/**" },
+  { law: "the telemetry edge keeps one admission authority", scope: "packages/edges/telemetry/src/**" },
+  { law: "the telemetry edge's import surface is exact", scope: "packages/edges/telemetry/{src,test}/**" },
+  {
+    law: "the telemetry edge's one fetch site carries no credential and invents no target",
+    scope: "packages/edges/telemetry/src/http/index.ts",
+  },
+  { law: "no production source names the telemetry edge", scope: "packages/*/*/src/**" },
 ];
 
 /**
@@ -9507,7 +9621,14 @@ const P1B_DEPENDENCY_LAW = [
       "@acp/tools",
       "fastify",
     ],
-    devDependencies: ["vitest"],
+    // V2-B5/R11: `@acp/telemetry` is a **devDependency**, and the distinction
+    // is the whole point. The gateway's already-registered `telemetry`
+    // test-only domain is the one place in this repository where the real
+    // production emitters, a real disposable ledger and the telemetry edge can
+    // meet, so the causal serialization drill lives there. Nothing under
+    // `packages/entrypoints/gateway/src/` names it, and the law below over
+    // every `src/` in the tree is what keeps that true rather than customary.
+    devDependencies: ["@acp/telemetry", "vitest"],
     forbidden: ["better-sqlite3"],
   },
   {
@@ -9567,7 +9688,17 @@ const P1B_DEPENDENCY_LAW = [
     devDependencies: ["vitest"],
     // The server package pulls @scarf/scarf, whose postinstall is a network
     // beacon. The 1.7.7 server is an external pinned binary, never a dependency.
-    forbidden: ["@restatedev/restate-server", "@scarf/scarf", "@restatedev/restate"],
+    //
+    // V2-B5/R11 adds `@acp/telemetry`. A domain that named the exporter would
+    // put a vendor endpoint in the routing plane's own graph, which is the
+    // thing restriction 3 forbids: "Phoenix falling over cannot affect routing"
+    // is a property of the import graph or it is a promise.
+    forbidden: [
+      "@restatedev/restate-server",
+      "@scarf/scarf",
+      "@restatedev/restate",
+      "@acp/telemetry",
+    ],
   },
   {
     manifest: "packages/edges/durability/package.json",
@@ -9604,6 +9735,9 @@ const P1B_DEPENDENCY_LAW = [
       "@restatedev/restate-sdk",
       "better-sqlite3",
       "node:sqlite",
+      // V2-B5/R11, on the runtime entry's terms: a domain naming the exporter
+      // would make a vendor endpoint reachable from the plane's own graph.
+      "@acp/telemetry",
     ],
   },
   {
@@ -9637,6 +9771,43 @@ const P1B_DEPENDENCY_LAW = [
       "@acp/runtime",
       "@acp/durability",
       "@acp/providers",
+      "@acp/protocol",
+      "better-sqlite3",
+      "node:sqlite",
+    ],
+  },
+  {
+    manifest: "packages/edges/telemetry/package.json",
+    // V2-B5/R11. One runtime dependency, and the OTLP/JSON encoding under it is
+    // hand-rolled rather than taken from an SDK — the owner ruling dissolved
+    // the dependency ask outright, so there is no `@opentelemetry/*` here, not
+    // even dev-only for "just the types". Adopting an OTel SDK later is an
+    // owner-level decision with its own install-script audit and catalog pin.
+    //
+    // `@acp/observation` is the dependency because the port types on
+    // `TelemetryBatch`, whose events are branded with `emitTelemetry` as their
+    // only mint site. That brand is the guarantee at the one surface in this
+    // repository that actually sends bytes: an exporter typed on it cannot
+    // receive a record that skipped the redaction gate. The cost is stated
+    // rather than hidden — `@acp/observation` declares `@acp/ledger`, which
+    // declares `better-sqlite3`, so the driver is in this edge's TRANSITIVE
+    // graph. The `forbidden` check below is name-based over the manifest text,
+    // so it still passes and still means exactly what it says: this edge names
+    // no ledger and no driver.
+    //
+    // `@acp/ledger` and `@acp/runtime` are forbidden by name for the reason
+    // restriction 3 exists. Recording an export failure in the ledger would
+    // make a vendor's availability part of the evidence chain; naming the
+    // runtime would put a domain and its exporter in one graph. A failed export
+    // is a returned value and three counters, and it is appended to nothing.
+    dependencies: ["@acp/observation"],
+    devDependencies: ["vitest"],
+    forbidden: [
+      "@acp/ledger",
+      "@acp/runtime",
+      "@acp/durability",
+      "@acp/providers",
+      "@acp/tools",
       "@acp/protocol",
       "better-sqlite3",
       "node:sqlite",
@@ -13321,8 +13492,18 @@ if (observationManifest === null) {
   if (devDeps.join(",") !== "vitest") {
     fail("packages/domains/observation devDependencies must be exactly vitest");
   }
-  for (const forbidden of ["better-sqlite3", "@restatedev/restate-sdk", "@scarf/scarf"]) {
-    if (deps.includes(forbidden)) {
+  // V2-B5/R11 adds `@acp/telemetry` by name. The exact-equality check above
+  // already refuses it structurally; naming it here is the direction that
+  // matters, because the dependency runs the other way — the edge types on this
+  // package's `TelemetryBatch`, and nothing in this package knows an exporter
+  // exists. A cycle is far easier to refuse here than to unpick later.
+  for (const forbidden of [
+    "better-sqlite3",
+    "@restatedev/restate-sdk",
+    "@scarf/scarf",
+    "@acp/telemetry",
+  ]) {
+    if (deps.includes(forbidden) || devDeps.includes(forbidden)) {
       fail("packages/domains/observation must not depend on " + forbidden + " directly");
     }
   }
@@ -13877,6 +14058,12 @@ const TOPOLOGY_ACTIVE_TREES = [
   // folder/index throughout has nothing to migrate, so activating it later
   // would only buy a window in which the law did not apply to it.
   "tools",
+  // V2-B5/R11: the telemetry export edge, on the same terms and in the same
+  // commit that creates it. Activating it later would also strand the
+  // `TEST_ONLY_DOMAINS.telemetry` entry below, which the reconciliation reads
+  // as a stale registration because `liveDomains` is only populated over
+  // activated trees.
+  "telemetry",
 ];
 
 /** The only basename a product module may carry, anywhere under `src/`. */
@@ -14077,6 +14264,10 @@ const TEST_TREE_SCANNED_PREFIXES = [
   // the commit that creates it. Leaving it out is the exact failure this list
   // exists to catch: the allowlists would simply stop applying, silently.
   "packages/edges/tools/test/",
+  // V2-B5/R11: the telemetry edge arrives with per-package purity laws of its
+  // own (L-R11-1 and L-R11-3 below), on exactly the tool edge's terms and for
+  // exactly its reason.
+  "packages/edges/telemetry/test/",
 ];
 
 /**
@@ -14401,6 +14592,12 @@ const TEST_ONLY_DOMAINS = {
   ],
   tools: [
     { domain: "testing", why: "the fake MCP server and scripted peer the tool suites share" },
+  ],
+  telemetry: [
+    {
+      domain: "testing",
+      why: "the scripted fetch peer and the typed projection fixtures the telemetry suites share; it mirrors no source module because a fake is not one",
+    },
   ],
 };
 
@@ -19046,6 +19243,495 @@ if (tracked.status === 0) {
     }
     notes.push(exported.size + " tool edge exports, pinned by equality");
   }
+}
+
+// --- 21c. V2-B5/R11: the telemetry export edge ------------------------------
+//
+// Five path-scoped laws over one new package, plus a barrel pin and a record
+// pin that are not path-shaped. What they have in common is that each one makes
+// a property of restriction 3 checkable rather than argued: this edge reaches
+// exactly one endpoint, decides what an endpoint is in exactly one file, holds
+// no credential and reads no environment, appends to nothing, and is named by
+// no production source anywhere in the repository.
+//
+// The last of those is the strongest. "A collector falling over cannot affect
+// routing, execution or recovery" is a property of the import graph or it is a
+// promise, and a reader who wants to check it should be able to read the graph
+// rather than trust this comment.
+
+const TELEMETRY_ALLOWED_PACKAGES = new Set(["@acp/observation"]);
+
+/**
+ * No builtin at all, and that is not an oversight.
+ *
+ * This edge opens no file, spawns nothing, reads no clock through a module and
+ * resolves no name. Its one capability is the platform `fetch`, confined by
+ * path below. An empty set is the honest statement of that, and it is what
+ * makes "the serializer is pure" a property of the build.
+ */
+const TELEMETRY_ALLOWED_BUILTINS = new Set([]);
+
+/**
+ * The suites get the runner and nothing else.
+ *
+ * No `node:fs`, no `node:os`, no `node:path`: there is no disposable directory
+ * to make, because there is no ledger here to open. That absence is the same
+ * fact the P1B row states from the manifest side, and the DT adjudicated the
+ * causal drill into the gateway rather than widening this set — narrowing "the
+ * edge names no ledger" to `src/` only would have retired the checkable half of
+ * restriction 3's proof.
+ */
+const TELEMETRY_TEST_ONLY_IMPORTS = new Set(["vitest"]);
+
+/**
+ * No network by import, anywhere in this package.
+ *
+ * The list is the tool edge's, inherited verbatim because the reason is
+ * inherited verbatim, PLUS `node:child_process`: this edge spawns nothing at
+ * all, so unlike the tool edge it has no spawn site to license.
+ *
+ * Banning builtins is not sufficient on its own — `fetch` is a global in this
+ * runtime — so both halves are asserted, and the single fetch site is pinned by
+ * exact path below. DNS is closed by neither: it is closed by the admission's
+ * hostname literals, because a name is resolved by the network stack, importing
+ * nothing.
+ */
+const TELEMETRY_FORBIDDEN_BUILTINS = [
+  "node:net",
+  "node:http",
+  "node:https",
+  "node:tls",
+  "node:dgram",
+  "node:dns",
+  "node:cluster",
+  "node:worker_threads",
+  "node:child_process",
+];
+
+/** Exactly one file reaches the network, and it is the transport. */
+const TELEMETRY_HTTP_SITE = "packages/edges/telemetry/src/http/index.ts";
+/** Exactly one file decides what may be talked to, and what loopback means. */
+const TELEMETRY_ADMISSION_SITE = "packages/edges/telemetry/src/admission/index.ts";
+/** Where the record the README is compared against is declared. */
+const TELEMETRY_CONTRACT_SITE = "packages/edges/telemetry/src/contract/index.ts";
+const TELEMETRY_README = "packages/edges/telemetry/README.md";
+
+/** Never appended to, never named, in any form. */
+const TELEMETRY_FORBIDDEN_PACKAGE_NAMES = [
+  "@acp/ledger",
+  "@acp/runtime",
+  "@acp/contracts",
+  "@acp/durability",
+  "@acp/providers",
+  "@acp/tools",
+  "@acp/protocol",
+];
+
+/**
+ * The closed barrel, pinned by equality in both directions.
+ *
+ * The serializer IS on this surface and the transport is not, and both halves
+ * are decisions. The drill that proves the mapping against events a real ledger
+ * produced lives in the gateway and reaches the mapping through this barrel
+ * like any consumer would; the transport, by contrast, is how the port keeps
+ * its promises, and a transport on the barrel is eventually called by somebody
+ * who skipped the ceiling, the receipt and the empty-batch refusal.
+ */
+const TELEMETRY_PUBLIC_EXPORTS = [
+  "OTLP_BODY_MAX_BYTES",
+  "OTLP_EXPORT_RECORD",
+  "OTLP_HEADERS_MAX",
+  "OTLP_HEADER_VALUE_MAX_BYTES",
+  "OTLP_SCOPE_NAME",
+  "OTLP_SERVICE_NAME_DEFAULT",
+  "OTLP_SERVICE_NAME_MAX_LENGTH",
+  "OTLP_TIMEOUT_DEFAULT_MS",
+  "OTLP_TIMEOUT_MAX_MS",
+  "TELEMETRY_ADMISSION_REFUSALS",
+  "TELEMETRY_EXPORT_REFUSALS",
+  "TelemetryAdmissionRefusal",
+  "TelemetryExportOutcome",
+  "TelemetryExportReceipt",
+  "TelemetryExportRefusal",
+  "admitOtlpEndpoint",
+  "AdmittedOtlpEndpoint",
+  "OtlpAdmissionOutcome",
+  "OtlpEndpointCandidate",
+  "serializeTelemetryBatch",
+  "OtlpSerialization",
+  "createOtlpExporterPort",
+  "TelemetryExporterPort",
+];
+
+if (tracked.status === 0) {
+  const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  const declared = new Set(present);
+  for (const relativePath of WRITE_SET) {
+    if (inAnyArea(relativePath, "telemetry", ["src", "test"], PACKAGE_STRATA) && relativePath.endsWith(".ts")) {
+      declared.add(relativePath);
+    }
+  }
+  const sources = [...declared]
+    .filter((relativePath) => inAnyArea(relativePath, "telemetry", ["src", "test"], PACKAGE_STRATA))
+    .filter((relativePath) => relativePath.endsWith(".ts"))
+    .sort();
+  // Under `src/`, not merely "not a .test.ts file": the scripted peer at
+  // `test/testing/index.ts` carries neither suffix, and the loopback law below
+  // is about production authority. A test that names an address in a fixture
+  // has decided nothing about what loopback means.
+  const productionSources = sources.filter((relativePath) =>
+    inArea(relativePath, "telemetry", "src", PACKAGE_STRATA),
+  );
+
+  // L-R11-1 — one network authority, by import and by global.
+  let transportChecked = 0;
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    transportChecked += 1;
+    const code = stripComments(content);
+
+    for (const name of importSpecifiers(content)) {
+      if (TELEMETRY_FORBIDDEN_BUILTINS.includes(name)) {
+        fail(relativePath + " imports " + name + "; the telemetry edge opens no socket and spawns nothing");
+      }
+    }
+    if (relativePath !== TELEMETRY_HTTP_SITE && /(^|[^A-Za-z0-9_$.])fetch\s*\(/.test(code)) {
+      fail(relativePath + " calls fetch(; only " + TELEMETRY_HTTP_SITE + " may");
+    }
+  }
+  requireScope("the telemetry edge keeps one network authority", transportChecked);
+
+  // L-R11-2 — one admission authority, and loopback is an address.
+  let admissionChecked = 0;
+  for (const relativePath of productionSources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    admissionChecked += 1;
+    const code = stripComments(content);
+    for (const literal of ['"127.0.0.1"', '"::1"']) {
+      if (code.includes(literal) && relativePath !== TELEMETRY_ADMISSION_SITE) {
+        fail(
+          relativePath +
+            " names " +
+            literal +
+            "; only " +
+            TELEMETRY_ADMISSION_SITE +
+            " decides what loopback means",
+        );
+      }
+    }
+    if (code.includes("new URL(") && relativePath !== TELEMETRY_ADMISSION_SITE) {
+      fail(relativePath + " parses a URL; only " + TELEMETRY_ADMISSION_SITE + " may");
+    }
+    if (code.includes('"/v1/traces"') && relativePath !== TELEMETRY_ADMISSION_SITE) {
+      fail(
+        relativePath +
+          " names the traces path; the target is joined once, in " +
+          TELEMETRY_ADMISSION_SITE +
+          ", and used verbatim thereafter",
+      );
+    }
+  }
+  {
+    const admission = readIfPresent(TELEMETRY_ADMISSION_SITE);
+    if (admission === null) {
+      fail(TELEMETRY_ADMISSION_SITE + " is missing; the telemetry edge must keep one admission authority");
+    } else {
+      const code = stripComments(admission);
+      // The refusal must be a parsed hostname rather than a field check, for
+      // the reason the tool edge already states: refusing the presence of a
+      // URL would make a conformant loopback endpoint unrepresentable, and the
+      // stage that admitted one would have to delete this leg rather than
+      // widen it.
+      if (!code.includes("new URL(")) {
+        fail(TELEMETRY_ADMISSION_SITE + " no longer parses a URL; the remote refusal would be a field check");
+      }
+      for (const literal of ['"127.0.0.1"', '"::1"']) {
+        if (!code.includes(literal)) {
+          fail(
+            TELEMETRY_ADMISSION_SITE +
+              " no longer names " +
+              literal +
+              "; loopback must be an address, never a name",
+          );
+        }
+      }
+      if (code.includes('"localhost"')) {
+        fail(
+          TELEMETRY_ADMISSION_SITE +
+            ' admits "localhost"; resolving a name means DNS, and a name that resolves on-box today is a' +
+            " remote collector tomorrow",
+        );
+      }
+      // R11 admits plaintext loopback and nothing else. A remote host or TLS is
+      // a widening with its own argument, its own law and its own record, and
+      // this line is what keeps it from arriving as a one-character edit.
+      if (!code.includes('"http:"')) {
+        fail(TELEMETRY_ADMISSION_SITE + " no longer pins the one scheme it admits");
+      }
+      if (code.includes('"https:"')) {
+        fail(
+          TELEMETRY_ADMISSION_SITE +
+            ' names "https:"; R11 admits plaintext loopback only, and TLS to a loopback endpoint needs a' +
+            " trust decision this package cannot make honestly",
+        );
+      }
+    }
+  }
+  requireScope("the telemetry edge keeps one admission authority", admissionChecked);
+
+  // L-R11-3 — the edge's import surface is exact, and it appends nothing.
+  let importChecked = 0;
+  for (const relativePath of sources) {
+    const content = readIfPresent(relativePath);
+    if (content === null) continue;
+    importChecked += 1;
+    const isTest = relativePath.endsWith(".test.ts") || relativePath.includes("/test/");
+    const code = stripComments(content);
+
+    for (const name of importSpecifiers(content)) {
+      const relative = name.startsWith("./") || name.startsWith("../");
+      const allowed =
+        relative ||
+        TELEMETRY_ALLOWED_PACKAGES.has(name) ||
+        TELEMETRY_ALLOWED_BUILTINS.has(name) ||
+        (isTest && TELEMETRY_TEST_ONLY_IMPORTS.has(name));
+      if (!allowed) {
+        fail(relativePath + " imports " + name + ", which the telemetry edge may not use");
+      }
+    }
+    for (const name of TELEMETRY_FORBIDDEN_PACKAGE_NAMES) {
+      if (code.includes(name)) {
+        fail(
+          relativePath +
+            " names " +
+            name +
+            "; the telemetry edge depends on one package and appends to nothing",
+        );
+      }
+    }
+    // Whole-package, tests included. A failed export is a returned value and
+    // three counters; recording one in the ledger would make a vendor's
+    // availability part of the evidence chain.
+    if (/\.append\s*\(/.test(code)) {
+      fail(relativePath + " calls .append(; an export failure is observed as a value, never as a row");
+    }
+    // The environment is never read, anywhere. The endpoint arrives from a
+    // config value a composition root hands the admission, which is what keeps
+    // "no credential can travel" a property of the shape rather than a habit.
+    if (code.includes("process.env")) {
+      fail(relativePath + " reads process.env; the telemetry edge is handed its endpoint and reads no ambient value");
+    }
+  }
+  requireScope("the telemetry edge's import surface is exact", importChecked);
+}
+
+// L-R11-4 — the one fetch site is bounded.
+//
+// L-R11-1 says where the network authority lives; this says what it may do
+// there. An exception that licensed a file to reach the network without
+// bounding what it sends would be a wider grant than the one that was made.
+{
+  let httpScanned = 0;
+  const httpSource = readIfPresent(TELEMETRY_HTTP_SITE);
+  if (httpSource === null) {
+    fail(TELEMETRY_HTTP_SITE + " is missing; the fetch exception would license a file that does not exist");
+  } else {
+    httpScanned += 1;
+    const code = stripComments(httpSource);
+
+    // The exception must license something. A site that no longer fetches is an
+    // exception standing over nothing.
+    if (!/(^|[^A-Za-z0-9_$.])fetch\s*\(/.test(code)) {
+      fail(TELEMETRY_HTTP_SITE + " no longer calls fetch(; the network exception licenses nothing");
+    }
+
+    // The target can only have come from the admitted endpoint. No literal, and
+    // nothing that could assemble one.
+    for (const literal of ["http://", "https://", "127.0.0.1", "::1", "localhost", "/v1/traces"]) {
+      if (code.includes(literal)) {
+        fail(
+          TELEMETRY_HTTP_SITE +
+            " contains the URL literal " +
+            literal +
+            "; the endpoint may only be the admitted string, and a transport that can name a" +
+            " target can name a different one",
+        );
+      }
+    }
+    if (code.includes("new URL(")) {
+      fail(TELEMETRY_HTTP_SITE + " parses a URL; parsing belongs to the admission, and one endpoint serves one method");
+    }
+
+    // The bounds that make the leg refusable rather than open-ended.
+    if (!code.includes('redirect: "manual"')) {
+      fail(TELEMETRY_HTTP_SITE + ' no longer sets redirect: "manual"; a followed redirect is an escape nobody sees');
+    }
+    if (!code.includes("REDIRECT_REFUSED")) {
+      fail(TELEMETRY_HTTP_SITE + " no longer refuses a redirect by name");
+    }
+    if (!code.includes("AbortSignal.timeout(")) {
+      fail(TELEMETRY_HTTP_SITE + " no longer bounds a request in time");
+    }
+
+    // Nothing that could carry a credential, and nothing that could install a
+    // proxy. Node's global fetch ignores HTTP_PROXY unless a dispatcher is
+    // installed; nothing here installs one, and this is what keeps that true.
+    for (const forbidden of [
+      "authorization",
+      "Authorization",
+      "cookie",
+      "proxy-authorization",
+      "Bearer",
+      "credentials:",
+      "dispatcher",
+      "process.env",
+    ]) {
+      if (code.includes(forbidden)) {
+        fail(
+          TELEMETRY_HTTP_SITE +
+            " names " +
+            forbidden +
+            "; this leg carries no credential and installs no dispatcher, and the admission refuses every" +
+            " credential-shaped header name outright",
+        );
+      }
+    }
+  }
+  requireScope("the telemetry edge's one fetch site carries no credential and invents no target", httpScanned);
+  notes.push("the telemetry edge's single fetch site names no target, carries no credential and bounds every request");
+}
+
+// L-R11-5 — no production source anywhere names the telemetry edge.
+//
+// This is the law restriction 3 actually rests on, and it is deliberately
+// repository-wide rather than scoped to the domains. "Removing the collector
+// does not affect routing, execution or recovery" is checkable exactly when no
+// `src/` in the tree can reach the exporter — which is a property of the import
+// graph, not a promise anybody has to be trusted about.
+//
+// The gateway's `test/telemetry/` drill is the one consumer, and it is a test
+// in a registered test-only domain rather than an exception carved into this
+// law: the scan is over `src/` only, so a test naming the package is outside
+// the law's subject rather than excused from it.
+{
+  let sourceScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!relativePath.endsWith(".ts") && !relativePath.endsWith(".tsx")) continue;
+      if (inArea(relativePath, "telemetry", "src", PACKAGE_STRATA)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      sourceScanned += 1;
+      if (content.includes("@acp/telemetry")) {
+        fail(
+          relativePath +
+            " names @acp/telemetry; no production source may reach the exporter, because that graph is what" +
+            " proves a collector's availability cannot affect routing, execution or recovery",
+        );
+      }
+    }
+  }
+  requireScope("no production source names the telemetry edge", sourceScanned);
+  notes.push(
+    sourceScanned + " production sources scanned; none names the telemetry edge, so a dead collector is outside the walk's graph",
+  );
+}
+
+// The closed barrel, pinned by equality in both directions.
+{
+  const telemetryIndex = readIfPresent("packages/edges/telemetry/src/index.ts");
+  if (telemetryIndex !== null) {
+    if (/export\s*\*\s*from/.test(telemetryIndex)) {
+      fail("packages/edges/telemetry/src/index.ts uses `export *`, which cannot stay closed");
+    }
+    // The transport is not public surface, and neither is the scripted peer: a
+    // fake on a public surface is eventually mistaken for evidence.
+    for (const withheld of ["postOtlpBody", "scriptFetch"]) {
+      if (stripComments(telemetryIndex).includes(withheld)) {
+        fail("packages/edges/telemetry/src/index.ts exports " + withheld + "; it is not public surface");
+      }
+    }
+    const exported = barrelExportNames(telemetryIndex);
+    for (const name of exported) {
+      if (!TELEMETRY_PUBLIC_EXPORTS.includes(name)) {
+        fail("packages/edges/telemetry exports " + name + ", which is outside its closed surface");
+      }
+    }
+    for (const name of TELEMETRY_PUBLIC_EXPORTS) {
+      if (!exported.has(name)) {
+        fail("packages/edges/telemetry no longer exports the pinned name " + name);
+      }
+    }
+    notes.push(exported.size + " telemetry edge exports, pinned by equality");
+  }
+}
+
+// The export record and the telemetry README cannot disagree (L-B4B-16 idiom).
+//
+// Deliberately NOT path-scoped: it reads three literals out of two named files
+// and registers no scope, exactly as the protocol record law it is modelled on
+// does. Prose is how a claim drifts from a record silently, and a record
+// reading NONE beside a README that reads as though a collector had accepted
+// these bytes is the overclaim restriction 5 exists to prevent.
+{
+  const recordSource = readIfPresent(TELEMETRY_CONTRACT_SITE);
+  const telemetryReadme = readIfPresent(TELEMETRY_README);
+  if (recordSource === null || telemetryReadme === null) {
+    fail("the telemetry edge's contract site or README is missing; the export record cannot be checked");
+  } else {
+    const code = stripComments(recordSource);
+    const start = code.indexOf("OTLP_EXPORT_RECORD");
+    const record = start < 0 ? "" : code.slice(start, code.indexOf("} as const);", start));
+    if (record === "") {
+      fail(TELEMETRY_CONTRACT_SITE + " no longer declares OTLP_EXPORT_RECORD");
+    } else {
+      // No key may be empty. A blank value is the shape a reader mistakes for
+      // "not applicable" when it means "nobody filled this in".
+      if (/:\s*""/.test(record)) {
+        fail("OTLP_EXPORT_RECORD carries an empty value; every key names a fact or the literal NONE/UNKNOWN");
+      }
+      // While no socket is exercised and no real subject has been drilled, all
+      // three read this way, and the README must not claim otherwise. The
+      // Phoenix drill is owner-gated and is not part of R11.
+      for (const field of ["LIVE_CONFORMANCE", "SOCKET_EXERCISED"]) {
+        if (!new RegExp(field + ':\\s*"NONE"').test(record)) {
+          fail("OTLP_EXPORT_RECORD." + field + " must read NONE while no socket is exercised");
+        }
+      }
+      if (!/CAPABILITIES:\s*"UNKNOWN"/.test(record)) {
+        fail(
+          "OTLP_EXPORT_RECORD.CAPABILITIES must read UNKNOWN; restriction 5 admits CONFIRMED only from a" +
+            " drill with a real subject, and that drill is owner-gated",
+        );
+      }
+    }
+    // The README carries the same three literals, verbatim. Comparing them
+    // rather than trusting them is the whole mechanism: the record is what a
+    // machine reads, the README is what a person reads, and they cannot be
+    // allowed to say different things.
+    for (const claim of ['SOCKET_EXERCISED: "NONE"', 'LIVE_CONFORMANCE: "NONE"', 'CAPABILITIES: "UNKNOWN"']) {
+      if (!telemetryReadme.includes(claim)) {
+        fail(
+          TELEMETRY_README +
+            " no longer carries the record line " +
+            claim +
+            "; the README and OTLP_EXPORT_RECORD are pinned to say the same thing",
+        );
+      }
+    }
+    if (telemetryReadme.includes("cited, not vendored") === false) {
+      fail(
+        TELEMETRY_README +
+          " omits the uncited qualifier while OTLP_EXPORT_RECORD.SPEC_MANIFEST_DIGEST is NONE; a README that" +
+          " reads as though the specification bytes were reviewed is the overclaim this law exists to prevent",
+      );
+    }
+  }
+  notes.push("the telemetry export record and its README agree on what was cited, exercised and claimed");
 }
 
 // --- 21b. the worktree arbitration store (V2 concurrency C1) ----------------

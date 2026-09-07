@@ -41,6 +41,8 @@
     { "path": "./packages/edges/tools/test" },
     { "path": "./packages/edges/durability" },
     { "path": "./packages/edges/durability/test" },
+    { "path": "./packages/edges/telemetry" },
+    { "path": "./packages/edges/telemetry/test" },
     { "path": "./packages/domains/accounts" },
     { "path": "./packages/domains/accounts/test" },
     { "path": "./packages/kernel/protocol" },

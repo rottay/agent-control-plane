@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { openLedger } from "@acp/ledger";
 import type { LedgerEventRecord } from "@acp/ledger";
 import { TELEMETRY_SPAN_KIND, computeBaseline, computeTokenRollups, emitTelemetry } from "@acp/observation";
-import type { BuildEventInput, SwitchExecutionInput } from "@acp/runtime";
+import type {
+  BuildEventInput,
+  EffectPort,
+  PostconditionVerdict,
+  SwitchExecutionInput,
+} from "@acp/runtime";
 import {
   LIFECYCLE_PLAN,
   acquireLease,
@@ -17,7 +22,9 @@ import {
   recordProviderPressure,
   recordTokenObservation,
   revokeLease,
+  settleFailure,
 } from "@acp/runtime";
+import { serializeTelemetryBatch } from "@acp/telemetry";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
@@ -1236,5 +1243,271 @@ describe("the baseline measures the walk that actually runs", () => {
       { type: "TASK_CANCELLED", count: 0 },
       { type: "TASK_FAILED", count: 0 },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C24 - C28 — the serialized shape, driven causally (V2-B5/R11)
+//
+// The edge that sends is `@acp/telemetry`, and it may not name a ledger, a
+// runtime or a contracts package: the fence forbids all three by name, in its
+// manifest and in its imports, over `src` and `test` alike. So the serializer's
+// unit evidence lives in that package over typed literals, and the CAUSAL half
+// lives here — the one place in this repository where the real production
+// emitters, a real ledger and that edge can meet. The DT adjudicated this split
+// rather than widening the edge's test surface, because "the edge names no
+// ledger" is the checkable proof of restriction 3 and does not survive being
+// narrowed to `src/` only.
+//
+// Nothing below is hand-built. The events are appended by the real emitters,
+// read back OUT of a real disposable ledger, projected by the real
+// `emitTelemetry`, and serialized by the real `serializeTelemetryBatch`.
+// ---------------------------------------------------------------------------
+
+/**
+ * A revocation cause the classification leaves unclassified, deliberately.
+ *
+ * `revokeLease` takes `cause: string` and the arbiter's `release` verb passes
+ * whatever its caller hands it, so a cause in neither the fault set nor the
+ * clean set is reachable production behaviour rather than a shape invented for
+ * this test. `UNSET` is the OTel status for exactly that, and guessing in
+ * either direction would be a claim the projection cannot support.
+ */
+const UNCLASSIFIED_CAUSE = "SUPERSEDED";
+
+/** An effect port that reports the effect did not happen. Nothing else is called. */
+const NO_EFFECT: EffectPort = {
+  apply: (): Promise<void> => {
+    throw new Error("the failure settlement applies no effect");
+  },
+  probe: (): Promise<PostconditionVerdict> => Promise.resolve("NOT_DONE"),
+};
+
+/**
+ * One chain carrying every shape the serializer has to get right.
+ *
+ * A root with no cause; a plan edge that resolves; a switch whose cause is
+ * another task's real event and therefore cannot be a parent; a recorded spend;
+ * a recorded pressure; a lease revoked for a cause nothing classifies; and a
+ * settled failure. One fixture, because the assertions below are about how
+ * those coexist in a single envelope.
+ */
+async function exportableChain(): Promise<{
+  readonly events: readonly ControlPlaneEvent[];
+  readonly foreignCause: ControlPlaneEvent;
+}> {
+  const path = temporaryDatabase();
+  const ledger = openLedger(path);
+  walk(ledger, 4);
+  walkFor(ledger, FOREIGN_INVOCATION, 4);
+
+  const foreign = eventsOf(ledger, FOREIGN_TASK_ID);
+  const foreignCause = foreign[foreign.length - 1];
+  if (foreignCause === undefined) throw new Error("the foreign task must have events");
+
+  executeSwitchPlan({
+    ledger,
+    invocation: INVOCATION,
+    plan: SWITCH_PLAN,
+    emittedBy: EMITTED_BY,
+    lease: null,
+    taskState: "RUNNING",
+    causedBy: foreignCause.eventId,
+  });
+
+  recordTokenObservation(ledger, {
+    invocation: INVOCATION,
+    kind: "USAGE",
+    accountId: ROUTE.accountId,
+    tokens: 4_321,
+    transitionId: "usage.export.01",
+    emittedBy: EMITTED_BY,
+  });
+
+  recordProviderPressure(ledger, {
+    invocation: INVOCATION,
+    accountId: ROUTE.accountId,
+    provider: ROUTE.provider,
+    pressure: "QUOTA_WARNING",
+    transitionId: "pressure.export.01",
+    emittedBy: EMITTED_BY,
+  });
+
+  const granted = acquireLease({ leases: [], now: "2026-09-06T09:00:00.000Z", candidate: LEASE });
+  if (!granted.ok) throw new Error("the lease fixture must be grantable");
+  for (const event of granted.events) {
+    appendEnforcementEvent(ledger, "lease.acquired.export", event.type, event.payload);
+  }
+
+  const revoked = revokeLease({
+    leases: [LEASE],
+    now: "2026-09-06T09:30:00.000Z",
+    leaseId: LEASE_ID,
+    cause: UNCLASSIFIED_CAUSE,
+  });
+  if (!revoked.ok) throw new Error("the revocation fixture must be grantable");
+  for (const event of revoked.events) {
+    appendEnforcementEvent(ledger, "lease.revoked.export", event.type, event.payload);
+  }
+
+  // The real terminal settlement, through the real supervisor verb. The intent
+  // is open at plan index 4, so the probe really runs and really reports that
+  // no effect happened — which is the branch that appends one failure event.
+  const settlement = await settleFailure(
+    {
+      ledger,
+      effects: NO_EFFECT,
+      invocation: INVOCATION,
+      emittedBy: EMITTED_BY,
+      plan: LIFECYCLE_PLAN,
+      initiativeId: INITIATIVE_ID,
+      route: ROUTE,
+    },
+    "EXECUTION_FAILED",
+  );
+  if (settlement.failed === null) throw new Error("the settlement must have appended a failure");
+  ledger.close();
+
+  return { events: readBack(path), foreignCause };
+}
+
+/** The parsed envelope, for the assertions that are about structure. */
+interface ParsedEnvelope {
+  readonly resourceSpans: readonly {
+    readonly resource: { readonly attributes: readonly { key: string; value: unknown }[] };
+    readonly scopeSpans: readonly {
+      readonly scope: Record<string, unknown>;
+      readonly spans: readonly Record<string, unknown>[];
+    }[];
+  }[];
+}
+
+function spansOf(body: string): readonly Record<string, unknown>[] {
+  const envelope = JSON.parse(body) as ParsedEnvelope;
+  return envelope.resourceSpans[0]?.scopeSpans[0]?.spans ?? [];
+}
+
+/** The one span an event became, found by the event id the projection carries. */
+function spanByEventId(
+  spans: readonly Record<string, unknown>[],
+  eventId: string,
+): Record<string, unknown> {
+  const found = spans.find((span) => {
+    const attributes = span["attributes"] as readonly { key: string; value: unknown }[];
+    const idAttribute = attributes.find((entry) => entry.key === "acp.event.id");
+    return JSON.stringify(idAttribute?.value) === JSON.stringify({ stringValue: eventId });
+  });
+  if (found === undefined) throw new Error("no span for the event " + eventId);
+  return found;
+}
+
+describe("the shape the exporter sends, driven causally", () => {
+  it("C24: one resourceSpans, one scopeSpans, and a span for every emitted event", async () => {
+    const { events } = await exportableChain();
+    const batch = emitTelemetry(events);
+    const serialized = serializeTelemetryBatch(batch, "acp");
+
+    expect(batch.refusedCount).toBe(0);
+    const envelope = JSON.parse(serialized.body) as ParsedEnvelope;
+    expect(envelope.resourceSpans.length).toBe(1);
+    const resource = envelope.resourceSpans[0];
+    if (resource === undefined) throw new Error("one resourceSpans entry was asserted above");
+    expect(resource.scopeSpans.length).toBe(1);
+
+    // Every emitted event became a span, and nothing was dropped: this chain
+    // carries a span context on every row, so `unexportableCount` is zero and
+    // the count agreeing is a fact about the fold rather than a coincidence.
+    expect(serialized.spanCount).toBe(batch.events.length);
+    expect(serialized.unexportableCount).toBe(0);
+    expect(serialized.spanCount).toBeGreaterThan(10);
+  });
+
+  it("C25: the ids on the wire round-trip back to the rows the ledger holds", async () => {
+    const { events } = await exportableChain();
+    const spans = spansOf(serializeTelemetryBatch(emitTelemetry(events), "acp").body);
+
+    for (const event of events) {
+      const span = spanByEventId(spans, event.eventId);
+      // Computed from the rule, over ids the real emitters derived. A pasted
+      // vector would prove the run agreed with a transcription.
+      expect(span["traceId"]).toBe(uuidHex(event.correlationId ?? ""));
+      expect(span["spanId"]).toBe(uuidHex(event.eventId).slice(0, 16));
+      expect(String(span["traceId"])).toMatch(/^[0-9a-f]{32}$/);
+      expect(String(span["spanId"])).toMatch(/^[0-9a-f]{16}$/);
+    }
+  });
+
+  it("C26: a root omits parentSpanId, a resolved edge carries it, a cross-task cause has none", async () => {
+    const { events, foreignCause } = await exportableChain();
+    const spans = spansOf(serializeTelemetryBatch(emitTelemetry(events), "acp").body);
+
+    // The root: the walk's discovery, which nothing caused.
+    const discovered = only(events, "TASK_DISCOVERED");
+    expect(discovered.causationId).toBe(null);
+    const rootSpan = spanByEventId(spans, discovered.eventId);
+    // Absent, not null and not empty. An omitted parent is how OTLP says
+    // "root"; a present-but-null one is a parent nobody named.
+    expect(Object.hasOwn(rootSpan, "parentSpanId")).toBe(false);
+
+    // A resolved edge: the plan step that followed the discovery, whose cause
+    // is in the same trace and did emit a span.
+    const classified = only(events, "TASK_CLASSIFIED");
+    expect(classified.causationId).toBe(discovered.eventId);
+    expect(spanByEventId(spans, classified.eventId)["parentSpanId"]).toBe(rootSpan["spanId"]);
+
+    // A refused edge, produced by a REAL cross-task cause: the switch executor
+    // threads the elector's `decidedFromEventId`, which names an event of
+    // another task and therefore of another trace. In OTel a cross-trace parent
+    // is not a weak edge, it is a corrupt one.
+    const switched = events.filter((event) => event.transitionId.startsWith("switch."));
+    expect(switched.length).toBe(3);
+    expect(foreignCause.taskId).not.toBe(TASK_ID);
+    for (const event of switched) {
+      expect(event.causationId).toBe(foreignCause.eventId);
+      const span = spanByEventId(spans, event.eventId);
+      expect(Object.hasOwn(span, "parentSpanId")).toBe(false);
+    }
+    // The fact travels even where the relation is refused.
+    expect(JSON.stringify(spans)).toContain(foreignCause.eventId);
+    expect(emitTelemetry(events).unresolvedCausationCount).toBe(switched.length);
+  });
+
+  it("C27: a real failure is code 2, an unclassified revocation is 0, a clean step is 1", async () => {
+    const { events } = await exportableChain();
+    const spans = spansOf(serializeTelemetryBatch(emitTelemetry(events), "acp").body);
+
+    const failed = only(events, "TASK_FAILED");
+    const revoked = events.find(
+      (event) => event.type === "LEASE_REVOKED" && event.payload["cause"] === UNCLASSIFIED_CAUSE,
+    );
+    if (revoked === undefined) throw new Error("the revocation must be in the chain");
+    const started = only(events, "RUN_STARTED");
+
+    expect({
+      failed: spanByEventId(spans, failed.eventId)["status"],
+      revoked: spanByEventId(spans, revoked.eventId)["status"],
+      started: spanByEventId(spans, started.eventId)["status"],
+    }).toEqual({ failed: { code: 2 }, revoked: { code: 0 }, started: { code: 1 } });
+  });
+
+  it("C28: the recorded spend travels as intValue, and intValue is a JSON string", async () => {
+    const { events } = await exportableChain();
+    const usage = only(events, "TOKEN_USAGE_RECORDED");
+    const body = serializeTelemetryBatch(emitTelemetry(events), "acp").body;
+
+    // The quantity is the recorder's own, read back off the row it wrote.
+    expect(usage.payload["tokens"]).toBe(4_321);
+    // int64 is a JSON string in proto3's JSON mapping. Asserted on the raw
+    // text, because `JSON.parse` turns a quoted integer and a bare one into
+    // the same value — which is exactly the distinction that makes an OTLP
+    // body well formed or malformed.
+    expect(body).toContain('{"key":"acp.usage.tokens","value":{"intValue":"4321"}}');
+    expect(body).not.toContain('"intValue":4321');
+    // The same rule applied to the timestamps, over instants the walk really
+    // wrote: nineteen digits, quoted, and no exponential notation anywhere.
+    for (const match of body.matchAll(/"(?:start|end)TimeUnixNano":([^,}]*)/g)) {
+      expect(match[1] ?? "").toMatch(/^"\d{19}"$/);
+    }
+    expect(body).not.toContain("e+");
   });
 });

@@ -1961,9 +1961,14 @@ describe("the six barrel pin laws parse through one helper (V2-B6-fence)", () =>
     expect(real(BARREL).has("type B")).toBe(false);
   });
 
-  it("routes exactly the six equality-pinned barrels through it, and no others", () => {
-    // The wiring half. Reverting any one of the six to the inline idiom makes
+  it("routes exactly the seven equality-pinned barrels through it, and no others", () => {
+    // The wiring half. Reverting any one of the seven to the inline idiom makes
     // this fail, which is what stops the cleanup from silently coming undone.
+    //
+    // V2-B5/R11 adds the seventh, `telemetryIndex`. A new equality-pinned
+    // barrel that reached for the inline idiom instead would be exactly the
+    // drift this probe exists to catch, so the pin moves with the barrel rather
+    // than being widened to "at least six".
     const routed = [...FENCE_SOURCE.matchAll(/=\s*barrelExportNames\((\w+)\)/g)].map((m) => m[1]);
     expect(routed.sort()).toEqual(
       [
@@ -1972,6 +1977,7 @@ describe("the six barrel pin laws parse through one helper (V2-B6-fence)", () =>
         "durabilityBarrel",
         "observationIndex",
         "runtimeBarrel",
+        "telemetryIndex",
         "toolsIndex",
       ].sort(),
     );
@@ -2168,5 +2174,259 @@ describe("the policy version pin is data, and the fence validates it (V2-B5/R14)
     expect(output).not.toContain("scripts/policy-version-digests.json is missing");
     expect(output).not.toContain("the policy version pin names a document it does not attest");
     expect(output).not.toContain("which the policy version pin does not pin");
+  });
+});
+
+describe("the telemetry export edge is confined by five laws (V2-B5/R11)", () => {
+  const TELEMETRY_SRC = "packages/edges/telemetry/src";
+
+  /**
+   * A minimal, lawful telemetry edge inside a synthetic tree.
+   *
+   * Written by every probe below, so each one changes exactly the file it is
+   * about and the failure it asserts can only have come from that change. A
+   * fixture that tripped the same law from three directions would prove the
+   * law fires, not that it fires on what it claims to be about.
+   */
+  function telemetryEdge(root) {
+    write(
+      root,
+      TELEMETRY_SRC + "/admission/index.ts",
+      [
+        'const HOSTS = ["127.0.0.1", "::1"];',
+        'const TRACES = "/v1/traces";',
+        "export function admit(raw) {",
+        "  const url = new URL(raw);",
+        '  if (url.protocol !== "http:") return null;',
+        "  if (!HOSTS.includes(url.hostname)) return null;",
+        "  return url.origin + TRACES;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    write(
+      root,
+      TELEMETRY_SRC + "/http/index.ts",
+      [
+        "export async function post(endpoint, body) {",
+        "  const response = await fetch(endpoint.target, {",
+        '    method: "POST",',
+        "    body,",
+        '    redirect: "manual",',
+        "    signal: AbortSignal.timeout(endpoint.timeoutMs),",
+        "  });",
+        '  if (response.status >= 300) return { ok: false, reason: "REDIRECT_REFUSED" };',
+        "  return { ok: true };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  }
+
+  it("refuses a second file in the edge that calls fetch (L-R11-1)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    // A second network authority is the failure this law exists to catch: the
+    // confinement is what makes "one endpoint, and it came from the admission"
+    // checkable rather than customary.
+    write(
+      root,
+      TELEMETRY_SRC + "/port/index.ts",
+      "export const ping = () => fetch(endpoint.target);\n",
+    );
+    landingHome(root);
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("calls fetch(; only packages/edges/telemetry/src/http/index.ts may");
+    expect(output).toContain(TELEMETRY_SRC + "/port/index.ts");
+  });
+
+  it("refuses a second file in the edge that decides what loopback means (L-R11-2)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    write(
+      root,
+      TELEMETRY_SRC + "/contract/index.ts",
+      'export const FALLBACK = "127.0.0.1";\n',
+    );
+    landingHome(root);
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("decides what loopback means");
+    expect(output).toContain(TELEMETRY_SRC + "/contract/index.ts");
+  });
+
+  it("refuses an admission that admits localhost, which is a name and not an address (L-R11-2)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    write(
+      root,
+      TELEMETRY_SRC + "/admission/index.ts",
+      [
+        'const HOSTS = ["127.0.0.1", "::1", "localhost"];',
+        "export function admit(raw) {",
+        "  const url = new URL(raw);",
+        '  if (url.protocol !== "http:") return null;',
+        "  return HOSTS.includes(url.hostname) ? url.origin : null;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    landingHome(root);
+    commitAll(root);
+
+    // The one a reviewer expects to pass. Resolving a name means DNS, and a
+    // name that resolves on-box today is a remote collector tomorrow.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain('admits "localhost"');
+  });
+
+  it("refuses an edge source that names the ledger, and one that appends (L-R11-3)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    write(
+      root,
+      TELEMETRY_SRC + "/port/index.ts",
+      [
+        'import { openLedger } from "@acp/ledger";',
+        "export const record = (outcome) => openLedger(path).append(outcome);",
+        "",
+      ].join("\n"),
+    );
+    landingHome(root);
+    commitAll(root);
+
+    // Both halves, because either alone would let the other back in: an import
+    // the manifest law would catch, and an `.append(` on a handle obtained some
+    // other way. Recording an export failure in the ledger would make a
+    // collector's availability part of the evidence chain.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("names @acp/ledger; the telemetry edge depends on one package");
+    expect(output).toContain("calls .append(; an export failure is observed as a value, never as a row");
+  });
+
+  it("refuses an edge source that reads the environment (L-R11-3)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    write(
+      root,
+      TELEMETRY_SRC + "/contract/index.ts",
+      'export const TARGET = process.env["ACP_OTLP_ENDPOINT"] ?? "";\n',
+    );
+    landingHome(root);
+    commitAll(root);
+
+    // The endpoint is handed to the admission by a composition root. An
+    // ambient read here is how a target — and then a credential — arrives
+    // without anybody deciding it should.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("reads process.env; the telemetry edge is handed its endpoint");
+  });
+
+  it("refuses a fetch site that names a target of its own (L-R11-4)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    write(
+      root,
+      TELEMETRY_SRC + "/http/index.ts",
+      [
+        "export async function post(body) {",
+        '  return fetch("http://127.0.0.1:6006/v1/traces", {',
+        '    method: "POST",',
+        "    body,",
+        '    redirect: "manual",',
+        "    signal: AbortSignal.timeout(10000),",
+        "  });",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    landingHome(root);
+    commitAll(root);
+
+    // A transport that can name a target can name a different one. The
+    // exception licenses reaching the network, not choosing where.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("contains the URL literal http://");
+  });
+
+  it("refuses a fetch site that stops bounding what it sends (L-R11-4)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    write(
+      root,
+      TELEMETRY_SRC + "/http/index.ts",
+      [
+        "export async function post(endpoint, body) {",
+        '  return fetch(endpoint.target, { method: "POST", body });',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    landingHome(root);
+    commitAll(root);
+
+    // An exception that licensed reaching the network without bounding what is
+    // sent would be a wider grant than the one that was made.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain('no longer sets redirect: "manual"');
+    expect(output).toContain("no longer bounds a request in time");
+  });
+
+  it("refuses a production source anywhere in the tree that names the edge (L-R11-5)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    write(
+      root,
+      "packages/domains/runtime/src/exporting/index.ts",
+      'import { createOtlpExporterPort } from "@acp/telemetry";\nexport const port = createOtlpExporterPort;\n',
+    );
+    landingHome(root);
+    commitAll(root);
+
+    // The law restriction 3 actually rests on. "Removing the collector does not
+    // affect routing" is checkable exactly when no `src/` in the tree can reach
+    // the exporter, and this is the fixture that can falsify it.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("names @acp/telemetry; no production source may reach the exporter");
+    expect(output).toContain("packages/domains/runtime/src/exporting/index.ts");
+  });
+
+  it("leaves a lawful edge alone, and a TEST that names it (L-R11-1 through L-R11-5)", async () => {
+    const root = syntheticTree();
+    telemetryEdge(root);
+    // The test-only consumer, which is where the causal drill really lives. The
+    // law is scoped to `src/`, so this is outside its subject rather than
+    // excused from it — and a probe that only ever showed refusals could not
+    // tell a law that discriminates from one that refuses everything.
+    write(
+      root,
+      "packages/entrypoints/gateway/test/telemetry/index.test.ts",
+      'import { serializeTelemetryBatch } from "@acp/telemetry";\nexport const fold = serializeTelemetryBatch;\n',
+    );
+    landingHome(root);
+    commitAll(root);
+
+    // The exit stays nonzero: a synthetic tree trips laws this packet is not
+    // about, and demanding exit 0 would be asserting the whole fence rather
+    // than these five. What is asserted is that none of their own refusals
+    // fired.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).not.toContain("calls fetch(; only packages/edges/telemetry/src/http/index.ts may");
+    expect(output).not.toContain("decides what loopback means");
+    expect(output).not.toContain("the telemetry edge depends on one package");
+    expect(output).not.toContain("contains the URL literal");
+    expect(output).not.toContain("no production source may reach the exporter");
   });
 });

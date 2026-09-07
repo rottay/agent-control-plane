@@ -325,6 +325,25 @@ export default defineConfig({
       },
       {
         test: {
+          // The telemetry edge substitutes `globalThis.fetch` and binds no
+          // port: no socket is opened anywhere in its suites, which is the
+          // ruling its own record carries as `SOCKET_EXERCISED: "NONE"`. So it
+          // joins the default parallel group (groupOrder 0) beside providers
+          // and tools, and its files need no serialization either — every
+          // fixture is a value, and the peer each file installs is restored by
+          // the same file's teardown.
+          name: 'telemetry',
+          root: './packages/edges/telemetry',
+          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+        },
+        resolve: { alias: workspaceSourceAliases },
+      },
+      {
+        test: {
           // Reads only. It opens no socket, binds no port and spawns no child,
           // so it stays in the default parallel group (groupOrder 0) beside the
           // other hermetic projects rather than joining the serialized

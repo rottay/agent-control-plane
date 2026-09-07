@@ -1,0 +1,27 @@
+{
+  "name": "@acp/telemetry",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The telemetry export edge for the Agent Control Plane. One hand-rolled OTLP/JSON serializer behind a port, posting to one admitted loopback endpoint, refusing by name and appending to nothing.",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@acp/observation": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
+  }
+}

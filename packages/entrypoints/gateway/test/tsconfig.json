@@ -23,6 +23,7 @@
     { "path": "../../../domains/observation" },
     { "path": "../../../edges/durability" },
     { "path": "../../../edges/tools" },
+    { "path": "../../../edges/telemetry" },
     { "path": "../../cli" },
     { "path": "../../console" }
   ]
