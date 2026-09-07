@@ -198,6 +198,12 @@ The codes are closed and distinct on purpose. A script that cannot tell "I asked
 wrongly" from "the ledger cannot be read" from "the ledger is not trustworthy"
 will retry an integrity failure as if it were a typo.
 
+The table is total over `API_ERROR_CODES` by construction rather than by
+inspection: a door's refusal is answered from a `Record<ApiErrorCode, number>`
+with no catch-all, so a sixteenth error code is a compile error here rather than
+a silent `2`, and a code that reaches the table from outside the type system is
+refused rather than given a number nobody chose (ADR 0053).
+
 `7` and `8` are the two that exist because a collapse would make a wrapper retry
 the one answer that cannot change. A lost tool claim (`7`) says the winner is
 recording the receipt, so read it rather than repeating the call. A capability

@@ -25,8 +25,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  API_ERROR_CODES,
   API_ROUTES,
   API_WRITE_ROUTES,
+  type ApiErrorCode,
   EventPageResponse,
   IntegrityResult,
   LEDGER_CONTRACT_VERSION,
@@ -50,10 +52,21 @@ import {
   loadAccountsFile,
   loadPolicyRegistry,
 } from "@acp/accounts";
-import { composeSubmission } from "@acp/runtime";
+import {
+  LIFECYCLE_PLAN,
+  buildEvent,
+  canonicalSubmissionDigest,
+  composeSubmission,
+  deriveInvocation,
+  planStep,
+  removeScenarioRoot,
+  resolveScenarioRoot,
+  scenarioLedgerPath,
+} from "@acp/runtime";
 
 import {
   CLI_COMMAND_NAMES,
+  EXIT_CLAIM_HELD,
   EXIT_INTEGRITY,
   EXIT_INTERNAL,
   EXIT_NOT_FOUND,
@@ -62,7 +75,8 @@ import {
   EXIT_USAGE,
   run,
 } from "../../src/cli/index.js";
-import type { CliIo } from "../../src/cli/index.js";
+import type { CliIo, CliSeams } from "../../src/cli/index.js";
+import { LifecycleRefused } from "../../src/lifecycle/index.js";
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -2543,5 +2557,216 @@ describe("F4d: --emit-authorization prints the whole document, or refuses", () =
       (await invoke(decisionArgv(accounts, database))).stdout,
     ) as DecisionDocument;
     expect(document.accounts[0]?.decision).toBe("SWITCH");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Old-V2 R1b: every API error code is answered by name
+// ---------------------------------------------------------------------------
+
+/**
+ * The exit code each of the fifteen `API_ERROR_CODES` earns.
+ *
+ * Written out here as the numbers HEAD answered before the decider became a
+ * table, so this file is the evidence that the totality packet changed no
+ * behaviour: six codes had explicit arms and nine fell to a `default:`, and
+ * every one of the fifteen still answers the same number. It is not a copy of
+ * the decider's table -- nothing exports that -- it is an independent
+ * statement of the contract, compared below against what the door actually
+ * returns.
+ */
+const EXIT_CODE_BY_API_ERROR_CODE: Record<ApiErrorCode, number> = {
+  // The six the switch named explicitly.
+  NOT_FOUND: EXIT_NOT_FOUND,
+  LEDGER_UNAVAILABLE: EXIT_UNAVAILABLE,
+  CONTRACT_VERSION_MISMATCH: EXIT_UNAVAILABLE,
+  WRITE_REFUSED: EXIT_INTEGRITY,
+  CLAIM_HELD: EXIT_CLAIM_HELD,
+  INTERNAL: EXIT_INTERNAL,
+  // The nine the `default:` arm absorbed. `BAD_REQUEST` is the only one of
+  // them a door raises today, and `2` is the right answer for it; the other
+  // eight arrived at `2` because nothing decided otherwise.
+  BAD_REQUEST: EXIT_USAGE,
+  METHOD_NOT_ALLOWED: EXIT_USAGE,
+  AUTH_REQUIRED: EXIT_USAGE,
+  WRITE_BEARER_UNCONFIGURED: EXIT_USAGE,
+  TOOL_SERVERS_UNCONFIGURED: EXIT_USAGE,
+  STREAM_CAPACITY: EXIT_USAGE,
+  LEDGER_INTEGRITY: EXIT_USAGE,
+  CAPABILITY_UNSUPPORTED: EXIT_USAGE,
+  SCENARIO_UNCONFIGURED: EXIT_USAGE,
+};
+
+/**
+ * One admitted route for the fixtures below.
+ *
+ * Declared structurally rather than imported, on the lifecycle suite's own
+ * reasoning: `@acp/contracts` owns `ResolvedRoute`, this package may not link
+ * it, and `buildEvent` parses the shape on every append anyway.
+ */
+const R1B_ROUTE = {
+  provider: "claude",
+  model: "opus",
+  accountId: "acct-fixture",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-fixture-1",
+  resolvedAt: FIXED_NOW,
+} as const;
+
+const R1B_INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
+const R1B_EMITTED_BY = "claude/opus/implementer/01";
+
+describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => {
+  const scenarios: string[] = [];
+
+  afterEach(() => {
+    for (const name of scenarios.splice(0)) removeScenarioRoot(name);
+  });
+
+  interface StagedAttempt {
+    readonly scenarioId: string;
+    readonly databasePath: string;
+    readonly taskId: string;
+  }
+
+  /**
+   * A scenario whose ledger holds a walk seeded through `RUN_STARTED`.
+   *
+   * The digest is computed the way a real submission computes it, because the
+   * door verifies it: a fixture with a placeholder would be refused before a
+   * driver was ever constructed, and every assertion below would then be
+   * measuring recovery rather than the decider.
+   */
+  function stageAttempt(scenarioId: string): StagedAttempt {
+    scenarios.push(scenarioId);
+    const databasePath = scenarioLedgerPath(resolveScenarioRoot(scenarioId));
+    const taskId = randomUUID();
+    const invocation = deriveInvocation(
+      taskId,
+      1,
+      FIXED_NOW,
+      canonicalSubmissionDigest({
+        taskId,
+        attempt: 1,
+        submittedAt: FIXED_NOW,
+        initiativeId: R1B_INITIATIVE_ID,
+        route: R1B_ROUTE,
+      }),
+    );
+    const ledger = openLedger(databasePath);
+    try {
+      for (let index = 0; index <= 4; index += 1) {
+        ledger.append(
+          buildEvent({
+            invocation,
+            step: planStep(index),
+            emittedBy: R1B_EMITTED_BY,
+            initiativeId: R1B_INITIATIVE_ID,
+            plan: LIFECYCLE_PLAN,
+            route: R1B_ROUTE,
+          }),
+        );
+      }
+    } finally {
+      ledger.close();
+    }
+    return { scenarioId, databasePath, taskId };
+  }
+
+  /**
+   * Seams whose driver factory refuses with the code it was given.
+   *
+   * The factory throws rather than answering, which is how a door refusal
+   * reaches `fromLifecycleError` and therefore the decider. `runLifecycleVerb`
+   * re-throws a `LifecycleRefused` unchanged, so the code that arrives at the
+   * exit table is the code named here and not a rewritten one.
+   */
+  function refusingWith(code: ApiErrorCode): CliSeams {
+    return {
+      makeDriver: (): never => {
+        throw new LifecycleRefused(code, "the door refused before an operation", "cancel");
+      },
+    };
+  }
+
+  async function invokeCancel(staged: StagedAttempt, seams: CliSeams): Promise<Invocation> {
+    let stdout = "";
+    let stderr = "";
+    const io: CliIo = {
+      stdout: (chunk) => {
+        stdout += chunk;
+      },
+      stderr: (chunk) => {
+        stderr += chunk;
+      },
+      now: () => FIXED_NOW,
+    };
+    const exitCode = await run(
+      [
+        "cancel",
+        "--database",
+        staged.databasePath,
+        "--scenario",
+        staged.scenarioId,
+        "--task",
+        staged.taskId,
+        "--attempt",
+        "1",
+        "--mode",
+        "RESTATE",
+        "--format",
+        "json",
+      ],
+      io,
+      seams,
+    );
+    return { exitCode, stdout, stderr };
+  }
+
+  it("refuses a code outside the vocabulary instead of calling it a usage error", async () => {
+    // `SIXTEENTH` is not in `API_ERROR_CODES`, and it stands for the code this
+    // repository has not written yet: a door that starts raising one, or a
+    // driver that deserializes one off a wire. The decider used to answer it
+    // with `EXIT_USAGE` through a `default:` arm -- a `2` telling a script to
+    // fix arguments that were already correct, decided by nobody. There is no
+    // number that is right for a code this package has never heard of, so the
+    // only honest answer is to refuse to produce one.
+    const staged = stageAttempt("cli-r1b-off-vocabulary");
+    const settled = await invokeCancel(staged, refusingWith("SIXTEENTH" as ApiErrorCode)).then(
+      (invocation) => ({ kind: "answered" as const, exitCode: invocation.exitCode }),
+      (error: unknown) => ({
+        kind: "refused" as const,
+        name: error instanceof Error ? error.name : "not an Error",
+      }),
+    );
+    expect(settled).toEqual({ kind: "refused", name: "UnnamedRefusal" });
+  });
+
+  it("answers each of the fifteen codes with the number it answered before", async () => {
+    // Every member of the closed vocabulary, driven through the real door and
+    // the real decider rather than read out of a table. A packet that quietly
+    // re-assigned one of the fifteen fails here, which is what makes the
+    // totality claim a non-behavioural one.
+    const answered: Record<string, number> = {};
+    for (const code of API_ERROR_CODES) {
+      const staged = stageAttempt("cli-r1b-" + code.toLowerCase().replace(/_/g, "-"));
+      const invocation = await invokeCancel(staged, refusingWith(code));
+      answered[code] = invocation.exitCode;
+    }
+    expect(answered).toEqual(EXIT_CODE_BY_API_ERROR_CODE);
+  });
+
+  it("leaves no member of API_ERROR_CODES without a stated number", () => {
+    // The type-level half. `Exclude` is `never` only while every member of the
+    // union is a key above; a sixteenth member of `API_ERROR_CODES` makes this
+    // assignment a compile error, and the typecheck stage of `pnpm check` is
+    // where that is enforced -- the union is erased long before any assertion
+    // could run.
+    const unmapped: Exclude<ApiErrorCode, keyof typeof EXIT_CODE_BY_API_ERROR_CODE>[] = [];
+    const none: never[] = unmapped;
+    expect(none).toEqual([]);
+    // And the runtime half, so a table that drifted from the vocabulary is a
+    // failure here rather than a silently narrower proof above.
+    expect(Object.keys(EXIT_CODE_BY_API_ERROR_CODE).sort()).toEqual([...API_ERROR_CODES].sort());
   });
 });

@@ -7189,6 +7189,72 @@ const V2BE_R6_WRITE_SET = [
   "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
 ];
 
+/**
+ * Old-V2 B-E, R1b: every API error code is answered by name.
+ *
+ * ADR 0049 named this debt when it closed row 13 and declined to widen:
+ * `refusalExitCode` covered six of the fifteen `API_ERROR_CODES` explicitly
+ * and sent the other nine to `EXIT_USAGE` through a `default:`. The gateway
+ * answers the same closed vocabulary with `STATUS_BY_CODE`, a
+ * `Record<ApiErrorCode, number>` total by type. One door had a table and the
+ * other had a catch-all over the same fifteen words.
+ *
+ * **The defect is the sixteenth code, not a misrouted one.** Measured: nothing
+ * is answered wrongly today. Five of the six codes a door actually raises have
+ * explicit arms and `BAD_REQUEST` earns its `2` honestly. What the `default:`
+ * bought was silence about the future — a new member of `API_ERROR_CODES`, or
+ * an existing code a door starts raising, became a `2` with no author, and a
+ * `2` tells an operator's script to fix arguments that were already correct.
+ *
+ * **Totality only.** Each of the nine gets an entry carrying the number it
+ * already returned, so the packet is provably non-behavioural for all fifteen
+ * and the suite asserts exactly that, driving every code through the real door.
+ * Re-assigning the 503 family to `EXIT_UNAVAILABLE`, or giving the two
+ * authentication codes their own numbers, is a change to a published CLI
+ * contract; ADR 0053 records it as the successor question rather than taking it.
+ *
+ * **Two enforcements, neither of them prose.** The compiler settles totality —
+ * `Record<ApiErrorCode, number>` with no `default:` makes a sixteenth member a
+ * type error at the typecheck stage — and the law below settles agreement, by
+ * reading both tables as text and asserting they name the identical fifteen
+ * codes both ways. Text, because this fence is dependency-free and runs before
+ * any build, and because `STATUS_BY_CODE` is private and the CLI may not import
+ * the gateway in any case.
+ *
+ * **Six paths, one novel** (the ADR). No test file outside the CLI's own suite
+ * moves: `CliSeams.makeDriver`, `LifecycleRefused` and `run` are all exported
+ * already, so an injected driver raising a cast code reaches the decider from
+ * `test/cli/index.test.ts` without a new seam and without a new export.
+ *
+ * **Pins that move.** ADR corpus 52 -> 53; the write set gains one path (the
+ * ADR); the `V2*_WRITE_SET` constants 59 -> 60.
+ *
+ * **Pins that do not.** `API_ERROR_CODES` stays 15 and the `EXIT_*` codes stay
+ * 8 — the guard throws rather than adding a ninth number. `PATH_SCOPED_LAWS`
+ * stays at 112 and the `requireScope` call sites with it: the law below asserts
+ * two named files and is deliberately not path-scoped, exactly as the
+ * api-reference law is (`V2BE_R1`) and the policy-digest law is (`V2B5R14`).
+ * The CLI's exported surface does not move: `EXIT_BY_CODE`, the guard and
+ * `refusalExitCode` are all module-private, so the barrel and `package.json`
+ * are untouched. `API_CONTRACT_VERSION`, `EXPIRED_LITERALS`, `AUTHORITY_LITERALS`,
+ * `TEST_ONLY_DOMAINS`, every manifest and the lockfile are untouched.
+ *
+ * **What this packet does not do.** It adds no error code, no exit code and no
+ * route. It does not touch the gateway, whose table was already total, nor the
+ * protocol's vocabulary. The two adjacent CLI README debts ADR 0049 excluded by
+ * name stay exactly as they are, and no console path is in scope.
+ *
+ * Record: `docs/architecture/0053-every-api-error-code-is-answered-by-name.md`.
+ */
+const V2BER1B_WRITE_SET = [
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/README.md",
+  "docs/architecture/0053-every-api-error-code-is-answered-by-name.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7352,6 +7418,7 @@ const WRITE_SET = [
   ...V2B5R10_WRITE_SET,
   ...V2B5R14_WRITE_SET,
   ...V2BE_R6_WRITE_SET,
+  ...V2BER1B_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -20557,6 +20624,106 @@ if (apiReference === null) {
           documentedPairings +
           " CLI pairings agreeing with SURFACE_MAP both ways",
       );
+    }
+  }
+}
+
+// --- the two doors answer one vocabulary (old-V2 R1b) -----------------------
+//
+// `API_ERROR_CODES` is a closed fifteen-word vocabulary, and both write doors
+// answer it: the gateway with `STATUS_BY_CODE`, a status per code, and the CLI
+// with `EXIT_BY_CODE`, an exit code per code. Each is `Record<ApiErrorCode,
+// number>`, so the compiler already pins each table to the vocabulary
+// separately — a sixteenth member of the union is a type error in both files.
+//
+// What the compiler cannot see is the two of them together, because they never
+// meet: `STATUS_BY_CODE` is module-private in `@acp/gateway`, the CLI does not
+// depend on the gateway and must not, and no third module names both. Before
+// R1b that gap was where the drift lived — the CLI answered nine of the fifteen
+// through a `default:` arm, which is a table that agrees with anything.
+//
+// So this law reads both tables as text and asserts they name the identical
+// codes, both directions. The same technique the api-reference law above uses
+// for `SURFACE_MAP`, and for the same two reasons: this fence is dependency-free
+// and runs before any build, so it cannot import either module; and reading the
+// source is the only way to compare a private table with anything at all.
+//
+// It asserts two named files, so it is deliberately not path-scoped: it selects
+// nothing by path, registers no scope in `PATH_SCOPED_LAWS` and calls no
+// `requireScope` — the shape the api-reference law and the policy-digest law
+// already carry.
+{
+  const cliDecider = readIfPresent("packages/entrypoints/cli/src/cli/index.ts");
+  const gatewayErrors = readIfPresent("packages/entrypoints/gateway/src/errors/index.ts");
+
+  /** The keys of one `Record<ApiErrorCode, number>` literal, read as text. */
+  const codesIn = (source, declaration, where) => {
+    const start = source.indexOf(declaration);
+    if (start === -1) {
+      fail(where + " no longer declares " + declaration.trim() + "; the two doors cannot be compared");
+      return null;
+    }
+    const end = source.indexOf("\n};", start);
+    if (end === -1) {
+      fail(where + " declares " + declaration.trim() + " without a closing brace at column zero");
+      return null;
+    }
+    return new Set(
+      [...source.slice(start, end).matchAll(/^ {2}([A-Z][A-Z_]*):/gm)].map((match) => match[1]),
+    );
+  };
+
+  if (cliDecider === null) {
+    fail("packages/entrypoints/cli/src/cli/index.ts is missing; the CLI's exit-code table has nothing to be checked");
+  } else if (gatewayErrors === null) {
+    fail("packages/entrypoints/gateway/src/errors/index.ts is missing; the CLI's exit-code table has nothing to be checked against");
+  } else {
+    const exits = codesIn(
+      cliDecider,
+      "const EXIT_BY_CODE: Record<ApiErrorCode, number> = {",
+      "packages/entrypoints/cli/src/cli/index.ts",
+    );
+    const statuses = codesIn(
+      gatewayErrors,
+      "const STATUS_BY_CODE: Record<ApiErrorCode, number> = {",
+      "packages/entrypoints/gateway/src/errors/index.ts",
+    );
+    if (exits !== null && statuses !== null) {
+      if (exits.size === 0 || statuses.size === 0) {
+        // A literal that stopped parsing would make this law agree with
+        // nothing, loudly — the guard the api-reference law carries, for the
+        // same reason: two empty sets are equal.
+        fail(
+          "one of the two door tables parsed as zero codes (CLI " +
+            exits.size +
+            ", gateway " +
+            statuses.size +
+            "); the door-vocabulary law would pass vacuously",
+        );
+      } else {
+        for (const code of statuses) {
+          if (!exits.has(code)) {
+            fail(
+              "the CLI's EXIT_BY_CODE does not name " +
+                code +
+                ", which the gateway's STATUS_BY_CODE answers; both doors answer one vocabulary",
+            );
+          }
+        }
+        for (const code of exits) {
+          if (!statuses.has(code)) {
+            fail(
+              "the CLI's EXIT_BY_CODE names " +
+                code +
+                ", which the gateway's STATUS_BY_CODE does not answer; both doors answer one vocabulary",
+            );
+          }
+        }
+        notes.push(
+          exits.size +
+            " API error codes answered by name at both doors, agreeing between the CLI's EXIT_BY_CODE and the gateway's STATUS_BY_CODE both ways",
+        );
+      }
     }
   }
 }

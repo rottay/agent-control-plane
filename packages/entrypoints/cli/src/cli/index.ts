@@ -483,11 +483,11 @@ function failure(
 }
 
 /**
- * The exit code a door's refusal earns, chosen once for every door.
+ * The exit code a door's refusal earns, for every code the contract declares.
  *
  * Both write doors raise the same closed `ApiErrorCode`s for the same reasons —
  * three of the five `WRITE_REFUSED` sites are word-for-word the gateway's — and
- * until this function existed each door carried its own `switch` over that code.
+ * until this table existed each door carried its own `switch` over that code.
  * Two tables over one closed set is the shape a shared convention takes right
  * before one of them drifts, and it had already drifted: `WRITE_REFUSED` left
  * the lifecycle door as `EXIT_INTEGRITY` and the tool-call door as `EXIT_USAGE`,
@@ -499,31 +499,104 @@ function failure(
  * with the coordinates the caller named, and nothing about the invocation was
  * wrong. A `2` would tell a script to fix arguments that are already correct —
  * the reasoning ADR 0026 already recorded for `EXIT_CLAIM_HELD`.
+ *
+ * **A table rather than a switch, and total by type (old-V2 R1b).** The switch
+ * named six of the fifteen codes and sent the other nine to `EXIT_USAGE`
+ * through a `default:`, which is `Record<ApiErrorCode, number>`'s job done by a
+ * catch-all: the numbers were the same, and nobody had chosen them. The failure
+ * mode was never a misrouted code — it was the sixteenth. A new member of
+ * `API_ERROR_CODES`, or a code an existing door starts raising, became a `2`
+ * with no author, and a `2` tells an operator's script the arguments were
+ * wrong. Written as a table the compiler settles it: a sixteenth member is a
+ * type error here, at the same stage that already checks the gateway's
+ * `STATUS_BY_CODE`, and the fence checks that these two name the same fifteen.
+ *
+ * Every number below is the number this package answered before it became a
+ * table. Re-assigning any of them — the 503 family earning `EXIT_UNAVAILABLE`,
+ * the two authentication codes earning their own — is a change to a published
+ * CLI contract and is deliberately not this record's (ADR 0053).
  */
-function refusalExitCode(code: ApiErrorCode): number {
-  switch (code) {
-    case "NOT_FOUND":
-      return EXIT_NOT_FOUND;
-    case "LEDGER_UNAVAILABLE":
-    case "CONTRACT_VERSION_MISMATCH":
-      // Including every throw from a driver. An engine this attempt could not
-      // reach is a failure of the channel, and it must stay distinguishable
-      // from `EXIT_CAPABILITY_UNSUPPORTED`, which says the engine answered and
-      // the answer was no.
-      return EXIT_UNAVAILABLE;
-    case "WRITE_REFUSED":
-      return EXIT_INTEGRITY;
-    case "CLAIM_HELD":
-      // Not a usage error, and the distinction is the whole reason this code
-      // exists: nothing about the invocation was wrong, and repeating it is the
-      // one action that is certainly not the remedy.
-      return EXIT_CLAIM_HELD;
-    case "INTERNAL":
-      return EXIT_INTERNAL;
-    default:
-      // Everything else is a request the door refused before it became one.
-      return EXIT_USAGE;
+const EXIT_BY_CODE: Record<ApiErrorCode, number> = {
+  // The door refused a request it could read. `2` is the answer this code was
+  // always given, and it is the right one: something about the invocation was
+  // wrong and fixing it is the remedy.
+  BAD_REQUEST: EXIT_USAGE,
+  NOT_FOUND: EXIT_NOT_FOUND,
+  // Neither door can raise this one — the CLI dispatches on its own verb table
+  // and never presents a method — so it earns the usage number it inherited
+  // rather than a code of its own invented for an unreachable case.
+  METHOD_NOT_ALLOWED: EXIT_USAGE,
+  // Including every throw from a driver. An engine this attempt could not
+  // reach is a failure of the channel, and it must stay distinguishable from
+  // `EXIT_CAPABILITY_UNSUPPORTED`, which says the engine answered and the
+  // answer was no.
+  CONTRACT_VERSION_MISMATCH: EXIT_UNAVAILABLE,
+  WRITE_REFUSED: EXIT_INTEGRITY,
+  // The three the gateway answers 401, 403 and 503 for. No CLI door raises any
+  // of them: a local invocation presents no bearer and configures no tool
+  // server, so these are the API's states reached through the shared
+  // vocabulary rather than this transport's. They keep the number the
+  // `default:` gave them, and whether the CLI should answer them differently
+  // is the successor question ADR 0053 records rather than answers.
+  AUTH_REQUIRED: EXIT_USAGE,
+  WRITE_BEARER_UNCONFIGURED: EXIT_USAGE,
+  TOOL_SERVERS_UNCONFIGURED: EXIT_USAGE,
+  // A gateway's connection ceiling. A CLI invocation is one process holding no
+  // long-lived connection, so it cannot be the ninth caller.
+  STREAM_CAPACITY: EXIT_USAGE,
+  LEDGER_UNAVAILABLE: EXIT_UNAVAILABLE,
+  // Reached through `fromLedgerError`, not through here: that function maps
+  // each `LedgerError` subclass onto its own number, and an integrity failure
+  // arrives as `EXIT_INTEGRITY` there. The entry exists because the code is in
+  // the vocabulary, and it carries the number this arm answered.
+  LEDGER_INTEGRITY: EXIT_USAGE,
+  // Not a usage error, and the distinction is the whole reason this code
+  // exists: nothing about the invocation was wrong, and repeating it is the
+  // one action that is certainly not the remedy.
+  CLAIM_HELD: EXIT_CLAIM_HELD,
+  // Decided by `lifecycleExitCode`, which answers a driver's own refusal with
+  // `EXIT_CAPABILITY_UNSUPPORTED`. A capability gap that arrived here instead
+  // would be a door refusal rather than an engine's answer, and it keeps the
+  // number it had.
+  CAPABILITY_UNSUPPORTED: EXIT_USAGE,
+  // The lifecycle door refuses a missing scenario as `BAD_REQUEST` before this
+  // code could be raised, so this too is the API's state named in the shared
+  // vocabulary, holding the number it inherited.
+  SCENARIO_UNCONFIGURED: EXIT_USAGE,
+  INTERNAL: EXIT_INTERNAL,
+};
+
+/**
+ * A refusal this package has no number for.
+ *
+ * Thrown rather than answered, and that is the whole point of the type above.
+ * `EXIT_BY_CODE` is total by type, so a build the compiler has checked cannot
+ * produce a miss; what can is a cast at a door, a hand-built refusal, or a
+ * code deserialized from a wire by a driver. The old `default:` answered all
+ * three with `EXIT_USAGE`, which is a number this package would be inventing
+ * on behalf of a caller it does not understand. Refusing is the honest answer:
+ * a script sees a crash it can investigate rather than a `2` it will act on.
+ *
+ * The message is fixed and carries no code, on this package's own rule that a
+ * failure is a closed code and a fixed sentence. The code rides on the error
+ * for a debugger and is printed nowhere.
+ */
+class UnnamedRefusal extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super("the CLI has no exit code for this refusal");
+    this.name = "UnnamedRefusal";
+    this.code = code;
   }
+}
+
+function refusalExitCode(code: ApiErrorCode): number {
+  // Read through a lookup that is allowed to miss, so the guard below is a
+  // real branch rather than dead code the compiler has already ruled out.
+  const exitCode: number | undefined = (EXIT_BY_CODE as Record<string, number>)[code];
+  if (exitCode === undefined) throw new UnnamedRefusal(code);
+  return exitCode;
 }
 
 /**
