@@ -133,6 +133,20 @@ export function canonicalSubmissionDigest(submission: DaemonSubmission): string 
  * and the submitted instant are derived ONCE, before ingress, and the same
  * value is sent as the idempotency key, which is what makes a retry a replay
  * rather than a second run.
+ *
+ * **What the identity therefore refuses** (old-V2 B2). The preimage is
+ * `(taskId, attempt)` and nothing else. The submitted instant and the digest
+ * are carried on the record and are deliberately not in it, so two submissions
+ * that agree on those two coordinates and differ in anything else — a
+ * re-elected route, a later instant — are ONE invocation, and the second
+ * cannot become a second run. A true retry re-sends the same content and
+ * replays, appending nothing. A different submission that reuses the
+ * coordinates is refused rather than forked: every event payload carries
+ * `submissionDigest`, so the colliding append fails closed on
+ * `LEDGER_IDEMPOTENCY_CONFLICT` and the first run stands. Reusing an attempt's
+ * coordinates for different content is a caller defect, and it is not silent.
+ * Drilled by "the invocation identity says what it refuses" in
+ * `test/submission/index.test.ts`.
  */
 export function deriveInvocation(
   taskId: string,

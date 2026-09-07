@@ -818,3 +818,123 @@ describe("the invocation identity survived its relocation byte for byte", () => 
     expect(again.invocationId).toBe(one.invocationId);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R17 — what the invocation identity refuses (old-V2 B2, boundary row 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * The identity is `(taskId, attempt)`, and this is the consequence.
+ *
+ * The block above pins that `deriveInvocation` ignores the instant and the
+ * digest. What nothing stated is what that costs: two submissions that agree on
+ * the task and the attempt and differ in everything else are ONE invocation, so
+ * the second cannot become a second run. That is deliberate — it is what makes a
+ * resubmission after a crash a replay — but "deliberate" is a claim, and until
+ * it executes it is only a comment.
+ *
+ * So the collision is composed here rather than asserted in the abstract: two
+ * real elections over two versions of a policy copy, under one `(taskId,
+ * attempt)`, differing in route, instant and digest. They collide on the
+ * invocation id, and they collide again on the ledger key, which is
+ * `taskId/attempt/transitionId` and carries no content either.
+ *
+ * What the ledger then does is the part worth writing down. A true retry — the
+ * same coordinates AND the same content — replays and appends nothing. A
+ * different submission reusing those coordinates does NOT quietly win and does
+ * not fork the attempt: every event payload carries `submissionDigest`, so the
+ * colliding append fails closed by name and the first run stands. The identity
+ * is content-free, and the refusal that makes that safe is not silent.
+ *
+ * The real Restate lane is drilled elsewhere and is not re-drilled here: G1-G3
+ * in the daemon's lifecycle drills already pay a real server and a SIGKILL to
+ * prove non-duplication against the ledger's own keys. This property is pure,
+ * so it is proved by direct call.
+ */
+describe("the invocation identity says what it refuses", () => {
+  const OTHER_TASK = "b7500000-0000-4000-8000-000000000002";
+  const OTHER_INSTANT = "2026-09-02T00:00:00.000Z";
+
+  it("gives two different submissions one invocation, and refuses the second as a second run", () => {
+    const dir = stage();
+    const copy = join(dir, "capability-policy.json");
+    copyFileSync(SHIPPED_POLICY, copy);
+
+    const first = composeSubmission(request([record(["opus", "sonnet"])]), shippedRegistry(copy), coordinates());
+    if (!first.ok) throw new Error("the first election refused");
+
+    // The policy moves and so does the clock: a genuinely different submission,
+    // reusing the coordinates of one already in flight.
+    const document = JSON.parse(readFileSync(copy, "utf8")) as { policyVersion: string; models: { model: string }[] };
+    document.policyVersion = "2026-09-02.1";
+    document.models = document.models.filter((entry) => entry.model !== "opus");
+    writeFileSync(copy, JSON.stringify(document));
+
+    const second = composeSubmission(
+      request([record(["opus", "sonnet"])]),
+      shippedRegistry(copy),
+      coordinates({ submittedAt: OTHER_INSTANT }),
+    );
+    if (!second.ok) throw new Error("the second election refused");
+
+    // They really are two different submissions.
+    expect(second.submission.route.model).not.toBe(first.submission.route.model);
+    expect(second.submission.submittedAt).not.toBe(first.submission.submittedAt);
+    expect(second.submissionDigest).not.toBe(first.submissionDigest);
+
+    // The collision, stated. Same task, same attempt, different everything
+    // else, one invocation id.
+    const one = deriveInvocation(first.submission.taskId, 1, first.submission.submittedAt, first.submissionDigest);
+    const other = deriveInvocation(second.submission.taskId, 1, second.submission.submittedAt, second.submissionDigest);
+    expect(other.invocationId).toBe(one.invocationId);
+
+    const root = scenario("b7s-r17");
+    const ledger = track(openLedger(scenarioLedgerPath(root)));
+
+    // The first submission opens the attempt.
+    const landed = appendPlanStep(toyBeatContext(root, ledger, one, first.submission.route), planStep(0));
+    expect(landed.inserted).toBe(true);
+
+    // A true retry re-sends the same coordinates and the same content. It
+    // replays: nothing is appended, and that is the whole point of the
+    // identity excluding the digest.
+    const retried = appendPlanStep(toyBeatContext(root, ledger, one, first.submission.route), planStep(0));
+    expect(retried.inserted).toBe(false);
+
+    // The other submission is not a retry. It collides on the same ledger key,
+    // and because its content differs the ledger refuses it by name rather than
+    // discarding it quietly or forking the attempt.
+    let refusal: { readonly name: string; readonly code: unknown } | null = null;
+    try {
+      appendPlanStep(toyBeatContext(root, ledger, other, second.submission.route), planStep(0));
+    } catch (error) {
+      refusal = { name: (error as Error).name, code: (error as { code?: unknown }).code };
+    }
+    expect(refusal).not.toBeNull();
+    expect(refusal?.name).toBe("LedgerIdempotencyConflictError");
+    expect(refusal?.code).toBe("LEDGER_IDEMPOTENCY_CONFLICT");
+
+    // One run, under the key both invocations derive, holding the FIRST
+    // submission's content. Three appends, one event, no key repeated.
+    const events = ledger.listEvents({ taskId: first.submission.taskId });
+    expect(events.events.length).toBe(1);
+    expect(events.events[0]?.idempotencyKey).toBe(
+      buildIdempotencyKey({
+        taskId: first.submission.taskId,
+        attempt: 1,
+        transitionId: planStep(0).transitionId,
+      }),
+    );
+    expect(events.events[0]?.event.payload["submissionDigest"]).toBe(first.submissionDigest);
+    const keys = events.events.map((entry) => entry.idempotencyKey);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("depends on the task as well as the attempt", () => {
+    // The anti-vacuity half the pinned attempt literals above do not cover:
+    // without this, a derivation that ignored the task would still pass.
+    const mine = deriveInvocation(TASK, 1, SUBMITTED_AT, "a".repeat(64));
+    const theirs = deriveInvocation(OTHER_TASK, 1, SUBMITTED_AT, "a".repeat(64));
+    expect(theirs.invocationId).not.toBe(mine.invocationId);
+  });
+});
