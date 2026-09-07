@@ -69,6 +69,7 @@ new records from `_template.md`, which carries the required fields.
 | 0051 | [The policy version pin is data, not code](0051-the-policy-version-pin-is-data.md) | accepted |
 | 0052 | [The daemon binds a transport it was given a client for](0052-the-daemon-binds-a-transport-it-was-given-a-client-for.md) | accepted |
 | 0053 | [Every API error code is answered by name](0053-every-api-error-code-is-answered-by-name.md) | accepted |
+| 0054 | [The baseline measures the walk that actually runs](0054-the-baseline-measures-the-walk-that-actually-runs.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

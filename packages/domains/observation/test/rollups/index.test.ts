@@ -316,9 +316,10 @@ describe("the fold is pure", () => {
       initiativeByTask: new Map([[TASK_A, INITIATIVE_ONE]]),
     });
 
-    // The baseline's own measure reads `tokensUsed` on a different event type.
-    // This fold reads two types and nothing else, even when a payload happens
-    // to carry a shape it would otherwise recognize.
+    // Since R9b the baseline reads the same key on one of these two types, so
+    // the boundary this asserts is the fold's own: it reads two types and
+    // nothing else, even when a payload happens to carry a shape it would
+    // otherwise recognize.
     expect(rollups.byTask[0]?.tokensUsed).toBe(5);
     expect(rollups.byTask[0]?.usageEvents).toBe(1);
   });

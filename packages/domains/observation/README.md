@@ -57,13 +57,15 @@ filesystem, no ledger, no randomness. It carries five measures — routing,
 tokens, time, rework and acceptance — each expressed with the frozen 24-type
 event vocabulary, each artifact-supplied rather than estimated.
 
-Where the number is not there, it stops. A missing classification reason, a
-step with no token count, a timestamp that runs backwards, a verdict outside
-the closed set: each throws one `BaselineStopError` carrying a closed reason
-code and never the payload that caused it. A measure that cannot be expressed
-under the frozen vocabulary is a STOP escalated to the DT, never a reason to
-widen the contract. The mapping and that law are in
-`docs/architecture/0009-shadow-observation-boundary.md`.
+Where the number is there and wrong, it stops. An empty classification reason,
+a usage row whose count is not an integer, a timestamp that runs backwards, a
+verdict outside the closed set: each throws one `BaselineStopError` carrying a
+closed reason code and never the payload that caused it. Where a field is
+simply absent because no emitter writes it, it counts instead of stopping, and
+reports the count — see "the baseline measures the walk that actually runs"
+below. A measure that cannot be expressed under the frozen vocabulary is a STOP
+escalated to the DT, never a reason to widen the contract. The mapping and that
+law are in `docs/architecture/0009-shadow-observation-boundary.md`.
 
 ## Token rollups
 
@@ -178,14 +180,38 @@ aligns the keys and adds no exporter, no port and no edge. A sink is owed to
 R11 and to the owner's dependency answer, which the frozen dependency graph
 makes an owner decision rather than a writer's.
 
-**The baseline's totality is owed too.** The telemetry half of the projection
-is truthful as of this record; `computeBaseline` still demands three payload
-fields no production emitter writes and therefore still stops on the first
-event of any real chain. R9b owes that repair: the token measure read from
-`TOKEN_USAGE_RECORDED.payload.tokens`, `reason` and `verdict` absent-tolerant
-with explicit unreported counts, and `MISSING_REASON`, `MISSING_TOKENS_USED`
-and `MISSING_VERDICT` retired or documented as reachable from synthetic chains
-only.
+**The baseline measures the walk that actually runs.** R9b paid the debt this
+paragraph used to record. `computeBaseline` reads spend off
+`TOKEN_USAGE_RECORDED.payload.tokens` — the event `recordTokenObservation`
+writes and the key the sibling rollup already folded — rather than off
+`ATOMIC_STEP_COMPLETED.payload.tokensUsed`, which the plan's OUTCOME beat never
+carried. A reservation is not read: the two types carry the identical key and
+mean different things, so spend and hold stay apart here for the reason they
+stay apart in the rollup.
+
+**`reason` and `verdict` are absent-tolerant, and absence is stated.** The walk
+writes `TASK_CLASSIFIED` and `AUDIT_COMPLETED` as PLAIN beats carrying neither
+field, so a real chain now measures instead of stopping. It does not measure
+silently: `routing.unreported` and `acceptance.unreported` carry the counts, so
+"no classification happened" and "every classification happened without saying
+why" never collapse into one zero. A field that is *present and broken* — an
+empty reason, an 81-character one, a verdict outside the closed set — still
+stops, because that is a defective artifact rather than a fact about the walk.
+
+**`MISSING_REASON`, `MISSING_TOKENS_USED` and `MISSING_VERDICT` were documented,
+not retired** (DT ruling). All three stay in `BaselineStopReason` and all three
+are now reachable only from a chain hand-built to carry a broken field, each
+pinned by its own synthetic test and asserted through the closed union so a
+rename is a compile error. They are kept because the shadow ledger replays
+synthetic chains, and a measure that waved a malformed artifact through there
+would be the estimate ADR 0009 forbids.
+
+**The agreement is proved causally, not asserted.** The drill lives in
+`packages/entrypoints/gateway/test/telemetry/index.test.ts` (C22, C23), the only
+package whose manifest already names both `@acp/observation` and `@acp/runtime`:
+it walks the real `LIFECYCLE_PLAN` through the real event builder, appends to a
+real ledger, reads the chain back out, and only then measures it. Record:
+`docs/architecture/0054-the-baseline-measures-the-walk-that-actually-runs.md`.
 
 **The redaction gate is structural, not procedural.** Every record passes the
 contracts' credential and transcript guards *inside* `emitTelemetry`, and a

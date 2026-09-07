@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { openLedger } from "@acp/ledger";
 import type { LedgerEventRecord } from "@acp/ledger";
-import { TELEMETRY_SPAN_KIND, computeTokenRollups, emitTelemetry } from "@acp/observation";
+import { TELEMETRY_SPAN_KIND, computeBaseline, computeTokenRollups, emitTelemetry } from "@acp/observation";
 import type { BuildEventInput, SwitchExecutionInput } from "@acp/runtime";
 import {
   LIFECYCLE_PLAN,
@@ -1140,5 +1140,101 @@ describe("the tree the ledger resolves, driven causally", () => {
     // order is compared alongside the attributes'.
     expect(JSON.stringify(emitTelemetry(events))).toBe(JSON.stringify(emitTelemetry(events)));
     expect(JSON.stringify(emitTelemetry(events))).toContain("spanContext");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C22, C23 — the baseline measures the walk that actually runs (R9b)
+//
+// The two checks above prove the *projection* reads what the walk writes. These
+// two prove the same thing of the *baseline*, which is the other read model
+// over the same chain and the one ADR 0048 left owing. They are here for the
+// reason C1-C21 are here: `@acp/observation` declares only `@acp/contracts` and
+// `@acp/ledger`, so its own suite cannot reach the walk, and the gateway is the
+// only package whose manifest already names both sides of the agreement.
+// ---------------------------------------------------------------------------
+
+describe("the baseline measures the walk that actually runs", () => {
+  it("C22: a real chain is measured rather than refused, and its tokens are the recorded ones", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+    // Two spends and one hold, written by the recorder the daemon calls, on the
+    // account the route elected -- the same door `recordUsage` goes through.
+    recordTokenObservation(ledger, {
+      invocation: INVOCATION,
+      kind: "USAGE",
+      accountId: ROUTE.accountId,
+      tokens: 4_321,
+      transitionId: "usage.baseline.01",
+      emittedBy: EMITTED_BY,
+    });
+    recordTokenObservation(ledger, {
+      invocation: INVOCATION,
+      kind: "USAGE",
+      accountId: ROUTE.accountId,
+      tokens: 1_234,
+      transitionId: "usage.baseline.02",
+      emittedBy: EMITTED_BY,
+    });
+    recordTokenObservation(ledger, {
+      invocation: INVOCATION,
+      kind: "RESERVATION",
+      accountId: ROUTE.accountId,
+      tokens: 9_999,
+      transitionId: "reservation.baseline.01",
+      emittedBy: EMITTED_BY,
+    });
+    ledger.close();
+
+    const events = readBack(path);
+    // The whole point: the walk's own chain, read back out of a real ledger,
+    // is measurable. Before R9b this threw `MISSING_REASON` on event index 1.
+    const baseline = computeBaseline(events);
+
+    // The expectation is derived from the rows themselves, never restated. A
+    // literal here would be a second declaration of the recorder's own numbers
+    // and could agree with a fold that read nothing at all.
+    const usageRows = events.filter((event) => event.type === "TOKEN_USAGE_RECORDED");
+    const recorded = usageRows.reduce((sum, event) => sum + Number(event.payload["tokens"]), 0);
+    expect(usageRows.length).toBeGreaterThan(1);
+    expect(recorded).toBeGreaterThan(0);
+    expect(baseline.tokens).toEqual({ events: usageRows.length, total: recorded });
+
+    // A hold is not a spend. The reservation carries the same `tokens` key on a
+    // neighbouring type, so a fold that read the key without reading the type
+    // would report it and disagree with the recorder that wrote it.
+    expect(baseline.tokens.total).not.toBe(recorded + 9_999);
+
+    // And the chain really is the walk's, not a hand-built stand-in.
+    expect(events.length).toBe(LIFECYCLE_PLAN.length + 3);
+    expect(only(events, "COMMIT_RECORDED").taskId).toBe(TASK_ID);
+  });
+
+  it("C23: what the walk never writes is counted as unreported, not as zero", () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    walk(ledger, 10);
+    ledger.close();
+
+    const events = readBack(path);
+    const baseline = computeBaseline(events);
+
+    // The walk emits `TASK_CLASSIFIED` and `AUDIT_COMPLETED` as PLAIN beats, so
+    // neither carries the field the baseline once demanded. Absence is now
+    // tolerated -- but it is *stated*. A reader sees "one classification, no
+    // reason reported", never a zero that could equally mean "none happened".
+    expect(baseline.routing).toEqual({ total: 0, unreported: 1, byReason: [] });
+    expect(baseline.acceptance.audits).toBe(0);
+    expect(baseline.acceptance.unreported).toBe(1);
+    expect(baseline.acceptance.byVerdict).toEqual([]);
+
+    // The counts are of real events, not of an empty chain: the same walk that
+    // reported nothing did reach a terminal outcome, and that is measured.
+    expect(baseline.acceptance.terminalOutcomes).toEqual([
+      { type: "COMMIT_RECORDED", count: 1 },
+      { type: "TASK_CANCELLED", count: 0 },
+      { type: "TASK_FAILED", count: 0 },
+    ]);
   });
 });

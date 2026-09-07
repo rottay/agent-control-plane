@@ -7255,6 +7255,78 @@ const V2BER1B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * Old-V2 B5, R9b: the baseline measures the walk that actually runs.
+ *
+ * The residual clause of boundary row 7. R9 (`cf1f0a1`) closed the telemetry
+ * half — `ERROR_TYPES` sanitized, `PAYLOAD_ATTRIBUTES` read nested under
+ * `RECORDED_ROUTE_KEY` — and recorded the rest as owed here, in the fence's own
+ * R9 docblock ("The baseline half is owed to R9b", `:6928`), in ADR 0048
+ * `:274-280` and in `packages/domains/observation/README.md:181-188`.
+ *
+ * **The defect was totality, not accuracy.** `computeBaseline` demanded three
+ * payload fields no production emitter writes — `TASK_CLASSIFIED.payload.reason`,
+ * `ATOMIC_STEP_COMPLETED.payload.tokensUsed` and `AUDIT_COMPLETED.payload.verdict`
+ * — so a real chain threw `MISSING_REASON` on event index 1 and produced no
+ * measurement at all. Spend is written on `TOKEN_USAGE_RECORDED.payload.tokens`
+ * (`runtime/src/usage/index.ts:208`), which the sibling rollup in the same
+ * package already folded; `reason` and `verdict` are PLAIN-beat absences, and
+ * become counted facts rather than stops.
+ *
+ * **Document, not retire** (DT ruling). `MISSING_REASON`, `MISSING_TOKENS_USED`
+ * and `MISSING_VERDICT` stay in the closed `BaselineStopReason` union, each now
+ * reachable only from a hand-built chain and each pinned by a synthetic test
+ * asserted through the union type, so a rename is a compile error. ADR 0048's
+ * cost sketch (`:237-238`, "retires three public stop reasons and adds two
+ * source paths") is superseded on both halves by ADR 0054: none is retired, and
+ * no source path is added — the causal drill joins an existing test file.
+ *
+ * **Nine paths, one novel** (the ADR). The drill lives in the gateway because
+ * that is the only package whose manifest names both `@acp/observation` and
+ * `@acp/runtime`, and `TEST_ONLY_DOMAINS.gateway` already registers `telemetry`
+ * for this exact class of drill, so no manifest, lockfile or tsconfig moves.
+ * The ninth path is a comment-only correction: `test/rollups/index.test.ts:319`
+ * said "the baseline's own measure reads `tokensUsed` on a different event
+ * type", which this packet's own change falsifies on both clauses. The test
+ * stays green — `computeTokenRollups` never calls `computeBaseline` — and no
+ * other line of that file moves.
+ *
+ * **Pins that move.** ADR corpus 53 -> 54; the write set gains one path (the
+ * ADR); the `V2*_WRITE_SET` constants 60 -> 61.
+ *
+ * **Pins that do not.** `OBSERVATION_PUBLIC_EXPORTS` stays 65 — members are
+ * added to `RoutingBaseline` and `AcceptanceBaseline`, both already exported by
+ * name, and no export name moves. `PATH_SCOPED_LAWS` stays at 112: a write-set
+ * constant and its spread are not a law, and this packet registers no scope,
+ * exactly as `V2BER1B` and `V2BE_R1` did. `CONTROL_PLANE_EVENT_TYPES` stays 24 —
+ * `TOKEN_USAGE_RECORDED` was already frozen vocabulary, so nothing is minted.
+ * `TEST_ONLY_DOMAINS`, `GATEWAY_TS_REFERENCES`, `ROUTE_KEY_DECLARERS`, the
+ * observation manifest surface, every other manifest and the lockfile are
+ * untouched.
+ *
+ * **What this packet does not do.** It adds no production sink: the projection
+ * and the baseline both keep zero production callers, still owed to R11 and to
+ * the owner's dependency answer. It touches nothing under
+ * `observation/src/telemetry/`, Langfuse included (ADR 0048:287-290), and
+ * nothing under `docs/certification/`: `metrics-baseline.md` and `p8-matrix.md`
+ * are dated records, and ADR 0054 records in one sentence that the
+ * `baselineSha256` pin `f31fb8ec…` is historical from that record forward
+ * rather than false.
+ *
+ * Record: `docs/architecture/0054-the-baseline-measures-the-walk-that-actually-runs.md`.
+ */
+const V2B5R9B_WRITE_SET = [
+  "packages/domains/observation/src/baseline/index.ts",
+  "packages/domains/observation/test/baseline/index.test.ts",
+  "packages/domains/observation/test/shadow-ledger/index.test.ts",
+  "packages/domains/observation/test/rollups/index.test.ts",
+  "packages/domains/observation/README.md",
+  "packages/entrypoints/gateway/test/telemetry/index.test.ts",
+  "docs/architecture/0054-the-baseline-measures-the-walk-that-actually-runs.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7419,6 +7491,7 @@ const WRITE_SET = [
   ...V2B5R14_WRITE_SET,
   ...V2BE_R6_WRITE_SET,
   ...V2BER1B_WRITE_SET,
+  ...V2B5R9B_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */

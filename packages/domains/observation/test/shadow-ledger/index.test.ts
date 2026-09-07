@@ -110,12 +110,18 @@ function event(overrides: Record<string, unknown>): ControlPlaneEvent {
 const TASK_A = "00000000-0000-4000-8000-00000000000a";
 const TASK_B = "00000000-0000-4000-8000-00000000000b";
 
-/** Synthetic lifecycles under the frozen vocabulary, covering all five measures. */
+/**
+ * Synthetic lifecycles under the frozen vocabulary, covering all five measures.
+ *
+ * Spend rides `TOKEN_USAGE_RECORDED` since R9b, because that is the type the
+ * recorder writes it on. Every classification and audit here reports its field,
+ * which is what keeps the receipt's routing and acceptance halves non-trivial.
+ */
 function syntheticChain(): ControlPlaneEvent[] {
   return [
     event({ taskId: TASK_A, transitionId: "discover", type: "TASK_DISCOVERED", toState: "DISCOVERED", occurredAt: "2026-08-27T12:00:00.000Z" }),
     event({ taskId: TASK_A, transitionId: "classify", type: "TASK_CLASSIFIED", fromState: "DISCOVERED", toState: "DT_CLASSIFIED", occurredAt: "2026-08-27T12:00:10.000Z", payload: { reason: "routine" } }),
-    event({ taskId: TASK_A, transitionId: "step", type: "ATOMIC_STEP_COMPLETED", fromState: "DT_CLASSIFIED", toState: "DT_CLASSIFIED", occurredAt: "2026-08-27T12:00:20.000Z", payload: { tokensUsed: 1200 } }),
+    event({ taskId: TASK_A, transitionId: "usage", type: "TOKEN_USAGE_RECORDED", fromState: "DT_CLASSIFIED", toState: "DT_CLASSIFIED", occurredAt: "2026-08-27T12:00:20.000Z", payload: { accountId: "acct-a", tokens: 1200 } }),
     event({ taskId: TASK_A, transitionId: "audit", type: "AUDIT_COMPLETED", fromState: "DT_CLASSIFIED", toState: "DT_CLASSIFIED", occurredAt: "2026-08-27T12:00:30.000Z", payload: { verdict: "ACCEPT" } }),
     event({ taskId: TASK_B, transitionId: "discover", type: "TASK_DISCOVERED", toState: "DISCOVERED", occurredAt: "2026-08-27T12:01:00.000Z" }),
     event({ taskId: TASK_B, transitionId: "classify", type: "TASK_CLASSIFIED", fromState: "DISCOVERED", toState: "DT_CLASSIFIED", occurredAt: "2026-08-27T12:01:10.000Z", payload: { reason: "escalated" } }),
@@ -318,10 +324,13 @@ describe("the shadow ledger refuses a chain it cannot vouch for", () => {
     makeRoots();
     const chain = [
       ...syntheticChain(),
-      event({ taskId: TASK_A, transitionId: "bad-step", type: "ATOMIC_STEP_COMPLETED", fromState: "DT_CLASSIFIED", toState: "DT_CLASSIFIED", occurredAt: "2026-08-27T12:00:40.000Z" }),
+      event({ taskId: TASK_A, transitionId: "bad-usage", type: "TOKEN_USAGE_RECORDED", fromState: "DT_CLASSIFIED", toState: "DT_CLASSIFIED", occurredAt: "2026-08-27T12:00:40.000Z", payload: { accountId: "acct-a" } }),
     ];
-    // The event is contract-valid but carries no tokensUsed: the ledger accepts
-    // it and the baseline refuses it, which is the correct division of labour.
+    // The event is contract-valid but its usage row carries no `tokens`: the
+    // ledger accepts it and the baseline refuses it, which is the correct
+    // division of labour. This is the shape only a hand-built chain has --
+    // `recordTokenObservation` writes the account and the count together --
+    // and it is exactly why the stop reason was documented rather than retired.
     expect(() => buildShadowLedger(uniqueName(), chain)).toThrow(/MISSING_TOKENS_USED/);
   });
 
