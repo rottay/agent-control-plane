@@ -75,6 +75,7 @@ new records from `_template.md`, which carries the required fields.
 | 0057 | [CI runs the gate it can run, and owes the rest](0057-ci-runs-the-gate-it-can-run-and-owes-the-rest.md) | accepted |
 | 0058 | [The backend certifies what the fence can compute](0058-the-backend-certifies-what-the-fence-can-compute.md) | accepted |
 | 0059 | [The gate's evidence binds to code, never to comments](0059-the-gates-evidence-binds-to-code.md) | accepted |
+| 0060 | [No evidence anchor resolves from emptiness or a comment](0060-no-anchor-resolves-from-emptiness-or-a-comment.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

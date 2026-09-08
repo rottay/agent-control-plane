@@ -64,17 +64,31 @@ file must still contain the anchor. The comparison is whitespace-normalised and
 case-insensitive, so a reflowed paragraph does not break a citation, but a
 renamed suite does.
 
-**In a code file the anchor must be in the code.** Comments are removed before
-the comparison, so a `describe` title, a refusal string, a computed note or a
-declaration satisfies a pointer and a docblock never does. This is not a detail
-of the comparison; it is what makes the sentence at the top of this page true.
-A law in the fence is a block of code under a header comment that names it, and
-until R19b six of the rows below quoted the comment. Deleting such a law
-entirely, header left standing, was measured to leave this gate green and still
-printing "39 resolving pointers" — so the six were re-anchored to literals the
-laws themselves compute, and prose stopped counting as evidence. `.md` and
-`.json` sources are still read whole, because in those the prose or the key is
-the content rather than a description of it. ADR 0059 records the finding.
+**In a code file the anchor must be in the code.** The file is tokenized with a
+lexical scanner and its comments are removed before the comparison, so a
+`describe` title, a refusal string, a computed note or a declaration satisfies a
+pointer and a docblock never does. This is not a detail of the comparison; it is
+what makes the sentence at the top of this page true. A law in the fence is a
+block of code under a header comment that names it, and until R19b six of the
+rows below quoted the comment. Deleting such a law entirely, header left
+standing, was measured to leave this gate green and still printing "39 resolving
+pointers" — so the six were re-anchored to literals the laws themselves compute,
+and prose stopped counting as evidence. `.md` and `.json` sources are still read
+whole, because in those the prose or the key is the content rather than a
+description of it. ADR 0059 records the finding.
+
+**And an anchor that states nothing resolves against nothing.** R19b's removal
+was line-oriented, which left three ways to satisfy a citation with no evidence
+at all: an empty anchor, which every file in the tree contains; an anchor
+written as the em dash this table uses for a blank cell, which is read as empty;
+and an anchor quoted from the interior line of a block comment, which opens no
+comment and continues none and so was taken for code. Each now fails with its
+own sentence, as does a row citing a file whose extension the scanner cannot
+read. The scanner also ended a failure in the opposite direction — the old cut
+at `//` deleted real code inside a regular expression shaped like a URL, and
+refused honest citations. No row below moved: all 39 resolve unchanged under the
+stricter rule. ADR 0060 records this one, including what an anchor does not
+prove — it is evidence of location, not of conduct or reachability.
 
 | Criterion | Path | Anchor |
 | --- | --- | --- |

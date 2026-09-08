@@ -2,10 +2,19 @@
 /**
  * Agent Control Plane architecture fence.
  *
- * This runs first in `pnpm check`. It is deliberately dependency free and
- * deterministic: it reads the working tree, asks git a few read-only
- * questions, and drives the pre-push hook over a fixed matrix of fake ref
- * updates -- no network -- to prove exactly what it denies and what it permits.
+ * This runs first in `pnpm check`. It is deterministic and imports almost
+ * nothing: node builtins, its own `./architecture/roots.mjs`, and the
+ * `typescript` scanner, which section 22b uses to decide whether an evidence
+ * anchor sits in code or in a comment. It imports no package of THIS
+ * repository, which is the property the laws below actually rely on when they
+ * compare tables as text -- the fence runs before any build, so a compiled
+ * package may not exist when it runs. That set is not a claim: section 22a
+ * pins it and checks it against this file's own imports on every run, so a
+ * dependency cannot arrive here unannounced (ADR 0060).
+ *
+ * It reads the working tree, asks git a few read-only questions, and drives
+ * the pre-push hook over a fixed matrix of fake ref updates -- no network --
+ * to prove exactly what it denies and what it permits.
  *
  * It enforces the P0 laws that a type system cannot:
  *
@@ -47,6 +56,8 @@ import { createHash } from "node:crypto";
 import { accessSync, constants, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import ts from "typescript";
 
 import {
   fenceRoot,
@@ -7217,9 +7228,9 @@ const V2BE_R6_WRITE_SET = [
  * `Record<ApiErrorCode, number>` with no `default:` makes a sixteenth member a
  * type error at the typecheck stage — and the law below settles agreement, by
  * reading both tables as text and asserting they name the identical fifteen
- * codes both ways. Text, because this fence is dependency-free and runs before
- * any build, and because `STATUS_BY_CODE` is private and the CLI may not import
- * the gateway in any case.
+ * codes both ways. Text, because this fence imports no package of this
+ * repository and runs before any build, and because `STATUS_BY_CODE` is
+ * private and the CLI may not import the gateway in any case.
  *
  * **Six paths, one novel** (the ADR). No test file outside the CLI's own suite
  * moves: `CliSeams.makeDriver`, `LifecycleRefused` and `run` are all exported
@@ -7543,6 +7554,29 @@ const V2BER19B_WRITE_SET = [
   "docs/architecture/index.md",
 ];
 
+/**
+ * P-03 — no evidence anchor resolves from emptiness or a comment.
+ *
+ * One novel path and the same four R19 and R19b already touched, because this
+ * is the third packet on one law and the law has one home. R19b bound the
+ * anchor to code with a line-oriented removal; three ways to satisfy a
+ * citation with nothing survived it — an empty anchor, an em dash the cell
+ * reader empties, and the interior line of a block comment — and the removal
+ * additionally deleted real code at the `//` inside a URL-shaped regular
+ * expression. The removal becomes a lexical scan, four refusals are named, and
+ * the import the scanner requires is pinned by a law rather than by a sentence.
+ *
+ * The record is prose only: all 39 rows resolve unchanged under the stricter
+ * rule, which was measured before the rule was written.
+ */
+const P03_WRITE_SET = [
+  "docs/certification/v2-backend-certification.md",
+  "docs/architecture/0060-no-anchor-resolves-from-emptiness-or-a-comment.md",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/index.md",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7713,6 +7747,7 @@ const WRITE_SET = [
   ...V2B5R18_WRITE_SET,
   ...V2BER19_WRITE_SET,
   ...V2BER19B_WRITE_SET,
+  ...P03_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -9652,8 +9687,9 @@ const ROOT_DEV_DEPENDENCIES = [
  * have to consult to be worth writing. Nothing catches that but a law here.
  *
  * The tables are compared **as text**, both directions, for the reason this
- * fence states about itself elsewhere: it is dependency-free and runs before any
- * build, so the compiled package may not exist when it runs. A key the producer
+ * fence states about itself elsewhere: it imports no package of this repository
+ * and runs before any build, so the compiled package may not exist when it
+ * runs. A key the producer
  * omits means a document missing a field the loader requires; a key the producer
  * invents means a document the loader refuses by name. Both fail here first,
  * where the failure names which side moved.
@@ -17059,9 +17095,9 @@ if (pinSource === null) {
 
 // L2 — the stream channel map is total over the event vocabulary.
 //
-// Read out of the two sources rather than imported: this fence is
-// dependency-free and runs before any build, so the compiled packages may not
-// exist when it runs. The failure it catches is a twenty-fourth event type
+// Read out of the two sources rather than imported: this fence imports no
+// package of this repository and runs before any build, so the compiled
+// packages may not exist when it runs. The failure it catches is a twenty-fourth event type
 // added upstream and never mapped — which would stream as `undefined` and reach
 // a reader as a channel nobody subscribed to.
 {
@@ -21884,8 +21920,8 @@ if (securityDoc === null) {
 // computing that is owed to a later gate, not asserted by this one.
 //
 // The route table is read out of the protocol source rather than imported: this
-// fence is dependency-free and runs before any build, so the compiled package
-// may not exist when it runs.
+// fence imports no package of this repository and runs before any build, so the
+// compiled package may not exist when it runs.
 const apiReference = readIfPresent("docs/api-reference.md");
 const routesSource = readIfPresent("packages/kernel/protocol/src/routes/index.ts");
 if (apiReference === null) {
@@ -22075,9 +22111,10 @@ if (apiReference === null) {
 //
 // So this law reads both tables as text and asserts they name the identical
 // codes, both directions. The same technique the api-reference law above uses
-// for `SURFACE_MAP`, and for the same two reasons: this fence is dependency-free
-// and runs before any build, so it cannot import either module; and reading the
-// source is the only way to compare a private table with anything at all.
+// for `SURFACE_MAP`, and for the same two reasons: this fence imports no
+// package of this repository and runs before any build, so it cannot import
+// either module; and reading the source is the only way to compare a private
+// table with anything at all.
 //
 // It asserts two named files, so it is deliberately not path-scoped: it selects
 // nothing by path, registers no scope in `PATH_SCOPED_LAWS` and calls no
@@ -22156,6 +22193,70 @@ if (apiReference === null) {
         );
       }
     }
+  }
+}
+
+// --- 22a. the fence imports exactly what it authorizes (P-03) ---------------
+//
+// This file used to open by calling itself "deliberately dependency free", and
+// five laws elsewhere cited that self-description as the reason they compare
+// tables as text instead of importing them. Section 22b now needs a real
+// lexical scanner, so one word of it stopped being true.
+//
+// Correcting the sentence would have been the wrong repair, and R19b is the
+// reason: a sentence describing a mechanism outlives the mechanism, and nothing
+// goes red. So the import set is data, and it is checked against a static
+// analysis of this file's own source — `preProcessFile`, which reads imports
+// out of the syntax rather than out of a regex that a string containing the
+// word `import` could satisfy.
+//
+// Both directions, because each catches a different mistake: a specifier this
+// list does not name is a dependency that arrived unannounced, and a name this
+// file no longer imports is a list nobody pruned, which is how a register stops
+// meaning anything. `typescript` is a root devDependency already named in
+// `ROOT_DEV_DEPENDENCIES`; the scanner is the only reason it is here. ADR 0060.
+const FENCE_IMPORTS_AUTHORIZED = [
+  "node:child_process",
+  "node:crypto",
+  "node:fs",
+  "node:path",
+  "node:url",
+  "typescript",
+  "./architecture/roots.mjs",
+];
+
+{
+  const fenceSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  const imported = [
+    ...new Set(ts.preProcessFile(fenceSource, true, true).importedFiles.map((ref) => ref.fileName)),
+  ];
+  let importDefects = 0;
+
+  for (const specifier of imported) {
+    if (FENCE_IMPORTS_AUTHORIZED.includes(specifier)) continue;
+    fail(
+      "scripts/check-architecture.mjs imports " +
+        specifier +
+        ", which its authorized import set does not name; a fence that can gain a dependency in silence is a fence whose description of itself is prose",
+    );
+    importDefects += 1;
+  }
+  for (const specifier of FENCE_IMPORTS_AUTHORIZED) {
+    if (imported.includes(specifier)) continue;
+    fail(
+      "scripts/check-architecture.mjs authorizes an import of " +
+        specifier +
+        ", which it no longer makes; retire the authorization in the same commit",
+    );
+    importDefects += 1;
+  }
+
+  if (importDefects === 0) {
+    notes.push(
+      "the fence imports exactly what it authorizes: " +
+        imported.filter((specifier) => specifier.startsWith("node:")).length +
+        " node builtins, its own resolver, and the scanner section 22b reads code with",
+    );
   }
 }
 
@@ -22290,54 +22391,154 @@ const BE_OWED_AUTHORIZED = Object.freeze([
 /** Sources whose prose is commentary about the code, rather than the content. */
 const BE_CODE_EVIDENCE = /\.(?:ts|mts|js|mjs)$/;
 
+/** Sources whose prose IS the evidence, so they are read whole. */
+const BE_PROSE_EVIDENCE = /\.(?:md|json)$/;
+
+/** Tokens after which a `/` is division rather than the start of a regex. */
+const TS_DIVISION_AFTER = new Set([
+  ts.SyntaxKind.Identifier,
+  ts.SyntaxKind.PrivateIdentifier,
+  ts.SyntaxKind.NumericLiteral,
+  ts.SyntaxKind.BigIntLiteral,
+  ts.SyntaxKind.StringLiteral,
+  ts.SyntaxKind.RegularExpressionLiteral,
+  ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+  ts.SyntaxKind.TemplateTail,
+  ts.SyntaxKind.CloseParenToken,
+  ts.SyntaxKind.CloseBracketToken,
+  ts.SyntaxKind.PlusPlusToken,
+  ts.SyntaxKind.MinusMinusToken,
+  ts.SyntaxKind.ThisKeyword,
+  ts.SyntaxKind.SuperKeyword,
+  ts.SyntaxKind.TrueKeyword,
+  ts.SyntaxKind.FalseKeyword,
+  ts.SyntaxKind.NullKeyword,
+]);
+
 /**
- * The part of a cited file an anchor is allowed to resolve against (R19b).
+ * The code of a file, with its comments deleted, by lexical scan (P-03).
  *
- * **The defect this closes.** L-R19-4 used to read the cited file whole, so a
+ * `skipTrivia: false` so the comments can be seen and decided about rather than
+ * silently dropped, and each one is replaced by a SPACE rather than by nothing:
+ * `flatten` collapses any run of whitespace to one space, so a removed comment
+ * cannot glue two fragments of code that the source kept apart.
+ *
+ * **`reScanSlashToken` is not a detail.** Reading `/^https?:\/\//` left to
+ * right, a lexer with no context sees `//` and takes the rest of the line as a
+ * comment — which deletes real code and makes this gate refuse an honest
+ * citation. Measured on this file: 955 scanner errors without the re-scan and 0
+ * with it; across the 318 `.ts` and 7 `.mjs` files this repository versions, 0
+ * either way once the re-scan is in place.
+ *
+ * **The error direction is chosen.** If the heuristic misjudges a division as
+ * the start of a regular expression, the text is KEPT — so this can fail to
+ * remove something, and can never delete code and manufacture a refusal. The
+ * predecessor was wrong in both directions at once, which is why it is gone.
+ *
+ * **Why not `stripComments`.** The obvious move is the `stripComments` helper
+ * this file already uses in a hundred places, and it is wrong HERE — uniquely
+ * so, because the file most often cited is this one. Its `/\*[\s\S]*?\*\//` arm
+ * cannot tell a comment from a string containing one, and this fence
+ * necessarily quotes comment syntax in its refusal messages: a literal holding
+ * `/**` opens a block that runs to the next `*\/` anywhere below, which measured
+ * at 460 lines swallowed — including the policy-pin law's own refusal. A real
+ * scanner is exactly what tells those apart, and it is confined to this law:
+ * generalizing it to the others is a packet with its own negatives.
+ */
+function beCodeTokens(content) {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    /* skipTrivia */ false,
+    ts.LanguageVariant.Standard,
+    content,
+  );
+  let text = "";
+  let previous = ts.SyntaxKind.Unknown;
+  let kind;
+  while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
+    if (
+      (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
+      !TS_DIVISION_AFTER.has(previous)
+    ) {
+      kind = scanner.reScanSlashToken();
+    }
+    if (
+      kind === ts.SyntaxKind.SingleLineCommentTrivia ||
+      kind === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      text += " ";
+      continue;
+    }
+    text += scanner.getTokenText();
+    if (kind !== ts.SyntaxKind.WhitespaceTrivia && kind !== ts.SyntaxKind.NewLineTrivia) {
+      previous = kind;
+    }
+  }
+  return text;
+}
+
+/**
+ * The scanned form of each cited path, computed once (P-03).
+ *
+ * The record cites 19 code files over 39 rows and this file up to seven times;
+ * without the cache a 1.1 MB source is tokenized once per citation. It is
+ * filled by the one section that reads these files and does not outlive the run.
+ */
+const BE_SCANNED = new Map();
+
+/**
+ * The part of a cited file an anchor is allowed to resolve against.
+ *
+ * **The defect R19b closed.** L-R19-4 used to read the cited file whole, so a
  * comment satisfied a citation. That is not a corner case: a law in this fence
  * is a block of code under a header comment that names it, and the record
  * quoted the header. A re-audit deleted the entire body of the R1b door-table
  * law — a hundred lines, its computed note gone with them — left the header
  * comment standing, and the fence printed `V2_BACKEND_CERTIFIED: … 39 resolving
- * pointers`. Six of the thirty-nine were bound to prose that way. The record's
- * own sentence, "delete a law … and the gate is red on the next run", was false
- * for exactly those six, and prose is the one thing a deletion leaves behind.
+ * pointers`. Six of the thirty-nine were bound to prose that way.
  *
- * **The rule.** For a code path the anchor must appear in code; `.md` and
+ * **The rule, and it is now one line of policy.** For a code path the anchor
+ * must appear in code, which `beCodeTokens` decides lexically; `.md` and
  * `.json` are returned whole, because in those a sentence or a key IS the
- * content and there is nothing to strip.
- *
- * **Why this removal and not `stripComments`.** The obvious move is the
- * `stripComments` helper this file already uses in a hundred places, and it is
- * wrong HERE — uniquely so, because the file most often cited is this one. Its
- * `/\*[\s\S]*?\*\//` arm cannot tell a comment from a string containing one,
- * and this fence necessarily quotes comment syntax in its refusal messages: a
- * literal holding `/**` opens a block that runs to the next `*\/` anywhere
- * below, which measured at 460 lines swallowed — including the policy-pin law's
- * own refusal. That failure is fail-closed and therefore quiet in the worst
- * way: it would refuse an honest code anchor and blame the record.
- *
- * So the removal is line-oriented and deliberately conservative in the other
- * direction. A line whose first non-space characters open or continue a comment
- * is dropped whole; every other line keeps everything before a `//` that is not
- * inside a string, via the same `codeBeforeLineComment` walk the literal-path
- * scan uses. It cannot remove a line that holds code, so it cannot manufacture
- * a refusal. What it does not catch is a block comment opened after code on the
- * same line — an idiom this repository does not use, and one that could only
- * ever leave a fragment on a line that already holds code, which is not where
- * the prose a citation could hide in lives.
- *
- * This is not a parser and must not become one. It is the same comment
- * blindness the literal-path scan above already relies on to decide which of
- * this file's own path literals sit in a live law position.
+ * content and there is nothing to strip. The line-oriented removal this
+ * replaced kept the interior line of a block comment and cut real code inside a
+ * URL-shaped regular expression, so it was wrong in both directions; ADR 0060
+ * carries the measurement.
  */
 function beEvidenceText(path, content) {
   if (!BE_CODE_EVIDENCE.test(path)) return content;
-  return content
-    .split("\n")
-    .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
-    .map(codeBeforeLineComment)
-    .join("\n");
+  const scanned = BE_SCANNED.get(path);
+  if (scanned !== undefined) return scanned;
+  const computed = beCodeTokens(content);
+  BE_SCANNED.set(path, computed);
+  return computed;
+}
+
+/**
+ * Why an anchor does not resolve, or `null` when it does (P-03).
+ *
+ * One reason per pointer and no two overlap, in the order that makes each
+ * refusal say the most useful true thing. Emptiness comes first because an
+ * empty anchor is contained in every file that has ever existed, so reporting
+ * it as "the file does not state it" would be false as well as unhelpful.
+ *
+ * The last sentence is byte-identical to the refusal R19b shipped, because
+ * three probes assert it and the anchor that genuinely is absent has not
+ * changed its meaning.
+ */
+function beAnchorDefect(path, content, anchor) {
+  if (flatten(anchor).trim() === "") {
+    return "which states nothing; an empty anchor resolves against every file";
+  }
+  if (content === null) return "which the tree does not hold";
+  if (content.trim() === "") {
+    return "whose cited file is empty; an empty file is evidence of nothing";
+  }
+  const evidence = beEvidenceText(path, content);
+  if (evidence.trim() === "") {
+    return "whose cited file holds no code outside its comments";
+  }
+  return flatten(evidence).includes(flatten(anchor)) ? null : "which that file does not state";
 }
 
 /**
@@ -22478,9 +22679,11 @@ const BE_DISCLOSURE_ID = /^OWED-[A-Z0-9-]+$/;
     }
 
     // L-R19-4: the derivation. A PROVEN criterion points at evidence, and the
-    // evidence still resolves — the path in the tree and the anchor in the
-    // CODE of the file, never in its prose. See `beEvidenceText` above for why
-    // the second half of that sentence is the whole of R19b.
+    // evidence still resolves — the path in the tree, an extension this record
+    // can actually read, an anchor that states something, and that anchor in
+    // the CODE of the file, never in its prose. See `beEvidenceText` for why
+    // the last clause is the whole of R19b and `beAnchorDefect` for why the two
+    // before it are the whole of P-03.
     if (criteriaDefects === 0 && pointerDefects === 0) {
       let resolving = 0;
       for (const row of criteriaRows) {
@@ -22504,8 +22707,28 @@ const BE_DISCLOSURE_ID = /^OWED-[A-Z0-9-]+$/;
             pointerDefects += 1;
             continue;
           }
+          // The declared limit, fail-closed (P-03). An extension the scanner
+          // cannot read must not fall through to "read the file whole", which
+          // is how R19b's defect would come back through the extension door.
+          // `.tsx` is the live case: 343 scanner errors over this repository's
+          // 56 of them even with the JSX variant, against 0 over the 318 `.ts`
+          // and 7 `.mjs`. Widening the table needs another technique and is
+          // another packet; ADR 0060 records why.
+          if (!BE_CODE_EVIDENCE.test(pointer.path) && !BE_PROSE_EVIDENCE.test(pointer.path)) {
+            fail(
+              BE_RECORD_PATH +
+                ": " +
+                row.id +
+                " points at " +
+                pointer.path +
+                ", whose extension this record cannot scan; admitted: .ts, .mts, .js, .mjs (code), .md, .json (prose evidence)",
+            );
+            pointerDefects += 1;
+            continue;
+          }
           const content = readIfPresent(pointer.path);
-          if (content === null || !flatten(beEvidenceText(pointer.path, content)).includes(flatten(pointer.anchor))) {
+          const defect = beAnchorDefect(pointer.path, content, pointer.anchor);
+          if (defect !== null) {
             fail(
               BE_RECORD_PATH +
                 ": " +
@@ -22514,7 +22737,8 @@ const BE_DISCLOSURE_ID = /^OWED-[A-Z0-9-]+$/;
                 pointer.path +
                 ' for the anchor "' +
                 pointer.anchor +
-                '", which that file does not state',
+                '", ' +
+                defect,
             );
             pointerDefects += 1;
             continue;

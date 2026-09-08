@@ -24,11 +24,20 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -3065,34 +3074,74 @@ const BE_AUTHORIZED_OWED = [
 const BE_EVIDENCE_PATH = "packages/domains/runtime/src/switch-landing/index.ts";
 const BE_EVIDENCE_ANCHOR = "ACCOUNT_SWITCH_COMPLETED";
 
+/** Tokens after which a `/` is division rather than the start of a regex. */
+const MIRROR_DIVISION_AFTER = new Set([
+  ts.SyntaxKind.Identifier,
+  ts.SyntaxKind.PrivateIdentifier,
+  ts.SyntaxKind.NumericLiteral,
+  ts.SyntaxKind.BigIntLiteral,
+  ts.SyntaxKind.StringLiteral,
+  ts.SyntaxKind.RegularExpressionLiteral,
+  ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+  ts.SyntaxKind.TemplateTail,
+  ts.SyntaxKind.CloseParenToken,
+  ts.SyntaxKind.CloseBracketToken,
+  ts.SyntaxKind.PlusPlusToken,
+  ts.SyntaxKind.MinusMinusToken,
+  ts.SyntaxKind.ThisKeyword,
+  ts.SyntaxKind.SuperKeyword,
+  ts.SyntaxKind.TrueKeyword,
+  ts.SyntaxKind.FalseKeyword,
+  ts.SyntaxKind.NullKeyword,
+]);
+
 /**
- * The fence's own comment blindness (R19b), restated rather than imported.
+ * The fence's own comment blindness (R19b, rewritten to a scanner by P-03),
+ * restated rather than imported.
  *
  * Same discipline as `BE_AUTHORIZED_OWED` above: a mirror that read the rule
- * out of the fence source would agree with a rule somebody weakened. This is
- * the line-oriented removal `beEvidenceText` performs — drop a line that opens
- * or continues a comment, and cut a trailing `//` that is not inside a string.
+ * out of the fence source would agree with a rule somebody weakened. The
+ * scanner package is shared, because writing a second TypeScript lexer here
+ * would be restating the tokenizer rather than the rule; the RULE — which
+ * kinds are dropped, when a `/` is re-scanned as a regex, and that a comment
+ * becomes one space rather than nothing — is written out by hand below and is
+ * the only thing this mirror and the fence have to agree about.
+ *
+ * The predecessor was line-oriented, and P-03 replaced it because it was wrong
+ * in both directions at once: it kept the interior line of a block comment
+ * (`N18`), and it cut real code at the `//` inside a regex literal shaped like
+ * a URL (`N23b`).
  */
 function beCodeOnly(text) {
-  const beforeLineComment = (line) => {
-    let quote = null;
-    for (let index = 0; index < line.length; index += 1) {
-      const char = line[index];
-      if (quote !== null) {
-        if (char === "\\") index += 1;
-        else if (char === quote) quote = null;
-        continue;
-      }
-      if (char === '"' || char === "'" || char === "`") quote = char;
-      else if (char === "/" && line[index + 1] === "/") return line.slice(0, index);
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    /* skipTrivia */ false,
+    ts.LanguageVariant.Standard,
+    text,
+  );
+  let out = "";
+  let previous = ts.SyntaxKind.Unknown;
+  let kind;
+  while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
+    if (
+      (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
+      !MIRROR_DIVISION_AFTER.has(previous)
+    ) {
+      kind = scanner.reScanSlashToken();
     }
-    return line;
-  };
-  return text
-    .split("\n")
-    .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
-    .map(beforeLineComment)
-    .join("\n");
+    if (
+      kind === ts.SyntaxKind.SingleLineCommentTrivia ||
+      kind === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      out += " ";
+      continue;
+    }
+    out += scanner.getTokenText();
+    if (kind !== ts.SyntaxKind.WhitespaceTrivia && kind !== ts.SyntaxKind.NewLineTrivia) {
+      previous = kind;
+    }
+  }
+  return out;
 }
 
 /** Comfortably over the fence's floor, so a probe about something else is about something else. */
@@ -3188,7 +3237,41 @@ const BE_REFUSALS = [
   "V2_BACKEND_CERTIFIED withheld",
   "states " + BE_IDS[3] + " twice",
   "which the record does not carry",
+  // The four P-03 adds. Same qualification rule as above: each is long enough
+  // that only this law family can produce it, so the control below denies this
+  // family's refusals rather than any refusal shaped like them.
+  "which states nothing; an empty anchor resolves against every file",
+  "whose cited file is empty; an empty file is evidence of nothing",
+  "whose cited file holds no code outside its comments",
+  "whose extension this record cannot scan",
 ];
+
+/** The cited file, with the landing body every fixture needs and an extra tail. */
+function evidenceHome(root, tail) {
+  write(
+    root,
+    BE_EVIDENCE_PATH,
+    [
+      "export function land(started) {",
+      "  const toAccountId = started.payload.toAccountId;",
+      '  return { type: "ACCOUNT_SWITCH_COMPLETED", payload: { toAccountId } };',
+      "}",
+      ...tail,
+      "",
+    ].join("\n"),
+  );
+}
+
+/** A record whose BE-1 row cites `anchor` and whose other six are ordinary. */
+function recordCiting(anchor, path = BE_EVIDENCE_PATH) {
+  return beRecordDocument({
+    pointers: BE_IDS.map((id) => ({
+      id,
+      path: id === "BE-1-SERVICE-INDEPENDENCE" ? path : BE_EVIDENCE_PATH,
+      anchor: id === "BE-1-SERVICE-INDEPENDENCE" ? anchor : BE_EVIDENCE_ANCHOR,
+    })),
+  });
+}
 
 describe("the backend certifies what the fence can compute (old-V2 R19)", () => {
   it("N1: refuses a tree with no B-E record at all", async () => {
@@ -3501,11 +3584,17 @@ describe("the backend certifies what the fence can compute (old-V2 R19)", () => 
     // pointer is anchored to prose. Mirroring the fence's comment blindness is
     // the point: a probe that read the cited files whole would keep passing
     // over exactly the six citations the re-audit falsified.
+    //
+    // P-03 rewrote the mirror to a scanner, so this is also the assertion that
+    // the shipped record still resolves under the NEW rule: all 39 rows, none
+    // of them re-anchored. Every cited path is one of the extensions the record
+    // is allowed to cite, which is the fence's own guard restated.
     expect(pointers.length).toBeGreaterThan(BE_IDS.length);
     let codeEvidence = 0;
     for (const pointer of pointers) {
       const full = join(REAL_REPO, pointer.path);
       expect(() => statSync(full)).not.toThrow();
+      expect(pointer.path).toMatch(/\.(?:ts|mts|js|mjs|md|json)$/);
       const raw = readFileSync(full, "utf8");
       const readable = /\.(?:ts|mts|js|mjs)$/.test(pointer.path) ? beCodeOnly(raw) : raw;
       if (readable !== raw) codeEvidence += 1;
@@ -3515,6 +3604,17 @@ describe("the backend certifies what the fence can compute (old-V2 R19)", () => 
     // Anti-vacuity: the mirror above proves nothing unless some pointer was
     // actually read stripped. A record that cited only `.md` files would
     // satisfy every assertion here while binding to no code at all.
+    //
+    // What is deliberately NOT asserted here is the differential — that some
+    // pointer survives the scanner and would not have survived the line filter
+    // P-03 removed. It was measured before this packet was written and it is
+    // unsatisfiable on this tree: of the 680 block comments in the 19 cited
+    // code files, not one keeps a single character under the old filter,
+    // because this repository writes JSDoc uniformly and puts no comment after
+    // code on a line. Asserting it here would force a fixture into a cited file
+    // to make a green light. The differential proof is N18 below, which is red
+    // against the fence this commit replaces and green against the one it
+    // lands — a claim a synthetic tree can carry honestly and this one cannot.
     expect(codeEvidence).toBeGreaterThan(0);
 
     // The register and the record agree, both ways, and the register is really
@@ -3545,32 +3645,10 @@ describe("the backend certifies what the fence can compute (old-V2 R19)", () => 
  * documents the old law called evidence.
  */
 describe("the gate's evidence binds to code, never to comments (old-V2 R19b)", () => {
-  /** The cited file, with the landing body every fixture needs and an extra tail. */
-  function evidenceHome(root, tail) {
-    write(
-      root,
-      BE_EVIDENCE_PATH,
-      [
-        "export function land(started) {",
-        "  const toAccountId = started.payload.toAccountId;",
-        '  return { type: "ACCOUNT_SWITCH_COMPLETED", payload: { toAccountId } };',
-        "}",
-        ...tail,
-        "",
-      ].join("\n"),
-    );
-  }
-
-  /** A record whose BE-1 row cites `anchor` and whose other six are ordinary. */
-  function recordCiting(anchor) {
-    return beRecordDocument({
-      pointers: BE_IDS.map((id) => ({
-        id,
-        path: BE_EVIDENCE_PATH,
-        anchor: id === "BE-1-SERVICE-INDEPENDENCE" ? anchor : BE_EVIDENCE_ANCHOR,
-      })),
-    });
-  }
+  // `evidenceHome` and `recordCiting` were declared here and were raised to
+  // file scope by P-03, which builds its own fixtures out of both. They are
+  // unchanged apart from `recordCiting` gaining an optional path, which
+  // defaults to the one every caller here already passed implicitly.
 
   it("N15: refuses an anchor that only a comment of the cited file states", async () => {
     const anchor = "the landing refuses a destination it never read";
@@ -3776,19 +3854,40 @@ function roadmapText(extraLines) {
  * tracked file touched.
  */
 function fenceRepinnedTo(digest) {
-  const dir = mkdtempSync(join(tmpdir(), "acp-fence-repin-"));
-  roots.push(dir);
   const repinned = FENCE_SOURCE.replace(ROADMAP_PIN, digest);
   if (repinned === FENCE_SOURCE) {
     throw new Error("the roadmap pin was not substituted; the fence copy would pin the real tree");
   }
+  return fenceCopy(repinned);
+}
+
+/**
+ * A copy of the fence, in a directory of this file's own, that can actually run.
+ *
+ * `roots.mjs` travels beside it because the fence imports it by relative path.
+ * `node_modules` is symlinked beside it for the same reason and it is P-03 that
+ * made it necessary: the fence imports the `typescript` scanner (ADR 0060), and
+ * Node resolves a bare specifier by walking up from the importing FILE, not
+ * from the tree under inspection. Without the link a copy under `mkdtemp` dies
+ * on `ERR_MODULE_NOT_FOUND` before reaching any law, which turns every probe
+ * that uses a fence copy into a probe of module resolution.
+ *
+ * The link is safe to tear down. `rmSync` unlinks a symlinked directory rather
+ * than descending into it, so the teardown that removes these roots removes the
+ * link and never its target — verified before this helper was written, because
+ * the target is this repository's own `node_modules`.
+ */
+function fenceCopy(source) {
+  const dir = mkdtempSync(join(tmpdir(), "acp-fence-copy-"));
+  roots.push(dir);
   mkdirSync(join(dir, "architecture"), { recursive: true });
-  writeFileSync(join(dir, "check-architecture.mjs"), repinned, "utf8");
+  writeFileSync(join(dir, "check-architecture.mjs"), source, "utf8");
   writeFileSync(
     join(dir, "architecture", "roots.mjs"),
     readFileSync(join(HERE, "roots.mjs"), "utf8"),
     "utf8",
   );
+  symlinkSync(join(REAL_REPO, "node_modules"), join(dir, "node_modules"));
   return join(dir, "check-architecture.mjs");
 }
 
@@ -3946,5 +4045,318 @@ describe("adoption stays impossible, proved without writing this checkout (P-01)
     expect(output).not.toContain(REFUSALS.nodeImport);
     expect(output).not.toContain(REFUSALS.secondMention);
     expect(output).not.toContain(REFUSALS.cutover);
+  });
+});
+
+/**
+ * A copy of the fence carrying one import its own law does not authorize.
+ *
+ * The extra specifier is a node builtin on purpose. It has to RESOLVE, or the
+ * copy dies on load and the probe measures module resolution instead of the
+ * law; and it has to be genuinely absent from the authorized set, or the law
+ * has nothing to object to. `node:util` is both. The insertion point is the
+ * resolver import, which is the one import shape this file can anchor on
+ * without also encoding the scanner import the law is about.
+ */
+function fenceWithExtraImport(specifier = "node:util") {
+  const marker = "import {\n  fenceRoot,";
+  const injected = FENCE_SOURCE.replace(
+    marker,
+    'import { format } from "' + specifier + '";\n\n' + marker,
+  );
+  if (injected === FENCE_SOURCE) {
+    throw new Error("the fence no longer opens its resolver import in the expected shape");
+  }
+  return fenceCopy(injected);
+}
+
+/**
+ * No evidence anchor resolves from emptiness or a comment (P-03).
+ *
+ * R19b bound the anchor to code and left three ways to satisfy a citation with
+ * nothing. Measured against the fence this packet replaces, in the section
+ * evaluated in isolation:
+ *
+ *   all 39 anchors blanked           → 0 failures, "39 resolving pointers"
+ *   an anchor written as an em dash  → 0 failures, "39 resolving pointers"
+ *   an anchor only inside a block    → 0 failures, "39 resolving pointers"
+ *
+ * The first two are `flatten("")` meeting `String.includes("")`, which is true
+ * of every file that has ever existed. The third is the line-oriented removal:
+ * it dropped the line that OPENS a comment and the line that continues one in
+ * the JSDoc style this repository writes, and kept the interior line of a bare
+ * block, which is not a corner case but the shape a writer reaches for when
+ * quoting a paragraph.
+ *
+ * The same measurement found the old rule wrong in the other direction too: it
+ * cut real code at the `//` inside `/^https?:\/\//`, so a URL-shaped regex
+ * literal made the gate manufacture a refusal against an honest citation. That
+ * is `N23b`, and it is a positive rather than a negative for that reason.
+ *
+ * So the removal became a scanner. `N18`, `N19`, `N19b`, `N21`, `N21b` and
+ * `N23b` are red against the fence at this commit's parent and green against
+ * the one it lands; `N18b`, `N20`, `N22`, `N23` and `N24` were already law and
+ * are pinned here as regressions rather than claimed as this packet's work.
+ */
+describe("no evidence anchor resolves from emptiness or a comment (P-03)", () => {
+  /** The refusal the anchor laws share, for the id every fixture below breaks. */
+  const pointsAt = (path = BE_EVIDENCE_PATH) =>
+    BE_RECORD + ": BE-1-SERVICE-INDEPENDENCE points at " + path;
+
+  it("N18: refuses an anchor stated only by the interior of a block comment", async () => {
+    // THE probe of this packet. The anchor sits on a line that opens nothing
+    // and continues nothing, so the line filter kept it and called it code.
+    const anchor = "the landing refuses a destination it never read";
+    const root = syntheticTree();
+    evidenceHome(root, ["/*", anchor, "*/"]);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(pointsAt() + ' for the anchor "' + anchor + '", which that file does not state');
+  });
+
+  it("N18b: refuses the same anchor in the JSDoc shape the old filter did catch", async () => {
+    // The discriminator, and it is why N18 is written the way it is: this one
+    // was already refused, because every interior line starts with `*`. A
+    // packet that only shipped this case would have proved nothing.
+    const anchor = "the landing refuses a destination it never read";
+    const root = syntheticTree();
+    evidenceHome(root, ["/**", " * " + anchor, " */"]);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(pointsAt() + ' for the anchor "' + anchor + '", which that file does not state');
+  });
+
+  it("N19: refuses an empty anchor by name rather than resolving it", async () => {
+    // The second probe of the packet, and the one with the widest blast
+    // radius: an empty anchor resolved against every file in the tree, so a
+    // record could certify seven clauses by citing seven paths and quoting
+    // nothing. The refusal names emptiness rather than reporting absence.
+    const root = beTree({
+      pointers: BE_IDS.map((id) => ({ id, path: BE_EVIDENCE_PATH, anchor: "" })),
+    });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      pointsAt() + ' for the anchor "", which states nothing; an empty anchor resolves against every file',
+    );
+  });
+
+  it("N19b: refuses an anchor written as an em dash, which the cell reader empties", async () => {
+    // The way an empty anchor arrives without anybody writing an empty cell.
+    // A markdown table cannot carry a blank legibly, so this record writes `—`
+    // and `beCell` reads it as the empty string it is meant to be — which fed
+    // the same vacuous comparison from a cell that looks filled in.
+    const root = beTree({
+      pointers: BE_IDS.map((id) => ({ id, path: BE_EVIDENCE_PATH, anchor: "—" })),
+    });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      pointsAt() + ' for the anchor "", which states nothing; an empty anchor resolves against every file',
+    );
+  });
+
+  it("N20: pins the two empty-list refusals that were already law", async () => {
+    // A declared regression pin, NOT evidence of this packet. The spec lists
+    // "the anchor list is not empty" beside the three holes above as though it
+    // were a fourth, and it has been law since R19 in two places. Writing it as
+    // though it proved something would be a test that cannot go red against the
+    // fence it was written against.
+    const empty = beTree({ pointers: [] });
+    const withoutRows = await runFenceAgainst(empty);
+    expect(withoutRows.status).not.toBe(0);
+    expect(withoutRows.output).toContain(
+      "the B-E evidence pointer table parsed as empty; the backend certification law would pass vacuously",
+    );
+
+    const missing = beTree({
+      pointers: BE_IDS.filter((id) => id !== "BE-1-SERVICE-INDEPENDENCE").map((id) => ({
+        id,
+        path: BE_EVIDENCE_PATH,
+        anchor: BE_EVIDENCE_ANCHOR,
+      })),
+    });
+    const withoutRow = await runFenceAgainst(missing);
+    expect(withoutRow.status).not.toBe(0);
+    expect(withoutRow.output).toContain(
+      BE_RECORD + " marks BE-1-SERVICE-INDEPENDENCE PROVEN with no evidence pointer",
+    );
+  });
+
+  it("N21: refuses an empty cited file by naming the emptiness", async () => {
+    // Refused before this packet too, but as "which that file does not state",
+    // which sends a reader to look for a string in a file that has nothing in
+    // it. The hole this closes is diagnostic, and the assertion is therefore
+    // about the message rather than about the refusal.
+    const root = syntheticTree();
+    write(root, BE_EVIDENCE_PATH, "");
+    write(root, BE_RECORD, beRecordDocument({}));
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      pointsAt() +
+        ' for the anchor "' +
+        BE_EVIDENCE_ANCHOR +
+        '", whose cited file is empty; an empty file is evidence of nothing',
+    );
+  });
+
+  it("N21b: refuses a cited file that is nothing but comments", async () => {
+    const root = syntheticTree();
+    write(root, BE_EVIDENCE_PATH, "// " + BE_EVIDENCE_ANCHOR + "\n/* x */\n");
+    write(root, BE_RECORD, beRecordDocument({}));
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      pointsAt() +
+        ' for the anchor "' +
+        BE_EVIDENCE_ANCHOR +
+        '", whose cited file holds no code outside its comments',
+    );
+  });
+
+  it("N22: accepts comment delimiters that sit inside a string", async () => {
+    // A positive, and the shape of the assertion is the file's established one:
+    // the exit code carries no information on a fixture this small, so what is
+    // asserted is the law's own computed note and the absence of its refusal.
+    const anchor = "the two door tables were compared and disagreed";
+    const root = syntheticTree();
+    evidenceHome(root, ['export const U = "' + anchor + ' // /* not a comment */";']);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(output).not.toContain("which that file does not state");
+  });
+
+  it("N23: accepts comment delimiters that sit inside a URL", async () => {
+    const anchor = "the two door tables were compared and disagreed";
+    const root = syntheticTree();
+    evidenceHome(root, ['export const U = "https://example.invalid/' + anchor + '";']);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(output).not.toContain("which that file does not state");
+  });
+
+  it("N23b: accepts an anchor after a regex literal shaped like a URL", async () => {
+    // The case that separates a scanner from a scanner that re-scans. Reading
+    // `/^https?:\/\//` left to right, a lexer with no context sees `//` and
+    // takes the rest of the line as a comment — which deletes the anchor and
+    // makes the gate refuse an honest citation. Measured on the fence itself:
+    // 955 scanner errors and 664 characters of real code lost without the
+    // re-scan, none with it. Red against the fence this packet replaces, for
+    // the same reason in its line-oriented form.
+    const anchor = "the two door tables were compared and disagreed";
+    const root = syntheticTree();
+    evidenceHome(root, ['export const R = /^https?:\\/\\//.source + "' + anchor + '";']);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(output).not.toContain("which that file does not state");
+  });
+
+  it("N24: refuses a mutation of the anchored code with the record left intact", async () => {
+    // The spec's "a mutation of the anchored code must make the law fail", as
+    // a before/after pair. Nobody edits a certification when they rename a
+    // constant, which is exactly why the gate has to be the thing that notices.
+    const anchor = "the landing refuses a destination it never read";
+    const body = ['export const REFUSAL = "' + anchor + '";'];
+
+    const whole = syntheticTree();
+    evidenceHome(whole, body);
+    write(whole, BE_RECORD, recordCiting(anchor));
+    commitAll(whole);
+
+    const before = await runFenceAgainst(whole);
+    expect(before.output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(before.output).not.toContain("which that file does not state");
+
+    const mutated = syntheticTree();
+    evidenceHome(mutated, ['export const REFUSAL = "the door tables agreed";']);
+    write(mutated, BE_RECORD, recordCiting(anchor));
+    commitAll(mutated);
+
+    const after = await runFenceAgainst(mutated);
+    expect(after.status).not.toBe(0);
+    expect(after.output).toContain(
+      pointsAt() + ' for the anchor "' + anchor + '", which that file does not state',
+    );
+    expect(after.output).toContain("V2_BACKEND_CERTIFIED withheld");
+  });
+
+  it("N25: refuses a row citing a file whose extension the record cannot scan", async () => {
+    // The declared limit, made fail-closed. `.tsx` is excluded because the
+    // scanner cannot tokenize JSX without a parser's context — 343 errors over
+    // this repository's 56 `.tsx` files even with the JSX language variant —
+    // and an excluded extension that fell through to "read the file whole"
+    // would reopen R19b's defect through the extension door.
+    const tsx = "packages/entrypoints/ui/src/probe.tsx";
+    const root = syntheticTree();
+    landingHome(root);
+    write(root, tsx, "export const Probe = () => null;\n");
+    write(root, BE_RECORD, recordCiting(BE_EVIDENCE_ANCHOR, tsx));
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      pointsAt(tsx) +
+        ", whose extension this record cannot scan; admitted: .ts, .mts, .js, .mjs (code), " +
+        ".md, .json (prose evidence)",
+    );
+  });
+
+  it("N26: refuses a fence that imports something its own law does not authorize", async () => {
+    // The law A1 asks for, and the reason it exists: this packet made the
+    // fence's prose about itself false in one word, and the repair is not a
+    // corrected sentence but a law that keeps the sentence true. A dependency
+    // is now a thing the fence declares and checks, not a thing it claims.
+    //
+    // The control comes first, on the same tree, so the refusal below is
+    // attributable to the extra import rather than to the copy.
+    const root = beTree({});
+    const control = await runFenceAgainst(root, fenceCopy(FENCE_SOURCE));
+    expect(control.output).toContain("the fence imports exactly what it authorizes");
+    expect(control.output).not.toContain("which its authorized import set does not name");
+
+    const mutant = await runFenceAgainst(root, fenceWithExtraImport());
+    expect(mutant.status).not.toBe(0);
+    expect(mutant.output).toContain(
+      "scripts/check-architecture.mjs imports node:util, which its authorized import set does not name",
+    );
+  });
+
+  it("P4: reaches its own verdict on a record and a tree with nothing wrong with them", async () => {
+    // The neutralization control, inherited from P1 and extended to this
+    // packet's four refusals, which were added to `BE_REFUSALS` in the same
+    // commit. Without it every negative above could be passing on some other
+    // law's failure text, and the new laws could be firing on a lawful fixture
+    // without anything here noticing.
+    const root = beTree({});
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(output).toContain("the fence imports exactly what it authorizes");
+    for (const refusal of BE_REFUSALS) {
+      expect(output).not.toContain(refusal);
+    }
   });
 });
