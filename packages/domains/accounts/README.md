@@ -159,6 +159,28 @@ version a route already recorded keeps its pin forever — and the fence refuses
 pin that is missing, malformed, empty, misdirected, carries a value that is not a
 digest, omits the published version, or disagrees with the document's bytes.
 
+**Who may produce a version.** Until R15 the answer was "a person, by hand", and
+that is still lawful. There is now also one tool: `scripts/evals/registry-cut.mjs`,
+which merges an evaluation's output into this document and returns the bytes,
+their digest and the single pin row that would publish them. It lives outside the
+workspace on purpose — no package can resolve it — and it is bound by what it may
+not do. It may not **write** either file: publishing stays an operator act,
+because a producer able to write the published paths could overwrite a version a
+route already recorded. It may not **add a model, grant a role, reach a transport
+or invent a fallback**: those are editorial, and only what an evaluation measures
+moves. It may not **derive `policyVersion`**, which is always the caller's. It may
+not **exceed the confidence the run earned** — the ceiling is `LOW`, since no run
+against a real subject has happened yet. And it may not **write anywhere else**:
+the architecture fence holds its key tables equal to this package's loader tables
+in both directions, and refuses any third registry-shaped path it names, because
+the one thing restriction 6 forbids outright is a second registry.
+
+What is still owed, and owner-gated: a run against a real provider, the first
+real cut, any confidence above `UNKNOWN`/`LOW`, and a `QUALITY_SCORE` `selection`
+in the published document. R15 shipped the producer and published nothing — this
+document is byte-identical to what it was, and the pin still carries two rows.
+See ADR 0056 and `scripts/evals/README.md`.
+
 Each entry states the eleven things law 4 names: the model's release, the roles
 it is eligible for, measured quality, latency, context, modality and tool
 support, the transports it is reachable through, the confidence in that

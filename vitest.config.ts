@@ -211,6 +211,33 @@ export default defineConfig({
       },
       {
         test: {
+          // The eval lane's own probes (old-V2 B5, R15). The lane lives in
+          // `scripts/`, which `pnpm-workspace.yaml` globs no member from, so no
+          // package can resolve it and no project here covered it: the `fence`
+          // project's root is `scripts/architecture` and its `*.test.mjs` glob
+          // does not descend. Without this entry the producer's suite would be
+          // a file no command runs, and a suite that only runs under a command
+          // nobody types is not a gate.
+          //
+          // It binds no port and spawns nothing that outlives its test, so it
+          // stays in the default parallel group with the fence probes rather
+          // than taking a fourth `groupOrder` and needlessly serialising the
+          // run. The timeout is the fence probes' timeout for the fence probes'
+          // reason: two of these arms spawn the whole fence against a synthetic
+          // tree.
+          name: 'evals',
+          root: './scripts/evals',
+          include: ['*.test.mjs'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+          testTimeout: 120_000,
+          hookTimeout: 120_000,
+        },
+      },
+      {
+        test: {
           // P5N cohort C1: the contracts tree is normalized, so its tests live
           // in the mirrored `test/` tree. The `src/**` glob stays until every
           // cohort has landed — a project that stopped looking at `src/` would

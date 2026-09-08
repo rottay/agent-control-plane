@@ -2430,3 +2430,267 @@ describe("the telemetry export edge is confined by five laws (V2-B5/R11)", () =>
     expect(output).not.toContain("no production source may reach the exporter");
   });
 });
+
+/**
+ * Probes for the eval lane's three laws (V2-B5/R15).
+ *
+ * The lane produces immutable versions of the capability registry and it is
+ * dependency-free by ruling: the owner refused a hosted evaluation runner after
+ * its graph was measured at 798 packages, seven of them declaring install-time
+ * hooks. Three laws make that shape checkable rather than asserted.
+ *
+ * `L-R15-1` pins the root's dependency surface, which nothing pinned before —
+ * `P1B_DEPENDENCY_LAW` covers package manifests and the root was asserted only
+ * for `private`, `license` and the absence of a second build allow-list. So a
+ * vendor could have arrived at the root and the fence would have printed green.
+ *
+ * `L-R15-3` holds the producer's key tables equal to the loader's in both
+ * directions, and refuses a third registry-shaped path: "never a second
+ * registry" reaches the form the loader cannot refuse, a sidecar the producer
+ * writes beside the document.
+ *
+ * `L-R15-4` holds the producer's consumption vocabulary equal to
+ * `QuotaObservation`'s, so an eval run and a ledger row cannot end up saying the
+ * same thing in two different words.
+ *
+ * Each probe changes exactly the file it is about and asserts **its own law's
+ * message**: a synthetic tree trips many unrelated laws, so an exit code
+ * identifies nothing on its own. The last probe is the positive control.
+ */
+const ROOT_MANIFEST = "package.json";
+const EVAL_ADAPTER = "scripts/evals/registry-cut.mjs";
+const POLICY_LOADER = "packages/domains/accounts/src/policy/index.ts";
+const QUOTA_SOURCE = "packages/domains/accounts/src/quota/index.ts";
+
+const AUTHORIZED_DEV_DEPENDENCIES = [
+  "@eslint/js",
+  "@types/node",
+  "eslint",
+  "globals",
+  "typescript",
+  "typescript-eslint",
+  "vitest",
+];
+
+const LOADER_ENTRY_KEYS = [
+  "allowedFallbacks",
+  "contextTokens",
+  "costPerMillionTokens",
+  "eligibleRoles",
+  "evaluatedAt",
+  "latency",
+  "model",
+  "provider",
+  "quality",
+  "quotaConfidence",
+  "release",
+  "supports",
+  "transports",
+];
+const LOADER_DOCUMENT_KEYS = ["evaluatedAt", "models", "policyVersion", "selection"];
+
+function frozenTable(name, keys, typed) {
+  const head = typed
+    ? "const " + name + ": readonly string[] = Object.freeze(["
+    : "const " + name + " = Object.freeze([";
+  return [head, ...keys.map((key) => '  "' + key + '",'), "]);"].join("\n");
+}
+
+/** The root manifest, written with whatever dependency surface a probe is about. */
+function rootManifest(root, { devDependencies = AUTHORIZED_DEV_DEPENDENCIES, dependencies } = {}) {
+  const manifest = {
+    name: "@acp/root",
+    private: true,
+    license: "MIT",
+    devDependencies: Object.fromEntries(devDependencies.map((name) => [name, "1.0.0"])),
+  };
+  if (dependencies !== undefined) manifest.dependencies = dependencies;
+  write(root, ROOT_MANIFEST, JSON.stringify(manifest, null, 2) + "\n");
+}
+
+/** The loader, as far as the two laws read it: its two key tables and one interface. */
+function registrySchema(root) {
+  write(
+    root,
+    POLICY_LOADER,
+    [
+      frozenTable("ENTRY_KEYS", LOADER_ENTRY_KEYS, true),
+      frozenTable("DOCUMENT_KEYS", LOADER_DOCUMENT_KEYS, true),
+      "",
+    ].join("\n"),
+  );
+  write(
+    root,
+    QUOTA_SOURCE,
+    [
+      "export interface QuotaObservation {",
+      "  readonly tokensUsed: number;",
+      "  readonly observedAt: string;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+}
+
+/** The producer, with whichever of its three tables a probe is about. */
+function evalProducer(
+  root,
+  {
+    entryKeys = LOADER_ENTRY_KEYS,
+    documentKeys = LOADER_DOCUMENT_KEYS,
+    observationKeys = ["observedAt", "tokensUsed"],
+    extraPath = null,
+  } = {},
+) {
+  write(
+    root,
+    EVAL_ADAPTER,
+    [
+      'const POLICY_DOCUMENT_PATH = "packages/domains/accounts/policy/capability-policy.json";',
+      'const POLICY_PIN_PATH = "scripts/policy-version-digests.json";',
+      ...(extraPath === null ? [] : ['const SIDECAR = "' + extraPath + '";']),
+      frozenTable("ADAPTER_ENTRY_KEYS", entryKeys, false),
+      frozenTable("ADAPTER_DOCUMENT_KEYS", documentKeys, false),
+      frozenTable("CONSUMPTION_OBSERVATION_KEYS", observationKeys, false),
+      "export { POLICY_DOCUMENT_PATH, POLICY_PIN_PATH };",
+      "",
+    ].join("\n"),
+  );
+}
+
+/** A tree carrying a lawful lane, which each probe then breaks in exactly one way. */
+function evalLane(root, options = {}) {
+  rootManifest(root, options.manifest);
+  registrySchema(root);
+  evalProducer(root, options.producer);
+  landingHome(root);
+}
+
+describe("the eval lane is dependency-free and writes one registry (V2-B5/R15)", () => {
+  it("R1: refuses a root that drops one of the names it was authorized", async () => {
+    const root = syntheticTree();
+    evalLane(root, {
+      manifest: { devDependencies: AUTHORIZED_DEV_DEPENDENCIES.filter((name) => name !== "vitest") },
+    });
+    commitAll(root);
+
+    // Exact in both directions. A name that leaves silently is a surface that
+    // moved without an integrator edit, exactly like a name that arrives.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the root manifest's devDependencies must be exactly");
+  });
+
+  it("R2: refuses a root that gains an eighth name", async () => {
+    const root = syntheticTree();
+    evalLane(root, {
+      manifest: { devDependencies: [...AUTHORIZED_DEV_DEPENDENCIES, "some-eval-runner"] },
+    });
+    commitAll(root);
+
+    // This is the arm the owner ruling turns on. Before this law a vendor could
+    // be added to the root and the fence would have said nothing at all.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the root manifest's devDependencies must be exactly");
+    expect(output).toContain("some-eval-runner");
+  });
+
+  it("R3: refuses a root that declares a runtime dependency", async () => {
+    const root = syntheticTree();
+    evalLane(root, { manifest: { dependencies: { "some-eval-runner": "1.0.0" } } });
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the root manifest declares runtime dependencies");
+  });
+
+  it("R4: refuses a producer whose table omits a key the loader carries", async () => {
+    const root = syntheticTree();
+    evalLane(root, {
+      producer: { entryKeys: LOADER_ENTRY_KEYS.filter((key) => key !== "quotaConfidence") },
+    });
+    commitAll(root);
+
+    // Loader → producer. A producer blind to a field emits a document missing
+    // it, and the loader refuses the whole registry at load.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the registry producer's entry key table omits: quotaConfidence");
+  });
+
+  it("R5: refuses a producer whose table invents a key the loader does not carry", async () => {
+    const root = syntheticTree();
+    evalLane(root, { producer: { documentKeys: [...LOADER_DOCUMENT_KEYS, "evalRunId"] } });
+    commitAll(root);
+
+    // Producer → loader, the other direction and a different failure: a key the
+    // loader would refuse by name, written by the one thing that produces the
+    // document.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the registry producer's document key table invents: evalRunId");
+  });
+
+  it("R6: refuses a producer that names a third registry-shaped path", async () => {
+    const root = syntheticTree();
+    evalLane(root, {
+      producer: { extraPath: "packages/domains/accounts/policy/eval-scores.json" },
+    });
+    commitAll(root);
+
+    // The form the loader cannot catch. An extra key it refuses by name; a
+    // sidecar beside the document it never sees, and restriction 6 is about
+    // exactly that file.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the registry producer names a third registry-shaped path: packages/domains/accounts/policy/eval-scores.json",
+    );
+  });
+
+  it("R7: refuses a producer that drops a consumption name the ledger records", async () => {
+    const root = syntheticTree();
+    evalLane(root, { producer: { observationKeys: ["observedAt"] } });
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the registry producer's consumption vocabulary omits: tokensUsed");
+  });
+
+  it("R8: refuses a producer that invents a second word for what it consumed", async () => {
+    const root = syntheticTree();
+    evalLane(root, {
+      producer: { observationKeys: ["observedAt", "tokensUsed", "tokens_used"] },
+    });
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the registry producer's consumption vocabulary invents: tokens_used");
+  });
+
+  it("P1: leaves a lawful lane alone, and says so about all three laws", async () => {
+    const root = syntheticTree();
+    evalLane(root);
+    commitAll(root);
+
+    // The positive control. Without it the eight negatives could every one be
+    // passing on some other law's failure text, and nothing would show that
+    // these three can reach a verdict of their own. The exit stays nonzero
+    // because a synthetic tree trips laws this packet is not about.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the root dependency surface is exactly the 7 dev names authorized");
+    expect(output).toContain("the registry producer mirrors the loader's key tables");
+    expect(output).toContain("one consumption vocabulary");
+    expect(output).not.toContain("the root manifest's devDependencies must be exactly");
+    expect(output).not.toContain("the root manifest declares runtime dependencies");
+    expect(output).not.toContain("the registry producer's entry key table");
+    expect(output).not.toContain("the registry producer's document key table");
+    expect(output).not.toContain("the registry producer names a third registry-shaped path");
+    expect(output).not.toContain("the registry producer's consumption vocabulary");
+  });
+});

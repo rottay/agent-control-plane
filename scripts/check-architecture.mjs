@@ -7422,6 +7422,68 @@ const V2B5R11_WRITE_SET = [
   "packages/entrypoints/gateway/test/telemetry/index.test.ts",
 ];
 
+/**
+ * Old-V2 B5, R15: the registry gains a producer, never a second one.
+ *
+ * The capability registry has had a schema, a loader, a seam that reads it and,
+ * since R14, a version pin the fence validates as data. What it never had was a
+ * **producer**: the documented way to publish a measurement was a hand edit of
+ * two data files, and audit row 12 recorded that absence as `AUSENTE`. This
+ * packet fills it with `scripts/evals/registry-cut.mjs` — a pure function that
+ * merges an eval-output into the shipped document and returns bytes, a digest
+ * and one pin row. It writes nothing: publishing stays an operator act, because
+ * a producer that could write the published paths could overwrite a version some
+ * route already recorded.
+ *
+ * **The lane has no vendor, and that was measured rather than preferred.** The
+ * owner ruling of 2026-09-07 authorized a hosted evaluation runner as a root
+ * devDependency; the graph audit that followed found 798 added packages and
+ * seven declaring install-time hooks, one of them a second major of the only
+ * name `onlyBuiltDependencies` carries — which would have inherited the ledger
+ * engine's build authorization by name. The writer stopped, the owner revoked
+ * the authorization, and the lane defines its **own** eval-output shape instead.
+ * A real runner stays owner-gated, run outside this repository's graph, and any
+ * vendor-to-lane adapter is a separate future packet.
+ *
+ * **The lane lives in `scripts/`, outside the workspace.** `pnpm-workspace.yaml`
+ * globs members exactly two levels under `packages/` and nowhere else, so
+ * nothing in the package graph can resolve this module; a
+ * `packages/tooling/evals` would have needed a stratum, a
+ * manifest disposition and a `P1B_DEPENDENCY_LAW` row, which is to say it would
+ * have put the lane inside the package graph.
+ *
+ * **Pins that move.** ADR corpus 55 -> 56; the write set gains 4 distinct paths;
+ * `vitest.config.ts` gains the `evals` project, without a `sequence.groupOrder`
+ * — the lane binds no port and spawns nothing that outlives its test.
+ *
+ * **Pins that do not.** `PATH_SCOPED_LAWS` stays 117 and the anchored
+ * `requireScope` call sites with it: all three laws below read named literals,
+ * so none registers a scope. `P1B_DEPENDENCY_LAW` stays 10 — no package manifest
+ * changes. `onlyBuiltDependencies` stays exactly `[better-sqlite3]` with its
+ * meaning intact, `pnpm-lock.yaml` is untouched, and the root's seven
+ * devDependencies are now pinned by L-R15-1 rather than by nothing.
+ *
+ * **What this packet does not do.** It cuts no policy version:
+ * `capability-policy.json` stays byte-identical and the pin keeps its two rows.
+ * Cutting one from a producer no real run has fed would write invented
+ * measurements into the shipped registry, which restriction 5 rules out and
+ * which the accounts README already forbids in as many words. It touches no
+ * loader, no consumer, no manifest and no contract.
+ *
+ * Record: `docs/architecture/0056-the-registry-gains-a-producer-never-a-second-one.md`.
+ */
+const V2B5R15_WRITE_SET = [
+  "scripts/evals/README.md",
+  "scripts/evals/registry-cut.mjs",
+  "scripts/evals/registry-cut.test.mjs",
+  "docs/architecture/0056-the-registry-gains-a-producer-never-a-second-one.md",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/index.md",
+  "packages/domains/accounts/README.md",
+  "vitest.config.ts",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7588,6 +7650,7 @@ const WRITE_SET = [
   ...V2BER1B_WRITE_SET,
   ...V2B5R9B_WRITE_SET,
   ...V2B5R11_WRITE_SET,
+  ...V2B5R15_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -9382,6 +9445,269 @@ if (ledgerManifestText === null) {
     // second authority that could disagree with the first.
     if (actual.join(",") === expected.join(",") && actualDev.join(",") === expectedDev.join(",")) {
       notes.push("ledger dependency surface is exactly what P1A authorized");
+    }
+  }
+}
+
+// --- 10b. the eval lane is dependency-free, and writes the one registry ----
+
+/**
+ * L-R15-1: the root's dependency surface is exact.
+ *
+ * Nothing pinned it before this packet, and the gap was measured rather than
+ * guessed. `P1B_DEPENDENCY_LAW` asserts nine package manifests as exact sets and
+ * `LEDGER_DEV_DEPENDENCIES` asserts a tenth; three package manifests have no
+ * exact-set law at all, and the **root** was asserted only for `private`,
+ * `license` and the absence of a second install-time build allow-list. So a
+ * dependency could have arrived at the root and this fence would have printed
+ * green over it, leaving an owner's authorization recorded in prose and in
+ * nothing mechanical.
+ *
+ * That is not hypothetical here. R15 builds a lane that produces versions of the
+ * capability registry, and the obvious way to build it was to adopt a hosted
+ * evaluation runner as a root devDependency. The graph was measured first, as
+ * P1B, P2A and P8-8B..E each measured their own: **798 packages**, seven of them
+ * declaring install-time lifecycle hooks, one of them a second major of a name
+ * the native-build allow-list above already carries — which would have inherited
+ * that authorization **by name**, leaving the allow-list textually unchanged and
+ * its meaning quietly widened. The owner refused the graph (ruling 2026-09-07,
+ * the second of that day) and R15 landed the producer without it.
+ *
+ * This law is what makes "the lane has no vendor" checkable instead of asserted:
+ * a name arriving at the root, or one leaving it, fails the build. Exact in both
+ * directions, and no runtime surface at all. It is a single-file law, so it
+ * registers no scope and calls no `requireScope`.
+ *
+ * Record: `docs/architecture/0056-the-registry-gains-a-producer-never-a-second-one.md`.
+ */
+const ROOT_DEV_DEPENDENCIES = [
+  "@eslint/js",
+  "@types/node",
+  "eslint",
+  "globals",
+  "typescript",
+  "typescript-eslint",
+  "vitest",
+];
+
+{
+  const text = readIfPresent("package.json");
+  if (text === null) {
+    fail("the root package.json is missing; its dependency surface is what L-R15-1 pins");
+  } else {
+    let manifest = null;
+    try {
+      manifest = JSON.parse(text);
+    } catch {
+      fail("the root package.json is not valid JSON; its dependency surface cannot be read");
+    }
+
+    if (manifest !== null) {
+      const actual = Object.keys(manifest.devDependencies ?? {}).sort();
+      const expected = [...ROOT_DEV_DEPENDENCIES].sort();
+      const runtime = Object.keys(manifest.dependencies ?? {}).sort();
+
+      if (actual.join(",") !== expected.join(",")) {
+        fail(
+          "the root manifest's devDependencies must be exactly [" +
+            expected.join(", ") +
+            "], found: [" +
+            actual.join(", ") +
+            "]",
+        );
+      }
+      // The root is a private workspace root that ships nothing. A runtime
+      // dependency here would be a dependency of everything, reachable from
+      // every package, which is the opposite of what a dev-only lane means.
+      if (runtime.length > 0) {
+        fail(
+          "the root manifest declares runtime dependencies [" +
+            runtime.join(", ") +
+            "]; the root ships nothing and its tooling lane is dev-only",
+        );
+      }
+      if (actual.join(",") === expected.join(",") && runtime.length === 0) {
+        notes.push(
+          "the root dependency surface is exactly the " +
+            ROOT_DEV_DEPENDENCIES.length +
+            " dev names authorized, and nothing runtime",
+        );
+      }
+    }
+  }
+}
+
+/**
+ * L-R15-3: there is one registry, and the producer writes that one.
+ *
+ * Restriction 6 says evaluations produce immutable versions of the **existing**
+ * registry and never a second one. Against this repository's format that has a
+ * precise reading: the producer emits bytes for the published document and one
+ * appended row for its pin, and its key tables are the loader's key tables.
+ *
+ * Two of the three ways to get a second registry are already caught. An extra
+ * top-level key and an extra entry key are `POLICY_UNKNOWN_KEY` at load, refused
+ * by name. The third is not: a sidecar written beside the document — a scores
+ * file, an eval-run index — that the loader never sees and that a router would
+ * have to consult to be worth writing. Nothing catches that but a law here.
+ *
+ * The tables are compared **as text**, both directions, for the reason this
+ * fence states about itself elsewhere: it is dependency-free and runs before any
+ * build, so the compiled package may not exist when it runs. A key the producer
+ * omits means a document missing a field the loader requires; a key the producer
+ * invents means a document the loader refuses by name. Both fail here first,
+ * where the failure names which side moved.
+ */
+const EVAL_PRODUCER_PATH = "scripts/evals/registry-cut.mjs";
+const POLICY_LOADER_PATH = "packages/domains/accounts/src/policy/index.ts";
+const QUOTA_VOCABULARY_PATH = "packages/domains/accounts/src/quota/index.ts";
+const REGISTRY_DOCUMENT_PATH = "packages/domains/accounts/policy/capability-policy.json";
+const REGISTRY_PIN_PATH = "scripts/policy-version-digests.json";
+
+/** The names inside a frozen string table, read out of source text. */
+function frozenStringTable(source, name) {
+  const declaration = new RegExp(
+    "const " + name + "(?:: readonly string\\[\\])? = Object\\.freeze\\(\\[([\\s\\S]*?)\\]\\)",
+  ).exec(source);
+  if (declaration === null || declaration[1] === undefined) return null;
+  return [...declaration[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+}
+
+/** What one side carries that the other does not, in both directions. */
+function tableDisagreement(mine, theirs) {
+  return {
+    omits: theirs.filter((name) => !mine.includes(name)),
+    invents: mine.filter((name) => !theirs.includes(name)),
+  };
+}
+
+{
+  const producer = readIfPresent(EVAL_PRODUCER_PATH);
+  const loader = readIfPresent(POLICY_LOADER_PATH);
+
+  if (producer === null) {
+    fail(
+      EVAL_PRODUCER_PATH +
+        " is missing; the one producer of a registry version is what L-R15-3 holds to the loader",
+    );
+  } else if (loader === null) {
+    fail(
+      POLICY_LOADER_PATH +
+        " is missing; L-R15-3 has no schema to hold the registry producer to",
+    );
+  } else {
+    const pairs = [
+      ["entry key table", frozenStringTable(producer, "ADAPTER_ENTRY_KEYS"), frozenStringTable(loader, "ENTRY_KEYS")],
+      [
+        "document key table",
+        frozenStringTable(producer, "ADAPTER_DOCUMENT_KEYS"),
+        frozenStringTable(loader, "DOCUMENT_KEYS"),
+      ],
+    ];
+
+    let compared = 0;
+    let disagreements = 0;
+    for (const [label, mine, theirs] of pairs) {
+      // Fail-closed on an unreadable table. A comparison between two empty sets
+      // would pass while proving that neither side was ever read.
+      if (mine === null || mine.length === 0) {
+        fail("the registry producer declares no readable " + label + "; L-R15-3 has nothing to compare");
+        disagreements += 1;
+        continue;
+      }
+      if (theirs === null || theirs.length === 0) {
+        fail("the policy loader declares no readable " + label + "; L-R15-3 has nothing to compare against");
+        disagreements += 1;
+        continue;
+      }
+      compared += mine.length;
+      const { omits, invents } = tableDisagreement(mine, theirs);
+      if (omits.length > 0) {
+        fail("the registry producer's " + label + " omits: " + omits.join(", "));
+        disagreements += 1;
+      }
+      if (invents.length > 0) {
+        fail("the registry producer's " + label + " invents: " + invents.join(", "));
+        disagreements += 1;
+      }
+    }
+
+    // One document, one pin, and no third file shaped like either. The producer
+    // names both by literal, so any other data path it names is the sidecar
+    // restriction 6 forbids.
+    const named = new Set([...producer.matchAll(/"([^"\n]*\.json)"/g)].map((match) => match[1]));
+    for (const path of [REGISTRY_DOCUMENT_PATH, REGISTRY_PIN_PATH]) {
+      if (named.has(path)) continue;
+      fail("the registry producer no longer names " + path + "; it is the document it exists to produce");
+      disagreements += 1;
+    }
+    for (const path of named) {
+      if (path === REGISTRY_DOCUMENT_PATH || path === REGISTRY_PIN_PATH) continue;
+      fail(
+        "the registry producer names a third registry-shaped path: " +
+          path +
+          "; there is one registry and one pin, and a sidecar beside them is the second registry restriction 6 forbids",
+      );
+      disagreements += 1;
+    }
+
+    if (disagreements === 0 && compared > 0) {
+      notes.push(
+        "the registry producer mirrors the loader's key tables in both directions (" +
+          compared +
+          " names), and names only the published document and its pin",
+      );
+    }
+  }
+}
+
+/**
+ * L-R15-4: one consumption vocabulary, not two.
+ *
+ * Restriction 6 also says no subscription benchmark without accounting for what
+ * it consumed. An eval run does not pass through the ledger, so the producer
+ * carries its own record — and a record in its own words would be a second
+ * answer to a question `QuotaObservation` already answers. `tokensUsed` and
+ * `observedAt` are the ledger's names; the producer reuses them, and this law is
+ * what keeps a rename on either side from splitting the vocabulary in silence.
+ */
+{
+  const producer = readIfPresent(EVAL_PRODUCER_PATH);
+  const quota = readIfPresent(QUOTA_VOCABULARY_PATH);
+
+  if (producer !== null) {
+    if (quota === null) {
+      fail(
+        QUOTA_VOCABULARY_PATH +
+          " is missing; L-R15-4 has no consumption vocabulary to hold the producer to",
+      );
+    } else {
+      const body = /export interface QuotaObservation \{([\s\S]*?)\n\}/.exec(quota);
+      const members =
+        body === null || body[1] === undefined
+          ? []
+          : [...body[1].matchAll(/^\s*readonly ([A-Za-z0-9_]+)\s*:/gm)].map((match) => match[1]);
+      const mine = frozenStringTable(producer, "CONSUMPTION_OBSERVATION_KEYS") ?? [];
+
+      if (members.length === 0) {
+        fail("QuotaObservation declares no readable members; L-R15-4 has nothing to compare against");
+      } else if (mine.length === 0) {
+        fail("the registry producer declares no readable consumption vocabulary; L-R15-4 has nothing to compare");
+      } else {
+        const { omits, invents } = tableDisagreement(mine, members);
+        if (omits.length > 0) {
+          fail("the registry producer's consumption vocabulary omits: " + omits.join(", "));
+        }
+        if (invents.length > 0) {
+          fail("the registry producer's consumption vocabulary invents: " + invents.join(", "));
+        }
+        if (omits.length === 0 && invents.length === 0) {
+          notes.push(
+            "the eval producer and the ledger's quota observation share one consumption vocabulary: " +
+              [...members].sort().join(", "),
+          );
+        }
+      }
     }
   }
 }
