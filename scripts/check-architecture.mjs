@@ -7503,6 +7503,26 @@ const V2B5R18_WRITE_SET = [
   "README.md",
 ];
 
+/**
+ * V2-B5/R19 — the backend certifies what the fence can compute.
+ *
+ * Two novel paths and three that every law-adding packet in this program has
+ * touched. The record is the novel artifact: the seven B-E criteria, the
+ * evidence pointers behind each one, and the disclosure rows the owner and the
+ * post-audit still hold. It lands in `docs/certification/` beside the dated
+ * P8 matrix and is deliberately not that: the matrix is anchored to the HEAD it
+ * was written against and nothing re-reads it, while this record is re-read by
+ * the fence on every run and refuses to certify the moment a pointer stops
+ * resolving.
+ */
+const V2BER19_WRITE_SET = [
+  "docs/certification/v2-backend-certification.md",
+  "docs/architecture/0058-the-backend-certifies-what-the-fence-can-compute.md",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/index.md",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7671,6 +7691,7 @@ const WRITE_SET = [
   ...V2B5R11_WRITE_SET,
   ...V2B5R15_WRITE_SET,
   ...V2B5R18_WRITE_SET,
+  ...V2BER19_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -8130,6 +8151,17 @@ const AUTHORITY_LITERALS = {
     "no product adoption",
     "no cutover",
   ],
+  // The B-E record's four load-bearing statements. The structural laws below
+  // read its tables; they cannot read its prose, and the prose is where three
+  // adjudications and the record's own standing live. B4's disposition, R17's
+  // fail-closed redaction and R18's destination would each be deletable
+  // without moving a single table row.
+  "docs/certification/v2-backend-certification.md": [
+    "AgentHarnessPort",
+    "LEDGER_IDEMPOTENCY_CONFLICT",
+    "POST_AUDIT_FOLLOW_UP",
+    "withheld-is-failure",
+  ],
 };
 
 /**
@@ -8360,6 +8392,33 @@ const certification = {
   moveMap: null,
   literalPaths: null,
   pathScopedLaws: null,
+};
+
+/**
+ * The three backend-certification inputs, recorded by the laws that compute
+ * them (old-V2 R19).
+ *
+ * The same shape as `certification` above and for the same reason, over a
+ * different claim. `STRUCTURAL_TOPOLOGY_CERTIFIED` folds five computations
+ * about the tree's topology; `V2_BACKEND_CERTIFIED` folds three about the
+ * backend acceptance criteria: that all seven are stated and classified, that
+ * every proven one points at evidence which still resolves, and that every
+ * withheld one is authorized by name and destination.
+ *
+ * The honest reading of "derived" is the one §23 already had to make: the
+ * fence cannot execute a drill, so what it computes is not absence but
+ * RESOLUTION. A criterion is certified here when the record states it, gives it
+ * a verdict from a closed vocabulary, and names files that still contain the
+ * anchors it cites. A renamed test or a deleted law breaks the gate on the next
+ * run, which is the difference between this and a matrix written once.
+ *
+ * A `null` is an input that did not hold, the receipt is withheld, and the
+ * withholding is itself a failure.
+ */
+const certificationBackend = {
+  criteria: null,
+  pointers: null,
+  owed: null,
 };
 
 /**
@@ -22079,6 +22138,423 @@ if (apiReference === null) {
   }
 }
 
+// --- 22b. old-V2 R19: the backend certification record, computed -------------
+
+/**
+ * The B-E gate: the backend certifies what the fence can compute.
+ *
+ * The roadmap's B-E criterion asks for a *computed* gate over seven backend
+ * acceptance clauses, derived and withheld-is-failure — not a matrix somebody
+ * typed. The honest reading of "derived" is the one §23 already had to make at
+ * P8-E: a fence cannot execute a drill, and a law that tried to would be
+ * asserting the whole suite from inside the linter. What it can compute is
+ * RESOLUTION. For each clause the record must state it, give it a verdict from
+ * a closed vocabulary, and — when the verdict is PROVEN — name files that still
+ * contain the anchors it cites. Rename the suite that proves a clause and the
+ * gate goes red on the next run; delete the law and it goes red too. That is
+ * the difference between this record and a document written once.
+ *
+ * Five laws, and each closes a way a certification can be dishonest:
+ *
+ * - **L-R19-1** the record exists and parses, and a table that parsed as empty
+ *   is a failure rather than a pass. A gate whose input vanished would
+ *   otherwise certify by reading nothing, which is how every vacuity defect in
+ *   this file has looked.
+ * - **L-R19-2** the seven criteria are total in both directions against
+ *   `BE_CRITERIA`. A criterion the fence knows and the record omits is a
+ *   failure: **absence is not silence.** A criterion the record names and the
+ *   fence does not is the other direction, and it catches an id typo that would
+ *   otherwise satisfy the first direction with a row nobody checks.
+ * - **L-R19-3** every row carries a status from `{PROVEN, OWED}`. Present with
+ *   no verdict is withheld, and withheld is a failure.
+ * - **L-R19-4** a PROVEN criterion's pointers resolve — the path in the tree,
+ *   and the anchor in the file, compared through `flatten()` so a line wrap
+ *   cannot break a citation. Zero pointers is a failure: "proven" with no
+ *   evidence is the assertion this whole record exists to refuse.
+ * - **L-R19-5** an OWED row carries a reason long enough to mean something and
+ *   a destination from a closed set, and the fence authorized it BY NAME.
+ *
+ * **Why the authorization register exists.** Without it the gate is toothless
+ * in one direction and unlandable in the other. If OWED counted as an input
+ * that did not hold, this packet would land a red `pnpm check`; if OWED counted
+ * as holding, seven OWED rows would certify. `BE_OWED_AUTHORIZED` names exactly
+ * the rows the owner and the post-audit still hold, each with its destination,
+ * and the agreement runs both ways: an owed row the register does not name is
+ * unauthorized withholding, and a register row the record proves is a stale
+ * authorization that must be retired in the same commit that closes the row.
+ * The register is therefore forced to shrink as criteria close, and when it
+ * reaches zero the receipt becomes the unconditional claim with no law change.
+ * This is the house shape, not an invention: `PRODUCT_AUTHORITY_EXEMPT`,
+ * `ROOT_DEV_DEPENDENCIES` and `DUPLICATION_ADJUDICATED` are all authorizations
+ * by exact name in a reviewed file.
+ *
+ * **The record is live, and that is what distinguishes it from the P8 matrix.**
+ * `docs/certification/p8-matrix.md` is a dated record anchored to the HEAD it
+ * was written against; nothing re-reads it and this packet does not touch it.
+ * This record is re-read here on every run. Which is also why it pins no
+ * tracked file by digest: a digest over a file that is meant to change is a pin
+ * that goes stale silently, and the evidence here is `(path, anchor)` pairs
+ * that cannot.
+ *
+ * Record: `docs/architecture/0058-the-backend-certifies-what-the-fence-can-compute.md`.
+ */
+const BE_RECORD_PATH = "docs/certification/v2-backend-certification.md";
+
+/**
+ * The seven backend clauses, frozen with the words that say what each one
+ * claims. The ids are the record's vocabulary and the clause text is what the
+ * refusal quotes, so a reader who meets a failure here does not have to open
+ * the roadmap to learn what went missing.
+ */
+const BE_CRITERIA = Object.freeze([
+  Object.freeze({ id: "BE-1-SERVICE-INDEPENDENCE", clause: "independence from every optional service" }),
+  Object.freeze({ id: "BE-2-DOOR-EQUIVALENCE", clause: "the two doors are equivalent" }),
+  Object.freeze({ id: "BE-3-KILL-WITHOUT-DUPLICATION", clause: "a kill duplicates no execution" }),
+  Object.freeze({ id: "BE-4-RESUMABLE-STREAM", clause: "the event stream is resumable" }),
+  Object.freeze({
+    id: "BE-5-NO-PAYLOAD-ON-RECORDED-SURFACES",
+    clause: "no secret, prompt or tool argument on any recorded surface",
+  }),
+  Object.freeze({ id: "BE-6-REMOTE-MCP-REFUSED", clause: "a remote tool server is refused" }),
+  Object.freeze({
+    id: "BE-7-POLICY-ONLY-MODEL-SWITCH",
+    clause: "the elected model changes by policy, with no source change",
+  }),
+]);
+
+/** The closed verdict vocabulary. Anything else is a word nobody defined. */
+const BE_STATUSES = Object.freeze(["PROVEN", "OWED"]);
+
+/** Where an owed row is discharged. Four destinations, and no fifth. */
+const BE_OWED_DESTINATIONS = Object.freeze([
+  "OWNER_GATED",
+  "POST_AUDIT_FOLLOW_UP",
+  "RECONCILIATION",
+  "CLOSURE_DEBRIEF",
+]);
+
+/**
+ * Long enough that "n/a", "TBD" and "-" cannot be reasons.
+ *
+ * A length floor is a crude instrument and it is chosen deliberately over a
+ * denylist of tokens: a denylist tells a writer which three words to avoid,
+ * and this tells them to write a sentence.
+ */
+const BE_REASON_MIN = 40;
+
+/**
+ * The owed rows the fence authorizes, by exact name and destination.
+ *
+ * Five rows, none of them a backend criterion: every one of the seven clauses
+ * is proven at this commit. These are disclosures the record must carry because
+ * the acceptance claim would overstate itself without them, and each is held by
+ * an authority outside this packet — the owner, or the post-audit.
+ */
+const BE_OWED_AUTHORIZED = Object.freeze([
+  Object.freeze({ id: "OWED-R11-PHOENIX-DRILL", destination: "OWNER_GATED" }),
+  Object.freeze({ id: "OWED-R15-BENCHMARK-CUT", destination: "OWNER_GATED" }),
+  Object.freeze({ id: "OWED-R18-CI-LINUX", destination: "POST_AUDIT_FOLLOW_UP" }),
+  Object.freeze({ id: "OWED-R11B-EXPORTER-WIRING", destination: "POST_AUDIT_FOLLOW_UP" }),
+  Object.freeze({ id: "OWED-GOVERNANCE-RECEIPTS", destination: "CLOSURE_DEBRIEF" }),
+]);
+
+/**
+ * One cell of a record row: trimmed, unwrapped from its backticks, with the
+ * em dash read as the empty cell it is meant to be.
+ *
+ * The em dash matters. A PROVEN row has no reason and no destination, and a
+ * markdown table cannot carry an empty cell legibly, so the record writes `—`.
+ * Reading it as text would make every PROVEN row look like an owed row with a
+ * one-character reason.
+ */
+function beCell(raw) {
+  const trimmed = raw.trim();
+  const unwrapped = trimmed.length > 1 && trimmed.startsWith("`") && trimmed.endsWith("`")
+    ? trimmed.slice(1, -1).trim()
+    : trimmed;
+  return unwrapped === "—" ? "" : unwrapped;
+}
+
+/**
+ * The record as data: two row grammars over the whole document.
+ *
+ * Four cells is a verdict row, three is a pointer row, and the two cannot
+ * collide because each anchors its closing pipe at the end of the line. Neither
+ * grammar cares which heading a row sits under: the id decides what a row is,
+ * so a criterion smuggled into the pointer section is still read as a pointer
+ * and a disclosure row moved anywhere is still governed by L-R19-5. Headers and
+ * separator rows fall out on their own — "Criterion" and "---" are not ids.
+ */
+const BE_VERDICT_ROW = /^\|([^|\n]*)\|([^|\n]*)\|([^|\n]*)\|([^|\n]*)\|$/gm;
+const BE_POINTER_ROW = /^\|([^|\n]*)\|([^|\n]*)\|([^|\n]*)\|$/gm;
+const BE_CRITERION_ID = /^BE-[A-Z0-9-]+$/;
+const BE_DISCLOSURE_ID = /^OWED-[A-Z0-9-]+$/;
+
+{
+  const record = readIfPresent(BE_RECORD_PATH);
+  if (record === null) {
+    // L-R19-1, the first half. A gate whose record can go missing quietly is
+    // weaker than the prose it replaced.
+    fail(BE_RECORD_PATH + " is missing; the backend certification gate has no record to read");
+  } else {
+    const criteriaRows = [];
+    const disclosureRows = [];
+    const pointerRows = [];
+
+    for (const match of record.matchAll(BE_VERDICT_ROW)) {
+      const id = beCell(match[1]);
+      const row = {
+        id,
+        status: beCell(match[2]),
+        reason: beCell(match[3]),
+        destination: beCell(match[4]),
+      };
+      if (BE_CRITERION_ID.test(id)) criteriaRows.push(row);
+      else if (BE_DISCLOSURE_ID.test(id)) disclosureRows.push(row);
+    }
+    for (const match of record.matchAll(BE_POINTER_ROW)) {
+      const id = beCell(match[1]);
+      if (!BE_CRITERION_ID.test(id)) continue;
+      pointerRows.push({ id, path: beCell(match[2]), anchor: beCell(match[3]) });
+    }
+
+    let criteriaDefects = 0;
+    let pointerDefects = 0;
+    let owedDefects = 0;
+
+    // L-R19-1, the second half: a table that parsed as nothing.
+    if (criteriaRows.length === 0) {
+      fail(
+        "the B-E criteria table parsed as empty; the backend certification law would pass vacuously",
+      );
+      criteriaDefects += 1;
+    }
+    if (pointerRows.length === 0) {
+      fail(
+        "the B-E evidence pointer table parsed as empty; the backend certification law would pass vacuously",
+      );
+      pointerDefects += 1;
+    }
+
+    if (criteriaDefects === 0) {
+      // L-R19-2: totality, both directions.
+      const stated = new Map();
+      for (const row of criteriaRows) {
+        if (stated.has(row.id)) {
+          fail(BE_RECORD_PATH + " states " + row.id + " twice; a criterion has one verdict or none");
+          criteriaDefects += 1;
+          continue;
+        }
+        stated.set(row.id, row);
+      }
+      for (const { id, clause } of BE_CRITERIA) {
+        if (stated.has(id)) continue;
+        fail(
+          BE_RECORD_PATH +
+            " does not carry the criterion " +
+            id +
+            " (" +
+            clause +
+            "), which the backend gate requires",
+        );
+        criteriaDefects += 1;
+      }
+      const defined = new Set(BE_CRITERIA.map((entry) => entry.id));
+      const undefinedIds = [
+        ...new Set([...criteriaRows, ...pointerRows].map((row) => row.id).filter((id) => !defined.has(id))),
+      ];
+      for (const id of undefinedIds) {
+        fail(BE_RECORD_PATH + " names " + id + ", which the backend gate does not define");
+        criteriaDefects += 1;
+      }
+
+      // L-R19-3: a verdict from the closed vocabulary, over every row the
+      // record carries — a disclosure row with an invented status is the same
+      // defect as a criterion with one.
+      for (const row of [...criteriaRows, ...disclosureRows]) {
+        if (row.status === "") {
+          fail(
+            BE_RECORD_PATH +
+              " carries " +
+              row.id +
+              " with no status; a criterion without a verdict is withheld",
+          );
+          criteriaDefects += 1;
+        } else if (!BE_STATUSES.includes(row.status)) {
+          fail(
+            BE_RECORD_PATH +
+              " gives " +
+              row.id +
+              " the status " +
+              row.status +
+              ", which is not one of " +
+              BE_STATUSES.join(", "),
+          );
+          criteriaDefects += 1;
+        }
+      }
+    }
+
+    // L-R19-4: the derivation. A PROVEN criterion points at evidence, and the
+    // evidence still resolves — the path in the tree and the anchor in the file.
+    if (criteriaDefects === 0 && pointerDefects === 0) {
+      let resolving = 0;
+      for (const row of criteriaRows) {
+        if (row.status !== "PROVEN") continue;
+        const pointers = pointerRows.filter((pointer) => pointer.id === row.id);
+        if (pointers.length === 0) {
+          fail(BE_RECORD_PATH + " marks " + row.id + " PROVEN with no evidence pointer");
+          pointerDefects += 1;
+          continue;
+        }
+        for (const pointer of pointers) {
+          if (!literalPathResolves(pointer.path)) {
+            fail(
+              BE_RECORD_PATH +
+                ": " +
+                row.id +
+                " points at " +
+                pointer.path +
+                ", which does not resolve in the tree",
+            );
+            pointerDefects += 1;
+            continue;
+          }
+          const content = readIfPresent(pointer.path);
+          if (content === null || !flatten(content).includes(flatten(pointer.anchor))) {
+            fail(
+              BE_RECORD_PATH +
+                ": " +
+                row.id +
+                " points at " +
+                pointer.path +
+                ' for the anchor "' +
+                pointer.anchor +
+                '", which that file does not state',
+            );
+            pointerDefects += 1;
+            continue;
+          }
+          resolving += 1;
+        }
+      }
+      if (pointerDefects === 0) {
+        certificationBackend.pointers = { resolving };
+      }
+    } else {
+      pointerDefects += 1;
+    }
+
+    // L-R19-5: an owed row is reasoned, destined and authorized by name.
+    if (criteriaDefects === 0) {
+      const owedRows = [...criteriaRows, ...disclosureRows].filter((row) => row.status === "OWED");
+      const authorized = new Map(BE_OWED_AUTHORIZED.map((entry) => [entry.id, entry.destination]));
+
+      for (const row of owedRows) {
+        if (row.reason === "") {
+          fail(BE_RECORD_PATH + ": " + row.id + " is OWED with no reason");
+          owedDefects += 1;
+        } else if (row.reason.length < BE_REASON_MIN) {
+          fail(
+            BE_RECORD_PATH +
+              ": " +
+              row.id +
+              " is OWED with a reason of " +
+              row.reason.length +
+              " characters; a destination and a stated reason are what make an owed row checkable",
+          );
+          owedDefects += 1;
+        }
+        if (row.destination === "") {
+          fail(BE_RECORD_PATH + ": " + row.id + " is OWED with no destination");
+          owedDefects += 1;
+        } else if (!BE_OWED_DESTINATIONS.includes(row.destination)) {
+          fail(
+            BE_RECORD_PATH +
+              ": " +
+              row.id +
+              " is OWED to " +
+              row.destination +
+              ", which is not one of " +
+              BE_OWED_DESTINATIONS.join(", "),
+          );
+          owedDefects += 1;
+        }
+        if (!authorized.has(row.id)) {
+          fail(BE_RECORD_PATH + ": " + row.id + " is OWED but the fence authorizes no owed row for it");
+          owedDefects += 1;
+        } else if (row.destination !== "" && authorized.get(row.id) !== row.destination) {
+          fail(
+            BE_RECORD_PATH +
+              ": " +
+              row.id +
+              " is OWED to " +
+              row.destination +
+              " but the fence authorizes it to " +
+              authorized.get(row.id),
+          );
+          owedDefects += 1;
+        }
+      }
+
+      // The other direction, and the one that forces the register to shrink.
+      const owedById = new Map([...criteriaRows, ...disclosureRows].map((row) => [row.id, row]));
+      for (const { id } of BE_OWED_AUTHORIZED) {
+        const row = owedById.get(id);
+        if (row === undefined) {
+          fail(
+            "the fence authorizes an owed row for " +
+              id +
+              ", which the record does not carry",
+          );
+          owedDefects += 1;
+        } else if (row.status !== "OWED") {
+          fail(
+            "the fence authorizes an owed row for " +
+              id +
+              ", which the record proves; retire the authorization in the same commit",
+          );
+          owedDefects += 1;
+        }
+      }
+
+      if (owedDefects === 0) {
+        const byDestination = BE_OWED_DESTINATIONS.map((destination) => ({
+          destination,
+          count: owedRows.filter((row) => row.destination === destination).length,
+        })).filter((entry) => entry.count > 0);
+        certificationBackend.owed = {
+          rows: owedRows.length,
+          byDestination: byDestination
+            .map((entry) => entry.count + " " + entry.destination)
+            .join(", "),
+        };
+      }
+    } else {
+      owedDefects += 1;
+    }
+
+    if (criteriaDefects === 0) {
+      certificationBackend.criteria = {
+        proven: criteriaRows.filter((row) => row.status === "PROVEN").length,
+        total: BE_CRITERIA.length,
+      };
+    }
+
+    if (criteriaDefects === 0 && pointerDefects === 0 && owedDefects === 0) {
+      notes.push(
+        "the B-E record states " +
+          criteriaRows.length +
+          " criteria over " +
+          pointerRows.length +
+          " evidence pointers, every one resolving, with " +
+          disclosureRows.length +
+          " disclosure row(s) authorized by name",
+      );
+    }
+  }
+}
+
 // --- 23. STRUCTURAL_TOPOLOGY_CERTIFIED: the fifth input, and the receipt (P8-E)
 //
 // ADR 0014 §Consequences names five inputs. Four were laws before this packet
@@ -22138,8 +22614,9 @@ if (apiReference === null) {
 // line. A trailing `//` on a code line is cut before the line is scanned,
 // quote-aware, so a comment after code is still prose.
 //
-// **The receipt.** One line, `STRUCTURAL_TOPOLOGY_CERTIFIED`, printed as the
-// output's last line and only on a passing run, folded from the five entries
+// **The receipt.** One line, `STRUCTURAL_TOPOLOGY_CERTIFIED`, printed on a
+// passing run as the first of the output's two closing receipts — old-V2 R19
+// added `V2_BACKEND_CERTIFIED` after it — folded from the five entries
 // the laws wrote into `certification` — never typed beside them. Every number
 // in it is the number the law computed: a synthetic tree with thirteen
 // packages prints thirteen, and a tree whose table names a package it lacks
@@ -22352,6 +22829,46 @@ if (withheld.length > 0) {
     CERTIFICATION_INPUTS.map(([, value, render]) => render(value)).join("; ");
 }
 
+// --- the backend receipt, folded from the three entries ---------------------
+//
+// The same fold over a different claim, and its placement is mechanical rather
+// than stylistic: the withheld `fail()` has to be registered BEFORE the failure
+// check below, or a withheld receipt would be computed after the fence had
+// already decided it passed and would report nothing at all.
+const BACKEND_CERTIFICATION_INPUTS = [
+  [
+    "the seven criteria stated and classified",
+    certificationBackend.criteria,
+    (value) => value.proven + " of " + value.total + " criteria proven",
+  ],
+  [
+    "every proven criterion pointing at evidence that resolves",
+    certificationBackend.pointers,
+    (value) => value.resolving + " resolving pointers",
+  ],
+  [
+    "every owed row authorized by name and destination",
+    certificationBackend.owed,
+    (value) => value.rows + " disclosure row(s) owed by authorization (" + value.byDestination + ")",
+  ],
+];
+
+const withheldBackend = BACKEND_CERTIFICATION_INPUTS.filter(([, value]) => value === null).map(
+  ([name]) => name,
+);
+let backendCertificationReceipt = null;
+if (withheldBackend.length > 0) {
+  fail(
+    "V2_BACKEND_CERTIFIED withheld; the input(s) that did not hold: " +
+      withheldBackend.join("; ") +
+      ". The backend acceptance claim rests on all three",
+  );
+} else {
+  backendCertificationReceipt =
+    "V2_BACKEND_CERTIFIED: " +
+    BACKEND_CERTIFICATION_INPUTS.map(([, value, render]) => render(value)).join("; ");
+}
+
 for (const note of notes) {
   console.log("  ✓ " + note);
 }
@@ -22368,11 +22885,16 @@ if (failures.length > 0) {
 
 console.log("  ✓ architecture fence passed");
 
-// The receipt is the last line, and only on a passing run. An aggregate over
-// five inputs means nothing on a run that failed elsewhere, and a reader who
-// tails the output should find the certification exactly where the fence
-// stopped. A withheld receipt never reaches this line: §23 recorded it as a
-// failure, and the fence exited above.
+// The receipts are the last two lines, and only on a passing run:
+// `STRUCTURAL_TOPOLOGY_CERTIFIED` first, then `V2_BACKEND_CERTIFIED`. An
+// aggregate over inputs means nothing on a run that failed elsewhere, and a
+// reader who tails the output should find the closure claim exactly where the
+// fence stopped — which is why the backend receipt goes last of the two. A
+// withheld receipt never reaches these lines: §23 and §22b each recorded the
+// withholding as a failure, and the fence exited above.
 if (certificationReceipt !== null) {
   console.log("  ✓ " + certificationReceipt);
+}
+if (backendCertificationReceipt !== null) {
+  console.log("  ✓ " + backendCertificationReceipt);
 }

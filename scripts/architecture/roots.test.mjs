@@ -24,7 +24,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2999,5 +2999,483 @@ describe("CI declares the subset it can run, computed from the topology (V2-B5/R
     expect(output).not.toContain("the durability project includes");
     expect(output).not.toContain("the durability-server project");
     expect(output).not.toContain("the CI workflow's amended clause no longer states:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The backend certification record, as a computed gate (old-V2 R19)
+// ---------------------------------------------------------------------------
+
+/**
+ * Probes for the B-E gate: the five laws that refuse to certify the backend
+ * from a record that is incomplete, unclassified, unresolvable or dishonestly
+ * owed.
+ *
+ * **Every probe below is red at HEAD by construction.** Before this packet the
+ * record did not exist, so N1 fired on the empty tree and N2-N14 describe
+ * shapes the file could not yet have. No assertion here compares a thing to
+ * itself, and none of them could have been satisfied by the fence as it stood.
+ *
+ * **N13 is the one that proves the gate is computed rather than declared.** It
+ * takes a pointer that resolves and changes a single character of its anchor.
+ * A gate that merely checked the pointer was *present* would stay green; this
+ * one goes red, which is the whole difference between a certification and a
+ * document that says it certified something once.
+ *
+ * Each probe asserts a nonzero exit **and its own law's message**. A synthetic
+ * tree trips laws this packet is not about, so an exit code identifies nothing
+ * on its own — the same reasoning the policy-pin probes above record.
+ */
+const BE_RECORD = "docs/certification/v2-backend-certification.md";
+
+const BE_IDS = [
+  "BE-1-SERVICE-INDEPENDENCE",
+  "BE-2-DOOR-EQUIVALENCE",
+  "BE-3-KILL-WITHOUT-DUPLICATION",
+  "BE-4-RESUMABLE-STREAM",
+  "BE-5-NO-PAYLOAD-ON-RECORDED-SURFACES",
+  "BE-6-REMOTE-MCP-REFUSED",
+  "BE-7-POLICY-ONLY-MODEL-SWITCH",
+];
+
+/**
+ * The five owed rows the fence authorizes, mirrored here on purpose.
+ *
+ * A fixture that read `BE_OWED_AUTHORIZED` out of the fence source would agree
+ * with whatever the fence happens to say, including a register somebody
+ * emptied. Stating them means N10 fails if the register is renamed away from
+ * under it, which is what a probe of an authorization register owes.
+ */
+const BE_AUTHORIZED_OWED = [
+  ["OWED-R11-PHOENIX-DRILL", "OWNER_GATED"],
+  ["OWED-R15-BENCHMARK-CUT", "OWNER_GATED"],
+  ["OWED-R18-CI-LINUX", "POST_AUDIT_FOLLOW_UP"],
+  ["OWED-R11B-EXPORTER-WIRING", "POST_AUDIT_FOLLOW_UP"],
+  ["OWED-GOVERNANCE-RECEIPTS", "CLOSURE_DEBRIEF"],
+];
+
+/** The one file every synthetic fixture already writes, and a string it holds. */
+const BE_EVIDENCE_PATH = "packages/domains/runtime/src/switch-landing/index.ts";
+const BE_EVIDENCE_ANCHOR = "ACCOUNT_SWITCH_COMPLETED";
+
+/** Comfortably over the fence's floor, so a probe about something else is about something else. */
+const BE_REASON = "Held elsewhere, and this sentence says where and why it is held.";
+
+const beProven = (id) => ({ id, status: "PROVEN", reason: "—", destination: "—" });
+
+/**
+ * A synthetic record, valid unless a probe deliberately breaks one thing.
+ *
+ * The default is the shape the real record has — seven proven criteria, one
+ * resolving pointer each, and the five authorized disclosures — so a probe's
+ * fixture differs from a passing document in exactly the way it is named for.
+ */
+function beRecordDocument(options = {}) {
+  const criteria = options.criteria ?? BE_IDS.map(beProven);
+  const disclosures =
+    options.disclosures ??
+    BE_AUTHORIZED_OWED.map(([id, destination]) => ({
+      id,
+      status: "OWED",
+      reason: BE_REASON,
+      destination,
+    }));
+  const pointers =
+    options.pointers ??
+    criteria
+      .filter((row) => row.status === "PROVEN")
+      .map((row) => ({ id: row.id, path: BE_EVIDENCE_PATH, anchor: BE_EVIDENCE_ANCHOR }));
+
+  const verdict = (row) =>
+    "| `" + row.id + "` | " + (row.status === "" ? "" : "`" + row.status + "`") +
+    " | " + row.reason + " | " + row.destination + " |";
+
+  return [
+    "# The V2 backend certification record",
+    "",
+    "The gate is withheld-is-failure. `AgentHarnessPort` is realized at the edge;",
+    "a colliding append fails closed on `LEDGER_IDEMPOTENCY_CONFLICT`; the CI",
+    "disclosure is destined `POST_AUDIT_FOLLOW_UP`.",
+    "",
+    "| Criterion | Status | Reason | Destination |",
+    "| --- | --- | --- | --- |",
+    ...criteria.map(verdict),
+    "",
+    "| Criterion | Path | Anchor |",
+    "| --- | --- | --- |",
+    ...pointers.map((p) => "| `" + p.id + "` | `" + p.path + "` | `" + p.anchor + "` |"),
+    "",
+    "| Row | Status | Reason | Destination |",
+    "| --- | --- | --- | --- |",
+    ...disclosures.map(verdict),
+    "",
+  ].join("\n");
+}
+
+/** A tree carrying the evidence file, and a record built from the options. */
+function beTree(options) {
+  const root = syntheticTree();
+  landingHome(root);
+  if (options !== null) write(root, BE_RECORD, beRecordDocument(options));
+  commitAll(root);
+  return root;
+}
+
+/**
+ * Every refusal N1-N14 can produce, for the neutralization control to deny.
+ *
+ * **Qualified on purpose, and it was measured rather than assumed.** A bare
+ * "would pass vacuously" is owned by at least a dozen laws in this fence — the
+ * import-purity gate prints one on any synthetic tree — so denying the bare
+ * fragment made the control fail on a fixture with nothing wrong with it. Every
+ * entry here is therefore long enough that only this law family can produce it,
+ * which is the same discipline the policy-pin probes above record for the pin
+ * law's message shape.
+ */
+const BE_REFUSALS = [
+  BE_RECORD + " is missing",
+  "does not carry the criterion",
+  "with no status; a criterion without a verdict is withheld",
+  "which is not one of PROVEN, OWED",
+  "which the backend gate does not define",
+  "is OWED with no reason",
+  "is OWED with no destination",
+  "a destination and a stated reason are what make an owed row checkable",
+  "is OWED but the fence authorizes no owed row for it",
+  "retire the authorization in the same commit",
+  "PROVEN with no evidence pointer",
+  "which does not resolve in the tree",
+  "which that file does not state",
+  "the B-E criteria table parsed as empty; the backend certification law would pass vacuously",
+  "the B-E evidence pointer table parsed as empty; the backend certification law would pass vacuously",
+  "V2_BACKEND_CERTIFIED withheld",
+  "states " + BE_IDS[3] + " twice",
+  "which the record does not carry",
+];
+
+describe("the backend certifies what the fence can compute (old-V2 R19)", () => {
+  it("N1: refuses a tree with no B-E record at all", async () => {
+    const root = beTree(null);
+
+    // Withheld, not malformed. A certification whose record can go missing in
+    // silence is weaker than the prose it replaced.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(BE_RECORD + " is missing");
+  });
+
+  it("N2: refuses a record that omits one of the seven criteria", async () => {
+    const kept = BE_IDS.filter((id) => id !== "BE-4-RESUMABLE-STREAM").map(beProven);
+    const root = beTree({
+      criteria: kept,
+      pointers: kept.map((row) => ({
+        id: row.id,
+        path: BE_EVIDENCE_PATH,
+        anchor: BE_EVIDENCE_ANCHOR,
+      })),
+    });
+
+    // Absence is the failure. A criterion that is simply not mentioned is the
+    // cheapest way to certify seven things by stating six.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "does not carry the criterion BE-4-RESUMABLE-STREAM (the event stream is resumable), which the backend gate requires",
+    );
+  });
+
+  it("N3: refuses a criterion present with no verdict", async () => {
+    const root = beTree({
+      criteria: BE_IDS.map((id) =>
+        id === "BE-4-RESUMABLE-STREAM"
+          ? { id, status: "", reason: "—", destination: "—" }
+          : beProven(id),
+      ),
+    });
+
+    // Present-without-status is the second way to say nothing while appearing
+    // to have said something.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "carries BE-4-RESUMABLE-STREAM with no status; a criterion without a verdict is withheld",
+    );
+  });
+
+  it("N4: refuses a verdict outside the closed vocabulary", async () => {
+    const root = beTree({
+      criteria: BE_IDS.map((id) =>
+        id === "BE-4-RESUMABLE-STREAM"
+          ? { id, status: "PARTIAL", reason: "—", destination: "—" }
+          : beProven(id),
+      ),
+    });
+
+    // "PARTIAL" is the word a certification reaches for when it wants credit
+    // without a claim. There are two verdicts and no third.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "gives BE-4-RESUMABLE-STREAM the status PARTIAL, which is not one of PROVEN, OWED",
+    );
+  });
+
+  it("N5: refuses a criterion the gate does not define", async () => {
+    const root = beTree({ criteria: [...BE_IDS.map(beProven), beProven("BE-8-INVENTED")] });
+
+    // The other direction of totality: without it, an id typo satisfies the
+    // first direction with a row nothing checks.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("names BE-8-INVENTED, which the backend gate does not define");
+  });
+
+  it("N6: refuses an owed row with no reason", async () => {
+    const root = beTree({
+      criteria: BE_IDS.map((id) =>
+        id === "BE-4-RESUMABLE-STREAM"
+          ? { id, status: "OWED", reason: "—", destination: "OWNER_GATED" }
+          : beProven(id),
+      ),
+    });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("BE-4-RESUMABLE-STREAM is OWED with no reason");
+  });
+
+  it("N7: refuses an owed row with no destination", async () => {
+    const root = beTree({
+      criteria: BE_IDS.map((id) =>
+        id === "BE-4-RESUMABLE-STREAM"
+          ? { id, status: "OWED", reason: BE_REASON, destination: "—" }
+          : beProven(id),
+      ),
+    });
+
+    // An owed row with no destination is a debt with no creditor: nobody is
+    // obliged to discharge it and nothing notices that nobody did.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("BE-4-RESUMABLE-STREAM is OWED with no destination");
+  });
+
+  it("N8: refuses a token where a reason should be", async () => {
+    const root = beTree({
+      criteria: BE_IDS.map((id) =>
+        id === "BE-4-RESUMABLE-STREAM"
+          ? { id, status: "OWED", reason: "TBD", destination: "OWNER_GATED" }
+          : beProven(id),
+      ),
+    });
+
+    // A length floor rather than a denylist of tokens, and deliberately so: a
+    // denylist teaches a writer which three words to avoid, a floor asks for a
+    // sentence.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "BE-4-RESUMABLE-STREAM is OWED with a reason of 3 characters; a destination and a stated reason are what make an owed row checkable",
+    );
+  });
+
+  it("N9: refuses an owed row the fence never authorized", async () => {
+    const root = beTree({
+      criteria: BE_IDS.map((id) =>
+        id === "BE-4-RESUMABLE-STREAM"
+          ? { id, status: "OWED", reason: BE_REASON, destination: "OWNER_GATED" }
+          : beProven(id),
+      ),
+    });
+
+    // Reason and destination are both well formed here, so nothing else fires.
+    // The refusal is about authority alone: withholding a criterion is a
+    // decision somebody has to have taken by name.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "BE-4-RESUMABLE-STREAM is OWED but the fence authorizes no owed row for it",
+    );
+  });
+
+  it("N10: refuses an authorization the record has outgrown", async () => {
+    const root = beTree({
+      disclosures: BE_AUTHORIZED_OWED.map(([id, destination]) =>
+        id === "OWED-R18-CI-LINUX"
+          ? { id, status: "PROVEN", reason: "—", destination: "—" }
+          : { id, status: "OWED", reason: BE_REASON, destination },
+      ),
+    });
+
+    // The direction that forces the register to shrink. Without it a closed row
+    // leaves a live permission behind, and the register's size stops meaning
+    // anything at all.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the fence authorizes an owed row for OWED-R18-CI-LINUX, which the record proves; retire the authorization in the same commit",
+    );
+  });
+
+  it("N11: refuses a proven criterion with no evidence at all", async () => {
+    const root = beTree({
+      pointers: BE_IDS.filter((id) => id !== "BE-4-RESUMABLE-STREAM").map((id) => ({
+        id,
+        path: BE_EVIDENCE_PATH,
+        anchor: BE_EVIDENCE_ANCHOR,
+      })),
+    });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("marks BE-4-RESUMABLE-STREAM PROVEN with no evidence pointer");
+  });
+
+  it("N12: refuses a pointer at a path that is not in the tree", async () => {
+    const gone = "packages/domains/runtime/src/switch-landing/gone.ts";
+    const root = beTree({
+      pointers: BE_IDS.map((id) => ({
+        id,
+        path: id === "BE-4-RESUMABLE-STREAM" ? gone : BE_EVIDENCE_PATH,
+        anchor: BE_EVIDENCE_ANCHOR,
+      })),
+    });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "BE-4-RESUMABLE-STREAM points at " + gone + ", which does not resolve in the tree",
+    );
+  });
+
+  it("N13: refuses a resolving path whose anchor moved by one character", async () => {
+    // The probe that proves the gate is COMPUTED. Everything about this fixture
+    // is valid — the criterion is stated, classified and pointed at a file that
+    // exists — and one character of the cited anchor is wrong. A gate that read
+    // presence rather than resolution would be green here, and would stay green
+    // through every rename that follows.
+    const moved = BE_EVIDENCE_ANCHOR.slice(0, -1) + "Q";
+    const root = beTree({
+      pointers: BE_IDS.map((id) => ({
+        id,
+        path: BE_EVIDENCE_PATH,
+        anchor: id === "BE-4-RESUMABLE-STREAM" ? moved : BE_EVIDENCE_ANCHOR,
+      })),
+    });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      'BE-4-RESUMABLE-STREAM points at ' +
+        BE_EVIDENCE_PATH +
+        ' for the anchor "' +
+        moved +
+        '", which that file does not state',
+    );
+  });
+
+  it("N14: refuses a record whose tables parsed as empty", async () => {
+    const root = syntheticTree();
+    landingHome(root);
+    write(
+      root,
+      BE_RECORD,
+      [
+        "# The V2 backend certification record",
+        "",
+        "The gate is withheld-is-failure, `AgentHarnessPort` is at the edge, a",
+        "collision is `LEDGER_IDEMPOTENCY_CONFLICT`, and CI is `POST_AUDIT_FOLLOW_UP`.",
+        "",
+        "| Criterion | Status | Reason | Destination |",
+        "| --- | --- | --- | --- |",
+        "",
+        "| Criterion | Path | Anchor |",
+        "| --- | --- | --- |",
+        "",
+      ].join("\n"),
+    );
+    commitAll(root);
+
+    // Headers and separators, no rows. Every totality check below would be
+    // satisfied by a table with nothing in it, which is how a gate certifies by
+    // reading nothing.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the B-E criteria table parsed as empty; the backend certification law would pass vacuously",
+    );
+  });
+
+  it("P1: reaches its own verdict on a record with nothing wrong with it", async () => {
+    const root = beTree({});
+
+    // The neutralization control. Without it every negative above could be
+    // passing on some other law's failure text, and nothing would show that
+    // this law can reach a verdict of its own.
+    //
+    // The exit stays nonzero: a synthetic tree trips laws this packet is not
+    // about, and a probe demanding exit 0 would be asserting the whole fence
+    // rather than these five. What is asserted is that the law's own computed
+    // note is present and every one of its refusals is absent. The receipt
+    // itself prints only on a fully passing run, which is the real tree's job
+    // and `pnpm check`'s, not a synthetic tree's.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    for (const refusal of BE_REFUSALS) {
+      expect(output).not.toContain(refusal);
+    }
+  });
+
+  it("P2: the shipped record satisfies the contract the shipped fence reads", () => {
+    // The real-tree half, in this file's established idiom: read the real
+    // documents rather than spawn the fence at the repository, because the
+    // real-tree run is `pnpm check`, outside vitest. What is checked here is
+    // the thing a synthetic fixture structurally cannot check — that the record
+    // this repository actually ships states all seven criteria, that every
+    // pointer it makes resolves against the real tree with its anchor still in
+    // place, and that the fence's own register agrees with it row for row.
+    const record = readFileSync(join(REAL_REPO, BE_RECORD), "utf8");
+    const fence = readFileSync(join(REAL_REPO, "scripts", "check-architecture.mjs"), "utf8");
+    const flat = (text) => text.toLowerCase().replace(/\s+/g, " ");
+
+    const cell = (raw) => {
+      const trimmed = raw.trim();
+      return trimmed.length > 1 && trimmed.startsWith("`") && trimmed.endsWith("`")
+        ? trimmed.slice(1, -1).trim()
+        : trimmed;
+    };
+    const verdicts = [...record.matchAll(/^\|([^|\n]*)\|([^|\n]*)\|([^|\n]*)\|([^|\n]*)\|$/gm)].map(
+      (m) => ({ id: cell(m[1]), status: cell(m[2]), destination: cell(m[4]) }),
+    );
+    const pointers = [...record.matchAll(/^\|([^|\n]*)\|([^|\n]*)\|([^|\n]*)\|$/gm)]
+      .map((m) => ({ id: cell(m[1]), path: cell(m[2]), anchor: cell(m[3]) }))
+      .filter((row) => /^BE-[A-Z0-9-]+$/.test(row.id));
+
+    // Seven criteria, every one proven, and the count is asserted so a record
+    // that lost a row cannot pass by having every row it kept be green.
+    const criteria = verdicts.filter((row) => /^BE-[A-Z0-9-]+$/.test(row.id));
+    expect(criteria.map((row) => row.id).sort()).toEqual([...BE_IDS].sort());
+    for (const row of criteria) expect(row.status).toBe("PROVEN");
+
+    // Every pointer resolves, with its anchor. This is the assertion that goes
+    // red when a suite is renamed and nobody updated the record.
+    expect(pointers.length).toBeGreaterThan(BE_IDS.length);
+    for (const pointer of pointers) {
+      const full = join(REAL_REPO, pointer.path);
+      expect(() => statSync(full)).not.toThrow();
+      expect(flat(readFileSync(full, "utf8"))).toContain(flat(pointer.anchor));
+    }
+
+    // The register and the record agree, both ways, and the register is really
+    // the fence's rather than this file's copy of it.
+    const owed = verdicts.filter((row) => /^OWED-[A-Z0-9-]+$/.test(row.id));
+    expect(owed.map((row) => row.id).sort()).toEqual(BE_AUTHORIZED_OWED.map(([id]) => id).sort());
+    for (const [id, destination] of BE_AUTHORIZED_OWED) {
+      const row = owed.find((candidate) => candidate.id === id);
+      expect(row?.status).toBe("OWED");
+      expect(row?.destination).toBe(destination);
+      expect(fence).toContain('{ id: "' + id + '", destination: "' + destination + '" }');
+    }
   });
 });
