@@ -2694,3 +2694,310 @@ describe("the eval lane is dependency-free and writes one registry (V2-B5/R15)",
     expect(output).not.toContain("the registry producer's consumption vocabulary");
   });
 });
+
+/**
+ * Probes for the CI-subset laws (V2-B5/R18).
+ *
+ * R18 narrows the workflow's promise from "the same gate a local writer runs"
+ * to a subset it can actually run, because two vitest projects require a Restate
+ * binary pinned to darwin-arm64 and the runner is `linux-x64`. The subset is
+ * declared by naming projects positively, which fails in the wrong direction on
+ * its own: a project added later would silently never run in CI.
+ *
+ * `L-R18-1` buys that direction back. It computes the expected set from
+ * `vitest.config.ts`, subtracts the two OWED names, and compares against the
+ * workflow in both directions — so the last two probes here are the ones that
+ * matter most, and they are the ones a positive list without a law would fail.
+ * It also pins the job's steps, since acquisition in CI is the deferred option
+ * and would arrive as an eighth step, and pins the split that makes the
+ * exclusion nameable.
+ *
+ * `L-R18-2` holds the amended comment to the four things it must say. The defect
+ * being closed is a sentence about CI that nobody checked, so the sentence that
+ * replaces it is checked.
+ *
+ * Same discipline as every probe above: change exactly the file the probe is
+ * about, and assert the law's own message rather than an exit code, since a
+ * synthetic tree trips laws these probes are not about.
+ */
+const CI_WORKFLOW = ".github/workflows/ci.yml";
+const VITEST_TOPOLOGY = "vitest.config.ts";
+
+const CI_STEP_NAMES = [
+  "Checkout",
+  "Set up pnpm",
+  "Set up Node",
+  "Report toolchain",
+  "Install dependencies",
+  "Arm the mechanical Git fence",
+  "Check",
+];
+
+/** The runnable projects a lawful synthetic topology defines, in config order. */
+const RUNNABLE_PROJECTS = ["fence", "contracts", "runtime", "durability"];
+const SERVER_GLOBS = [
+  "test/lifecycle-operation/**/*.test.ts",
+  "test/drivers/drills/**/*.test.ts",
+];
+
+/** One project entry, shaped as the real topology shapes them. */
+function projectEntry(name, settings = []) {
+  return [
+    "      {",
+    "        test: {",
+    "          name: '" + name + "',",
+    ...settings.map((line) => "          " + line),
+    "        },",
+    "      },",
+  ];
+}
+
+/**
+ * A synthetic `vitest.config.ts`, carrying whichever project set a probe is
+ * about. The two OWED names are always present: they are what the law subtracts,
+ * and a topology without them would test a different subtraction.
+ */
+function vitestTopology(root, { runnable = RUNNABLE_PROJECTS, durability = {}, server = {} } = {}) {
+  const {
+    globs: hermeticGlobs = ["test/drivers/restate-driver/**/*.test.ts"],
+    groupOrder: hermeticGroupOrder = null,
+  } = durability;
+  const { globs: serverGlobs = SERVER_GLOBS, groupOrder: serverGroupOrder = 3 } = server;
+
+  const entries = [];
+  for (const name of runnable) {
+    if (name === "durability") {
+      entries.push(
+        ...projectEntry("durability", [
+          "include: [" + hermeticGlobs.map((glob) => "'" + glob + "'").join(", ") + "],",
+          ...(hermeticGroupOrder === null
+            ? []
+            : ["sequence: { groupOrder: " + String(hermeticGroupOrder) + " },"]),
+        ]),
+      );
+      continue;
+    }
+    entries.push(...projectEntry(name));
+  }
+  entries.push(
+    ...projectEntry("durability-server", [
+      "include: [" + serverGlobs.map((glob) => "'" + glob + "'").join(", ") + "],",
+      ...(serverGroupOrder === null
+        ? []
+        : ["sequence: { groupOrder: " + String(serverGroupOrder) + " },"]),
+    ]),
+    ...projectEntry("daemon"),
+  );
+
+  write(
+    root,
+    VITEST_TOPOLOGY,
+    ["export default {", "  test: {", "    projects: [", ...entries, "    ],", "  },", "};", ""].join("\n"),
+  );
+}
+
+/**
+ * A synthetic workflow. `declared` is what the gate step names; the header
+ * comment carries the four literals L-R18-2 requires unless a probe drops one.
+ */
+function ciWorkflow(root, { declared = RUNNABLE_PROJECTS, steps = CI_STEP_NAMES, literals = true } = {}) {
+  const header = literals
+    ? [
+        "# CI runs the fence, lint, typecheck and the vitest projects this runner can run.",
+        "# durability-server and daemon are OWED: the pinned Restate server is",
+        "# darwin-arm64 only, and the debt is discharged by POST_AUDIT_FOLLOW_UP B5.",
+      ]
+    : ["# CI runs the same gate a local writer runs."];
+
+  const body = [];
+  for (const step of steps) {
+    body.push("      - name: " + step);
+    if (step !== "Check") {
+      body.push("        run: true");
+      continue;
+    }
+    body.push("        run: |");
+    body.push("          node scripts/check-architecture.mjs");
+    body.push(
+      "          pnpm exec vitest run --reporter=dot " +
+        declared.map((name) => "--project " + name).join(" "),
+    );
+  }
+
+  write(
+    root,
+    CI_WORKFLOW,
+    [
+      "name: ci",
+      "",
+      ...header,
+      "",
+      "jobs:",
+      "  check:",
+      "    runs-on: ubuntu-latest",
+      "",
+      "    steps:",
+      ...body,
+      "",
+    ].join("\n"),
+  );
+}
+
+/** A tree whose CI declaration and topology agree, which each probe then breaks once. */
+function ciSubset(root, options = {}) {
+  vitestTopology(root, options.topology);
+  ciWorkflow(root, options.workflow);
+  landingHome(root);
+}
+
+describe("CI declares the subset it can run, computed from the topology (V2-B5/R18)", () => {
+  it("C1: refuses a subset that omits a project the topology defines", async () => {
+    const root = syntheticTree();
+    ciSubset(root, {
+      workflow: { declared: RUNNABLE_PROJECTS.filter((name) => name !== "contracts") },
+    });
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the CI subset omits vitest project(s) the topology defines: contracts");
+  });
+
+  it("C2: refuses a subset that runs a project the runner cannot run", async () => {
+    const root = syntheticTree();
+    ciSubset(root, { workflow: { declared: [...RUNNABLE_PROJECTS, "daemon"] } });
+    commitAll(root);
+
+    // The other direction of the same comparison. A well-meaning edit that
+    // "restores full coverage" would land here and be red on the runner instead.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the CI subset names project(s) that are OWED, not runnable on the runner: daemon",
+    );
+  });
+
+  it("C3: refuses a subset naming a project the topology does not define", async () => {
+    const root = syntheticTree();
+    ciSubset(root, { workflow: { declared: [...RUNNABLE_PROJECTS, "durabilty"] } });
+    commitAll(root);
+
+    // A typo selects nothing and reports success, which is the quietest way a
+    // positive list can stop running something.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the CI subset names vitest project(s) vitest.config.ts does not define: durabilty",
+    );
+  });
+
+  it("C4: refuses a topology whose new project never reached the workflow", async () => {
+    const root = syntheticTree();
+    // The fail-closed direction the positive list exists to be guarded in, and
+    // the reason this law parses the config instead of pinning a literal list:
+    // the config moved, the workflow did not, and nobody had to remember.
+    ciSubset(root, {
+      topology: { runnable: [...RUNNABLE_PROJECTS, "evals"] },
+      workflow: { declared: RUNNABLE_PROJECTS },
+    });
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the CI subset omits vitest project(s) the topology defines: evals");
+    expect(output).toContain("must be added to .github/workflows/ci.yml or declared OWED");
+  });
+
+  it("C5: refuses an eighth step, which is how acquisition would arrive", async () => {
+    const root = syntheticTree();
+    ciSubset(root, {
+      workflow: {
+        steps: [...CI_STEP_NAMES.slice(0, 6), "Acquire the Restate server", "Check"],
+      },
+    });
+    commitAll(root);
+
+    // Option B is POST_AUDIT_FOLLOW_UP. Pinning the steps is what keeps it from
+    // arriving one line at a time.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the CI job's steps must be exactly");
+    expect(output).toContain("Acquire the Restate server");
+  });
+
+  it("C6: refuses a server tree that drifts back into the project CI runs", async () => {
+    const root = syntheticTree();
+    ciSubset(root, {
+      topology: {
+        durability: { globs: ["test/drivers/restate-driver/**/*.test.ts", SERVER_GLOBS[1]] },
+      },
+    });
+    commitAll(root);
+
+    // The split is the whole mechanism. Undone, the subset is a list of names
+    // that is still exactly right and still red on the runner.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the durability project includes test/drivers/drills/**/*.test.ts, which needs the pinned server",
+    );
+  });
+
+  it("C7: refuses a durability-server that drops one of its two trees", async () => {
+    const root = syntheticTree();
+    ciSubset(root, { topology: { server: { globs: [SERVER_GLOBS[0]] } } });
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the durability-server project no longer includes test/drivers/drills/**/*.test.ts",
+    );
+  });
+
+  it("C8: refuses a server project that stops taking a group of its own", async () => {
+    const root = syntheticTree();
+    ciSubset(root, { topology: { server: { groupOrder: null } } });
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the durability-server project must keep groupOrder 3");
+  });
+
+  it("C9: refuses an amended clause that stops saying what it excludes and why", async () => {
+    const root = syntheticTree();
+    ciSubset(root, { workflow: { literals: false } });
+    commitAll(root);
+
+    // L-R18-2. The old sentence was false because nothing read it; this is the
+    // reading.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the CI workflow's amended clause no longer states:");
+    expect(output).toContain("durability-server");
+    expect(output).toContain("POST_AUDIT_FOLLOW_UP");
+  });
+
+  it("P1: leaves an agreeing declaration alone, and says so about both laws", async () => {
+    const root = syntheticTree();
+    ciSubset(root);
+    commitAll(root);
+
+    // The positive control. Without it every negative above could be passing on
+    // some other law's output. The exit stays nonzero because a synthetic tree
+    // trips laws this packet is not about.
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain("the CI subset is exactly the 4 vitest projects the runner can run");
+    expect(output).toContain("with durability-server and daemon OWED");
+    expect(output).toContain("the CI workflow states its excluded projects");
+    expect(output).not.toContain("the CI subset omits vitest project(s)");
+    expect(output).not.toContain("the CI subset names project(s) that are OWED");
+    expect(output).not.toContain("the CI subset names vitest project(s)");
+    expect(output).not.toContain("the CI job's steps must be exactly");
+    expect(output).not.toContain("the durability project includes");
+    expect(output).not.toContain("the durability-server project");
+    expect(output).not.toContain("the CI workflow's amended clause no longer states:");
+  });
+});

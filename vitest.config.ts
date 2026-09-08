@@ -66,9 +66,15 @@ import { defineConfig } from 'vitest/config';
  *
  * `sequence.groupOrder` is the project-level control: projects sharing a number
  * run together, and lower numbers run first. The three port-binding projects —
- * runtime, daemon and, since G5 moved the Restate drills out, durability — get
- * distinct numbers, so they are serialised with respect to each other while
- * every hermetic project still runs concurrently in group 0.
+ * runtime, daemon and, since G5 moved the Restate drills out, durability-server
+ * — get distinct numbers, so they are serialised with respect to each other
+ * while every hermetic project still runs concurrently in group 0.
+ *
+ * R18 split `durability` in two along exactly that line. What binds ports is now
+ * `durability-server`; what remains under `durability` scripts `fetch` and binds
+ * nothing, so it joins group 0. The reason is CI, not scheduling: the server the
+ * drills verify is a pinned darwin-arm64 binary, and a project that cannot run
+ * on the runner has to be nameable before it can be honestly excluded.
  *
  * The daemon drills additionally assert the ports are unbound before they start
  * and fail loudly if they are not. Solving this with dynamic ports was rejected:
@@ -462,9 +468,37 @@ export default defineConfig({
       },
       {
         test: {
+          // The hermetic half of the durability edge. Its one file scripts
+          // `globalThis.fetch` and restores it, so it binds no port, starts no
+          // server and shares no root — which is why it runs in group 0 with
+          // every other hermetic project rather than waiting its turn.
           name: 'durability',
           root: './packages/edges/durability',
-          include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
+          include: ['test/drivers/restate-driver/**/*.test.ts'],
+          environment: 'node',
+          restoreMocks: true,
+          unstubEnvs: true,
+          unstubGlobals: true,
+        },
+        resolve: { alias: durabilitySourceAliases },
+      },
+      {
+        test: {
+          // The half that needs the pinned Restate server on disk, split out by
+          // R18 so CI can name what it cannot run. These two trees hold the five
+          // assertions that require `serverAvailability()` to be `verified` and
+          // fail rather than skip when it is not; the pin describes darwin-arm64
+          // and nothing else, so on any other platform this project is red by
+          // design. ADR 0057 records the exclusion and what it owes.
+          //
+          // The split is by glob and nothing else: no test moved, no assertion
+          // relaxed, and no availability branch was added anywhere. Locally the
+          // two projects still run together under `pnpm check`, and their union
+          // is exactly what the single `durability` project ran before — there
+          // are no tests under `src/`, and the edge has exactly three test files.
+          name: 'durability-server',
+          root: './packages/edges/durability',
+          include: ['test/lifecycle-operation/**/*.test.ts', 'test/drivers/drills/**/*.test.ts'],
           environment: 'node',
           restoreMocks: true,
           unstubEnvs: true,

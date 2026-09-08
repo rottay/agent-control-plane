@@ -2,12 +2,46 @@ name: ci
 
 # This workflow was frozen in P0 as a contract, for the case the owner ever
 # published the repository. That happened on 2026-09-03, so this contract is
-# now live rather than hypothetical: CI runs exactly the same gate a local
-# writer runs, and nothing here may diverge from `pnpm check`.
+# now live rather than hypothetical.
 #
 # It grants no publication authority of its own. Pushing is governed by
 # `.githooks/pre-push`, which denies by default and is a local hook CI does not
 # execute; this workflow only ever reads and checks.
+#
+# R18 amends the clause this file used to carry. It said CI ran "exactly the
+# same gate a local writer runs, and nothing here may diverge from `pnpm check`"
+# — and that was not true on this runner, in a way no one could see from here.
+# `pnpm check` runs every vitest project, and two of them require the pinned
+# Restate server: `scripts/restate-server.pin.json` describes exactly one
+# platform, darwin-arm64, and this job runs on ubuntu-latest with no acquisition
+# step. Those suites assert availability and fail rather than skip, on purpose,
+# so the promise could not be kept and the failure would have been read as the
+# suite's rather than the runner's.
+#
+# So the promise is narrowed to one this runner can actually keep: CI runs the
+# fence, lint, typecheck, and every vitest project it is able to run, named one
+# by one below. Two are OWED rather than run:
+#
+#   • durability-server — the Restate drills and the lifecycle operation. The
+#     server binary is pinned darwin-arm64 only.
+#   • daemon — its drills spawn the real child in RESTATE mode, which resolves
+#     availability inside its own process, so the in-process injection cannot
+#     reach it. The hermetic and server-bound tests are interleaved inside single
+#     files, so unlike durability there is no glob that separates them; splitting
+#     them is test surgery this packet does not do.
+#
+# Both are OWED, both run green locally on darwin-arm64 under `pnpm check`, and
+# both are discharged by POST_AUDIT_FOLLOW_UP B5 — a linux-x64 pin, a hermetic
+# runner set and a Linux identity probe. ADR 0057 is the record.
+#
+# The enumeration below is positive on purpose. Repeating `--project '!name'`
+# looks like exclusion and is not: vitest 3.2.4 compiles each filter to a
+# negative lookahead and combines them with `.some()`, so two negations are a
+# union that readmits everything. Measured, not assumed. The cost of naming
+# projects positively is that a new one is silently never run here — so the
+# architecture fence computes the expected set from `vitest.config.ts` and
+# compares it against this file in both directions, and CI runs that fence
+# first. A project added to the config and not to this list fails the build.
 
 on:
   push:
@@ -63,5 +97,29 @@ jobs:
       - name: Arm the mechanical Git fence
         run: git config core.hooksPath .githooks
 
+      # Not `pnpm check`: that script runs every project, and this runner cannot
+      # run two of them. The four stages `pnpm check` chains are run here in the
+      # same order, with the vitest stage naming its projects. Keep this list in
+      # agreement with `vitest.config.ts` — the fence, one step earlier in this
+      # same job, refuses a disagreement in either direction.
       - name: Check
-        run: pnpm check
+        run: |
+          node scripts/check-architecture.mjs
+          pnpm lint
+          pnpm typecheck
+          pnpm exec vitest run --reporter=dot \
+            --project fence \
+            --project evals \
+            --project contracts \
+            --project ledger \
+            --project protocol \
+            --project observation \
+            --project providers \
+            --project tools \
+            --project telemetry \
+            --project accounts \
+            --project gateway \
+            --project cli \
+            --project console \
+            --project runtime \
+            --project durability

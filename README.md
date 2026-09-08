@@ -177,8 +177,8 @@ pagination, cursors and redaction are part of that equality.
 | HTTP | Fastify, bound to `127.0.0.1` |
 | Console | React 19, Vite, TanStack Query, Radix primitives, React Flow |
 | Durable execution | Restate SDK, with the Restate server acquired as an external pinned binary rather than an npm dependency |
-| Tests and lint | Vitest across 13 project scopes, ESLint with typescript-eslint, jsdom and axe-core for the console |
-| CI | GitHub Actions running the identical check a local writer runs, against a frozen lockfile |
+| Tests and lint | Vitest across 17 project scopes, ESLint with typescript-eslint, jsdom and axe-core for the console |
+| CI | GitHub Actions, against a frozen lockfile, running every stage of the local check and 15 of its 17 vitest projects — the two that need the darwin-arm64 Restate binary are named and owed (ADR 0057) |
 
 Optional integrations are the provider CLIs themselves — `claude`, `kimi` and `codex`. None is
 bundled or downloaded; each is admitted by absolute path, with ownership, permission and

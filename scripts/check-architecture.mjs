@@ -7484,6 +7484,25 @@ const V2B5R15_WRITE_SET = [
   "vitest.config.ts",
 ];
 
+/**
+ * V2-B5/R18 — CI declares the subset it can run, and owes the rest.
+ *
+ * Six paths that already sit in earlier rosters plus one new record. The
+ * workflow and the fence's own probes are publication-set paths, the vitest
+ * topology is P1B-shared, and `README.md` joins because R18 makes one of its
+ * sentences false and this repository does not leave a tracked falsehood
+ * standing while writing a law about tracked falsehoods.
+ */
+const V2B5R18_WRITE_SET = [
+  "docs/architecture/0057-ci-runs-the-gate-it-can-run-and-owes-the-rest.md",
+  ".github/workflows/ci.yml",
+  "vitest.config.ts",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/index.md",
+  "README.md",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7651,6 +7670,7 @@ const WRITE_SET = [
   ...V2B5R9B_WRITE_SET,
   ...V2B5R11_WRITE_SET,
   ...V2B5R15_WRITE_SET,
+  ...V2B5R18_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -9708,6 +9728,252 @@ function tableDisagreement(mine, theirs) {
           );
         }
       }
+    }
+  }
+}
+
+/**
+ * L-R18-1: the subset CI declares is the subset CI runs, and it is computed.
+ *
+ * The workflow used to promise it ran the same gate a local writer runs. On
+ * `ubuntu-latest` that was false, and invisibly so: `pnpm check` runs every
+ * vitest project, two of them need the pinned Restate server, and the pin
+ * describes darwin-arm64 alone. Those suites assert availability and fail
+ * rather than skip — deliberately, so a green suite can never be mistaken for a
+ * green adoption decision — so the runner could only ever have been red.
+ *
+ * R18's answer is to name the runnable subset in the workflow. That choice has a
+ * failure direction, and it is the wrong one by default: under a positive list a
+ * project added later to `vitest.config.ts` is simply never run in CI, and
+ * nothing says so. Exclusion by `--project '!name'` would have failed the other
+ * way, but it does not work — vitest 3.2.4 compiles a negation to a negative
+ * lookahead and combines filters with `.some()`, so two negations union into a
+ * tautology that readmits both projects. Measured against the pinned dist, not
+ * inferred.
+ *
+ * So the fail-closed direction is bought here instead. This law parses the
+ * project names out of `vitest.config.ts`, subtracts the two that are OWED, and
+ * compares the result against the workflow's enumeration **in both
+ * directions**: an expected project missing from CI, an OWED project present in
+ * CI, and a name in CI that the config does not define are each a failure that
+ * says which side moved. CI runs this fence as the first line of its own gate
+ * step, so the check binds on the runner as well as locally.
+ *
+ * It also pins the two shapes the arrangement rests on: the workflow's steps,
+ * so a step cannot be added that quietly does the acquisition Option B was
+ * deferred for, and the `durability-server` split, so the two server-bound trees
+ * cannot drift back into the project CI does run.
+ */
+const CI_WORKFLOW_PATH = ".github/workflows/ci.yml";
+const VITEST_TOPOLOGY_PATH = "vitest.config.ts";
+
+/** The projects CI owes rather than runs, and why each one cannot run there. */
+const CI_OWED_PROJECTS = Object.freeze(["durability-server", "daemon"]);
+
+/** The job's steps, in order. A seventh step doing acquisition is the thing to catch. */
+const CI_PINNED_STEPS = Object.freeze([
+  "Checkout",
+  "Set up pnpm",
+  "Set up Node",
+  "Report toolchain",
+  "Install dependencies",
+  "Arm the mechanical Git fence",
+  "Check",
+]);
+
+/** The two trees whose assertions require the pinned binary, split out by R18. */
+const DURABILITY_SERVER_GLOBS = Object.freeze([
+  "test/lifecycle-operation/**/*.test.ts",
+  "test/drivers/drills/**/*.test.ts",
+]);
+
+{
+  const workflow = readIfPresent(CI_WORKFLOW_PATH);
+  const topology = readIfPresent(VITEST_TOPOLOGY_PATH);
+
+  if (workflow === null) {
+    fail(CI_WORKFLOW_PATH + " is missing; L-R18-1 has no declared subset to check");
+  } else if (topology === null) {
+    fail(VITEST_TOPOLOGY_PATH + " is missing; L-R18-1 has no project set to compute from");
+  } else {
+    let disagreements = 0;
+
+    // The steps, in order and exactly. Acquisition in CI is Option B, which is
+    // POST_AUDIT_FOLLOW_UP, and it would arrive as an eighth step here.
+    const steps = [...workflow.matchAll(/^ *- name: (.+)$/gm)].map((match) => match[1].trim());
+    if (steps.length !== CI_PINNED_STEPS.length || steps.some((step, index) => step !== CI_PINNED_STEPS[index])) {
+      fail(
+        "the CI job's steps must be exactly " +
+          CI_PINNED_STEPS.join(" → ") +
+          "; they are " +
+          (steps.length === 0 ? "unreadable" : steps.join(" → ")),
+      );
+      disagreements += 1;
+    }
+
+    // The set the config defines, which is the only authority on what exists.
+    // The workflow is read for what it *runs*: the comment above the gate step
+    // discusses `--project` in order to explain why the list is positive, and a
+    // law that counted prose would be checking the explanation rather than the
+    // command.
+    const commands = workflow
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    const defined = [...topology.matchAll(/^ +name: '([^']+)',$/gm)].map((match) => match[1]);
+    const declared = [...commands.matchAll(/--project ([A-Za-z0-9_-]+)/g)].map((match) => match[1]);
+
+    if (defined.length === 0) {
+      fail(VITEST_TOPOLOGY_PATH + " declares no readable project names; L-R18-1 has nothing to compute");
+      disagreements += 1;
+    } else if (declared.length === 0) {
+      fail(CI_WORKFLOW_PATH + " declares no vitest projects; L-R18-1 has nothing to compare against");
+      disagreements += 1;
+    } else {
+      const expected = defined.filter((name) => !CI_OWED_PROJECTS.includes(name));
+
+      // Direction one: everything the config defines and CI can run is named.
+      // This is the arm the positive list would otherwise have failed open on.
+      const missing = expected.filter((name) => !declared.includes(name));
+      if (missing.length > 0) {
+        fail(
+          "the CI subset omits vitest project(s) the topology defines: " +
+            missing.join(", ") +
+            "; a project added to " +
+            VITEST_TOPOLOGY_PATH +
+            " must be added to " +
+            CI_WORKFLOW_PATH +
+            " or declared OWED",
+        );
+        disagreements += 1;
+      }
+
+      // Direction two: nothing OWED is quietly run, and nothing is named that
+      // does not exist. A stale name would select nothing and prove nothing.
+      const owedButDeclared = declared.filter((name) => CI_OWED_PROJECTS.includes(name));
+      if (owedButDeclared.length > 0) {
+        fail(
+          "the CI subset names project(s) that are OWED, not runnable on the runner: " +
+            owedButDeclared.join(", "),
+        );
+        disagreements += 1;
+      }
+      const unknown = declared.filter((name) => !defined.includes(name));
+      if (unknown.length > 0) {
+        fail(
+          "the CI subset names vitest project(s) " +
+            VITEST_TOPOLOGY_PATH +
+            " does not define: " +
+            unknown.join(", "),
+        );
+        disagreements += 1;
+      }
+
+      // And the split itself. `durability-server` carries both server-bound
+      // trees and the port-binding group; `durability` keeps neither, which is
+      // what lets CI run it.
+      const serverIndex = topology.indexOf("name: 'durability-server',");
+      if (serverIndex === -1) {
+        fail(
+          VITEST_TOPOLOGY_PATH +
+            " no longer defines the durability-server project; it is the half CI owes and must stay nameable",
+        );
+        disagreements += 1;
+      } else {
+        const nextName = topology.indexOf("name: '", serverIndex + 1);
+        const block = topology.slice(serverIndex, nextName === -1 ? topology.length : nextName);
+        for (const glob of DURABILITY_SERVER_GLOBS) {
+          if (block.includes("'" + glob + "'")) continue;
+          fail(
+            "the durability-server project no longer includes " +
+              glob +
+              "; both server-bound trees belong to the project CI excludes",
+          );
+          disagreements += 1;
+        }
+        if (!block.includes("sequence: { groupOrder: 3 }")) {
+          fail("the durability-server project must keep groupOrder 3; it binds the pinned ports");
+          disagreements += 1;
+        }
+      }
+
+      const hermeticIndex = topology.indexOf("name: 'durability',");
+      if (hermeticIndex === -1) {
+        fail(VITEST_TOPOLOGY_PATH + " no longer defines the durability project; CI runs it by name");
+        disagreements += 1;
+      } else {
+        const nextName = topology.indexOf("name: '", hermeticIndex + 1);
+        const block = topology.slice(hermeticIndex, nextName === -1 ? topology.length : nextName);
+        for (const glob of DURABILITY_SERVER_GLOBS) {
+          if (!block.includes("'" + glob + "'")) continue;
+          fail(
+            "the durability project includes " +
+              glob +
+              ", which needs the pinned server; CI runs this project and cannot",
+          );
+          disagreements += 1;
+        }
+        if (block.includes("groupOrder")) {
+          fail(
+            "the durability project declares a groupOrder; the hermetic half binds no port and belongs in group 0",
+          );
+          disagreements += 1;
+        }
+      }
+
+      if (disagreements === 0) {
+        notes.push(
+          "the CI subset is exactly the " +
+            expected.length +
+            " vitest projects the runner can run, computed from " +
+            VITEST_TOPOLOGY_PATH +
+            " in both directions, with " +
+            CI_OWED_PROJECTS.join(" and ") +
+            " OWED",
+        );
+      }
+    }
+  }
+}
+
+/**
+ * L-R18-2: the amended clause says what is actually true.
+ *
+ * A workflow that quietly ran less than it claimed is the defect R18 closes, so
+ * the amendment cannot itself be a sentence nobody checks. These are the four
+ * things the comment has to carry to be an honest replacement: both excluded
+ * project names, the word that classifies them, the measured reason the binary
+ * is unavailable there, and where the debt is discharged. Prose around them is
+ * free; their absence is not.
+ */
+const CI_AMENDMENT_LITERALS = Object.freeze([
+  "durability-server",
+  "daemon",
+  "OWED",
+  "darwin-arm64",
+  "POST_AUDIT_FOLLOW_UP",
+]);
+
+{
+  const workflow = readIfPresent(CI_WORKFLOW_PATH);
+  if (workflow === null) {
+    fail(CI_WORKFLOW_PATH + " is missing; L-R18-2 has no amended clause to read");
+  } else {
+    const comment = workflow
+      .split("\n")
+      .filter((line) => line.trimStart().startsWith("#"))
+      .join("\n");
+    const absent = CI_AMENDMENT_LITERALS.filter((literal) => !comment.includes(literal));
+    if (absent.length > 0) {
+      fail(
+        "the CI workflow's amended clause no longer states: " +
+          absent.join(", ") +
+          "; a subset that does not name what it excludes, or why, is the promise this packet replaced",
+      );
+    } else {
+      notes.push(
+        "the CI workflow states its excluded projects, their darwin-arm64 reason and their POST_AUDIT_FOLLOW_UP destination",
+      );
     }
   }
 }
