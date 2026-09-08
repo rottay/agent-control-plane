@@ -141,10 +141,17 @@ function landingHome(root) {
  * its `✗` lines to stderr, so a probe that read stdout alone would miss exactly
  * the lines it exists to assert. No timeout is imposed here, as none was before;
  * vitest's own per-test timeout remains the only bound.
+ *
+ * `fenceScript` defaults to the real fence and is overridden by exactly one
+ * caller: the roadmap probe below, which needs a fence whose roadmap digest pin
+ * matches the fixture's own roadmap rather than this repository's. The override
+ * is a path, not a behaviour flag -- the copy it points at is byte-identical to
+ * `FENCE` apart from that one constant, and `fenceRepinnedTo` refuses to produce
+ * it if the substitution did not happen.
  */
-function runFenceAgainst(root) {
+function runFenceAgainst(root, fenceScript = FENCE) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [FENCE], {
+    const child = spawn(process.execPath, [fenceScript], {
       env: { ...process.env, ACP_FENCE_ROOT: root },
     });
 
@@ -3637,5 +3644,307 @@ describe("the gate's evidence binds to code, never to comments (old-V2 R19b)", (
         '", which that file does not state',
     );
     expect(after.output).toContain("V2_BACKEND_CERTIFIED withheld");
+  });
+});
+
+/**
+ * The adoption laws, drilled against synthetic trees rather than this checkout
+ * (P-01).
+ *
+ * These six cases arrived from `packages/entrypoints/daemon/test/launchd/
+ * drills/index.test.ts`, where each one edited a **tracked file of the live
+ * repository**, ran the fence, and restored the file in a `finally`. Five
+ * mutated the tree — one of them `docs/ROADMAP.md` and the fence itself — and
+ * the sixth asserted the fence passed over the working tree as it stood. That
+ * is a window in which a crash or a concurrent writer loses somebody else's
+ * work, and it is why the full suite could not be run at all.
+ *
+ * Two things changed with the move, and both are the point.
+ *
+ * **The tree is synthetic.** Everything below writes only into `mkdtemp`
+ * directories this file removes in teardown, so a failing probe cannot damage
+ * the repository and the suite no longer has to be kept away from it.
+ *
+ * **The assertion is a diagnostic, not an exit code.** The old drills asserted
+ * `status !== 0`, which a minimal synthetic tree produces for dozens of reasons
+ * that have nothing to do with the law under test — a fence that exited 1
+ * because a template was missing would have satisfied every one of them. Each
+ * negative here asserts the **exact** refusal line and the offending path; the
+ * positive control asserts the **absence** of those same lines on a tree the
+ * fixture makes lawful. Neither direction reads the global exit code, because
+ * on a fixture this small the global exit code carries no information.
+ *
+ * What is deliberately **not** here is the sixth drill's old claim — that the
+ * real fence passes over the live checkout. That property is not a test's to
+ * assert while the tree is anyone's to edit, and today it is simply false: the
+ * repository is mid-packet with a documentation bridge open. It belongs to
+ * `pnpm check`, which is where it always ran for real.
+ *
+ * The two forbidden tokens are assembled from pieces rather than written out,
+ * for the reason the daemon drills give: the fence refuses the bare literals in
+ * code, and this file is tracked code like any other. A probe exempted from the
+ * law it probes is an exemption that quietly becomes the rule.
+ */
+
+/** The load command, never written literally in this file. */
+const LOAD_COMMAND = ["launch", "ctl"].join("");
+/** The user agent directory, never written literally in this file. */
+const AGENT_DIR = ["Launch", "Agents"].join("");
+/** The one file permitted to name the agent directory, as a denylist entry. */
+const DENYLIST_FILE = "packages/entrypoints/daemon/src/launchd/validate/index.ts";
+
+const FENCE_SOURCE = readFileSync(FENCE, "utf8");
+
+/**
+ * A constant read out of the fence, rather than restated here.
+ *
+ * The roadmap fixture has to satisfy the structural statements the fence
+ * requires before the forbidden-literal law can be the only thing left to
+ * object. Hard-coding those statements would rot silently: when the fence's own
+ * literals moved, the benign control would start failing on a statement this
+ * probe is not about, while the cutover assertions kept passing — a fixture
+ * that had stopped isolating anything and could not say so.
+ *
+ * There is a second, harder reason. One of the required literals names the
+ * product environment, and the fence refuses that token in any tracked file
+ * that is not on its authority list. A fixture that spelled the literals out
+ * would fail the repository's own gate on this very file. Reading them at run
+ * time is the only form that is both durable and lawful.
+ */
+function fromFence(pattern, what) {
+  const found = pattern.exec(FENCE_SOURCE);
+  if (found === null || found[1] === undefined) {
+    throw new Error("the fence no longer declares " + what + " in the expected shape");
+  }
+  return found[1];
+}
+
+/** Every double-quoted string in a declaration block, in source order. */
+function quotedStrings(block) {
+  return [...block.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => JSON.parse('"' + match[1] + '"'));
+}
+
+const ROADMAP_PIN = fromFence(
+  /const ROADMAP_SHA256 =\s*\n?\s*"([0-9a-f]{64})";/,
+  "ROADMAP_SHA256",
+);
+const ROADMAP_STATUS_LINE = JSON.parse(
+  fromFence(
+    /const ROADMAP_STATUS_LITERAL =\s*\n?\s*("(?:[^"\\]|\\.)*");/,
+    "ROADMAP_STATUS_LITERAL",
+  ),
+);
+const ROADMAP_REQUIRED = quotedStrings(
+  fromFence(/const ROADMAP_LITERALS = \[([\s\S]*?)\n\];/, "ROADMAP_LITERALS"),
+);
+
+/** The claim the roadmap may never make. Owner authority at P9, and nobody else's. */
+const CUTOVER_CLAIM = "PRODUCT_CUTOVER_AUTHORIZED";
+
+/** A synthetic roadmap that makes every structural statement the fence requires. */
+function roadmapText(extraLines) {
+  return [
+    "# Synthetic roadmap (fixture)",
+    "",
+    ROADMAP_STATUS_LINE,
+    "",
+    ...ROADMAP_REQUIRED.map((literal) => "- " + literal),
+    ...(extraLines ?? []),
+    "",
+  ].join("\n");
+}
+
+/**
+ * A copy of the fence whose roadmap digest pin the fixture owns.
+ *
+ * This is what keeps the roadmap probe attributable, and it is the one place a
+ * probe here does not run `FENCE` itself. Any edit to a roadmap changes its
+ * digest, so the digest gate would refuse the fixture's roadmap on sight and a
+ * refusal would prove nothing about the literal law. Moving the pin to match
+ * the fixture's own roadmap satisfies the digest gate, leaving the literal law
+ * as the only gate that can still object — which the benign control below
+ * demonstrates rather than assumes.
+ *
+ * The copy differs from `FENCE` in exactly one 64-character constant, and the
+ * substitution is verified rather than trusted: the pin appears once, and a
+ * replace that changed nothing throws instead of silently producing a fence
+ * that still pins this repository's roadmap. `roots.mjs` travels beside it
+ * because the fence imports it by relative path; it is copied byte-for-byte.
+ *
+ * The predecessor did all of this to `scripts/check-architecture.mjs` **in the
+ * working tree**, under a `finally`. Same technique, same causal claim, no
+ * tracked file touched.
+ */
+function fenceRepinnedTo(digest) {
+  const dir = mkdtempSync(join(tmpdir(), "acp-fence-repin-"));
+  roots.push(dir);
+  const repinned = FENCE_SOURCE.replace(ROADMAP_PIN, digest);
+  if (repinned === FENCE_SOURCE) {
+    throw new Error("the roadmap pin was not substituted; the fence copy would pin the real tree");
+  }
+  mkdirSync(join(dir, "architecture"), { recursive: true });
+  writeFileSync(join(dir, "check-architecture.mjs"), repinned, "utf8");
+  writeFileSync(
+    join(dir, "architecture", "roots.mjs"),
+    readFileSync(join(HERE, "roots.mjs"), "utf8"),
+    "utf8",
+  );
+  return join(dir, "check-architecture.mjs");
+}
+
+/** A tree carrying a complete synthetic roadmap, and the fence that pins it. */
+function treeWithRoadmap(extraLines) {
+  const root = syntheticTree();
+  landingHome(root);
+  const text = roadmapText(extraLines);
+  write(root, "docs/ROADMAP.md", text);
+  commitAll(root);
+  return { root, fence: fenceRepinnedTo(createHash("sha256").update(text, "utf8").digest("hex")) };
+}
+
+/** The denylist reader as it is lawfully allowed to look: the token, once, as an entry. */
+function lawfulDenylist() {
+  return [
+    "export const HOST_SPECIFIC_LITERALS = [",
+    '  "/Users/",',
+    '  "' + AGENT_DIR + '",',
+    "];",
+    "",
+  ].join("\n");
+}
+
+/** The exact refusals these six cases exist to observe. */
+const REFUSALS = {
+  loadCommand: " names " + LOAD_COMMAND + " in code; only the lifecycle drill may drive launchd",
+  agentDirectory: " names the user agent directory in code; nothing may write there",
+  nodeImport: DENYLIST_FILE + " must import nothing from node:; it is a pure reader",
+  secondMention: DENYLIST_FILE + " names the user agent directory more than once",
+  cutover:
+    "docs/ROADMAP.md claims " +
+    CUTOVER_CLAIM +
+    ", which overstates what has actually been delivered",
+};
+
+describe("adoption stays impossible, proved without writing this checkout (P-01)", () => {
+  it("refuses the load command appearing in code", async () => {
+    // Was: a mutation of `daemon/src/launchd/render/index.ts` in the live tree.
+    // The verb is a permitted one, so the persisting-verb law stays out of the
+    // way and the bare-token law is the only one this can be refused by.
+    const offender = "packages/entrypoints/probe/src/index.ts";
+    const root = syntheticTree();
+    landingHome(root);
+    write(root, offender, 'export const NOTE = "' + LOAD_COMMAND + ' bootstrap";\n');
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain(offender + REFUSALS.loadCommand);
+  });
+
+  it("refuses the agent directory appearing in test code", async () => {
+    // Was: a mutation of `daemon/test/launchd/render/index.test.ts` in the live
+    // tree. Test files used to be skipped wholesale by this scan, which made
+    // the rule advisory for exactly the files most likely to reach for the
+    // token, so the fixture is deliberately a test file.
+    const offender = "packages/entrypoints/probe/test/index.test.ts";
+    const root = syntheticTree();
+    landingHome(root);
+    write(root, offender, 'export const TARGET = "~/Library/' + AGENT_DIR + '";\n');
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain(offender + REFUSALS.agentDirectory);
+  });
+
+  it("refuses a node import in the pure denylist reader", async () => {
+    // Was: a mutation of `daemon/src/launchd/validate/index.ts` in the live
+    // tree. The file keeps its single lawful mention, so the count and the
+    // denylist-shape checks both pass and the import law is what refuses.
+    const root = syntheticTree();
+    landingHome(root);
+    write(
+      root,
+      DENYLIST_FILE,
+      'import { readFileSync } from "node:fs";\n' + lawfulDenylist() + "export const read = readFileSync;\n",
+    );
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain(REFUSALS.nodeImport);
+  });
+
+  it("refuses a second mention of the agent directory in the denylist reader", async () => {
+    // Was: a second mutation of the same live file. The exemption is one
+    // occurrence, and it is written that narrowly on purpose: a reader allowed
+    // to name the directory twice is a reader that could name it as a target.
+    const root = syntheticTree();
+    landingHome(root);
+    write(root, DENYLIST_FILE, 'const EXTRA = "' + AGENT_DIR + '";\n' + lawfulDenylist() + "export const extra = EXTRA;\n");
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain(REFUSALS.secondMention);
+  });
+
+  it("refuses a roadmap that claims cutover authority, with the digest gate satisfied", async () => {
+    // Was: an edit to `docs/ROADMAP.md` AND to `scripts/check-architecture.mjs`
+    // in the live tree, nested two deep and restored in two `finally` blocks.
+    // The causal structure is preserved exactly; only the tree is synthetic.
+    //
+    // The control comes first and is what gives the case its meaning: with the
+    // pin moved to the fixture's own roadmap, the digest gate is green and the
+    // roadmap section raises nothing at all. So when the claiming variant is
+    // refused, the forbidden-literal law is demonstrably the only gate left.
+    const benign = treeWithRoadmap([]);
+    const control = await runFenceAgainst(benign.root, benign.fence);
+    expect(control.output).toContain("docs/ROADMAP.md matches its pinned digest");
+    expect(control.output).not.toContain(REFUSALS.cutover);
+    expect(control.output).not.toContain("docs/ROADMAP.md no longer states");
+
+    // Appended rather than substituted. Replacing the status line's
+    // NO_PRODUCT_CUTOVER also destroys a required structural statement, so the
+    // fence refuses on that instead and the law under test is never reached —
+    // the predecessor wrote that version first and recorded the trap.
+    const claiming = treeWithRoadmap([CUTOVER_CLAIM]);
+    const refused = await runFenceAgainst(claiming.root, claiming.fence);
+    expect(refused.output).toContain("docs/ROADMAP.md matches its pinned digest");
+    expect(refused.output).toContain(REFUSALS.cutover);
+
+    // The substituting shape is refused as well. In the live tree this could
+    // only be asserted as a bare non-zero exit, because the edit tripped the
+    // structural statements too; here the specific line is still assertable.
+    const substituted = roadmapText([]).replace("NO_PRODUCT_CUTOVER", CUTOVER_CLAIM);
+    expect(substituted).not.toBe(roadmapText([]));
+    const root = syntheticTree();
+    landingHome(root);
+    write(root, "docs/ROADMAP.md", substituted);
+    commitAll(root);
+    const fence = fenceRepinnedTo(createHash("sha256").update(substituted, "utf8").digest("hex"));
+    const also = await runFenceAgainst(root, fence);
+    expect(also.output).toContain(REFUSALS.cutover);
+  });
+
+  it("leaves all five alone on a tree the fixture makes lawful", async () => {
+    // Was: "passes with no mutation at all", which ran the real fence over this
+    // repository and asserted exit 0 — a global claim about a tree the test did
+    // not own, made by a file whose other cases were editing it.
+    //
+    // The honest successor is a positive control for the five laws above, on
+    // one tree that satisfies all of them at once: the roadmap is complete and
+    // its digest is pinned, the denylist reader names the directory exactly
+    // once as an entry and imports nothing, and no file names the load command.
+    // Five absences, each the exact line its negative asserts. The global exit
+    // code is not read, because a fixture this small owes no other law.
+    const { root, fence } = treeWithRoadmap([]);
+    write(root, DENYLIST_FILE, lawfulDenylist());
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root, fence);
+
+    expect(output).toContain("docs/ROADMAP.md matches its pinned digest");
+    expect(output).not.toContain(REFUSALS.loadCommand);
+    expect(output).not.toContain(REFUSALS.agentDirectory);
+    expect(output).not.toContain(REFUSALS.nodeImport);
+    expect(output).not.toContain(REFUSALS.secondMention);
+    expect(output).not.toContain(REFUSALS.cutover);
   });
 });

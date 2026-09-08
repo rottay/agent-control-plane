@@ -55,7 +55,6 @@ const AGENT_DIR = ["Launch", "Agents"].join("");
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const PACKAGE_ROOT = resolve(HERE, "..", "..", "..");
-const REPO_ROOT = resolve(PACKAGE_ROOT, "..", "..", "..");
 const TEMPLATE = readFileSync(TEMPLATE_PATH, "utf8");
 
 const temporaries: string[] = [];
@@ -443,143 +442,32 @@ describe("purity", () => {
 // L12, L13
 describe("adoption is impossible from here", () => {
   /**
-   * Mutation drills against the real fence.
+   * The mutation drills moved out in P-01, and this note records where and why.
    *
-   * A fence nobody has seen fail is a fence nobody has tested. These edit a
-   * tracked file, run `check-architecture.mjs` for real, assert it refuses, and
-   * restore the file in `finally` — with the digest checked afterwards, so a
-   * failure inside the drill cannot leave the tree quietly modified.
+   * Six cases used to live here. Five edited a **tracked file of this
+   * repository** — one of them `docs/ROADMAP.md` and the architecture fence
+   * itself — ran the fence for real, asserted a non-zero exit, and restored the
+   * file in a `finally`. A sixth asserted the fence passed over the working tree
+   * as it stood. The restore was careful and digest-checked, and it was still
+   * the wrong shape: for the length of each drill the live checkout was
+   * modified, so a crash or a concurrent writer would have destroyed work that
+   * was not this suite's to risk. That hazard is why the full suite could not
+   * be run.
    *
-   * Nothing here runs the load command or writes to the agent directory. The
-   * mutation is text in a source file; the fence's reaction is the evidence.
+   * They now run in `scripts/architecture/roots.test.mjs`, against synthetic
+   * trees under the helper that already existed for exactly this, and they
+   * assert the **exact refusal line** rather than a non-zero exit — a minimal
+   * tree exits non-zero for many reasons, so the old assertion could not tell
+   * the law under test from an unrelated one.
+   *
+   * The sixth case has no successor here, deliberately. "The fence passes over
+   * this checkout" is a claim about a tree no test owns, and a file that
+   * asserted it while its neighbours mutated that same tree was measuring its
+   * own interference. `pnpm check` is where that property is established, which
+   * is where it was always actually established.
+   *
+   * What stays below reads this package and writes nothing.
    */
-  function withMutation(relativePath: string, mutate: (source: string) => string): number {
-    const absolute = join(REPO_ROOT, relativePath);
-    const original = readFileSync(absolute, "utf8");
-    const digestBefore = createHash("sha256").update(original).digest("hex");
-    try {
-      const mutated = mutate(original);
-      expect(mutated).not.toBe(original);
-      writeFileSync(absolute, mutated, "utf8");
-      return spawnSync(process.execPath, [join(REPO_ROOT, "scripts", "check-architecture.mjs")], {
-        encoding: "utf8",
-      }).status ?? -1;
-    } finally {
-      writeFileSync(absolute, original, "utf8");
-      const digestAfter = createHash("sha256")
-        .update(readFileSync(absolute, "utf8"))
-        .digest("hex");
-      expect(digestAfter).toBe(digestBefore);
-    }
-  }
-
-  it("the fence refuses the load command appearing in code", () => {
-    const status = withMutation("packages/entrypoints/daemon/src/launchd/render/index.ts", (source) =>
-      source.replace(
-        "export const TEMPLATE_NAME",
-        "const NOTE = \"" + LOAD_COMMAND + " bootstrap\";\nexport const TEMPLATE_NAME",
-      ),
-    );
-    expect(status).not.toBe(0);
-  });
-
-  it("the fence refuses the agent directory appearing in test code", () => {
-    // Test files used to be skipped wholesale by this scan, which made the
-    // rule advisory for exactly the files most likely to reach for the token.
-    const status = withMutation("packages/entrypoints/daemon/test/launchd/render/index.test.ts", (source) =>
-      source.replace(
-        "const TEMPLATE = ",
-        "const TARGET = \"~/Library/" + AGENT_DIR + "\";\nconst TEMPLATE = ",
-      ),
-    );
-    expect(status).not.toBe(0);
-  });
-
-  it("the fence refuses a node import in the pure denylist reader", () => {
-    const status = withMutation("packages/entrypoints/daemon/src/launchd/validate/index.ts", (source) =>
-      "import { readFileSync } from \"node:fs\";\n" + source,
-    );
-    expect(status).not.toBe(0);
-  });
-
-  it("the fence refuses a second mention of the agent directory in the denylist reader", () => {
-    const status = withMutation("packages/entrypoints/daemon/src/launchd/validate/index.ts", (source) =>
-      source.replace(
-        "export const HOST_SPECIFIC_LITERALS",
-        "const EXTRA = \"" + AGENT_DIR + "\";\nexport const HOST_SPECIFIC_LITERALS",
-      ),
-    );
-    expect(status).not.toBe(0);
-  });
-
-  it("the fence refuses a roadmap that claims cutover authority", () => {
-    // Migrated in P2F Stage B. This drill used to flip P2_IN_PROGRESS to
-    // P2_COMPLETE — an invariant that expired the moment P2 legitimately
-    // closed, at which point the replace became a no-op and the harness guard
-    // caught it. The cutover literals are the enduring form of the same law:
-    // no phase status may assert cutover authority, which is the owner's at P9
-    // and nobody else's, so they never leave the forbidden list.
-    //
-    // Attribution is the point here. Any edit to the roadmap changes its
-    // digest, and the digest gate would refuse on its own — so a bare non-zero
-    // exit would prove nothing about the literal gate. The pin is therefore
-    // moved to match the edited roadmap, which satisfies the digest gate and
-    // leaves the literal gate as the only thing that can still object. The
-    // control below shows that re-pinning really does neutralize the digest
-    // gate; the case then shows the claim is refused anyway.
-    const roadmapAbsolute = join(REPO_ROOT, "docs", "ROADMAP.md");
-    const original = readFileSync(roadmapAbsolute, "utf8");
-    const originalDigest = createHash("sha256").update(original).digest("hex");
-    const digestOf = (text: string): string =>
-      createHash("sha256").update(text).digest("hex");
-
-    // Control: changes the digest, claims nothing.
-    const benign = original + "\n";
-    // Case: changes the digest and claims cutover authority, while leaving the
-    // exact status line and NO_PRODUCT_CUTOVER intact.
-    //
-    // Appended rather than substituted, deliberately. Replacing
-    // NO_PRODUCT_CUTOVER with PRODUCT_CUTOVER_AUTHORIZED also destroys the
-    // exact status literal and removes a required structural statement, so the
-    // fence refuses on those instead and the forbidden-literal gate is never
-    // reached. That version was written first and observed to pass with
-    // PRODUCT_CUTOVER_AUTHORIZED deleted from the forbidden list — a negative
-    // that could not fail for its stated reason. Appending isolates the gate
-    // under test.
-    const claiming = original + "\nPRODUCT_CUTOVER_AUTHORIZED\n";
-    // The substituting form is still exercised, for the shape the DT named; it
-    // is refused too, just not attributably.
-    const substituting = original.replace("NO_PRODUCT_CUTOVER", "PRODUCT_CUTOVER_AUTHORIZED");
-    expect(substituting).not.toBe(original);
-
-    const runWithRoadmap = (variant: string): number => {
-      try {
-        writeFileSync(roadmapAbsolute, variant, "utf8");
-        return withMutation("scripts/check-architecture.mjs", (fence) =>
-          fence.replace(originalDigest, digestOf(variant)),
-        );
-      } finally {
-        writeFileSync(roadmapAbsolute, original, "utf8");
-        expect(digestOf(readFileSync(roadmapAbsolute, "utf8"))).toBe(originalDigest);
-      }
-    };
-
-    // The digest gate is satisfied by the re-pin, so this passes. This is what
-    // makes the next assertion mean something.
-    expect(runWithRoadmap(benign)).toBe(0);
-    // Same treatment, status line and structural statements untouched, and it
-    // is still refused: the forbidden-literal gate is the only one left.
-    expect(runWithRoadmap(claiming)).not.toBe(0);
-    // And the substituting shape is refused as well.
-    expect(runWithRoadmap(substituting)).not.toBe(0);
-  });
-
-  it("passes with no mutation at all", () => {
-    const status = spawnSync(process.execPath, [join(REPO_ROOT, "scripts", "check-architecture.mjs")], {
-      encoding: "utf8",
-    }).status;
-    expect(status).toBe(0);
-  });
 
   it("no source in this package invokes the load command", () => {
     const roots = [join(PACKAGE_ROOT, "src"), join(PACKAGE_ROOT, "launchd")];
