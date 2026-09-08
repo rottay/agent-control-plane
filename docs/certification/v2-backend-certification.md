@@ -64,12 +64,24 @@ file must still contain the anchor. The comparison is whitespace-normalised and
 case-insensitive, so a reflowed paragraph does not break a citation, but a
 renamed suite does.
 
+**In a code file the anchor must be in the code.** Comments are removed before
+the comparison, so a `describe` title, a refusal string, a computed note or a
+declaration satisfies a pointer and a docblock never does. This is not a detail
+of the comparison; it is what makes the sentence at the top of this page true.
+A law in the fence is a block of code under a header comment that names it, and
+until R19b six of the rows below quoted the comment. Deleting such a law
+entirely, header left standing, was measured to leave this gate green and still
+printing "39 resolving pointers" — so the six were re-anchored to literals the
+laws themselves compute, and prose stopped counting as evidence. `.md` and
+`.json` sources are still read whole, because in those the prose or the key is
+the content rather than a description of it. ADR 0059 records the finding.
+
 | Criterion | Path | Anchor |
 | --- | --- | --- |
 | `BE-1-SERVICE-INDEPENDENCE` | `packages/entrypoints/daemon/test/fallback/index.test.ts` | `the runtime fallback gate: SQLite mode operates with Restate disabled` |
 | `BE-1-SERVICE-INDEPENDENCE` | `packages/entrypoints/daemon/test/fallback/index.test.ts` | `P8-6-FALLBACK-GATE` |
 | `BE-1-SERVICE-INDEPENDENCE` | `packages/edges/durability/test/drivers/drills/index.test.ts` | `D4 server unavailable fails closed and never fails over on its own` |
-| `BE-1-SERVICE-INDEPENDENCE` | `scripts/check-architecture.mjs` | `the P8-6 fallback gate: SQLite operating with Restate disabled` |
+| `BE-1-SERVICE-INDEPENDENCE` | `packages/entrypoints/daemon/test/fallback/index.test.ts` | `checkpoints a toy scenario over SQLITE_SUPERVISOR with the full plan trail, the pinned Restate ports unbound throughout` |
 | `BE-1-SERVICE-INDEPENDENCE` | `scripts/check-architecture.mjs` | `no production source names the telemetry edge` |
 | `BE-1-SERVICE-INDEPENDENCE` | `scripts/check-architecture.mjs` | `ROOT_DEV_DEPENDENCIES` |
 | `BE-1-SERVICE-INDEPENDENCE` | `packages/edges/tools/src/port/index.ts` | `ToolProtocolPort` |
@@ -77,20 +89,20 @@ renamed suite does.
 | `BE-2-DOOR-EQUIVALENCE` | `packages/entrypoints/gateway/test/parity/index.test.ts` | `ledger, CLI and UI agree, route by route` |
 | `BE-2-DOOR-EQUIVALENCE` | `packages/entrypoints/gateway/test/parity/index.test.ts` | `agrees on taskById and workerByIdentity` |
 | `BE-2-DOOR-EQUIVALENCE` | `packages/entrypoints/gateway/test/parity/index.test.ts` | `agrees on taskToolCalls, with the CLI folding the ledger itself` |
-| `BE-2-DOOR-EQUIVALENCE` | `scripts/check-architecture.mjs` | `the API reference is a bijection with API_ROUTES` |
-| `BE-2-DOOR-EQUIVALENCE` | `scripts/check-architecture.mjs` | `Old-V2 B-E, R1b: every API error code is answered by name` |
+| `BE-2-DOOR-EQUIVALENCE` | `scripts/check-architecture.mjs` | `API_ROUTES parsed as empty; the API reference law would pass vacuously` |
+| `BE-2-DOOR-EQUIVALENCE` | `scripts/check-architecture.mjs` | `API error codes answered by name at both doors, agreeing between the CLI's EXIT_BY_CODE and the gateway's STATUS_BY_CODE both ways` |
 | `BE-2-DOOR-EQUIVALENCE` | `packages/entrypoints/gateway/src/errors/index.ts` | `STATUS_BY_CODE` |
 | `BE-2-DOOR-EQUIVALENCE` | `packages/entrypoints/cli/src/cli/index.ts` | `EXIT_BY_CODE` |
 | `BE-3-KILL-WITHOUT-DUPLICATION` | `packages/edges/durability/test/drivers/drills/index.test.ts` | `recovers from a SIGKILL` |
 | `BE-3-KILL-WITHOUT-DUPLICATION` | `packages/entrypoints/daemon/test/drills/execution/index.test.ts` | `a restart over the real adapter performs no second execution` |
-| `BE-3-KILL-WITHOUT-DUPLICATION` | `packages/domains/runtime/src/submission/index.ts` | `the colliding append fails closed on` |
+| `BE-3-KILL-WITHOUT-DUPLICATION` | `packages/domains/runtime/src/submission/index.ts` | `deriveInvocation` |
 | `BE-3-KILL-WITHOUT-DUPLICATION` | `packages/persistence/ledger/src/errors/index.ts` | `LEDGER_IDEMPOTENCY_CONFLICT` |
 | `BE-3-KILL-WITHOUT-DUPLICATION` | `packages/domains/runtime/test/submission/index.test.ts` | `LEDGER_IDEMPOTENCY_CONFLICT` |
 | `BE-3-KILL-WITHOUT-DUPLICATION` | `packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts` | `kill and restart, 3/3` |
 | `BE-4-RESUMABLE-STREAM` | `packages/entrypoints/gateway/test/stream/index.test.ts` | `a reconnect loses nothing and repeats nothing` |
 | `BE-4-RESUMABLE-STREAM` | `packages/entrypoints/gateway/test/stream/index.test.ts` | `a resumed connection is told which ledger it resumed into` |
 | `BE-4-RESUMABLE-STREAM` | `packages/entrypoints/gateway/test/stream/index.test.ts` | `a malformed anchor is refused before anything is hijacked` |
-| `BE-4-RESUMABLE-STREAM` | `scripts/check-architecture.mjs` | `is a bare decimal sequence and cannot be widened` |
+| `BE-4-RESUMABLE-STREAM` | `scripts/check-architecture.mjs` | `the stream has exactly one id producer, and it is String(sequence)` |
 | `BE-5-NO-PAYLOAD-ON-RECORDED-SURFACES` | `scripts/check-architecture.mjs` | `TOOLS_RECEIPT_FORBIDDEN_MEMBERS` |
 | `BE-5-NO-PAYLOAD-ON-RECORDED-SURFACES` | `packages/edges/providers/src/redact/index.ts` | `hasPrivacyViolation` |
 | `BE-5-NO-PAYLOAD-ON-RECORDED-SURFACES` | `packages/domains/observation/src/telemetry/index.ts` | `PAYLOAD_ATTRIBUTES` |
@@ -101,7 +113,7 @@ renamed suite does.
 | `BE-6-REMOTE-MCP-REFUSED` | `packages/edges/tools/test/admission/index.test.ts` | `a URL-shaped descriptor is parsed, then refused field by field` |
 | `BE-6-REMOTE-MCP-REFUSED` | `packages/edges/tools/test/admission/index.test.ts` | `the loopback leg is admitted, and the refusal finally has a sibling` |
 | `BE-7-POLICY-ONLY-MODEL-SWITCH` | `scripts/policy-version-digests.json` | `2026-09-06.1` |
-| `BE-7-POLICY-ONLY-MODEL-SWITCH` | `scripts/check-architecture.mjs` | `the pin is data, and this law is what validates it` |
+| `BE-7-POLICY-ONLY-MODEL-SWITCH` | `scripts/check-architecture.mjs` | `the policy version pin establishes no version, so it pins nothing` |
 | `BE-7-POLICY-ONLY-MODEL-SWITCH` | `packages/domains/accounts/test/policy/index.test.ts` | `a policy update changes the chosen model with no source change` |
 | `BE-7-POLICY-ONLY-MODEL-SWITCH` | `packages/domains/accounts/test/policy/index.test.ts` | `versions are immutable, and there is exactly one registry` |
 | `BE-7-POLICY-ONLY-MODEL-SWITCH` | `packages/entrypoints/daemon/test/drills/execution/index.test.ts` | `the route is resolved over the repository's real policy` |
@@ -172,7 +184,7 @@ too, so the register shrinks as the rows close.
 | `OWED-R11-PHOENIX-DRILL` | `OWED` | The collector drill needs a real subject and law 8 reserves that authorization to the owner; until one runs, the fence pins the socket and live-conformance results at NONE and the capabilities at UNKNOWN. | `OWNER_GATED` |
 | `OWED-R15-BENCHMARK-CUT` | `OWED` | No real benchmark has fed the evaluation producer and no registry version has been cut from it; restriction 5 keeps capabilities UNKNOWN until a drill with a real subject confirms one, and the owner refused the hosted runner. | `OWNER_GATED` |
 | `OWED-R18-CI-LINUX` | `OWED` | CI runs the subset its runner can run: two projects are excluded because the pinned server binary is darwin-arm64 only and their drills refuse to skip, so green-on-Linux is unproven and cannot be produced on this machine. ADR 0057 records it. | `POST_AUDIT_FOLLOW_UP` |
-| `OWED-R11B-EXPORTER-WIRING` | `OWED` | The telemetry exporter has no production caller, by a law that makes that the point; wiring the walk to it would weaken the service-independence criterion, so the reconciliation decides the wiring rather than this record. | `POST_AUDIT_FOLLOW_UP` |
+| `OWED-R11B-EXPORTER-WIRING` | `OWED` | The telemetry exporter has no production caller, by a law that makes that the point; wiring the walk to it would weaken the service-independence criterion, so the reconciliation decides the wiring rather than this record. | `RECONCILIATION` |
 | `OWED-GOVERNANCE-RECEIPTS` | `OWED` | Receipt coverage per commit belongs to the closure debrief: the evidence lives in an ignored directory, and a law may not read what a fresh clone does not have, so this gate does not attempt to compute it. | `CLOSURE_DEBRIEF` |
 
 ### R18 — what CI actually runs

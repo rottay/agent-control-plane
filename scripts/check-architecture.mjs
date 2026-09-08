@@ -7523,6 +7523,26 @@ const V2BER19_WRITE_SET = [
   "docs/architecture/index.md",
 ];
 
+/**
+ * V2-B5/R19b — the gate's evidence binds to code, never to comments.
+ *
+ * One novel path and four the R19 packet already touched. R19 landed a gate
+ * whose record says "delete a law … and the gate is red on the next run"; a
+ * re-audit falsified that sentence for six of the thirty-nine pointers by
+ * deleting a cited law's whole body, leaving its header comment in place, and
+ * watching the fence certify. The anchor check read the file whole, so prose
+ * that described a law satisfied a citation to it. This packet makes the
+ * containment comment-blind and re-anchors those six at literals the laws
+ * themselves compute, so the record's sentence is true for all thirty-nine.
+ */
+const V2BER19B_WRITE_SET = [
+  "docs/certification/v2-backend-certification.md",
+  "docs/architecture/0059-the-gates-evidence-binds-to-code.md",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/index.md",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7692,6 +7712,7 @@ const WRITE_SET = [
   ...V2B5R15_WRITE_SET,
   ...V2B5R18_WRITE_SET,
   ...V2BER19_WRITE_SET,
+  ...V2BER19B_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -22248,15 +22269,76 @@ const BE_REASON_MIN = 40;
  * Five rows, none of them a backend criterion: every one of the seven clauses
  * is proven at this commit. These are disclosures the record must carry because
  * the acceptance claim would overstate itself without them, and each is held by
- * an authority outside this packet — the owner, or the post-audit.
+ * an authority outside this packet — the owner, the post-audit, or the
+ * reconciliation.
+ *
+ * R19b moves `OWED-R11B-EXPORTER-WIRING` from `POST_AUDIT_FOLLOW_UP` to
+ * `RECONCILIATION` because its own stated reason already delegated there ("the
+ * reconciliation decides the wiring rather than this record") while its
+ * destination named a different body. The law compares the pair by name in both
+ * directions, so a row whose reason and destination disagree is a row this
+ * register can hold honestly and this repository could still read wrongly.
  */
 const BE_OWED_AUTHORIZED = Object.freeze([
   Object.freeze({ id: "OWED-R11-PHOENIX-DRILL", destination: "OWNER_GATED" }),
   Object.freeze({ id: "OWED-R15-BENCHMARK-CUT", destination: "OWNER_GATED" }),
   Object.freeze({ id: "OWED-R18-CI-LINUX", destination: "POST_AUDIT_FOLLOW_UP" }),
-  Object.freeze({ id: "OWED-R11B-EXPORTER-WIRING", destination: "POST_AUDIT_FOLLOW_UP" }),
+  Object.freeze({ id: "OWED-R11B-EXPORTER-WIRING", destination: "RECONCILIATION" }),
   Object.freeze({ id: "OWED-GOVERNANCE-RECEIPTS", destination: "CLOSURE_DEBRIEF" }),
 ]);
+
+/** Sources whose prose is commentary about the code, rather than the content. */
+const BE_CODE_EVIDENCE = /\.(?:ts|mts|js|mjs)$/;
+
+/**
+ * The part of a cited file an anchor is allowed to resolve against (R19b).
+ *
+ * **The defect this closes.** L-R19-4 used to read the cited file whole, so a
+ * comment satisfied a citation. That is not a corner case: a law in this fence
+ * is a block of code under a header comment that names it, and the record
+ * quoted the header. A re-audit deleted the entire body of the R1b door-table
+ * law — a hundred lines, its computed note gone with them — left the header
+ * comment standing, and the fence printed `V2_BACKEND_CERTIFIED: … 39 resolving
+ * pointers`. Six of the thirty-nine were bound to prose that way. The record's
+ * own sentence, "delete a law … and the gate is red on the next run", was false
+ * for exactly those six, and prose is the one thing a deletion leaves behind.
+ *
+ * **The rule.** For a code path the anchor must appear in code; `.md` and
+ * `.json` are returned whole, because in those a sentence or a key IS the
+ * content and there is nothing to strip.
+ *
+ * **Why this removal and not `stripComments`.** The obvious move is the
+ * `stripComments` helper this file already uses in a hundred places, and it is
+ * wrong HERE — uniquely so, because the file most often cited is this one. Its
+ * `/\*[\s\S]*?\*\//` arm cannot tell a comment from a string containing one,
+ * and this fence necessarily quotes comment syntax in its refusal messages: a
+ * literal holding `/**` opens a block that runs to the next `*\/` anywhere
+ * below, which measured at 460 lines swallowed — including the policy-pin law's
+ * own refusal. That failure is fail-closed and therefore quiet in the worst
+ * way: it would refuse an honest code anchor and blame the record.
+ *
+ * So the removal is line-oriented and deliberately conservative in the other
+ * direction. A line whose first non-space characters open or continue a comment
+ * is dropped whole; every other line keeps everything before a `//` that is not
+ * inside a string, via the same `codeBeforeLineComment` walk the literal-path
+ * scan uses. It cannot remove a line that holds code, so it cannot manufacture
+ * a refusal. What it does not catch is a block comment opened after code on the
+ * same line — an idiom this repository does not use, and one that could only
+ * ever leave a fragment on a line that already holds code, which is not where
+ * the prose a citation could hide in lives.
+ *
+ * This is not a parser and must not become one. It is the same comment
+ * blindness the literal-path scan above already relies on to decide which of
+ * this file's own path literals sit in a live law position.
+ */
+function beEvidenceText(path, content) {
+  if (!BE_CODE_EVIDENCE.test(path)) return content;
+  return content
+    .split("\n")
+    .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .map(codeBeforeLineComment)
+    .join("\n");
+}
 
 /**
  * One cell of a record row: trimmed, unwrapped from its backticks, with the
@@ -22396,7 +22478,9 @@ const BE_DISCLOSURE_ID = /^OWED-[A-Z0-9-]+$/;
     }
 
     // L-R19-4: the derivation. A PROVEN criterion points at evidence, and the
-    // evidence still resolves — the path in the tree and the anchor in the file.
+    // evidence still resolves — the path in the tree and the anchor in the
+    // CODE of the file, never in its prose. See `beEvidenceText` above for why
+    // the second half of that sentence is the whole of R19b.
     if (criteriaDefects === 0 && pointerDefects === 0) {
       let resolving = 0;
       for (const row of criteriaRows) {
@@ -22421,7 +22505,7 @@ const BE_DISCLOSURE_ID = /^OWED-[A-Z0-9-]+$/;
             continue;
           }
           const content = readIfPresent(pointer.path);
-          if (content === null || !flatten(content).includes(flatten(pointer.anchor))) {
+          if (content === null || !flatten(beEvidenceText(pointer.path, content)).includes(flatten(pointer.anchor))) {
             fail(
               BE_RECORD_PATH +
                 ": " +

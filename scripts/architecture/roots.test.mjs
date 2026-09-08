@@ -3050,13 +3050,43 @@ const BE_AUTHORIZED_OWED = [
   ["OWED-R11-PHOENIX-DRILL", "OWNER_GATED"],
   ["OWED-R15-BENCHMARK-CUT", "OWNER_GATED"],
   ["OWED-R18-CI-LINUX", "POST_AUDIT_FOLLOW_UP"],
-  ["OWED-R11B-EXPORTER-WIRING", "POST_AUDIT_FOLLOW_UP"],
+  ["OWED-R11B-EXPORTER-WIRING", "RECONCILIATION"],
   ["OWED-GOVERNANCE-RECEIPTS", "CLOSURE_DEBRIEF"],
 ];
 
 /** The one file every synthetic fixture already writes, and a string it holds. */
 const BE_EVIDENCE_PATH = "packages/domains/runtime/src/switch-landing/index.ts";
 const BE_EVIDENCE_ANCHOR = "ACCOUNT_SWITCH_COMPLETED";
+
+/**
+ * The fence's own comment blindness (R19b), restated rather than imported.
+ *
+ * Same discipline as `BE_AUTHORIZED_OWED` above: a mirror that read the rule
+ * out of the fence source would agree with a rule somebody weakened. This is
+ * the line-oriented removal `beEvidenceText` performs — drop a line that opens
+ * or continues a comment, and cut a trailing `//` that is not inside a string.
+ */
+function beCodeOnly(text) {
+  const beforeLineComment = (line) => {
+    let quote = null;
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      if (quote !== null) {
+        if (char === "\\") index += 1;
+        else if (char === quote) quote = null;
+        continue;
+      }
+      if (char === '"' || char === "'" || char === "`") quote = char;
+      else if (char === "/" && line[index + 1] === "/") return line.slice(0, index);
+    }
+    return line;
+  };
+  return text
+    .split("\n")
+    .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .map(beforeLineComment)
+    .join("\n");
+}
 
 /** Comfortably over the fence's floor, so a probe about something else is about something else. */
 const BE_REASON = "Held elsewhere, and this sentence says where and why it is held.";
@@ -3458,14 +3488,27 @@ describe("the backend certifies what the fence can compute (old-V2 R19)", () => 
     expect(criteria.map((row) => row.id).sort()).toEqual([...BE_IDS].sort());
     for (const row of criteria) expect(row.status).toBe("PROVEN");
 
-    // Every pointer resolves, with its anchor. This is the assertion that goes
-    // red when a suite is renamed and nobody updated the record.
+    // Every pointer resolves, with its anchor, in the part of the file the
+    // fence is willing to read. This is the assertion that goes red when a
+    // suite is renamed and nobody updated the record — and, since R19b, when a
+    // pointer is anchored to prose. Mirroring the fence's comment blindness is
+    // the point: a probe that read the cited files whole would keep passing
+    // over exactly the six citations the re-audit falsified.
     expect(pointers.length).toBeGreaterThan(BE_IDS.length);
+    let codeEvidence = 0;
     for (const pointer of pointers) {
       const full = join(REAL_REPO, pointer.path);
       expect(() => statSync(full)).not.toThrow();
-      expect(flat(readFileSync(full, "utf8"))).toContain(flat(pointer.anchor));
+      const raw = readFileSync(full, "utf8");
+      const readable = /\.(?:ts|mts|js|mjs)$/.test(pointer.path) ? beCodeOnly(raw) : raw;
+      if (readable !== raw) codeEvidence += 1;
+      expect(flat(readable)).toContain(flat(pointer.anchor));
     }
+
+    // Anti-vacuity: the mirror above proves nothing unless some pointer was
+    // actually read stripped. A record that cited only `.md` files would
+    // satisfy every assertion here while binding to no code at all.
+    expect(codeEvidence).toBeGreaterThan(0);
 
     // The register and the record agree, both ways, and the register is really
     // the fence's rather than this file's copy of it.
@@ -3477,5 +3520,122 @@ describe("the backend certifies what the fence can compute (old-V2 R19)", () => 
       expect(row?.destination).toBe(destination);
       expect(fence).toContain('{ id: "' + id + '", destination: "' + destination + '" }');
     }
+  });
+});
+
+/**
+ * The gate's evidence binds to code, never to comments (old-V2 R19b).
+ *
+ * R19's own record says "delete a law … and the gate is red on the next run".
+ * A re-audit falsified that sentence without touching the record: it deleted
+ * the whole body of a cited fence law, left the header comment that names the
+ * law standing, and the fence certified with "39 resolving pointers". The
+ * anchor check read the cited file whole, so the prose describing a law
+ * satisfied a citation to the law.
+ *
+ * Both probes below are red against the pre-R19b containment, which is the
+ * only interesting property a probe of this defect can have: the fixtures are
+ * documents the old law called evidence.
+ */
+describe("the gate's evidence binds to code, never to comments (old-V2 R19b)", () => {
+  /** The cited file, with the landing body every fixture needs and an extra tail. */
+  function evidenceHome(root, tail) {
+    write(
+      root,
+      BE_EVIDENCE_PATH,
+      [
+        "export function land(started) {",
+        "  const toAccountId = started.payload.toAccountId;",
+        '  return { type: "ACCOUNT_SWITCH_COMPLETED", payload: { toAccountId } };',
+        "}",
+        ...tail,
+        "",
+      ].join("\n"),
+    );
+  }
+
+  /** A record whose BE-1 row cites `anchor` and whose other six are ordinary. */
+  function recordCiting(anchor) {
+    return beRecordDocument({
+      pointers: BE_IDS.map((id) => ({
+        id,
+        path: BE_EVIDENCE_PATH,
+        anchor: id === "BE-1-SERVICE-INDEPENDENCE" ? anchor : BE_EVIDENCE_ANCHOR,
+      })),
+    });
+  }
+
+  it("N15: refuses an anchor that only a comment of the cited file states", async () => {
+    const anchor = "the landing refuses a destination it never read";
+
+    const commented = syntheticTree();
+    evidenceHome(commented, ["// " + anchor]);
+    write(commented, BE_RECORD, recordCiting(anchor));
+    commitAll(commented);
+
+    // The path resolves and the string is in the file. Everything the old law
+    // asked for is satisfied, and the file does not do the thing it says.
+    const refused = await runFenceAgainst(commented);
+    expect(refused.status).not.toBe(0);
+    expect(refused.output).toContain(
+      "BE-1-SERVICE-INDEPENDENCE points at " +
+        BE_EVIDENCE_PATH +
+        ' for the anchor "' +
+        anchor +
+        '", which that file does not state',
+    );
+
+    // The control, and it is what keeps this probe from being a probe that
+    // refuses everything: the same anchor, the same record, moved into code.
+    const executable = syntheticTree();
+    evidenceHome(executable, ['const refusal = "' + anchor + '";', "export const REFUSAL = refusal;"]);
+    write(executable, BE_RECORD, recordCiting(anchor));
+    commitAll(executable);
+
+    const accepted = await runFenceAgainst(executable);
+    expect(accepted.output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(accepted.output).not.toContain("which that file does not state");
+  });
+
+  it("N16: refuses a cited law whose body was deleted and whose comment survived", async () => {
+    // The re-audit's own sequence, as a fixture. The header comment names the
+    // law in the words the record quotes, which is exactly why deleting the
+    // body used to be invisible: the sentence outlives the code that earned it.
+    const anchor = "the two door tables were compared and disagreed";
+    const header = [
+      "// --- the two doors answer one vocabulary --------------------------",
+      "//",
+      "// " + anchor + " is what this law says when it refuses.",
+    ];
+    const body = ['export const REFUSAL = "' + anchor + '";'];
+
+    const whole = syntheticTree();
+    evidenceHome(whole, [...header, ...body]);
+    write(whole, BE_RECORD, recordCiting(anchor));
+    commitAll(whole);
+
+    // Before: the law is there, and the pointer resolves against the code.
+    const before = await runFenceAgainst(whole);
+    expect(before.output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(before.output).not.toContain("which that file does not state");
+
+    // After: the body is gone and its comment is not. The record is untouched,
+    // which is the whole point — nobody edits the certification when they
+    // delete a law, so the gate is the only thing that can notice.
+    const gutted = syntheticTree();
+    evidenceHome(gutted, header);
+    write(gutted, BE_RECORD, recordCiting(anchor));
+    commitAll(gutted);
+
+    const after = await runFenceAgainst(gutted);
+    expect(after.status).not.toBe(0);
+    expect(after.output).toContain(
+      "BE-1-SERVICE-INDEPENDENCE points at " +
+        BE_EVIDENCE_PATH +
+        ' for the anchor "' +
+        anchor +
+        '", which that file does not state',
+    );
+    expect(after.output).toContain("V2_BACKEND_CERTIFIED withheld");
   });
 });
