@@ -3152,14 +3152,26 @@ const MIRROR_DIVISION_AFTER = new Set([
  * out of the fence source would agree with a rule somebody weakened. The
  * scanner package is shared, because writing a second TypeScript lexer here
  * would be restating the tokenizer rather than the rule; the RULE — which
- * kinds are dropped, when a `/` is re-scanned as a regex, and that a comment
- * becomes one space rather than nothing — is written out by hand below and is
- * the only thing this mirror and the fence have to agree about.
+ * kinds are dropped, when a `/` is re-scanned as a regex, when a `}` is
+ * re-read as the continuation of a template, and that a comment becomes one
+ * space rather than nothing — is written out by hand below and is the only
+ * thing this mirror and the fence have to agree about.
  *
  * The predecessor was line-oriented, and P-03 replaced it because it was wrong
  * in both directions at once: it kept the interior line of a block comment
  * (`N18`), and it cut real code at the `//` inside a regex literal shaped like
  * a URL (`N23b`).
+ *
+ * **R19d: a mirror that names an incomplete rule reflects an incomplete rule.**
+ * R19c added the third clause above to the fence — a `}` that closes a `${…}`
+ * is re-read as template, tracked with a stack so nesting stays right — and
+ * this docblock went on describing the two-clause rule while the body
+ * implemented it. Left alone, `` `hello ${1}` `` followed by a comment let the
+ * closing backtick open a template that ran to end of file, so the mirror kept
+ * a comment the fence drops: it over-accepted, which `P2`'s `toContain` cannot
+ * see, and the sentence above claiming the two agree was false in one
+ * direction. `M1`–`M5` are that measurement, red against this commit's parent
+ * and green here.
  */
 function beCodeOnly(text) {
   const scanner = ts.createScanner(
@@ -3170,6 +3182,8 @@ function beCodeOnly(text) {
   );
   let out = "";
   let previous = ts.SyntaxKind.Unknown;
+  /** One entry per brace still open: `true` when a `${…}` is what opened it. */
+  const substitutions = [];
   let kind;
   while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
     if (
@@ -3177,6 +3191,15 @@ function beCodeOnly(text) {
       !MIRROR_DIVISION_AFTER.has(previous)
     ) {
       kind = scanner.reScanSlashToken();
+    }
+    if (kind === ts.SyntaxKind.OpenBraceToken) {
+      substitutions.push(false);
+    } else if (kind === ts.SyntaxKind.CloseBraceToken) {
+      const closesSubstitution = substitutions.pop() === true;
+      if (closesSubstitution) kind = scanner.reScanTemplateToken(/* isTaggedTemplate */ false);
+    }
+    if (kind === ts.SyntaxKind.TemplateHead || kind === ts.SyntaxKind.TemplateMiddle) {
+      substitutions.push(true);
     }
     if (
       kind === ts.SyntaxKind.SingleLineCommentTrivia ||
@@ -3680,6 +3703,93 @@ describe("the backend certifies what the fence can compute (old-V2 R19)", () => 
       expect(row?.destination).toBe(destination);
       expect(fence).toContain('{ id: "' + id + '", destination: "' + destination + '" }');
     }
+  });
+});
+
+/**
+ * The mirror reflects the whole rule, templates included (R19d).
+ *
+ * `beCodeOnly` is a hand-written restatement of the fence's `beCodeTokens`,
+ * and its docblock calls the rule "the only thing this mirror and the fence
+ * have to agree about". R19c added a clause to the fence — a `}` that closes a
+ * `${…}` is re-read as template, so the literal's own closing backtick stops
+ * opening a fresh one — and did not add it here. The sentence stopped being
+ * true in one direction: the mirror KEPT comments the fence drops.
+ *
+ * That direction is exactly why nothing went red. `P2` above asserts
+ * `toContain`, so a mirror that keeps too much still finds every anchor the
+ * shipped record states — the defect is invisible to the assertion the mirror
+ * exists to serve, and would have stayed invisible until a record anchored to
+ * a comment sitting after a template: this file would have waved it through
+ * while `pnpm check` refused it, which is the disagreement a mirror is for.
+ *
+ * These are unit probes of the helper rather than synthetic-tree runs, and
+ * deliberately so. The fence's behaviour on these same shapes is already
+ * `N24b`–`N24e`; spawning it again here would measure the fence a second time
+ * and call it a measurement of the mirror. What is asserted below is the
+ * mirror alone, on the fixtures R19c wrote for the fence.
+ *
+ * `M1`–`M4` are red against this commit's parent and green here. `M5` is the
+ * acceptance side and the shape of the error that stays chosen: template TEXT
+ * is code, code after a template is code, and a comment with no template in
+ * front of it was already dropped.
+ */
+describe("the mirror reflects the whole rule, templates included (R19d)", () => {
+  /** Stated by no fixture's CODE below, so finding it means a comment survived. */
+  const COMMENTED = "the landing refuses a destination it never read";
+
+  it("M1: drops a line comment that follows a template substitution", () => {
+    // THE probe. At the parent the closing backtick of `` `hello ${1}` ``
+    // opened a template that ran to end of file, and the comment below it came
+    // back as string text.
+    const source = "export const T = `hello ${1}`;\n// " + COMMENTED + "\n";
+    expect(beCodeOnly(source)).not.toContain(COMMENTED);
+  });
+
+  it("M2: drops a block comment in the same position", () => {
+    // The discriminator against a repair that only handles `//`: the swallowed
+    // region is string text either way, so the comment's shape never mattered.
+    const source = "export const T = `hello ${1}`;\n/* " + COMMENTED + " */\n";
+    expect(beCodeOnly(source)).not.toContain(COMMENTED);
+  });
+
+  it("M3: drops a comment after a template with two substitutions", () => {
+    // One substitution desynchronizes the scan and the second could have
+    // re-paired the stray backticks by accident. It does not, and asserting it
+    // stops a repair from passing by counting to one.
+    const source = "export const T = `a ${1} b ${2}`;\n// " + COMMENTED + "\n";
+    expect(beCodeOnly(source)).not.toContain(COMMENTED);
+  });
+
+  it("M4: drops a comment after a nested template, re-paired or not", () => {
+    // Nesting is where a brace-counting repair goes wrong, so both shapes are
+    // asserted and they are not the same evidence. `` `a ${ `b ${1}` }` `` was
+    // already dropped at the parent, because its stray backticks happen to
+    // re-pair into a complete literal — a regression pin. Give the OUTER
+    // template something to continue with and the luck runs out: that half is
+    // this packet's nested evidence.
+    const paired = "export const T = `a ${ `b ${1}` }`;\n// " + COMMENTED + "\n";
+    expect(beCodeOnly(paired)).not.toContain(COMMENTED);
+
+    const continued = "export const T = `a ${ `b ${1}` } c ${2}`;\n// " + COMMENTED + "\n";
+    expect(beCodeOnly(continued)).not.toContain(COMMENTED);
+  });
+
+  it("M5: keeps template text, keeps code after a template, and was already right without one", () => {
+    // The acceptance half, and the reason the repair is a re-scan rather than a
+    // rule about backticks. An anchor may quote what a template interpolates,
+    // and `//` inside `` `http://a ${1}` `` is TEXT rather than the start of a
+    // comment; both halves are green at the parent too, so `M1`-`M4` cannot
+    // have bought their refusals by breaking either one.
+    const inText = "export const U = `http://a ${1} " + COMMENTED + "`;\n";
+    expect(beCodeOnly(inText)).toContain(COMMENTED);
+
+    const afterTemplate = 'export const T = `hello ${1}`;\nexport const R = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(afterTemplate)).toContain(COMMENTED);
+
+    // The control that says the drop above is about the template and not about
+    // comments in general: this shape was law before R19c and stays law.
+    expect(beCodeOnly("export const N = 1;\n// " + COMMENTED + "\n")).not.toContain(COMMENTED);
   });
 });
 
