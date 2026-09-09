@@ -5085,3 +5085,261 @@ describe("the fence's dependencies are declarations, not computations (A1-delta)
     expect(output).not.toContain("reaches for a dependency through");
   });
 });
+
+/**
+ * The gate proves the coverage it runs, and owes the runs it never had (P-04).
+ *
+ * `L-P04-1` exists because ADR 0057 called `durability-server` and `daemon`
+ * OWED on the strength of one sentence — that they run green locally on
+ * darwin-arm64 — and nothing checked the host that sentence is about. The
+ * binary those suites need is not in the package graph, is not tracked, and
+ * arrives only when an operator runs the acquisition script.
+ *
+ * The probes below are written so that they exercise the same two arms on
+ * either platform, because this file runs in the `fence` project and CI runs
+ * `fence` on `ubuntu-latest`. A fixture that hard-coded `darwin-arm64` would
+ * assert the local arm on a runner that can only take the other one, and would
+ * be red there for a reason that has nothing to do with the law. So every
+ * fixture keys its pin off `HOST_KEY` when it wants the proving arm and off
+ * `OTHER_KEY` when it wants the arm that proves nothing — which is exactly the
+ * distinction the law draws, read from the pin rather than from a platform
+ * string the fence holds.
+ *
+ * No environment override is used, and none exists. A seam that could tell the
+ * fence it is running somewhere it is not would be a seam for skipping the
+ * proof this law compels; the branch is data in the tree instead.
+ */
+describe("the gate proves the coverage it runs (P-04)", () => {
+  /** The class table, read from the law rather than restated beside it. */
+  const COVERAGE_CLASSES = quotedStrings(
+    fromFence(
+      /const COVERAGE_CLASS_LITERALS = Object\.freeze\(\[([\s\S]*?)\n\]\);/,
+      "COVERAGE_CLASS_LITERALS",
+    ),
+  );
+
+  /** The three that name a class. Dropping any one is how a configuration becomes a run. */
+  const CLASS_NAMES = ["TESTS_RUN_LOCALLY", "CI_CONFIGURED", "CI_RUN_VERIFIED: NONE"];
+
+  const COVERAGE_RECORD = "docs/architecture/0062-the-gate-proves-the-coverage-it-runs.md";
+  const COVERAGE_PIN = "scripts/restate-server.pin.json";
+  const COVERAGE_CONSTANTS = "packages/domains/runtime/src/constants/index.ts";
+
+  /** A version that is not the real pin's, so a fixture can never be read as the real install. */
+  const FIXTURE_VERSION = "0.0.0-fixture";
+
+  const HOST_KEY = process.platform + "-" + process.arch;
+  const OTHER_KEY = HOST_KEY === "darwin-arm64" ? "linux-x64" : "darwin-arm64";
+
+  const PINNED_BYTES = "the bytes the pin describes\n";
+  const OTHER_BYTES = "bytes the pin does not describe\n";
+  const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
+
+  const installPath = (version = FIXTURE_VERSION) =>
+    ".acp-local/tools/restate-server-" + version + "/restate-server";
+
+  /** Every refusal this law can produce, for the neutralization control to deny. */
+  const COVERAGE_REFUSALS = [
+    "L-P04-1 has no install convention to read",
+    "in the shape L-P04-1 reads",
+    "L-P04-1 has no record to hold the three coverage classes",
+    "; a coverage record that does not separate",
+    "L-P04-1 has no pinned platform set to place this host in",
+    "L-P04-1 cannot say whether this host is one the pin describes",
+    "L-P04-1 has nothing to place this host against",
+    "is not an established 64-lowercase-hex digest, so L-P04-1",
+    "the pinned server binary is absent from",
+    ", not the pinned ",
+  ];
+
+  /**
+   * A tree carrying the four things the law reads: the install convention, the
+   * pin, the record, and — unless the case is about its absence — the binary.
+   *
+   * `landingHome` is written for the same reason every fixture in this file
+   * writes it: two unrelated laws carry a vacuity half naming that exact path,
+   * and a tree without it would be red for something no probe here is about.
+   */
+  function coverageTree(options) {
+    const root = syntheticTree();
+    landingHome(root);
+
+    const version = options.version ?? FIXTURE_VERSION;
+    const platformKey = options.platformKey ?? HOST_KEY;
+
+    write(
+      root,
+      COVERAGE_CONSTANTS,
+      options.constants ??
+        [
+          'export const RESTATE_SERVER_VERSION = "' + version + '";',
+          'export const RESTATE_SERVER_INSTALL_DIR = ".acp-local/tools/restate-server-" + RESTATE_SERVER_VERSION;',
+          "",
+        ].join("\n"),
+    );
+
+    if (options.binary !== null) {
+      write(root, installPath(version), options.binary ?? PINNED_BYTES);
+    }
+
+    write(
+      root,
+      COVERAGE_PIN,
+      JSON.stringify(
+        {
+          version,
+          platforms: { [platformKey]: { binarySha256: options.digest ?? sha256(PINNED_BYTES) } },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+
+    write(
+      root,
+      COVERAGE_RECORD,
+      "# fixture record\n\n" +
+        (options.record ?? COVERAGE_CLASSES).map((literal) => "- " + literal).join("\n") +
+        "\n",
+    );
+
+    commitAll(root);
+    return root;
+  }
+
+  it("N36: refuses an absent binary on the host whose pin describes a build", async () => {
+    // The defect the law exists for, in its plainest form. Before it, this tree
+    // said nothing at all about the two OWED projects: `L-R18-1` was green
+    // because the workflow still enumerated its fifteen, and the only thing that
+    // would have noticed is a writer running the suites and reading the failure.
+    const root = coverageTree({ binary: null });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      "the pinned server binary is absent from " +
+        installPath() +
+        " on " +
+        HOST_KEY +
+        ", the host whose pin describes a build: durability-server and daemon are OWED by CI and are covered here" +
+        " or nowhere, and coverage claimed from an absent binary is a declaration rather than a run",
+    );
+    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
+  });
+
+  it("N37: refuses a binary whose bytes are not the ones the pin describes", async () => {
+    // The substitution case, and the reason the law hashes the file rather than
+    // reading `verification-receipt.json` beside it. A receipt is written by the
+    // acquisition script and is exactly as substitutable as the binary; the pin
+    // says so in its own comment, and a law that trusted it would be the thing
+    // that comment warns about.
+    const root = coverageTree({ binary: OTHER_BYTES, digest: sha256(PINNED_BYTES) });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      installPath() +
+        " hashes to " +
+        sha256(OTHER_BYTES) +
+        ", not the pinned " +
+        sha256(PINNED_BYTES) +
+        "; the suites CI owes would run against a binary the pin does not describe, which proves the coverage of" +
+        " something else",
+    );
+    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
+  });
+
+  it("N38: claims nothing, and refuses nothing, on a host the pin describes no build for", async () => {
+    // The runner's arm, taken here for the runner's actual reason: the pin has
+    // no entry for the platform the fence is running on. The binary is present
+    // and correct for the OTHER key, which is what makes this a test of the
+    // branch rather than of a missing file — the law still declines to say
+    // anything, because a build for someone else's platform proves nothing here.
+    const root = coverageTree({ platformKey: OTHER_KEY });
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain(
+      "on " +
+        HOST_KEY +
+        " the server pin describes no build (it describes " +
+        OTHER_KEY +
+        "), so the macOS coverage of durability-server and daemon is not provable here: L-P04-1 reports no" +
+        " violations and proves nothing on this host",
+    );
+    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
+    for (const refusal of COVERAGE_REFUSALS) {
+      expect(output).not.toContain(refusal);
+    }
+  });
+
+  it("N39: refuses a record that has stopped naming one of the three classes", async () => {
+    // The third class has no other home. The fence reads a working tree and asks
+    // git read-only questions; neither answers what a hosted runner did, so
+    // `CI_RUN_VERIFIED: NONE` is a literal the record states and this law checks.
+    // The other two are here because a record that named only the class it
+    // cannot compute would be free to blur the two it can.
+    for (const dropped of CLASS_NAMES) {
+      const root = coverageTree({ record: COVERAGE_CLASSES.filter((literal) => literal !== dropped) });
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain(
+        COVERAGE_RECORD +
+          " no longer states: " +
+          dropped +
+          "; a coverage record that does not separate what ran locally, what CI is configured to run and what a" +
+          " CI run actually proved is the conflation this law exists to refuse",
+      );
+      expect(output).not.toContain("the coverage record keeps the three classes apart by name");
+    }
+  });
+
+  it("N40: refuses an install convention it can no longer read", async () => {
+    // The law computes the path it checks from `RESTATE_SERVER_INSTALL_DIR`
+    // rather than spelling it out, so that it cannot go on proving a binary at a
+    // location nothing runs from. That only holds if losing the constant is a
+    // failure: a law that fell back to a hardcoded directory would keep passing
+    // here, against the old path, after the runtime had moved.
+    const root = coverageTree({
+      constants: 'export const RESTATE_SERVER_INSTALL_DIR = ".acp-local/tools/wherever";\n',
+    });
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      COVERAGE_CONSTANTS +
+        " no longer states RESTATE_SERVER_VERSION and RESTATE_SERVER_INSTALL_DIR in the shape L-P04-1 reads;" +
+        " the law would otherwise prove a binary at a path nothing runs from",
+    );
+    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
+  });
+
+  it("P5: proves the coverage, and says which three classes it is separating", async () => {
+    // The neutralization control. Without it every negative above could be
+    // passing on some other law's failure text, and the law could be firing on a
+    // lawful fixture with nothing here noticing. It also pins the positive the
+    // packet is actually for: on the host the pin describes, the note names the
+    // binary it hashed, the path it found it at, and the two projects that
+    // coverage is about.
+    const root = coverageTree({});
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain(
+      "TESTS_RUN_LOCALLY on " +
+        HOST_KEY +
+        ": the pinned server " +
+        FIXTURE_VERSION +
+        " is present at " +
+        installPath() +
+        " and hashes to its pinned binary digest, so durability-server and daemon — the two vitest projects CI" +
+        " OWES — are covered on the host that runs them",
+    );
+    expect(output).toContain(
+      "the coverage record keeps the three classes apart by name, and holds the third one empty: " +
+        COVERAGE_CLASSES.join(", "),
+    );
+    for (const refusal of COVERAGE_REFUSALS) {
+      expect(output).not.toContain(refusal);
+    }
+  });
+});

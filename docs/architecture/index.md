@@ -77,6 +77,7 @@ new records from `_template.md`, which carries the required fields.
 | 0059 | [The gate's evidence binds to code, never to comments](0059-the-gates-evidence-binds-to-code.md) | accepted |
 | 0060 | [No evidence anchor resolves from emptiness or a comment](0060-no-anchor-resolves-from-emptiness-or-a-comment.md) | accepted |
 | 0061 | [The fence admits a living specification, not a frozen record](0061-the-fence-admits-a-living-specification.md) | accepted |
+| 0062 | [The gate proves the coverage it runs, and owes the runs it never had](0062-the-gate-proves-the-coverage-it-runs.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

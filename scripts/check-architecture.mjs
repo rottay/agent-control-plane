@@ -7655,6 +7655,44 @@ const P03_WRITE_SET = [
   "docs/architecture/index.md",
 ];
 
+/**
+ * P-04 — the gate proves the coverage it runs, and owes the runs it never had.
+ *
+ * One novel path and the same three every law-adding packet touches. R18 split
+ * the vitest topology so CI could run the fifteen projects its runner supports
+ * and name the two it cannot; what it left unchecked was the claim underneath
+ * that arrangement — that the two OWED projects are covered on the one host
+ * that can run them. `L-P04-1` turns that claim into a measurement on the host
+ * the pin describes a build for, and into an explicit non-claim everywhere
+ * else, so the same law is honest on this machine and on the runner.
+ *
+ * The record is the novel artifact: it holds the third class, which no law can
+ * compute. `CI_RUN_VERIFIED: NONE` is true as this packet lands — four hosted
+ * runs exist, all red, all on `a92756b` and earlier, where the fence was red by
+ * design; nothing after P-02 has been pushed, and pushing is the owner's act.
+ *
+ * **Pins that move.** ADR corpus 61 -> 62; the write set gains one distinct
+ * path, 577 -> 578; the literal-path scan's live count 314 -> 315, distinct
+ * unchanged at 191 — `RUNTIME_CONSTANTS_PATH` names a file a live law already
+ * held.
+ *
+ * **Pins that do not.** `PATH_SCOPED_LAWS` stays 117: the law reads named
+ * literals and registers no scope. `CI_OWED_PROJECTS` stays exactly the two
+ * names R18 froze — this packet reuses that table rather than minting a second
+ * vocabulary for the same two projects. `.github/workflows/ci.yml` is not
+ * touched, so `L-R18-1` and `L-R18-2` are unchanged and undisturbed;
+ * `vitest.config.ts` gains no project, the pin gains no platform, and no
+ * dependency is added anywhere.
+ *
+ * Record: `docs/architecture/0062-the-gate-proves-the-coverage-it-runs.md`.
+ */
+const P04_WRITE_SET = [
+  "docs/architecture/0062-the-gate-proves-the-coverage-it-runs.md",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/index.md",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7826,6 +7864,7 @@ const WRITE_SET = [
   ...V2BER19_WRITE_SET,
   ...V2BER19B_WRITE_SET,
   ...P03_WRITE_SET,
+  ...P04_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */
@@ -10173,6 +10212,239 @@ const CI_AMENDMENT_LITERALS = Object.freeze([
       notes.push(
         "the CI workflow states its excluded projects, their darwin-arm64 reason and their POST_AUDIT_FOLLOW_UP destination",
       );
+    }
+  }
+}
+
+// --- 10c. the coverage the gate proves where it runs (P-04) ----------------
+//
+// R18 named two projects CI cannot run and called them OWED. It did not check
+// the other half of that sentence: that the host which is supposed to run them
+// actually can. `pnpm check` runs `durability-server` and `daemon` on this
+// machine and both need the pinned Restate server on disk; if the binary were
+// missing or substituted, the suites would fail — but nothing said that the
+// coverage claim R18 rests on is a RUN rather than a sentence about one.
+//
+// **L-P04-1 makes the macOS half a measurement.** On the host the pin describes
+// a build for, the binary must be present at the convention the runtime states
+// and must hash to the pin's `binarySha256`. The digest is computed over the
+// file's bytes rather than read from the receipt the acquisition script leaves
+// beside it: the pin's own comment says a substituted binary with a matching
+// receipt would pass, and a law that trusted the receipt would be the thing
+// that comment warns about.
+//
+// **On any other host the law says so, and proves nothing.** The branch is not
+// a platform string this file hardcodes; it is whether the pin describes a
+// build for `process.platform + "-" + process.arch`, which is the same question
+// `platformKey()` and `scripts/acquire-restate-server.mjs` ask. Today the pin
+// carries `darwin-arm64` alone, so the runner — `linux-x64` — takes the second
+// arm: it reports no violations and it establishes nothing about macOS. That is
+// the honest reading of a path-scoped law on a tree its scope does not reach,
+// and it is why this law can run in CI at all. When P-38 adds the Linux pin,
+// the runner starts taking the first arm without an edit here.
+//
+// **The three classes, kept apart by name.** The owner's distinction is that a
+// written configuration is not an executed run, and there are three states this
+// repository can be in about any suite:
+//
+//   TESTS_RUN_LOCALLY  — executed here, on this host, and this law proves it;
+//   CI_CONFIGURED      — declared in the workflow, which `L-R18-1` checks in
+//                        both directions and this law does not duplicate;
+//   CI_RUN_VERIFIED    — a run on the runner whose result was observed. The
+//                        fence cannot observe one: it reads a working tree and
+//                        asks git read-only questions, and neither answers what
+//                        a hosted runner did.
+//
+// So the third class is held where it can be held — in the record — and this
+// law requires the record to state it rather than leaving it to be inferred
+// from a green fence. `CI_RUN_VERIFIED: NONE` is a literal here, checked on
+// every host including the runner, and the corpus is append-only: the day a
+// pushed commit with a green fence produces a verified run, that reading
+// changes by a superseding record, not by a quiet edit.
+
+/** The record that holds the three classes, and the Linux debt, in words. */
+const MACOS_COVERAGE_RECORD = "docs/architecture/0062-the-gate-proves-the-coverage-it-runs.md";
+
+/** The install convention's source of truth. The law reads it rather than restating it. */
+const RUNTIME_CONSTANTS_PATH = "packages/domains/runtime/src/constants/index.ts";
+
+/** The pin, which is the content authority for a binary the package manager never sees. */
+const SERVER_PIN_PATH = "scripts/restate-server.pin.json";
+
+/** The file name the install directory holds, per `serverBinaryPath()`. */
+const SERVER_BINARY_NAME = "restate-server";
+
+/** A 64-lowercase-hex digest, the only shape a pinned digest may take. */
+const COVERAGE_DIGEST = /^[0-9a-f]{64}$/;
+
+/**
+ * What the record must say, by literal.
+ *
+ * The three class names, the two projects the classes are about, the platform
+ * that can prove them, the standing value of the third class, and the Linux
+ * disposition with the packet that discharges it. Prose around them is free;
+ * their absence is a record that has blurred a configuration into a run.
+ */
+const COVERAGE_CLASS_LITERALS = Object.freeze([
+  "TESTS_RUN_LOCALLY",
+  "CI_CONFIGURED",
+  "CI_RUN_VERIFIED: NONE",
+  "durability-server",
+  "daemon",
+  "darwin-arm64",
+  "PROVISIONAL",
+  "P-38",
+]);
+
+{
+  const coverageConstants = readIfPresent(RUNTIME_CONSTANTS_PATH);
+  const coveragePinText = readIfPresent(SERVER_PIN_PATH);
+  const coverageRecord = readIfPresent(MACOS_COVERAGE_RECORD);
+
+  // The convention, computed from the code that uses it. A law that spelled the
+  // directory out would keep checking the old place after a move, and would
+  // report the binary present at a path nothing runs from.
+  let installDir = null;
+  let pinnedVersion = null;
+  if (coverageConstants === null) {
+    fail(RUNTIME_CONSTANTS_PATH + " is missing; L-P04-1 has no install convention to read");
+  } else {
+    const version = /export const RESTATE_SERVER_VERSION = "([^"]+)";/.exec(coverageConstants);
+    const directory =
+      /export const RESTATE_SERVER_INSTALL_DIR = "([^"]*)" \+ RESTATE_SERVER_VERSION;/.exec(
+        coverageConstants,
+      );
+    if (version === null || directory === null) {
+      fail(
+        RUNTIME_CONSTANTS_PATH +
+          " no longer states RESTATE_SERVER_VERSION and RESTATE_SERVER_INSTALL_DIR in the shape L-P04-1 reads;" +
+          " the law would otherwise prove a binary at a path nothing runs from",
+      );
+    } else {
+      pinnedVersion = version[1];
+      installDir = directory[1] + pinnedVersion;
+    }
+  }
+
+  // The record's clause, checked on every host. It is the only place the third
+  // class can live, so it is the one part of this law the runner also enforces.
+  if (coverageRecord === null) {
+    fail(MACOS_COVERAGE_RECORD + " is missing; L-P04-1 has no record to hold the three coverage classes");
+  } else {
+    const unstated = COVERAGE_CLASS_LITERALS.filter((literal) => !coverageRecord.includes(literal));
+    if (unstated.length > 0) {
+      fail(
+        MACOS_COVERAGE_RECORD +
+          " no longer states: " +
+          unstated.join(", ") +
+          "; a coverage record that does not separate what ran locally, what CI is configured to run and what a CI run" +
+          " actually proved is the conflation this law exists to refuse",
+      );
+    } else {
+      notes.push(
+        "the coverage record keeps the three classes apart by name, and holds the third one empty: " +
+          COVERAGE_CLASS_LITERALS.join(", "),
+      );
+    }
+  }
+
+  const hostKey = process.platform + "-" + process.arch;
+  let coveragePin = null;
+  if (coveragePinText === null) {
+    fail(SERVER_PIN_PATH + " is missing; L-P04-1 has no pinned platform set to place this host in");
+  } else {
+    try {
+      coveragePin = JSON.parse(coveragePinText);
+    } catch {
+      fail(SERVER_PIN_PATH + " is not valid JSON; L-P04-1 has no pinned platform set to place this host in");
+    }
+  }
+
+  const coveragePlatforms =
+    coveragePin !== null && typeof coveragePin.platforms === "object" && coveragePin.platforms !== null
+      ? coveragePin.platforms
+      : null;
+
+  if (coveragePinText !== null && coveragePin !== null && coveragePlatforms === null) {
+    fail(
+      SERVER_PIN_PATH +
+        " establishes no platform table; L-P04-1 cannot say whether this host is one the pin describes a build for",
+    );
+  } else if (coveragePlatforms !== null) {
+    const described = Object.keys(coveragePlatforms).sort();
+    const hostPlatform = coveragePlatforms[hostKey];
+
+    if (described.length === 0) {
+      fail("the server pin describes no platform at all; L-P04-1 has nothing to place this host against");
+    } else if (hostPlatform === undefined || hostPlatform === null) {
+      // The runner's arm. Nothing here is a violation and nothing here is
+      // evidence: the pin describes no build for this host, so the suites that
+      // need one cannot be run, and a claim about them cannot be made.
+      notes.push(
+        "on " +
+          hostKey +
+          " the server pin describes no build (it describes " +
+          described.join(", ") +
+          "), so the macOS coverage of " +
+          CI_OWED_PROJECTS.join(" and ") +
+          " is not provable here: L-P04-1 reports no violations and proves nothing on this host",
+      );
+    } else if (installDir !== null) {
+      const binaryPath = installDir + "/" + SERVER_BINARY_NAME;
+      const expected = hostPlatform.binarySha256;
+
+      let bytes = null;
+      try {
+        bytes = readFileSync(join(REPO_ROOT, binaryPath));
+      } catch {
+        bytes = null;
+      }
+
+      if (typeof expected !== "string" || !COVERAGE_DIGEST.test(expected)) {
+        fail(
+          "the server pin's " +
+            hostKey +
+            ".binarySha256 is not an established 64-lowercase-hex digest, so L-P04-1 has nothing to hold the" +
+            " installed binary to on the host that runs " +
+            CI_OWED_PROJECTS.join(" and "),
+        );
+      } else if (bytes === null) {
+        fail(
+          "the pinned server binary is absent from " +
+            binaryPath +
+            " on " +
+            hostKey +
+            ", the host whose pin describes a build: " +
+            CI_OWED_PROJECTS.join(" and ") +
+            " are OWED by CI and are covered here or nowhere, and coverage claimed from an absent binary is a" +
+            " declaration rather than a run",
+        );
+      } else {
+        const digest = createHash("sha256").update(bytes).digest("hex");
+        if (digest !== expected) {
+          fail(
+            binaryPath +
+              " hashes to " +
+              digest +
+              ", not the pinned " +
+              expected +
+              "; the suites CI owes would run against a binary the pin does not describe, which proves the coverage" +
+              " of something else",
+          );
+        } else {
+          notes.push(
+            "TESTS_RUN_LOCALLY on " +
+              hostKey +
+              ": the pinned server " +
+              pinnedVersion +
+              " is present at " +
+              binaryPath +
+              " and hashes to its pinned binary digest, so " +
+              CI_OWED_PROJECTS.join(" and ") +
+              " — the two vitest projects CI OWES — are covered on the host that runs them",
+          );
+        }
+      }
     }
   }
 }
