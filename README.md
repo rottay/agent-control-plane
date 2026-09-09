@@ -1,351 +1,220 @@
-# Agent Control Plane
+<h1 align="center">Agent Control Plane</h1>
 
-A local, provider-neutral control plane for coordinating multiple coding agents across
-providers, accounts and quotas — on one machine, with an append-only ledger as the authority
-and a loopback-only surface over it.
+<p align="center">
+  <strong>Your agents. Your subscriptions. Your choice.</strong><br>
+  One place to coordinate AI work — without building your workflow around one vendor.
+</p>
 
-Agent Control Plane runs on an operator's own machine. It records everything that happens as an
-append-only, hash-chained SQLite event log, derives every read model from that log, and exposes
-the result through three readers — an HTTP server, a terminal CLI and a browser console — that
-are proven to agree with each other rather than assumed to.
+<p align="center">
+  <a href="#the-vision">Overview</a> ·
+  <a href="#subscriptions-first">Subscriptions</a> ·
+  <a href="#what-you-can-build">Use cases</a> ·
+  <a href="#choose-the-capability-not-the-vendor">Integrations</a> ·
+  <a href="#how-work-moves-forward">How it works</a> ·
+  <a href="#explore-the-project">Explore</a>
+</p>
 
-MIT licensed. Node 22, TypeScript, pnpm workspace.
+> **The destination, not a release announcement.** This README presents the product
+> we are building. It is not a claim that every integration or guarantee ships today.
+> The canonical [implementation record](docs/ROADMAP.md) tracks delivery and verification;
+> the [product specification](docs/audit/README.md) defines the target.
 
----
+<sub>01 / THE VISION</sub>
 
-## The problem
+## The vision
 
-Running several coding agents at once is not a scheduling problem, it is an accounting and
-safety problem:
+### Models change. Your operating model should not have to.
 
-- **Providers differ.** Claude, Kimi and Codex speak different protocols with different
-  capabilities, and none of them tells you what it will actually support before you ask.
-- **Quotas are invisible until they bite.** An agent that runs out of quota mid-task leaves
-  work in an unknown state, and you find out afterwards.
-- **Concurrent writers corrupt repositories.** Two agents in one worktree is not a merge
-  conflict; it is lost work.
-- **Crashes lose context.** A restart that cannot say what was already done has to guess, and
-  guessing is how a supposedly idempotent step runs twice.
+AI tooling evolves quickly. The underlying needs are more durable: give agents useful
+instructions, choose the right resources, preserve context, control spending, verify
+results and recover when something stops.
 
-This project treats all four as one problem: make every decision explicit, record every
-transition, and never let a component act on state it cannot prove.
+**Agent Control Plane is a local-first, extensible framework for those needs.**
+It is designed to coordinate providers, models, accounts and tools through shared
+contracts — so adopting a better implementation does not mean rebuilding your workflow.
 
-## What it does
+- **For developers:** delegate implementation, research and review without manually supervising every terminal.
+- **For teams:** keep initiatives, responsibilities, permissions and evidence organized.
+- **For operators:** understand consumption, capacity and progress before deciding what runs next.
 
-- **Coordinates work as concurrent initiatives.** Not a flat task list. Every task is scoped to
-  an initiative, and that attribution lives in exactly one place — the task — so worktrees,
-  leases, checkpoints and commits inherit it rather than holding a second copy that could
-  disagree. Roadmap versions are per-initiative; accounts and quota are deliberately global;
-  per-initiative token rollups report the spend they cannot place rather than hiding it.
-- **Keeps one authoritative history.** An append-only SQLite log, hash-chained and
-  tamper-evident, with every projection rebuildable from it byte-for-byte.
-- **Runs work durably.** A single lifecycle engine with two interchangeable drivers — a built-in
-  SQLite supervisor and a Restate-backed durable-execution edge — that walk the same plan and
-  recover from real process kills.
-- **Estimates quota and recommends switching.** A clock-injected estimator with a reset calendar,
-  a router that refuses an account without margin for the next atomic step plus its checkpoint,
-  and a switching policy that returns an ordered plan.
-- **Decides writer safety before anyone writes.** At most one lease holder per worktree, an
-  exact write-set checked across tracked and untracked paths, prestate verification by digest,
-  and commit authorization that requires an independent verifier.
-- **Shows all of it locally.** One HTTP server, one CLI and one browser console over the same
-  ledger.
+**The ambition is not to bundle every framework. It is to make the useful ones replaceable.**
 
 ---
 
-## Status and maturity
+<sub>02 / CAPACITY, NOT JUST API BILLS</sub>
 
-This is working software with an unusually explicit account of its own limits. The distinction
-that matters is between *decisions that are made and proven* and *actions taken against live
-systems*.
+## Subscriptions first
 
-### Shipped
+### Use the capacity you already pay for.
 
-| Area | State |
-| --- | --- |
-| Contracts | Frozen, strict, versioned, provider-neutral. Credential-shaped keys rejected structurally. |
-| Event ledger | Append-only SQLite (WAL), hash-chained, idempotent, with checksummed migrations and rebuildable read models. |
-| Observation plane | 20 routes over Fastify on loopback, 4 of them guarded writes. Server, CLI and console proven equal route by route. |
-| Durable execution | One lifecycle engine, two drivers, recovery proven against real process kills. |
-| Daemon | Supervised local process with a singleton lock, bounded logs and fail-closed port checks. |
-| Provider adapters | Claude, Kimi and Codex, behind a single spawn authority with a per-provider environment allowlist. |
-| Model execution | One execution port with three transports, behind which the daemon runs a resolved route in an admitted working directory under a durable driver. |
-| Accounts and quota | Owner-file admission, quota estimation, quota-aware routing, switching policy. |
-| Writer enforcement | Leases, conflict graph, write-set conformance, quarantine, commit authorization. |
-| Governance | An executable architecture fence enforcing roadmap authority, write-sets, import purity, topology, dependency and documentation laws. |
+Our primary use case is coordinating coding-agent subscriptions, including Claude Code,
+Codex and Kimi. Subscription CLIs, API-key clients and local models belong behind the
+**same execution contract**, while retaining their actual authentication, capabilities
+and usage limits.
 
-### Not shipped, stated plainly
+| What you need to know | What the control plane is designed to do |
+|---|---|
+| Which account can handle the next task? | Combine observed usage, remaining quota, reset windows and reserved capacity |
+| Which model should implement or review? | Resolve roles through configurable, versioned policies — not permanent brand rankings |
+| What happens when capacity runs out? | Checkpoint safely, wait for renewal or select another authorized account/model |
+| What did this initiative consume? | Attribute reported tokens and API costs; distinguish measurements, estimates and unknowns |
+| Can I use an API or local model instead? | Select a compatible transport without rewriting the task or silently changing its budget |
 
-- **No provider protocol has been handshaked.** Streaming, resume, model pinning, session
-  identity and protocol-level cancellation are recorded as `UNKNOWN` for all three providers.
-  No adapter has ever been pointed at a running provider: no handshake, no credential, no real
-  session. Every drill and every negative in the suite runs a scripted fake, which proves the
-  port, the parsers and the recovery path and makes no claim about any provider's live behaviour.
-  Interruption works regardless, because the signal floor is a property of the process handle
-  rather than a provider feature.
-- **There is no production Git observer.** The read-only Git port is a type naming the four verbs
-  an observer may speak; no implementation ships in the package. No lease has been taken over a
-  real worktree and no commit has been authorized for a running system.
-- **Routing recommends; it does not act.** No account is drained, no reservation is held, and the
-  opaque authentication and credential references are never dereferenced.
-- **The performance baseline is synthetic.** The measurement machinery is proved and pinned, but
-  it has only ever run over already-emitted artifacts and synthetic scenarios. No throughput,
-  token or latency improvement is claimed.
-- **The launchd integration is an inert template.** Nothing installs it and nothing invokes
-  `launchctl`.
-- **Nothing here is adopted into real operation.** This repository has **no product cutover
-  authority**. Adoption is a separate, explicit, reversible owner decision, and it is not implied
-  by anything working.
-
-Out of scope by decision, so absence is not mistaken for oversight: authentication on the read
-plane, TLS, multi-tenancy and authorization roles, network hardening of the pinned durable
-server, and sandboxing of provider processes.
+A subscription is **not** an API key or unlimited capacity. Each adapter uses the
+provider's permitted interface; login may require the operator. Switching must respect
+provider terms and authorized budgets — never bypass limits or silently fall back to
+paid API usage. Missing quota information stays **unknown**, not “100% available.”
 
 ---
 
-## Architecture
+<sub>03 / PRACTICAL OUTCOMES</sub>
 
-Five strata, twelve packages. Dependencies point inward: an edge may reach a domain, a domain may
-not reach an edge.
+## What you can build
 
+| Use case | The intended experience |
+|---|---|
+| Ship a feature with an AI team | A coordinator plans, an implementer changes code, and an independent reviewer checks the result |
+| Run several initiatives | Separate roadmaps, context, task graphs and evidence; parallel work only where resources and write ownership allow it |
+| Continue after interruption | Resume from a validated checkpoint after a restart, quota pause or compatible account/model change |
+| Improve model selection | Use measured outcomes and evaluations to revise routing policies without changing application code |
+| Understand an execution | Inspect progress, decisions, usage and failures through CLI, API or an operator console |
+| Adopt better tooling | Replace a compatible adapter while preserving task identity, permissions and recorded history |
+
+The operator console is a product surface, not the execution engine.
+Its full redesign follows backend certification.
+
+---
+
+<sub>04 / OPEN BY DESIGN</sub>
+
+## Choose the capability, not the vendor
+
+**These are design choices, not a supported-integrations checklist.** The initial
+direction builds on existing components; alternatives require adapters and conformance
+tests before becoming selectable.
+
+| Need | Initial direction | Extension options |
+|---|---|---|
+| Model execution | Claude Code, Codex and Kimi subscription adapters | API-key providers and local/self-hosted models |
+| Durable execution | SQLite supervisor and Restate driver | Temporal or another compatible engine |
+| Agent reasoning and workflows | Native harness and policy-driven coordination | LangGraph; LangChain components inside bounded adapters |
+| Tools and agent communication | Local tools, MCP over stdio/loopback; durable messaging | A2A for external-agent interoperability |
+| Context and retrieval | Scoped artifacts and local context | LlamaIndex, vector stores or other retrieval adapters |
+| Tracing and diagnostics | OpenTelemetry/OpenInference contracts; optional Phoenix | Another compatible telemetry backend |
+| Evaluation | Native evidence pipeline; Promptfoo as external tooling | Other evaluation runners under the same result contract |
+| Persistence and credentials | SQLite ledger, local artifacts and protected credential references | Transactional stores, object storage and keychain adapters |
+| Voice and richer interaction | Text first | Optional speech, realtime and multimodal providers |
+
+See the [full market comparison](docs/audit/architecture/integrations/market/index.md)
+and [integration contracts](docs/audit/architecture/integrations/index.md).
+
+### Interchangeable does not mean interchangeable at any cost.
+
+The target composition policy checks compatibility **before work starts**.
+One component owns each responsibility within its scope: two engines must not both
+retry the same effect, and an SDK must not secretly override account or budget policy.
+
+Restate could own durability while a bounded LangGraph harness handles a subtask —
+but only with an explicitly tested division of responsibilities. An observability
+backend observes; its failure must not control execution.
+
+**Selection, checkpoint-based continuation and live migration are different capabilities.**
+A replacement must satisfy the required contract and evidence profile. Unsupported
+combinations are rejected with an explanation, not disguised as seamless switching.
+
+---
+
+<sub>05 / FROM INTENT TO EVIDENCE</sub>
+
+## How work moves forward
+
+```mermaid
+flowchart LR
+  A["Goal & roadmap"] --> B["Plan & permissions"]
+  B --> C["Resolve model, account & tools"]
+  C --> D["Execute bounded work"]
+  D --> E["Independent verification"]
+  E --> F["Checkpoint & next step"]
+  F -. "Continue or recover" .-> B
+  C -. "Decisions & usage" .-> L[("Durable ledger")]
+  D -. "Progress & outcomes" .-> L
+  E -. "Evidence" .-> L
+  L --> V["CLI · API · Console"]
+
+  classDef step fill:#102a43,stroke:#38bdf8,color:#f0f9ff
+  classDef record fill:#0f3d36,stroke:#2dd4bf,color:#ecfdf5
+  class A,B,C,D,E,F step
+  class L,V record
 ```
-kernel/       contracts        frozen runtime contracts, provider-neutral
-              protocol         the browser-safe observation contract
 
-persistence/  ledger           append-only event log and derived read models
+**Shared contracts, replaceable edges.** Domain rules own task state, permissions and
+budgets. Adapters translate provider protocols; vendor SDK types stay outside shared
+contracts. A durable, append-only ledger anchors history and rebuildable views.
 
-domains/      runtime          lifecycle engine, orchestration port, writer enforcement
-              accounts         quota estimation, ranking, switch recommendation
-              observation      passive collectors and the measured baseline
+**Evidence before completion.** The design requires bounded write ownership,
+independent verification and recovery that acknowledges uncertain external effects
+instead of blindly repeating them. Credentials stay outside recorded history.
 
-edges/        providers        three provider adapters behind one spawn authority
-              durability       the Restate edge: driver, endpoint, pinned server
+### Engineering foundation
 
-entrypoints/  daemon           supervised process and inert launchd template
-              gateway          the loopback HTTP front
-              console          the local operator surface, browser-safe
-              cli              the terminal reader over the same ledger
-```
+| Layer | Technology in this repository |
+|---|---|
+| Core | TypeScript, Node.js, pnpm workspaces, Zod |
+| Persistence | SQLite with WAL, via better-sqlite3 |
+| Execution edge | Restate TypeScript SDK and a pinned external server |
+| Local API | Fastify |
+| Console foundation | React, Vite, TanStack Query, Radix, XYFlow |
+| Verification | Vitest, ESLint, TypeScript checks, axe-core, GitHub Actions |
 
-Four ideas hold it together.
-
-**The ledger is the authority.** Every read model is derived and rebuildable; one projection
-implementation serves both the live path and replay, so a rebuild is byte-equivalent to what it
-replaces. Updates and deletes abort unconditionally at the database level.
-
-**Domains declare ports; edges implement them.** The orchestration port lives in the runtime
-domain, not in the Restate edge that satisfies it — an edge that owned its own port would be an
-edge implementing itself. The same shape applies to model execution: the daemon builds the port
-from admitted bindings and injects it, so the runtime domain never imports a provider.
-
-**Continuity is carried by digests, never by transcripts.** A checkpoint records bounded,
-digest-based state and one next safe action. Replaying a provider transcript is not a recovery
-strategy this system offers.
-
-**Agreement is proven, not assumed.** The CLI builds its answer from the ledger without ever
-seeing the server's; the console is proven to project the server's answer unchanged. Ordering,
-pagination, cursors and redaction are part of that equality.
+These are implementation choices, not a promise that every dependency can be hot-swapped.
+Replaceability is established at deliberate boundaries and proved per adapter.
 
 ---
 
-## Use cases
+<sub>06 / LOOK UNDER THE HOOD</sub>
 
-- **Read the recorded history of a run.** `acp integrity` verifies the hash chain end to end;
-  `acp events` pages through transitions filtered by task, type, emitting worker or resulting
-  state.
-- **Watch concurrent initiatives.** The console renders the portfolio, per-initiative task graph,
-  timeline, agents, accounts and roadmap documents from the same contract the server serves.
-- **Run one resolved route durably.** The daemon takes a resolved route and an admitted provider
-  binding, walks the plan under a durable driver, and survives a kill mid-step.
-- **Decide before acting.** Ask the conflict graph whether two task envelopes may run in
-  parallel, or the router whether an account still has margin for the next step plus its
-  checkpoint — both are pure functions over values you supply.
-- **Measure a baseline.** Collect over already-emitted artifacts or synthetic scenarios and
-  recompute the baseline over a disposable ledger.
+## Explore the project
 
----
+| Start here | What you will find |
+|---|---|
+| [Product blueprint](docs/audit/README.md) | Use cases, requirements and the planned architecture |
+| [Architecture](docs/audit/architecture/index.md) · [Data model](docs/audit/architecture/database/index.md) | Responsibilities, dependency direction and persistence contracts |
+| [Composition rules](docs/audit/architecture/integrations/composition/index.md) | How integrations coexist without duplicate authority |
+| [Quality and testing](docs/audit/quality/testing/index.md) | Behavioral tests, recovery drills and compatibility evidence |
+| [Developer runbook](docs/operations/runbook.md) · [API reference](docs/api-reference.md) | Build, run and inspect the current implementation |
+| [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) | Change discipline and operational boundaries |
 
-## Technology
+<details>
+<summary><strong>Developer setup</strong></summary>
 
-| Area | Choice |
-| --- | --- |
-| Language and build | TypeScript 5.9, ESM throughout, project references |
-| Runtime | Node 22.17 (`>=22.17.0 <23`) |
-| Packages | pnpm 10.26 workspace, exact-version catalog, install scripts disabled |
-| Storage | SQLite in WAL mode via `better-sqlite3` — the only native dependency in the graph |
-| Validation | Zod, at every boundary, with unknown keys rejected |
-| HTTP | Fastify, bound to `127.0.0.1` |
-| Console | React 19, Vite, TanStack Query, Radix primitives, React Flow |
-| Durable execution | Restate SDK, with the Restate server acquired as an external pinned binary rather than an npm dependency |
-| Tests and lint | Vitest across 17 project scopes, ESLint with typescript-eslint, jsdom and axe-core for the console |
-| CI | GitHub Actions, against a frozen lockfile, running every stage of the local check and 15 of its 17 vitest projects — the two that need the darwin-arm64 Restate binary are named and owed (ADR 0057) |
-
-Optional integrations are the provider CLIs themselves — `claude`, `kimi` and `codex`. None is
-bundled or downloaded; each is admitted by absolute path, with ownership, permission and
-canonical-path checks, and receives an environment built key by key from a four-variable
-allowlist.
-
-An API-key or local/self-hosted route takes an injected client instead of a binary. The bindings
-are optional at construction: a port built without them refuses those routes with a classified
-reason rather than downgrading them to a CLI, so subscription operation never depends on a paid
-API account or a local server.
-
----
-
-## Quick start
-
-Requires Node 22.17.0 and pnpm 10.26.2.
+Requires Node.js 22.17.0 and pnpm 10.26.2.
 
 ```sh
 pnpm install
 git config core.hooksPath .githooks
 ```
 
-The second line is required, once per checkout. Git's hook path is local configuration that a
-clone does not carry, and the checks fail until it is set — by design, because an unarmed fence
-is worse than no fence.
-
-One further step is needed before the full suite passes, and it is the only script this
-repository ships that reaches the network:
+For the full local verification suite, acquire the pinned Restate server explicitly:
 
 ```sh
 node scripts/acquire-restate-server.mjs
-```
-
-It verifies the platform and the SHA-256 against a pinned manifest, allows a single redirect
-hop, and unpacks into an ignored directory inside the checkout. Nothing downloads at import time
-and no install hook is involved. To ask whether the binary is present without fetching:
-
-```sh
-node scripts/acquire-restate-server.mjs --verify-only
-```
-
-Then verify the tree:
-
-```sh
 pnpm check
 ```
 
-## Commands
+The current server pin supports macOS on Apple Silicon. Other platforms cannot run
+every drill; consult the [runbook](docs/operations/runbook.md) and
+[CI workflow](.github/workflows/ci.yml) for their coverage and prerequisites.
+No provider subscription or API call is required for the scripted test fixtures.
 
-```sh
-pnpm check                 # architecture fence, lint, typecheck, tests
-pnpm check:architecture    # authority, write-set, topology and fence checks only
-pnpm lint
-pnpm typecheck
-pnpm test
-```
+The current surfaces are local-only and have **no product cutover authority**.
+Production adoption and any wider exposure require separate validation and authorization.
+Account configuration belongs outside repositories at
+`~/.rottay-agent-control-plane/accounts.local.json` (mode `0600`); recorded history
+carries credential references, not secrets. See the [security policy](SECURITY.md).
 
-### Running the surfaces
+</details>
 
-Both binaries must be built before they exist:
-
-```sh
-pnpm --filter @acp/cli build
-pnpm --filter @acp/gateway build
-```
-
-**Read a ledger.** `--database` is required and has no default; the CLI does not guess which
-ledger you mean, and it cannot write to one.
-
-```sh
-node packages/entrypoints/cli/dist/index.js status --database /absolute/path/acp.sqlite3
-```
-
-The verbs are `overview`, `tasks`, `task`, `workers`, `worker`, `events`, `status` and
-`integrity`.
-
-**Serve the observation plane.** Every path flag must be absolute; the server binds `127.0.0.1`
-and defaults to port 7517.
-
-```sh
-node packages/entrypoints/gateway/dist/bin/index.js \
-  --ledger /absolute/path/acp.sqlite3 \
-  [--accounts-file <absolute path>] \
-  [--write-bearer <absolute path>] \
-  [--port <n>]
-```
-
-Two fail-closed behaviours are worth knowing before you start. Without `--accounts-file`, the
-accounts surface answers `UNAVAILABLE` with reason `ACCOUNTS_FILE_UNCONFIGURED` — a true
-statement about the process, not an error. Without `--write-bearer`, every write answers `403`:
-an unconfigured door is shut, not open.
-
-**Open the console.** It proxies `/api` to the server on loopback and refuses to fall back to
-another port.
-
-```sh
-pnpm --filter @acp/console dev      # http://127.0.0.1:5178
-```
-
-**Stop cleanly.** Send `SIGTERM`, not `SIGKILL`. The daemon's supervised shutdown is what reaps
-the durable server it started; killing it outright leaves that process behind with nothing
-owning it.
-
----
-
-## Security and local-first boundaries
-
-**Loopback is the boundary, and it is deliberate rather than titular.** The observation surface
-shows every task, worker and transition with no authentication in front of it. The data is
-already on the operator's own machine, so a login there buys ceremony rather than security —
-what makes it safe is the bind address, which is a constant in code and not a deployment
-preference. A routable bind would publish the whole control plane to the local network.
-
-**Reads are free; writes are guarded structurally.** The two write routes are registered through
-a single guarded registrar, so a route is protected because of where it is registered rather than
-because someone remembered. The bearer token file must be absolute, canonical, a regular file,
-owned by the running user, and mode `0600`. A request with no credential and a request with the
-wrong one both answer `401`, and they are indistinguishable on purpose.
-
-**No secret enters this repository.** Not the ledger, not logs, not checkpoints, prompts,
-artifacts or commit messages. The owner's account file lives at
-`~/.rottay-agent-control-plane/accounts.local.json` with mode `0600`, outside every repository.
-Contracts carry opaque locators — `keychain://`, `profile://`, `file://` — and never material.
-Redaction is absence rather than masking: a value that must not travel is not serialized at all.
-
-**The browser holds nothing it should not.** The console's only workspace dependency is the
-observation contract. No absolute path, no event payload and no database driver reaches it, and
-the architecture fence asserts that rather than trusting it.
-
-**Supply chain is pinned and quiet.** Install scripts are disabled globally; exactly one package
-is authorized to build natively, and the fence asserts it stays the only one. Every runtime
-dependency is pinned to an exact version through a shared catalog. The durable server is not an
-npm dependency, because the published package carries a postinstall network beacon.
-
-**Publishing is a deliberate, narrowly authorized act.** The pre-push hook denies by default and
-only permits a fast-forward update from local `main` to `main` on this repository's canonical
-`origin` when the owner supplies the one-shot `ACP_OWNER_PUBLISH=1` signal. Deletions, tags, other
-refs, other remotes, credential-bearing URLs and non-fast-forward updates remain blocked. Local
-commits still require independent verification; publishing the repository does not authorize it to
-control another project or begin an operational cutover.
-
-**Destructive Git operations are forbidden.** A suspected worktree is quarantined and inspected,
-never cleaned. The violation record has no field in which a restore, reset, stash or clean could
-be written.
-
----
-
-## Documentation
-
-`docs/ROADMAP.md` is the canonical authority for this repository; its SHA-256 is verified on
-every check, and where it and any other document disagree, the roadmap wins.
-
-| Document | What it answers |
-| --- | --- |
-| [Runbook](docs/operations/runbook.md) | how to build, start and stop the surfaces, and what fails closed until you wire it |
-| [Troubleshooting](docs/operations/troubleshooting.md) | the failure classes this system produces, by the names it uses for them |
-| [Backup and restore](docs/operations/backup-restore.md) | why WAL makes "copy the file" the wrong instinct, and how to prove a restore |
-| [Switching accounts](docs/operations/account-switch.md) | which file governs, when the ledger takes over, and why a later file edit does not win |
-| [Update and rollback](docs/operations/update-rollback.md) | changing pins deliberately, and rolling back without destroying anything |
-| [API reference](docs/api-reference.md) | every route, checked in both directions against the frozen route table |
-| [Architecture decisions](docs/architecture/index.md) | the sixteen records behind the choices above |
-| [Contributing](CONTRIBUTING.md) | the write-set, single-writer and independent-validation rules every change follows |
-| [Security](SECURITY.md) | the boundary, the write door, the supply chain, and what is out of scope |
-
-Each package carries its own README describing its surface; where a list claims to be complete,
-it is checked against the actual exported barrel, so documentation drift fails the build.
-
-## Licence
-
-MIT. See [LICENSE](LICENSE).
+<p align="center">
+  <strong>Build around the work. Keep the freedom to change the tools.</strong><br>
+  Built at <a href="https://github.com/rottay">Rottay</a> · <a href="LICENSE">License</a>
+</p>
