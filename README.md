@@ -35,13 +35,34 @@ check. Adding more models does not, by itself, solve those coordination problems
 
 Agent Control Plane brings the missing decisions into one operating model:
 
-| What you want to control | What should no longer depend on remembering a chat |
-|---|---|
-| **The team** | Who owns each responsibility, with which model and account |
-| **The boundaries** | What an agent may read, change, call or spend |
-| **The handoff** | Which result and evidence the next worker receives |
-| **The outcome** | Which conditions authorize completion, correction or escalation |
-| **The continuity** | How the task waits, recovers or moves to a compatible worker |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">What you want to control</th>
+<th width="10000">What should no longer depend on remembering a chat</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>The team</strong></td>
+<td>Who owns each responsibility, with which model and account</td>
+</tr>
+<tr>
+<td><strong>The boundaries</strong></td>
+<td>What an agent may read, change, call or spend</td>
+</tr>
+<tr>
+<td><strong>The handoff</strong></td>
+<td>Which result and evidence the next worker receives</td>
+</tr>
+<tr>
+<td><strong>The outcome</strong></td>
+<td>Which conditions authorize completion, correction or escalation</td>
+</tr>
+<tr>
+<td><strong>The continuity</strong></td>
+<td>How the task waits, recovers or moves to a compatible worker</td>
+</tr>
+</tbody></table>
 
 This is the distinction between **running several agents** and **operating an
 agent team**. The product is designed for the second.
@@ -76,13 +97,40 @@ you define the responsibilities and the evidence they exchange.
 
 *Illustrative workflow, not a fixed template or an assertion of current end-to-end support.*
 
-| Responsibility | Example assignment | What it must deliver |
-|---|---|---|
-| **Clarify the request** | Kimi as coordinator | File format, selected data, access rules and acceptance criteria; unresolved decisions go to the operator |
-| **Implement the feature** | Claude as implementer | A change inside an approved write-set, with artifact references and an explanation of behavior |
-| **Verify the behavior** | A separate worker with a suitable model | Tests for normal output, empty results and unauthorized access, with actual command results |
-| **Audit the change** | Codex or another independent reviewer | Findings against the agreed requirements and the exact change, not a restatement of the writer's summary |
-| **Authorize the next action** | The configured policy and operator approval where required | Permission to advance or create a commit only after the required evidence is present |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">Responsibility</th>
+<th width="25%">Example assignment</th>
+<th width="10000">What it must deliver</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Clarify the request</strong></td>
+<td>Kimi as coordinator</td>
+<td>File format, selected data, access rules and acceptance criteria; unresolved decisions go to the operator</td>
+</tr>
+<tr>
+<td><strong>Implement the feature</strong></td>
+<td>Claude as implementer</td>
+<td>A change inside an approved write-set, with artifact references and an explanation of behavior</td>
+</tr>
+<tr>
+<td><strong>Verify the behavior</strong></td>
+<td>A separate worker with a suitable model</td>
+<td>Tests for normal output, empty results and unauthorized access, with actual command results</td>
+</tr>
+<tr>
+<td><strong>Audit the change</strong></td>
+<td>Codex or another independent reviewer</td>
+<td>Findings against the agreed requirements and the exact change, not a restatement of the writer&#39;s summary</td>
+</tr>
+<tr>
+<td><strong>Authorize the next action</strong></td>
+<td>The configured policy and operator approval where required</td>
+<td>Permission to advance or create a commit only after the required evidence is present</td>
+</tr>
+</tbody></table>
 
 Suppose the reviewer finds that the export includes data the requester cannot
 access. **The plan does not advance because most tests passed.** It returns the
@@ -98,15 +146,42 @@ invent its own authority to skip them.
 
 ### Configure the responsibility, not just the model name.
 
-| Setting | What you define |
-|---|---|
-| Responsibility | Coordinate, investigate, implement, verify, audit or consult |
-| Assignment | Provider, model/version, transport and eligible account |
-| Context | Instructions, reference artifacts, scope and prior decisions |
-| Permissions | Allowed tools, read/write boundaries and required approvals |
-| Deliverable | A change, tests, findings or another result with acceptance criteria |
-| Transition | Continue, request corrections, wait, escalate or stop |
-| Resources | Budget, timeout, retry limits and concurrency |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">Setting</th>
+<th width="10000">What you define</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Responsibility</td>
+<td>Coordinate, investigate, implement, verify, audit or consult</td>
+</tr>
+<tr>
+<td>Assignment</td>
+<td>Provider, model/version, transport and eligible account</td>
+</tr>
+<tr>
+<td>Context</td>
+<td>Instructions, reference artifacts, scope and prior decisions</td>
+</tr>
+<tr>
+<td>Permissions</td>
+<td>Allowed tools, read/write boundaries and required approvals</td>
+</tr>
+<tr>
+<td>Deliverable</td>
+<td>A change, tests, findings or another result with acceptance criteria</td>
+</tr>
+<tr>
+<td>Transition</td>
+<td>Continue, request corrections, wait, escalate or stop</td>
+</tr>
+<tr>
+<td>Resources</td>
+<td>Budget, timeout, retry limits and concurrency</td>
+</tr>
+</tbody></table>
 
 Plans and assignments are versioned. Approvals refer to a specific revision.
 A dry-run explains dependencies, capability requirements and estimated consumption
@@ -127,11 +202,26 @@ Subscription-based coding tools are a primary use case. The control plane is
 designed to consider account eligibility, reported usage, reservations and reset
 windows when assigning work — alongside API-key clients and local models.
 
-| Execution path | What it brings |
-|---|---|
-| **Subscription** | Use a provider's permitted coding interface and manage its reported capacity |
-| **API key** | Use explicit metered billing with an authorized budget |
-| **Local or self-hosted** | Use an admitted endpoint under its resource and privacy constraints |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">Execution path</th>
+<th width="10000">What it brings</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Subscription</strong></td>
+<td>Use a provider&#39;s permitted coding interface and manage its reported capacity</td>
+</tr>
+<tr>
+<td><strong>API key</strong></td>
+<td>Use explicit metered billing with an authorized budget</td>
+</tr>
+<tr>
+<td><strong>Local or self-hosted</strong></td>
+<td>Use an admitted endpoint under its resource and privacy constraints</td>
+</tr>
+</tbody></table>
 
 The execution contract is shared. Billing rules and permissions are not.
 
@@ -201,14 +291,38 @@ integrations must use a permitted authentication and billing path.
 
 ![The operating layer: recover work, control spending, prove results, bound authority, understand each run and change tools through stable contracts.](docs/readme/benefits/index.png)
 
-| Situation | The designed response |
-|---|---|
-| **A process crashes** | Recover task identity and checkpoints; reconcile uncertain effects before retrying |
-| **A provider stops responding** | Apply bounded timeouts and retries; wait or use an explicitly permitted alternative |
-| **An account runs out of capacity** | Pause or hand off under policy, without losing the task or hiding new charges |
-| **A task needs outside input** | Wait for an approval, signal or timer supported by the selected driver |
-| **Two agents want the same resource** | Reserve capacity and enforce write ownership before dispatch |
-| **A check or review fails** | Record the evidence and follow the configured correction or escalation path |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">Situation</th>
+<th width="10000">The designed response</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>A process crashes</strong></td>
+<td>Recover task identity and checkpoints; reconcile uncertain effects before retrying</td>
+</tr>
+<tr>
+<td><strong>A provider stops responding</strong></td>
+<td>Apply bounded timeouts and retries; wait or use an explicitly permitted alternative</td>
+</tr>
+<tr>
+<td><strong>An account runs out of capacity</strong></td>
+<td>Pause or hand off under policy, without losing the task or hiding new charges</td>
+</tr>
+<tr>
+<td><strong>A task needs outside input</strong></td>
+<td>Wait for an approval, signal or timer supported by the selected driver</td>
+</tr>
+<tr>
+<td><strong>Two agents want the same resource</strong></td>
+<td>Reserve capacity and enforce write ownership before dispatch</td>
+</tr>
+<tr>
+<td><strong>A check or review fails</strong></td>
+<td>Record the evidence and follow the configured correction or escalation path</td>
+</tr>
+</tbody></table>
 
 Durable queues, cancellation, reattachment and concurrency belong to the execution
 contract. Each driver declares what it can actually support. A simpler local
@@ -272,17 +386,50 @@ and rules for how they cooperate.
 The map below distinguishes the principal direction from alternative and optional
 integration targets. **It is not a list of installed or currently supported plugins.**
 
-| Responsibility | Technologies and integration direction |
-|---|---|
-| **Model execution** | [Claude Code](https://code.claude.com/docs/en/overview), [Codex](https://openai.com/codex/), [Kimi](https://www.kimi.com/); API-key and local-model adapters |
-| **Durable orchestration** | [Restate](https://docs.restate.dev/) as the principal integration direction; [Temporal](https://docs.temporal.io/) as an alternative driver target; local [SQLite](https://sqlite.org/) supervisor |
-| **Agent workflows** | Native harness; optional [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview) and [LangChain](https://docs.langchain.com/oss/python/langchain/overview) adapters |
-| **Tools and delegation** | [MCP](https://modelcontextprotocol.io/) and native tools; [A2A](https://a2a-protocol.org/latest/) as an external-agent extension |
-| **Context and retrieval** | Scoped artifacts; optional [LlamaIndex](https://github.com/run-llama/llama_index), retrieval and vector-store adapters |
-| **Observability** | [OpenTelemetry](https://opentelemetry.io/) / [OpenInference](https://github.com/Arize-ai/openinference); [Phoenix](https://arize.com/docs/phoenix) as the initial optional backend |
-| **Evaluations** | [Promptfoo](https://www.promptfoo.dev/docs/intro/) and compatible runners informing one capability registry and versioned routing policies |
-| **Storage and credentials** | [SQLite](https://sqlite.org/) and local artifacts; transactional database, object-store and keychain adapter targets |
-| **Operator interaction** | CLI and API; a separately designed console, notifications and optional voice/realtime extensions |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">Responsibility</th>
+<th width="10000">Technologies and integration direction</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Model execution</strong></td>
+<td><a href="https://code.claude.com/docs/en/overview">Claude Code</a>, <a href="https://openai.com/codex/">Codex</a>, <a href="https://www.kimi.com/">Kimi</a>; API-key and local-model adapters</td>
+</tr>
+<tr>
+<td><strong>Durable orchestration</strong></td>
+<td><a href="https://docs.restate.dev/">Restate</a> as the principal integration direction; <a href="https://docs.temporal.io/">Temporal</a> as an alternative driver target; local <a href="https://sqlite.org/">SQLite</a> supervisor</td>
+</tr>
+<tr>
+<td><strong>Agent workflows</strong></td>
+<td>Native harness; optional <a href="https://docs.langchain.com/oss/python/langgraph/overview">LangGraph</a> and <a href="https://docs.langchain.com/oss/python/langchain/overview">LangChain</a> adapters</td>
+</tr>
+<tr>
+<td><strong>Tools and delegation</strong></td>
+<td><a href="https://modelcontextprotocol.io/">MCP</a> and native tools; <a href="https://a2a-protocol.org/latest/">A2A</a> as an external-agent extension</td>
+</tr>
+<tr>
+<td><strong>Context and retrieval</strong></td>
+<td>Scoped artifacts; optional <a href="https://github.com/run-llama/llama_index">LlamaIndex</a>, retrieval and vector-store adapters</td>
+</tr>
+<tr>
+<td><strong>Observability</strong></td>
+<td><a href="https://opentelemetry.io/">OpenTelemetry</a> / <a href="https://github.com/Arize-ai/openinference">OpenInference</a>; <a href="https://arize.com/docs/phoenix">Phoenix</a> as the initial optional backend</td>
+</tr>
+<tr>
+<td><strong>Evaluations</strong></td>
+<td><a href="https://www.promptfoo.dev/docs/intro/">Promptfoo</a> and compatible runners informing one capability registry and versioned routing policies</td>
+</tr>
+<tr>
+<td><strong>Storage and credentials</strong></td>
+<td><a href="https://sqlite.org/">SQLite</a> and local artifacts; transactional database, object-store and keychain adapter targets</td>
+</tr>
+<tr>
+<td><strong>Operator interaction</strong></td>
+<td>CLI and API; a separately designed console, notifications and optional voice/realtime extensions</td>
+</tr>
+</tbody></table>
 
 ### Combine capabilities without duplicating control.
 
@@ -345,13 +492,34 @@ hidden prerequisite for the native path.
 
 ## What you can build
 
-| Use case | The outcome to coordinate |
-|---|---|
-| **Feature delivery** | Brief, implementation, tests and independent review, with explicit approval gates |
-| **Codebase audit or refactor** | Read-only investigation, evidence, bounded changes and verification against the original objective |
-| **Parallel initiatives** | Separate plans, context and results sharing eligible capacity safely |
-| **Long-running development** | Continuity across quota pauses, process restarts and compatible worker handoffs |
-| **Model evaluation** | Compare quality, latency and total cost per accepted result before revising routing policy |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">Use case</th>
+<th width="10000">The outcome to coordinate</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Feature delivery</strong></td>
+<td>Brief, implementation, tests and independent review, with explicit approval gates</td>
+</tr>
+<tr>
+<td><strong>Codebase audit or refactor</strong></td>
+<td>Read-only investigation, evidence, bounded changes and verification against the original objective</td>
+</tr>
+<tr>
+<td><strong>Parallel initiatives</strong></td>
+<td>Separate plans, context and results sharing eligible capacity safely</td>
+</tr>
+<tr>
+<td><strong>Long-running development</strong></td>
+<td>Continuity across quota pauses, process restarts and compatible worker handoffs</td>
+</tr>
+<tr>
+<td><strong>Model evaluation</strong></td>
+<td>Compare quality, latency and total cost per accepted result before revising routing policy</td>
+</tr>
+</tbody></table>
 
 ### Two initiatives, without two disconnected operating models.
 
@@ -395,14 +563,38 @@ Certification focuses on behavior: instruction delivery, independent verificatio
 crash recovery, concurrent reservations, quota pressure, stream reconnection and
 tool failures. Tests mirror module ownership outside production folders.
 
-| Architectural commitment | What it protects |
-|---|---|
-| **One owner per concept** | No competing definitions of an account, task, permission or capability |
-| **Explicit module boundaries** | Folder/index entry points, meaningful paths and dependencies that can be inspected |
-| **Normalized data and migrations** | Consistent identities and relationships instead of opaque provider payloads as the product model |
-| **Versioned policy and approvals** | An explanation of which rules and exact revision governed a result |
-| **Conformance beyond types** | An adapter must deliver real instructions, cancellation, results and usage under its declared support profile |
-| **Failure-path certification** | Recovery, isolation and optional-service failures tested as behavior, not inferred from interfaces |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">Architectural commitment</th>
+<th width="10000">What it protects</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>One owner per concept</strong></td>
+<td>No competing definitions of an account, task, permission or capability</td>
+</tr>
+<tr>
+<td><strong>Explicit module boundaries</strong></td>
+<td>Folder/index entry points, meaningful paths and dependencies that can be inspected</td>
+</tr>
+<tr>
+<td><strong>Normalized data and migrations</strong></td>
+<td>Consistent identities and relationships instead of opaque provider payloads as the product model</td>
+</tr>
+<tr>
+<td><strong>Versioned policy and approvals</strong></td>
+<td>An explanation of which rules and exact revision governed a result</td>
+</tr>
+<tr>
+<td><strong>Conformance beyond types</strong></td>
+<td>An adapter must deliver real instructions, cancellation, results and usage under its declared support profile</td>
+</tr>
+<tr>
+<td><strong>Failure-path certification</strong></td>
+<td>Recovery, isolation and optional-service failures tested as behavior, not inferred from interfaces</td>
+</tr>
+</tbody></table>
 
 The local ledger remains the record of product events. A workflow engine may
 keep its own journal; a telemetry system may keep traces; a retrieval service may
@@ -412,13 +604,34 @@ silently replace the product's definition of a completed task or an authorized a
 <details>
 <summary><strong>Technology foundation</strong></summary>
 
-| Layer | Current implementation technologies |
-|---|---|
-| Language and contracts | [TypeScript](https://www.typescriptlang.org/), [Node.js](https://nodejs.org/), [Zod](https://zod.dev/) |
-| Workspace and API | [pnpm](https://pnpm.io/), [Fastify](https://fastify.dev/) |
-| Persistence and execution | [SQLite](https://sqlite.org/) with WAL, [better-sqlite3](https://github.com/WiseLibs/better-sqlite3), [Restate TypeScript SDK](https://docs.restate.dev/) |
-| Console foundation | [React](https://react.dev/), [Vite](https://vite.dev/), [TanStack Query](https://tanstack.com/query), [Radix](https://www.radix-ui.com/), [XYFlow](https://xyflow.com/) |
-| Verification | [Vitest](https://vitest.dev/), [ESLint](https://eslint.org/), TypeScript checks, [axe-core](https://github.com/dequelabs/axe-core), [GitHub Actions](https://github.com/features/actions) |
+<table width="100%">
+<thead>
+<tr>
+<th width="25%">Layer</th>
+<th width="10000">Current implementation technologies</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Language and contracts</td>
+<td><a href="https://www.typescriptlang.org/">TypeScript</a>, <a href="https://nodejs.org/">Node.js</a>, <a href="https://zod.dev/">Zod</a></td>
+</tr>
+<tr>
+<td>Workspace and API</td>
+<td><a href="https://pnpm.io/">pnpm</a>, <a href="https://fastify.dev/">Fastify</a></td>
+</tr>
+<tr>
+<td>Persistence and execution</td>
+<td><a href="https://sqlite.org/">SQLite</a> with WAL, <a href="https://github.com/WiseLibs/better-sqlite3">better-sqlite3</a>, <a href="https://docs.restate.dev/">Restate TypeScript SDK</a></td>
+</tr>
+<tr>
+<td>Console foundation</td>
+<td><a href="https://react.dev/">React</a>, <a href="https://vite.dev/">Vite</a>, <a href="https://tanstack.com/query">TanStack Query</a>, <a href="https://www.radix-ui.com/">Radix</a>, <a href="https://xyflow.com/">XYFlow</a></td>
+</tr>
+<tr>
+<td>Verification</td>
+<td><a href="https://vitest.dev/">Vitest</a>, <a href="https://eslint.org/">ESLint</a>, TypeScript checks, <a href="https://github.com/dequelabs/axe-core">axe-core</a>, <a href="https://github.com/features/actions">GitHub Actions</a></td>
+</tr>
+</tbody></table>
 
 The console is a separate design effort, not an already-finished dashboard.
 CLI, API and console are intended to share task semantics and authorization.
@@ -455,12 +668,35 @@ history carries credential references, not secrets. See [Security](SECURITY.md).
 
 ## Explore
 
-| Product | Engineering | Development |
-|---|---|---|
-| [Use-case catalog](docs/audit/requirements/index.md) | [Architecture](docs/audit/architecture/index.md) | [Runbook](docs/operations/runbook.md) |
-| [Specification](docs/audit/README.md) | [Data model](docs/audit/architecture/database/index.md) | [API reference](docs/api-reference.md) |
-| [Ecosystem comparison](docs/audit/architecture/integrations/market/index.md) | [Testing strategy](docs/audit/quality/testing/index.md) | [Contributing](CONTRIBUTING.md) |
-| [Interaction model](docs/audit/architecture/contracts/interaction/index.md) | [Integration contracts](docs/audit/architecture/integrations/index.md) | [Security](SECURITY.md) · [License](LICENSE) |
+<table width="100%">
+<thead>
+<tr>
+<th width="33%">Product</th>
+<th width="33%">Engineering</th>
+<th width="10000">Development</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><a href="docs/audit/requirements/index.md">Use-case catalog</a></td>
+<td><a href="docs/audit/architecture/index.md">Architecture</a></td>
+<td><a href="docs/operations/runbook.md">Runbook</a></td>
+</tr>
+<tr>
+<td><a href="docs/audit/README.md">Specification</a></td>
+<td><a href="docs/audit/architecture/database/index.md">Data model</a></td>
+<td><a href="docs/api-reference.md">API reference</a></td>
+</tr>
+<tr>
+<td><a href="docs/audit/architecture/integrations/market/index.md">Ecosystem comparison</a></td>
+<td><a href="docs/audit/quality/testing/index.md">Testing strategy</a></td>
+<td><a href="CONTRIBUTING.md">Contributing</a></td>
+</tr>
+<tr>
+<td><a href="docs/audit/architecture/contracts/interaction/index.md">Interaction model</a></td>
+<td><a href="docs/audit/architecture/integrations/index.md">Integration contracts</a></td>
+<td><a href="SECURITY.md">Security</a> · <a href="LICENSE">License</a></td>
+</tr>
+</tbody></table>
 
 <p align="center">
   <strong>Your workflow should outlast your choice of tools.</strong><br>
