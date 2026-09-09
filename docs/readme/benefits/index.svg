@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
+  <title id="title">Work as a team. Spend with intent. Keep your freedom.</title>
+  <desc id="desc">Three product benefits: clear roles and verified handoffs; capacity-aware decisions; replaceable implementations behind stable contracts.</desc>
+  <defs>
+    <style>text{font-family:"Helvetica Neue",Arial,sans-serif}.serif{font-family:Georgia,serif;font-style:italic}.mono{font-family:Menlo,Consolas,monospace}</style>
+    <filter id="shadow" x="-25%" y="-25%" width="160%" height="175%">
+      <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#12232a" flood-opacity=".12"/>
+    </filter>
+  </defs>
+  <rect x="0.5" y="0.5" width="379" height="279" rx="18" fill="#ecf1e5" stroke="#d8d6cc"/>
+  <text x="30" y="40" font-size="11" fill="#526551" class="mono" letter-spacing="1.4">01 / COORDINATION</text>
+  <text x="29" y="100" font-size="42" fill="#264333" font-weight="600" letter-spacing="-1.6">Work as</text>
+  <text x="29" y="151" font-size="48" fill="#264333" class="serif" letter-spacing="-1.3">a team.</text>
+  <path d="M30 178 L350 178" fill="none" stroke="#cfd3c6" stroke-width="1"/>
+  <text x="30" y="215" font-size="18" fill="#526551">Clear roles. Shared context.</text>
+  <text x="30" y="244" font-size="18" fill="#526551">Independently verified handoffs.</text>
+  <rect x="410.5" y="0.5" width="379" height="279" rx="18" fill="#f3f0e9" stroke="#d8d6cc"/>
+  <text x="440" y="40" font-size="11" fill="#53616a" class="mono" letter-spacing="1.4">02 / CAPACITY</text>
+  <text x="439" y="100" font-size="42" fill="#192630" font-weight="600" letter-spacing="-1.6">Spend with</text>
+  <text x="439" y="151" font-size="48" fill="#192630" class="serif" letter-spacing="-1.3">intent.</text>
+  <path d="M440 178 L760 178" fill="none" stroke="#cfd3c6" stroke-width="1"/>
+  <text x="440" y="215" font-size="18" fill="#53616a">Usage, quotas and reset windows.</text>
+  <text x="440" y="244" font-size="18" fill="#53616a">Decisions before the next run.</text>
+  <rect x="820.5" y="0.5" width="379" height="279" rx="18" fill="#142630" stroke="#243b46"/>
+  <text x="850" y="40" font-size="11" fill="#bfccd0" class="mono" letter-spacing="1.4">03 / FREEDOM</text>
+  <text x="849" y="100" font-size="42" fill="#f4f1e9" font-weight="600" letter-spacing="-1.6">Keep your</text>
+  <text x="849" y="151" font-size="48" fill="#d9e4bd" class="serif" letter-spacing="-1.3">freedom.</text>
+  <path d="M850 178 L1170 178" fill="none" stroke="#38505a" stroke-width="1"/>
+  <text x="850" y="215" font-size="18" fill="#bfccd0">Stable contracts.</text>
+  <text x="850" y="244" font-size="18" fill="#bfccd0">Replaceable implementations.</text>
+</svg>

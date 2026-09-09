@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="664" viewBox="0 0 1200 664" role="img" aria-labelledby="title desc">
+  <title id="title">Keep the work. Change the implementation.</title>
+  <desc id="desc">Task identity, context, permissions and history live behind shared contracts. Compatible adapters supply models, durability, tools and telemetry. One owner per responsibility and tested compatibility govern replacement.</desc>
+  <defs>
+    <style>text{font-family:"Helvetica Neue",Arial,sans-serif}.serif{font-family:Georgia,serif;font-style:italic}.mono{font-family:Menlo,Consolas,monospace}</style>
+    <filter id="shadow" x="-25%" y="-25%" width="160%" height="175%">
+      <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#12232a" flood-opacity=".12"/>
+    </filter>
+  </defs>
+  <rect x="0.5" y="0.5" width="1199" height="663" rx="20" fill="#f3f0e9" stroke="#d8d6cc"/>
+  <text x="46" y="44" font-size="12" fill="#53616a" class="mono" letter-spacing="1.4">THE ARCHITECTURE / REPLACEABLE EDGES</text>
+  <text x="46" y="102" font-size="43" fill="#192630" font-weight="650" letter-spacing="-1.7">Keep the work.</text>
+  <text x="351" y="102" font-size="43" fill="#355945" class="serif" letter-spacing="-1.1">Change the implementation.</text>
+  <rect x="46" y="142" width="1108" height="159" rx="15" fill="#142630" stroke="none"/>
+  <text x="75" y="179" font-size="11" fill="#bdccce" class="mono" letter-spacing="1.4">WHAT BELONGS TO YOUR WORKFLOW</text>
+  <text x="75" y="227" font-size="29" fill="#f4f1e8" font-weight="550" letter-spacing="-0.3">Goals  /  Context  /  Permissions  /  Evidence</text>
+  <text x="75" y="269" font-size="18" fill="#bdccce">Shared contracts keep task identity, budgets and recorded history independent of vendor protocols.</text>
+  <path d="M600 301 L600 337" fill="none" stroke="#718879" stroke-width="2"/>
+  <path d="M181 337 L1019 337" fill="none" stroke="#718879" stroke-width="2"/>
+  <path d="M181 337 L181 369" fill="none" stroke="#718879" stroke-width="2"/>
+  <path d="M461 337 L461 369" fill="none" stroke="#718879" stroke-width="2"/>
+  <path d="M741 337 L741 369" fill="none" stroke="#718879" stroke-width="2"/>
+  <path d="M1021 337 L1021 369" fill="none" stroke="#718879" stroke-width="2"/>
+  <rect x="46" y="369" width="268" height="199" rx="13" fill="#fffcf6" stroke="#cfd3c7"/>
+  <text x="64" y="400" font-size="10" fill="#537057" class="mono" letter-spacing="1.4">MODELS</text>
+  <text x="64" y="438" font-size="18" fill="#192630" font-weight="600" letter-spacing="-0.3">The right intelligence</text>
+  <text x="64" y="471" font-size="14" fill="#53616a">Claude Code &#xB7; Codex &#xB7; Kimi</text>
+  <text x="64" y="496" font-size="14" fill="#53616a">API-key clients &#xB7; Local models</text>
+  <path d="M64 518 L294 518" fill="none" stroke="#d8d6cc" stroke-width="1"/>
+  <text x="64" y="547" font-size="13" fill="#56725b" font-weight="550">Execution contract</text>
+  <rect x="326" y="369" width="268" height="199" rx="13" fill="#fffcf6" stroke="#cfd3c7"/>
+  <text x="344" y="400" font-size="10" fill="#537057" class="mono" letter-spacing="1.4">DURABILITY</text>
+  <text x="344" y="438" font-size="18" fill="#192630" font-weight="600" letter-spacing="-0.3">Work that can recover</text>
+  <text x="344" y="471" font-size="14" fill="#53616a">SQLite &#xB7; Restate</text>
+  <text x="344" y="496" font-size="14" fill="#53616a">Other certified drivers</text>
+  <path d="M344 518 L574 518" fill="none" stroke="#d8d6cc" stroke-width="1"/>
+  <text x="344" y="547" font-size="13" fill="#56725b" font-weight="550">Orchestration contract</text>
+  <rect x="606" y="369" width="268" height="199" rx="13" fill="#fffcf6" stroke="#cfd3c7"/>
+  <text x="624" y="400" font-size="10" fill="#537057" class="mono" letter-spacing="1.4">TOOLS</text>
+  <text x="624" y="438" font-size="18" fill="#192630" font-weight="600" letter-spacing="-0.3">Capabilities on demand</text>
+  <text x="624" y="471" font-size="14" fill="#53616a">Native tools &#xB7; MCP</text>
+  <text x="624" y="496" font-size="14" fill="#53616a">Bounded external harnesses</text>
+  <path d="M624 518 L854 518" fill="none" stroke="#d8d6cc" stroke-width="1"/>
+  <text x="624" y="547" font-size="13" fill="#56725b" font-weight="550">Tool &amp; harness contracts</text>
+  <rect x="886" y="369" width="268" height="199" rx="13" fill="#fffcf6" stroke="#cfd3c7"/>
+  <text x="904" y="400" font-size="10" fill="#537057" class="mono" letter-spacing="1.4">OBSERVABILITY</text>
+  <text x="904" y="438" font-size="18" fill="#192630" font-weight="600" letter-spacing="-0.3">Visibility without control</text>
+  <text x="904" y="471" font-size="14" fill="#53616a">OTLP &#xB7; Phoenix</text>
+  <text x="904" y="496" font-size="14" fill="#53616a">Other compatible collectors</text>
+  <path d="M904 518 L1134 518" fill="none" stroke="#d8d6cc" stroke-width="1"/>
+  <text x="904" y="547" font-size="13" fill="#56725b" font-weight="550">Telemetry contract</text>
+  <text x="600" y="615" font-size="12" fill="#53616a" class="mono" text-anchor="middle" letter-spacing="1.1">ONE OWNER PER RESPONSIBILITY &#xB7; COMPATIBILITY BEFORE EXECUTION</text>
+  <text x="600" y="641" font-size="14" fill="#53616a" text-anchor="middle">Design concept. Named alternatives require an implemented, tested adapter before selection.</text>
+</svg>

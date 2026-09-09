@@ -7693,6 +7693,20 @@ const P04_WRITE_SET = [
   "docs/architecture/index.md",
 ];
 
+// Owner-authorized static README artwork; exact paths, no directory exemption.
+const README_ASSET_WRITE_SET = [
+  "docs/readme/header/index.svg",
+  "docs/readme/header/index.png",
+  "docs/readme/benefits/index.svg",
+  "docs/readme/benefits/index.png",
+  "docs/readme/capacity/index.svg",
+  "docs/readme/capacity/index.png",
+  "docs/readme/architecture/index.svg",
+  "docs/readme/architecture/index.png",
+  "docs/readme/roadmap/index.svg",
+  "docs/readme/roadmap/index.png",
+];
+
 const WRITE_SET = [
   ...P0_WRITE_SET,
   ...P1A_WRITE_SET,
@@ -7865,6 +7879,7 @@ const WRITE_SET = [
   ...V2BER19B_WRITE_SET,
   ...P03_WRITE_SET,
   ...P04_WRITE_SET,
+  ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
 /** Distinct paths, for reporting. A path in two phases is still one path. */

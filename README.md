@@ -1,220 +1,243 @@
-<h1 align="center">Agent Control Plane</h1>
+<h1 align="center">
+  <img src="docs/readme/header/index.png" width="1200" alt="Rottay Agent Control Plane — One mission. Many minds. Coordinate the work, choose the right agents, and keep the freedom to change your tools." />
+</h1>
 
 <p align="center">
-  <strong>Your agents. Your subscriptions. Your choice.</strong><br>
-  One place to coordinate AI work — without building your workflow around one vendor.
-</p>
-
-<p align="center">
-  <a href="#the-vision">Overview</a> ·
-  <a href="#subscriptions-first">Subscriptions</a> ·
+  <a href="#overview">Overview</a> ·
   <a href="#what-you-can-build">Use cases</a> ·
-  <a href="#choose-the-capability-not-the-vendor">Integrations</a> ·
-  <a href="#how-work-moves-forward">How it works</a> ·
+  <a href="#subscriptions-as-a-first-class-resource">Subscriptions</a> ·
+  <a href="#an-open-framework-not-a-fixed-stack">Integrations</a> ·
+  <a href="#the-product-roadmap">Roadmap</a> ·
+  <a href="#built-for-developers">Architecture</a> ·
   <a href="#explore-the-project">Explore</a>
 </p>
 
-> **The destination, not a release announcement.** This README presents the product
-> we are building. It is not a claim that every integration or guarantee ships today.
-> The canonical [implementation record](docs/ROADMAP.md) tracks delivery and verification;
-> the [product specification](docs/audit/README.md) defines the target.
+> **The destination, not a release announcement.** This is the product vision.
+> The canonical [implementation record](docs/ROADMAP.md) tracks what is delivered;
+> the [specification](docs/audit/README.md) defines the requirements and acceptance tests.
 
 <sub>01 / THE VISION</sub>
 
-## The vision
+## Overview
 
-### Models change. Your operating model should not have to.
+### Your next model should be a choice. Not a rewrite.
 
-AI tooling evolves quickly. The underlying needs are more durable: give agents useful
-instructions, choose the right resources, preserve context, control spending, verify
-results and recover when something stops.
+**Agent Control Plane is a local-first, extensible framework for running AI work
+across providers, models, accounts and tools.** It connects the whole journey:
+a goal, an executable plan, an agent team, controlled execution, independent
+verification and a record you can trust.
 
-**Agent Control Plane is a local-first, extensible framework for those needs.**
-It is designed to coordinate providers, models, accounts and tools through shared
-contracts — so adopting a better implementation does not mean rebuilding your workflow.
+The starting point is practical: we work with coding-agent subscriptions and want
+to coordinate their strengths and capacity without manually supervising every
+terminal. The destination is broader: **one operating model for agent work,
+with replaceable technology behind it.**
 
-- **For developers:** delegate implementation, research and review without manually supervising every terminal.
-- **For teams:** keep initiatives, responsibilities, permissions and evidence organized.
-- **For operators:** understand consumption, capacity and progress before deciding what runs next.
+![Work as a team: clear roles, shared context and verified handoffs. Spend with intent: usage, quotas and reset windows. Keep your freedom: stable contracts and replaceable implementations.](docs/readme/benefits/index.png)
 
-**The ambition is not to bundle every framework. It is to make the useful ones replaceable.**
+Models and frameworks will keep changing. The needs remain recognizable:
+plan, delegate, execute, remember, verify, recover and measure. Those needs own
+the contracts; vendor-specific protocols belong behind adapters.
 
----
-
-<sub>02 / CAPACITY, NOT JUST API BILLS</sub>
-
-## Subscriptions first
-
-### Use the capacity you already pay for.
-
-Our primary use case is coordinating coding-agent subscriptions, including Claude Code,
-Codex and Kimi. Subscription CLIs, API-key clients and local models belong behind the
-**same execution contract**, while retaining their actual authentication, capabilities
-and usage limits.
-
-| What you need to know | What the control plane is designed to do |
-|---|---|
-| Which account can handle the next task? | Combine observed usage, remaining quota, reset windows and reserved capacity |
-| Which model should implement or review? | Resolve roles through configurable, versioned policies — not permanent brand rankings |
-| What happens when capacity runs out? | Checkpoint safely, wait for renewal or select another authorized account/model |
-| What did this initiative consume? | Attribute reported tokens and API costs; distinguish measurements, estimates and unknowns |
-| Can I use an API or local model instead? | Select a compatible transport without rewriting the task or silently changing its budget |
-
-A subscription is **not** an API key or unlimited capacity. Each adapter uses the
-provider's permitted interface; login may require the operator. Switching must respect
-provider terms and authorized budgets — never bypass limits or silently fall back to
-paid API usage. Missing quota information stays **unknown**, not “100% available.”
+**A coordinator today, a different reviewer tomorrow.** Assignments are versioned
+policy decisions, not permanent rankings of Claude, Codex, Kimi or any next provider.
 
 ---
 
-<sub>03 / PRACTICAL OUTCOMES</sub>
+<sub>02 / THE POSSIBILITIES</sub>
 
 ## What you can build
 
-| Use case | The intended experience |
-|---|---|
-| Ship a feature with an AI team | A coordinator plans, an implementer changes code, and an independent reviewer checks the result |
-| Run several initiatives | Separate roadmaps, context, task graphs and evidence; parallel work only where resources and write ownership allow it |
-| Continue after interruption | Resume from a validated checkpoint after a restart, quota pause or compatible account/model change |
-| Improve model selection | Use measured outcomes and evaluations to revise routing policies without changing application code |
-| Understand an execution | Inspect progress, decisions, usage and failures through CLI, API or an operator console |
-| Adopt better tooling | Replace a compatible adapter while preserving task identity, permissions and recorded history |
+### From a single task to an accountable agent team.
 
-The operator console is a product surface, not the execution engine.
-Its full redesign follows backend certification.
+| When you want to… | The intended workflow |
+|---|---|
+| **Ship a feature from a brief** | Decompose the goal, assign implementation and independent review, run checks, and create an authorized commit |
+| **Audit or refactor a codebase** | Explore read-only, collect evidence, propose bounded changes, and verify the result against the original objective |
+| **Run several initiatives** | Keep roadmaps, context and results separate while sharing account capacity; parallelize only compatible work |
+| **Continue a long-running project** | Survive quota pauses, restarts and compatible agent handoffs without reconstructing everything from a transcript |
+| **Stay in control without babysitting** | Review proposed plans, simulate before execution, approve sensitive actions, and pause or cancel through durable controls |
+| **Choose models by results** | Compare quality, latency and total cost per accepted result — including retries and reviews — then revise routing policy |
+| **Understand what happened** | Follow instructions, decisions, tool calls, outcomes and verification through a correlated execution history |
+
+The same operation should mean the same thing through **CLI, API and the future
+operator console**. The interface changes; the authority, task and result do not.
 
 ---
 
-<sub>04 / OPEN BY DESIGN</sub>
+<sub>03 / THE SUBSCRIPTION ADVANTAGE</sub>
 
-## Choose the capability, not the vendor
+## Subscriptions as a first-class resource
 
-**These are design choices, not a supported-integrations checklist.** The initial
-direction builds on existing components; alternatives require adapters and conformance
-tests before becoming selectable.
+### Coordinate the capacity you already pay for.
 
-| Need | Initial direction | Extension options |
+Subscription CLIs, API-key clients and local models share an execution contract,
+**not a billing model**. The control plane is designed to consider suitability,
+reported usage, remaining quota, reservations and reset windows before dispatching work.
+
+![Conceptual routing example, not live quota: an account without sufficient known capacity waits; a suitable account with margin is eligible; unreported quota remains unknown. A handoff checkpoints, revalidates and continues.](docs/readme/capacity/index.png)
+
+- **Route deliberately.** Choose a role, model and authorized account using configurable policies and the evidence available.
+- **Continue safely.** Wait for renewal or rehydrate a verified checkpoint on a compatible destination; a change of account is not a fresh, unrelated task.
+- **Account honestly.** Separate measured, estimated and unknown usage, subscription allocation and API spend. Track cost per result and forecasts with uncertainty.
+
+Each provider's permitted interface and terms still apply; login may require the
+operator. A subscription is not an API key or unlimited capacity. There is no
+silent switch from exhausted subscription capacity to a paid API bill.
+
+---
+
+<sub>04 / CAPABILITIES WITHOUT LOCK-IN</sub>
+
+## An open framework, not a fixed stack
+
+### Choose the responsibility. Then choose its implementation.
+
+![Architecture concept: goals, context, permissions and evidence stay behind shared contracts; compatible adapters provide models, durable execution, tools and observability. One owner per responsibility, with compatibility validated before execution.](docs/readme/architecture/index.png)
+
+The table below describes **integration directions and extension points**, not
+a claim that every named option is installed or supported today.
+
+| The need | Initial direction | Additional choices the architecture is designed to admit |
 |---|---|---|
-| Model execution | Claude Code, Codex and Kimi subscription adapters | API-key providers and local/self-hosted models |
-| Durable execution | SQLite supervisor and Restate driver | Temporal or another compatible engine |
-| Agent reasoning and workflows | Native harness and policy-driven coordination | LangGraph; LangChain components inside bounded adapters |
-| Tools and agent communication | Local tools, MCP over stdio/loopback; durable messaging | A2A for external-agent interoperability |
-| Context and retrieval | Scoped artifacts and local context | LlamaIndex, vector stores or other retrieval adapters |
-| Tracing and diagnostics | OpenTelemetry/OpenInference contracts; optional Phoenix | Another compatible telemetry backend |
-| Evaluation | Native evidence pipeline; Promptfoo as external tooling | Other evaluation runners under the same result contract |
-| Persistence and credentials | SQLite ledger, local artifacts and protected credential references | Transactional stores, object storage and keychain adapters |
-| Voice and richer interaction | Text first | Optional speech, realtime and multimodal providers |
+| **Execute a model** | Claude Code, Codex and Kimi subscription adapters | API-key clients and local/self-hosted models |
+| **Coordinate durable work** | SQLite supervisor and Restate driver | Temporal or another driver with a proven compatibility profile |
+| **Run agent workflows** | Native harness and configurable planning | LangGraph; LangChain components inside bounded adapters |
+| **Use tools and delegate** | Local tools, MCP over stdio/loopback, durable messages | A2A and external-agent adapters |
+| **Provide context and memory** | Scoped artifacts and local context | Retrieval adapters, LlamaIndex and vector stores |
+| **Observe and evaluate** | Neutral OTLP/OpenInference contracts; optional Phoenix; external Promptfoo tooling | Compatible telemetry backends and evaluation runners |
+| **Store and protect state** | SQLite, local artifacts and protected credential references | Transactional databases, object storage and keychain adapters |
+| **Add richer interaction** | Text first | Optional speech, realtime and multimodal packs |
 
-See the [full market comparison](docs/audit/architecture/integrations/market/index.md)
-and [integration contracts](docs/audit/architecture/integrations/index.md).
+**Composition matters as much as selection.** One engine owns recovery for a run;
+a delegated harness owns only its bounded subtask. A tool cannot expand permissions.
+An observability backend must not become a dependency for completing work.
 
-### Interchangeable does not mean interchangeable at any cost.
+The planned preflight explains incompatible combinations before execution — including
+overlapping retries, hidden model fallbacks and competing state owners.
 
-The target composition policy checks compatibility **before work starts**.
-One component owns each responsibility within its scope: two engines must not both
-retry the same effect, and an SDK must not secretly override account or budget policy.
+> **Change the tools. Preserve the meaning of the work.**
+>
+> Selection, checkpoint continuation and live migration are different capabilities.
+> Interchangeability requires real adapters passing the same contractual tests.
+> It is never inferred from two libraries exposing similar interfaces.
 
-Restate could own durability while a bounded LangGraph harness handles a subtask —
-but only with an explicitly tested division of responsibilities. An observability
-backend observes; its failure must not control execution.
-
-**Selection, checkpoint-based continuation and live migration are different capabilities.**
-A replacement must satisfy the required contract and evidence profile. Unsupported
-combinations are rejected with an explanation, not disguised as seamless switching.
+[Explore the market comparison →](docs/audit/architecture/integrations/market/index.md)
+[Read the composition rules →](docs/audit/architecture/integrations/composition/index.md)
 
 ---
 
-<sub>05 / FROM INTENT TO EVIDENCE</sub>
+<sub>05 / THE DELIVERY PATH</sub>
 
-## How work moves forward
+## The product roadmap
 
-```mermaid
-flowchart LR
-  A["Goal & roadmap"] --> B["Plan & permissions"]
-  B --> C["Resolve model, account & tools"]
-  C --> D["Execute bounded work"]
-  D --> E["Independent verification"]
-  E --> F["Checkpoint & next step"]
-  F -. "Continue or recover" .-> B
-  C -. "Decisions & usage" .-> L[("Durable ledger")]
-  D -. "Progress & outcomes" .-> L
-  E -. "Evidence" .-> L
-  L --> V["CLI · API · Console"]
+### Demonstrable outcomes, not a list of dependencies.
 
-  classDef step fill:#102a43,stroke:#38bdf8,color:#f0f9ff
-  classDef record fill:#0f3d36,stroke:#2dd4bf,color:#ecfdf5
-  class A,B,C,D,E,F step
-  class L,V record
-```
+The roadmap progresses from useful execution to dependable operation. The graphic
+groups the planned deliveries; the [detailed roadmap](docs/audit/roadmap/index.md)
+owns their dependencies, gates and acceptance evidence.
 
-**Shared contracts, replaceable edges.** Domain rules own task state, permissions and
-budgets. Adapters translate provider protocols; vendor SDK types stay outside shared
-contracts. A durable, append-only ledger anchors history and rebuildable views.
+![Six planned deliveries: first useful task; verified and recoverable work; continuous execution; coordinated agent teams; operational intelligence; dependable distribution. These are planned outcomes, not completion badges.](docs/readme/roadmap/index.png)
 
-**Evidence before completion.** The design requires bounded write ownership,
-independent verification and recovery that acknowledges uncertain external effects
-instead of blindly repeating them. Credentials stay outside recorded history.
+**What each delivery must prove**
 
-### Engineering foundation
+1. **Useful execution:** an instruction reaches a real model and its result returns through the product.
+2. **Trustworthy changes:** independent checks and recovery guarantees precede enabling automated commits.
+3. **Continuity:** queueing, cancellation, quotas and account handoffs preserve identity and authority.
+4. **Teamwork:** editable plans, dependencies, tools and parallel workers respect scope and resource limits.
+5. **Intelligence:** live diagnostics, usage, forecasts and evaluations produce explainable routing improvements.
+6. **Distribution:** installation, storage boundaries, compatibility profiles and failure scenarios are verified.
 
-| Layer | Technology in this repository |
-|---|---|
-| Core | TypeScript, Node.js, pnpm workspaces, Zod |
-| Persistence | SQLite with WAL, via better-sqlite3 |
-| Execution edge | Restate TypeScript SDK and a pinned external server |
-| Local API | Fastify |
-| Console foundation | React, Vite, TanStack Query, Radix, XYFlow |
-| Verification | Vitest, ESLint, TypeScript checks, axe-core, GitHub Actions |
+**After backend certification:** design the operator experience around initiatives,
+roadmaps, tasks, agents, accounts, live executions, evaluations and configuration.
+The console redesign is a separate delivery — not an already-finished dashboard.
 
-These are implementation choices, not a promise that every dependency can be hot-swapped.
-Replaceability is established at deliberate boundaries and proved per adapter.
+Advanced retrieval, external-agent interoperability, voice and other optional packs
+expand the product only when a concrete use case justifies them. The core must work
+without installing the entire ecosystem.
 
 ---
 
-<sub>06 / LOOK UNDER THE HOOD</sub>
+<sub>06 / ENGINEERING THAT SUPPORTS THE PROMISE</sub>
 
-## Explore the project
+## Built for developers
 
-| Start here | What you will find |
-|---|---|
-| [Product blueprint](docs/audit/README.md) | Use cases, requirements and the planned architecture |
-| [Architecture](docs/audit/architecture/index.md) · [Data model](docs/audit/architecture/database/index.md) | Responsibilities, dependency direction and persistence contracts |
-| [Composition rules](docs/audit/architecture/integrations/composition/index.md) | How integrations coexist without duplicate authority |
-| [Quality and testing](docs/audit/quality/testing/index.md) | Behavioral tests, recovery drills and compatibility evidence |
-| [Developer runbook](docs/operations/runbook.md) · [API reference](docs/api-reference.md) | Build, run and inspect the current implementation |
-| [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) | Change discipline and operational boundaries |
+**Clear boundaries. One owner per concept.** Domain rules own task state, budgets,
+permissions and continuity; adapters translate external protocols. Shared contracts
+keep vendor SDK types out of the core.
+
+**Data that can be explained.** A durable event ledger anchors recorded history;
+normalized models, explicit migrations and rebuildable projections give state a
+traceable meaning across restarts and storage changes.
+
+**Quality demonstrated through behavior.** The certification plan covers real
+instruction delivery, independent checks, crash recovery, quota pressure,
+stream reconnection, tool failures and incompatible adapters. Optional services
+must also be tested absent or unavailable.
 
 <details>
-<summary><strong>Developer setup</strong></summary>
+<summary><strong>Technology foundation</strong></summary>
+
+- **Core:** TypeScript, Node.js, pnpm workspaces and Zod.
+- **Persistence and execution:** SQLite with WAL, better-sqlite3 and the Restate TypeScript SDK.
+- **Local API:** Fastify.
+- **Console foundation:** React, Vite, TanStack Query, Radix and XYFlow.
+- **Verification:** Vitest, ESLint, TypeScript checks, axe-core and GitHub Actions.
+
+These are present implementation choices. Replaceability belongs to deliberate
+contract boundaries, not to every dependency or an untested promise of hot-swapping.
+
+</details>
+
+<details>
+<summary><strong>Developer setup and operational boundaries</strong></summary>
 
 Requires Node.js 22.17.0 and pnpm 10.26.2.
 
 ```sh
 pnpm install
 git config core.hooksPath .githooks
-```
-
-For the full local verification suite, acquire the pinned Restate server explicitly:
-
-```sh
 node scripts/acquire-restate-server.mjs
 pnpm check
 ```
 
-The current server pin supports macOS on Apple Silicon. Other platforms cannot run
-every drill; consult the [runbook](docs/operations/runbook.md) and
-[CI workflow](.github/workflows/ci.yml) for their coverage and prerequisites.
-No provider subscription or API call is required for the scripted test fixtures.
+The current Restate server pin supports macOS on Apple Silicon. Check the
+[runbook](docs/operations/runbook.md) and [CI workflow](.github/workflows/ci.yml)
+for platform-specific coverage. Scripted test fixtures do not consume provider
+subscriptions or API calls.
 
 The current surfaces are local-only and have **no product cutover authority**.
-Production adoption and any wider exposure require separate validation and authorization.
-Account configuration belongs outside repositories at
-`~/.rottay-agent-control-plane/accounts.local.json` (mode `0600`); recorded history
-carries credential references, not secrets. See the [security policy](SECURITY.md).
+Adoption and wider exposure require separate validation and authorization.
+Account configuration stays outside repositories at
+`~/.rottay-agent-control-plane/accounts.local.json` (mode `0600`); protected
+history carries credential references, not secrets. See [Security](SECURITY.md).
 
 </details>
 
+---
+
+<sub>07 / EXPLORE</sub>
+
+## Explore the project
+
+**Understand the product**<br>
+[Full specification](docs/audit/README.md) ·
+[Use-case catalog](docs/audit/requirements/index.md) ·
+[Delivery roadmap](docs/audit/roadmap/index.md)
+
+**Inspect the engineering**<br>
+[Architecture](docs/audit/architecture/index.md) ·
+[Data model](docs/audit/architecture/database/index.md) ·
+[Integration contracts](docs/audit/architecture/integrations/index.md) ·
+[Testing strategy](docs/audit/quality/testing/index.md)
+
+**Run or contribute**<br>
+[Developer runbook](docs/operations/runbook.md) ·
+[API reference](docs/api-reference.md) ·
+[Contributing](CONTRIBUTING.md) ·
+[Security](SECURITY.md) ·
+[License](LICENSE)
+
 <p align="center">
   <strong>Build around the work. Keep the freedom to change the tools.</strong><br>
-  Built at <a href="https://github.com/rottay">Rottay</a> · <a href="LICENSE">License</a>
+  A project by <a href="https://github.com/rottay">Rottay</a>
 </p>

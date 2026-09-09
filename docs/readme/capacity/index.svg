@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="576" viewBox="0 0 1200 576" role="img" aria-labelledby="title desc">
+  <title id="title">Make capacity a decision, not a surprise.</title>
+  <desc id="desc">Conceptual account-routing example, not live quota. A policy evaluates suitability, known capacity, reservations and resets. It checkpoints before an authorized handoff, while unknown quota remains unknown.</desc>
+  <defs>
+    <style>text{font-family:"Helvetica Neue",Arial,sans-serif}.serif{font-family:Georgia,serif;font-style:italic}.mono{font-family:Menlo,Consolas,monospace}</style>
+    <filter id="shadow" x="-25%" y="-25%" width="160%" height="175%">
+      <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#12232a" flood-opacity=".12"/>
+    </filter>
+  </defs>
+  <rect x="0.5" y="0.5" width="1199" height="575" rx="20" fill="#142630" stroke="#30444d"/>
+  <text x="46" y="45" font-size="12" fill="#b8c6c8" class="mono" letter-spacing="1.4">SUBSCRIPTIONS / ROUTING CONCEPT</text>
+  <text x="46" y="106" font-size="45" fill="#f4f1e8" font-weight="600" letter-spacing="-1.9">Make capacity a decision.</text>
+  <text x="46" y="159" font-size="48" fill="#d9e4bd" class="serif" letter-spacing="-1.4">Not a surprise.</text>
+  <text text-anchor="end" x="1160" y="45" font-size="10" fill="#b8c6c8" class="mono" letter-spacing="1.4">ILLUSTRATIVE &#xB7; NOT LIVE QUOTA</text>
+  <rect x="46" y="205" width="483" height="88" rx="12" fill="#20343e" stroke="#3a4c53"/>
+  <text x="67" y="235" font-size="21" fill="#f3f0e7" font-weight="550">Account A</text>
+  <text x="67" y="263" font-size="15" fill="#b7c6cb">Not enough known capacity</text>
+  <rect x="388" y="223" width="120" height="29" rx="14" fill="#473e35" stroke="none"/>
+  <text x="448" y="243" font-size="10" fill="#ead3b0" text-anchor="middle" class="mono" letter-spacing="1">WAIT</text>
+  <rect x="46" y="307" width="483" height="88" rx="12" fill="#20343e" stroke="#3a4c53"/>
+  <text x="67" y="337" font-size="21" fill="#f3f0e7" font-weight="550">Account B</text>
+  <text x="67" y="365" font-size="15" fill="#b7c6cb">Required model + available margin</text>
+  <rect x="388" y="325" width="120" height="29" rx="14" fill="#284c40" stroke="none"/>
+  <text x="448" y="345" font-size="10" fill="#d9e9c3" text-anchor="middle" class="mono" letter-spacing="1">ELIGIBLE</text>
+  <rect x="46" y="409" width="483" height="88" rx="12" fill="#20343e" stroke="#3a4c53"/>
+  <text x="67" y="439" font-size="21" fill="#f3f0e7" font-weight="550">Account C</text>
+  <text x="67" y="467" font-size="15" fill="#b7c6cb">Quota not reported by provider</text>
+  <rect x="388" y="427" width="120" height="29" rx="14" fill="#35424a" stroke="none"/>
+  <text x="448" y="447" font-size="10" fill="#d0d9db" text-anchor="middle" class="mono" letter-spacing="1">UNKNOWN</text>
+  <path d="M572 205 L572 496" fill="none" stroke="#3b4e55" stroke-width="1"/>
+  <text x="619" y="222" font-size="11" fill="#d9e4bd" class="mono" letter-spacing="1.4">BEFORE DISPATCH</text>
+  <text x="619" y="264" font-size="29" fill="#f5f0e7" font-weight="600" letter-spacing="-0.7">Fit. Capacity. Permission.</text>
+  <text x="619" y="300" font-size="18" fill="#bac9ce">Evaluate the task, account and budget together.</text>
+  <text x="619" y="329" font-size="18" fill="#bac9ce">Reserve the resources the next step needs.</text>
+  <path d="M620 351 L1150 351" fill="none" stroke="#3b4e55" stroke-width="1"/>
+  <text x="619" y="383" font-size="11" fill="#d9e4bd" class="mono" letter-spacing="1.4">WHEN CAPACITY CHANGES</text>
+  <text x="619" y="425" font-size="26" fill="#f5f0e7" font-weight="600" letter-spacing="-0.9">Checkpoint. Revalidate. Continue.</text>
+  <text x="619" y="459" font-size="16" fill="#bac9ce">Wait for renewal, or use an authorized alternative.</text>
+  <text x="619" y="486" font-size="16" fill="#bac9ce">Never turn a subscription pause into hidden API spend.</text>
+  <text x="46" y="544" font-size="17" fill="#bac9ce">Reported, estimated and unknown usage stay distinct. Switching is a controlled handoff.</text>
+</svg>
