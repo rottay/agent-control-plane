@@ -22575,7 +22575,13 @@ const BE_CODE_EVIDENCE = /\.(?:ts|mts|js|mjs)$/;
 /** Sources whose prose IS the evidence, so they are read whole. */
 const BE_PROSE_EVIDENCE = /\.(?:md|json)$/;
 
-/** Tokens after which a `/` is division rather than the start of a regex. */
+/**
+ * Tokens after which a `/` is division rather than the start of a regex.
+ *
+ * `CloseParenToken` is in this set and is the one entry that cannot decide the
+ * question by kind alone, because `)` ends both `(a + b)` and `if (…)`. What
+ * separates them is `TS_CONTROL_HEAD` below.
+ */
 const TS_DIVISION_AFTER = new Set([
   ts.SyntaxKind.Identifier,
   ts.SyntaxKind.PrivateIdentifier,
@@ -22594,6 +22600,29 @@ const TS_DIVISION_AFTER = new Set([
   ts.SyntaxKind.TrueKeyword,
   ts.SyntaxKind.FalseKeyword,
   ts.SyntaxKind.NullKeyword,
+]);
+
+/**
+ * Keywords whose parenthesis is a control head rather than an operand.
+ *
+ * The `)` that closes `if (…)` is followed by a STATEMENT, so a `/` after it
+ * opens a regular expression; the `)` that closes `(a + b)` is followed by an
+ * operator, so a `/` after it divides. Both are `CloseParenToken`, which is why
+ * the answer is a stack rather than a kind.
+ *
+ * `if`, `for`, `while` and `with` admit a bare statement, so those four are the
+ * ones a program can put a `/` directly after. `switch` and `catch` require a
+ * block and no valid source exercises them here; they are named because this
+ * set states the grammar's control heads rather than the shapes that happened
+ * to be measured.
+ */
+const TS_CONTROL_HEAD = new Set([
+  ts.SyntaxKind.IfKeyword,
+  ts.SyntaxKind.ForKeyword,
+  ts.SyntaxKind.WhileKeyword,
+  ts.SyntaxKind.SwitchKeyword,
+  ts.SyntaxKind.CatchKeyword,
+  ts.SyntaxKind.WithKeyword,
 ]);
 
 /**
@@ -22632,13 +22661,39 @@ const TS_DIVISION_AFTER = new Set([
  * interpolates, and nothing here changes that. What stops being code is a real
  * comment.
  *
- * **The error direction is chosen.** If the heuristic misjudges a division as
- * the start of a regular expression, the text is KEPT — so this can fail to
- * remove something, and can never delete code and manufacture a refusal. The
- * brace stack fails the same way: braces that do not balance leave a `}` unread
- * as template, which is the permissive behaviour this replaces rather than a new
- * way to delete code. The predecessor was wrong in both directions at once,
- * which is why it is gone.
+ * **R19e: a regex is not a division, and that is how a comment became code.**
+ * `)` sits in `TS_DIVISION_AFTER` and closes both `(a + b)` and `if (…)`, so
+ * the `/` in `if (true) /` + backtick + `/.test("x")` was read as division —
+ * and the backtick inside what was really a regular expression opened a
+ * template that ran to end of file and returned the comment below it as string
+ * text. Measured on this fence before the repair, on the real section: an
+ * anchor renamed out of its cited file and restated in a line comment after
+ * that statement RESOLVED, with 39 resolving pointers printed. The same `)` was
+ * wrong in the other direction too — `if (u) /[//]/.test(u)` had the rest of
+ * its line deleted at the `//` its character class holds, which manufactures a
+ * refusal against honest code.
+ *
+ * **A parenthesis stack answers it, in the grammar's terms.** Each open
+ * parenthesis records whether a control keyword introduced it, so the `)` that
+ * closes `if (…)` is regex context and the `)` that closes `(a + b)` stays
+ * division context. A keyword reached through a property access is not a
+ * control head: `o.if(x) / 2` divides, and this scanner reads that `if` as a
+ * keyword whatever precedes it, so the token before the keyword is consulted.
+ *
+ * **The error direction is chosen, and R19e is why choosing it needs an
+ * invariant.** The predecessor's theory was that a misjudged `/` keeps text and
+ * therefore only fails to remove something. That is false in both directions:
+ * a regex misread as division swallows the comments after it into an
+ * unterminated literal, and a division misread as a regex swallows the `//` of
+ * a real comment into a terminated one. So the scan carries an invariant
+ * instead — parentheses balance, braces balance, and no literal is left
+ * unterminated — and a scan that breaks it has lost sync with the source and
+ * returns NOTHING. A file whose scan is not trustworthy states no code, so
+ * every anchor pointing at it is refused: the degradation is a refusal, never
+ * an acceptance, and no comment can survive a scan that produced no text at
+ * all. Measured over the 325 `.ts` and `.mjs` files this repository versions:
+ * every one satisfies the invariant, and the text this returns is byte
+ * identical before and after R19e — the invariant costs an honest tree nothing.
  *
  * **Why not `stripComments`.** The obvious move is the `stripComments` helper
  * this file already uses in a hundred places, and it is wrong HERE — uniquely
@@ -22659,25 +22714,46 @@ function beCodeTokens(content) {
   );
   let text = "";
   let previous = ts.SyntaxKind.Unknown;
+  /** The significant token before `previous`, so a `.if(` is not a control head. */
+  let beforePrevious = ts.SyntaxKind.Unknown;
+  /** Whether `previous` is the `)` of a control head, so a `/` after it is a regex. */
+  let afterControlHead = false;
   /** One entry per brace still open: `true` when a `${…}` is what opened it. */
   const substitutions = [];
+  /** One entry per parenthesis still open: `true` when a control keyword opened it. */
+  const controlHeads = [];
+  /** False once the scan has lost sync with the source, and never true again. */
+  let inSync = true;
   let kind;
   while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
     if (
       (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
-      !TS_DIVISION_AFTER.has(previous)
+      (!TS_DIVISION_AFTER.has(previous) || afterControlHead)
     ) {
       kind = scanner.reScanSlashToken();
     }
     if (kind === ts.SyntaxKind.OpenBraceToken) {
       substitutions.push(false);
     } else if (kind === ts.SyntaxKind.CloseBraceToken) {
+      if (substitutions.length === 0) inSync = false;
       const closesSubstitution = substitutions.pop() === true;
       if (closesSubstitution) kind = scanner.reScanTemplateToken(/* isTaggedTemplate */ false);
     }
     if (kind === ts.SyntaxKind.TemplateHead || kind === ts.SyntaxKind.TemplateMiddle) {
       substitutions.push(true);
     }
+    let closesControlHead = false;
+    if (kind === ts.SyntaxKind.OpenParenToken) {
+      controlHeads.push(
+        TS_CONTROL_HEAD.has(previous) &&
+          beforePrevious !== ts.SyntaxKind.DotToken &&
+          beforePrevious !== ts.SyntaxKind.QuestionDotToken,
+      );
+    } else if (kind === ts.SyntaxKind.CloseParenToken) {
+      if (controlHeads.length === 0) inSync = false;
+      closesControlHead = controlHeads.pop() === true;
+    }
+    if ((scanner.getTokenFlags() & ts.TokenFlags.Unterminated) !== 0) inSync = false;
     if (
       kind === ts.SyntaxKind.SingleLineCommentTrivia ||
       kind === ts.SyntaxKind.MultiLineCommentTrivia
@@ -22687,10 +22763,13 @@ function beCodeTokens(content) {
     }
     text += scanner.getTokenText();
     if (kind !== ts.SyntaxKind.WhitespaceTrivia && kind !== ts.SyntaxKind.NewLineTrivia) {
+      beforePrevious = previous;
       previous = kind;
+      afterControlHead = closesControlHead;
     }
   }
-  return text;
+  if (controlHeads.length > 0 || substitutions.length > 0) inSync = false;
+  return inSync ? text : "";
 }
 
 /**

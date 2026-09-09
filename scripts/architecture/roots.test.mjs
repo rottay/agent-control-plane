@@ -3123,7 +3123,12 @@ const BE_AUTHORIZED_OWED = [
 const BE_EVIDENCE_PATH = "packages/domains/runtime/src/switch-landing/index.ts";
 const BE_EVIDENCE_ANCHOR = "ACCOUNT_SWITCH_COMPLETED";
 
-/** Tokens after which a `/` is division rather than the start of a regex. */
+/**
+ * Tokens after which a `/` is division rather than the start of a regex.
+ *
+ * `CloseParenToken` is the entry that cannot decide by kind alone, because `)`
+ * ends both `(a + b)` and `if (…)`. `MIRROR_CONTROL_HEAD` separates them.
+ */
 const MIRROR_DIVISION_AFTER = new Set([
   ts.SyntaxKind.Identifier,
   ts.SyntaxKind.PrivateIdentifier,
@@ -3145,6 +3150,25 @@ const MIRROR_DIVISION_AFTER = new Set([
 ]);
 
 /**
+ * Keywords whose parenthesis is a control head rather than an operand.
+ *
+ * The `)` that closes `if (…)` is followed by a statement, so a `/` after it
+ * opens a regular expression; the `)` that closes `(a + b)` is followed by an
+ * operator, so a `/` after it divides. `if`, `for`, `while` and `with` admit a
+ * bare statement and are the ones a program can exercise; `switch` and `catch`
+ * require a block and are named because the rule is the grammar's rather than a
+ * list of measured shapes.
+ */
+const MIRROR_CONTROL_HEAD = new Set([
+  ts.SyntaxKind.IfKeyword,
+  ts.SyntaxKind.ForKeyword,
+  ts.SyntaxKind.WhileKeyword,
+  ts.SyntaxKind.SwitchKeyword,
+  ts.SyntaxKind.CatchKeyword,
+  ts.SyntaxKind.WithKeyword,
+]);
+
+/**
  * The fence's own comment blindness (R19b, rewritten to a scanner by P-03),
  * restated rather than imported.
  *
@@ -3152,10 +3176,11 @@ const MIRROR_DIVISION_AFTER = new Set([
  * out of the fence source would agree with a rule somebody weakened. The
  * scanner package is shared, because writing a second TypeScript lexer here
  * would be restating the tokenizer rather than the rule; the RULE — which
- * kinds are dropped, when a `/` is re-scanned as a regex, when a `}` is
- * re-read as the continuation of a template, and that a comment becomes one
- * space rather than nothing — is written out by hand below and is the only
- * thing this mirror and the fence have to agree about.
+ * kinds are dropped, when a `/` is re-scanned as a regex, which `)` leaves a
+ * `/` in regex position, when a `}` is re-read as the continuation of a
+ * template, that a scan which has lost sync returns nothing, and that a comment
+ * becomes one space rather than nothing — is written out by hand below and is
+ * the only thing this mirror and the fence have to agree about.
  *
  * The predecessor was line-oriented, and P-03 replaced it because it was wrong
  * in both directions at once: it kept the interior line of a block comment
@@ -3172,6 +3197,15 @@ const MIRROR_DIVISION_AFTER = new Set([
  * see, and the sentence above claiming the two agree was false in one
  * direction. `M1`–`M5` are that measurement, red against this commit's parent
  * and green here.
+ *
+ * **R19e: the same restatement, one clause later.** The fence's `)` could not
+ * tell `if (…)` from `(a + b)`, so a regular expression after a control head
+ * was read as division and whatever it held — a backtick, a `//` inside a
+ * character class — desynchronized the scan in one direction or the other. The
+ * repair is a parenthesis stack plus an invariant: parentheses balance, braces
+ * balance, no literal is unterminated, and a scan that breaks any of the three
+ * returns the empty string rather than text it cannot vouch for. `M6`–`M10`
+ * hold this side of the mirror to it.
  */
 function beCodeOnly(text) {
   const scanner = ts.createScanner(
@@ -3182,25 +3216,46 @@ function beCodeOnly(text) {
   );
   let out = "";
   let previous = ts.SyntaxKind.Unknown;
+  /** The significant token before `previous`, so a `.if(` is not a control head. */
+  let beforePrevious = ts.SyntaxKind.Unknown;
+  /** Whether `previous` is the `)` of a control head, so a `/` after it is a regex. */
+  let afterControlHead = false;
   /** One entry per brace still open: `true` when a `${…}` is what opened it. */
   const substitutions = [];
+  /** One entry per parenthesis still open: `true` when a control keyword opened it. */
+  const controlHeads = [];
+  /** False once the scan has lost sync with the source, and never true again. */
+  let inSync = true;
   let kind;
   while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
     if (
       (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
-      !MIRROR_DIVISION_AFTER.has(previous)
+      (!MIRROR_DIVISION_AFTER.has(previous) || afterControlHead)
     ) {
       kind = scanner.reScanSlashToken();
     }
     if (kind === ts.SyntaxKind.OpenBraceToken) {
       substitutions.push(false);
     } else if (kind === ts.SyntaxKind.CloseBraceToken) {
+      if (substitutions.length === 0) inSync = false;
       const closesSubstitution = substitutions.pop() === true;
       if (closesSubstitution) kind = scanner.reScanTemplateToken(/* isTaggedTemplate */ false);
     }
     if (kind === ts.SyntaxKind.TemplateHead || kind === ts.SyntaxKind.TemplateMiddle) {
       substitutions.push(true);
     }
+    let closesControlHead = false;
+    if (kind === ts.SyntaxKind.OpenParenToken) {
+      controlHeads.push(
+        MIRROR_CONTROL_HEAD.has(previous) &&
+          beforePrevious !== ts.SyntaxKind.DotToken &&
+          beforePrevious !== ts.SyntaxKind.QuestionDotToken,
+      );
+    } else if (kind === ts.SyntaxKind.CloseParenToken) {
+      if (controlHeads.length === 0) inSync = false;
+      closesControlHead = controlHeads.pop() === true;
+    }
+    if ((scanner.getTokenFlags() & ts.TokenFlags.Unterminated) !== 0) inSync = false;
     if (
       kind === ts.SyntaxKind.SingleLineCommentTrivia ||
       kind === ts.SyntaxKind.MultiLineCommentTrivia
@@ -3210,10 +3265,13 @@ function beCodeOnly(text) {
     }
     out += scanner.getTokenText();
     if (kind !== ts.SyntaxKind.WhitespaceTrivia && kind !== ts.SyntaxKind.NewLineTrivia) {
+      beforePrevious = previous;
       previous = kind;
+      afterControlHead = closesControlHead;
     }
   }
-  return out;
+  if (controlHeads.length > 0 || substitutions.length > 0) inSync = false;
+  return inSync ? out : "";
 }
 
 /** Comfortably over the fence's floor, so a probe about something else is about something else. */
@@ -3794,6 +3852,88 @@ describe("the mirror reflects the whole rule, templates included (R19d)", () => 
 });
 
 /**
+ * The mirror reflects the whole rule, regexes included (R19e).
+ *
+ * The clause R19e adds to the fence is that `)` does not settle the question a
+ * `/` after it asks: the parenthesis closing `if (…)` leaves the slash in regex
+ * position, and the one closing `(a + b)` leaves it dividing. Read the first as
+ * division and a backtick inside the regular expression opens a template that
+ * swallows the comments below it; read the second as a regex and the `//` of a
+ * real comment closes a literal that swallows the code around it. Both
+ * directions end with the mirror and the fence disagreeing, which is the one
+ * thing a mirror exists to prevent.
+ *
+ * The same discipline as `M1`–`M5`: unit probes of the helper, not synthetic
+ * trees. The fence's behaviour on these shapes is `N31`–`N35`, and spawning it
+ * here would measure the fence twice and call the second run a measurement of
+ * the mirror.
+ *
+ * `M6`–`M8` and `M10` are red against this commit's parent and green here.
+ * `M9` is the acceptance side, green at both, so the refusals above cannot have
+ * been bought by re-scanning every slash — except its middle clause, which is
+ * red at the parent because the parent deleted the code after a regular
+ * expression holding `//`.
+ */
+describe("the mirror reflects the whole rule, regexes included (R19e)", () => {
+  /** Stated by no fixture's CODE below, so finding it means a comment survived. */
+  const COMMENTED = "the landing refuses a destination it never read";
+
+  it("M6: drops a line comment that follows a regex after an if head", () => {
+    // THE probe. At the parent the `/` after `if (true)` was division, the
+    // backtick opened a template that ran to end of file, and the comment below
+    // it came back as string text.
+    const source = 'if (true) /`/.test("x");\n// ' + COMMENTED + "\n";
+    expect(beCodeOnly(source)).not.toContain(COMMENTED);
+  });
+
+  it("M7: drops it after a for head and after a while head", () => {
+    // `if` is not a special case, and a repair that named one keyword would
+    // pass M6 alone.
+    const forHead = 'for (const c of "ab") /`/.test(c);\n// ' + COMMENTED + "\n";
+    expect(beCodeOnly(forHead)).not.toContain(COMMENTED);
+
+    const whileHead = 'while (false) /`/.test("x");\n// ' + COMMENTED + "\n";
+    expect(beCodeOnly(whileHead)).not.toContain(COMMENTED);
+  });
+
+  it("M8: drops a block comment in the same position", () => {
+    // The discriminator against a repair that only handles `//`: the swallowed
+    // region is string text either way, so the comment's shape never mattered.
+    const source = 'if (true) /`/.test("x");\n/* ' + COMMENTED + " */\n";
+    expect(beCodeOnly(source)).not.toContain(COMMENTED);
+  });
+
+  it("M9: keeps a division, keeps a comment delimiter inside a regex, keeps code after one", () => {
+    // The acceptance side, in the three shapes the repair could have broken. A
+    // parenthesis closing an operand still divides; `/[//]/` is a regular
+    // expression holding two slashes rather than the start of a comment, and the
+    // parent deleted the rest of that line; and code stated after a regular
+    // expression is still code.
+    const divided = 'export const R = (1 + 2) / 3;\nexport const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(divided)).toContain(COMMENTED);
+
+    const held = 'if (true) /[//]/.test("x"); export const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(held)).toContain(COMMENTED);
+
+    const after = 'if (true) /`/.test("x");\nexport const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(after)).toContain(COMMENTED);
+  });
+
+  it("M10: returns nothing at all when the scan has lost sync with the source", () => {
+    // The declared degradation, and the reason the fence can say a comment never
+    // becomes code. Neither reading of an ambiguous slash is safe — one swallows
+    // comments into an unterminated literal, the other swallows a comment
+    // delimiter into a terminated one — so the invariant decides instead:
+    // parentheses balance, braces balance, no literal is unterminated. A scan
+    // that breaks it vouches for nothing, which the anchor law reads as a file
+    // holding no code and refuses.
+    expect(beCodeOnly('export const A = "' + COMMENTED + '";\nexport const B = 1);\n')).toBe("");
+    expect(beCodeOnly("export const T = `a;\n// " + COMMENTED + "\n")).toBe("");
+    expect(beCodeOnly("export const O = { a: 1 };\n// " + COMMENTED + "\n")).not.toBe("");
+  });
+});
+
+/**
  * The gate's evidence binds to code, never to comments (old-V2 R19b).
  *
  * R19's own record says "delete a law … and the gate is red on the next run".
@@ -4278,6 +4418,23 @@ function fenceWithExtraImport(specifier = "node:util") {
  * by luck rather than by rule. `N22b` and the `before` phase of `N24b` are the
  * acceptance side — a template's text and the code after it are still code —
  * and are green at both commits on purpose.
+ *
+ * **R19e: the token before the slash decided it wrongly.** `)` closes both
+ * `(a + b)` and `if (…)`, and the scanner treated every one of them as a token
+ * after which a `/` divides. So a regular expression opening a statement was
+ * read as division, and what it held desynchronized the scan in whichever
+ * direction the source allowed. Measured against the fence R19e repairs, in the
+ * section evaluated in isolation:
+ *
+ *   `if (true) /` + backtick + `/…` then a comment  → the anchor RESOLVED
+ *   `if (true) /[//]/…` then real code on the line  → the anchor was DELETED
+ *
+ * `N31`, `N32` and `N35` are the first direction, `N34` is the second, and all
+ * four are red at the parent. `N33` and the `before` phase of `N31` are the
+ * acceptance side and green at both. `N35` also states the degradation the
+ * repair chooses: a scan whose parentheses or braces do not balance, or that
+ * left a literal unterminated, has lost sync and returns no text at all, so the
+ * file states no code and every anchor into it is refused rather than accepted.
  */
 describe("no evidence anchor resolves from emptiness or a comment (P-03)", () => {
   /** The refusal the anchor laws share, for the id every fixture below breaks. */
@@ -4649,6 +4806,133 @@ describe("no evidence anchor resolves from emptiness or a comment (P-03)", () =>
     expect(mutant.output).toContain(
       "scripts/check-architecture.mjs imports node:util, which its authorized import set does not name",
     );
+  });
+
+  it("N31: refuses an anchor commented after a regex that follows an if head", async () => {
+    // THE probe of R19e, as a before/after pair on one shape. `)` sits in
+    // `TS_DIVISION_AFTER`, so the `/` after `if (true)` was read as division and
+    // the backtick inside what was really a regular expression opened a template
+    // that ran to end of file — returning the comment below it as string text.
+    // R19b's defect, reopened through the token before the slash.
+    //
+    // The `before` phase is the positive the correction owes: an anchor stated
+    // in real code after that same statement still resolves, and it is green at
+    // this commit's parent as well, so the pair attributes the change to the
+    // comment and to nothing else.
+    const anchor = "the landing refuses a destination it never read";
+    const guard = 'if (true) /`/.test("x");';
+
+    const stated = syntheticTree();
+    evidenceHome(stated, [guard, 'export const REFUSAL = "' + anchor + '";']);
+    write(stated, BE_RECORD, recordCiting(anchor));
+    commitAll(stated);
+
+    const before = await runFenceAgainst(stated);
+    expect(before.output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(before.output).not.toContain("which that file does not state");
+
+    const commented = syntheticTree();
+    evidenceHome(commented, [guard, "// " + anchor]);
+    write(commented, BE_RECORD, recordCiting(anchor));
+    commitAll(commented);
+
+    const after = await runFenceAgainst(commented);
+    expect(after.status).not.toBe(0);
+    expect(after.output).toContain(
+      pointsAt() + ' for the anchor "' + anchor + '", which that file does not state',
+    );
+    expect(after.output).toContain("V2_BACKEND_CERTIFIED withheld");
+  });
+
+  it("N32: refuses the same after a for head, a while head, and in a block comment", async () => {
+    // `if` is not a special case, and a repair that named one keyword would pass
+    // N31 alone. `for` and `while` close the same way, and the block-comment
+    // shape is the discriminator against a repair that only handles `//`: the
+    // swallowed region is string text either way, so the comment's form never
+    // mattered. All three resolved a comment-only anchor at the parent.
+    const anchor = "the landing refuses a destination it never read";
+    const refusal = pointsAt() + ' for the anchor "' + anchor + '", which that file does not state';
+
+    for (const tail of [
+      ['for (const c of "ab") /`/.test(c);', "// " + anchor],
+      ['while (false) /`/.test("x");', "// " + anchor],
+      ['if (true) /`/.test("x");', "/* " + anchor + " */"],
+    ]) {
+      const root = syntheticTree();
+      evidenceHome(root, tail);
+      write(root, BE_RECORD, recordCiting(anchor));
+      commitAll(root);
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain(refusal);
+      expect(output).toContain("V2_BACKEND_CERTIFIED withheld");
+    }
+  });
+
+  it("N33: accepts a division after a parenthesis that closes an operand", async () => {
+    // The control that stops the repair from buying its refusals by re-scanning
+    // every `/` after a `)`. Here the parenthesis closes an operand, so the
+    // slash divides; read as a regular expression it would run to the end of the
+    // line without a closing `/`, the scan would report itself out of sync, and
+    // this citation would be refused. Green at the parent too.
+    const anchor = "the two door tables were compared and disagreed";
+    const root = syntheticTree();
+    evidenceHome(root, ["export const R = (1 + 2) / 3;", 'export const A = "' + anchor + '";']);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(output).not.toContain("which that file does not state");
+  });
+
+  it("N34: accepts an anchor after a regex whose character class holds a comment delimiter", async () => {
+    // The same defect in the other direction, and the N22/N23 class preserved
+    // through a control head. `/[//]/` is a regular expression holding two
+    // slashes, not a comment; with the `)` read as division the scan took
+    // `//]/.test(x); export const A = "…"` for a line comment and deleted the
+    // anchor with it, which manufactures a refusal against honest code. Red at
+    // the parent for that reason, and a positive rather than a negative.
+    const anchor = "the two door tables were compared and disagreed";
+    const root = syntheticTree();
+    evidenceHome(root, ['if (true) /[//]/.test("x"); export const A = "' + anchor + '";']);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(output).not.toContain("which that file does not state");
+  });
+
+  it("N35: refuses every anchor in a file whose scan lost sync with the source", async () => {
+    // The declared degradation, at the gate. A misjudged slash desynchronizes
+    // the scan in one direction or the other, and both directions can hand a
+    // comment back as code — so "the text is kept" is not a safe side and the
+    // scanner carries an invariant instead: parentheses balance, braces balance,
+    // no literal is unterminated. A file that breaks it states no code at all,
+    // which refuses rather than accepts. Both halves resolved at the parent.
+    const anchor = "the landing refuses a destination it never read";
+    const refusal =
+      pointsAt() +
+      ' for the anchor "' +
+      anchor +
+      '", whose cited file holds no code outside its comments';
+
+    for (const tail of [
+      ['export const A = "' + anchor + '";', "export const B = 1);"],
+      ["export const T = `a;", "// " + anchor],
+    ]) {
+      const root = syntheticTree();
+      evidenceHome(root, tail);
+      write(root, BE_RECORD, recordCiting(anchor));
+      commitAll(root);
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain(refusal);
+      expect(output).toContain("V2_BACKEND_CERTIFIED withheld");
+    }
   });
 
   it("P4: reaches its own verdict on a record and a tree with nothing wrong with them", async () => {
