@@ -4146,6 +4146,24 @@ function fenceWithExtraImport(specifier = "node:util") {
  * `N23b` are red against the fence at this commit's parent and green against
  * the one it lands; `N18b`, `N20`, `N22`, `N23` and `N24` were already law and
  * are pinned here as regressions rather than claimed as this packet's work.
+ *
+ * **R19c: the scanner had the same hole one layer down.** A scanner that never
+ * re-reads the `}` closing a `${…}` leaves the template's own closing backtick
+ * to open a fresh one, which runs to the next backtick or to end of file —
+ * swallowing the comments below it as string text and resolving an anchor no
+ * code states. Measured against the fence R19c repairs, in the section
+ * evaluated in isolation:
+ *
+ *   `` `hello ${1}` `` then a line comment   → the anchor RESOLVED
+ *   `` `hello ${1}` `` then a block comment  → the anchor RESOLVED
+ *   `` `a ${1} b ${2}` `` then a comment     → the anchor RESOLVED
+ *
+ * `N24b`, `N24c`, `N24d` and the second half of `N24e` are that measurement,
+ * red at the parent and green here. The first half of `N24e` is a pin: the
+ * bare nested shape was already refused, because its stray backticks re-pair
+ * by luck rather than by rule. `N22b` and the `before` phase of `N24b` are the
+ * acceptance side — a template's text and the code after it are still code —
+ * and are green at both commits on purpose.
  */
 describe("no evidence anchor resolves from emptiness or a comment (P-03)", () => {
   /** The refusal the anchor laws share, for the id every fixture below breaks. */
@@ -4322,6 +4340,24 @@ describe("no evidence anchor resolves from emptiness or a comment (P-03)", () =>
     expect(output).not.toContain("which that file does not state");
   });
 
+  it("N22b: accepts comment delimiters inside the text of a template that interpolates", async () => {
+    // The acceptance half of R19c, and the reason the repair is a re-scan rather
+    // than a rule about backticks. `//` inside `` `http://a ${1}` `` is template
+    // TEXT, not the start of a comment, and it has to stay that way while the
+    // substitution's closing brace starts being read as a template again. Green
+    // against the fence at this commit's parent too, which is the point: the
+    // repair below must not buy its negatives by breaking this.
+    const anchor = "the two door tables were compared and disagreed";
+    const root = syntheticTree();
+    evidenceHome(root, ["export const U = `http://a ${1}` + \"" + anchor + '";']);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { output } = await runFenceAgainst(root);
+    expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(output).not.toContain("which that file does not state");
+  });
+
   it("N24: refuses a mutation of the anchored code with the record left intact", async () => {
     // The spec's "a mutation of the anchored code must make the law fail", as
     // a before/after pair. Nobody edits a certification when they rename a
@@ -4349,6 +4385,114 @@ describe("no evidence anchor resolves from emptiness or a comment (P-03)", () =>
       pointsAt() + ' for the anchor "' + anchor + '", which that file does not state',
     );
     expect(after.output).toContain("V2_BACKEND_CERTIFIED withheld");
+  });
+
+  it("N24b: refuses an anchor left in a line comment after a template substitution", async () => {
+    // THE probe of R19c, as a before/after pair on one shape. `beCodeTokens`
+    // scanned the `}` of a `${…}` as an ordinary close brace, so the closing
+    // backtick opened a template that ran to end of file and took every comment
+    // below it as string text — R19b's defect, reopened through the lexer.
+    //
+    // The `before` phase is the positive the correction owes: an anchor stated
+    // in real code AFTER a template that interpolates still resolves. It is
+    // green at this commit's parent as well, so the pair attributes the change
+    // to the comment and to nothing else.
+    const anchor = "the landing refuses a destination it never read";
+    const template = "export const T = `hello ${1}`;";
+
+    const stated = syntheticTree();
+    evidenceHome(stated, [template, 'export const REFUSAL = "' + anchor + '";']);
+    write(stated, BE_RECORD, recordCiting(anchor));
+    commitAll(stated);
+
+    const before = await runFenceAgainst(stated);
+    expect(before.output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(before.output).not.toContain("which that file does not state");
+
+    const commented = syntheticTree();
+    evidenceHome(commented, [template, "// " + anchor]);
+    write(commented, BE_RECORD, recordCiting(anchor));
+    commitAll(commented);
+
+    const after = await runFenceAgainst(commented);
+    expect(after.status).not.toBe(0);
+    expect(after.output).toContain(
+      pointsAt() + ' for the anchor "' + anchor + '", which that file does not state',
+    );
+    expect(after.output).toContain("V2_BACKEND_CERTIFIED withheld");
+  });
+
+  it("N24c: refuses the same anchor in a block comment after a template substitution", async () => {
+    // The discriminator against a repair that only handles `//`. The swallowed
+    // region is string text either way, so the comment's shape never mattered —
+    // and a fix that special-cased line comments would leave this one red.
+    const anchor = "the landing refuses a destination it never read";
+    const root = syntheticTree();
+    evidenceHome(root, ["export const T = `hello ${1}`;", "/* " + anchor + " */"]);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      pointsAt() + ' for the anchor "' + anchor + '", which that file does not state',
+    );
+    expect(output).toContain("V2_BACKEND_CERTIFIED withheld");
+  });
+
+  it("N24d: refuses an anchor commented after a template with two substitutions", async () => {
+    // One substitution desynchronizes the scan; the second re-pairs the stray
+    // backticks and could have hidden the defect by accident. It does not — the
+    // template opened at the first `}` simply ends at the second, and a third
+    // opens on the tail. Asserted so a repair cannot pass by counting to one.
+    const anchor = "the landing refuses a destination it never read";
+    const root = syntheticTree();
+    evidenceHome(root, ["export const T = `a ${1} b ${2}`;", "// " + anchor]);
+    write(root, BE_RECORD, recordCiting(anchor));
+    commitAll(root);
+
+    const { status, output } = await runFenceAgainst(root);
+    expect(status).not.toBe(0);
+    expect(output).toContain(
+      pointsAt() + ' for the anchor "' + anchor + '", which that file does not state',
+    );
+    expect(output).toContain("V2_BACKEND_CERTIFIED withheld");
+  });
+
+  it("N24e: refuses an anchor commented after a nested template, re-paired or not", async () => {
+    // Nesting is where a brace-counting repair goes wrong, so both shapes are
+    // asserted — and they are NOT the same evidence, which is worth stating
+    // rather than hiding behind a shared assertion.
+    //
+    // Measured against the fence at this commit's parent: `` `a ${ `b ${1}` }` ``
+    // was ALREADY refused, because its stray backticks happen to re-pair into a
+    // complete literal and leave the comment below visible. That half is a
+    // regression pin, in the sense N18b and N20 already use in this file, not
+    // this packet's work. Give the OUTER template something to continue with —
+    // `` `a ${ `b ${1}` } c ${2}` `` — and the luck runs out: that half resolved
+    // a comment-only anchor at the parent and is this packet's nested evidence.
+    const anchor = "the landing refuses a destination it never read";
+    const refusal = pointsAt() + ' for the anchor "' + anchor + '", which that file does not state';
+
+    const paired = syntheticTree();
+    evidenceHome(paired, ["export const T = `a ${ `b ${1}` }`;", "// " + anchor]);
+    write(paired, BE_RECORD, recordCiting(anchor));
+    commitAll(paired);
+
+    const pinned = await runFenceAgainst(paired);
+    expect(pinned.status).not.toBe(0);
+    expect(pinned.output).toContain(refusal);
+    expect(pinned.output).toContain("V2_BACKEND_CERTIFIED withheld");
+
+    const continued = syntheticTree();
+    evidenceHome(continued, ["export const T = `a ${ `b ${1}` } c ${2}`;", "// " + anchor]);
+    write(continued, BE_RECORD, recordCiting(anchor));
+    commitAll(continued);
+
+    const unlucky = await runFenceAgainst(continued);
+    expect(unlucky.status).not.toBe(0);
+    expect(unlucky.output).toContain(refusal);
+    expect(unlucky.output).toContain("V2_BACKEND_CERTIFIED withheld");
   });
 
   it("N25: refuses a row citing a file whose extension the record cannot scan", async () => {

@@ -22513,10 +22513,34 @@ const TS_DIVISION_AFTER = new Set([
  * with it; across the 318 `.ts` and 7 `.mjs` files this repository versions, 0
  * either way once the re-scan is in place.
  *
+ * **`reScanTemplateToken` is not a detail either, and R19c is why.** A `}` that
+ * closes a `${` substitution is scanned as an ordinary close brace unless the
+ * caller asks for it to be re-read, so `` `hello ${1}` `` left the closing
+ * backtick to be taken as the OPENING of a fresh template — one that terminates
+ * at the next backtick, or at end of file when there is none, swallowing every
+ * comment below it as string text. Measured on this fence before the repair:
+ * `` const x = `hello ${1}`; `` followed by an anchor stated in a line comment
+ * and nothing else RESOLVED, which is precisely the defect R19b closed, reopened
+ * through the lexer. The same held for a block comment and for two
+ * substitutions; a nested template escaped only when its stray backticks
+ * happened to re-pair, which is luck rather than a rule.
+ *
+ * **The stack is what makes it hold under nesting.** Each unclosed brace records
+ * whether it opened a substitution, so a `}` is re-read as template only when a
+ * `${` is what it closes: an object literal inside a substitution, a block, a
+ * string or a regular expression holding a brace, and a template nested inside
+ * another template's substitution all stay correct. The template's own TEXT
+ * remains code, because it is code — an anchor may quote what a template
+ * interpolates, and nothing here changes that. What stops being code is a real
+ * comment.
+ *
  * **The error direction is chosen.** If the heuristic misjudges a division as
  * the start of a regular expression, the text is KEPT — so this can fail to
  * remove something, and can never delete code and manufacture a refusal. The
- * predecessor was wrong in both directions at once, which is why it is gone.
+ * brace stack fails the same way: braces that do not balance leave a `}` unread
+ * as template, which is the permissive behaviour this replaces rather than a new
+ * way to delete code. The predecessor was wrong in both directions at once,
+ * which is why it is gone.
  *
  * **Why not `stripComments`.** The obvious move is the `stripComments` helper
  * this file already uses in a hundred places, and it is wrong HERE — uniquely
@@ -22537,6 +22561,8 @@ function beCodeTokens(content) {
   );
   let text = "";
   let previous = ts.SyntaxKind.Unknown;
+  /** One entry per brace still open: `true` when a `${…}` is what opened it. */
+  const substitutions = [];
   let kind;
   while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
     if (
@@ -22544,6 +22570,15 @@ function beCodeTokens(content) {
       !TS_DIVISION_AFTER.has(previous)
     ) {
       kind = scanner.reScanSlashToken();
+    }
+    if (kind === ts.SyntaxKind.OpenBraceToken) {
+      substitutions.push(false);
+    } else if (kind === ts.SyntaxKind.CloseBraceToken) {
+      const closesSubstitution = substitutions.pop() === true;
+      if (closesSubstitution) kind = scanner.reScanTemplateToken(/* isTaggedTemplate */ false);
+    }
+    if (kind === ts.SyntaxKind.TemplateHead || kind === ts.SyntaxKind.TemplateMiddle) {
+      substitutions.push(true);
     }
     if (
       kind === ts.SyntaxKind.SingleLineCommentTrivia ||
