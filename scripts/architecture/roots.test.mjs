@@ -1835,6 +1835,55 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     // repository's own paths cannot appear in a run rooted somewhere else.
     expect(output).not.toContain(join(REAL_REPO, "packages", "domains", "runtime"));
   });
+
+  it("delivers every diagnostic of a failing run, under concurrent load (H1)", async () => {
+    // Codex 2026-09-08 observation 2, and a defect three phases had already
+    // measured before it was named. Toward a pipe Node's stdio is asynchronous,
+    // and the `process.exit(1)` this fence used to end a red run with tore the
+    // process down without draining it: the exit code arrived intact and the
+    // TAIL of the `✗` block did not — a gate that announces 626 violations and
+    // then shows 397 of them. P-01 saw the tail go; P-03 measured 693-1226 of
+    // 1227 lines lost; P-02's N24 went red on a line the fence had printed and
+    // then dropped, and passed on the re-run. The fence now assigns
+    // `process.exitCode` and lets the module end, so the writes complete first.
+    //
+    // Reproducing it needs three conditions at once, and all three are here: a
+    // failing run whose output is far larger than a pipe buffer, which a bare
+    // synthetic tree gives for free by breaking hundreds of laws at once;
+    // capture THROUGH a pipe, which is what `runFenceAgainst` does and what
+    // every real caller does; and enough concurrency that the pending writes
+    // cannot finish before the process would have exited. K was chosen by
+    // measurement rather than taste: against the parent commit, K = 20 truncated
+    // 7 runs of 20, the worst delivering 397 of 626 `✗` lines, and it costs
+    // about 17s of the project's 120s budget. K = 1 reproduces nothing.
+    //
+    // The assertion is deliberately not a fixed string. The fence's own counter
+    // announces how many violations it is about to print, so each run is held to
+    // its own promise: N announced, N `✗` lines delivered, and the blank line
+    // the failure block closes with actually arriving. That stays true however
+    // the set of laws a bare tree breaks changes.
+    const K = 20;
+    const root = syntheticTree();
+
+    const runs = await Promise.all(Array.from({ length: K }, () => runFenceAgainst(root)));
+
+    for (const [index, { status, output }] of runs.entries()) {
+      expect(status, `run ${index} should have failed`).not.toBe(0);
+
+      const counter = /Architecture fence FAILED with (\d+) violation\(s\):/.exec(output);
+      expect(counter, `run ${index} printed no violation counter`).not.toBeNull();
+      const announced = Number(counter[1]);
+      // The load condition itself, asserted rather than assumed: a fixture that
+      // one day failed two laws would make everything below vacuously true.
+      expect(announced, `run ${index} output too small to prove anything`).toBeGreaterThan(100);
+
+      const delivered = (output.match(/^ {2}✗ /gm) ?? []).length;
+      expect(`run ${index}: ${delivered}/${announced}`).toBe(`run ${index}: ${announced}/${announced}`);
+      // The very last write of all, and the one with the least chance of
+      // surviving a torn-down process.
+      expect(output.endsWith("\n\n"), `run ${index} lost the blank line closing the block`).toBe(true);
+    }
+  });
 });
 describe("the expired-literal table catches the fragments V2-B6-fence armed", () => {
   // Both probes drive the real fence as a subprocess against a synthetic tree,

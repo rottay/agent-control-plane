@@ -23271,21 +23271,42 @@ if (failures.length > 0) {
     console.error("  ✗ " + message);
   }
   console.error("");
-  process.exit(1);
-}
+  // `process.exitCode` rather than `process.exit(1)`, and the difference is not
+  // stylistic. Toward a pipe — which is every caller that captures the fence,
+  // `pnpm check` included — Node's stdout and stderr are ASYNCHRONOUS, and
+  // `process.exit` tears the process down without draining what is still
+  // buffered. The lines already handed to `console.error` above are not
+  // necessarily written yet, so the TAIL of the diagnostics is discarded: the
+  // run reports its exit code honestly and then withholds the violations that
+  // exit code is about. Measured against this file at 7016994, over a synthetic
+  // tree failing 626 laws, 20 concurrent runs: 7 lost their tail, the worst
+  // delivering 397 of 626 `✗` lines. P-01 saw it first, P-03 measured 693-1226
+  // of 1227 lines lost, and P-02's N24 went red on a line that had been printed
+  // and then dropped.
+  //
+  // Assigning the code instead lets this module simply end. The event loop then
+  // drains the pending writes before the process exits, because a stream write
+  // keeps its handle referenced until it completes, and the exit code is
+  // already 1 when that happens. Nothing about WHAT is printed changes here —
+  // same text, same order, same streams — only that all of it arrives. The
+  // success path below moves under an `else` for the same reason: there is no
+  // longer an `exit` to stop it running.
+  process.exitCode = 1;
+} else {
+  console.log("  ✓ architecture fence passed");
 
-console.log("  ✓ architecture fence passed");
-
-// The receipts are the last two lines, and only on a passing run:
-// `STRUCTURAL_TOPOLOGY_CERTIFIED` first, then `V2_BACKEND_CERTIFIED`. An
-// aggregate over inputs means nothing on a run that failed elsewhere, and a
-// reader who tails the output should find the closure claim exactly where the
-// fence stopped — which is why the backend receipt goes last of the two. A
-// withheld receipt never reaches these lines: §23 and §22b each recorded the
-// withholding as a failure, and the fence exited above.
-if (certificationReceipt !== null) {
-  console.log("  ✓ " + certificationReceipt);
-}
-if (backendCertificationReceipt !== null) {
-  console.log("  ✓ " + backendCertificationReceipt);
+  // The receipts are the last two lines, and only on a passing run:
+  // `STRUCTURAL_TOPOLOGY_CERTIFIED` first, then `V2_BACKEND_CERTIFIED`. An
+  // aggregate over inputs means nothing on a run that failed elsewhere, and a
+  // reader who tails the output should find the closure claim exactly where the
+  // fence stopped — which is why the backend receipt goes last of the two. A
+  // withheld receipt never reaches these lines: §23 and §22b each recorded the
+  // withholding as a failure, and a run carrying one takes the branch above
+  // rather than this one.
+  if (certificationReceipt !== null) {
+    console.log("  ✓ " + certificationReceipt);
+  }
+  if (backendCertificationReceipt !== null) {
+    console.log("  ✓ " + backendCertificationReceipt);
+  }
 }
