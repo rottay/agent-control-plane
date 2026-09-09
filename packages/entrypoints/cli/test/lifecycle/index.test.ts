@@ -74,6 +74,23 @@ const ROUTE: TestRoute = {
   resolvedAt: SUBMITTED_AT,
 };
 
+/**
+ * The taskId N6 sweeps, pinned and hostile on purpose.
+ *
+ * `stage` minted this identifier with `randomUUID` until the P-02 post-audit
+ * caught the suite red on a run where nothing was wrong: the hex held "404",
+ * the document carries the taskId by contract, and N6 read the operator's own
+ * coordinate as a leaked status number. About 9 runs in 1000 land there --
+ * 17470 of 2000000 sampled v4 UUIDs contain the substring -- which is often
+ * enough to be seen and rare enough to be re-run rather than diagnosed.
+ *
+ * So the flake becomes the fixture. This scenario now always stages the hostile
+ * shape, and the sweep below passes only because it strikes the one identifier
+ * it is entitled to carry. Randomness bought the assertion nothing: no test
+ * here depends on the value, and each scenario has a ledger of its own.
+ */
+const NOT_FOUND_TASK_ID = "f20b47d6-4040-4040-8040-3d1404114040";
+
 const scenarios: string[] = [];
 const ledgers: Ledger[] = [];
 
@@ -128,12 +145,22 @@ interface Staged {
  * The digest is computed the way a real submission would compute it, because
  * the door verifies it: a fixture with a placeholder digest would be refused
  * before it reached a driver, and every test below would measure the refusal.
+ *
+ * The taskId is minted here by default and pinnable by the caller. Every
+ * scenario owns its own ledger under its own root, so uniqueness across the
+ * file is a property of the scenario name rather than of the identifier, and a
+ * test whose assertion is about the identifier may choose the value it asserts
+ * on instead of hoping for it.
  */
-function stage(name: string, through: number, route: TestRoute = ROUTE): Staged {
+function stage(
+  name: string,
+  through: number,
+  route: TestRoute = ROUTE,
+  taskId: string = randomUUID(),
+): Staged {
   scenarios.push(name);
   const root = resolveScenarioRoot(name);
   const databasePath = scenarioLedgerPath(root);
-  const taskId = randomUUID();
   const invocation = deriveInvocation(
     taskId,
     1,
@@ -162,6 +189,20 @@ function stage(name: string, through: number, route: TestRoute = ROUTE): Staged 
     );
   }
   return { scenarioId: name, databasePath, taskId, invocation, ledger };
+}
+
+/**
+ * A surface with one identifier struck out, for N6's sweep.
+ *
+ * The taskId is the operator's own coordinate and rides the document by
+ * contract; a status number the door learned from an engine does not. Removing
+ * exactly the known taskId is the whole of the allowance, and it is written as
+ * a split/join rather than a pattern so no other text can be caught by
+ * accident: every occurrence of a status number that is not this identifier
+ * survives into the assertion.
+ */
+function withoutTaskId(surface: string, taskId: string): string {
+  return surface.split(taskId).join("");
 }
 
 function argsFor(verb: string, staged: Staged, mode: string): readonly string[] {
@@ -372,7 +413,7 @@ describe("the lifecycle door fails closed", () => {
     // unreachable engine — exit 5, "look again" — for a fact that could never
     // change. It is now a refusal like the others: the seven-field document on
     // stdout, and `EXIT_NOT_FOUND` because there is nothing there to act on.
-    const staged = stage("cli-l4-not-found", 4);
+    const staged = stage("cli-l4-not-found", 4, ROUTE, NOT_FOUND_TASK_ID);
     const result = await invoke(argsFor("attach", staged, "RESTATE"), {
       makeDriver: scriptedDriver({
         ok: false,
@@ -389,15 +430,50 @@ describe("the lifecycle door fails closed", () => {
     // The document, not an envelope: this is an answer about the work, and it
     // goes to stdout with nothing on stderr.
     expect(result.stderr).toBe("");
-    // N6: no status number reaches any surface.
+    // N6: no status number reaches any surface. The taskId is struck first,
+    // and only the taskId: this scenario's identifier holds "404" in its hex
+    // on purpose, so what remains to sweep is everything the door chose to
+    // print rather than the coordinate the operator handed it. Any other "404"
+    // is still a failure, which the next test proves on this same helper.
     for (const surface of [result.stdout, result.stderr]) {
-      expect(surface).not.toContain("404");
-      expect(surface).not.toContain("inv_");
+      const swept = withoutTaskId(surface, staged.taskId);
+      expect(swept).not.toContain("404");
+      expect(swept).not.toContain("inv_");
     }
     // Four refusals, four codes, still none of them zero.
     expect(
       new Set([EXIT_CAPABILITY_UNSUPPORTED, EXIT_NOT_FOUND, EXIT_UNAVAILABLE, EXIT_USAGE]).size,
     ).toBe(4);
+  });
+
+  it("N6 is non-vacuous: a status number that is not the taskId still fails the sweep", async () => {
+    // The allowance above is exactly one identifier wide, and this is where
+    // that is proved -- over a real surface and the same helper, because a
+    // sweep certified on a literal would say nothing about what the door
+    // actually prints.
+    const staged = stage("cli-l4-n6-nonvacuous", 4, ROUTE, NOT_FOUND_TASK_ID);
+    const result = await invoke(argsFor("attach", staged, "RESTATE"), {
+      makeDriver: scriptedDriver({ ok: false, refusal: "INVOCATION_NOT_FOUND", at: "reattach" }),
+    });
+    expect(result.exitCode).toBe(EXIT_NOT_FOUND);
+    // What the door really printed passes the sweep, hostile taskId and all.
+    expect(withoutTaskId(result.stdout, staged.taskId)).not.toContain("404");
+
+    // The same surface carrying the leak N6 exists to catch: the engine's
+    // status number and its invocation id, in a field the door does not have.
+    // Pinned by inequality so a document that stopped matching this shape fails
+    // here rather than certifying a mutation that never happened.
+    const leaked = result.stdout.replace(
+      '"refusal": "INVOCATION_NOT_FOUND"',
+      '"refusal": "INVOCATION_NOT_FOUND",\n  "detail": "the engine answered 404 for inv_9aXb2Kd0Lm7Q"',
+    );
+    expect(leaked).not.toBe(result.stdout);
+
+    const swept = withoutTaskId(leaked, staged.taskId);
+    expect(swept).toContain("404");
+    expect(swept).toContain("inv_");
+    // And the identifier is the only thing the sweep took out of it.
+    expect(swept).not.toContain(staged.taskId);
   });
 
   it("N1 keeps an unreachable engine at exit 5, distinct from the engine's answer", async () => {
