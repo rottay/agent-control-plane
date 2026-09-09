@@ -42,9 +42,9 @@ repository may be written as though there were.
 
 ## Decision
 
-**The macOS coverage claim is proved where it runs, declared as unprovable
-where it does not, and the run CI never had is recorded as empty rather than
-implied.**
+**The macOS coverage claim rests on a checked precondition where it runs, is
+declared unprovable where it does not, and the run CI never had is recorded as
+empty rather than implied.**
 
 Three things are fixed together.
 
@@ -57,8 +57,8 @@ selection is what §3.3 anticipated — "a macOS runner with the pinned binaries
 supports the suites specific to that system today" — and it costs nothing
 because the host already exists and already runs the suites.
 
-**2. `L-P04-1` turns the local half into a measurement.** On the host the pin
-describes a build for, the law requires the binary to be present at the
+**2. `L-P04-1` puts a checked precondition under the local half.** On the host
+the pin describes a build for, the law requires the binary to be present at the
 convention the runtime states and to hash to the pin's `binarySha256`:
 
 - the install directory is read from `RESTATE_SERVER_INSTALL_DIR` in
@@ -68,9 +68,20 @@ convention the runtime states and to hash to the pin's `binarySha256`:
   script leaves in the install directory is not consulted, for the reason the
   pin's own comment gives: a substituted binary carrying a matching receipt
   would pass a check that read the receipt;
+- the pin's structure is established **before** the branch is chosen, because
+  the branch is chosen from the pin. The document must be a JSON object, its
+  `platforms` must be a table, and every key must be a platform key with an
+  entry carrying a 64-lowercase-hex `binarySha256` — every key, not the one this
+  host would read. Any deviation is a refusal naming the keys it was found at.
+  What is checked is what this law consumes and no more: the pin's full shape
+  already has two validators, section 2C and `readPin()` in the acquisition
+  script, and a third restatement would be a third thing to drift;
 - on success the note names the two projects — `durability-server` and `daemon`,
-  taken from `CI_OWED_PROJECTS` rather than restated — as covered on the host
-  that runs them, and says which binary at which path it proved that with.
+  taken from `CI_OWED_PROJECTS` rather than restated — as able to run here
+  against the binary the pin describes, and says which binary at which path it
+  hashed to establish that. It does not say they ran. Reading and hashing a file
+  establishes presence and integrity; a fence does not execute a suite and
+  cannot observe one that executed.
 
 **3. On any other host the same law says what it cannot say.** The branch is
 not a hardcoded platform string. It is whether `process.platform + "-" +
@@ -82,12 +93,17 @@ stays green on the runner, and it stays green there without asserting anything
 about macOS. When P-38 adds the Linux pin the runner begins taking the first arm
 with no edit to this law.
 
+That arm is reachable from an absent key and from nothing else. A pin the law
+cannot read is not a pin that describes no build here, and answering the first
+condition with the second one's silence would let a malformed pin buy the same
+green the runner legitimately earns.
+
 **The three classes, named so they cannot be blurred.** `L-P04-1` requires this
 record to state each of them as a literal:
 
 | Class | Meaning | Where it is established |
 |---|---|---|
-| `TESTS_RUN_LOCALLY` | executed on this host, this toolchain, these binaries | `L-P04-1`, first arm, every run |
+| `TESTS_RUN_LOCALLY` | executed on this host, this toolchain, these binaries | the recorded runs of the packet that established it (`942a800`, 2026-09-09) and of every packet since, archived outside this tree; `L-P04-1` is a precondition of their integrity and does not execute them |
 | `CI_CONFIGURED` | declared in the workflow the runner executes | `L-R18-1` and `L-R18-2`, both directions |
 | `CI_RUN_VERIFIED` | a run on the runner whose result was observed | nothing in the fence; this record |
 
@@ -120,8 +136,8 @@ host does, at zero cost.
 The cost of that choice is stated rather than hidden, and it is the same cost
 0057 already recorded one level up: these two projects are proven on one
 platform, by one machine, and no independent party corroborates them. This
-record does not reduce that exposure. It makes it legible, and it makes the
-local half a measured fact instead of a sentence.
+record does not reduce that exposure. It makes it legible, and it puts a checked
+precondition under the local half instead of leaving it resting on a sentence.
 
 ## Why the law was not written as a platform allow-list
 
@@ -158,8 +174,10 @@ that can be used to skip the proof this law exists to compel.
   message.
 - **The two OWED projects now have two laws between them and a false claim.**
   `L-R18-1` keeps CI from silently running or silently dropping them;
-  `L-P04-1` keeps the local coverage from being asserted by a host that cannot
-  produce it. Neither says anything about the runner having executed them.
+  `L-P04-1` keeps their local runs from being credited to a host whose pinned
+  binary is absent, substituted, or described by a pin nothing validated.
+  Neither law says that either host executed them: `L-R18-1` reads a workflow
+  and `L-P04-1` reads a file, and the runs themselves live in the record.
 - **`PATH_SCOPED_LAWS` stays at 117**, the ADR corpus moves 61 → 62, the write
   set gains one distinct path, 577 → 578, and the literal-path scan's live count
   moves 314 → 315 with its distinct count unchanged at 191 — the one new literal

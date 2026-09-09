@@ -5489,16 +5489,30 @@ describe("the gate proves the coverage it runs (P-04)", () => {
   const installPath = (version = FIXTURE_VERSION) =>
     ".acp-local/tools/restate-server-" + version + "/restate-server";
 
-  /** Every refusal this law can produce, for the neutralization control to deny. */
+  /**
+   * Every refusal this law can produce, for the neutralization control to deny.
+   *
+   * Each entry is anchored to something only `L-P04-1` says. A fragment loose
+   * enough to appear in another law's output would make the controls below red
+   * for a reason that has nothing to do with this one — which matters here
+   * because section 2C refuses malformed pin digests in words that are nearly
+   * these, and the two must not be mistaken for each other.
+   *
+   * The structural refusals are one `fail`, so they are one entry: the three
+   * defects it names — an unreadable entry, a digest that is not one, a key
+   * outside the platform grammar — are reported together with the keys they
+   * were found at.
+   */
   const COVERAGE_REFUSALS = [
     "L-P04-1 has no install convention to read",
     "in the shape L-P04-1 reads",
     "L-P04-1 has no record to hold the three coverage classes",
     "; a coverage record that does not separate",
     "L-P04-1 has no pinned platform set to place this host in",
+    " is not a JSON object, so it carries no platform table",
     "L-P04-1 cannot say whether this host is one the pin describes",
     "L-P04-1 has nothing to place this host against",
-    "is not an established 64-lowercase-hex digest, so L-P04-1",
+    "the server pin's platform table is malformed: ",
     "the pinned server binary is absent from",
     ", not the pinned ",
   ];
@@ -5533,17 +5547,23 @@ describe("the gate proves the coverage it runs (P-04)", () => {
       write(root, installPath(version), options.binary ?? PINNED_BYTES);
     }
 
+    // `pin` writes the document verbatim, for the shapes a well-formed table
+    // cannot express — a pin that is not an object, a table that is not one,
+    // an entry that is not readable, a key that is not a platform. Those are
+    // the cases this law now decides before it chooses its branch, so a fixture
+    // that could only produce valid tables could not reach them.
     write(
       root,
       COVERAGE_PIN,
-      JSON.stringify(
-        {
-          version,
-          platforms: { [platformKey]: { binarySha256: options.digest ?? sha256(PINNED_BYTES) } },
-        },
-        null,
-        2,
-      ) + "\n",
+      options.pin ??
+        JSON.stringify(
+          {
+            version,
+            platforms: { [platformKey]: { binarySha256: options.digest ?? sha256(PINNED_BYTES) } },
+          },
+          null,
+          2,
+        ) + "\n",
     );
 
     write(
@@ -5575,7 +5595,7 @@ describe("the gate proves the coverage it runs (P-04)", () => {
         ", the host whose pin describes a build: durability-server and daemon are OWED by CI and are covered here" +
         " or nowhere, and coverage claimed from an absent binary is a declaration rather than a run",
     );
-    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
+    expect(output).not.toContain("BINARY_PRESENT_AND_INTACT on ");
   });
 
   it("N37: refuses a binary whose bytes are not the ones the pin describes", async () => {
@@ -5597,7 +5617,7 @@ describe("the gate proves the coverage it runs (P-04)", () => {
         "; the suites CI owes would run against a binary the pin does not describe, which proves the coverage of" +
         " something else",
     );
-    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
+    expect(output).not.toContain("BINARY_PRESENT_AND_INTACT on ");
   });
 
   it("N38: claims nothing, and refuses nothing, on a host the pin describes no build for", async () => {
@@ -5617,7 +5637,7 @@ describe("the gate proves the coverage it runs (P-04)", () => {
         "), so the macOS coverage of durability-server and daemon is not provable here: L-P04-1 reports no" +
         " violations and proves nothing on this host",
     );
-    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
+    expect(output).not.toContain("BINARY_PRESENT_AND_INTACT on ");
     for (const refusal of COVERAGE_REFUSALS) {
       expect(output).not.toContain(refusal);
     }
@@ -5662,29 +5682,160 @@ describe("the gate proves the coverage it runs (P-04)", () => {
         " no longer states RESTATE_SERVER_VERSION and RESTATE_SERVER_INSTALL_DIR in the shape L-P04-1 reads;" +
         " the law would otherwise prove a binary at a path nothing runs from",
     );
-    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
+    expect(output).not.toContain("BINARY_PRESENT_AND_INTACT on ");
   });
 
-  it("P5: proves the coverage, and says which three classes it is separating", async () => {
+  /** A pin document carrying `platforms` verbatim, whatever shape that is. */
+  const pinOf = (platforms) => JSON.stringify({ version: FIXTURE_VERSION, platforms }, null, 2) + "\n";
+
+  /** The entry shape this law reads, for the key it is written under. */
+  const validEntry = { binarySha256: sha256(PINNED_BYTES) };
+
+  it("N41: refuses a pin document that is not a JSON object", async () => {
+    // The silent case. `JSON.parse("null")` succeeds, so the pin was not
+    // malformed JSON — it was a valid document carrying nothing, and the law
+    // used one variable both for "did not parse" and for "parsed to null". It
+    // therefore reached the end of the section without a refusal AND without a
+    // note: no branch taken, no claim made, nothing said, fence green.
+    //
+    // The other three are the same defect with the shapes JSON also allows. A
+    // pin that is not an object cannot carry a platform table, and a law that
+    // needs one must say so rather than proceed as though the question of which
+    // host this is had been answered.
+    for (const document of ["null", "[]", '"x"', "42"]) {
+      const root = coverageTree({ pin: document + "\n" });
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain(
+        COVERAGE_PIN +
+          " is not a JSON object, so it carries no platform table; L-P04-1 cannot say whether this host is one" +
+          " the pin describes a build for",
+      );
+      expect(output).not.toContain("BINARY_PRESENT_AND_INTACT on ");
+      expect(output).not.toContain("the server pin describes no build");
+    }
+  });
+
+  it("N42: refuses a platform table that is not a table", async () => {
+    // An array of the same entries, which is the shape that certified a green
+    // fence with both certificates printed: `typeof [] === "object"`, so the
+    // table was accepted, and its keys are `0`, `1`, … , so no key equalled this
+    // host and the law took the arm that proves nothing. The pin described a
+    // build for this host in every sense a reader would mean; the law reported
+    // it did not, and was believed.
+    for (const platforms of [[validEntry], null, "darwin-arm64"]) {
+      const root = coverageTree({ pin: pinOf(platforms) });
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain(
+        COVERAGE_PIN +
+          " establishes no platform table; L-P04-1 cannot say whether this host is one the pin describes a" +
+          " build for",
+      );
+      expect(output).not.toContain("BINARY_PRESENT_AND_INTACT on ");
+      expect(output).not.toContain("the server pin describes no build");
+    }
+  });
+
+  it("N43: refuses an entry it cannot read, under any key, not merely this host's", async () => {
+    // The scope of the structural check is the whole table, and these five cases
+    // are why. The first three were silent before it: a null entry under this
+    // host's own key took the second arm and produced a note contradicting
+    // itself — "describes no build (it describes darwin-arm64)" — and a
+    // malformed entry under any other key was never looked at, because the
+    // digest was validated only after the branch and only for this host.
+    //
+    // The third is the sharpest: a valid entry for this host beside a sibling
+    // that is not even an object took the FIRST arm, read the binary, hashed it
+    // and claimed coverage — from a pin half of which is unreadable.
+    //
+    // The last two refuse today as well, from the digest check that ran after
+    // the branch. They are kept as a non-regression control: moving that check
+    // in front of the branch must not stop it refusing what it already refused.
+    const cases = [
+      { [HOST_KEY]: null },
+      { [OTHER_KEY]: { binarySha256: "nope" } },
+      { [HOST_KEY]: validEntry, [OTHER_KEY]: "garbage" },
+      { [HOST_KEY]: {} },
+      { [HOST_KEY]: { binarySha256: "abc" } },
+    ];
+
+    for (const platforms of cases) {
+      const root = coverageTree({ pin: pinOf(platforms) });
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain("the server pin's platform table is malformed: ");
+      expect(output).toContain(
+        "; L-P04-1 reads this table to choose between holding the installed binary to a digest and declaring" +
+          " the coverage of durability-server and daemon unprovable here, and an entry it cannot read is" +
+          " neither of those answers",
+      );
+      expect(output).not.toContain("BINARY_PRESENT_AND_INTACT on ");
+      expect(output).not.toContain("the server pin describes no build");
+    }
+  });
+
+  it("N44: refuses a key that is not a platform key", async () => {
+    // A key outside `platformKey()`'s grammar can never equal this host's, so an
+    // entry under one describes a build for nobody. Before the check, such a pin
+    // took the second arm and reported — truthfully, and uselessly — that it
+    // describes no build here, naming `0` or `__proto__` as the platform it
+    // describes instead. The refusal says what is actually wrong with it.
+    //
+    // `__proto__` is written as literal text rather than built from an object,
+    // because an object literal with that key sets a prototype instead of
+    // creating an own property. `JSON.parse` does create it as an own,
+    // enumerable one — which is exactly why the law must not be handed a table
+    // whose keys it has not examined.
+    const documents = [
+      pinOf({ 0: validEntry }),
+      pinOf({ "darwin arm64": validEntry }),
+      '{"version":"' + FIXTURE_VERSION + '","platforms":{"__proto__":' + JSON.stringify(validEntry) + "}}\n",
+    ];
+
+    for (const document of documents) {
+      const root = coverageTree({ pin: document });
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain(" is not a platform key");
+      expect(output).toContain("the server pin's platform table is malformed: ");
+      expect(output).not.toContain("BINARY_PRESENT_AND_INTACT on ");
+      expect(output).not.toContain("the server pin describes no build");
+    }
+  });
+
+  it("P5: proves the binary is present and intact, and claims no run from it", async () => {
     // The neutralization control. Without it every negative above could be
     // passing on some other law's failure text, and the law could be firing on a
     // lawful fixture with nothing here noticing. It also pins the positive the
     // packet is actually for: on the host the pin describes, the note names the
     // binary it hashed, the path it found it at, and the two projects that
     // coverage is about.
+    //
+    // The literal is asserted in full because its wording is the claim. Reading
+    // and hashing a file establishes that the binary is here and is the pinned
+    // one; it does not establish that a suite ran against it, and an earlier
+    // form of this note said it did. The note now says what the bytes support
+    // and hands the run itself back to the records that hold it.
     const root = coverageTree({});
 
     const { output } = await runFenceAgainst(root);
     expect(output).toContain(
-      "TESTS_RUN_LOCALLY on " +
+      "BINARY_PRESENT_AND_INTACT on " +
         HOST_KEY +
         ": the pinned server " +
         FIXTURE_VERSION +
         " is present at " +
         installPath() +
         " and hashes to its pinned binary digest, so durability-server and daemon — the two vitest projects CI" +
-        " OWES — are covered on the host that runs them",
+        " OWES — can run here against the binary the pin describes; that they did run is established by the" +
+        " recorded runs of each packet, not by this law",
     );
+    expect(output).not.toContain("TESTS_RUN_LOCALLY on ");
     expect(output).toContain(
       "the coverage record keeps the three classes apart by name, and holds the third one empty: " +
         COVERAGE_CLASSES.join(", "),

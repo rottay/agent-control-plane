@@ -10240,13 +10240,22 @@ const CI_AMENDMENT_LITERALS = Object.freeze([
 // missing or substituted, the suites would fail — but nothing said that the
 // coverage claim R18 rests on is a RUN rather than a sentence about one.
 //
-// **L-P04-1 makes the macOS half a measurement.** On the host the pin describes
-// a build for, the binary must be present at the convention the runtime states
+// **L-P04-1 makes the macOS half checkable.** On the host the pin describes a
+// build for, the binary must be present at the convention the runtime states
 // and must hash to the pin's `binarySha256`. The digest is computed over the
 // file's bytes rather than read from the receipt the acquisition script leaves
 // beside it: the pin's own comment says a substituted binary with a matching
 // receipt would pass, and a law that trusted the receipt would be the thing
 // that comment warns about.
+//
+// **What that proves is integrity, and not execution.** A fence reads a working
+// tree; it does not run a suite, and it cannot observe one that ran. So this law
+// establishes the precondition — the binary those two suites need is here, and
+// it is the one the pin describes — and stops there. That they RAN is
+// established by the recorded runs of the packet that established the coverage
+// and of every packet since, archived outside this tree. A law that read its own
+// green as evidence of a run would be manufacturing the second half of a claim
+// it can only support the first half of.
 //
 // **On any other host the law says so, and proves nothing.** The branch is not
 // a platform string this file hardcodes; it is whether the pin describes a
@@ -10258,11 +10267,22 @@ const CI_AMENDMENT_LITERALS = Object.freeze([
 // and it is why this law can run in CI at all. When P-38 adds the Linux pin,
 // the runner starts taking the first arm without an edit here.
 //
+// **Which arm is read FROM the pin, so the pin's structure is established
+// first.** The document, the table, every key and every entry — not merely the
+// entry this host would read, because a malformed sibling is a malformed pin.
+// A pin this law cannot read is not a pin that describes no build here, and
+// answering the first condition with the second arm's silence is how a
+// malformed pin once certified a green fence with both certificates printed.
+// Every structural deviation is its own refusal below, and the second arm is
+// reachable from an absent key and from nothing else.
+//
 // **The three classes, kept apart by name.** The owner's distinction is that a
 // written configuration is not an executed run, and there are three states this
 // repository can be in about any suite:
 //
-//   TESTS_RUN_LOCALLY  — executed here, on this host, and this law proves it;
+//   TESTS_RUN_LOCALLY  — executed here, on this host. The recorded runs of the
+//                        packets that ran them establish it; this law proves
+//                        only that the binary they need is present and intact;
 //   CI_CONFIGURED      — declared in the workflow, which `L-R18-1` checks in
 //                        both directions and this law does not duplicate;
 //   CI_RUN_VERIFIED    — a run on the runner whose result was observed. The
@@ -10291,6 +10311,18 @@ const SERVER_BINARY_NAME = "restate-server";
 
 /** A 64-lowercase-hex digest, the only shape a pinned digest may take. */
 const COVERAGE_DIGEST = /^[0-9a-f]{64}$/;
+
+/**
+ * The shape of a platform key: `platformKey()`'s output, and the form
+ * `scripts/acquire-restate-server.mjs` looks its downloads up by.
+ *
+ * A key outside this grammar can never equal `process.platform + "-" +
+ * process.arch`, so an entry under one describes a build for nobody. The law
+ * refuses it rather than reporting — truthfully, and uselessly — that the pin
+ * describes no build for this host, which is what a table keyed `0` or
+ * `__proto__` would otherwise produce.
+ */
+const COVERAGE_PLATFORM_KEY = /^[a-z0-9]+-[a-z0-9]+$/;
 
 /**
  * What the record must say, by literal.
@@ -10364,37 +10396,93 @@ const COVERAGE_CLASS_LITERALS = Object.freeze([
   }
 
   const hostKey = process.platform + "-" + process.arch;
+
+  /** A parsed JSON value that can carry named fields: not null, not an array. */
+  const isJsonObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+  // Whether the document parsed is tracked apart from what it parsed TO,
+  // because `null` is both a document JSON accepts and the value that reads as
+  // "nothing was parsed". Conflating the two is what let a pin of literal
+  // `null` pass through this law without a refusal and without a note.
   let coveragePin = null;
+  let coveragePinParsed = false;
   if (coveragePinText === null) {
     fail(SERVER_PIN_PATH + " is missing; L-P04-1 has no pinned platform set to place this host in");
   } else {
     try {
       coveragePin = JSON.parse(coveragePinText);
+      coveragePinParsed = true;
     } catch {
       fail(SERVER_PIN_PATH + " is not valid JSON; L-P04-1 has no pinned platform set to place this host in");
     }
   }
 
-  const coveragePlatforms =
-    coveragePin !== null && typeof coveragePin.platforms === "object" && coveragePin.platforms !== null
-      ? coveragePin.platforms
-      : null;
+  // The structure, checked in full before the branch is chosen — document,
+  // table, every key and every entry, not merely the entry this host would
+  // read. A malformed sibling is a malformed pin, and a law that inspected only
+  // its own row would certify the first arm beside an entry that is not even an
+  // object.
+  //
+  // What is checked is exactly what this law consumes, and no more. The pin's
+  // full shape — `asset`, `url`, `sha256` — already has two validators in this
+  // repository: section 2C, and `readPin()` in the acquisition script. A third
+  // restatement here would be one more place for the three to drift apart.
+  let coveragePlatforms = null;
+  if (coveragePinParsed) {
+    if (!isJsonObject(coveragePin)) {
+      fail(
+        SERVER_PIN_PATH +
+          " is not a JSON object, so it carries no platform table; L-P04-1 cannot say whether this host is one" +
+          " the pin describes a build for",
+      );
+    } else if (!isJsonObject(coveragePin.platforms)) {
+      fail(
+        SERVER_PIN_PATH +
+          " establishes no platform table; L-P04-1 cannot say whether this host is one the pin describes a build for",
+      );
+    } else {
+      const malformed = [];
+      for (const [key, entry] of Object.entries(coveragePin.platforms)) {
+        if (!COVERAGE_PLATFORM_KEY.test(key)) {
+          malformed.push(JSON.stringify(key) + " is not a platform key");
+        } else if (!isJsonObject(entry)) {
+          malformed.push(key + " is not an object");
+        } else if (typeof entry.binarySha256 !== "string" || !COVERAGE_DIGEST.test(entry.binarySha256)) {
+          malformed.push(key + ".binarySha256 is not an established 64-lowercase-hex digest");
+        }
+      }
 
-  if (coveragePinText !== null && coveragePin !== null && coveragePlatforms === null) {
-    fail(
-      SERVER_PIN_PATH +
-        " establishes no platform table; L-P04-1 cannot say whether this host is one the pin describes a build for",
-    );
-  } else if (coveragePlatforms !== null) {
+      if (malformed.length > 0) {
+        fail(
+          "the server pin's platform table is malformed: " +
+            malformed.join(", ") +
+            "; L-P04-1 reads this table to choose between holding the installed binary to a digest and declaring" +
+            " the coverage of " +
+            CI_OWED_PROJECTS.join(" and ") +
+            " unprovable here, and an entry it cannot read is neither of those answers",
+        );
+      } else {
+        coveragePlatforms = coveragePin.platforms;
+      }
+    }
+  }
+
+  if (coveragePlatforms !== null) {
     const described = Object.keys(coveragePlatforms).sort();
     const hostPlatform = coveragePlatforms[hostKey];
 
     if (described.length === 0) {
       fail("the server pin describes no platform at all; L-P04-1 has nothing to place this host against");
-    } else if (hostPlatform === undefined || hostPlatform === null) {
+    } else if (hostPlatform === undefined) {
       // The runner's arm. Nothing here is a violation and nothing here is
       // evidence: the pin describes no build for this host, so the suites that
       // need one cannot be run, and a claim about them cannot be made.
+      //
+      // An absent key is the only way in. An entry that was present but
+      // unreadable — `null`, a string, a bad digest — was refused above, so this
+      // arm can no longer be reached by a pin that simply failed to say
+      // anything, and its note can no longer contradict itself by reporting "no
+      // build" for a platform the table does list.
       notes.push(
         "on " +
           hostKey +
@@ -10406,6 +10494,11 @@ const COVERAGE_CLASS_LITERALS = Object.freeze([
       );
     } else if (installDir !== null) {
       const binaryPath = installDir + "/" + SERVER_BINARY_NAME;
+
+      // Established as a 64-lowercase-hex digest by the structural check above,
+      // for this key and every other. It is not re-checked here: a second guard
+      // on a value already refused would be a branch no input can take, and an
+      // unreachable refusal is indistinguishable from one that does not work.
       const expected = hostPlatform.binarySha256;
 
       let bytes = null;
@@ -10415,15 +10508,7 @@ const COVERAGE_CLASS_LITERALS = Object.freeze([
         bytes = null;
       }
 
-      if (typeof expected !== "string" || !COVERAGE_DIGEST.test(expected)) {
-        fail(
-          "the server pin's " +
-            hostKey +
-            ".binarySha256 is not an established 64-lowercase-hex digest, so L-P04-1 has nothing to hold the" +
-            " installed binary to on the host that runs " +
-            CI_OWED_PROJECTS.join(" and "),
-        );
-      } else if (bytes === null) {
+      if (bytes === null) {
         fail(
           "the pinned server binary is absent from " +
             binaryPath +
@@ -10447,8 +10532,13 @@ const COVERAGE_CLASS_LITERALS = Object.freeze([
               " of something else",
           );
         } else {
+          // Presence and integrity, which is what reading and hashing a file
+          // establishes, and not one word more. The suites are not run here, so
+          // this note does not say they were: the coverage of the two projects
+          // CI owes is established by the recorded runs of the packets that ran
+          // them, and this law is the precondition those runs depend on.
           notes.push(
-            "TESTS_RUN_LOCALLY on " +
+            "BINARY_PRESENT_AND_INTACT on " +
               hostKey +
               ": the pinned server " +
               pinnedVersion +
@@ -10456,7 +10546,8 @@ const COVERAGE_CLASS_LITERALS = Object.freeze([
               binaryPath +
               " and hashes to its pinned binary digest, so " +
               CI_OWED_PROJECTS.join(" and ") +
-              " — the two vitest projects CI OWES — are covered on the host that runs them",
+              " — the two vitest projects CI OWES — can run here against the binary the pin describes; that they" +
+              " did run is established by the recorded runs of each packet, not by this law",
           );
         }
       }
