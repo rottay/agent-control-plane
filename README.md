@@ -1,296 +1,413 @@
-<!-- Canonical operational authority: docs/ROADMAP.md. This is not the public product roadmap. -->
+<!-- Canonical operational authority: docs/ROADMAP.md. -->
 <h1 align="center">
-  <img src="docs/readme/header/index.png" width="1200" alt="Rottay Agent Control Plane — One mission. Many minds. Coordinate the work, choose the right agents, and keep the freedom to change your tools." />
+  <img src="docs/readme/header/index.png" width="1200" alt="Rottay Agent Control Plane — Run the team. Keep the control. Assign the right agents, govern the work, and stay free to change your tools." />
 </h1>
 
 <p align="center">
-  <strong>Configurable agent teams. Durable work. Technology without lock-in.</strong>
+  <a href="#one-workflow-different-responsibilities">Workflows</a> ·
+  <a href="#put-your-subscriptions-to-work">Subscriptions</a> ·
+  <a href="#control-what-happens-when-things-go-wrong">Reliability</a> ·
+  <a href="#choose-the-tools-not-the-lock-in">Ecosystem</a> ·
+  <a href="#what-you-can-build">Use cases</a> ·
+  <a href="#inside-the-architecture">Architecture</a>
 </p>
 
-<p align="center">
-  <a href="#the-operating-layer-for-agent-work">Overview</a> ·
-  <a href="#your-team-your-rules">Workflows</a> ·
-  <a href="#reliability-beyond-the-prompt">Reliability</a> ·
-  <a href="#subscriptions-as-a-first-class-resource">Subscriptions</a> ·
-  <a href="#an-open-ecosystem-with-clear-boundaries">Ecosystem</a> ·
-  <a href="#built-around-real-use-cases">Use cases</a> ·
-  <a href="#engineering-behind-the-experience">Engineering</a>
-</p>
+## Your AI team, from the first brief to a verified result.
 
-> **Product vision.** This page describes the system we are building. Named
-> alternatives are extension targets, not a claim of universal support; an option
-> becomes selectable only with an implemented adapter and a verified compatibility
-> profile. The [specification](docs/audit/README.md) defines the contracts and
-> acceptance criteria; operational authority remains in canonical repository documentation.
+Agent Control Plane is a local-first framework for coordinating work across AI
+providers, models and accounts. Assign one agent to plan, another to implement,
+another to test and another to review. Define what each must deliver — and what
+must happen before the work moves forward.
 
-<sub>01 / THE IDEA</sub>
+**The goal: less manual coordination, better use of the capacity you pay for,
+and the freedom to change providers without rebuilding your workflow.**
 
-## The operating layer for agent work
+> This is the product we are building. Capabilities below describe the target
+> experience; named alternatives require an implemented, verified adapter before use.
+> [Read the product specification](docs/audit/README.md).
 
-### Design the team. Define the rules. Choose the intelligence.
+### The hard part is not opening another agent. It is keeping the work coherent.
 
-**Agent Control Plane is a local-first, extensible framework for coordinating AI
-work across providers, models, accounts and tools.** It connects a goal to a
-structured plan, assigns responsibilities, governs execution, collects evidence
-and decides when the work is allowed to move forward.
+A strong coding model can still run out of quota halfway through a change. A
+reviewer can receive the wrong context. Two useful agents can overwrite the same
+files. A successful-looking conversation can end without a single independent
+check. Adding more models does not, by itself, solve those coordination problems.
 
-Not just “send this prompt to a model.” **Decide who should do the work, what they
-can access, what they must deliver, who verifies it, and what happens next.**
+Agent Control Plane brings the missing decisions into one operating model:
 
-![Work as a team: clear roles, shared context and verified handoffs. Spend with intent: usage, quotas and reset windows. Keep your freedom: stable contracts and replaceable implementations.](docs/readme/benefits/index.png)
-
-The motivation comes from everyday agent-assisted development: several useful
-subscriptions, different model strengths, changing quotas, long-running tasks,
-and too much coordination spread across terminals and conversations.
-
-The answer is **a backend organized around enduring needs, not vendor names**.
-Models and frameworks change. Planning, permissions, context, recovery, budgets
-and verification still need an owner. Your workflow should survive those choices.
-
----
-
-<sub>02 / CONFIGURABLE TEAMS</sub>
-
-## Your team, your rules
-
-### A role is a responsibility — not a permanent model assignment.
-
-Ask [Kimi](https://www.kimi.com/) to clarify requirements,
-[Claude Code](https://code.claude.com/docs/en/overview) to implement,
-another worker to add tests, and [Codex](https://openai.com/codex/) to review.
-Or assign the same responsibilities differently. **The provider, model and account
-are configurable for each step**, within the permissions and budget of the plan.
-
-![Example workflow: requirements, implementation, tests and independent review use configurable agents. Review can request clarification, code changes or more tests, or allow the authorized next step. The backend validates transitions.](docs/readme/architecture/index.png)
-
-| Configure each step | What the configuration controls |
+| What you want to control | What should no longer depend on remembering a chat |
 |---|---|
-| **Responsibility** | Coordinate, investigate, implement, verify, audit or consult |
-| **Assignment** | Provider, model/version, transport, eligible account and capability requirements |
-| **Instructions and context** | The objective, scoped inputs, reference artifacts and relevant prior decisions |
-| **Authority** | Read/write scope, allowed tools, execution environment and required human approvals |
-| **Deliverable** | Code, tests, findings, a proposal or another artifact with explicit acceptance criteria |
-| **Exit conditions** | Required checks, independent verification, evidence and approval before advancing |
-| **Next action** | Continue, request clarification, return for corrections, wait, escalate or stop |
-| **Resource policy** | Budget, timeout, retry limits, concurrency and permitted handoff destinations |
+| **The team** | Who owns each responsibility, with which model and account |
+| **The boundaries** | What an agent may read, change, call or spend |
+| **The handoff** | Which result and evidence the next worker receives |
+| **The outcome** | Which conditions authorize completion, correction or escalation |
+| **The continuity** | How the task waits, recovers or moves to a compatible worker |
 
-**Transitions depend on results, not just sequence.** A failed review might send
-work back to implementation; missing coverage might open a testing task; an
-ambiguous requirement might return to planning. A passed review advances only
-when the configured checks and approvals also pass. Correction loops have limits
-and an escalation path.
-
-**Parallel where safe.** Independent investigations or disjoint tasks can run
-together. Dependencies, account reservations, write ownership and join conditions
-determine when branches may start and when their results can be combined.
-
-**Change the plan without losing its history.** Version assignments and approvals,
-compare revisions, and simulate capabilities and estimated consumption before
-spending quota. Changing a preference does not silently reassign work already in flight.
-
-> **Agents produce results. The backend validates transitions.**
-> A model saying “done” is not proof that tests ran, a reviewer accepted, or a
-> commit was authorized.
-
-[Planning and team use cases →](docs/audit/requirements/index.md#2-a--iniciativas-y-planificación) ·
-[Execution contracts →](docs/audit/architecture/contracts/index.md)
+This is the distinction between **running several agents** and **operating an
+agent team**. The product is designed for the second.
 
 ---
 
-<sub>03 / OPERATIONAL DEPTH</sub>
+## One workflow. Different responsibilities.
 
-## Reliability beyond the prompt
+### Choose who does the work — and who decides it is good enough.
 
-### Keep the work coherent when the happy path ends.
+[Kimi](https://www.kimi.com/) could clarify requirements,
+[Claude Code](https://code.claude.com/docs/en/overview) implement,
+a separate worker verify the tests, and [Codex](https://openai.com/codex/) audit
+the result. These are example assignments, not fixed rankings. Provider, model
+and account are configurable for each step.
 
-The control plane's scope includes the operational machinery around an agent —
-not only its reasoning loop.
+![A configurable workflow moves from requirements to implementation, verification and independent review. The review can request clarification, code changes or more evidence, or allow the authorized next step.](docs/readme/architecture/index.png)
 
-| Need | Designed behavior | Why it matters |
+A review is not just a “next” button. Missing requirements return to planning;
+defects return to implementation; missing evidence returns to verification.
+Advancing requires the configured checks and approvals, not an agent saying “done.”
+
+Independent work can run in parallel. Dependencies, account capacity and write
+ownership determine what is safe to start together. Correction loops are bounded,
+with an explicit path to pause or ask for help.
+
+### An example: “Add downloadable reports to this application.”
+
+The request sounds small. Delivering it involves product decisions, code, tests,
+access rules and review. Instead of asking one conversation to do everything,
+you define the responsibilities and the evidence they exchange.
+
+*Illustrative workflow, not a fixed template or an assertion of current end-to-end support.*
+
+| Responsibility | Example assignment | What it must deliver |
 |---|---|---|
-| **Durable execution** | Persist task identity, decisions, checkpoints and outcomes | Long-running work is not tied to one terminal or process |
-| **Retries and recovery** | Bounded retries, backoff, timeouts and explicit handling of uncertain side effects | A crash is not permission to repeat a costly or destructive action |
-| **Lifecycle control** | Queues, cancellation, signals, timers, reattachment and concurrency within the driver's declared capabilities | Waiting and resuming become governed states, not manual workarounds |
-| **Verified handoffs** | Transfer bounded context and artifact references; revalidate destination, permissions and prestate | Continue useful work without treating a provider transcript as the source of truth |
-| **Independent quality gates** | Separate implementation from verification; record actual checks, findings and approvals | Advancement follows evidence rather than self-reported success |
-| **Context and tools** | Scoped artifacts, tool schemas, allowlists and controlled access to private content | Each worker gets the information and authority its task needs |
-| **Live visibility** | Correlated execution events, logs, progress and reconnectable streams | Distinguish active work, waiting, failure and disconnection |
-| **Operational control** | Diagnostics, bounded notifications, backup/restore and explicit degraded modes | Failures are actionable, and optional services do not become hidden dependencies |
+| **Clarify the request** | Kimi as coordinator | File format, selected data, access rules and acceptance criteria; unresolved decisions go to the operator |
+| **Implement the feature** | Claude as implementer | A change inside an approved write-set, with artifact references and an explanation of behavior |
+| **Verify the behavior** | A separate worker with a suitable model | Tests for normal output, empty results and unauthorized access, with actual command results |
+| **Audit the change** | Codex or another independent reviewer | Findings against the agreed requirements and the exact change, not a restatement of the writer's summary |
+| **Authorize the next action** | The configured policy and operator approval where required | Permission to advance or create a commit only after the required evidence is present |
 
-### Observability that answers useful questions.
+Suppose the reviewer finds that the export includes data the requester cannot
+access. **The plan does not advance because most tests passed.** It returns the
+finding to implementation, invalidates evidence that no longer matches the
+revised change, and requires the relevant checks again.
 
-Who acted? Which instruction and policy did they receive? What changed? Which
-attempt consumed quota? Why was a task retried? Who accepted the result?
+If the access rule was never defined, the correct next step is different: return
+to clarification. If the implementation is correct but the test is missing,
+send the work to verification. You configure these paths; the model does not
+invent its own authority to skip them.
 
-The design connects **instruction → routing decision → attempt → effect → result
-→ verification**, using stable identifiers and a durable event ledger. Metrics
-cover latency, throughput, failures, resource use and consumption. Usage that is
-missing or estimated is labeled, not silently counted as zero.
+> **The next state is a decision backed by evidence — not the next message in a chat.**
 
-Telemetry is an export of operational evidence, not another authority over the
-task. Sensitive prompts and responses belong in access-controlled artifacts;
-they do not belong in ordinary browser streams or traces. A telemetry outage
-must not stop execution or recovery.
+### Configure the responsibility, not just the model name.
 
-[Observability requirements →](docs/audit/requirements/index.md#7-f--trazabilidad-y-observabilidad) ·
-[Recovery and data integrity →](docs/audit/architecture/database/index.md)
+| Setting | What you define |
+|---|---|
+| Responsibility | Coordinate, investigate, implement, verify, audit or consult |
+| Assignment | Provider, model/version, transport and eligible account |
+| Context | Instructions, reference artifacts, scope and prior decisions |
+| Permissions | Allowed tools, read/write boundaries and required approvals |
+| Deliverable | A change, tests, findings or another result with acceptance criteria |
+| Transition | Continue, request corrections, wait, escalate or stop |
+| Resources | Budget, timeout, retry limits and concurrency |
+
+Plans and assignments are versioned. Approvals refer to a specific revision.
+A dry-run explains dependencies, capability requirements and estimated consumption
+before execution. Editing preferences does not silently reassign in-flight work.
+
+[Planning and team requirements](docs/audit/requirements/index.md#2-a--iniciativas-y-planificación) ·
+[Execution contracts](docs/audit/architecture/contracts/index.md)
 
 ---
 
-<sub>04 / SUBSCRIPTION-AWARE BY DESIGN</sub>
-
-## Subscriptions as a first-class resource
+## Put your subscriptions to work.
 
 ### Coordinate the capacity you already pay for.
 
-**Subscription-based coding tools are a primary use case, not an afterthought.**
-The aim is to manage permitted subscription interfaces alongside API-key clients
-and local models through a common execution contract — without pretending their
-authentication, quotas or economics are identical.
+![Use the capacity you already pay for: subscriptions, API keys and local models share an execution contract, with separate billing and permission rules.](docs/readme/capacity/index.png)
 
-![Conceptual capacity policy: an exhausted account waits, an eligible account can receive work, and unknown quota remains unknown. A compatible handoff checkpoints, revalidates and continues. This is not a live usage dashboard.](docs/readme/capacity/index.png)
+Subscription-based coding tools are a primary use case. The control plane is
+designed to consider account eligibility, reported usage, reservations and reset
+windows when assigning work — alongside API-key clients and local models.
 
-| Decision | Information the control plane should consider |
+| Execution path | What it brings |
 |---|---|
-| **Which worker fits?** | Role, model capabilities, measured task performance and execution constraints |
-| **Which account is eligible?** | Authorized identity, reported quota, existing reservations, account state and data freshness |
-| **Wait or hand off?** | Reset windows, deadlines, checkpoint compatibility and permitted alternatives |
-| **What did the result cost?** | Input/output/cache usage where reported, retries, failed attempts and reviewers |
-| **Is the policy improving?** | Quality, latency and cost per accepted result, with sample size and uncertainty |
+| **Subscription** | Use a provider's permitted coding interface and manage its reported capacity |
+| **API key** | Use explicit metered billing with an authorized budget |
+| **Local or self-hosted** | Use an admitted endpoint under its resource and privacy constraints |
 
-Account selection must be explainable. Waiting for renewal, switching to another
-authorized account and changing transport are **different actions with different
-rules**. A handoff carries the task's identity and verified context; it does not
-assume native conversation history transfers between providers.
+The execution contract is shared. Billing rules and permissions are not.
 
-Subscription allocation, API charges and estimated equivalent cost remain
-separate. There is **no silent fallback to a paid API bill**, no invented remaining
-quota and no fixed savings claim without a measured workload comparison.
+- **Choose deliberately.** Match role requirements to model capability and eligible capacity.
+- **Wait or hand off safely.** Resume after renewal, or continue from a verified checkpoint on an authorized, compatible destination.
+- **Measure the whole result.** Count retries, failed attempts and reviewers — not only the final response.
+
+No hidden fallback to a paid API bill. No invented quota. Measured, estimated
+and unknown consumption stay distinct; subscription allocation and API charges
+are accounted for separately.
+
+### An exhausted account should not erase a productive afternoon.
+
+Consider a feature whose implementation pauses at a quota limit. An independent
+documentation review may still be eligible to run; tests that depend on unfinished
+code are not. The coordinator should know the difference instead of freezing the
+entire initiative or launching every worker again.
+
+For the paused task, the policy can wait for the reported renewal window or choose
+a permitted compatible destination. The handoff includes the objective, accepted
+decisions, last verified step, pending work and artifact references. It does not
+copy an unlimited transcript and hope the next model interprets it correctly.
+
+**Continuity is the objective; account switching is only one possible mechanism.**
+If a destination lacks the required capability, needs operator authentication or
+would exceed the budget, the correct state is an explained wait — not a hidden
+downgrade or an unexpected invoice.
+
+### The cheapest response is not always the cheapest result.
+
+A low-cost model that needs repeated corrections can cost more than a stronger
+model that produces an accepted result sooner. Conversely, an expensive model
+need not perform every mechanical check. Routing should consider the responsibility,
+quality evidence, latency and total consumption together.
+
+Evaluations inform explicit, versioned policy changes. A new model can earn a
+role through measured results rather than a permanent preference hardcoded into
+the system. Usage remains attributable to the initiative and step, including
+the cost of retries, verification and auditing.
 
 <details>
-<summary><strong>Provider permissions and billing boundaries</strong></summary>
+<summary><strong>Account switching, savings and provider terms</strong></summary>
 
-A shared contract does not turn a subscription into an unrestricted API key.
-Supported use must follow each provider's permitted interfaces and account terms;
-authentication can require the operator. Switching accounts is not a mechanism
-for bypassing provider limits or restrictions.
+A handoff preserves task identity and bounded context, not a promise that native
+conversation history transfers between providers. It revalidates the destination,
+permissions and checkpoint before continuing.
+
+Savings depend on workload, limits and review overhead. They must be measured;
+a subscription is neither unlimited capacity nor an unrestricted API key.
+Account switching must respect provider terms and cannot be used to bypass restrictions.
+Authentication may require the operator.
 
 For example, [Claude Code's provider policy](https://code.claude.com/docs/en/legal-and-compliance)
 distinguishes individual subscription use from third-party products offering
 Claude.ai login or routing subscription credentials on users' behalf. Commercial
-integrations must use the permitted authentication and billing path. An adapter
-must declare those constraints, not hide them behind the common interface.
+integrations must use a permitted authentication and billing path.
+
+[Accounts, quotas and economics](docs/audit/requirements/index.md#5-d--cuentas-y-economía)
 
 </details>
 
-[Accounts, quotas and economics →](docs/audit/requirements/index.md#5-d--cuentas-y-economía)
-
 ---
 
-<sub>05 / OPEN BY CONTRACT</sub>
+## Control what happens when things go wrong.
 
-## An open ecosystem with clear boundaries
+### Long-running work needs more than a prompt and a terminal.
 
-### Use the ecosystem. Keep ownership of your workflow.
+![The operating layer: recover work, control spending, prove results, bound authority, understand each run and change tools through stable contracts.](docs/readme/benefits/index.png)
 
-<p align="center">
-  <a href="https://docs.restate.dev/"><img src="https://img.shields.io/badge/Restate-Durable%20execution-213B38?style=flat-square" alt="Restate — durable execution" /></a>
-  <a href="https://docs.temporal.io/"><img src="https://img.shields.io/badge/Temporal-Durable%20execution-213B38?style=flat-square" alt="Temporal — durable execution" /></a><br>
-  <a href="https://docs.langchain.com/oss/python/langgraph/overview"><img src="https://img.shields.io/badge/LangGraph-Agent%20graphs-314656?style=flat-square&amp;logo=langgraph&amp;logoColor=white" alt="LangGraph — agent graphs" /></a>
-  <a href="https://docs.langchain.com/oss/python/langchain/overview"><img src="https://img.shields.io/badge/LangChain-Agent%20components-314656?style=flat-square&amp;logo=langchain&amp;logoColor=white" alt="LangChain — agent components" /></a><br>
-  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-Tool%20protocol-5A4C45?style=flat-square&amp;logo=modelcontextprotocol&amp;logoColor=white" alt="MCP — tool protocol" /></a>
-  <a href="https://opentelemetry.io/"><img src="https://img.shields.io/badge/OpenTelemetry-Observability-5A4C45?style=flat-square&amp;logo=opentelemetry&amp;logoColor=white" alt="OpenTelemetry — observability" /></a>
-</p>
-
-These technologies address different parts of the problem. Agent Control Plane
-provides the **governance, composition and operational contracts around them**;
-it does not attempt to rebuild every workflow engine, retrieval framework or
-telemetry platform.
-
-**The table maps needs to integration directions and alternatives. It is not an
-installed-plugin or current-support list.**
-
-| Need | Technology choices | Boundary owned by the control plane |
-|---|---|---|
-| **🧠 Model execution** | [Claude Code](https://code.claude.com/docs/en/overview), [Codex](https://openai.com/codex/), [Kimi](https://www.kimi.com/); API-key and local/self-hosted adapters | Instructions, role, model identity, account eligibility, results, cancellation and usage |
-| **↻ Durable orchestration** | [Restate](https://docs.restate.dev/) as the principal integration direction; [Temporal](https://docs.temporal.io/) as an alternative driver target; local [SQLite](https://sqlite.org/) supervisor | Lifecycle, recovery, checkpoints and capability negotiation; no presumed feature parity |
-| **⑂ Agent workflows** | Native harness; optional [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview) and [LangChain](https://docs.langchain.com/oss/python/langchain/overview) adapters | Bounded task execution, input/output contracts, authority and budget |
-| **🔌 Tools and delegation** | [MCP](https://modelcontextprotocol.io/), native tools; [A2A](https://a2a-protocol.org/latest/) as an external-agent extension | Discovery, schemas, allowlists, delegated scope, receipts and cancellation |
-| **📚 Context and retrieval** | Scoped artifacts; optional [LlamaIndex](https://github.com/run-llama/llama_index), retrieval and vector-store adapters | Authorized sources, provenance, context limits, retention and task isolation |
-| **◎ Tracing and diagnostics** | [OpenTelemetry](https://opentelemetry.io/) / [OpenInference](https://github.com/Arize-ai/openinference); [Phoenix](https://arize.com/docs/phoenix) as the initial optional backend | Correlated, redacted evidence exported independently of execution |
-| **✓ Evaluations and routing** | [Promptfoo](https://www.promptfoo.dev/docs/intro/) and compatible evaluation runners | Versioned datasets, measured results and usage feeding one capability registry and explicit policy revisions |
-| **▤ Storage and credentials** | [SQLite](https://sqlite.org/), local artifacts; transactional database, object-store and keychain adapters | Consistency, migrations, identity and opaque credential references |
-| **◉ Operator interaction** | CLI and API; console, notifications and optional voice/realtime adapters | The same task semantics, permissions and state across interfaces |
-
-### Complementary tools, not competing control loops.
-
-**Restate or Temporal can own durable orchestration; LangGraph can execute a
-bounded agent subtask inside it.** MCP supplies tools. OpenTelemetry and Phoenix
-observe. These are compatible responsibilities when their ownership is explicit,
-not interchangeable names for the same layer.
-
-The composition contract distinguishes alternatives, delegated work, pipelines
-and observers. Preflight must reject competing owners for the same responsibility,
-duplicate retry loops, unsupported capabilities or a hidden model fallback that
-would bypass routing policy. Two engines may serve separate scopes; they do not
-both control recovery for the same run.
-
-**Install only what the use case needs.** A native path remains meaningful without
-an external harness or telemetry backend. Unsupported operations fail explicitly;
-a simpler local driver must not pretend to provide an advanced engine's guarantees.
-
-> **Replaceable does not mean magically hot-swappable.**
-> Selecting an adapter, continuing from a compatible checkpoint and migrating a
-> live execution are distinct capabilities. Each requires its own tested contract.
-
-[Integration families →](docs/audit/architecture/integrations/index.md) ·
-[Composition and conflict rules →](docs/audit/architecture/integrations/composition/index.md) ·
-[Ecosystem comparison →](docs/audit/architecture/integrations/market/index.md)
-
----
-
-<sub>06 / PRACTICAL OUTCOMES</sub>
-
-## Built around real use cases
-
-### One operating model. Different kinds of work.
-
-| Scenario | What the team is designed to coordinate |
+| Situation | The designed response |
 |---|---|
-| **Feature delivery** | Clarify the brief, implement a bounded change, assign tests and independent review, then request the authorized next action |
-| **Codebase audit or refactor** | Explore read-only, gather evidence, propose changes, and verify them against the original objective |
-| **Several initiatives at once** | Separate plans, context and results while sharing eligible capacity; run only compatible work in parallel |
-| **Long-running development** | Wait for quota, recover after interruption, or hand off to a compatible worker without rebuilding the project from chat history |
-| **Model and policy evaluation** | Compare accepted results, quality, latency and total consumption; propose an explainable routing change with rollback |
+| **A process crashes** | Recover task identity and checkpoints; reconcile uncertain effects before retrying |
+| **A provider stops responding** | Apply bounded timeouts and retries; wait or use an explicitly permitted alternative |
+| **An account runs out of capacity** | Pause or hand off under policy, without losing the task or hiding new charges |
+| **A task needs outside input** | Wait for an approval, signal or timer supported by the selected driver |
+| **Two agents want the same resource** | Reserve capacity and enforce write ownership before dispatch |
+| **A check or review fails** | Record the evidence and follow the configured correction or escalation path |
 
-The [use-case catalog](docs/audit/requirements/index.md) goes deeper: planning,
-execution, recovery, accounts, evaluations, observability, interfaces, security,
-installation and extensibility. Each requirement has an owner, a contract and a
-falsifiable acceptance criterion. That is the source of product scope, not an
-ever-growing collection of integrations.
+Durable queues, cancellation, reattachment and concurrency belong to the execution
+contract. Each driver declares what it can actually support. A simpler local
+runtime must reject unsupported operations, not imitate stronger guarantees.
+
+### Recovery must preserve meaning, not just restart a process.
+
+Imagine an agent wrote a file and the supervisor crashed before recording the
+outcome. Blindly repeating the request could create a duplicate effect or spend
+quota twice. Recovery needs to reconcile what happened, preserve ownership and
+decide whether continuation is safe.
+
+The architecture therefore separates task state, attempts, effects, checkpoints
+and evidence. **A durable engine cannot make every external side effect
+exactly-once by itself.** Uncertain outcomes need explicit handling, including a
+pause for inspection when the system cannot safely determine what occurred.
+
+Cancellation follows the same principle. “Stop” is a lifecycle action with a
+recorded outcome and preserved checkpoint, not a promise that killing a terminal
+undoes changes already made.
+
+### See the work, not just the last message.
+
+Observability connects **the instruction, routing decision, attempts, effects,
+result and verification**. That history should answer practical questions:
+
+- What is running, waiting or blocked — and why?
+- Which worker changed what, under which permissions?
+- Where did the time and quota go?
+- Which checks actually ran, and who accepted the result?
+
+Live events, correlated logs, metrics and reconnectable streams provide the
+operational view. Sensitive prompts and responses stay in access-controlled
+artifacts, not ordinary browser streams or traces.
+
+Telemetry remains optional: an unavailable tracing backend must not stop the
+work or become another source of authority.
+
+**For the operator:** a timeline should distinguish useful execution from waiting,
+quota pressure, a pending approval or a disconnected stream. Notifications should
+surface an actionable change, not repeatedly announce that nothing changed.
+
+**For the developer:** correlated identifiers connect a task to its attempts,
+tool effects, routing policy and verification. That makes it possible to diagnose
+why one task needed several retries, or why the apparently fastest model produced
+the most expensive accepted result.
+
+[Observability requirements](docs/audit/requirements/index.md#7-f--trazabilidad-y-observabilidad) ·
+[Recovery and data integrity](docs/audit/architecture/database/index.md)
 
 ---
 
-<sub>07 / BUILT TO BE UNDERSTOOD</sub>
+## Choose the tools, not the lock-in.
 
-## Engineering behind the experience
+### Stable responsibilities. Replaceable implementations.
 
-### Stable contracts at the center. Replaceable implementations at the edges.
+Agent Control Plane does not replace every framework in the ecosystem. It
+provides the contracts around them: task identity, permissions, budgets, evidence
+and rules for how they cooperate.
 
-| Engineering choice | Purpose |
+The map below distinguishes the principal direction from alternative and optional
+integration targets. **It is not a list of installed or currently supported plugins.**
+
+| Responsibility | Technologies and integration direction |
 |---|---|
-| **Domain-owned ports and types** | Keep vendor SDKs out of shared contracts; centralize interfaces and enums with their owning concept rather than duplicating them |
-| **Declarative boundaries** | Organize modules by responsibility with folder/index entry points; make dependencies visible and prevent circular ownership |
-| **Normalized operational data** | Give initiatives, steps, attempts, accounts, reservations and artifacts explicit identities and consistent naming |
-| **Ledger and projections** | Preserve authoritative recorded history; distinguish business state from engine journals, telemetry and rebuildable read models |
-| **Versioned policy and evidence** | Explain which instruction, capability profile, decision and approval governed each result |
-| **Behavioral conformance tests** | Verify real inputs, outputs, failures and side effects, not merely that an adapter implements an interface |
-| **Mirror-structured tests** | Keep tests outside production folders while preserving the module structure and clear ownership |
+| **Model execution** | [Claude Code](https://code.claude.com/docs/en/overview), [Codex](https://openai.com/codex/), [Kimi](https://www.kimi.com/); API-key and local-model adapters |
+| **Durable orchestration** | [Restate](https://docs.restate.dev/) as the principal integration direction; [Temporal](https://docs.temporal.io/) as an alternative driver target; local [SQLite](https://sqlite.org/) supervisor |
+| **Agent workflows** | Native harness; optional [LangGraph](https://docs.langchain.com/oss/python/langgraph/overview) and [LangChain](https://docs.langchain.com/oss/python/langchain/overview) adapters |
+| **Tools and delegation** | [MCP](https://modelcontextprotocol.io/) and native tools; [A2A](https://a2a-protocol.org/latest/) as an external-agent extension |
+| **Context and retrieval** | Scoped artifacts; optional [LlamaIndex](https://github.com/run-llama/llama_index), retrieval and vector-store adapters |
+| **Observability** | [OpenTelemetry](https://opentelemetry.io/) / [OpenInference](https://github.com/Arize-ai/openinference); [Phoenix](https://arize.com/docs/phoenix) as the initial optional backend |
+| **Evaluations** | [Promptfoo](https://www.promptfoo.dev/docs/intro/) and compatible runners informing one capability registry and versioned routing policies |
+| **Storage and credentials** | [SQLite](https://sqlite.org/) and local artifacts; transactional database, object-store and keychain adapter targets |
+| **Operator interaction** | CLI and API; a separately designed console, notifications and optional voice/realtime extensions |
 
-Certification includes instruction delivery, independent verification, crash
-recovery, quota exhaustion, concurrent reservations, interrupted streams and tool
-failures. It also tests optional integrations **enabled, absent and unavailable**.
-An adapter is only as interchangeable as the behavior it proves.
+### Combine capabilities without duplicating control.
+
+A durable engine such as Restate or Temporal can own recovery for a run.
+LangGraph can execute a bounded subtask inside it. MCP supplies tools;
+OpenTelemetry and Phoenix observe. Each has a different job.
+
+Preflight must reject competing owners, duplicate retry loops and hidden
+fallbacks. Multiple engines can serve different scopes; they do not both control
+the same execution.
+
+### Where the familiar frameworks fit
+
+**Restate and Temporal address durable execution.** They provide mechanisms for
+long-running work to wait and recover. The control plane's driver contract owns
+the semantics the product needs; a provider-specific SDK stays behind that
+boundary. Supporting another engine means implementing and testing that contract,
+not scattering engine-specific branches through the application.
+
+**LangGraph and LangChain address work inside an agent workflow.** They can be
+useful for a bounded reasoning graph, tool loop or specialized component. That
+does not give the nested framework permission to choose a different billing
+account, expand a write-set or start an unaccounted retry loop. The surrounding
+task keeps its identity, budget and authority.
+
+**MCP and A2A address different connections.** MCP is a tool integration boundary;
+A2A is an extension direction for communicating with external agents. Neither
+replaces the product's authorization and evidence model. A discovered tool still
+needs permission to run, and an external agent's response still needs validation.
+
+**OpenTelemetry, OpenInference and Phoenix address visibility.** Their job is to
+carry and inspect operational evidence. **Promptfoo addresses evaluations:**
+measured comparisons that can inform model selection and routing policy. Neither
+observability nor evaluation results silently rewrite execution authority.
+
+The benefit is practical: you can use a proven tool for its strengths without
+letting it become the owner of every other concern in the system.
+
+<details>
+<summary><strong>What “provider-neutral” means in practice</strong></summary>
+
+The domain owns its contracts. Adapters translate external protocols without
+leaking vendor SDK types into shared models.
+
+Selection, checkpoint continuation and live migration are separate capabilities.
+Two tools exposing similar APIs does not make them interchangeable: each supported
+profile must pass the corresponding behavioral tests.
+
+Optional integrations are tested enabled, absent and unavailable. Install what a
+use case needs; neither an external harness nor a telemetry service should be a
+hidden prerequisite for the native path.
+
+[Integration contracts](docs/audit/architecture/integrations/index.md) ·
+[Composition and conflict rules](docs/audit/architecture/integrations/composition/index.md) ·
+[Ecosystem comparison](docs/audit/architecture/integrations/market/index.md)
+
+</details>
+
+---
+
+## What you can build
+
+| Use case | The outcome to coordinate |
+|---|---|
+| **Feature delivery** | Brief, implementation, tests and independent review, with explicit approval gates |
+| **Codebase audit or refactor** | Read-only investigation, evidence, bounded changes and verification against the original objective |
+| **Parallel initiatives** | Separate plans, context and results sharing eligible capacity safely |
+| **Long-running development** | Continuity across quota pauses, process restarts and compatible worker handoffs |
+| **Model evaluation** | Compare quality, latency and total cost per accepted result before revising routing policy |
+
+### Two initiatives, without two disconnected operating models.
+
+One team could be developing a new backend module while another investigates a
+frontend regression. Each initiative keeps its own plan, context, approvals and
+results. Eligible account capacity can be shared, but permissions and artifacts
+do not become interchangeable merely because the same provider executes both.
+
+Read-only investigations can proceed together. Work that depends on a shared
+contract waits for the dependency and its required checks. The point of
+parallelization is **more completed work without competing ownership**, not simply
+more open terminals.
+
+### More interfaces, without a second set of rules.
+
+The same task should be operable through CLI, API and a separately designed
+console. Optional notification, voice or realtime adapters can extend how an
+operator communicates with the system; they must still use the same permissions,
+task identity and approval rules. An interface is a way to operate the product,
+not an alternative authority over it.
+
+The [full use-case catalog](docs/audit/requirements/index.md) covers planning,
+execution, accounts, recovery, observability, security, installation and
+extensibility. Every requirement has an owner, a contract and an acceptance test.
+
+---
+
+## Inside the architecture
+
+### Explicit boundaries. Traceable data. Testable behavior.
+
+The design separates domain rules from execution drivers, model providers,
+tools, storage and operator interfaces. Interfaces and enums belong to their
+owning concept; reusable behavior has one implementation.
+
+Normalized operational models give initiatives, steps, attempts, accounts and
+reservations explicit identities. A durable ledger records authoritative history;
+engine journals, telemetry and rebuildable read models serve different purposes.
+
+Certification focuses on behavior: instruction delivery, independent verification,
+crash recovery, concurrent reservations, quota pressure, stream reconnection and
+tool failures. Tests mirror module ownership outside production folders.
+
+| Architectural commitment | What it protects |
+|---|---|
+| **One owner per concept** | No competing definitions of an account, task, permission or capability |
+| **Explicit module boundaries** | Folder/index entry points, meaningful paths and dependencies that can be inspected |
+| **Normalized data and migrations** | Consistent identities and relationships instead of opaque provider payloads as the product model |
+| **Versioned policy and approvals** | An explanation of which rules and exact revision governed a result |
+| **Conformance beyond types** | An adapter must deliver real instructions, cancellation, results and usage under its declared support profile |
+| **Failure-path certification** | Recovery, isolation and optional-service failures tested as behavior, not inferred from interfaces |
+
+The local ledger remains the record of product events. A workflow engine may
+keep its own journal; a telemetry system may keep traces; a retrieval service may
+keep an index. Those stores have distinct responsibilities. Changing one must not
+silently replace the product's definition of a completed task or an authorized action.
 
 <details>
 <summary><strong>Technology foundation</strong></summary>
@@ -298,15 +415,14 @@ An adapter is only as interchangeable as the behavior it proves.
 | Layer | Current implementation technologies |
 |---|---|
 | Language and contracts | [TypeScript](https://www.typescriptlang.org/), [Node.js](https://nodejs.org/), [Zod](https://zod.dev/) |
-| Workspace and local API | [pnpm](https://pnpm.io/), [Fastify](https://fastify.dev/) |
+| Workspace and API | [pnpm](https://pnpm.io/), [Fastify](https://fastify.dev/) |
 | Persistence and execution | [SQLite](https://sqlite.org/) with WAL, [better-sqlite3](https://github.com/WiseLibs/better-sqlite3), [Restate TypeScript SDK](https://docs.restate.dev/) |
 | Console foundation | [React](https://react.dev/), [Vite](https://vite.dev/), [TanStack Query](https://tanstack.com/query), [Radix](https://www.radix-ui.com/), [XYFlow](https://xyflow.com/) |
 | Verification | [Vitest](https://vitest.dev/), [ESLint](https://eslint.org/), TypeScript checks, [axe-core](https://github.com/dequelabs/axe-core), [GitHub Actions](https://github.com/features/actions) |
 
-The console is a separate product-design effort. Shared contracts are intended
-to give CLI, API and console equivalent semantics; this is not a claim that a
-finished dashboard exists. Architectural replaceability applies to deliberate
-ports, not to every library in the dependency tree.
+The console is a separate design effort, not an already-finished dashboard.
+CLI, API and console are intended to share task semantics and authorization.
+Replaceability applies to deliberate ports, not every library in the dependency tree.
 
 </details>
 
@@ -337,16 +453,16 @@ history carries credential references, not secrets. See [Security](SECURITY.md).
 
 ---
 
-## Explore the project
+## Explore
 
-| Understand the product | Inspect the design | Run or contribute |
+| Product | Engineering | Development |
 |---|---|---|
-| [Use-case catalog](docs/audit/requirements/index.md) | [Architecture](docs/audit/architecture/index.md) | [Developer runbook](docs/operations/runbook.md) |
-| [Product specification](docs/audit/README.md) | [Data model](docs/audit/architecture/database/index.md) | [API reference](docs/api-reference.md) |
-| [Ecosystem comparison](docs/audit/architecture/integrations/market/index.md) | [Integration contracts](docs/audit/architecture/integrations/index.md) | [Contributing](CONTRIBUTING.md) |
-| [Interaction model](docs/audit/architecture/contracts/interaction/index.md) | [Testing strategy](docs/audit/quality/testing/index.md) | [Security](SECURITY.md) · [License](LICENSE) |
+| [Use-case catalog](docs/audit/requirements/index.md) | [Architecture](docs/audit/architecture/index.md) | [Runbook](docs/operations/runbook.md) |
+| [Specification](docs/audit/README.md) | [Data model](docs/audit/architecture/database/index.md) | [API reference](docs/api-reference.md) |
+| [Ecosystem comparison](docs/audit/architecture/integrations/market/index.md) | [Testing strategy](docs/audit/quality/testing/index.md) | [Contributing](CONTRIBUTING.md) |
+| [Interaction model](docs/audit/architecture/contracts/interaction/index.md) | [Integration contracts](docs/audit/architecture/integrations/index.md) | [Security](SECURITY.md) · [License](LICENSE) |
 
 <p align="center">
-  <strong>Build around the work. Keep the freedom to change the tools.</strong><br>
+  <strong>Your workflow should outlast your choice of tools.</strong><br>
   A project by <a href="https://github.com/rottay">Rottay</a>
 </p>

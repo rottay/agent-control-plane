@@ -1,42 +1,19 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="576" viewBox="0 0 1200 576" role="img" aria-labelledby="title desc">
-  <title id="title">Make capacity a decision, not a surprise.</title>
-  <desc id="desc">Conceptual account-routing example, not live quota. A policy evaluates suitability, known capacity, reservations and resets. It checkpoints before an authorized handoff, while unknown quota remains unknown.</desc>
-  <defs>
-    <style>text{font-family:"Helvetica Neue",Arial,sans-serif}.serif{font-family:Georgia,serif;font-style:italic}.mono{font-family:Menlo,Consolas,monospace}</style>
-    <filter id="shadow" x="-25%" y="-25%" width="160%" height="175%">
-      <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#12232a" flood-opacity=".12"/>
-    </filter>
-  </defs>
-  <rect x="0.5" y="0.5" width="1199" height="575" rx="20" fill="#142630" stroke="#30444d"/>
-  <text x="46" y="45" font-size="12" fill="#b8c6c8" class="mono" letter-spacing="1.4">SUBSCRIPTIONS / ROUTING CONCEPT</text>
-  <text x="46" y="106" font-size="45" fill="#f4f1e8" font-weight="600" letter-spacing="-1.9">Make capacity a decision.</text>
-  <text x="46" y="159" font-size="48" fill="#d9e4bd" class="serif" letter-spacing="-1.4">Not a surprise.</text>
-  <text text-anchor="end" x="1160" y="45" font-size="10" fill="#b8c6c8" class="mono" letter-spacing="1.4">ILLUSTRATIVE &#xB7; NOT LIVE QUOTA</text>
-  <rect x="46" y="205" width="483" height="88" rx="12" fill="#20343e" stroke="#3a4c53"/>
-  <text x="67" y="235" font-size="21" fill="#f3f0e7" font-weight="550">Account A</text>
-  <text x="67" y="263" font-size="15" fill="#b7c6cb">Not enough known capacity</text>
-  <rect x="388" y="223" width="120" height="29" rx="14" fill="#473e35" stroke="none"/>
-  <text x="448" y="243" font-size="10" fill="#ead3b0" text-anchor="middle" class="mono" letter-spacing="1">WAIT</text>
-  <rect x="46" y="307" width="483" height="88" rx="12" fill="#20343e" stroke="#3a4c53"/>
-  <text x="67" y="337" font-size="21" fill="#f3f0e7" font-weight="550">Account B</text>
-  <text x="67" y="365" font-size="15" fill="#b7c6cb">Required model + available margin</text>
-  <rect x="388" y="325" width="120" height="29" rx="14" fill="#284c40" stroke="none"/>
-  <text x="448" y="345" font-size="10" fill="#d9e9c3" text-anchor="middle" class="mono" letter-spacing="1">ELIGIBLE</text>
-  <rect x="46" y="409" width="483" height="88" rx="12" fill="#20343e" stroke="#3a4c53"/>
-  <text x="67" y="439" font-size="21" fill="#f3f0e7" font-weight="550">Account C</text>
-  <text x="67" y="467" font-size="15" fill="#b7c6cb">Quota not reported by provider</text>
-  <rect x="388" y="427" width="120" height="29" rx="14" fill="#35424a" stroke="none"/>
-  <text x="448" y="447" font-size="10" fill="#d0d9db" text-anchor="middle" class="mono" letter-spacing="1">UNKNOWN</text>
-  <path d="M572 205 L572 496" fill="none" stroke="#3b4e55" stroke-width="1"/>
-  <text x="619" y="222" font-size="11" fill="#d9e4bd" class="mono" letter-spacing="1.4">BEFORE DISPATCH</text>
-  <text x="619" y="264" font-size="29" fill="#f5f0e7" font-weight="600" letter-spacing="-0.7">Fit. Capacity. Permission.</text>
-  <text x="619" y="300" font-size="18" fill="#bac9ce">Evaluate the task, account and budget together.</text>
-  <text x="619" y="329" font-size="18" fill="#bac9ce">Reserve the resources the next step needs.</text>
-  <path d="M620 351 L1150 351" fill="none" stroke="#3b4e55" stroke-width="1"/>
-  <text x="619" y="383" font-size="11" fill="#d9e4bd" class="mono" letter-spacing="1.4">WHEN CAPACITY CHANGES</text>
-  <text x="619" y="425" font-size="26" fill="#f5f0e7" font-weight="600" letter-spacing="-0.9">Checkpoint. Revalidate. Continue.</text>
-  <text x="619" y="459" font-size="16" fill="#bac9ce">Wait for renewal, or use an authorized alternative.</text>
-  <text x="619" y="486" font-size="16" fill="#bac9ce">Never turn a subscription pause into hidden API spend.</text>
-  <text x="46" y="544" font-size="17" fill="#bac9ce">Reported, estimated and unknown usage stay distinct. Switching is a controlled handoff.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="456" viewBox="0 0 1200 456" role="img" aria-labelledby="title"><title id="title">Use the capacity you already pay for. Subscriptions, API keys and local models share a contract, not a billing model.</title><defs><style>text{font-family:"Helvetica Neue",Arial,sans-serif}.mono{font-family:Menlo,Consolas,monospace}</style><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#09151d"/><stop offset="1" stop-color="#173b42"/></linearGradient><filter id="lift" x="-10%" y="-15%" width="125%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0a1821" flood-opacity=".13"/></filter></defs>
+<rect x=".5" y=".5" width="1199" height="455" rx="24" fill="url(#bg)" stroke="#38515d"/>
+<text x="46" y="48" fill="#baff75" font-size="12" class="mono" letter-spacing="1.5">SUBSCRIPTIONS ARE PART OF THE EXECUTION STRATEGY</text>
+<text x="43" y="108" fill="#ffffff" font-size="47" font-weight="750" letter-spacing="-1.6">Use the capacity you already pay for.</text>
+<text x="46" y="149" fill="#d0e0e9" font-size="21">One task model. Different ways to run it. Explicit rules for every choice.</text>
+<rect x="42" y="196" width="362" height="155" rx="13" fill="#baff75" stroke="#baff75" filter="url(#lift)"/>
+<text x="65" y="235" fill="#173719" font-size="13" class="mono" font-weight="700" letter-spacing="1.1">SUBSCRIPTIONS</text>
+<text x="65" y="278" fill="#0a1d17" font-size="22" font-weight="650">Your permitted coding tools.</text>
+<text x="65" y="313" fill="#23422e" font-size="18">Quota, eligibility and resets.</text><rect x="420" y="196" width="362" height="155" rx="13" fill="#142f3c" stroke="#547382" filter="url(#lift)"/>
+<text x="443" y="235" fill="#baff75" font-size="13" class="mono" font-weight="700" letter-spacing="1.1">API KEYS</text>
+<text x="443" y="278" fill="#ffffff" font-size="22" font-weight="650">Explicit metered access.</text>
+<text x="443" y="313" fill="#d4e3eb" font-size="18">Budgets and authorized spend.</text><rect x="798" y="196" width="362" height="155" rx="13" fill="#142f3c" stroke="#547382" filter="url(#lift)"/>
+<text x="821" y="235" fill="#baff75" font-size="13" class="mono" font-weight="700" letter-spacing="1.1">LOCAL MODELS</text>
+<text x="821" y="278" fill="#ffffff" font-size="22" font-weight="650">Your admitted endpoints.</text>
+<text x="821" y="313" fill="#d4e3eb" font-size="18">Resources and privacy scope.</text>
+<text x="600" y="400" fill="#ffffff" font-size="21" text-anchor="middle" font-weight="600">Shared execution contract. Separate billing and permission rules.</text>
+<text x="600" y="431" fill="#c8dae5" font-size="14" text-anchor="middle">Target experience · Provider terms apply · No silent fallback to a paid API bill</text>
 </svg>

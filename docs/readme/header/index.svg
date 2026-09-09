@@ -1,47 +1,25 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title desc">
-  <title id="title">Agent Control Plane &#x2014; One mission. Many minds.</title>
-  <desc id="desc">A subscription-first, provider-neutral control plane. Models are interchangeable choices around a shared mission, not fixed role assignments.</desc>
-  <defs>
-    <style>text{font-family:"Helvetica Neue",Arial,sans-serif}.serif{font-family:Georgia,serif;font-style:italic}.mono{font-family:Menlo,Consolas,monospace}</style>
-    <filter id="shadow" x="-25%" y="-25%" width="160%" height="175%">
-      <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#12232a" flood-opacity=".12"/>
-    </filter>
-  </defs>
-  <rect x="0.5" y="0.5" width="1199" height="519" rx="20" fill="#f3f0e9" stroke="#d8d6cc"/>
-  <text x="52" y="67" font-size="39" fill="#192630" font-weight="750" letter-spacing="-2">rottay</text>
-  <path d="M181 39 L181 70" fill="none" stroke="#b7bdb5" stroke-width="1"/>
-  <text x="205" y="61" font-size="14" fill="#53616a" class="mono" letter-spacing="1.4">AGENT CONTROL PLANE</text>
-  <text text-anchor="end" x="1146" y="60" font-size="12" fill="#53616a" class="mono" letter-spacing="1.4">WORK FIRST. TOOLS SECOND.</text>
-  <path d="M52 97 L1148 97" fill="none" stroke="#d8d6cc" stroke-width="1"/>
-  <text x="47" y="202" font-size="81" fill="#192630" font-weight="650" letter-spacing="-3.7">One mission.</text>
-  <text x="48" y="300" font-size="90" fill="#355945" class="serif" letter-spacing="-3.8">Many minds.</text>
-  <text x="54" y="351" font-size="23" fill="#53616a">Coordinate the work. Choose the right agents.</text>
-  <text x="54" y="384" font-size="23" fill="#53616a">Keep the freedom to change your tools.</text>
-  <g transform="translate(720 128)">
-    <circle cx="218" cy="139" r="147" fill="none" stroke="#e2dfd5"/>
-    <circle cx="218" cy="139" r="111" fill="none" stroke="#dedbce"/>
-    <path d="M116 43 H163 Q177 43 177 59 V85 M325 43 H269 Q255 43 255 59 V85 M217 201 V246 H111 M217 246 H330" fill="none" stroke="#809885" stroke-width="2"/>
-    <rect x="1" y="0" width="145" height="66" rx="13" fill="#fffcf5" stroke="#d3d5c9"/>
-    <text x="22" y="28" font-size="17" fill="#192630" font-weight="600">Claude Code</text>
-    <text x="22" y="49" font-size="9" fill="#53616a" class="mono" letter-spacing="1.4">SUBSCRIPTION</text>
-    <rect x="281" y="0" width="145" height="66" rx="13" fill="#fffcf5" stroke="#d3d5c9"/>
-    <text x="302" y="28" font-size="17" fill="#192630" font-weight="600">Codex</text>
-    <text x="302" y="49" font-size="9" fill="#53616a" class="mono" letter-spacing="1.4">SUBSCRIPTION</text>
-    <g filter="url(#shadow)">
-      <rect x="117" y="84" width="203" height="116" rx="18" fill="#142630" stroke="#2d4247"/>
-      <text x="137" y="113" font-size="10" fill="#b4c8b7" class="mono" letter-spacing="1.4">THE SHARED PLAN</text>
-      <text x="137" y="155" font-size="40" fill="#f7f4eb" font-weight="650" letter-spacing="-1.5">ACP</text>
-      <text x="137" y="179" font-size="9" fill="#cad5d6" class="mono" letter-spacing="1.4">POLICY &#xB7; CONTEXT</text>
-    </g>
-    <rect x="1" y="232" width="145" height="66" rx="13" fill="#fffcf5" stroke="#d3d5c9"/>
-    <text x="22" y="260" font-size="17" fill="#192630" font-weight="600">Kimi</text>
-    <text x="22" y="281" font-size="9" fill="#53616a" class="mono" letter-spacing="1.4">SUBSCRIPTION</text>
-    <rect x="281" y="232" width="145" height="66" rx="13" fill="#ecf1e5" stroke="#c8d4bd"/>
-    <text x="302" y="260" font-size="15" fill="#192630" font-weight="600">Your next choice</text>
-    <text x="302" y="281" font-size="9" fill="#536b53" class="mono" letter-spacing="1.4">API &#xB7; LOCAL</text>
-  </g>
-  <path d="M52 445 L1148 445" fill="none" stroke="#d8d6cc" stroke-width="1"/>
-  <text x="52" y="483" font-size="12" fill="#53616a" class="mono" letter-spacing="1.4">SUBSCRIPTION-FIRST BY DESIGN</text>
-  <text x="1148" y="483" font-size="16" fill="#53616a" text-anchor="end">Local-first / Policy-driven / Open to change</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520" role="img" aria-labelledby="title"><title id="title">Agent Control Plane: Run the team. Keep the control.</title><defs><style>text{font-family:"Helvetica Neue",Arial,sans-serif}.mono{font-family:Menlo,Consolas,monospace}</style><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#09151d"/><stop offset="1" stop-color="#173b42"/></linearGradient><filter id="lift" x="-10%" y="-15%" width="125%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0a1821" flood-opacity=".13"/></filter></defs>
+<rect x=".5" y=".5" width="1199" height="519" rx="24" fill="url(#bg)" stroke="#38515d"/>
+<text x="52" y="58" fill="#f8fafc" font-size="27" font-weight="750" letter-spacing="-1.2">rottay</text>
+<path d="M151 34 V67" stroke="#54707b"/>
+<text x="177" y="55" fill="#d5e0e5" font-size="13" class="mono" letter-spacing="2">AGENT CONTROL PLANE</text>
+<rect x="52" y="105" width="354" height="30" rx="6" fill="#baff75"/>
+<text x="65" y="125" fill="#0a1b1b" font-size="12" font-weight="700" letter-spacing="1.2">YOUR WORKFLOW. NOT YOUR VENDOR'S.</text>
+<text x="48" y="211" fill="#ffffff" font-size="78" font-weight="750" letter-spacing="-3.8">Run the team.</text>
+<text x="48" y="299" fill="#baff75" font-size="78" font-weight="750" letter-spacing="-3.8">Keep the control.</text>
+<text x="54" y="353" fill="#f0f5f8" font-size="25">Different models. Clear responsibilities.</text>
+<text x="54" y="390" fill="#f0f5f8" font-size="25">One workflow you own.</text>
+<rect x="846" y="134" width="300" height="269" rx="16" fill="#112832" stroke="#47616e" filter="url(#lift)"/>
+<text x="872" y="172" fill="#baff75" font-size="11" class="mono" letter-spacing="1.6">YOU DEFINE THE RULES</text>
+<path d="M872 190 H1120" stroke="#3b5661"/>
+<text x="872" y="226" fill="#ffffff" font-size="23" font-weight="600">Who does the work.</text>
+<text x="872" y="276" fill="#ffffff" font-size="23" font-weight="600">What they can do.</text>
+<text x="872" y="326" fill="#ffffff" font-size="23" font-weight="600">When it can advance.</text>
+<rect x="872" y="353" width="248" height="27" rx="5" fill="#234c4d"/>
+<text x="996" y="372" fill="#d6f3e2" font-size="12" text-anchor="middle">Models are choices. Not dependencies.</text>
+<path d="M52 441 H1148" stroke="#46606b"/>
+<text x="54" y="479" fill="#d1e0e7" font-size="13" class="mono" letter-spacing="1.2">SUBSCRIPTION-AWARE</text>
+<text x="480" y="479" fill="#d1e0e7" font-size="13" class="mono" letter-spacing="1.2">LOCAL-FIRST</text>
+<text x="1146" y="479" fill="#baff75" font-size="13" class="mono" letter-spacing="1.2" text-anchor="end">PROVIDER-NEUTRAL</text>
 </svg>

@@ -1,32 +1,32 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
-  <title id="title">Work as a team. Spend with intent. Keep your freedom.</title>
-  <desc id="desc">Three product benefits: clear roles and verified handoffs; capacity-aware decisions; replaceable implementations behind stable contracts.</desc>
-  <defs>
-    <style>text{font-family:"Helvetica Neue",Arial,sans-serif}.serif{font-family:Georgia,serif;font-style:italic}.mono{font-family:Menlo,Consolas,monospace}</style>
-    <filter id="shadow" x="-25%" y="-25%" width="160%" height="175%">
-      <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#12232a" flood-opacity=".12"/>
-    </filter>
-  </defs>
-  <rect x="0.5" y="0.5" width="379" height="279" rx="18" fill="#ecf1e5" stroke="#d8d6cc"/>
-  <text x="30" y="40" font-size="11" fill="#526551" class="mono" letter-spacing="1.4">01 / COORDINATION</text>
-  <text x="29" y="100" font-size="42" fill="#264333" font-weight="600" letter-spacing="-1.6">Work as</text>
-  <text x="29" y="151" font-size="48" fill="#264333" class="serif" letter-spacing="-1.3">a team.</text>
-  <path d="M30 178 L350 178" fill="none" stroke="#cfd3c6" stroke-width="1"/>
-  <text x="30" y="215" font-size="18" fill="#526551">Clear roles. Shared context.</text>
-  <text x="30" y="244" font-size="18" fill="#526551">Independently verified handoffs.</text>
-  <rect x="410.5" y="0.5" width="379" height="279" rx="18" fill="#f3f0e9" stroke="#d8d6cc"/>
-  <text x="440" y="40" font-size="11" fill="#53616a" class="mono" letter-spacing="1.4">02 / CAPACITY</text>
-  <text x="439" y="100" font-size="42" fill="#192630" font-weight="600" letter-spacing="-1.6">Spend with</text>
-  <text x="439" y="151" font-size="48" fill="#192630" class="serif" letter-spacing="-1.3">intent.</text>
-  <path d="M440 178 L760 178" fill="none" stroke="#cfd3c6" stroke-width="1"/>
-  <text x="440" y="215" font-size="18" fill="#53616a">Usage, quotas and reset windows.</text>
-  <text x="440" y="244" font-size="18" fill="#53616a">Decisions before the next run.</text>
-  <rect x="820.5" y="0.5" width="379" height="279" rx="18" fill="#142630" stroke="#243b46"/>
-  <text x="850" y="40" font-size="11" fill="#bfccd0" class="mono" letter-spacing="1.4">03 / FREEDOM</text>
-  <text x="849" y="100" font-size="42" fill="#f4f1e9" font-weight="600" letter-spacing="-1.6">Keep your</text>
-  <text x="849" y="151" font-size="48" fill="#d9e4bd" class="serif" letter-spacing="-1.3">freedom.</text>
-  <path d="M850 178 L1170 178" fill="none" stroke="#38505a" stroke-width="1"/>
-  <text x="850" y="215" font-size="18" fill="#bfccd0">Stable contracts.</text>
-  <text x="850" y="244" font-size="18" fill="#bfccd0">Replaceable implementations.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="610" viewBox="0 0 1200 610" role="img" aria-labelledby="title"><title id="title">Agent operations: recover, measure, verify, constrain, observe and replace.</title><defs><style>text{font-family:"Helvetica Neue",Arial,sans-serif}.mono{font-family:Menlo,Consolas,monospace}</style><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#09151d"/><stop offset="1" stop-color="#173b42"/></linearGradient><filter id="lift" x="-10%" y="-15%" width="125%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0a1821" flood-opacity=".13"/></filter></defs>
+<rect x=".5" y=".5" width="1199" height="609" rx="24" fill="#f4f7fa" stroke="#c6d0da"/>
+<text x="46" y="52" fill="#345064" font-size="12" class="mono" letter-spacing="1.5">THE OPERATING LAYER</text>
+<text x="43" y="111" fill="#0a1d2a" font-size="46" font-weight="750" letter-spacing="-1.6">Good agents need more than good prompts.</text>
+<text x="46" y="150" fill="#344c5e" font-size="21">The capabilities around the model make the work dependable.</text>
+<rect x="40" y="189" width="364" height="175" rx="14" fill="#0d1d27" stroke="#0d1d27" filter="url(#lift)"/>
+<rect x="61" y="213" width="32" height="4" rx="2" fill="#baff75"/>
+<text x="61" y="254" fill="#ffffff" font-size="25" font-weight="700" letter-spacing="-.5">Recover the work.</text>
+<text x="61" y="293" fill="#d4e1e9" font-size="18">Checkpoints, bounded retries</text>
+<text x="61" y="322" fill="#d4e1e9" font-size="18">and explicit uncertainty.</text><rect x="418" y="189" width="364" height="175" rx="14" fill="#ffffff" stroke="#c6d0da" filter="url(#lift)"/>
+<rect x="439" y="213" width="32" height="4" rx="2" fill="#345b76"/>
+<text x="439" y="254" fill="#0a1d2a" font-size="25" font-weight="700" letter-spacing="-.5">Control the spend.</text>
+<text x="439" y="293" fill="#365166" font-size="18">Quotas, reset windows and</text>
+<text x="439" y="322" fill="#365166" font-size="18">cost per accepted result.</text><rect x="796" y="189" width="364" height="175" rx="14" fill="#ffffff" stroke="#c6d0da" filter="url(#lift)"/>
+<rect x="817" y="213" width="32" height="4" rx="2" fill="#345b76"/>
+<text x="817" y="254" fill="#0a1d2a" font-size="25" font-weight="700" letter-spacing="-.5">Prove the result.</text>
+<text x="817" y="293" fill="#365166" font-size="18">Independent verification</text>
+<text x="817" y="322" fill="#365166" font-size="18">and recorded approvals.</text><rect x="40" y="384" width="364" height="175" rx="14" fill="#ffffff" stroke="#c6d0da" filter="url(#lift)"/>
+<rect x="61" y="408" width="32" height="4" rx="2" fill="#345b76"/>
+<text x="61" y="449" fill="#0a1d2a" font-size="25" font-weight="700" letter-spacing="-.5">Bound the authority.</text>
+<text x="61" y="488" fill="#365166" font-size="18">Scoped context, allowed tools</text>
+<text x="61" y="517" fill="#365166" font-size="18">and controlled writes.</text><rect x="418" y="384" width="364" height="175" rx="14" fill="#ffffff" stroke="#c6d0da" filter="url(#lift)"/>
+<rect x="439" y="408" width="32" height="4" rx="2" fill="#345b76"/>
+<text x="439" y="449" fill="#0a1d2a" font-size="25" font-weight="700" letter-spacing="-.5">Understand the run.</text>
+<text x="439" y="488" fill="#365166" font-size="18">Correlated events, metrics</text>
+<text x="439" y="517" fill="#365166" font-size="18">and actionable failures.</text><rect x="796" y="384" width="364" height="175" rx="14" fill="#0d1d27" stroke="#0d1d27" filter="url(#lift)"/>
+<rect x="817" y="408" width="32" height="4" rx="2" fill="#baff75"/>
+<text x="817" y="449" fill="#ffffff" font-size="25" font-weight="700" letter-spacing="-.5">Change the tools.</text>
+<text x="817" y="488" fill="#d4e1e9" font-size="18">Stable contracts and tested</text>
+<text x="817" y="517" fill="#d4e1e9" font-size="18">integration boundaries.</text>
 </svg>

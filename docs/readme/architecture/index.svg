@@ -1,78 +1,37 @@
 <?xml version="1.0"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="770" viewBox="0 0 1200 770" role="img" aria-labelledby="title desc">
-  <title id="title">Assign the responsibility. Define what happens next.</title>
-  <desc id="desc">Illustrative configurable workflow: Kimi clarifies requirements, Claude implements, a selected worker tests, and Codex reviews. Review may request clarification, code changes or more tests, or permit an authorized next step. These are examples, not fixed brand assignments. Agents produce results; the backend validates transitions.</desc>
-  <defs>
-    <style>text{font-family:"Helvetica Neue",Arial,sans-serif}.serif{font-family:Georgia,serif;font-style:italic}.mono{font-family:Menlo,Consolas,monospace}</style>
-    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#718879" stroke-width="1.4"/></marker>
-  </defs>
-  <rect x=".5" y=".5" width="1199" height="769" rx="20" fill="#f3f0e9" stroke="#d8d6cc"/>
-  <text x="46" y="45" font-size="12" fill="#53616a" class="mono" letter-spacing="1.4">YOUR WORKFLOW / YOUR CONDITIONS</text>
-  <text x="46" y="102" font-size="40" fill="#192630" font-weight="650" letter-spacing="-1.4">Assign the responsibility.</text>
-  <text x="46" y="153" font-size="40" fill="#355945" class="serif" letter-spacing="-1">Define what happens next.</text>
-  <rect x="46" y="183" width="1108" height="61" rx="11" fill="#142630"/>
-  <text x="70" y="208" font-size="10" fill="#bccccc" class="mono" letter-spacing="1.3">EVERY STEP HAS A CONTRACT</text>
-  <text x="70" y="231" font-size="16" fill="#f3f0e9">Role + model + context + permissions + deliverable + exit conditions</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="688" viewBox="0 0 1200 688" role="img" aria-labelledby="title"><title id="title">Configure every responsibility and every transition. Agents produce results; the backend validates advancement.</title><defs><style>text{font-family:"Helvetica Neue",Arial,sans-serif}.mono{font-family:Menlo,Consolas,monospace}</style><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#09151d"/><stop offset="1" stop-color="#173b42"/></linearGradient><filter id="lift" x="-10%" y="-15%" width="125%" height="150%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0a1821" flood-opacity=".13"/></filter></defs>
+<rect x=".5" y=".5" width="1199" height="687" rx="24" fill="#f4f7fa" stroke="#c6d0da"/>
+<rect x="26" y="26" width="1148" height="149" rx="16" fill="#0d1d27"/>
+<text x="54" y="63" fill="#baff75" font-size="12" class="mono" letter-spacing="1.6">CONFIGURABLE ROLES / CONDITIONAL TRANSITIONS</text>
+<text x="52" y="119" fill="#ffffff" font-size="42" font-weight="700" letter-spacing="-1.6">Every step has a role. Every result has a rule.</text>
+<text x="54" y="152" fill="#d0dce5" font-size="17">Choose the provider, model, context, permissions and acceptance criteria for each responsibility.</text>
+<rect x="38" y="210" width="266" height="205" rx="13" fill="#ffffff" stroke="#c6d0da" filter="url(#lift)"/>
+<text x="58" y="249" fill="#536879" class="mono" font-size="22">01</text>
+<text x="58" y="295" fill="#0c1c28" font-size="31" font-weight="700" letter-spacing="-1">Plan</text>
+<text x="58" y="327" fill="#344c5e" font-size="16">Clarify the requirements.</text>
+<path d="M58 348 H284" stroke="#ced8df"/>
+<text x="58" y="379" fill="#344c5e" font-size="16">An approved brief.</text>
+<path d="M308 306 h11 m-4 -4 l4 4 -4 4" fill="none" stroke="#425f70" stroke-width="2"/><rect x="324" y="210" width="266" height="205" rx="13" fill="#ffffff" stroke="#c6d0da" filter="url(#lift)"/>
+<text x="344" y="249" fill="#536879" class="mono" font-size="22">02</text>
+<text x="344" y="295" fill="#0c1c28" font-size="31" font-weight="700" letter-spacing="-1">Implement</text>
+<text x="344" y="327" fill="#344c5e" font-size="16">Create the bounded change.</text>
+<path d="M344 348 H570" stroke="#ced8df"/>
+<text x="344" y="379" fill="#344c5e" font-size="16">Code and artifacts.</text>
+<path d="M594 306 h11 m-4 -4 l4 4 -4 4" fill="none" stroke="#425f70" stroke-width="2"/><rect x="610" y="210" width="266" height="205" rx="13" fill="#ffffff" stroke="#c6d0da" filter="url(#lift)"/>
+<text x="630" y="249" fill="#536879" class="mono" font-size="22">03</text>
+<text x="630" y="295" fill="#0c1c28" font-size="31" font-weight="700" letter-spacing="-1">Verify</text>
+<text x="630" y="327" fill="#344c5e" font-size="16">Run independent checks.</text>
+<path d="M630 348 H856" stroke="#ced8df"/>
+<text x="630" y="379" fill="#344c5e" font-size="16">Measured evidence.</text>
+<path d="M880 306 h11 m-4 -4 l4 4 -4 4" fill="none" stroke="#425f70" stroke-width="2"/><rect x="896" y="210" width="266" height="205" rx="13" fill="#e4f9cf" stroke="#9aba7b" filter="url(#lift)"/>
+<text x="916" y="249" fill="#32521d" class="mono" font-size="22">04</text>
+<text x="916" y="295" fill="#0c1c28" font-size="31" font-weight="700" letter-spacing="-1">Review</text>
+<text x="916" y="327" fill="#344c5e" font-size="16">Evaluate the whole result.</text>
+<path d="M916 348 H1142" stroke="#ced8df"/>
+<text x="916" y="379" fill="#344c5e" font-size="16">A reasoned verdict.</text>
 
-  <rect x="46" y="276" width="254" height="166" rx="13" fill="#fffcf6" stroke="#cfd3c7"/>
-  <text x="65" y="303" font-size="10" fill="#537057" class="mono" letter-spacing="1">01 / CLARIFY</text>
-  <text x="65" y="338" font-size="23" fill="#192630" font-weight="600">Requirements</text>
-  <text x="65" y="365" font-size="16" fill="#53616a">Kimi · example assignment</text>
-  <path d="M65 384 H281" stroke="#d8d6cc"/>
-  <text x="65" y="409" font-size="14" fill="#53616a">Deliver: an approved brief</text>
-
-  <path d="M306 358 H326" fill="none" stroke="#718879" stroke-width="2" marker-end="url(#arrow)"/>
-  <rect x="330" y="276" width="254" height="166" rx="13" fill="#fffcf6" stroke="#cfd3c7"/>
-  <text x="349" y="303" font-size="10" fill="#537057" class="mono" letter-spacing="1">02 / IMPLEMENT</text>
-  <text x="349" y="338" font-size="23" fill="#192630" font-weight="600">Implementation</text>
-  <text x="349" y="365" font-size="16" fill="#53616a">Claude · example assignment</text>
-  <path d="M349 384 H565" stroke="#d8d6cc"/>
-  <text x="349" y="409" font-size="14" fill="#53616a">Deliver: a bounded change</text>
-
-  <path d="M590 358 H610" fill="none" stroke="#718879" stroke-width="2" marker-end="url(#arrow)"/>
-  <rect x="614" y="276" width="254" height="166" rx="13" fill="#fffcf6" stroke="#cfd3c7"/>
-  <text x="633" y="303" font-size="10" fill="#537057" class="mono" letter-spacing="1">03 / VERIFY</text>
-  <text x="633" y="338" font-size="23" fill="#192630" font-weight="600">Tests &amp; evidence</text>
-  <text x="633" y="365" font-size="16" fill="#53616a">Your selected worker</text>
-  <path d="M633 384 H849" stroke="#d8d6cc"/>
-  <text x="633" y="409" font-size="14" fill="#53616a">Deliver: measured checks</text>
-
-  <path d="M874 358 H894" fill="none" stroke="#718879" stroke-width="2" marker-end="url(#arrow)"/>
-  <rect x="898" y="276" width="256" height="166" rx="13" fill="#e4ebd7" stroke="#b8c5a5"/>
-  <text x="917" y="303" font-size="10" fill="#537057" class="mono" letter-spacing="1">04 / REVIEW</text>
-  <text x="917" y="338" font-size="23" fill="#192630" font-weight="600">Independent audit</text>
-  <text x="917" y="365" font-size="16" fill="#53616a">Codex · example assignment</text>
-  <path d="M917 384 H1135" stroke="#becbb1"/>
-  <text x="917" y="409" font-size="14" fill="#53616a">Deliver: findings + verdict</text>
-
-  <text x="46" y="478" font-size="11" fill="#53616a" class="mono" letter-spacing="1.2">THE RESULT SELECTS AN AUTHORIZED PATH</text>
-  <path d="M1026 442 V503 H173" fill="none" stroke="#718879" stroke-width="2"/>
-  <path d="M173 503 V531" fill="none" stroke="#718879" stroke-width="2" marker-end="url(#arrow)"/>
-  <path d="M457 503 V531" fill="none" stroke="#718879" stroke-width="2" marker-end="url(#arrow)"/>
-  <path d="M741 503 V531" fill="none" stroke="#718879" stroke-width="2" marker-end="url(#arrow)"/>
-  <path d="M1026 503 V531" fill="none" stroke="#718879" stroke-width="2" marker-end="url(#arrow)"/>
-
-  <rect x="46" y="541" width="254" height="110" rx="11" fill="#fffcf6" stroke="#cfd3c7"/>
-  <text x="65" y="569" font-size="11" fill="#786149" class="mono">NEEDS CLARIFICATION</text>
-  <text x="65" y="599" font-size="21" fill="#192630" font-weight="600">Back to requirements</text>
-  <text x="65" y="628" font-size="14" fill="#53616a">Resolve the missing decision</text>
-
-  <rect x="330" y="541" width="254" height="110" rx="11" fill="#fffcf6" stroke="#cfd3c7"/>
-  <text x="349" y="569" font-size="11" fill="#786149" class="mono">CHANGES REQUESTED</text>
-  <text x="349" y="599" font-size="21" fill="#192630" font-weight="600">Back to implementation</text>
-  <text x="349" y="628" font-size="14" fill="#53616a">Correct the reported defect</text>
-
-  <rect x="614" y="541" width="254" height="110" rx="11" fill="#fffcf6" stroke="#cfd3c7"/>
-  <text x="633" y="569" font-size="11" fill="#786149" class="mono">EVIDENCE INCOMPLETE</text>
-  <text x="633" y="599" font-size="21" fill="#192630" font-weight="600">Back to testing</text>
-  <text x="633" y="628" font-size="14" fill="#53616a">Add the missing checks</text>
-
-  <rect x="898" y="541" width="256" height="110" rx="11" fill="#142630"/>
-  <text x="917" y="569" font-size="11" fill="#d9e4bd" class="mono">ACCEPTED + GATES PASSED</text>
-  <text x="917" y="599" font-size="21" fill="#f3f0e9" font-weight="600">Authorized next step</text>
-  <text x="917" y="628" font-size="14" fill="#bdccce">Advance within the policy</text>
-
-  <path d="M46 682 H1154" stroke="#d8d6cc"/>
-  <text x="600" y="716" text-anchor="middle" font-size="20" fill="#192630" font-weight="550">Agents produce results. The backend validates transitions.</text>
-  <text x="600" y="745" text-anchor="middle" font-size="13" fill="#53616a">Illustrative configuration · Assignments are replaceable · Correction loops are bounded</text>
+<text x="40" y="464" fill="#233d4c" font-size="12" class="mono" letter-spacing="1.3">THE VERDICT CHANGES THE PATH — NOT THE RULES</text>
+<rect x="38" y="491" width="266" height="91" rx="11" fill="#e7edf2" stroke="#c6d0da"/><text x="55" y="519" fill="#4d6373" font-size="11" class="mono">CLARIFICATION</text><text x="55" y="552" fill="#102333" font-size="18" font-weight="650">Return to planning</text><rect x="324" y="491" width="266" height="91" rx="11" fill="#e7edf2" stroke="#c6d0da"/><text x="341" y="519" fill="#4d6373" font-size="11" class="mono">CHANGES REQUIRED</text><text x="341" y="552" fill="#102333" font-size="18" font-weight="650">Return to implementation</text><rect x="610" y="491" width="266" height="91" rx="11" fill="#e7edf2" stroke="#c6d0da"/><text x="627" y="519" fill="#4d6373" font-size="11" class="mono">EVIDENCE MISSING</text><text x="627" y="552" fill="#102333" font-size="18" font-weight="650">Return to verification</text><rect x="896" y="491" width="266" height="91" rx="11" fill="#0d1d27" stroke="#0d1d27"/><text x="913" y="519" fill="#baff75" font-size="11" class="mono">ALL GATES PASSED</text><text x="913" y="552" fill="#ffffff" font-size="18" font-weight="650">Allow the next step</text>
+<text x="600" y="633" fill="#0b1d29" font-size="25" font-weight="700" text-anchor="middle">No advancement without the required evidence.</text>
+<text x="600" y="662" fill="#41596b" font-size="14" text-anchor="middle">Illustrative workflow · Replaceable assignments · Bounded correction loops</text>
 </svg>
