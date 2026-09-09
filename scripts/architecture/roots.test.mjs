@@ -3169,6 +3169,15 @@ const MIRROR_CONTROL_HEAD = new Set([
 ]);
 
 /**
+ * Tokens after which the next name is a property rather than a fresh expression.
+ *
+ * The grammar admits `.` and `?.`, and both questions this scan asks about a
+ * keyword collapse into this one: `o.if(x)` opens no control head, and
+ * `o.default / 2` divides.
+ */
+const MIRROR_MEMBER_ACCESS = new Set([ts.SyntaxKind.DotToken, ts.SyntaxKind.QuestionDotToken]);
+
+/**
  * The fence's own comment blindness (R19b, rewritten to a scanner by P-03),
  * restated rather than imported.
  *
@@ -3206,6 +3215,32 @@ const MIRROR_CONTROL_HEAD = new Set([
  * balance, no literal is unterminated, and a scan that breaks any of the three
  * returns the empty string rather than text it cannot vouch for. `M6`–`M10`
  * hold this side of the mirror to it.
+ *
+ * **R19f: one clause later again, and this time the invariant could not help.**
+ * R19e taught the scan that a keyword reached through a dot heads no control
+ * parenthesis, and stopped there. The keyword that is itself the operand stayed
+ * misread: in `({ default: 4 }).default / 2` the `/` divides, but `default` is
+ * absent from the division-after set — correctly absent, since the `default`
+ * that opens a switch clause is followed by a statement — so the slash was
+ * re-scanned as a regular expression that closed on the first `/` of the
+ * comment behind it, and the comment came back as code. Nothing went out of
+ * sync while that happened, so the invariant above never fires and the clause
+ * is a classification: **a name immediately preceded by `.` or `?.` is a
+ * property, a `/` after it divides, and the keyword's identity does not enter
+ * into it.** `switch (x) { default: /re/… }` keeps its regular expression,
+ * because that `default` follows `:` or `{`. `M11`–`M14` hold this side of the
+ * mirror to that, and they are the reason a fence-only repair cannot leave this
+ * file green and wrong: no probe above exercises a keyword behind a dot.
+ *
+ * **What the clause says is A NAME, and the first cut of it forgot to check.**
+ * Asking only which token precedes the previous one is wider than the rule:
+ * `?.` is also how a program writes an optional call, `f?.(…)`, and an optional
+ * element access, `a?.[…]`. In both the token after the `?.` is `(` or `[`, an
+ * operand position, so a `/` there opens a regular expression — and reading it
+ * as a division lets `/[//]/` become a comment that swallows the rest of the
+ * line, refusing a file whose anchor was written in plain code. `(` and `[` are
+ * therefore excluded, and `M15` is the probe that says so. The plain `.` needs
+ * no guard, because `a.(` and `a.[` are not grammatical.
  */
 function beCodeOnly(text) {
   const scanner = ts.createScanner(
@@ -3228,8 +3263,19 @@ function beCodeOnly(text) {
   let inSync = true;
   let kind;
   while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
+    /**
+     * Whether `previous` is a property name, so a `/` after it is a division.
+     * A `?.` need not be followed by a name: `f?.(…)` calls and `a?.[…]`
+     * indexes, and both put the next token in operand position, where a `/`
+     * opens a regular expression rather than dividing.
+     */
+    const afterPropertyName =
+      MIRROR_MEMBER_ACCESS.has(beforePrevious) &&
+      previous !== ts.SyntaxKind.OpenParenToken &&
+      previous !== ts.SyntaxKind.OpenBracketToken;
     if (
       (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
+      !afterPropertyName &&
       (!MIRROR_DIVISION_AFTER.has(previous) || afterControlHead)
     ) {
       kind = scanner.reScanSlashToken();
@@ -3246,11 +3292,7 @@ function beCodeOnly(text) {
     }
     let closesControlHead = false;
     if (kind === ts.SyntaxKind.OpenParenToken) {
-      controlHeads.push(
-        MIRROR_CONTROL_HEAD.has(previous) &&
-          beforePrevious !== ts.SyntaxKind.DotToken &&
-          beforePrevious !== ts.SyntaxKind.QuestionDotToken,
-      );
+      controlHeads.push(MIRROR_CONTROL_HEAD.has(previous) && !afterPropertyName);
     } else if (kind === ts.SyntaxKind.CloseParenToken) {
       if (controlHeads.length === 0) inSync = false;
       closesControlHead = controlHeads.pop() === true;
@@ -3934,6 +3976,133 @@ describe("the mirror reflects the whole rule, regexes included (R19e)", () => {
 });
 
 /**
+ * The mirror reflects the whole rule, property names included (R19f).
+ *
+ * R19e taught this scan that a keyword reached through a dot heads no control
+ * parenthesis, and stopped one token short: the keyword that IS the operand
+ * stayed misread. That is the shape Codex's counterexample uses.
+ * `({ default: 4 }).default / 2` divides, `default` is absent from the
+ * division-after set, and so the slash was re-scanned as a regular expression
+ * which closed on the first `/` of the comment behind it and returned that
+ * comment as identifiers. Nothing lost sync while it happened — parentheses
+ * balanced, braces balanced, no literal left open — so `M10`'s invariant is
+ * blind to this class and cannot stand in for the probes below.
+ *
+ * The clause is therefore a classification, and it is the token BEFORE the name
+ * that carries it: a name immediately preceded by `.` or `?.` is a property, a
+ * `/` after it divides, and which keyword it happens to be does not enter into
+ * the question. `switch (x) { default: /re/… }` keeps its regular expression,
+ * because that `default` follows `:` or `{` rather than a dot.
+ *
+ * The same discipline as `M1`–`M10`: unit probes of the helper, not synthetic
+ * trees. The fence's behaviour on these shapes is `N41`–`N44`.
+ *
+ * `M11`–`M13` are red against this commit's parent, where BOTH readers returned
+ * the comment intact — which is the reason these exist rather than the fence
+ * probes alone: no probe above exercises a keyword behind a dot, so a repair
+ * made only to the fence would have left this file green and wrong, the exact
+ * failure R19d named. `M14` is the acceptance side; its first clause is red at
+ * the parent too, in the other direction of the same defect — there the
+ * division was read as a regular expression that never closed, the scan lost
+ * sync, and the code after it came back as nothing at all.
+ */
+describe("the mirror reflects the whole rule, property names included (R19f)", () => {
+  /** Stated by no fixture's CODE below, so finding it means a comment survived. */
+  const COMMENTED = "the landing refuses a destination it never read";
+
+  it("M11: drops a line comment after a division behind a property keyword", () => {
+    // THE probe of R19f: Codex's counterexample, in the shape he wrote it. At
+    // the parent the `/` after `.default` was a regular expression that closed
+    // on the first slash of the `//`, and the rest of the comment was code.
+    const source = "const quotient = ({ default: 4 }).default / 2; // " + COMMENTED + "\n";
+    expect(beCodeOnly(source)).not.toContain(COMMENTED);
+  });
+
+  it("M12: drops it for any keyword behind the dot, and in a block comment", () => {
+    // `default` is not a special case, and a repair naming that one literal
+    // would pass M11 alone. The block-comment shape is the discriminator
+    // against a repair that only handles `//`.
+    for (const source of [
+      "const q = x.if / 2; // " + COMMENTED + "\n",
+      "const q = x.while / 2; // " + COMMENTED + "\n",
+      "const quotient = ({ default: 4 }).default / 2; /* " + COMMENTED + " */\n",
+    ]) {
+      expect(beCodeOnly(source)).not.toContain(COMMENTED);
+    }
+  });
+
+  it("M13: drops it behind an optional-chaining dot as well", () => {
+    // `?.` reaches a property exactly as `.` does, and the control-head lookback
+    // this clause is the symmetric half of already names both tokens. A repair
+    // that named only `DotToken` would leave this shape accepting a comment.
+    for (const source of [
+      "const q = a?.default / 2; // " + COMMENTED + "\n",
+      "const q = a?.if / 2; // " + COMMENTED + "\n",
+    ]) {
+      expect(beCodeOnly(source)).not.toContain(COMMENTED);
+    }
+  });
+
+  it("M14: keeps the code after such a division, and every regex the clause must not touch", () => {
+    // The acceptance side, in the three shapes this repair could have broken.
+    // The first is the erase-code direction of the same defect and is red at the
+    // parent: there the division opened a regular expression that ran to the end
+    // of the source without closing, so the scan reported itself out of sync and
+    // returned nothing, which refuses an honest citation.
+    const divided = 'const q = x.default / 2; export const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(divided)).toContain(COMMENTED);
+
+    // A `default` that opens a switch clause is followed by a statement, so a
+    // `/` after THAT one still starts a regular expression — here one holding a
+    // comment delimiter, which a division reading would turn into a comment that
+    // deletes the closing brace and desynchronizes the scan.
+    const clause = 'switch (x) { default: /[//]/.test(s); }\nexport const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(clause)).toContain(COMMENTED);
+
+    // R19e's own shape, pinned here because this clause reads the same lookback:
+    // a keyword behind a dot heads no control parenthesis, so the `)` after it
+    // divides and the code beyond survives.
+    const called = 'const q = o.if(x) / 2; export const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(called)).toContain(COMMENTED);
+  });
+
+  it("M15: keeps a regex that an optional call or an optional index introduces", () => {
+    // The clause says a NAME behind the dot, and the first cut of it asked only
+    // what preceded the previous token — which is wider, because `?.` is also
+    // how a program writes an optional call and an optional element access. The
+    // token after those is `(` or `[`, an operand position, so a `/` there opens
+    // a regular expression. Read as a division, the `//` inside this character
+    // class becomes a comment that eats the rest of the line, and a file whose
+    // anchor is written in plain code is refused for stating none. Red against
+    // the wider clause, in the erase-code direction rather than the accepting
+    // one; the fence's side of these shapes is `N45`.
+    const call = 'f?.(/[//]/.test(s)); export const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(call)).toContain(COMMENTED);
+
+    // The same, with a character class that unbalances the parentheses instead
+    // of opening a comment: the wider clause returned nothing at all here.
+    const paren = 'f?.(/[(]/.test(s)); export const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(paren)).toContain(COMMENTED);
+
+    const index = 'const v = a?.[/[//]/.test(s) ? 0 : 1]; export const A = "' + COMMENTED + '";\n';
+    expect(beCodeOnly(index)).toContain(COMMENTED);
+
+    // And the narrowing does not give back what R19f took: once the optional
+    // call or index CLOSES, the `)` and the `]` divide as they always did, and a
+    // comment after that division is still not evidence. Green on both sides of
+    // the narrowing, which is what makes the three above attributable to it.
+    expect(beCodeOnly('const q = a?.(x) / 2; export const A = "' + COMMENTED + '";\n')).toContain(
+      COMMENTED,
+    );
+    expect(beCodeOnly('const q = a?.[0] / 2; export const A = "' + COMMENTED + '";\n')).toContain(
+      COMMENTED,
+    );
+    expect(beCodeOnly("const q = a?.(x) / 2; // " + COMMENTED + "\n")).not.toContain(COMMENTED);
+    expect(beCodeOnly("const q = a?.[0] / 2; // " + COMMENTED + "\n")).not.toContain(COMMENTED);
+  });
+});
+
+/**
  * The gate's evidence binds to code, never to comments (old-V2 R19b).
  *
  * R19's own record says "delete a law … and the gate is red on the next run".
@@ -4435,6 +4604,38 @@ function fenceWithExtraImport(specifier = "node:util") {
  * repair chooses: a scan whose parentheses or braces do not balance, or that
  * left a literal unterminated, has lost sync and returns no text at all, so the
  * file states no code and every anchor into it is refused rather than accepted.
+ *
+ * **R19f: the keyword one token further left.** R19e settled the keyword that
+ * HEADS a parenthesis and left the keyword that IS the operand, which is the
+ * shape Codex's counterexample uses. Measured against the fence R19f repairs,
+ * in the section evaluated in isolation:
+ *
+ *   `({ default: 4 }).default / 2; // …`   → the anchor RESOLVED
+ *   `a?.default / 2; // …`                 → the anchor RESOLVED
+ *   `x.default / 2;` then real code        → the anchor was DELETED
+ *
+ * The first two are the acceptance the record's reader must not get; the third
+ * is the same defect erasing honest code, because a division read as a regular
+ * expression ran to end of line without closing and the scan reported itself out
+ * of sync. `N41`, `N42` and `N43` are that measurement, and so is the `before`
+ * phase of `N41` — which, unlike `N31`'s, is red at the parent, for the third
+ * row's reason. `N44` is the acceptance side and green at both: a `default` that
+ * opens a switch clause still introduces a regular expression, because the token
+ * before it is `:` rather than a dot.
+ *
+ * **And the first cut of that clause was wider than the rule it states.** It
+ * asked which token preceded the previous one and never asked whether the
+ * previous one was a name, so it fired after `f?.(` and after `a?.[` — an
+ * optional call and an optional element access, where the next token is an
+ * operand and a `/` opens a regular expression. Measured on the section against
+ * the wider clause, both on valid syntax the fence's own parent read correctly:
+ *
+ *   `f?.(/[//]/.test(s)); export const A = "…"`      → the anchor was DELETED
+ *   `a?.[/[//]/.test(s) ? 0 : 1]; export const A = …` → the anchor was DELETED
+ *
+ * `N45` is that measurement and is a positive: both must resolve. Excluding `(`
+ * and `[` costs the clause nothing it was owed, because a `?.` that reaches a
+ * property is still followed by that property's name.
  */
 describe("no evidence anchor resolves from emptiness or a comment (P-03)", () => {
   /** The refusal the anchor laws share, for the id every fixture below breaks. */
@@ -4932,6 +5133,156 @@ describe("no evidence anchor resolves from emptiness or a comment (P-03)", () =>
       expect(status).not.toBe(0);
       expect(output).toContain(refusal);
       expect(output).toContain("V2_BACKEND_CERTIFIED withheld");
+    }
+  });
+
+  it("N41: refuses an anchor commented after a division behind a property keyword", async () => {
+    // THE probe of R19f, as a before/after pair on one shape, and Codex's
+    // counterexample in the form he wrote it: valid TypeScript, the comment on
+    // the same line as the division. `.default` is a member access, so the `/`
+    // divides — but `default` is not in `TS_DIVISION_AFTER`, correctly not,
+    // since the `default` that opens a switch clause is followed by a statement.
+    // So the slash was re-scanned as a regular expression, it closed on the
+    // first `/` of the `//`, and the rest of the comment came back as code.
+    // Parentheses and braces balanced and no literal was left open, so `N35`'s
+    // invariant cannot reach this one: the defect is in the classification.
+    //
+    // Unlike `N31`, the `before` phase here is red at the parent as well, and
+    // that is the second direction of the same defect rather than a weakness of
+    // the pair: with the division read as a regular expression, the literal ran
+    // to end of line without closing, the scan lost sync, and the file stated no
+    // code at all — so an anchor written in plain code was refused too.
+    const anchor = "the landing refuses a destination it never read";
+    const divides = "const quotient = ({ default: 4 }).default / 2;";
+
+    const stated = syntheticTree();
+    evidenceHome(stated, [divides + ' export const REFUSAL = "' + anchor + '";']);
+    write(stated, BE_RECORD, recordCiting(anchor));
+    commitAll(stated);
+
+    const before = await runFenceAgainst(stated);
+    expect(before.output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+    expect(before.output).not.toContain("which that file does not state");
+
+    const commented = syntheticTree();
+    evidenceHome(commented, [divides + " // " + anchor]);
+    write(commented, BE_RECORD, recordCiting(anchor));
+    commitAll(commented);
+
+    const after = await runFenceAgainst(commented);
+    expect(after.status).not.toBe(0);
+    expect(after.output).toContain(
+      pointsAt() + ' for the anchor "' + anchor + '", which that file does not state',
+    );
+    expect(after.output).toContain("V2_BACKEND_CERTIFIED withheld");
+  });
+
+  it("N42: refuses the same for any keyword behind the dot, and in a block comment", async () => {
+    // `default` is not a special case, and a repair naming that one literal
+    // would pass N41 alone. The block-comment shape is the discriminator against
+    // a repair that only handles `//`, and it is red at the parent for its own
+    // reason: there the regular expression closed on the `/` of the `*/`, the
+    // trailing slash never closed, and the file was refused for holding no code
+    // rather than for failing to state the anchor. Both refuse; only one of them
+    // refuses for the reason the record's reader is entitled to.
+    const anchor = "the landing refuses a destination it never read";
+    const refusal = pointsAt() + ' for the anchor "' + anchor + '", which that file does not state';
+
+    for (const tail of [
+      "const q = x.if / 2; // " + anchor,
+      "const q = x.while / 2; // " + anchor,
+      "const quotient = ({ default: 4 }).default / 2; /* " + anchor + " */",
+    ]) {
+      const root = syntheticTree();
+      evidenceHome(root, [tail]);
+      write(root, BE_RECORD, recordCiting(anchor));
+      commitAll(root);
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain(refusal);
+      expect(output).toContain("V2_BACKEND_CERTIFIED withheld");
+    }
+  });
+
+  it("N43: refuses it behind an optional-chaining dot as well", async () => {
+    // `?.` reaches a property exactly as `.` does, and the control-head lookback
+    // this clause is the symmetric half of already names both tokens. A repair
+    // that named only `DotToken` would leave this shape resolving an anchor no
+    // code states — the same class, alive one syntax later. Red at the parent.
+    const anchor = "the landing refuses a destination it never read";
+    const refusal = pointsAt() + ' for the anchor "' + anchor + '", which that file does not state';
+
+    for (const tail of [
+      "const q = a?.default / 2; // " + anchor,
+      "const q = a?.if / 2; // " + anchor,
+    ]) {
+      const root = syntheticTree();
+      evidenceHome(root, [tail]);
+      write(root, BE_RECORD, recordCiting(anchor));
+      commitAll(root);
+
+      const { status, output } = await runFenceAgainst(root);
+      expect(status).not.toBe(0);
+      expect(output).toContain(refusal);
+      expect(output).toContain("V2_BACKEND_CERTIFIED withheld");
+    }
+  });
+
+  it("N44: accepts a regex the clause must not touch, and code after such a division", async () => {
+    // The control that stops the repair from buying its refusals by calling
+    // every keyword a property. The `default` that opens a switch clause is
+    // followed by a statement, so a `/` after it still starts a regular
+    // expression: read as a division, the `//` this one holds in its character
+    // class would begin a comment, delete the closing brace with the rest of the
+    // line, and refuse the citation. The second fixture is `R19e`'s own shape,
+    // pinned because this clause reads the same lookback. Green at the parent.
+    const anchor = "the two door tables were compared and disagreed";
+
+    for (const tail of [
+      ["switch (x) { default: /[//]/.test(s); }", 'export const A = "' + anchor + '";'],
+      ['const q = o.if(x) / 2; export const A = "' + anchor + '";'],
+    ]) {
+      const root = syntheticTree();
+      evidenceHome(root, tail);
+      write(root, BE_RECORD, recordCiting(anchor));
+      commitAll(root);
+
+      const { output } = await runFenceAgainst(root);
+      expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+      expect(output).not.toContain("which that file does not state");
+    }
+  });
+
+  it("N45: accepts an anchor beside a regex an optional call or index introduces", async () => {
+    // The narrowing R19f owes its own clause. `?.` reaches a property MOST of
+    // the time, and the rule is written about that property's name — but the
+    // grammar also lets `?.` be followed by `(` for an optional call and by `[`
+    // for an optional element access, and there the next token is an operand,
+    // so a `/` opens a regular expression. A clause that asked only what came
+    // before the previous token read those two as divisions, at which point the
+    // `//` in this character class began a comment that deleted the rest of the
+    // line — the anchor with it — and the fence refused a file that states its
+    // anchor in plain code. Fail-closed, but it is the erase-code direction, and
+    // it is a regression on valid syntax the parent read correctly.
+    //
+    // Both fixtures are red against the wider clause and green here, and they
+    // are positives: the citation must RESOLVE.
+    const anchor = "the two door tables were compared and disagreed";
+
+    for (const tail of [
+      'f?.(/[//]/.test(s)); export const A = "' + anchor + '";',
+      'const v = a?.[/[//]/.test(s) ? 0 : 1]; export const A = "' + anchor + '";',
+    ]) {
+      const root = syntheticTree();
+      evidenceHome(root, [tail]);
+      write(root, BE_RECORD, recordCiting(anchor));
+      commitAll(root);
+
+      const { output } = await runFenceAgainst(root);
+      expect(output).toContain("the B-E record states 7 criteria over 7 evidence pointers");
+      expect(output).not.toContain("which that file does not state");
+      expect(output).not.toContain("holds no code outside its comments");
     }
   });
 

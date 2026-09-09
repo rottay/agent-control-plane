@@ -22913,6 +22913,16 @@ const TS_CONTROL_HEAD = new Set([
 ]);
 
 /**
+ * Tokens after which the NEXT name is a property rather than a fresh expression.
+ *
+ * `.` and `?.` are the two the grammar admits, and the two questions this scan
+ * asks about a keyword reduce to this one: `o.if(x)` does not open a control
+ * head, and `o.default / 2` divides. Stated once so neither reading can be
+ * weakened without the other noticing.
+ */
+const TS_MEMBER_ACCESS = new Set([ts.SyntaxKind.DotToken, ts.SyntaxKind.QuestionDotToken]);
+
+/**
  * The code of a file, with its comments deleted, by lexical scan (P-03).
  *
  * `skipTrivia: false` so the comments can be seen and decided about rather than
@@ -22967,6 +22977,42 @@ const TS_CONTROL_HEAD = new Set([
  * control head: `o.if(x) / 2` divides, and this scanner reads that `if` as a
  * keyword whatever precedes it, so the token before the keyword is consulted.
  *
+ * **R19f: that lookback answered half the question.** It settled the keyword
+ * that HEADS a parenthesis and left the keyword that IS the operand:
+ * `({ default: 4 }).default / 2` is valid TypeScript, and `default` is not in
+ * `TS_DIVISION_AFTER` — rightly not, because the `default` that opens a switch
+ * clause is followed by a statement, so a `/` after THAT one starts a regular
+ * expression. Adding the keyword to the set is therefore the wrong repair; the
+ * position it stands in is what differs. Read as a regex, the `/` that divides
+ * here closed on the first `/` of the `//` after it and handed the comment's
+ * text back as identifiers. Measured on the real section 22b before the repair,
+ * with an anchor renamed out of its cited file and restated in a line comment
+ * after that statement: RESOLVED, 39 resolving pointers. Parentheses balanced,
+ * braces balanced, no literal left open — R19e's invariant is blind to this one
+ * by construction, and only a classification can answer it.
+ *
+ * **The rule is about the token before the name, and `?.` is the same rule.** A
+ * name immediately preceded by `.` or `?.` is a member access, an operand, so a
+ * `/` after it divides whatever the name is — `x.if / 2` and `a?.default / 2`
+ * alike. `TS_MEMBER_ACCESS` states those two tokens once and both readings
+ * consult it, because the control-head lookback above asks the identical
+ * question one token earlier and a rule written twice is a rule that can be
+ * weakened in one copy. `switch (x) { default: /re/.test(s); }` is untouched:
+ * that `default` follows `:` or `{` rather than a dot, so its regular
+ * expression is still read as one.
+ *
+ * **And the rule is about a NAME, which is narrower than "after a dot".** `?.`
+ * does not have to be followed by one: `f?.(…)` is an optional call and
+ * `a?.[…]` an optional element access, and both put the token after them in
+ * OPERAND position, where a `/` opens a regular expression. Asking only what
+ * precedes the previous token gets those two wrong in the erase-code direction
+ * — `f?.(/[//]/.test(s))` read as a division turns its character class into a
+ * comment that eats the rest of the line, and the file that stated an anchor
+ * honestly is refused for holding no code. So `(` and `[` are excluded by
+ * name: the clause fires when a property name is what the dot reached, and not
+ * when the dot reached a call or an index. `.` needs no such guard, since
+ * `a.(` and `a.[` are not grammatical at all.
+ *
  * **The error direction is chosen, and R19e is why choosing it needs an
  * invariant.** The predecessor's theory was that a misjudged `/` keeps text and
  * therefore only fails to remove something. That is false in both directions:
@@ -23013,8 +23059,19 @@ function beCodeTokens(content) {
   let inSync = true;
   let kind;
   while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
+    /**
+     * Whether `previous` is a property name, so a `/` after it is a division.
+     * `?.` may also be followed by `(` or `[` (optional call, optional element
+     * access); those open an operand position, not a property, and a `/`
+     * after them starts a regular expression.
+     */
+    const afterPropertyName =
+      TS_MEMBER_ACCESS.has(beforePrevious) &&
+      previous !== ts.SyntaxKind.OpenParenToken &&
+      previous !== ts.SyntaxKind.OpenBracketToken;
     if (
       (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
+      !afterPropertyName &&
       (!TS_DIVISION_AFTER.has(previous) || afterControlHead)
     ) {
       kind = scanner.reScanSlashToken();
@@ -23031,11 +23088,7 @@ function beCodeTokens(content) {
     }
     let closesControlHead = false;
     if (kind === ts.SyntaxKind.OpenParenToken) {
-      controlHeads.push(
-        TS_CONTROL_HEAD.has(previous) &&
-          beforePrevious !== ts.SyntaxKind.DotToken &&
-          beforePrevious !== ts.SyntaxKind.QuestionDotToken,
-      );
+      controlHeads.push(TS_CONTROL_HEAD.has(previous) && !afterPropertyName);
     } else if (kind === ts.SyntaxKind.CloseParenToken) {
       if (controlHeads.length === 0) inSync = false;
       closesControlHead = controlHeads.pop() === true;
