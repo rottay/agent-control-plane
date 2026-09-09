@@ -20,6 +20,40 @@ that current model preferences are permanent.
 | `claude/fable/reviewer/01` | Strict auditor. Structurally read-only. Emits exactly one `ACCEPT`, `ACCEPT_WITH_CORRECTIONS` or `REJECT`. |
 | `codex/<resolved-model>/consultant/01` | Owner-facing consultant and phase-boundary checkpoint auditor. Concise by design. |
 
+## Reparto vigente — the standing assignment
+
+The table above is a **catalogue of roles, not a roster**. The assignment
+actually in force is the one the owner approved, recorded in
+`docs/audit/kickoff.md` §1–2:
+
+- `kimi/k3/coordinator/01` is the DT. It chooses packets, freezes briefs and
+  write-sets, verifies deliveries, adjudicates corrections, and **manages the
+  local commits**. It does not become the routine writer and does not approve
+  its own changes; when it edits files personally, Codex reviews the diff.
+- `claude/opus/implementer/01` is the only canonical writer and **integrates
+  directly on `main`**. No new branch and no new worktree is created for this
+  work. Other Opus instances prepare maps, proposals and oracles, or verify
+  authorized snapshots, read-only — with scope disjoint in files, outputs and
+  resources, not merely in folders.
+- `codex/<resolved-model>/consultant/01` reviews changes the DT makes
+  personally, and the milestones that document lists. It does not direct daily
+  operation and does not approve each change of the writer.
+- `claude/sonnet/implementer/NN` and `claude/fable/reviewer/01` are **historical
+  staffing, not currently convened.** Their rows stay above because the roles
+  remain available and their contracts still bind whoever holds them; nothing
+  here recreates that fleet. A second verifier is another read-only Opus.
+
+Reading is obligatory in both directions before a packet opens: `docs/ROADMAP.md`,
+which is canonical, and `docs/audit/`, the consolidated specification of what
+this control plane must become — architecture, data model, contracts,
+requirements, quality rubric and packet inventory. ADR 0061 admits that folder to
+the fence's exact write-set. **Admission is not authority**: where the two speak,
+the roadmap governs, and changing that is a separate act of the owner.
+
+This section reassigns nobody's obligations. Law 1 governs concurrency per
+worktree and holds unchanged where there is exactly one; law 3 still forbids a
+writer from verifying itself, whoever is assigned to write.
+
 ## The laws
 
 ### 1. Single writer

@@ -440,6 +440,33 @@ const RETIRED_PATHS = [
   "packages/edges/adapters",
   "packages/entrypoints/ui",
   "packages/entrypoints/server",
+  // P-02 (ADR 0061): the eighteen files of the withdrawn 2026-09-04-backend-v2
+  // package. The pre-0030 flat layout needed no entry here because it was never
+  // tracked; these were, so `git ls-files --cached` keeps listing them until
+  // the deletion is committed, and removing their literals from
+  // `V2DOCSAUDIT_WRITE_SET` alone would move them from "tracked path is
+  // missing" to "outside the exact write-set" rather than clear them. Named
+  // here, the pending deletion is absorbed by `retiredInIndex` — without a
+  // writer mutating the shared index, which the commit window owns — and the
+  // law above refuses the files permanently if any of them ever comes back.
+  "docs/audit/2026-09-04-backend-v2/README.md",
+  "docs/audit/2026-09-04-backend-v2/audit-report.md",
+  "docs/audit/2026-09-04-backend-v2/rubric.md",
+  "docs/audit/2026-09-04-backend-v2/use-cases.md",
+  "docs/audit/2026-09-04-backend-v2/data-model.md",
+  "docs/audit/2026-09-04-backend-v2/architecture-decision.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/accounts.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/durability.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/fence.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/ledger.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/neutrality.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/parity.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/product.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/security.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/streaming.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/structure.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/tests.md",
+  "docs/audit/2026-09-04-backend-v2/evidence/wiring.md",
 ];
 
 /**
@@ -5814,56 +5841,107 @@ const P5N_C11_WRITE_SET = [
 ];
 
 /**
- * docs/audit governance — the audit record becomes a tracked, frozen folder.
+ * docs/audit governance — a frozen record became a living specification.
  *
- * Owner decision, 2026-09-04: the independent backend-V2 audit lives in this
+ * Owner decision, 2026-09-04: the independent backend-V2 audit lived in this
  * repository permanently, as a dated folder under `docs/audit/`, and the
- * compact nineteen-file layout is canonical. The earlier flat layout, the raw
- * fence and suite logs and the `.acp-local` listing are superseded and are
+ * compact nineteen-file layout was canonical. The earlier flat layout, the raw
+ * fence and suite logs and the `.acp-local` listing were superseded and are
  * never restored.
  *
- * **Nineteen literals, one per file, and no glob.** `WRITE_SET` is an exact
+ * Owner decision, 2026-09-08 (ADR 0061): that description no longer matches the
+ * tree. What sits under `docs/audit/` now is a consolidated specification of
+ * what this control plane must become — architecture, data model, contracts,
+ * requirements, quality rubric, packet inventory and the coordination mandate —
+ * in thirty-eight documents with no dated folders, the twenty-five superseded
+ * drafts withdrawn after an independent review. Admission to this array is not
+ * authority: `docs/ROADMAP.md` stays canonical where the two speak.
+ *
+ * **Forty-two literals, one per file, and no glob.** `WRITE_SET` is an exact
  * `Set.has()` lookup over each relative path, so `docs/audit/**` would match
  * nothing; the only prefix mechanism in this file is closed by design and is
- * not reopened here. The array is append-only *by dated folder*: a later audit
- * declares its own array beside this one rather than widening this one.
+ * not reopened here. The array is no longer append-only *by dated folder*: the
+ * folder's contents change, so this array is re-derived whenever a document is
+ * added or removed under `docs/audit/`, and a writer who adds a file there
+ * without adding its literal gets a red gate on the next run.
  *
- * **The old layout is refused by the exact write-set itself**, not by
- * `RETIRED_PATHS`. Those files were never tracked, and any path not listed
- * fails the write-set check on the next run; adding ~20 retired entries would
- * buy a redundant second refusal while growing a frozen block this very audit
- * criticises.
+ * **The pre-0030 flat layout is refused by the exact write-set itself**, not by
+ * `RETIRED_PATHS`: those files were never tracked, and any path not listed
+ * fails the write-set check on the next run. **The eighteen withdrawn
+ * 2026-09-04 files are a different case and are named in `RETIRED_PATHS`.**
+ * They *were* tracked, so `git ls-files --cached` keeps listing them until the
+ * deletion is committed; dropping their literals alone would move them from
+ * "tracked path is missing" to "outside the exact write-set" rather than clear
+ * them. Named as retired, `retiredInIndex` absorbs the pending deletion and the
+ * retired-path law refuses them permanently if they ever come back.
  *
- * No new law, no new `requireScope`, no exemption: `PATH_SCOPED_LAWS` stays at
- * 91. The credential, product-token, forbidden-roadmap-literal and
+ * No new law, no new `requireScope`, no exemption: `PATH_SCOPED_LAWS` did not
+ * move for the 0030 packet and does not move for this one, which leaves it at
+ * 117. The credential, product-token, forbidden-roadmap-literal and
  * credential-store filename laws keep scanning `docs/audit/` unchanged and
- * unweakened — verified negatively, because the folder trips none of them.
+ * unweakened. The product-token law did trip: seven passages across five of
+ * these documents named the product environment in order to exclude it, and the
+ * fence refused them six times at HEAD e1c9b35. The documents were rewritten to
+ * forbid the same things without naming them; the law was not touched, and
+ * neither the `PRODUCT_TOKENS` array nor the `PRODUCT_AUTHORITY_EXEMPT` set is
+ * edited by this packet — nine tokens and eight exempt paths, as before. The
+ * negative verification holds by correction, not by luck.
  *
- * Record: `docs/architecture/0030-the-audit-record.md`.
+ * Record: `docs/architecture/0030-the-audit-record.md`, superseded by
+ * `docs/architecture/0061-the-fence-admits-a-living-specification.md`.
  */
 const V2DOCSAUDIT_WRITE_SET = [
+  // The living consolidated specification, thirty-eight paths, each pinned by
+  // SHA-256 against HEAD e1c9b35 when P-02 opened and each checked with
+  // `git check-ignore` before it was written down. One path per literal; no
+  // glob, because `WRITE_SET` is consulted with `Set.has()` and "docs/audit/**"
+  // would match nothing at all.
   "docs/audit/README.md",
-  "docs/audit/2026-09-04-backend-v2/README.md",
-  "docs/audit/2026-09-04-backend-v2/audit-report.md",
-  "docs/audit/2026-09-04-backend-v2/rubric.md",
-  "docs/audit/2026-09-04-backend-v2/use-cases.md",
-  "docs/audit/2026-09-04-backend-v2/data-model.md",
-  "docs/audit/2026-09-04-backend-v2/architecture-decision.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/accounts.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/durability.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/fence.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/ledger.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/neutrality.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/parity.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/product.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/security.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/streaming.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/structure.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/tests.md",
-  "docs/audit/2026-09-04-backend-v2/evidence/wiring.md",
+  "docs/audit/architecture/contracts/estimation/algorithms/index.md",
+  "docs/audit/architecture/contracts/estimation/index.md",
+  "docs/audit/architecture/contracts/index.md",
+  "docs/audit/architecture/contracts/interaction/index.md",
+  "docs/audit/architecture/database/accounts/index.md",
+  "docs/audit/architecture/database/artifacts/index.md",
+  "docs/audit/architecture/database/coordination/index.md",
+  "docs/audit/architecture/database/economy/index.md",
+  "docs/audit/architecture/database/economy/performance/index.md",
+  "docs/audit/architecture/database/execution/composition/index.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "docs/audit/architecture/database/execution/notifications/index.md",
+  "docs/audit/architecture/database/index.md",
+  "docs/audit/architecture/database/planning/index.md",
+  "docs/audit/architecture/database/planning/simulation/index.md",
+  "docs/audit/architecture/database/streams/index.md",
+  "docs/audit/architecture/index.md",
+  "docs/audit/architecture/integrations/composition/contracts/index.md",
+  "docs/audit/architecture/integrations/composition/index.md",
+  "docs/audit/architecture/integrations/composition/validation/index.md",
+  "docs/audit/architecture/integrations/index.md",
+  "docs/audit/architecture/integrations/market/index.md",
+  "docs/audit/architecture/structure/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/evidence/index.md",
+  "docs/audit/evidence/review/index.md",
+  "docs/audit/findings/index.md",
+  "docs/audit/implementation/index.md",
+  "docs/audit/implementation/migration/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/implementation/packets/requirements/index.md",
+  "docs/audit/kickoff.md",
+  "docs/audit/quality/index.md",
+  "docs/audit/quality/testing/index.md",
+  "docs/audit/requirements/index.md",
+  "docs/audit/roadmap/index.md",
+  "docs/audit/roadmap/parallelism/index.md",
+  // Support, carried over from the block this one replaces. The eighteen paths
+  // of the withdrawn 2026-09-04-backend-v2 package are not here: they are named
+  // in `RETIRED_PATHS` instead, for the reason the docblock above gives.
   "scripts/check-architecture.mjs",
   "docs/architecture/0030-the-audit-record.md",
   "docs/architecture/index.md",
+  // The record that admits the living specification.
+  "docs/architecture/0061-the-fence-admits-a-living-specification.md",
 ];
 
 /**
@@ -7864,8 +7942,13 @@ function assertAdrNumbering() {
   notes.push("ADR corpus: " + String(records.length) + " records, unique, contiguous, indexed");
 }
 
+// Re-pinned in P-02, in the same commit as the edit that moved it: the roadmap
+// gained one paragraph after its review-evidence block, naming `docs/audit/` as
+// the planning source admitted by ADR 0061 and restating that the roadmap keeps
+// operational authority where the two speak. Nothing was deleted. Previous
+// digest: bf4c63b5a230e48f348847d8aee64cb61bd0e5696e9cd35b9531e796333b5a9a.
 const ROADMAP_SHA256 =
-  "bf4c63b5a230e48f348847d8aee64cb61bd0e5696e9cd35b9531e796333b5a9a";
+  "feaa94aa1e7ccdbbb8bec18374f44889e6cd267acadfe7b8e204e8064951c052";
 
 /**
  * The Estado line P7 closure is allowed to have produced.

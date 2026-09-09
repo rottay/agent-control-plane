@@ -30,6 +30,14 @@ Los dos revisores dieron `ACCEPT_WITH_CHANGES`. Sus correcciones quedan
 integradas aquí. No se abre una cadena adicional de reauditorías antes del
 kickoff.
 
+La especificación consolidada bajo `docs/audit/` es la fuente de planificación de
+arquitectura, contratos, requisitos y secuencia de packets, admitida por la
+compuerta a través del ADR 0061. Este documento no cede por eso su condición de
+autoridad operativa: donde ambos hablen, manda el roadmap, y trasladar esa
+condición es un acto separado del owner, no una consecuencia de haber admitido
+la carpeta. Admitirla tampoco autoriza fases nuevas, adopción en repositorios de
+producto ni publicación.
+
 ## Objetivo
 
 Construir un control plane local, neutral respecto del proveedor, que coordine

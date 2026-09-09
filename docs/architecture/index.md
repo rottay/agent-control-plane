@@ -45,7 +45,7 @@ new records from `_template.md`, which carries the required fields.
 | 0027 | [The production endpoint hosts every service the driver declares](0027-the-production-gate.md) | accepted |
 | 0028 | [A resumed stream restates its identity](0028-the-resumed-stream-identity.md) | accepted |
 | 0029 | [The lifecycle door recovers what it acts on](0029-the-lifecycle-door.md) | accepted |
-| 0030 | [An external audit is a frozen dated record, not an authority](0030-the-audit-record.md) | accepted |
+| 0030 | [An external audit is a frozen dated record, not an authority](0030-the-audit-record.md) | superseded by 0061 |
 | 0031 | [The API cancels through the same operation the CLI does](0031-the-lifecycle-api-door.md) | accepted |
 | 0032 | [An engine that answers is not an engine that failed](0032-the-invocation-the-engine-forgot.md) | accepted |
 | 0033 | [The daemon records what it spawned, so recovery can prove what to stop](0033-the-daemon-reaps-the-engine-it-started.md) | accepted |
@@ -76,6 +76,7 @@ new records from `_template.md`, which carries the required fields.
 | 0058 | [The backend certifies what the fence can compute](0058-the-backend-certifies-what-the-fence-can-compute.md) | accepted |
 | 0059 | [The gate's evidence binds to code, never to comments](0059-the-gates-evidence-binds-to-code.md) | accepted |
 | 0060 | [No evidence anchor resolves from emptiness or a comment](0060-no-anchor-resolves-from-emptiness-or-a-comment.md) | accepted |
+| 0061 | [The fence admits a living specification, not a frozen record](0061-the-fence-admits-a-living-specification.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

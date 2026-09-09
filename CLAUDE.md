@@ -29,6 +29,24 @@ conventions repeated below.
   Rottay repositories and existing tmux sessions are out of scope.
 - No secrets in code, contracts, tests, fixtures, logs or commit messages.
 
+## Where Claude sits, and what it reads
+
+The standing assignment is in `AGENTS.md` under "Reparto vigente" and originates
+in `docs/audit/kickoff.md` §1–2. Two consequences bind Claude Code sessions here:
+
+- **One Opus integrates, directly on `main`.** It is the only canonical writer.
+  Other Opus sessions prepare maps, proposals and oracles or verify authorized
+  snapshots, read-only. Nothing about that widens a write-set.
+- **The DT commits.** This is the same rule already stated above — do not commit
+  unless the owner or the DT asked for it — read from the other side: the commit
+  window belongs to `kimi/k3/coordinator/01`, and a writer does not stage, commit
+  or mutate the index inside it.
+
+Read `docs/ROADMAP.md`, which is canonical, and `docs/audit/`, the consolidated
+specification, before opening a packet. ADR 0061 admits that folder to the
+fence's exact write-set; admission is not authority, and where the two speak the
+roadmap governs.
+
 ## Subagents
 
 Do not spawn subagents for shared bootstrap or authority paths: contracts,
@@ -36,7 +54,9 @@ schemas, ledger, orchestrator, leases, adapters base, the Git fence, or the
 authority documents. Those are integrator-owned and single-writer by law.
 
 Subagents are appropriate only for disjoint leaves with their own exact
-write-sets and their own isolated worktrees, and only when the DT has issued
+write-sets and a scope that is disjoint in files, outputs and resources — not in
+a worktree of their own. No new branch and no new worktree is created for this
+work; the coordination mandate excludes them. And only when the DT has issued
 that split.
 
 ## Git

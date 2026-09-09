@@ -2,7 +2,7 @@
 
 - Status: accepted.
 - Supersedes: none.
-- Superseded-by: none.
+- Superseded-by: ADR 0061.
 
 ## Context
 
