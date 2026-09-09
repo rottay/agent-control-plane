@@ -3293,6 +3293,10 @@ const BE_REFUSALS = [
   "whose cited file is empty; an empty file is evidence of nothing",
   "whose cited file holds no code outside its comments",
   "whose extension this record cannot scan",
+  // The A1-delta add. Same qualification rule: the tail is long enough that only
+  // section 22a can produce it, and one entry covers all four forms because the
+  // four refusals differ only in the form they name.
+  "a specifier a run computes is a dependency no register can name",
 ];
 
 /** The cited file, with the landing body every fixture needs and an extra tail. */
@@ -4551,5 +4555,139 @@ describe("no evidence anchor resolves from emptiness or a comment (P-03)", () =>
     for (const refusal of BE_REFUSALS) {
       expect(output).not.toContain(refusal);
     }
+  });
+});
+
+/**
+ * A copy of the fence that reaches for a dependency the way a register cannot
+ * see it, inside a function nothing calls.
+ *
+ * Inert on purpose, and it is not a stylistic choice. `require` is not defined
+ * in an ES module, so a top-level call would kill the copy with a ReferenceError
+ * roughly 1.07 MB before section 22a runs; and a top-level `await import(v)`
+ * would actually resolve. Either way the probe would be measuring module
+ * loading instead of the law. A function declaration nobody invokes is parsed
+ * and never evaluated, which is exactly the asymmetry this law exists to close:
+ * the dependency is real to a reader and invisible to a run.
+ *
+ * The insertion point is the resolver import, the same anchor `fenceWithExtraImport`
+ * uses, because a function declaration is legal between ESM imports. If a later
+ * packet ever adds a law refusing functions with no consumer, these negatives
+ * would go red for a reason that has nothing to do with section 22a.
+ */
+function fenceReachingFor(lines) {
+  const marker = "import {\n  fenceRoot,";
+  const injected = FENCE_SOURCE.replace(
+    marker,
+    ["function acpUnreachableDependency() {", ...lines, "}", "", marker].join("\n"),
+  );
+  if (injected === FENCE_SOURCE) {
+    throw new Error("the fence no longer opens its resolver import in the expected shape");
+  }
+  return fenceCopy(injected);
+}
+
+/**
+ * The fence's dependencies are declarations, not computations (A1-delta).
+ *
+ * Consultation A1 found section 22a comparing its register against
+ * `preProcessFile`, which is a reference pre-processor rather than a reader of
+ * declarations. Measured against the fence this packet corrects, in the section
+ * evaluated in isolation:
+ *
+ *   import(next), a variable            → extractor saw NOTHING  → green
+ *   import("node:fs" + "/promises")     → extractor saw "node:fs" → green, authorized
+ *   require("node:fs")                  → extractor saw "node:fs" → green, authorized
+ *
+ * Three ways of acquiring a dependency in silence, through the very law written
+ * to make silence impossible. The first is invisible to the old instrument; the
+ * other two are worse, because the old instrument reports them as declarations
+ * and the register then agrees with them.
+ *
+ * So the negatives below are the three shapes plus the template literal, which
+ * is the form a writer reaches for without thinking. Each asserts the stable
+ * prefix of the refusal rather than its line number, and each also asserts that
+ * the law did not lose its other half — without that, a writer who broke the
+ * second direction would leave every case here green.
+ */
+describe("the fence's dependencies are declarations, not computations (A1-delta)", () => {
+  /** The refusal's stable head, per form; the trailing ` at line N` is not asserted. */
+  const reachesThrough = (form) =>
+    "scripts/check-architecture.mjs reaches for a dependency through " + form;
+
+  it("N27: refuses an import whose specifier is a variable", async () => {
+    // Invisible to the old extractor, so the old law returned no extra specifier
+    // and passed. Nothing about the fence's register had to change for a
+    // dependency to arrive.
+    const root = beTree({});
+    const { status, output } = await runFenceAgainst(
+      root,
+      fenceReachingFor(['  const next = "node:util";', "  return import(next);"]),
+    );
+
+    expect(status).not.toBe(0);
+    expect(output).toContain(reachesThrough("import()"));
+    expect(output).not.toContain("the fence imports exactly what it authorizes");
+    expect(output).not.toContain("authorizes an import of");
+  });
+
+  it("N28: refuses an import whose specifier is a concatenation", async () => {
+    // The sharpest of the four: the old extractor read the literal prefix
+    // `node:fs`, which the register AUTHORIZES, so the law affirmatively agreed
+    // that a dependency on `node:fs/promises` was one it had named.
+    const root = beTree({});
+    const { status, output } = await runFenceAgainst(
+      root,
+      fenceReachingFor(['  return import("node:fs" + "/promises");']),
+    );
+
+    expect(status).not.toBe(0);
+    expect(output).toContain(reachesThrough("import()"));
+    expect(output).not.toContain("the fence imports exactly what it authorizes");
+    expect(output).not.toContain("authorizes an import of");
+  });
+
+  it("N28b: refuses an import whose specifier is a template literal", async () => {
+    // Same blindness as N27, in the shape a writer produces by habit.
+    const root = beTree({});
+    const { status, output } = await runFenceAgainst(
+      root,
+      fenceReachingFor(['  const p = "util";', "  return import(`node:${p}`);"]),
+    );
+
+    expect(status).not.toBe(0);
+    expect(output).toContain(reachesThrough("import()"));
+    expect(output).not.toContain("the fence imports exactly what it authorizes");
+    expect(output).not.toContain("authorizes an import of");
+  });
+
+  it("N29: refuses a require, even for a specifier the register authorizes", async () => {
+    // The specifier has to be an AUTHORIZED one or this case proves nothing: the
+    // old extractor reported `require("x")` as a declaration, so an
+    // unauthorized `x` would have gone red today through the ordinary first
+    // direction and the negative would not discriminate between the two laws.
+    // `node:fs` is authorized, so the old law was green here.
+    const root = beTree({});
+    const { status, output } = await runFenceAgainst(
+      root,
+      fenceReachingFor(['  return require("node:fs");']),
+    );
+
+    expect(status).not.toBe(0);
+    expect(output).toContain(reachesThrough("require()"));
+    expect(output).not.toContain("the fence imports exactly what it authorizes");
+    expect(output).not.toContain("authorizes an import of");
+  });
+
+  it("N30: reaches its own verdict on a fence copy that computes no specifier", async () => {
+    // The positive control, on the same tree and through the same copy helper as
+    // the four above, so their refusals are attributable to the injected
+    // function rather than to being a copy. The note is the one N26 and P4 also
+    // hold this law to.
+    const root = beTree({});
+    const { output } = await runFenceAgainst(root, fenceCopy(FENCE_SOURCE));
+
+    expect(output).toContain("the fence imports exactly what it authorizes");
+    expect(output).not.toContain("reaches for a dependency through");
   });
 });

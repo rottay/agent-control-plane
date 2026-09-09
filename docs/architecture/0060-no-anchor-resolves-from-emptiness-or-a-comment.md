@@ -3,6 +3,10 @@
 - Status: accepted.
 - Supersedes: none.
 - Superseded-by: none.
+- Amends: ADR 0053, in one clause of its reasoning and nothing else. The
+  decision recorded there — every API error code is answered by name, and the
+  fence pins the two tables to each other as text — stands unchanged, and its
+  file is not touched.
 
 ## Context
 
@@ -163,3 +167,59 @@ topology law of section 23, which is outside this write-set. Nothing here
 certifies the backend, closes the program, or touches the deployment phase; the
 gate's own exit code still depends on the documentation bridge this packet does
 not open.
+
+## Addendum (A1-δ): what this record amends, and one attribution it got wrong
+
+The A1 consultation accepted this record's direction and returned two changes to
+its closing prose and one to the law it introduced. They are recorded here rather
+than by editing the paragraphs above, because a record that is edited into
+agreement with its own review stops being evidence of what was decided when.
+
+**`Amends: ADR 0053`, limited to one clause.** ADR 0053 justifies reading two
+private tables as text with two reasons, and the first of them is that "the fence
+is dependency-free and runs before any build". Half of that sentence stopped
+being true in this packet: the fence imports `typescript`. The corpus is
+append-only and 0053's file is not touched, so the replacement is stated here.
+Read that clause as: **the fence imports no package this repository builds, and
+runs before any build.** That is the property 0053's law actually needed —
+comparing a module-private table with anything at all requires reading source,
+and reading source requires running before the thing that would make a compiled
+table available. A root devDependency the fence declares and checks (section 22a)
+never had any bearing on it. Nothing else in 0053 is amended: its decision, its
+tables, its scope registration and its consequences stand as written.
+
+**One attribution in this record's consequences was wrong.** The paragraph
+beginning "The fence no longer runs in a checkout without `node_modules`" says
+`pnpm install` precedes `pnpm check` "in AGENTS.md, in CI and in the pre-push
+hook". The first two are right; the third is not. `.githooks/pre-push` installs
+nothing and checks nothing: it is a publication fence, and every line of it
+decides whether one push of `main` to the canonical `origin` is authorized —
+`ACP_OWNER_PUBLISH`, the remote's name and URL, the ref pair, no deletions,
+fast-forward only, and a refusal when git offers it no refs at all. Read the
+requirement as founded where it actually is: **AGENTS.md's `## Checks` block runs
+`pnpm install` before `pnpm check`, and CI's `check` job installs with
+`--frozen-lockfile` before running the four stages `pnpm check` chains** (it runs
+the stages rather than the script, for the reason ADR 0057 records). Nothing in
+the decision depends on which of the three it was; the sentence was
+load-bearing for a reader, not for the law, and it is corrected here rather than
+above for the reason this addendum opens with.
+
+**The law of section 22a was reading the wrong instrument.** This record
+introduced "the fence imports exactly what it authorizes" and had it compare the
+register against `preProcessFile`. That is a reference pre-processor, not a
+reader of declarations: A1 measured it reporting `require("x")` and `import("x")`
+as though they were declarations, and reporting nothing at all for a specifier a
+run computes. Three ways of acquiring a dependency in silence therefore passed
+the law in green — `import(next)`, which it could not see; and
+`import("node:fs" + "/promises")` and `require("node:fs")`, which it read as the
+authorized `node:fs` and affirmatively approved. The extraction is now made from
+the syntax: a dependency of the fence is a static ESM declaration with a
+string-literal specifier, and every other way of reaching for a module is refused
+by name rather than extracted, because a specifier a run computes cannot be
+compared against a list written before the run. Both directions of the comparison
+and their two refusals are unchanged. The ceiling of the corrected instrument is
+stated in the law's own prose rather than left to be discovered: `eval`,
+`new Function` and `process.getBuiltinModule` require no import and no law over a
+declared set can see them. This record already says of its anchors that an anchor
+proves location, not conduct; section 22a proves what the fence declares, not
+what a determined run could still reach.

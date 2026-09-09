@@ -22288,16 +22288,42 @@ if (apiReference === null) {
 //
 // Correcting the sentence would have been the wrong repair, and R19b is the
 // reason: a sentence describing a mechanism outlives the mechanism, and nothing
-// goes red. So the import set is data, and it is checked against a static
-// analysis of this file's own source — `preProcessFile`, which reads imports
-// out of the syntax rather than out of a regex that a string containing the
-// word `import` could satisfy.
+// goes red. So the import set is data, and it is checked against this file's
+// own source.
+//
+// The first version of that check read the source with `preProcessFile`, and
+// consultation A1 measured why that was the wrong instrument. It is a reference
+// pre-processor, not a reader of declarations: it reports `require("x")` and
+// `import("x")` as though they were declarations, and it reports NOTHING for a
+// specifier a run computes. Measured: `import(next)` is invisible to it, and
+// `import("node:fs" + "/promises")` registers as the authorized `node:fs`.
+// Three ways of reaching for a dependency therefore passed both directions of
+// this law in green. A register compared against an extractor that cannot see a
+// dependency is a register that certifies its own blind spot.
+//
+// So `fenceDependencies` reads the declarations instead. A dependency of this
+// file is a static ESM declaration with a string-literal specifier; every other
+// way to reach for a module is refused by name rather than extracted, because a
+// specifier a run computes cannot be compared against a list written before the
+// run.
 //
 // Both directions, because each catches a different mistake: a specifier this
 // list does not name is a dependency that arrived unannounced, and a name this
 // file no longer imports is a list nobody pruned, which is how a register stops
 // meaning anything. `typescript` is a root devDependency already named in
-// `ROOT_DEV_DEPENDENCIES`; the scanner is the only reason it is here. ADR 0060.
+// `ROOT_DEV_DEPENDENCIES`; the scanner is the only reason it is here.
+//
+// The ceiling of this instrument, stated rather than left to be discovered.
+// This law reads syntax, so it sees every form that names a module in the
+// source and nothing a run assembles from strings: `eval`, `new Function` and
+// `process.getBuiltinModule` need no import at all, and no law over a declared
+// set can see them. Two neighbours look like the same hole and are not —
+// `createRequire` and `Worker` must first import `node:module` or
+// `node:worker_threads`, which the second direction below refuses by name — and
+// `const rq = require` dies at load, because `require` is not defined in an ES
+// module. ADR 0060 says of its own anchors that an anchor proves location, not
+// conduct; the same honesty is owed here. This law proves what this file
+// declares, not what a determined run could still reach. ADR 0060.
 const FENCE_IMPORTS_AUTHORIZED = [
   "node:child_process",
   "node:crypto",
@@ -22308,14 +22334,86 @@ const FENCE_IMPORTS_AUTHORIZED = [
   "./architecture/roots.mjs",
 ];
 
+/**
+ * This file's dependencies, read out of its syntax as declarations.
+ *
+ * The scan and the walk answer two different questions, and the split is not a
+ * style choice. An ESM import declaration is legal only at the top level, so
+ * declarations are read from `statements` and a nested `import` is not one of
+ * them. The walk exists for the forms that CAN nest anywhere in the file, which
+ * are exactly the forms this law refuses by name.
+ *
+ * `ScriptKind.JS` is deliberate: it parses `import type` and
+ * `import x = require()` without complaint, so a refusal here comes from the
+ * law rather than from the parser giving up. `import(...)` written inside a
+ * comment or a string is not a call and is correctly ignored — this file
+ * contains both shapes in its own prose.
+ */
+function fenceDependencies(source) {
+  const parsed = ts.createSourceFile(
+    "check-architecture.mjs",
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ false,
+    ts.ScriptKind.JS,
+  );
+
+  const declared = new Set();
+  const computed = [];
+  const lineOf = (node) => parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
+
+  for (const statement of parsed.statements) {
+    if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+    const specifier = statement.moduleSpecifier;
+    if (specifier === undefined) continue; // `export { a };` declares no dependency
+    if (ts.isStringLiteral(specifier)) declared.add(specifier.text);
+    else {
+      computed.push({
+        form: "a module specifier that is not a string literal",
+        line: lineOf(statement),
+      });
+    }
+  }
+
+  const walk = (node) => {
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      computed.push({ form: "import()", line: lineOf(node) });
+    } else if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "require"
+    ) {
+      computed.push({ form: "require()", line: lineOf(node) });
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      computed.push({ form: "import = require()", line: lineOf(node) });
+    }
+    ts.forEachChild(node, walk);
+  };
+  ts.forEachChild(parsed, walk);
+
+  return { declared: [...declared], computed };
+}
+
 {
   const fenceSource = readFileSync(fileURLToPath(import.meta.url), "utf8");
-  const imported = [
-    ...new Set(ts.preProcessFile(fenceSource, true, true).importedFiles.map((ref) => ref.fileName)),
-  ];
+  const { declared, computed } = fenceDependencies(fenceSource);
   let importDefects = 0;
 
-  for (const specifier of imported) {
+  // One emitter, four forms. The tail is shared so that `BE_REFUSALS` needs one
+  // entry rather than four, and the line number goes last so a negative can
+  // assert the stable prefix without chaining itself to this file's length.
+  for (const { form, line } of computed) {
+    fail(
+      "scripts/check-architecture.mjs reaches for a dependency through " +
+        form +
+        " at line " +
+        line +
+        "; the fence's imports are static ESM declarations, and a specifier a run computes is a dependency no register can name",
+    );
+    importDefects += 1;
+  }
+
+  for (const specifier of declared) {
     if (FENCE_IMPORTS_AUTHORIZED.includes(specifier)) continue;
     fail(
       "scripts/check-architecture.mjs imports " +
@@ -22325,7 +22423,7 @@ const FENCE_IMPORTS_AUTHORIZED = [
     importDefects += 1;
   }
   for (const specifier of FENCE_IMPORTS_AUTHORIZED) {
-    if (imported.includes(specifier)) continue;
+    if (declared.includes(specifier)) continue;
     fail(
       "scripts/check-architecture.mjs authorizes an import of " +
         specifier +
@@ -22337,7 +22435,7 @@ const FENCE_IMPORTS_AUTHORIZED = [
   if (importDefects === 0) {
     notes.push(
       "the fence imports exactly what it authorizes: " +
-        imported.filter((specifier) => specifier.startsWith("node:")).length +
+        declared.filter((specifier) => specifier.startsWith("node:")).length +
         " node builtins, its own resolver, and the scanner section 22b reads code with",
     );
   }

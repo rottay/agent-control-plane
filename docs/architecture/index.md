@@ -68,7 +68,7 @@ new records from `_template.md`, which carries the required fields.
 | 0050 | [A span is parented only where the ledger resolves it](0050-a-span-is-parented-only-where-the-ledger-resolves-it.md) | accepted |
 | 0051 | [The policy version pin is data, not code](0051-the-policy-version-pin-is-data.md) | accepted |
 | 0052 | [The daemon binds a transport it was given a client for](0052-the-daemon-binds-a-transport-it-was-given-a-client-for.md) | accepted |
-| 0053 | [Every API error code is answered by name](0053-every-api-error-code-is-answered-by-name.md) | accepted |
+| 0053 | [Every API error code is answered by name](0053-every-api-error-code-is-answered-by-name.md) | accepted, amended by 0060 |
 | 0054 | [The baseline measures the walk that actually runs](0054-the-baseline-measures-the-walk-that-actually-runs.md) | accepted |
 | 0055 | [A vendor endpoint is an edge behind a port](0055-a-vendor-endpoint-is-an-edge-behind-a-port.md) | accepted |
 | 0056 | [The registry gains a producer, never a second one](0056-the-registry-gains-a-producer-never-a-second-one.md) | accepted |
