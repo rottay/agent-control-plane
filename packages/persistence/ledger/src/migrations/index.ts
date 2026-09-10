@@ -588,6 +588,401 @@ BEGIN
 END;
 `,
   },
+  {
+    version: 9,
+    name: "registry_stream",
+    sql: `
+-- The registry stream, and the first projection fed by two of them.
+--
+-- \`registry_events\` is a new stream, so unlike the two that came before it, it
+-- implements the contract's common field profile COMPLETELY from its first
+-- migration. The digest shapes and the causal triple are CHECK constraints in
+-- the DDL rather than rules imposed forward by a trigger: a trigger is what a
+-- table that already exists is stuck with, and this one does not exist yet.
+--
+-- Its subject is a versioned configuration document. This is STORAGE. It does
+-- not decide eligibility, does not score models and does not set prices: the
+-- semantics of each \`document_kind\` belong to planning, accounts and economy,
+-- and this table persists versions with a digest, an author and a validity
+-- instant. Nothing in this migration or in the code above it validates a
+-- \`model_version_id\` against anything.
+CREATE TABLE registry_events (
+  sequence                INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id                TEXT    NOT NULL UNIQUE,
+  idempotency_key         TEXT    NOT NULL UNIQUE,
+  document_kind           TEXT    NOT NULL,
+  document_id             TEXT    NOT NULL,
+  document_version        INTEGER NOT NULL,
+  content_digest          TEXT    NOT NULL,
+  parent_document_version INTEGER,
+  recorded_by             TEXT    NOT NULL,
+  effective_from          TEXT    NOT NULL,
+  occurred_at             TEXT    NOT NULL,
+  recorded_at             TEXT    NOT NULL,
+  causation_stream        TEXT,
+  causation_sequence      INTEGER,
+  causation_sha256        TEXT,
+  contract_version        TEXT    NOT NULL,
+  event_json              TEXT    NOT NULL,
+  previous_sha256         TEXT    NOT NULL,
+  event_sha256            TEXT    NOT NULL UNIQUE,
+  -- The closed vocabulary of the contract, fourteen names. A CHECK cannot be
+  -- widened without rewriting the table, so a fifteenth kind is a migration
+  -- and a decision, never a value that slips in.
+  CONSTRAINT ck_registry_events__document_kind CHECK (
+    document_kind IN (
+      'CAPABILITY_POLICY',
+      'MODEL_VERSION',
+      'PRICE_TABLE',
+      'MODEL_PERFORMANCE',
+      'ROUTING_ASSIGNMENT_GLOBAL',
+      'ESTIMATION_POLICY',
+      'INTEGRATION_PROFILE',
+      'INTEGRATION_INSTALLATION',
+      'COMPOSITION_POLICY',
+      'COMPOSITION_EVIDENCE',
+      'NOTIFICATION_POLICY',
+      'APPROVAL_WAIT_POLICY',
+      'DUEL_POLICY',
+      'ANOMALY_POLICY'
+    )
+  ),
+  CONSTRAINT ck_registry_events__document_version CHECK (document_version >= 1),
+  -- A parent shares the document_id and precedes this version. NULL is the
+  -- first version of a document, and is the only way to be a first version.
+  CONSTRAINT ck_registry_events__parent_document_version CHECK (
+    parent_document_version IS NULL
+      OR (parent_document_version >= 1 AND parent_document_version < document_version)
+  ),
+  CONSTRAINT ck_registry_events__content_digest CHECK (
+    length(content_digest) = 64 AND content_digest NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT ck_registry_events__causation_pair CHECK (
+    (causation_stream IS NULL) = (causation_sequence IS NULL)
+      AND (causation_stream IS NULL) = (causation_sha256 IS NULL)
+  ),
+  CONSTRAINT ck_registry_events__causation_sequence CHECK (
+    causation_sequence IS NULL OR causation_sequence >= 1
+  ),
+  CONSTRAINT ck_registry_events__causation_sha256 CHECK (
+    causation_sha256 IS NULL
+      OR (length(causation_sha256) = 64 AND causation_sha256 NOT GLOB '*[^0-9a-f]*')
+  ),
+  CONSTRAINT ck_registry_events__previous_sha256 CHECK (
+    length(previous_sha256) = 64 AND previous_sha256 NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT ck_registry_events__event_sha256 CHECK (
+    length(event_sha256) = 64 AND event_sha256 NOT GLOB '*[^0-9a-f]*'
+  )
+) STRICT;
+
+-- Version identity. Deliberately (document_id, document_version) and not
+-- (document_kind, document_version): two different documents of the same class
+-- are legitimate, and keying on the class would make the second one a conflict.
+CREATE UNIQUE INDEX ux_registry_events__document_id__document_version
+  ON registry_events (document_id, document_version);
+
+CREATE INDEX ix_registry_events__document_kind__document_id__document_version
+  ON registry_events (document_kind, document_id, document_version);
+
+CREATE INDEX ix_registry_events__document_id__effective_from
+  ON registry_events (document_id, effective_from);
+
+-- The append-only pair, under the §3.2 naming convention rather than the
+-- legacy \`<table>_deny_*\` the first three streams carry. Those names are
+-- frozen in applied migrations and stay exactly as they are; a stream created
+-- from migration 7 onward follows the convention that governs from there, so
+-- the third stream does not inherit a shape it never had to.
+CREATE TRIGGER tr_registry_events__deny_update
+BEFORE UPDATE ON registry_events
+BEGIN
+  SELECT RAISE(ABORT, 'registry_events is append-only: UPDATE is denied');
+END;
+
+CREATE TRIGGER tr_registry_events__deny_delete
+BEFORE DELETE ON registry_events
+BEGIN
+  SELECT RAISE(ABORT, 'registry_events is append-only: DELETE is denied');
+END;
+
+-- What a CHECK cannot do: resolve the reference against the row it names.
+--
+-- SQLite does not allow a subquery in a CHECK, so the static rules above are
+-- constraints and the resolution is a trigger. That is one more trigger than
+-- the contract enumerates for this stream, declared here rather than smuggled:
+-- the alternative was to leave the resolution to the code above, and the
+-- packet that just closed that gap for the other two streams would have opened
+-- it again for the third.
+CREATE TRIGGER tr_registry_events__validate_new_rows
+BEFORE INSERT ON registry_events
+BEGIN
+  SELECT RAISE(ABORT, 'registry_events causal reference names a stream with no verifiable digest')
+  WHERE NEW.causation_stream IS NOT NULL
+    AND NEW.causation_stream NOT IN ('control_plane_events', 'initiative_events', 'registry_events');
+
+  SELECT RAISE(ABORT, 'registry_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'control_plane_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM control_plane_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'registry_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'initiative_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM initiative_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'registry_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'registry_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM registry_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+END;
+
+-- The causal vocabulary widens to three, here, and only here.
+--
+-- Migration 8 is applied and immutable by checksum, so its two triggers cannot
+-- be edited to admit a third stream; they are dropped and recreated under the
+-- same names instead, AFTER \`registry_events\` exists a few lines above. That
+-- order is not a style choice: SQLite compiles a trigger body when it prepares
+-- an INSERT on the guarded table, so a branch naming a table that does not
+-- exist breaks every append rather than lying dormant. It is exactly why
+-- migration 8 could not name this stream and why this migration can.
+--
+-- The recreated bodies are migration 8's, with one name added to the
+-- vocabulary and one resolution branch added to the end. The account stream is
+-- still absent and still refused, and is not named here in a comment or
+-- otherwise: migration 5 gives it neither \`previous_sha256\` nor
+-- \`event_sha256\`, so a reference to it could be believed but never checked,
+-- and completing the list to four while the trigger was open would be the
+-- easiest way to reintroduce the weak link the triple exists to rule out.
+DROP TRIGGER tr_control_plane_events__validate_new_rows;
+DROP TRIGGER tr_initiative_events__validate_new_rows;
+
+CREATE TRIGGER tr_control_plane_events__validate_new_rows
+BEFORE INSERT ON control_plane_events
+BEGIN
+  SELECT RAISE(ABORT, 'control_plane_events.event_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.event_sha256) <> 64 OR NEW.event_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'control_plane_events.previous_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.previous_sha256) <> 64 OR NEW.previous_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference is all three columns or none')
+  WHERE (NEW.causation_stream IS NULL) <> (NEW.causation_sequence IS NULL)
+     OR (NEW.causation_stream IS NULL) <> (NEW.causation_sha256 IS NULL);
+
+  SELECT RAISE(ABORT, 'control_plane_events.causation_sha256 is not 64 lowercase hex characters')
+  WHERE NEW.causation_sha256 IS NOT NULL
+    AND (length(NEW.causation_sha256) <> 64 OR NEW.causation_sha256 GLOB '*[^0-9a-f]*');
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference names a stream with no verifiable digest')
+  WHERE NEW.causation_stream IS NOT NULL
+    AND NEW.causation_stream NOT IN ('control_plane_events', 'initiative_events', 'registry_events');
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference needs a positive position')
+  WHERE NEW.causation_sequence IS NOT NULL AND NEW.causation_sequence < 1;
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'control_plane_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM control_plane_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'initiative_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM initiative_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'registry_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM registry_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+END;
+
+CREATE TRIGGER tr_initiative_events__validate_new_rows
+BEFORE INSERT ON initiative_events
+BEGIN
+  SELECT RAISE(ABORT, 'initiative_events.event_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.event_sha256) <> 64 OR NEW.event_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'initiative_events.previous_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.previous_sha256) <> 64 OR NEW.previous_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference is all three columns or none')
+  WHERE (NEW.causation_stream IS NULL) <> (NEW.causation_sequence IS NULL)
+     OR (NEW.causation_stream IS NULL) <> (NEW.causation_sha256 IS NULL);
+
+  SELECT RAISE(ABORT, 'initiative_events.causation_sha256 is not 64 lowercase hex characters')
+  WHERE NEW.causation_sha256 IS NOT NULL
+    AND (length(NEW.causation_sha256) <> 64 OR NEW.causation_sha256 GLOB '*[^0-9a-f]*');
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference names a stream with no verifiable digest')
+  WHERE NEW.causation_stream IS NOT NULL
+    AND NEW.causation_stream NOT IN ('control_plane_events', 'initiative_events', 'registry_events');
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference needs a positive position')
+  WHERE NEW.causation_sequence IS NOT NULL AND NEW.causation_sequence < 1;
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'control_plane_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM control_plane_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'initiative_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM initiative_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'registry_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM registry_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+END;
+
+-- The first read model fed by two streams.
+--
+-- Its GLOBAL partition is folded from \`registry_events\`; its INITIATIVE and
+-- STEP partitions from \`initiative_events\`. Read precedence is
+-- STEP > INITIATIVE > GLOBAL, resolved against a VECTOR of watermarks, never
+-- against "the latest" of a single stream, because two streams' sequences are
+-- not comparable and \`sequence\` below is an application order rather than a
+-- shared clock.
+--
+-- The INITIATIVE and STEP partitions are EMPTY in this build, and empty by
+-- construction rather than by omission: the event type that fills them,
+-- \`ROUTING_ASSIGNMENT_RECORDED\`, is not in the initiative contract's closed
+-- vocabulary, and widening a contract that lives in another package is another
+-- packet's. The fold over that stream is total and returns no row for every
+-- type that does exist. What this migration establishes is the mechanism —
+-- two independent heads under one projection name.
+CREATE TABLE routing_assignment_read_model (
+  assignment_id    TEXT    NOT NULL PRIMARY KEY,
+  scope_kind       TEXT    NOT NULL,
+  scope_id         TEXT,
+  version          INTEGER NOT NULL,
+  role             TEXT    NOT NULL,
+  slot             INTEGER NOT NULL,
+  provider         TEXT    NOT NULL,
+  model_version_id TEXT    NOT NULL,
+  recorded_by      TEXT    NOT NULL,
+  recorded_at      TEXT    NOT NULL,
+  superseded_by    TEXT,
+  source_stream    TEXT    NOT NULL,
+  source_sequence  INTEGER NOT NULL,
+  sequence         INTEGER NOT NULL,
+  CONSTRAINT ck_routing_assignment_read_model__scope_kind CHECK (
+    scope_kind IN ('GLOBAL', 'INITIATIVE', 'STEP')
+  ),
+  CONSTRAINT ck_routing_assignment_read_model__scope_id_required CHECK (
+    (scope_kind = 'GLOBAL') = (scope_id IS NULL)
+  ),
+  CONSTRAINT ck_routing_assignment_read_model__version CHECK (version >= 1),
+  CONSTRAINT ck_routing_assignment_read_model__role CHECK (
+    role IN ('coordinator', 'implementer', 'reviewer', 'consultant', 'verifier')
+  ),
+  CONSTRAINT ck_routing_assignment_read_model__slot CHECK (slot >= 0),
+  -- The partition rule, in the base rather than only in the fold: a row from
+  -- the registry stream is GLOBAL and a row from the initiative stream is not.
+  -- Neither stream can write into the other's partition.
+  CONSTRAINT ck_routing_assignment_read_model__source_scope CHECK (
+    (source_stream = 'registry_events' AND scope_kind = 'GLOBAL')
+      OR (source_stream = 'initiative_events' AND scope_kind IN ('INITIATIVE', 'STEP'))
+  ),
+  CONSTRAINT ck_routing_assignment_read_model__source_sequence CHECK (source_sequence >= 1)
+) STRICT;
+
+-- Partial, both of them. A UNIQUE index over a nullable column does not
+-- enforce uniqueness by itself: two GLOBAL rows both carry scope_id NULL, and
+-- SQLite treats distinct NULLs as distinct, so one index over the five columns
+-- would silently admit the duplicate it was written to refuse.
+CREATE UNIQUE INDEX ux_routing_assignment_read_model__global
+  ON routing_assignment_read_model (role, slot, version)
+  WHERE scope_kind = 'GLOBAL';
+
+CREATE UNIQUE INDEX ux_routing_assignment_read_model__scoped
+  ON routing_assignment_read_model (scope_kind, scope_id, role, slot, version)
+  WHERE scope_kind <> 'GLOBAL';
+
+CREATE INDEX ix_routing_assignment_read_model__resolution
+  ON routing_assignment_read_model (scope_kind, scope_id, role, slot, superseded_by);
+
+-- Rows, not a JSON column. §3.5 of the database contract forbids a JSON list
+-- of fallbacks in a column of the assignment: an ordered list that has to be
+-- parsed to be read is not a relation, and the ordinal is the order of attempt.
+CREATE TABLE routing_assignment_fallback (
+  assignment_id    TEXT    NOT NULL,
+  ordinal          INTEGER NOT NULL,
+  model_version_id TEXT    NOT NULL,
+  CONSTRAINT pk_routing_assignment_fallback PRIMARY KEY (assignment_id, ordinal),
+  CONSTRAINT ck_routing_assignment_fallback__ordinal CHECK (ordinal >= 0),
+  CONSTRAINT fk_routing_assignment_fallback__routing_assignment_read_model
+    FOREIGN KEY (assignment_id) REFERENCES routing_assignment_read_model (assignment_id)
+    ON DELETE CASCADE
+) STRICT;
+
+INSERT INTO ledger_meta (key, value) VALUES
+  ('registry_head_sequence', '0'),
+  ('registry_head_event_sha256', '0000000000000000000000000000000000000000000000000000000000000000'),
+  ('registry_event_count', '0');
+
+-- Two watermark rows under one projection name, seeded from two different
+-- arguments, and the difference is the whole point of writing them separately.
+--
+-- The registry row may honestly be zero: the stream is born empty in this same
+-- migration, so a projection at zero IS level with it. This is not the defect
+-- migration 6 and migration 7 both carry a comment about — a row frozen at
+-- zero behind a NON-ZERO head — because there is no history here to be behind.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+VALUES (
+  'routing_assignment_read_model',
+  'registry_events',
+  1,
+  0,
+  0,
+  '0000000000000000000000000000000000000000000000000000000000000000',
+  '1970-01-01T00:00:00.000Z'
+);
+
+-- The initiative row may NOT be zero, and for exactly the reason migration 6
+-- states: this projection arrives over a stream that may already hold events.
+-- The fold over all of them is legitimately empty — no initiative event type
+-- carries a routing assignment — so the projection IS current the moment the
+-- table exists, and its metadata must say so. A literal zero here would make
+-- every ledger in the field fail its own integrity check immediately after a
+-- routine upgrade, with nothing wrong with it.
+--
+-- On a fresh ledger the three subqueries read 0, 0 and the genesis digest, so
+-- this is identical to a literal zero seed there.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  'routing_assignment_read_model',
+  'initiative_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'initiative_head_event_sha256'),
+  '1970-01-01T00:00:00.000Z';
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -598,7 +993,13 @@ export const MIGRATIONS: readonly Migration[] = SOURCES.map((source) => ({
   sha256: sha256Hex(source.sql),
 }));
 
-/** Names of the derived tables a rebuild is allowed to clear. */
+/**
+ * Names of the derived tables a rebuild is allowed to clear.
+ *
+ * The order is load-bearing where a foreign key exists: `foreign_keys` is ON,
+ * so `routing_assignment_fallback` is cleared before the assignment rows it
+ * references, exactly as `worker_task_read_model` precedes `worker_read_model`.
+ */
 export const DERIVED_TABLES: readonly string[] = [
   "worker_task_read_model",
   "task_read_model",
@@ -606,6 +1007,8 @@ export const DERIVED_TABLES: readonly string[] = [
   "execution_route_read_model",
   "initiative_read_model",
   "roadmap_version_read_model",
+  "routing_assignment_fallback",
+  "routing_assignment_read_model",
 ];
 
 /** Projection names tracked in projection_watermark, for the task stream. */
@@ -634,6 +1037,18 @@ export const TASK_STREAM = "control_plane_events";
 
 /** The initiative stream's table name, in the same vocabulary. */
 export const INITIATIVE_STREAM = "initiative_events";
+
+/** The registry stream's table name, in the same vocabulary (P-09/log-C). */
+export const REGISTRY_STREAM = "registry_events";
+
+/**
+ * The one projection this build folds from more than one stream.
+ *
+ * Named on its own rather than added to either stream's name list, because it
+ * belongs to neither: it has a watermark row per stream, and the lists above
+ * exist precisely to keep a projection level with the single chain it follows.
+ */
+export const ROUTING_ASSIGNMENT_PROJECTION = "routing_assignment_read_model";
 
 /**
  * The fold algorithm's generation.
@@ -668,7 +1083,12 @@ export interface ProjectionSource {
  * no watermark at all. Its integrity is P-08's, and until it exists this build
  * publishes no certified watermark for that stream.
  *
- * `registry_events` is absent because it does not exist yet (P-09/log-C).
+ * The last two rows are one projection, twice (P-09/log-C). That is what the
+ * composite key was built for: `routing_assignment_read_model` folds
+ * `registry_events` into its `GLOBAL` partition and `initiative_events` into
+ * its `INITIATIVE`/`STEP` partition, so it has two independent heads and no
+ * single number describes it. Every other name here appears exactly once, and
+ * a test holds that difference.
  */
 export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: "task_read_model", sourceStream: TASK_STREAM },
@@ -676,7 +1096,30 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: "execution_route_read_model", sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
+  { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: REGISTRY_STREAM },
+  { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: INITIATIVE_STREAM },
 ];
+
+/**
+ * The pairs `status()` publishes, which is every projection with ONE source.
+ *
+ * `ProjectionStatus` answers "how far is this projection?" with a single
+ * `appliedThroughSequence`, and for a projection with two independent heads
+ * there is no such number — stamping it with either one makes the other
+ * unverifiable, which is the exact defect `projection_meta` had. So the
+ * two-source projection is omitted from the status DTO rather than described
+ * badly in it, and its vector travels when the wire schema can carry it.
+ *
+ * Derived rather than written out, so a projection that gained or lost a
+ * source moves in or out of the DTO by itself instead of by a second edit
+ * somebody has to remember.
+ */
+export const SINGLE_SOURCE_PROJECTION_SOURCES: readonly ProjectionSource[] =
+  PROJECTION_SOURCES.filter(
+    (source) =>
+      PROJECTION_SOURCES.filter((other) => other.projectionName === source.projectionName)
+        .length === 1,
+  );
 
 export interface SchemaObject {
   readonly type: string;
@@ -755,6 +1198,32 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   // table and no index — a column is not a schema object here.
   { type: "trigger", name: "tr_control_plane_events__validate_new_rows" },
   { type: "trigger", name: "tr_initiative_events__validate_new_rows" },
+  // P-09/log-C. The third stream, complete from its first migration: the
+  // append-only pair for the same reason the other two streams carry it, and a
+  // third trigger for the one rule a CHECK cannot express — resolving a causal
+  // reference against the row it names. All three follow the §3.2 convention
+  // rather than the legacy `<table>_deny_*` of the first three streams, whose
+  // names are frozen inside applied migrations. Migration 9 also drops and
+  // recreates the two triggers above under the same names, so the inventory
+  // does not move for them; what would be invisible without this list is the
+  // removal of any of the three below.
+  { type: "table", name: "registry_events" },
+  { type: "index", name: "ux_registry_events__document_id__document_version" },
+  { type: "index", name: "ix_registry_events__document_kind__document_id__document_version" },
+  { type: "index", name: "ix_registry_events__document_id__effective_from" },
+  { type: "trigger", name: "tr_registry_events__deny_update" },
+  { type: "trigger", name: "tr_registry_events__deny_delete" },
+  { type: "trigger", name: "tr_registry_events__validate_new_rows" },
+  // Derived, so no append-only trigger: the two authorities are
+  // `registry_events` and `initiative_events`, and this is a fold over both
+  // that `rebuildReadModel` may drop and rewrite. The partial unique indexes
+  // are inventoried by name like any other; the automatic index behind each
+  // primary key carries the reserved prefix this inventory excludes.
+  { type: "table", name: "routing_assignment_read_model" },
+  { type: "index", name: "ux_routing_assignment_read_model__global" },
+  { type: "index", name: "ux_routing_assignment_read_model__scoped" },
+  { type: "index", name: "ix_routing_assignment_read_model__resolution" },
+  { type: "table", name: "routing_assignment_fallback" },
 ];
 
 export interface MigrationConformance {

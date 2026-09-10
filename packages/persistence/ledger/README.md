@@ -43,6 +43,7 @@ ledger.close();
 | `getWorker(identity)` / `listWorkers(query?)` | Derived worker read model, ordered by identity. |
 | `getExecutionRoute(taskId, attempt)` / `listExecutionRoutes(taskId)` | The route an attempt was admitted on, keyed by the pair. Null, or empty, when nothing recorded one. |
 | `appendInitiativeEvent(event, causation?)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
+| `appendRegistryEvent(document, causation?)` | The same pipeline on the registry stream: one version of one configuration document, on its own chain. A unit door; there is no registry batch. |
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
@@ -85,11 +86,16 @@ the contract's `ck_<table>__causation_pair` and the 64-hex digest shape live,
 because SQLite cannot add a `CHECK` to a table that already exists and an applied
 migration is never rewritten.
 
-**Only the two streams with a hash chain may be named.** `account_events` has no
-`event_sha256` at all, and `registry_events` does not exist yet, so a reference
-to either could be believed but never checked. Both are refused as a value of
-`causation_stream`; widening the vocabulary belongs to the packets that give
-those streams a digest.
+**Only the streams with a hash chain may be named** — three of the contract's
+four. `registry_events` joined them in P-09/log-C, which is the packet that gave
+that stream a chain; the widening is a `DROP TRIGGER` and a `CREATE TRIGGER`
+under the same names in migration 9, because migration 8's text is immutable by
+checksum and every ledger in the field compares it on every open.
+
+`account_events` is still refused as a value of `causation_stream`. It has no
+`event_sha256` at all, so a reference naming it could be believed but never
+checked, and widening the vocabulary to four belongs to the packet that gives it
+a digest.
 
 A retry under the same idempotency key is still a silent no-op only when the
 reference matches too. The triple is not part of `event_json`, so a comparison
@@ -147,6 +153,7 @@ fourteenth class cannot arrive without appearing here.
 | `schema_migrations` | authority | applied version, name, SHA-256, timestamp |
 | `control_plane_events` | authority | the append-only log, with `previous_sha256` and `event_sha256`, and the nullable causal triple |
 | `initiative_events` | authority | the sibling append-only stream, on its own hash chain, with the same triple |
+| `registry_events` | authority | versioned configuration documents, on a third hash chain, with the common field profile complete from its first migration |
 | `ledger_meta` | authority | head sequence, head digest and event count, one set per stream |
 | `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable) |
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
@@ -154,6 +161,8 @@ fourteenth class cannot arrive without appearing here.
 | `execution_route_read_model` | derived | the route each `(task, attempt)` was admitted on: provider, model, account, transport and the capability-policy version that chose them |
 | `initiative_read_model` | derived | current status, counts, first and last position |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
+| `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
+| `routing_assignment_fallback` | derived | one row per fallback of one assignment, in attempt order |
 | `projection_watermark` | derived | one row per `(projection, source stream)`: projector version, applied sequence, event count, and the source digest at that sequence |
 | `projection_meta` | legacy | frozen at the values migration 7 found. Not written, and not read for truth. |
 
@@ -182,6 +191,48 @@ hash chain of its own — migration 5 gives it neither `previous_sha256` nor
 stream is refused by `verifyIntegrity()` rather than believed. Its integrity is a
 later packet's.
 
+### The projection with two heads
+
+`routing_assignment_read_model` is the first projection fed by more than one
+stream, and it is why the watermark table is keyed by a pair rather than by a
+name. Its `GLOBAL` partition is folded from `registry_events`, its
+`INITIATIVE`/`STEP` partition from `initiative_events`, and it therefore holds
+**two** watermark rows under one name. `appendRegistryEvent` advances one of
+them, `appendInitiativeEvent` advances the other, and neither can move the
+other's, because the `UPDATE` targets the composite key. Read precedence is
+`STEP` > `INITIATIVE` > `GLOBAL`, resolved against the vector — never against
+"the latest" of a single stream, whose sequences are not comparable anyway.
+
+Three things about it are stated here rather than left to be discovered.
+
+- **The `INITIATIVE`/`STEP` partition is empty, by construction.** The event
+  type that fills it, `ROUTING_ASSIGNMENT_RECORDED`, is not one of the three
+  names in the initiative contract's closed vocabulary, and widening a contract
+  that lives in another package belongs to the planning packet that needs it.
+  The fold over that stream is total and returns no row for every type that does
+  exist, and a test names them one by one. What this build establishes is the
+  mechanism, not the rows.
+- **It is not published in `status()`.** `ProjectionStatus` answers "how far?"
+  with one number, and a projection with two independent heads has no such
+  number — stamping it with either makes the other unverifiable, which is the
+  exact defect `projection_meta` had. So `status()` reports the same five
+  single-source projections it always did. The vector is not lost: it lives in
+  `projection_watermark`, `verifyIntegrity()` checks every row of it, and a
+  rebuild rewrites all of them. What is deferred is putting it on the wire.
+- **The fold validates no eligibility.** The contract has `model_version_id`
+  checked fail-closed against an ACTIVE model version; that is the write gate of
+  the module owning the semantics, not this one. The registry is storage, this
+  package may not import `@acp/accounts`, and `model_version_read_model` does not
+  exist. A document whose payload this fold cannot read projects **no row while
+  the document still stands**, exactly as a malformed route does.
+
+The document vocabulary itself — `DOCUMENT_KINDS`, fourteen names — is exported
+from this package and is **provisional there**. It belongs in `@acp/contracts`,
+which owns no schema for these documents yet and whose schema barrel is a pinned
+re-export that cannot receive a definition. It is validated by hand here because
+this package may not import `zod`, and the `CHECK` in migration 9 is a second,
+independent declaration of the same list that a test holds against it.
+
 Only the derived tables are ever cleared. Neither event table has a delete path
 at all: each carries its own `BEFORE UPDATE` and `BEFORE DELETE` triggers, which
 abort unconditionally, and a `BEFORE INSERT` trigger that refuses a malformed
@@ -189,13 +240,14 @@ digest or a broken causal triple on the way in. All of them are inventoried by
 name, because dropping one leaves `schema_migrations` untouched and no other
 check would notice.
 
-The two streams share a database and the transaction discipline, and nothing
-else. An initiative registration has no task and no lifecycle state, so it
-cannot ride in the task stream without either a null in a NOT NULL column or an
-initiative id in a field named `taskId`; it gets its own table, its own chain
-and its own head instead. `rebuildReadModel()` replays both, and
-`verifyIntegrity()` verifies both — each projection is checked against the head
-of the stream it was built from, never the other's.
+The three streams share a database and the transaction discipline, and nothing
+else. An initiative registration has no task and no lifecycle state, and a
+configuration document has neither; none of them can ride in the task stream
+without either a null in a NOT NULL column or an initiative id in a field named
+`taskId`. Each gets its own table, its own chain and its own head instead.
+`rebuildReadModel()` replays all three, and `verifyIntegrity()` verifies all
+three — each watermark is checked against the head of the stream it names, never
+another's.
 
 ## Integrity
 
@@ -210,7 +262,15 @@ The watermark checks are membership and level: exactly one row per
 none missing — each at its own stream's head, each carrying that stream's digest
 at its `applied_sequence`, each written by this build's projector version. A
 watermark from another projector version invalidates the derived table without
-anything having happened to the stream.
+anything having happened to the stream, and it does so **per pair**: one head of
+the two-source projection can be reported without implicating the other, and a
+rebuild rewrites both.
+
+Invalidation is `verifyIntegrity()` plus `rebuildReadModel()`, and deliberately
+not something `openLedger` does. An open that silently compared projector
+versions and rebuilt would repair a ledger nobody asked it to touch; an open
+that compared and refused would make a routine upgrade fail. It reports, and the
+operator decides.
 
 It cannot prove the events were true when written, and it cannot detect a
 coherent whole-file replacement. Both need an external anchor that P1A does not
@@ -235,6 +295,15 @@ A damaged event stream is deliberately not repaired here. `verifyIntegrity()`
 names what is wrong, and a rebuild refuses to run over an inconsistent log
 rather than laundering it into a clean-looking read model. Recovering a damaged
 authority is an owner decision made with evidence.
+
+A rebuild is a function of the whole **vector** of heads. All three chains are
+replayed and checked against their own head metadata *before* a single derived
+row is deleted, and any one of them being unsound refuses the whole rebuild:
+repairing two streams while the third was corrupt would hand back a
+clean-looking read model over a ledger that is not clean. Two rebuilds of an
+unchanged ledger produce byte-identical derived tables and byte-identical
+watermarks, which is what makes the read model a fact about the log rather than
+about when it was last regenerated.
 
 ## Tests
 

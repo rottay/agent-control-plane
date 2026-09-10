@@ -7827,6 +7827,91 @@ const P09B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-09/log-C — the registry stream proves two heads can coexist.
+ *
+ * The third rung of P-09/log (D2 of `acp-p09-kimi-dt-adjudication-v1.md`),
+ * landing on A and B. Migration 9 creates `registry_events` — a new stream, so
+ * it implements the contract's common field profile completely from its first
+ * migration, with the digest shapes and the causal triple as CHECK constraints
+ * rather than rules imposed forward — and, in the same migration and after that
+ * table exists, drops and recreates migration 8's two validating triggers under
+ * the same names so the causal vocabulary widens to three.
+ *
+ * **Migration 8 is not edited.** Its text is immutable by checksum and every
+ * ledger in the field compares it on every open, so the widening is a DROP and
+ * a CREATE in a NEW migration. The suite asserts both halves: migration 8 still
+ * carries its two-stream `NOT IN` and its four `NOT EXISTS`, and migration 9
+ * carries a three-stream `NOT IN` and nine.
+ *
+ * **`account_events` stays out.** It has no `event_sha256` at all (migration 5
+ * is immutable; the sidecar is P-08), so a reference naming it could be
+ * believed but never checked. It is not named anywhere in migration 9, in a
+ * comment or otherwise, and the suite asserts that literally — completing the
+ * vocabulary to four while the trigger was open is the easiest way this packet
+ * could have reintroduced the weak link the triple exists to rule out.
+ *
+ * **What makes the watermark vector real.** `routing_assignment_read_model` is
+ * the first projection fed by two streams: its `GLOBAL` partition from
+ * `registry_events`, its `INITIATIVE`/`STEP` partition from
+ * `initiative_events`. `PROJECTION_SOURCES` goes from five pairs to seven, and
+ * one name holds two of them. The second partition is EMPTY, by construction
+ * and not by omission: `ROUTING_ASSIGNMENT_RECORDED` is not one of the three
+ * names in `INITIATIVE_EVENT_TYPES`, widening a contract in `@acp/contracts` is
+ * not this packet's, and the fold over that stream is total and returns no row
+ * for every type that exists. Declared in the migration comment and in the
+ * README rather than left for a reader to discover.
+ *
+ * **`status()` does not move.** `ProjectionStatus` has one
+ * `appliedThroughSequence` and a projection with two independent heads has no
+ * such number, so the two-source projection is omitted from the DTO rather than
+ * described badly in it: the same five rows, the same shape, and the gateway's
+ * strict schema untouched. The vector travels when a DTO can carry it, which is
+ * P-09/log-D.
+ *
+ * **Pins that do not move.** The write set gains **0 distinct paths**: all ten
+ * literals below are admitted by historical blocks — the eight of A and B, plus
+ * `src/projection/index.ts` and `test/projection/index.test.ts`, which entered
+ * with V2-B1c. `WRITE_SET_DISTINCT` holds. The block exists because D6/R8
+ * requires a packet to carry its own registration.
+ *
+ * `packages/kernel/contracts/` is deliberately **absent**. The fourteen
+ * `document_kind` names exist in no `.ts` file in this repository, and the
+ * schema barrel is a pure re-export whose exported set this file pins, so a
+ * definition cannot land in it: a real contract addition is a new folder, a
+ * barrel line, a pin here and a contract test — four paths in a package this
+ * packet does not write. `DOCUMENT_KINDS` therefore lives in `@acp/ledger`,
+ * validated by hand because the ledger may not import `zod`, and the README
+ * declares it provisional until a contracts packet owns it.
+ *
+ * No law here is falsified. `L-X1-4` still finds `schema_migrations` named in
+ * the ledger's migration module and the three stores' migration tables
+ * distinct. The recorded-route law still finds `RECORDED_ROUTE_KEY` declared in
+ * `src/projection/index.ts` and still finds `payload[RECORDED_ROUTE_KEY]` and
+ * `ResolvedRoute.safeParse(` there: this packet only ADDS folds to that file.
+ * The ledger still imports no `@acp/accounts` — the routing fold projects what
+ * the document recorded and validates no eligibility, because the registry is
+ * storage and `model_version_read_model` does not exist. `L-V2B5R10` is
+ * untouched. The README/barrel error law is untouched because no error class is
+ * added: a malformed document and a reused document version are both
+ * `LedgerValidationError`, a replayed key under different content is
+ * `LedgerIdempotencyConflictError`, and a broken chain is a finding. And
+ * `TEST_ONLY_DOMAINS` needs no entry — every test lands in the three test
+ * modules that already mirror a source module.
+ */
+const P09C_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8016,6 +8101,7 @@ const WRITE_SET = [
   ...R19G_WRITE_SET,
   ...P09A_WRITE_SET,
   ...P09B_WRITE_SET,
+  ...P09C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

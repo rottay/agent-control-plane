@@ -145,6 +145,7 @@ export type {
   AppliedMigration,
   CausationRef,
   CausationStream,
+  DocumentKind,
   EventPage,
   EventQuery,
   ExecutionRouteReadModel,
@@ -163,7 +164,12 @@ export type {
   OpenLedgerOptions,
   ProjectionStatus,
   RebuildResult,
+  RegistryAppendResult,
+  RegistryDocument,
+  RegistryEventRecord,
   RoadmapVersionReadModel,
+  RoutingAssignmentFallbackRow,
+  RoutingAssignmentReadModel,
   TaskPage,
   TaskQuery,
   TaskReadModel,
@@ -171,6 +177,17 @@ export type {
   WorkerQuery,
   WorkerReadModel,
 } from "./types/index.js";
+
+/**
+ * The registry stream's document vocabulary (P-09/log-C).
+ *
+ * **Provisional.** It belongs in `@acp/contracts` and lives here because that
+ * package owns no schema for these documents and its schema barrel is a pinned
+ * re-export that cannot receive a definition. When a contracts packet takes
+ * ownership, this export moves and this note goes with it. Nothing outside this
+ * package imports it today.
+ */
+export { DOCUMENT_KINDS } from "./types/index.js";
 
 export type { AccountActionAppendResult, AccountActionRecordRow } from "./types/index.js";
 

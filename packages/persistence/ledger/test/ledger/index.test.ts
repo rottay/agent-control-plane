@@ -28,6 +28,7 @@ import {
   LedgerQueryError,
   LedgerReadOnlyError,
   LedgerValidationError,
+  LEDGER_MIGRATIONS,
   canonicalJsonStringify,
   chainDigest,
   openLedger,
@@ -269,10 +270,10 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    // Eight since P-09/log-B added the typed causal triple beside the watermark
-    // table P-09/log-A added.
+    // Nine since P-09/log-C opened the registry stream, beside the typed causal
+    // triple of B and the watermark table of A.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8,
+      1, 2, 3, 4, 5, 6, 7, 8, 9,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1155,6 +1156,41 @@ const GHOST_TASK = "cccccccc-0000-4000-8000-000000000003";
 
 /** A raw handle that leaves the append-only triggers and the schema intact. */
 /**
+ * Undo migration 9's schema objects, in the reverse of the order it made them.
+ *
+ * Including the two triggers it did not create but DID recreate. Migration 9
+ * drops migration 8's pair and puts back a three-stream version under the same
+ * names, so rewinding past 9 without dropping them leaves the recreated
+ * triggers behind and re-applying 8 fails with "trigger already exists" — an
+ * upgrade path that looks like a divergent history. This is the same failure
+ * mode P-09/log-B found the first time a rewind helper was one migration short.
+ */
+function dropRegistryStream(raw: Database.Database): void {
+  raw.exec(
+    "DROP TRIGGER tr_control_plane_events__validate_new_rows; " +
+      "DROP TRIGGER tr_initiative_events__validate_new_rows;",
+  );
+  raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?").run(
+    "routing_assignment_read_model",
+  );
+  raw.prepare("DELETE FROM ledger_meta WHERE key LIKE ?").run("registry_%");
+  raw.exec(
+    "DROP TABLE routing_assignment_fallback; " +
+      "DROP TABLE routing_assignment_read_model; " +
+      "DROP TRIGGER tr_registry_events__validate_new_rows; " +
+      "DROP TRIGGER tr_registry_events__deny_delete; " +
+      "DROP TRIGGER tr_registry_events__deny_update; " +
+      "DROP TABLE registry_events;",
+  );
+  // Migration 8's own pair, restored to the two-stream form it shipped with,
+  // so re-applying the tail is an upgrade rather than a conflict.
+  const eighth = LEDGER_MIGRATIONS.find((migration) => migration.version === 8);
+  if (eighth === undefined) throw new Error("migration 8 is absent from this build");
+  const triggers = eighth.sql.slice(eighth.sql.indexOf("CREATE TRIGGER"));
+  raw.exec(triggers);
+}
+
+/**
  * Undo migration 8's schema objects.
  *
  * A migration set is applied in order and compared by position, so a test that
@@ -1173,6 +1209,13 @@ function dropTypedCausality(raw: Database.Database): void {
       raw.exec("ALTER TABLE " + table + " DROP COLUMN " + column);
     }
   }
+}
+
+/** The whole P-09 tail, undone in the reverse of the order it was applied. */
+function dropProjectionVector(raw: Database.Database): void {
+  dropRegistryStream(raw);
+  dropTypedCausality(raw);
+  raw.exec("DROP TABLE projection_watermark");
 }
 
 function withRawDatabase(path: string, mutate: (raw: Database.Database) => void): void {
@@ -1413,10 +1456,18 @@ describe("projection watermark verification", () => {
 
     const report = open(path).verifyIntegrity();
     expect(report.ok).toBe(false);
-    expect(report.problems).toHaveLength(1);
-    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    // Two findings, not one: the row was rewound consistently in its position
+    // and its digest, but a watermark makes a THIRD claim — how many events it
+    // folded — and rewinding to sequence 3 while still claiming 5 events is
+    // false at that sequence too. The count is compared AT applied_sequence,
+    // so a lawfully lagging watermark is judged against its own position.
+    expect(report.problems).toHaveLength(2);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META", "PROJECTION_META"]);
     expect(detailsOf(report.problems)).toContain(
       "is applied through sequence 3 but the head of control_plane_events is sequence 5",
+    );
+    expect(detailsOf(report.problems)).toContain(
+      "counts 5 events through sequence 3 but that stream holds 3",
     );
   });
 
@@ -1442,13 +1493,141 @@ describe("projection watermark verification", () => {
 
     const report = open(path).verifyIntegrity();
     expect(report.ok).toBe(false);
-    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META", "PROJECTION_META"]);
+    // Three, now: the position, the digest it kept from the later head, and
+    // the count it kept with it.
+    expect(kindsOf(report.problems)).toEqual([
+      "PROJECTION_META",
+      "PROJECTION_META",
+      "PROJECTION_META",
+    ]);
     expect(detailsOf(report.problems)).toContain(
       "is applied through sequence 3 but the head of control_plane_events is sequence 5",
     );
     expect(detailsOf(report.problems)).toContain(
       "which is not the digest of control_plane_events at sequence 3",
     );
+    expect(detailsOf(report.problems)).toContain(
+      "counts 5 events through sequence 3 but that stream holds 3",
+    );
+  });
+
+  // The third claim a watermark makes, and the one nothing checked until now.
+  //
+  // `applied_sequence` says how far, `source_head_sha256` says which history,
+  // and `event_count` says how much of it was folded. The first two were
+  // verified from the packet that created the table; the third was written on
+  // every append, published by `status()` as `eventCount`, and compared
+  // against nothing. A number the ledger asserts on its own authority while no
+  // check holds it to the log is exactly the shape of claim this package
+  // exists to refuse.
+  //
+  // One negative per certified stream, because the count is resolved through
+  // the same three-way dispatch the digest is, and a dispatch that fell
+  // through to the task stream for the other two would report a healthy
+  // registry watermark as broken — or, worse, a broken one as healthy.
+  function tamperCount(path: string, projection: string, stream: string, count: number): void {
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare(
+          "UPDATE projection_watermark SET event_count = ? " +
+            "WHERE projection_name = ? AND source_stream = ?",
+        )
+        .run(count, projection, stream);
+    });
+  }
+
+  it("detects an event count that disagrees with the task stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    // The control: nothing is wrong with this ledger before the tamper.
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    expect(ledger.status().projections.find((p) => p.name === "task_read_model")?.eventCount).toBe(
+      5,
+    );
+    ledger.close();
+
+    tamperCount(path, "task_read_model", "control_plane_events", 7);
+
+    const reopened = open(path);
+    const report = reopened.verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    expect(detailsOf(report.problems)).toContain(
+      "task_read_model on control_plane_events counts 7 events through sequence 5 " +
+        "but that stream holds 5",
+    );
+    // And the number `status()` was publishing on the ledger's authority is
+    // the very one that had nothing behind it.
+    expect(
+      reopened.status().projections.find((p) => p.name === "task_read_model")?.eventCount,
+    ).toBe(7);
+  });
+
+  it("detects an event count that disagrees with the initiative stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    tamperCount(path, "initiative_read_model", "initiative_events", 9);
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    expect(detailsOf(report.problems)).toContain(
+      "initiative_read_model on initiative_events counts 9 events through sequence 1 " +
+        "but that stream holds 1",
+    );
+  });
+
+  it("detects an event count that disagrees with the registry stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    // The registry-side row of the two-source projection. Its sibling on the
+    // initiative stream is untouched and must stay unreported.
+    tamperCount(path, "routing_assignment_read_model", "registry_events", 4);
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    expect(detailsOf(report.problems)).toContain(
+      "routing_assignment_read_model on registry_events counts 4 events through sequence 1 " +
+        "but that stream holds 1",
+    );
+    expect(detailsOf(report.problems)).not.toContain("on initiative_events");
+  });
+
+  it("repairs a tampered event count by rebuilding, on every stream at once", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.close();
+
+    const before = readWatermarks(path);
+
+    tamperCount(path, "task_read_model", "control_plane_events", 7);
+    tamperCount(path, "roadmap_version_read_model", "initiative_events", 8);
+    tamperCount(path, "routing_assignment_read_model", "registry_events", 9);
+
+    const reopened = open(path);
+    expect(reopened.verifyIntegrity().problems).toHaveLength(3);
+
+    reopened.rebuildReadModel();
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    reopened.close();
+
+    // Byte-identical to before the tamper: a rebuild rewrites the whole
+    // watermark table from the log, so the counts come back from the only
+    // authority that has them.
+    expect(readWatermarks(path)).toEqual(before);
   });
 
   // I4. A fold algorithm that changed invalidates the derived table without
@@ -2467,14 +2646,13 @@ describe("the recorded execution route", () => {
     seeded.close();
 
     // Rewind to the pre-V2-B1c shape: no route table, no meta row, no
-    // migration 6. This is what such a ledger looks like on disk. Migrations 7
-    // and 8 go with it, because a migration set is applied in order and neither
-    // the watermark table nor the causal triple existed before the route
-    // projection did.
+    // migration 6. This is what such a ledger looks like on disk. Migrations 7,
+    // 8 and 9 go with it, because a migration set is applied in order and
+    // neither the watermark table, nor the causal triple, nor the registry
+    // stream existed before the route projection did.
     const raw = new Database(path);
-    dropTypedCausality(raw);
+    dropProjectionVector(raw);
     raw.exec("DROP TABLE execution_route_read_model");
-    raw.exec("DROP TABLE projection_watermark");
     raw.prepare("DELETE FROM projection_meta WHERE name = ?").run("execution_route_read_model");
     raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(6);
     expect(
@@ -2483,10 +2661,10 @@ describe("the recorded execution route", () => {
     ).toEqual([1, 2, 3, 4, 5]);
     raw.close();
 
-    // The upgrade: migrations 6, 7 and 8 apply on open, and nothing else is done.
+    // The upgrade: migrations 6 to 9 apply on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8,
+      1, 2, 3, 4, 5, 6, 7, 8, 9,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -2697,7 +2875,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(7);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "execution_route_read_model",
@@ -2714,8 +2892,9 @@ describe("the watermark advances with every door that moves a head", () => {
     expect(initiativeRows.map((row) => row.projection_name)).toEqual([
       "initiative_read_model",
       "roadmap_version_read_model",
+      "routing_assignment_read_model",
     ]);
-    expect(initiativeRows.map((row) => row.applied_sequence)).toEqual([0, 0]);
+    expect(initiativeRows.map((row) => row.applied_sequence)).toEqual([0, 0, 0]);
   });
 
   it("carries the initiative stream's own head on appendInitiativeEvent", () => {
@@ -2759,7 +2938,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(5);
+    expect(before).toHaveLength(7);
 
     tamper(path, (raw) => {
       raw
@@ -2859,13 +3038,13 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     expect(initiativeHead).toBe(2);
     seeded.close();
 
-    // Rewind to the pre-P-09 shape: no watermark table, no typed causality, and
-    // neither migration recorded. This is what such a ledger looks like on disk.
-    // Both tails come off together because conformance is compared by position:
-    // an applied set of 1-6 and 8 is a divergent history, not a pending one.
+    // Rewind to the pre-P-09 shape: no watermark table, no typed causality, no
+    // registry stream, and none of the three migrations recorded. This is what
+    // such a ledger looks like on disk. The whole tail comes off together
+    // because conformance is compared by position: an applied set of 1-6 and 8
+    // is a divergent history, not a pending one.
     withRawDatabase(path, (raw) => {
-      dropTypedCausality(raw);
-      raw.exec("DROP TABLE projection_watermark");
+      dropProjectionVector(raw);
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(7);
     });
 
@@ -2874,7 +3053,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8,
+      1, 2, 3, 4, 5, 6, 7, 8, 9,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -2898,6 +3077,16 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     expect(applied.get("roadmap_version_read_model@initiative_events")?.applied_sequence).toBe(
       initiativeHead,
     );
+    // The two-source projection's two rows, seeded from two different
+    // arguments: its registry row may honestly be zero because that stream is
+    // born empty in the same migration, and its initiative row may not, because
+    // the fold over an existing history is empty by construction.
+    expect(
+      applied.get("routing_assignment_read_model@registry_events")?.applied_sequence,
+    ).toBe(0);
+    expect(
+      applied.get("routing_assignment_read_model@initiative_events")?.applied_sequence,
+    ).toBe(initiativeHead);
     expect(applied.get("task_read_model@control_plane_events")?.projector_version).toBe(1);
 
     // And an append after the upgrade still lands, projects and verifies.
@@ -2908,12 +3097,12 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     expect(appliedByName(reopened).get("initiative_read_model")).toBe(initiativeHead);
   });
 
-  it("seeds a fresh ledger at zero, with the genesis digest on both streams", () => {
+  it("seeds a fresh ledger at zero, with the genesis digest on all three streams", () => {
     const path = temporaryDatabase();
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(7);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -3041,20 +3230,31 @@ describe("a causal reference is typed, verified, or absent", () => {
   });
 
   it("refuses a stream whose digest this build cannot verify", () => {
-    // `account_events` has no `event_sha256` at all and `registry_events` does
-    // not exist. A reference nobody can check is the weak link the contract
-    // refuses, so the vocabulary is the two streams that carry a chain — and
-    // widening it belongs to the packets that give those streams one.
+    // `account_events` has no `event_sha256` at all. A reference nobody can
+    // check is the weak link the contract refuses, so the vocabulary is exactly
+    // the streams that carry a chain — three since P-09/log-C, and widening it
+    // to four belongs to the packet that gives the account stream one.
     const ledger = open(temporaryDatabase());
     ledger.append(makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }));
     const digest = ledger.getEventBySequence(1)?.eventSha256 ?? "";
 
-    for (const stream of ["account_events", "registry_events", "not_a_stream"]) {
+    for (const stream of ["account_events", "not_a_stream"]) {
       const error = caught(() =>
         ledger.appendInitiativeEvent(makeInitiativeEvent(), ref(stream, 1, digest)),
       );
       expect(error, stream).toBeInstanceOf(LedgerValidationError);
+      expect((error as Error).message, stream).toContain("names a stream whose digest");
     }
+
+    // `registry_events` is inside the vocabulary now, so the door gets past the
+    // shape check and refuses it for the honest reason instead: there is no
+    // such event to resolve against.
+    const unresolved = caught(() =>
+      ledger.appendInitiativeEvent(makeInitiativeEvent(), ref("registry_events", 1, digest)),
+    );
+    expect(unresolved).toBeInstanceOf(LedgerValidationError);
+    expect((unresolved as Error).message).toContain("which holds no event");
+
     expect(ledger.status().initiativeHeadSequence).toBe(0);
   });
 
@@ -3315,6 +3515,12 @@ describe("the base refuses a broken causal triple even with the ledger bypassed"
   it("rejects a stream name outside the verifiable vocabulary", () => {
     // Without an explicit guard a name with no branch of its own would pass in
     // silence, which is exactly the weak link the triple exists to rule out.
+    //
+    // `registry_events` left this list in P-09/log-C, which is the packet that
+    // gave that stream a chain: it is now a name the trigger has a branch for,
+    // so a reference to it is refused for NOT RESOLVING rather than for being
+    // unverifiable. That is the difference the widening is, and the two are
+    // asserted apart so the vocabulary cannot quietly widen again.
     const path = temporaryDatabase();
     const ledger = open(path);
     const cause = ledger.append(
@@ -3323,12 +3529,19 @@ describe("the base refuses a broken causal triple even with the ledger bypassed"
     const digest = cause.record.eventSha256;
     ledger.close();
 
-    for (const stream of ["account_events", "registry_events", "control_plane_event"]) {
+    for (const stream of ["account_events", "control_plane_event"]) {
       expect(
         refusalMessage(rawTaskInsert(path, { stream, sequence: 1, sha256: digest }), stream),
         stream,
       ).toContain("no verifiable digest");
     }
+
+    expect(
+      refusalMessage(
+        rawTaskInsert(path, { stream: "registry_events", sequence: 1, sha256: digest }),
+        "registry_events",
+      ),
+    ).toContain("does not resolve");
   });
 
   it("rejects a non-positive causal position", () => {
@@ -3399,6 +3612,676 @@ describe("the base refuses a broken causal triple even with the ledger bypassed"
         { stream: "control_plane_events", sequence: 1, sha256: digest },
         { event: "f".repeat(64) },
       ),
+    ).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The registry stream, and the first projection fed by two streams (P-09/log-C)
+//
+// This is where the watermark vector stops being decorative. Every projection
+// before this one folds exactly one stream, so a table keyed by
+// `(projection, stream)` holds one row per projection and a single number would
+// have described it just as well. `routing_assignment_read_model` is fed by
+// two: its `GLOBAL` partition comes from `registry_events` and its
+// `INITIATIVE`/`STEP` partition from `initiative_events`, under one name, with
+// two independent heads advanced by two different doors.
+//
+// The initiative partition is empty by construction and says so: the event type
+// that would fill it, `ROUTING_ASSIGNMENT_RECORDED`, is not in the initiative
+// contract's closed vocabulary, and widening a contract in another package is
+// not this packet's. What is proved here is the mechanism — two heads under one
+// name, each verified against its own chain at its own `applied_sequence`, and
+// rebuilt together or not at all.
+// ---------------------------------------------------------------------------
+
+const REGISTRY_AT = "2026-09-03T12:00:00.000Z";
+const MODEL_ONE = "claude-opus-5@2026-06-01";
+const MODEL_TWO = "claude-sonnet-5@2026-06-01";
+const CONTENT_ONE = "1".repeat(64);
+const CONTENT_TWO = "2".repeat(64);
+
+interface RegistryInput {
+  readonly eventId?: string;
+  readonly idempotencyKey?: string;
+  readonly documentKind?: string;
+  readonly documentId?: string;
+  readonly documentVersion?: number;
+  readonly parentDocumentVersion?: number | null;
+  readonly contentDigest?: string;
+  readonly recordedBy?: string;
+  readonly effectiveFrom?: string;
+  readonly occurredAt?: string;
+  readonly recordedAt?: string;
+  readonly payload?: Record<string, unknown>;
+}
+
+/** The document id the contract gives a GLOBAL routing assignment (§7.8). */
+function routingDocumentId(role = "implementer", slot = 0): string {
+  return "routing:GLOBAL:" + role + ":" + String(slot);
+}
+
+function routingPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    role: "implementer",
+    slot: 0,
+    provider: "claude",
+    modelVersionId: MODEL_ONE,
+    fallbacks: [MODEL_TWO],
+    ...overrides,
+  };
+}
+
+function makeRegistryDocument(input: RegistryInput = {}): Record<string, unknown> {
+  const documentId = input.documentId ?? routingDocumentId();
+  const documentVersion = input.documentVersion ?? 1;
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: input.eventId ?? randomUUID(),
+    idempotencyKey: input.idempotencyKey ?? documentId + "/" + String(documentVersion),
+    documentKind: input.documentKind ?? "ROUTING_ASSIGNMENT_GLOBAL",
+    documentId,
+    documentVersion,
+    parentDocumentVersion:
+      input.parentDocumentVersion === undefined ? null : input.parentDocumentVersion,
+    contentDigest: input.contentDigest ?? CONTENT_ONE,
+    recordedBy: input.recordedBy ?? KIMI,
+    effectiveFrom: input.effectiveFrom ?? REGISTRY_AT,
+    occurredAt: input.occurredAt ?? REGISTRY_AT,
+    recordedAt: input.recordedAt ?? REGISTRY_AT,
+    payload: input.payload ?? routingPayload(),
+  };
+}
+
+/** Every watermark row keyed by the pair, which is the table's own identity. */
+function appliedByPair(path: string): Map<string, number> {
+  return new Map(
+    readWatermarks(path).map((row) => [
+      row.projection_name + "@" + row.source_stream,
+      row.applied_sequence,
+    ]),
+  );
+}
+
+/** The five single-source rows this build has published since P-09/log-A. */
+const SINGLE_SOURCE_PAIRS = [
+  "task_read_model@control_plane_events",
+  "worker_read_model@control_plane_events",
+  "execution_route_read_model@control_plane_events",
+  "initiative_read_model@initiative_events",
+  "roadmap_version_read_model@initiative_events",
+] as const;
+
+function singleSourceApplied(path: string): number[] {
+  const applied = appliedByPair(path);
+  return SINGLE_SOURCE_PAIRS.map((pair) => applied.get(pair) ?? -1);
+}
+
+interface RoutingRow {
+  readonly assignment_id: string;
+  readonly scope_kind: string;
+  readonly scope_id: string | null;
+  readonly version: number;
+  readonly role: string;
+  readonly slot: number;
+  readonly provider: string;
+  readonly model_version_id: string;
+  readonly recorded_by: string;
+  readonly recorded_at: string;
+  readonly superseded_by: string | null;
+  readonly source_stream: string;
+  readonly source_sequence: number;
+  readonly sequence: number;
+}
+
+interface FallbackRow {
+  readonly assignment_id: string;
+  readonly ordinal: number;
+  readonly model_version_id: string;
+}
+
+function readRouting(path: string): RoutingRow[] {
+  const raw = new Database(path);
+  try {
+    return raw
+      .prepare("SELECT * FROM routing_assignment_read_model ORDER BY assignment_id ASC")
+      .all() as RoutingRow[];
+  } finally {
+    raw.close();
+  }
+}
+
+function readFallbacks(path: string): FallbackRow[] {
+  const raw = new Database(path);
+  try {
+    return raw
+      .prepare(
+        "SELECT * FROM routing_assignment_fallback ORDER BY assignment_id ASC, ordinal ASC",
+      )
+      .all() as FallbackRow[];
+  } finally {
+    raw.close();
+  }
+}
+
+/** The registry stream's head, read the way the vector is: by raw SQL. */
+function readRegistryMeta(path: string): Map<string, string> {
+  const raw = new Database(path);
+  try {
+    const rows = raw
+      .prepare("SELECT key, value FROM ledger_meta WHERE key LIKE 'registry_%'")
+      .all() as { key: string; value: string }[];
+    return new Map(rows.map((row) => [row.key, row.value]));
+  } finally {
+    raw.close();
+  }
+}
+
+describe("the registry stream carries its own chain, head and projection", () => {
+  it("appends a document, chains it from genesis, and folds it into the GLOBAL partition", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+
+    const result = ledger.appendRegistryEvent(makeRegistryDocument());
+
+    expect(result.inserted).toBe(true);
+    expect(result.record.sequence).toBe(1);
+    expect(result.record.previousSha256).toBe(GENESIS_SHA256);
+    expect(result.record.eventSha256).toBe(
+      chainDigest(GENESIS_SHA256, result.record.canonicalJson),
+    );
+    expect(result.record.causation).toBeNull();
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    const meta = readRegistryMeta(path);
+    expect(meta.get("registry_head_sequence")).toBe("1");
+    expect(meta.get("registry_event_count")).toBe("1");
+    expect(meta.get("registry_head_event_sha256")).toBe(result.record.eventSha256);
+
+    const rows = readRouting(path);
+    expect(rows).toHaveLength(1);
+    expect({
+      scope: rows[0]?.scope_kind,
+      scopeId: rows[0]?.scope_id,
+      version: rows[0]?.version,
+      role: rows[0]?.role,
+      slot: rows[0]?.slot,
+      model: rows[0]?.model_version_id,
+      stream: rows[0]?.source_stream,
+      at: rows[0]?.source_sequence,
+      superseded: rows[0]?.superseded_by,
+    }).toEqual({
+      scope: "GLOBAL",
+      scopeId: null,
+      version: 1,
+      role: "implementer",
+      slot: 0,
+      model: MODEL_ONE,
+      stream: "registry_events",
+      at: 1,
+      superseded: null,
+    });
+    expect(readFallbacks(path).map((row) => row.model_version_id)).toEqual([MODEL_TWO]);
+  });
+
+  it("supersedes the parent version rather than overwriting it", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const first = ledger.appendRegistryEvent(makeRegistryDocument());
+    const second = ledger.appendRegistryEvent(
+      makeRegistryDocument({
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        contentDigest: CONTENT_TWO,
+        payload: routingPayload({ modelVersionId: MODEL_TWO, fallbacks: [] }),
+      }),
+    );
+    expect(second.inserted).toBe(true);
+    expect(first.record.sequence).toBe(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    const rows = readRouting(path);
+    expect(rows).toHaveLength(2);
+    const byVersion = new Map(rows.map((row) => [row.version, row]));
+    expect(byVersion.get(1)?.superseded_by).toBe(byVersion.get(2)?.assignment_id);
+    expect(byVersion.get(2)?.superseded_by).toBeNull();
+    // The earlier version's own facts are intact: history is kept, not replaced.
+    expect(byVersion.get(1)?.model_version_id).toBe(MODEL_ONE);
+    expect(readFallbacks(path).map((row) => row.assignment_id)).toEqual([
+      byVersion.get(1)?.assignment_id,
+    ]);
+  });
+
+  it("treats an exact replay as a no-op and a reused version as a refusal", () => {
+    const ledger = open(temporaryDatabase());
+    const document = makeRegistryDocument();
+    const first = ledger.appendRegistryEvent(document);
+
+    const replay = ledger.appendRegistryEvent(document);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(first.record.sequence);
+
+    // The same key with different content is the ordinary conflict.
+    expect(
+      caught(() =>
+        ledger.appendRegistryEvent(makeRegistryDocument({ contentDigest: CONTENT_TWO })),
+      ),
+    ).toBeInstanceOf(LedgerIdempotencyConflictError);
+
+    // A different key claiming a version the document already holds is refused
+    // as a typed error, not as a raw uniqueness violation from SQLite.
+    const clash = caught(() =>
+      ledger.appendRegistryEvent(
+        makeRegistryDocument({ idempotencyKey: "another/1", contentDigest: CONTENT_TWO }),
+      ),
+    );
+    expect(clash).toBeInstanceOf(LedgerValidationError);
+    expect((clash as Error).message).toContain("version");
+
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("records causality in both directions across the registry boundary", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const task = ledger.append(makeEvent({ taskId, transitionId: "discover", emittedBy: KIMI }));
+
+    // registry_events -> control_plane_events
+    const causedByTask = ref(
+      "control_plane_events",
+      task.record.sequence,
+      task.record.eventSha256,
+    );
+    const document = ledger.appendRegistryEvent(makeRegistryDocument(), causedByTask);
+    expect(document.record.causation).toEqual(causedByTask);
+
+    // initiative_events -> registry_events, the direction B could not express.
+    const causedByRegistry = ref(
+      "registry_events",
+      document.record.sequence,
+      document.record.eventSha256,
+    );
+    const initiative = ledger.appendInitiativeEvent(makeInitiativeEvent(), causedByRegistry);
+    expect(initiative.record.causation).toEqual(causedByRegistry);
+    expect(ledger.listInitiativeEvents().events[0]?.causation).toEqual(causedByRegistry);
+
+    // And a digest that is not the registry event's own is still refused.
+    expect(
+      caught(() =>
+        ledger.append(
+          makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+          ref("registry_events", document.record.sequence, "a".repeat(64)),
+        ),
+      ),
+    ).toBeInstanceOf(LedgerValidationError);
+
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("rolls the whole registry append back when the commit seam fails", () => {
+    const path = temporaryDatabase();
+    let armed = true;
+    const ledger = open(path, {
+      __testFaults: {
+        beforeAppendCommit: () => {
+          if (armed) throw new Error("deliberate fault");
+        },
+      },
+    });
+
+    expect(caught(() => ledger.appendRegistryEvent(makeRegistryDocument()))).toBeInstanceOf(Error);
+    ledger.close();
+
+    // Neither the row, nor the head, nor the projection, nor the watermark.
+    expect(readRegistryMeta(path).get("registry_head_sequence")).toBe("0");
+    expect(readRouting(path)).toEqual([]);
+    expect(appliedByPair(path).get("routing_assignment_read_model@registry_events")).toBe(0);
+
+    armed = false;
+    const reopened = open(path);
+    expect(reopened.appendRegistryEvent(makeRegistryDocument()).record.sequence).toBe(1);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("projects no row for a malformed routing payload, and leaves the event standing", () => {
+    // R4/C8. The fold projects what the event recorded; it validates no
+    // eligibility, and a payload it cannot read produces no row rather than a
+    // refusal to append.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const result = ledger.appendRegistryEvent(
+      makeRegistryDocument({ payload: { role: "implementer" } }),
+    );
+    expect(result.inserted).toBe(true);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    expect(readRouting(path)).toEqual([]);
+    expect(readRegistryMeta(path).get("registry_head_sequence")).toBe("1");
+    expect(appliedByPair(path).get("routing_assignment_read_model@registry_events")).toBe(1);
+  });
+});
+
+describe("two heads under one projection name advance independently (negative 2)", () => {
+  it("moves only the registry row when a registry document lands", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.close();
+
+    const before = singleSourceApplied(path);
+    const initiativeBefore = appliedByPair(path).get(
+      "routing_assignment_read_model@initiative_events",
+    );
+
+    const writer = open(path);
+    writer.appendRegistryEvent(makeRegistryDocument());
+    writer.close();
+
+    const after = appliedByPair(path);
+    expect(after.get("routing_assignment_read_model@registry_events")).toBe(1);
+    // The sibling row of the SAME projection did not move. This is the whole
+    // claim of the composite key, and no single-source projection can make it.
+    expect(after.get("routing_assignment_read_model@initiative_events")).toBe(initiativeBefore);
+    expect(singleSourceApplied(path)).toEqual(before);
+    expect(open(path).verifyIntegrity().ok).toBe(true);
+  });
+
+  it("moves only the initiative row when an initiative event lands", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.close();
+
+    const before = singleSourceApplied(path);
+    const registryBefore = appliedByPair(path).get(
+      "routing_assignment_read_model@registry_events",
+    );
+    expect(registryBefore).toBe(1);
+
+    const writer = open(path);
+    writer.appendInitiativeEvent(makeInitiativeEvent());
+    writer.close();
+
+    const after = appliedByPair(path);
+    // The hard direction: the initiative door advances a row of a projection it
+    // shares with a stream it never touched, and leaves that stream's row alone.
+    expect(after.get("routing_assignment_read_model@initiative_events")).toBe(1);
+    expect(after.get("routing_assignment_read_model@registry_events")).toBe(registryBefore);
+    expect(singleSourceApplied(path)).toEqual([5, 5, 5, 1, 1]);
+    expect(before).toEqual([5, 5, 5, 0, 0]);
+    expect(open(path).verifyIntegrity().ok).toBe(true);
+  });
+
+  it("publishes exactly the five single-source rows in status(), and no more", () => {
+    // D2 keeps the status DTO exactly as it is, and no single
+    // `appliedThroughSequence` describes a projection with two heads. The
+    // vector travels when the wire schema can carry it, which is P-09/log-D.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+
+    const published = ledger.status().projections.map((projection) => projection.name);
+    expect(published).toEqual([
+      "execution_route_read_model",
+      "initiative_read_model",
+      "roadmap_version_read_model",
+      "task_read_model",
+      "worker_read_model",
+    ]);
+    ledger.close();
+
+    // Seven rows in the table, five in the DTO. The difference is the point.
+    expect(readWatermarks(path)).toHaveLength(7);
+  });
+});
+
+describe("a projector version invalidates a pair, not a projection (negative 3)", () => {
+  it("reports the mismatched pair and leaves its sibling alone", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare(
+          "UPDATE projection_watermark SET projector_version = ? " +
+            "WHERE projection_name = ? AND source_stream = ?",
+        )
+        .run(2, "routing_assignment_read_model", "initiative_events");
+    });
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    expect(detailsOf(report.problems)).toContain("initiative_events");
+    expect(detailsOf(report.problems)).toContain(
+      "was written by projector version 2 but this build is version 1",
+    );
+    // The other head of the same projection is not implicated by its sibling.
+    expect(detailsOf(report.problems)).not.toContain("registry_events");
+  });
+
+  it("does not compare the projector version when the ledger is opened", () => {
+    // Stated because the alternative is to let a reader assume it: invalidation
+    // is verifyIntegrity plus rebuildReadModel, and an open that silently
+    // rebuilt would repair a ledger nobody asked it to touch.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw.prepare("UPDATE projection_watermark SET projector_version = 2").run();
+    });
+
+    const reopened = open(path);
+    expect(reopened.readOnly).toBe(false);
+    reopened.close();
+    // Untouched: opening neither repaired it nor hid it.
+    expect(readWatermarks(path).every((row) => row.projector_version === 2)).toBe(true);
+  });
+
+  it("rewrites both rows of the two-source projection on rebuild", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare(
+          "UPDATE projection_watermark SET projector_version = 2 WHERE projection_name = ?",
+        )
+        .run("routing_assignment_read_model");
+    });
+
+    const reopened = open(path);
+    expect(reopened.verifyIntegrity().ok).toBe(false);
+    reopened.rebuildReadModel();
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    reopened.close();
+
+    const versions = readWatermarks(path)
+      .filter((row) => row.projection_name === "routing_assignment_read_model")
+      .map((row) => row.projector_version);
+    expect(versions).toEqual([1, 1]);
+  });
+});
+
+describe("a rebuild is a function of the vector of three heads (negative 8)", () => {
+  it("produces identical rows twice over, in both routing tables and all seven watermarks", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.appendRegistryEvent(
+      makeRegistryDocument({
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        contentDigest: CONTENT_TWO,
+        payload: routingPayload({ modelVersionId: MODEL_TWO }),
+      }),
+    );
+    ledger.appendRegistryEvent(
+      makeRegistryDocument({
+        documentId: routingDocumentId("reviewer", 1),
+        payload: routingPayload({ role: "reviewer", slot: 1 }),
+      }),
+    );
+    ledger.close();
+
+    const live = {
+      routing: readRouting(path),
+      fallbacks: readFallbacks(path),
+      watermarks: readWatermarks(path),
+    };
+    expect(live.watermarks).toHaveLength(7);
+    expect(live.routing).toHaveLength(3);
+
+    const first = open(path);
+    const firstResult = first.rebuildReadModel();
+    first.close();
+    const afterFirst = {
+      routing: readRouting(path),
+      fallbacks: readFallbacks(path),
+      watermarks: readWatermarks(path),
+    };
+
+    const second = open(path);
+    const secondResult = second.rebuildReadModel();
+    second.close();
+    const afterSecond = {
+      routing: readRouting(path),
+      fallbacks: readFallbacks(path),
+      watermarks: readWatermarks(path),
+    };
+
+    // The incremental projection and two independent replays all agree.
+    expect(afterFirst).toEqual(live);
+    expect(afterSecond).toEqual(afterFirst);
+    expect(secondResult).toEqual(firstResult);
+    expect(firstResult.replayedRegistryEvents).toBe(3);
+    expect(firstResult.registryThroughSequence).toBe(3);
+    expect(firstResult.routingAssignmentRows).toBe(3);
+    expect(open(path).verifyIntegrity().ok).toBe(true);
+  });
+});
+
+describe("a rebuild refuses over any of the three broken chains (negative 10)", () => {
+  it("refuses over a broken registry chain before it deletes a derived row", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.close();
+
+    const before = {
+      routing: readRouting(path),
+      watermarks: readWatermarks(path),
+      tasks: readRouting(path).length,
+    };
+    expect(before.routing).toHaveLength(1);
+
+    withRawDatabase(path, (raw) => {
+      // The append-only trigger denies UPDATE, so the row is rewritten the only
+      // way a tamperer could: by dropping the trigger first.
+      raw.exec("DROP TRIGGER tr_registry_events__deny_update");
+      raw
+        .prepare("UPDATE registry_events SET event_sha256 = ? WHERE sequence = ?")
+        .run("f".repeat(64), 1);
+    });
+
+    const reopened = open(path);
+    expect(caught(() => reopened.rebuildReadModel())).toBeInstanceOf(LedgerIntegrityError);
+    reopened.close();
+
+    // The refusal came before the DELETE: the derived rows are all still there.
+    expect(readRouting(path)).toEqual(before.routing);
+    expect(readWatermarks(path)).toEqual(before.watermarks);
+  });
+});
+
+describe("the base refuses a broken registry triple with the ledger bypassed", () => {
+  function rawRegistryInsert(path: string, triple: RawTriple): unknown {
+    const raw = new Database(path);
+    try {
+      return caught(() =>
+        raw
+          .prepare(
+            "INSERT INTO registry_events (" +
+              "event_id, idempotency_key, document_kind, document_id, document_version, " +
+              "content_digest, parent_document_version, recorded_by, effective_from, " +
+              "occurred_at, recorded_at, causation_stream, causation_sequence, " +
+              "causation_sha256, contract_version, event_json, previous_sha256, event_sha256" +
+              ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            randomUUID(),
+            randomUUID(),
+            "MODEL_VERSION",
+            "raw-document",
+            1,
+            CONTENT_ONE,
+            null,
+            KIMI,
+            REGISTRY_AT,
+            REGISTRY_AT,
+            REGISTRY_AT,
+            triple.stream,
+            triple.sequence,
+            triple.sha256,
+            CONTRACT_VERSION,
+            "{}",
+            GENESIS_SHA256,
+            "c".repeat(64),
+          ),
+      );
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("rejects a reference that does not resolve, and a stream outside the vocabulary", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const cause = ledger.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+    );
+    const digest = cause.record.eventSha256;
+    ledger.close();
+
+    expect(
+      refusalMessage(
+        rawRegistryInsert(path, {
+          stream: "control_plane_events",
+          sequence: 1,
+          sha256: "d".repeat(64),
+        }),
+        "wrong digest",
+      ),
+    ).toContain("does not resolve");
+
+    for (const stream of ["account_events", "not_a_stream"]) {
+      expect(
+        refusalMessage(rawRegistryInsert(path, { stream, sequence: 1, sha256: digest }), stream),
+        stream,
+      ).toContain("no verifiable digest");
+    }
+
+    // And the reference that resolves is admitted, which is what keeps the
+    // guard from being a blanket refusal.
+    expect(
+      rawRegistryInsert(path, { stream: "control_plane_events", sequence: 1, sha256: digest }),
     ).toBeUndefined();
   });
 });

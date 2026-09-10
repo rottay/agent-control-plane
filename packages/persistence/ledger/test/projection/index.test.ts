@@ -1,9 +1,15 @@
-import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
-import type { ControlPlaneEvent } from "@acp/contracts";
+import { CONTRACT_VERSION, INITIATIVE_EVENT_TYPES, buildIdempotencyKey } from "@acp/contracts";
+import type { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
-import { nextExecutionRouteProjection, nextTaskProjection } from "../../src/projection/index.js";
-import type { TaskReadModel } from "../../src/types/index.js";
+import {
+  nextExecutionRouteProjection,
+  nextRoutingAssignmentFromInitiative,
+  nextRoutingAssignmentProjection,
+  nextTaskProjection,
+  routingAssignmentId,
+} from "../../src/projection/index.js";
+import type { RegistryDocument, TaskReadModel } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 
 /**
@@ -268,5 +274,164 @@ describe("the recorded route fold", () => {
   it("is a pure fold: the same event yields an identical row every time", () => {
     const event = runStarted({ route: ROUTE });
     expect(nextExecutionRouteProjection(event, 11)).toEqual(nextExecutionRouteProjection(event, 11));
+  });
+});
+
+/**
+ * The routing-assignment fold, on both of its sources (P-09/log-C).
+ *
+ * `routing_assignment_read_model` is the first projection fed by two streams:
+ * its `GLOBAL` partition from `registry_events`, its `INITIATIVE`/`STEP`
+ * partition from `initiative_events`. Both folds are asserted here, and the
+ * second one is asserted *empty* rather than left unwritten — the event type
+ * that would fill it does not exist in the initiative contract's closed
+ * vocabulary, so the partition is empty by construction, and a test per
+ * existing type is what makes that a recorded fact instead of an oversight.
+ *
+ * The same asymmetry the recorded-route fold has applies here: a document whose
+ * payload does not carry a readable assignment projects NO ROW while the event
+ * still stands. The fold validates no eligibility of its own — it is storage,
+ * not the owner of the semantics.
+ */
+describe("the routing assignment fold", () => {
+  const DOCUMENT_ID = "routing:GLOBAL:implementer:0";
+  const MODEL_ONE = "claude-opus-5@2026-06-01";
+  const MODEL_TWO = "claude-sonnet-5@2026-06-01";
+  const AT = "2026-09-03T12:00:00.000Z";
+
+  function document(overrides: Record<string, unknown> = {}): RegistryDocument {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "0000aaaa-0000-4000-8000-000000000001",
+      idempotencyKey: DOCUMENT_ID + "/1",
+      documentKind: "ROUTING_ASSIGNMENT_GLOBAL",
+      documentId: DOCUMENT_ID,
+      documentVersion: 1,
+      parentDocumentVersion: null,
+      contentDigest: "1".repeat(64),
+      recordedBy: EMITTED_BY,
+      effectiveFrom: AT,
+      occurredAt: AT,
+      recordedAt: AT,
+      payload: {
+        role: "implementer",
+        slot: 0,
+        provider: "claude",
+        modelVersionId: MODEL_ONE,
+        fallbacks: [MODEL_TWO],
+      },
+      ...overrides,
+    } as RegistryDocument;
+  }
+
+  it("projects a GLOBAL assignment with its fallbacks in ordinal order", () => {
+    const projected = nextRoutingAssignmentProjection(document(), 4);
+    expect(projected?.assignment).toEqual({
+      assignmentId: routingAssignmentId(DOCUMENT_ID, 1),
+      scopeKind: "GLOBAL",
+      scopeId: null,
+      version: 1,
+      role: "implementer",
+      slot: 0,
+      provider: "claude",
+      modelVersionId: MODEL_ONE,
+      recordedBy: EMITTED_BY,
+      recordedAt: AT,
+      supersededBy: null,
+      sourceStream: "registry_events",
+      sourceSequence: 4,
+      sequence: 4,
+    });
+    expect(projected?.fallbacks).toEqual([
+      { assignmentId: routingAssignmentId(DOCUMENT_ID, 1), ordinal: 0, modelVersionId: MODEL_TWO },
+    ]);
+    expect(projected?.supersedes).toBeNull();
+  });
+
+  it("names the version it supersedes from the document's own parent", () => {
+    const projected = nextRoutingAssignmentProjection(
+      document({ documentVersion: 2, parentDocumentVersion: 1 }),
+      9,
+    );
+    expect(projected?.supersedes).toBe(routingAssignmentId(DOCUMENT_ID, 1));
+    expect(projected?.assignment.version).toBe(2);
+    expect(projected?.assignment.supersededBy).toBeNull();
+  });
+
+  it("takes identity from the document and never from the payload", () => {
+    const projected = nextRoutingAssignmentProjection(
+      document({
+        payload: {
+          role: "implementer",
+          slot: 0,
+          provider: "claude",
+          modelVersionId: MODEL_ONE,
+          assignmentId: "claimed-by-the-payload",
+          version: 99,
+        },
+      }),
+      2,
+    );
+    expect(projected?.assignment.assignmentId).toBe(routingAssignmentId(DOCUMENT_ID, 1));
+    expect(projected?.assignment.version).toBe(1);
+  });
+
+  it("projects no row for a document of another kind", () => {
+    expect(nextRoutingAssignmentProjection(document({ documentKind: "MODEL_VERSION" }), 3)).toBeNull();
+    expect(nextRoutingAssignmentProjection(document({ documentKind: "PRICE_TABLE" }), 3)).toBeNull();
+  });
+
+  it("projects no row, without disowning the document, for every unreadable payload", () => {
+    const malformed: readonly [string, unknown][] = [
+      ["empty", {}],
+      ["no role", { slot: 0, provider: "claude", modelVersionId: MODEL_ONE }],
+      ["a role outside the closed set", { role: "wizard", slot: 0, provider: "claude", modelVersionId: MODEL_ONE }],
+      ["a negative slot", { role: "implementer", slot: -1, provider: "claude", modelVersionId: MODEL_ONE }],
+      ["a fractional slot", { role: "implementer", slot: 1.5, provider: "claude", modelVersionId: MODEL_ONE }],
+      ["no model version", { role: "implementer", slot: 0, provider: "claude" }],
+      ["an empty model version", { role: "implementer", slot: 0, provider: "claude", modelVersionId: "" }],
+      ["fallbacks that are not strings", { role: "implementer", slot: 0, provider: "claude", modelVersionId: MODEL_ONE, fallbacks: [1] }],
+      ["a payload that is not an object", "routing"],
+    ];
+    for (const [label, payload] of malformed) {
+      expect({ label, row: nextRoutingAssignmentProjection(document({ payload }), 5) }).toEqual({
+        label,
+        row: null,
+      });
+    }
+  });
+
+  it("is a pure fold: the same document yields an identical projection every time", () => {
+    const one = document();
+    expect(nextRoutingAssignmentProjection(one, 11)).toEqual(
+      nextRoutingAssignmentProjection(one, 11),
+    );
+  });
+
+  it("folds every existing initiative event type to no row at all", () => {
+    // The INITIATIVE/STEP partition is empty by construction, not by omission.
+    // `ROUTING_ASSIGNMENT_RECORDED` is not in `INITIATIVE_EVENT_TYPES`, and
+    // widening a contract in another package is not this packet's; the fold is
+    // total over the vocabulary that exists, and returns null for all of it.
+    for (const type of INITIATIVE_EVENT_TYPES) {
+      const event = {
+        contractVersion: CONTRACT_VERSION,
+        eventId: "0000bbbb-0000-4000-8000-000000000001",
+        initiativeId: "5b5b5b5b-5b5b-4b5b-8b5b-5b5b5b5b5b01",
+        transitionId: "t",
+        idempotencyKey: "k",
+        type,
+        fromStatus: null,
+        toStatus: "ACTIVE",
+        emittedBy: EMITTED_BY,
+        occurredAt: AT,
+        recordedAt: AT,
+        payload: {},
+      } as unknown as InitiativeEvent;
+      expect({ type, row: nextRoutingAssignmentFromInitiative(event, 1) }).toEqual({
+        type,
+        row: null,
+      });
+    }
   });
 });

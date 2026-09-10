@@ -56,12 +56,17 @@ export interface OpenLedgerOptions {
  *
  * The contract's vocabulary is four names; this is the subset whose events
  * carry an `event_sha256`, and therefore the subset a reference can be checked
- * against. `account_events` has no chain of its own and `registry_events` does
- * not exist yet, so a reference to either could only ever be believed, and a
- * reference nobody can check is the weak link the typed triple exists to rule
- * out. Widening this belongs to the packets that give those streams a digest.
+ * against. `registry_events` joined it in P-09/log-C, which is the packet that
+ * gave that stream a chain. `account_events` has none — migration 5 gives it
+ * neither `previous_sha256` nor `event_sha256` — so a reference naming it could
+ * only ever be believed, and a reference nobody can check is the weak link the
+ * typed triple exists to rule out. Widening this to four belongs to the packet
+ * that gives that stream a digest.
  */
-export type CausationStream = "control_plane_events" | "initiative_events";
+export type CausationStream =
+  | "control_plane_events"
+  | "initiative_events"
+  | "registry_events";
 
 /**
  * A verifiable reference to the event that caused this one (P-09/log-B).
@@ -332,6 +337,19 @@ export interface RebuildResult {
   readonly initiativeThroughSequence: number;
   readonly initiativeRows: number;
   readonly roadmapVersionRows: number;
+  /** The third stream, replayed in the same transaction as the other two. */
+  readonly replayedRegistryEvents: number;
+  readonly registryThroughSequence: number;
+  /**
+   * Rows in the two-source routing projection, across BOTH partitions.
+   *
+   * One count and not two, because it is one table: the vector of watermarks
+   * is where the two sources stay distinguishable, and a per-source row count
+   * would invite a caller to compare numbers from streams whose sequences are
+   * not comparable.
+   */
+  readonly routingAssignmentRows: number;
+  readonly routingFallbackRows: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +424,168 @@ export interface RoadmapVersionReadModel {
   readonly recordedAt: string;
   /** The initiative-stream position the version was recorded at. */
   readonly sequence: number;
+}
+
+// ---------------------------------------------------------------------------
+// The registry stream (P-09/log-C)
+//
+// **Provisional, and declared so.** The contract package owns no
+// `RegistryDocument` schema — the fourteen names below appear nowhere in
+// `packages/**` today — and its schema barrel is a pure re-export whose
+// exported set the fence pins, so a definition cannot land in it. Adding one
+// properly is a new folder in that package, a line in the barrel, a fence pin
+// and a contract test: four paths in a package this packet does not write.
+//
+// So the vocabulary lives here, beside the migration whose CHECK is the second
+// independent declaration of the same fact, and the candidate is validated by
+// hand because this package may not import `zod`. Nothing outside this package
+// imports either name in this packet. When a contracts packet takes ownership,
+// these move and this comment goes with them.
+// ---------------------------------------------------------------------------
+
+/**
+ * The closed vocabulary of configuration documents the registry stream holds.
+ *
+ * Fourteen names, matching `ck_registry_events__document_kind` exactly. The
+ * two declarations are deliberately independent — one in TypeScript, one in
+ * SQL — so a test can hold them against each other and a name added to one
+ * alone shows up as a disagreement rather than as a runtime abort.
+ */
+export const DOCUMENT_KINDS = [
+  "CAPABILITY_POLICY",
+  "MODEL_VERSION",
+  "PRICE_TABLE",
+  "MODEL_PERFORMANCE",
+  "ROUTING_ASSIGNMENT_GLOBAL",
+  "ESTIMATION_POLICY",
+  "INTEGRATION_PROFILE",
+  "INTEGRATION_INSTALLATION",
+  "COMPOSITION_POLICY",
+  "COMPOSITION_EVIDENCE",
+  "NOTIFICATION_POLICY",
+  "APPROVAL_WAIT_POLICY",
+  "DUEL_POLICY",
+  "ANOMALY_POLICY",
+] as const;
+
+export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
+
+/**
+ * One version of one configuration document, as the registry door records it.
+ *
+ * The registry is storage. It persists a version with a digest, an author and
+ * an instant from which it rules; it decides no eligibility, scores no model
+ * and sets no price. The semantics of each `documentKind` belong to the module
+ * that owns it, and `payload` is the versioned extension namespace those
+ * modules read — bounded, canonical, and never a prompt, a response, a tool
+ * argument or a credential.
+ */
+export interface RegistryDocument {
+  readonly contractVersion: string;
+  readonly eventId: string;
+  readonly idempotencyKey: string;
+  readonly documentKind: DocumentKind;
+  /** Stable identity of the document across its versions. */
+  readonly documentId: string;
+  /** One or greater. Unique within `documentId`. */
+  readonly documentVersion: number;
+  /**
+   * The version this one supersedes, sharing `documentId`. Null on a first
+   * version, and null is the only way to be a first version.
+   */
+  readonly parentDocumentVersion: number | null;
+  /** Digest of the content artifact, 64 lowercase hex characters. */
+  readonly contentDigest: string;
+  readonly recordedBy: string;
+  /** The instant from which this version rules. ISO-8601 ms UTC. */
+  readonly effectiveFrom: string;
+  readonly occurredAt: string;
+  readonly recordedAt: string;
+  readonly payload: Record<string, unknown>;
+}
+
+/** One durable registry-stream row, with the document and its chain position. */
+export interface RegistryEventRecord {
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly idempotencyKey: string;
+  readonly document: RegistryDocument;
+  /** The exact bytes the chain digest was computed over. */
+  readonly canonicalJson: string;
+  readonly previousSha256: string;
+  readonly eventSha256: string;
+  /** The event this one was recorded as caused by, or null. See CausationRef. */
+  readonly causation: CausationRef | null;
+}
+
+export interface RegistryAppendResult {
+  /** false means this was an exact replay and nothing new was written. */
+  readonly inserted: boolean;
+  readonly record: RegistryEventRecord;
+}
+
+/**
+ * One resolved routing assignment, in the projection fed by two streams.
+ *
+ * `sourceStream` and `sourceSequence` are a pair on purpose: a sequence alone
+ * is meaningless across streams, so the row carries the stream it came from
+ * beside the position it came from. `sequence` is the projection's own
+ * application order and is comparable with neither.
+ */
+export interface RoutingAssignmentReadModel {
+  readonly assignmentId: string;
+  readonly scopeKind: "GLOBAL" | "INITIATIVE" | "STEP";
+  /** Null if and only if `scopeKind` is `GLOBAL`. */
+  readonly scopeId: string | null;
+  readonly version: number;
+  readonly role: WorkerRole;
+  readonly slot: number;
+  readonly provider: string;
+  /** The exact model version id the document named. Never an alias. */
+  readonly modelVersionId: string;
+  readonly recordedBy: string;
+  /** The recording event's own instant. Never a clock read in this package. */
+  readonly recordedAt: string;
+  /** The assignment that superseded this one, or null while it rules. */
+  readonly supersededBy: string | null;
+  readonly sourceStream: "registry_events" | "initiative_events";
+  readonly sourceSequence: number;
+  readonly sequence: number;
+}
+
+/** One fallback of one assignment, in attempt order. */
+export interface RoutingAssignmentFallbackRow {
+  readonly assignmentId: string;
+  readonly ordinal: number;
+  readonly modelVersionId: string;
+}
+
+/**
+ * One document's worth of routing projection: the row, its fallbacks, its parent.
+ *
+ * What a fold hands its two callers — the incremental path inside the registry
+ * door, and the replay inside a rebuild — so both write the same three things
+ * and cannot come to disagree about what folding an assignment means.
+ */
+export interface RoutingAssignmentProjection {
+  readonly assignment: RoutingAssignmentReadModel;
+  readonly fallbacks: readonly RoutingAssignmentFallbackRow[];
+  /** The assignment id this version supersedes, or null on a first version. */
+  readonly supersedes: string | null;
+}
+
+/**
+ * The routing partition of an in-memory snapshot.
+ *
+ * Named for the registry stream because that is the only source that fills it
+ * today, but the shape is the partition rather than the stream: the initiative
+ * snapshot carries the same two maps for its own partition, and the function
+ * that writes into either one takes this type so the two sources fold through
+ * one implementation.
+ */
+export interface RegistryProjectionSnapshot {
+  readonly routingAssignments: Map<string, RoutingAssignmentReadModel>;
+  readonly routingFallbacks: Map<string, RoutingAssignmentFallbackRow>;
 }
 
 /** One recorded operator action, as the ledger returns it (P8-8G packet 2). */

@@ -2,15 +2,22 @@ import {
   ResolvedRoute,
   RoadmapVersion,
   TERMINAL_STATES,
+  WORKER_ROLES,
   parseWorkerIdentity,
   type ControlPlaneEvent,
   type InitiativeEvent,
+  type WorkerRole,
 } from "@acp/contracts";
 
 import type {
   ExecutionRouteReadModel,
   InitiativeReadModel,
+  RegistryDocument,
+  RegistryProjectionSnapshot,
   RoadmapVersionReadModel,
+  RoutingAssignmentFallbackRow,
+  RoutingAssignmentProjection,
+  RoutingAssignmentReadModel,
   TaskReadModel,
   WorkerReadModel,
 } from "../types/index.js";
@@ -371,8 +378,18 @@ export function nextRoadmapVersionProjection(
   };
 }
 
-/** In-memory projection of the whole initiative stream. */
-export interface InitiativeProjectionSnapshot {
+/**
+ * In-memory projection of the whole initiative stream.
+ *
+ * It carries a routing partition of its own, which is why it extends the
+ * partition type rather than restating those two maps: one declaration, so the
+ * two sources of the routing projection cannot drift into carrying different
+ * shapes for the same table. The partition is present and **empty** in this
+ * build — written down rather than left out, so it reads as *folded and empty*
+ * rather than *forgotten*: the fold below runs over every initiative event and
+ * returns no row for every type the contract defines.
+ */
+export interface InitiativeProjectionSnapshot extends RegistryProjectionSnapshot {
   readonly initiatives: Map<string, InitiativeReadModel>;
   readonly roadmapVersions: Map<string, RoadmapVersionReadModel>;
 }
@@ -381,6 +398,8 @@ export function createInitiativeProjectionSnapshot(): InitiativeProjectionSnapsh
   return {
     initiatives: new Map<string, InitiativeReadModel>(),
     roadmapVersions: new Map<string, RoadmapVersionReadModel>(),
+    routingAssignments: new Map<string, RoutingAssignmentReadModel>(),
+    routingFallbacks: new Map<string, RoutingAssignmentFallbackRow>(),
   };
 }
 
@@ -397,4 +416,193 @@ export function applyInitiativeEventToSnapshot(
 
   const version = nextRoadmapVersionProjection(event, sequence);
   if (version !== null) snapshot.roadmapVersions.set(version.roadmapVersionId, version);
+
+  const assignment = nextRoutingAssignmentFromInitiative(event, sequence);
+  if (assignment !== null) applyRoutingAssignment(snapshot, assignment);
+}
+
+// ---------------------------------------------------------------------------
+// The registry stream, and the projection fed by two of them (P-09/log-C)
+// ---------------------------------------------------------------------------
+
+/** The one document kind that carries a GLOBAL routing assignment. */
+const ROUTING_ASSIGNMENT_GLOBAL = "ROUTING_ASSIGNMENT_GLOBAL";
+
+/**
+ * The row identity of one version of one routing document.
+ *
+ * Derived from the document rather than read out of its payload, for the
+ * reason `executionRouteKey` takes its coordinates from the event: a payload
+ * that could name its own row could name another document's row. Deriving it
+ * also makes the identity of the version this one supersedes computable from
+ * `parentDocumentVersion` alone, with no lookup.
+ *
+ * `(document_id, document_version)` is unique by
+ * `ux_registry_events__document_id__document_version`, and a document id is a
+ * colon-delimited identifier, so the separator cannot make two pairs collide.
+ */
+export function routingAssignmentId(documentId: string, documentVersion: number): string {
+  return documentId + "#" + String(documentVersion);
+}
+
+export function routingFallbackKey(assignmentId: string, ordinal: number): string {
+  return assignmentId + "#" + String(ordinal);
+}
+
+function isRole(value: unknown): value is WorkerRole {
+  return typeof value === "string" && (WORKER_ROLES as readonly string[]).includes(value);
+}
+
+function isSlot(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function readFallbacks(value: unknown): readonly string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  return value.every(isNonEmptyString) ? (value as readonly string[]) : null;
+}
+
+/**
+ * The GLOBAL routing assignment one registry document records, if it is one.
+ *
+ * The same allocation of duties as `nextExecutionRouteProjection`, and the same
+ * asymmetry: a payload this fold cannot read projects **no row while the
+ * document still stands**. The registry is an append-only authority with no
+ * delete path, so a projection that refused an accepted document would be
+ * disowning history, and replay has to remain total.
+ *
+ * What this fold does **not** do is check eligibility. The contract requires
+ * `model_version_id` to be validated fail-closed against an ACTIVE model
+ * version, and that is the write gate of the module that owns the semantics,
+ * not this one: the ledger is storage, it may not import `@acp/accounts`, and
+ * `model_version_read_model` does not exist. The fold projects what the
+ * document recorded.
+ */
+export function nextRoutingAssignmentProjection(
+  document: RegistryDocument,
+  sequence: number,
+): RoutingAssignmentProjection | null {
+  if (document.documentKind !== ROUTING_ASSIGNMENT_GLOBAL) return null;
+
+  const payload: unknown = document.payload;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const fields = payload as Record<string, unknown>;
+
+  const role = fields["role"];
+  const slot = fields["slot"];
+  const provider = fields["provider"];
+  const modelVersionId = fields["modelVersionId"];
+  if (!isRole(role) || !isSlot(slot)) return null;
+  if (!isNonEmptyString(provider) || !isNonEmptyString(modelVersionId)) return null;
+
+  const fallbacks = readFallbacks(fields["fallbacks"]);
+  if (fallbacks === null) return null;
+
+  const assignmentId = routingAssignmentId(document.documentId, document.documentVersion);
+
+  return {
+    assignment: {
+      assignmentId,
+      scopeKind: "GLOBAL",
+      // NULL if and only if the scope is GLOBAL, which this partition always
+      // is: `ck_routing_assignment_read_model__scope_id_required` in the base,
+      // and `ck_..._source_scope` refuses a GLOBAL row from the other stream.
+      scopeId: null,
+      version: document.documentVersion,
+      role,
+      slot,
+      provider,
+      modelVersionId,
+      recordedBy: document.recordedBy,
+      recordedAt: document.recordedAt,
+      supersededBy: null,
+      sourceStream: "registry_events",
+      sourceSequence: sequence,
+      sequence,
+    },
+    fallbacks: fallbacks.map((fallbackModelVersionId, ordinal) => ({
+      assignmentId,
+      ordinal,
+      modelVersionId: fallbackModelVersionId,
+    })),
+    supersedes:
+      document.parentDocumentVersion === null
+        ? null
+        : routingAssignmentId(document.documentId, document.parentDocumentVersion),
+  };
+}
+
+/**
+ * The INITIATIVE/STEP partition of the same projection. Total, and empty.
+ *
+ * The contract fills this partition from `ROUTING_ASSIGNMENT_RECORDED`, which
+ * is not one of the three names in `INITIATIVE_EVENT_TYPES`. Widening that
+ * vocabulary is a change to a contract in another package and belongs to the
+ * planning packet that needs it; until then this fold is total over the types
+ * that do exist and returns no row for every one of them.
+ *
+ * It is a function rather than an absence so that the partition is folded and
+ * empty rather than unfolded and forgotten, and so the test that pins it can
+ * name every existing type one by one.
+ */
+export function nextRoutingAssignmentFromInitiative(
+  event: InitiativeEvent,
+  sequence: number,
+): RoutingAssignmentProjection | null {
+  void event;
+  void sequence;
+  return null;
+}
+
+/** In-memory projection of the registry stream. */
+export function createRegistryProjectionSnapshot(): RegistryProjectionSnapshot {
+  return {
+    routingAssignments: new Map<string, RoutingAssignmentReadModel>(),
+    routingFallbacks: new Map<string, RoutingAssignmentFallbackRow>(),
+  };
+}
+
+/**
+ * Write one routing projection into a snapshot, superseding its parent.
+ *
+ * Shared by both partitions, so the two sources cannot come to disagree about
+ * what folding an assignment means. Supersession rewrites the parent row's
+ * `supersededBy` and nothing else: the earlier version keeps every fact it
+ * recorded, because "which model was implementer slot 0 assigned last March"
+ * is a question the read model exists to answer.
+ */
+function applyRoutingAssignment(
+  snapshot: RegistryProjectionSnapshot,
+  projected: RoutingAssignmentProjection,
+): void {
+  const { assignment, fallbacks, supersedes } = projected;
+  snapshot.routingAssignments.set(assignment.assignmentId, assignment);
+  for (const fallback of fallbacks) {
+    snapshot.routingFallbacks.set(
+      routingFallbackKey(fallback.assignmentId, fallback.ordinal),
+      fallback,
+    );
+  }
+  if (supersedes === null) return;
+  const parent = snapshot.routingAssignments.get(supersedes);
+  if (parent === undefined) return;
+  snapshot.routingAssignments.set(supersedes, {
+    ...parent,
+    supersededBy: assignment.assignmentId,
+  });
+}
+
+/** Fold one registry document into an in-memory snapshot. */
+export function applyRegistryEventToSnapshot(
+  snapshot: RegistryProjectionSnapshot,
+  document: RegistryDocument,
+  sequence: number,
+): void {
+  const projected = nextRoutingAssignmentProjection(document, sequence);
+  if (projected !== null) applyRoutingAssignment(snapshot, projected);
 }

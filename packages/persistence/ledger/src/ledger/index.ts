@@ -31,7 +31,10 @@ import {
   PROJECTION_NAMES,
   PROJECTION_SOURCES,
   PROJECTOR_VERSION,
+  REGISTRY_STREAM,
+  ROUTING_ASSIGNMENT_PROJECTION,
   SCHEMA_MIGRATIONS_DDL,
+  SINGLE_SOURCE_PROJECTION_SOURCES,
   TASK_STREAM,
   applyMigrations,
   checkMigrationConformance,
@@ -42,51 +45,64 @@ import {
 import {
   applyEventToSnapshot,
   applyInitiativeEventToSnapshot,
+  applyRegistryEventToSnapshot,
   createInitiativeProjectionSnapshot,
   createProjectionSnapshot,
+  createRegistryProjectionSnapshot,
   executionRouteKey,
   nextExecutionRouteProjection,
   nextInitiativeProjection,
   nextRoadmapVersionProjection,
+  nextRoutingAssignmentProjection,
   nextTaskProjection,
   nextWorkerProjection,
   nextWorkerTaskProjection,
+  routingFallbackKey,
   workerTaskKey,
   type InitiativeProjectionSnapshot,
   type ProjectionSnapshot,
   type WorkerTaskProjection,
 } from "../projection/index.js";
-import type {
-  AppendBatchResult,
-  AppendResult,
-  AppliedMigration,
-  CausationRef,
-  CausationStream,
-  EventPage,
-  EventQuery,
-  ExecutionRouteReadModel,
-  InitiativeAppendResult,
-  InitiativeEventPage,
-  InitiativeEventQuery,
-  InitiativeEventRecord,
-  InitiativeReadModel,
-  IntegrityProblem,
-  IntegrityReport,
-  LedgerEventRecord,
-  LedgerStatus,
-  LedgerTestFaults,
-  OpenLedgerOptions,
-  ProjectionStatus,
-  RebuildResult,
-  RoadmapVersionReadModel,
-  TaskPage,
-  TaskQuery,
-  TaskReadModel,
-  WorkerPage,
-  WorkerQuery,
-  WorkerReadModel,
-  AccountActionAppendResult,
-  AccountActionRecordRow,
+import {
+  DOCUMENT_KINDS,
+  type AppendBatchResult,
+  type AppendResult,
+  type AppliedMigration,
+  type CausationRef,
+  type CausationStream,
+  type DocumentKind,
+  type EventPage,
+  type EventQuery,
+  type ExecutionRouteReadModel,
+  type InitiativeAppendResult,
+  type InitiativeEventPage,
+  type InitiativeEventQuery,
+  type InitiativeEventRecord,
+  type InitiativeReadModel,
+  type IntegrityProblem,
+  type IntegrityReport,
+  type LedgerEventRecord,
+  type LedgerStatus,
+  type LedgerTestFaults,
+  type OpenLedgerOptions,
+  type ProjectionStatus,
+  type RebuildResult,
+  type RegistryAppendResult,
+  type RegistryDocument,
+  type RegistryEventRecord,
+  type RegistryProjectionSnapshot,
+  type RoadmapVersionReadModel,
+  type RoutingAssignmentFallbackRow,
+  type RoutingAssignmentProjection,
+  type RoutingAssignmentReadModel,
+  type TaskPage,
+  type TaskQuery,
+  type TaskReadModel,
+  type WorkerPage,
+  type WorkerQuery,
+  type WorkerReadModel,
+  type AccountActionAppendResult,
+  type AccountActionRecordRow,
 } from "../types/index.js";
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
@@ -121,6 +137,30 @@ const INITIATIVE_EVENT_COLUMNS =
 const INITIATIVE_HEAD_SEQUENCE = "initiative_head_sequence";
 const INITIATIVE_HEAD_EVENT_SHA256 = "initiative_head_event_sha256";
 const INITIATIVE_EVENT_COUNT = "initiative_event_count";
+
+const REGISTRY_EVENT_COLUMNS =
+  "sequence, event_id, idempotency_key, document_kind, document_id, document_version, " +
+  "content_digest, parent_document_version, recorded_by, effective_from, occurred_at, " +
+  "recorded_at, causation_stream, causation_sequence, causation_sha256, contract_version, " +
+  "event_json, previous_sha256, event_sha256";
+
+const REGISTRY_HEAD_SEQUENCE = "registry_head_sequence";
+const REGISTRY_HEAD_EVENT_SHA256 = "registry_head_event_sha256";
+const REGISTRY_EVENT_COUNT = "registry_event_count";
+
+/**
+ * The byte budget of one registry document's canonical body.
+ *
+ * The contract says `event_json` is bounded and does not say by how much; a
+ * stream with no bound at all is a way to put a megabyte of configuration
+ * inside a chain of small canonical facts, which is what the artifact store
+ * exists to prevent. Content lives beside the database and the document
+ * records its digest.
+ */
+const REGISTRY_EVENT_JSON_MAX_BYTES = 64 * 1024;
+
+/** Bound on the identifiers a document carries, so a diagnostic stays small. */
+const REGISTRY_IDENTIFIER_MAX = 512;
 
 interface EventRow {
   readonly sequence: number;
@@ -167,7 +207,29 @@ interface InitiativeEventRow {
   readonly event_sha256: string;
 }
 
-/** The columns a causal reference occupies, in either stream's table. */
+interface RegistryEventRow {
+  readonly sequence: number;
+  readonly event_id: string;
+  readonly idempotency_key: string;
+  readonly document_kind: string;
+  readonly document_id: string;
+  readonly document_version: number;
+  readonly content_digest: string;
+  readonly parent_document_version: number | null;
+  readonly recorded_by: string;
+  readonly effective_from: string;
+  readonly occurred_at: string;
+  readonly recorded_at: string;
+  readonly causation_stream: string | null;
+  readonly causation_sequence: number | null;
+  readonly causation_sha256: string | null;
+  readonly contract_version: string;
+  readonly event_json: string;
+  readonly previous_sha256: string;
+  readonly event_sha256: string;
+}
+
+/** The columns a causal reference occupies, in any stream's table. */
 interface CausationColumns {
   readonly causation_stream: string | null;
   readonly causation_sequence: number | null;
@@ -175,20 +237,25 @@ interface CausationColumns {
 }
 
 /**
- * The streams a reference may name in this build (P-09/log-B).
+ * The streams a reference may name in this build (P-09/log-B, widened by C).
  *
- * The contract's vocabulary is four names; these are the two whose events carry
- * an `event_sha256`. A reference to `account_events` or `registry_events` could
- * only be believed, never checked, and the contract is explicit that a digest
- * which does not match is an invalid reference rather than a weak link — so a
- * reference that *cannot* be matched at all is refused here rather than stored.
+ * The contract's vocabulary is four names; these are the three whose events
+ * carry an `event_sha256`. `registry_events` joined the list in the packet that
+ * gave it a chain. A reference to `account_events` could only be believed,
+ * never checked, and the contract is explicit that a digest which does not
+ * match is an invalid reference rather than a weak link — so a reference that
+ * *cannot* be matched at all is refused here rather than stored.
  */
 const CAUSATION_STREAMS: readonly CausationStream[] = [
   "control_plane_events",
   "initiative_events",
+  "registry_events",
 ];
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+/** ISO-8601 with milliseconds, in UTC. The contract's one instant form. */
+const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 function isCausationStream(value: unknown): value is CausationStream {
   return typeof value === "string" && CAUSATION_STREAMS.includes(value as CausationStream);
@@ -197,12 +264,14 @@ function isCausationStream(value: unknown): value is CausationStream {
 /**
  * The table a reference resolves against.
  *
- * A total function over the closed set, returning one of two literals written
+ * A total function over the closed set, returning one of three literals written
  * in this module. Nothing a caller supplies is ever concatenated into SQL, for
  * the reason `safeIdentifier` exists a few lines below.
  */
 function causationTable(stream: CausationStream): string {
-  return stream === "control_plane_events" ? "control_plane_events" : "initiative_events";
+  if (stream === "control_plane_events") return "control_plane_events";
+  if (stream === "initiative_events") return "initiative_events";
+  return "registry_events";
 }
 
 /** Read a reference out of a stored row, refusing a triple the base should not hold. */
@@ -299,6 +368,209 @@ function appendContentDigest(canonicalJson: string, causation: CausationRef | nu
       "\n" +
       causation.sha256,
   );
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** An instant in the contract's one form, and a real date rather than a shape. */
+function isInstant(value: unknown): value is string {
+  if (typeof value !== "string" || !INSTANT_PATTERN.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function isBoundedIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= REGISTRY_IDENTIFIER_MAX;
+}
+
+/**
+ * Shape-check a registry document by hand, and refuse anything the base would.
+ *
+ * By hand because this package may not import `zod` — the fence pins its three
+ * runtime dependencies by equality — and because the contract package owns no
+ * schema for these documents yet. `normalizeCausation` above is the precedent
+ * and the pattern: pure, reading no database, and copying rather than keeping
+ * the caller's object so a later mutation cannot change what was recorded.
+ *
+ * Every rule here has a twin in `ck_registry_events__*`. The door exists so a
+ * refusal is a typed `LedgerValidationError` naming the field, rather than a
+ * raw SQLite constraint failure nobody can catch by class; the base is what
+ * holds the same line for a caller who reaches past the door.
+ */
+function normalizeRegistryDocument(candidate: unknown): RegistryDocument {
+  if (!isPlainObject(candidate)) {
+    throw new LedgerValidationError([
+      { path: "<root>", message: "a registry document is an object" },
+    ]);
+  }
+
+  const issues: LedgerValidationIssue[] = [];
+  const fields = candidate;
+
+  for (const field of ["contractVersion", "eventId", "idempotencyKey", "documentId", "recordedBy"]) {
+    if (!isBoundedIdentifier(fields[field])) {
+      issues.push({
+        path: field,
+        message:
+          "a registry document's " +
+          field +
+          " is a string of 1 to " +
+          String(REGISTRY_IDENTIFIER_MAX) +
+          " characters",
+      });
+    }
+  }
+
+  const documentKind = fields["documentKind"];
+  if (
+    typeof documentKind !== "string" ||
+    !(DOCUMENT_KINDS as readonly string[]).includes(documentKind)
+  ) {
+    issues.push({
+      path: "documentKind",
+      message: "a registry document names one of the contract's document kinds",
+    });
+  }
+
+  const documentVersion = fields["documentVersion"];
+  if (!Number.isSafeInteger(documentVersion) || (documentVersion as number) < 1) {
+    issues.push({
+      path: "documentVersion",
+      message: "a document version is an integer of one or greater",
+    });
+  }
+
+  const parentDocumentVersion = fields["parentDocumentVersion"];
+  if (parentDocumentVersion !== null) {
+    // Null is not a default here: it is the assertion that this is the first
+    // version of the document, and the door checks that claim against the
+    // stream before it inserts.
+    if (
+      !Number.isSafeInteger(parentDocumentVersion) ||
+      (parentDocumentVersion as number) < 1 ||
+      (Number.isSafeInteger(documentVersion) &&
+        (parentDocumentVersion as number) >= (documentVersion as number))
+    ) {
+      issues.push({
+        path: "parentDocumentVersion",
+        message: "a parent version is null, or an earlier version of the same document",
+      });
+    }
+  }
+
+  const contentDigest = fields["contentDigest"];
+  if (typeof contentDigest !== "string" || !SHA256_PATTERN.test(contentDigest)) {
+    issues.push({
+      path: "contentDigest",
+      message: "a content digest is 64 lowercase hexadecimal characters",
+    });
+  }
+
+  for (const field of ["effectiveFrom", "occurredAt", "recordedAt"]) {
+    if (!isInstant(fields[field])) {
+      issues.push({
+        path: field,
+        message: "a registry document's " + field + " is an ISO-8601 instant in UTC with milliseconds",
+      });
+    }
+  }
+
+  const occurredAt = fields["occurredAt"];
+  const recordedAt = fields["recordedAt"];
+  if (isInstant(occurredAt) && isInstant(recordedAt) && recordedAt < occurredAt) {
+    // Lexicographic comparison is exact for this form: fixed width, UTC, and
+    // zero-padded throughout.
+    issues.push({
+      path: "recordedAt",
+      message: "a document is recorded no earlier than it occurred",
+    });
+  }
+
+  const payload = fields["payload"];
+  if (!isPlainObject(payload)) {
+    issues.push({ path: "payload", message: "a registry document's payload is an object" });
+  }
+
+  if (issues.length > 0) throw new LedgerValidationError(issues);
+
+  return {
+    contractVersion: fields["contractVersion"] as string,
+    eventId: fields["eventId"] as string,
+    idempotencyKey: fields["idempotencyKey"] as string,
+    documentKind: documentKind as DocumentKind,
+    documentId: fields["documentId"] as string,
+    documentVersion: documentVersion as number,
+    parentDocumentVersion: parentDocumentVersion === null ? null : (parentDocumentVersion as number),
+    contentDigest: contentDigest as string,
+    recordedBy: fields["recordedBy"] as string,
+    effectiveFrom: fields["effectiveFrom"] as string,
+    occurredAt: occurredAt as string,
+    recordedAt: recordedAt as string,
+    payload: payload as Record<string, unknown>,
+  };
+}
+
+/**
+ * The same check as a verdict rather than a throw.
+ *
+ * The read paths ask "is this a document?" and act on the answer, exactly as
+ * the other two streams ask their contract with `safeParse`. Written once, so
+ * a caller that wants the verdict does not have to spell out a `catch` that
+ * silently discards the reason.
+ */
+function tryNormalizeRegistryDocument(candidate: unknown): RegistryDocument | null {
+  try {
+    return normalizeRegistryDocument(candidate);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The byte bound, checked at the door and nowhere else.
+ *
+ * Deliberately not part of `normalizeRegistryDocument`, which runs once per row
+ * on every replay: a body already on disk is inside the bound by construction,
+ * because it got there through this check, and re-measuring it would make a
+ * rebuild pay for a rule it cannot act on anyway. A stored row that somehow
+ * exceeded it is a tampering question, and the chain answers that one.
+ */
+function assertRegistryBodyBounded(canonicalJson: string): void {
+  if (Buffer.byteLength(canonicalJson, "utf8") <= REGISTRY_EVENT_JSON_MAX_BYTES) return;
+  throw new LedgerValidationError([
+    {
+      path: "payload",
+      message:
+        "a registry document's canonical body exceeds " +
+        String(REGISTRY_EVENT_JSON_MAX_BYTES) +
+        " bytes; content belongs in the artifact store, and the document records its digest",
+    },
+  ]);
+}
+
+interface RoutingAssignmentRow {
+  readonly assignment_id: string;
+  readonly scope_kind: string;
+  readonly scope_id: string | null;
+  readonly version: number;
+  readonly role: string;
+  readonly slot: number;
+  readonly provider: string;
+  readonly model_version_id: string;
+  readonly recorded_by: string;
+  readonly recorded_at: string;
+  readonly superseded_by: string | null;
+  readonly source_stream: string;
+  readonly source_sequence: number;
+  readonly sequence: number;
+}
+
+interface RoutingFallbackRow {
+  readonly assignment_id: string;
+  readonly ordinal: number;
+  readonly model_version_id: string;
 }
 
 interface InitiativeRow {
@@ -526,6 +798,33 @@ function executionRouteRowToModel(row: ExecutionRouteRow): ExecutionRouteReadMod
   };
 }
 
+function routingAssignmentRowToModel(row: RoutingAssignmentRow): RoutingAssignmentReadModel {
+  return {
+    assignmentId: row.assignment_id,
+    scopeKind: row.scope_kind as RoutingAssignmentReadModel["scopeKind"],
+    scopeId: row.scope_id,
+    version: row.version,
+    role: row.role as RoutingAssignmentReadModel["role"],
+    slot: row.slot,
+    provider: row.provider,
+    modelVersionId: row.model_version_id,
+    recordedBy: row.recorded_by,
+    recordedAt: row.recorded_at,
+    supersededBy: row.superseded_by,
+    sourceStream: row.source_stream as RoutingAssignmentReadModel["sourceStream"],
+    sourceSequence: row.source_sequence,
+    sequence: row.sequence,
+  };
+}
+
+function routingFallbackRowToModel(row: RoutingFallbackRow): RoutingAssignmentFallbackRow {
+  return {
+    assignmentId: row.assignment_id,
+    ordinal: row.ordinal,
+    modelVersionId: row.model_version_id,
+  };
+}
+
 function boundedLimit(requested: number | undefined, label: string): number {
   if (requested === undefined) return DEFAULT_PAGE_LIMIT;
   if (!Number.isInteger(requested) || requested < 1 || requested > MAX_PAGE_LIMIT) {
@@ -546,6 +845,9 @@ function boundedLimit(requested: number | undefined, label: string): number {
 const PROJECTION_NAME_SET: ReadonlySet<string> = new Set([
   ...PROJECTION_NAMES,
   ...INITIATIVE_PROJECTION_NAMES,
+  // Neither list, deliberately: this projection is level with two chains and
+  // belongs to neither stream's roster. Membership is still one question.
+  ROUTING_ASSIGNMENT_PROJECTION,
 ]);
 
 // Which stream a projection follows used to be a second name set here. It is
@@ -575,8 +877,28 @@ const TASK_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filter(
   (source) => source.sourceStream === TASK_STREAM,
 );
 
+/**
+ * Every projection the initiative stream feeds — now three, not two.
+ *
+ * The third is the two-source projection's initiative-side row, and it arrives
+ * here by the filter rather than by a second edit. That is what makes the hard
+ * direction of the cross-advance true by construction: `appendInitiativeEvent`
+ * moves the routing projection's initiative row and cannot move its registry
+ * row, because the `UPDATE` targets the composite key.
+ */
 const INITIATIVE_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filter(
   (source) => source.sourceStream === INITIATIVE_STREAM,
+);
+
+const REGISTRY_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filter(
+  (source) => source.sourceStream === REGISTRY_STREAM,
+);
+
+/** The pairs `status()` publishes, as a membership set. See the migrations module. */
+const STATUS_WATERMARK_KEYS: ReadonlySet<string> = new Set(
+  SINGLE_SOURCE_PROJECTION_SOURCES.map((source) =>
+    watermarkKey(source.projectionName, source.sourceStream),
+  ),
 );
 
 /**
@@ -589,6 +911,30 @@ const INITIATIVE_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.fi
  */
 function safeIdentifier(name: string): string {
   return /^[A-Za-z0-9_]{1,64}$/.test(name) ? name : "<unprintable name>";
+}
+
+/**
+ * The routing projection's two partitions, as one table's worth of rows.
+ *
+ * The registry side folds `GLOBAL`, the initiative side folds `INITIATIVE` and
+ * `STEP`, and `ck_routing_assignment_read_model__source_scope` refuses either
+ * one writing into the other's partition. So this is a union of disjoint sets
+ * and never a merge with a winner; the initiative side is empty in this build,
+ * and stays a term in the expression rather than being dropped from it,
+ * because the day it is not empty this must already be right.
+ */
+function mergeRoutingAssignments(
+  registry: RegistryProjectionSnapshot,
+  initiative: InitiativeProjectionSnapshot,
+): Map<string, RoutingAssignmentReadModel> {
+  return new Map([...registry.routingAssignments, ...initiative.routingAssignments]);
+}
+
+function mergeRoutingFallbacks(
+  registry: RegistryProjectionSnapshot,
+  initiative: InitiativeProjectionSnapshot,
+): Map<string, RoutingAssignmentFallbackRow> {
+  return new Map([...registry.routingFallbacks, ...initiative.routingFallbacks]);
 }
 
 /**
@@ -813,6 +1159,37 @@ export class Ledger {
     this.#writeMeta(INITIATIVE_EVENT_COUNT, String(count));
   }
 
+  /** The registry stream's head, read with the same suspicion as the other two. */
+  #readRegistryHead(): HeadState {
+    const meta = this.#readMetaMap();
+    const sequenceText = meta.get(REGISTRY_HEAD_SEQUENCE);
+    const shaText = meta.get(REGISTRY_HEAD_EVENT_SHA256);
+    const countText = meta.get(REGISTRY_EVENT_COUNT);
+
+    if (sequenceText === undefined || shaText === undefined || countText === undefined) {
+      throw new LedgerIntegrityError(["ledger_meta is missing a registry head or count row"]);
+    }
+    const sequence = Number(sequenceText);
+    const count = Number(countText);
+    if (!Number.isInteger(sequence) || sequence < 0 || !Number.isInteger(count) || count < 0) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds a registry head or count that is not a count",
+      ]);
+    }
+    if (!SHA256_PATTERN.test(shaText)) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds a registry head digest that is not a sha-256",
+      ]);
+    }
+    return { sequence, sha256: shaText, count };
+  }
+
+  #writeRegistryHead(sequence: number, sha256: string, count: number): void {
+    this.#writeMeta(REGISTRY_HEAD_SEQUENCE, String(sequence));
+    this.#writeMeta(REGISTRY_HEAD_EVENT_SHA256, sha256);
+    this.#writeMeta(REGISTRY_EVENT_COUNT, String(count));
+  }
+
   /**
    * Advance the watermark of every projection fed by one stream.
    *
@@ -852,13 +1229,21 @@ export class Ledger {
    * a projection this build no longer defines would survive an UPDATE that
    * never named it.
    */
-  #rewriteWatermarks(task: StreamLevel, initiative: StreamLevel): void {
+  #rewriteWatermarks(task: StreamLevel, initiative: StreamLevel, registry: StreamLevel): void {
     this.#stmt("DELETE FROM projection_watermark").run();
     const insert = this.#stmt(
       "INSERT INTO projection_watermark (" + WATERMARK_COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
     for (const source of PROJECTION_SOURCES) {
-      const level = source.sourceStream === INITIATIVE_STREAM ? initiative : task;
+      // One level per stream, chosen per ROW rather than per projection. The
+      // two-source projection gets both, which is the whole reason a rebuild
+      // may not carry a single number for it.
+      const level =
+        source.sourceStream === INITIATIVE_STREAM
+          ? initiative
+          : source.sourceStream === REGISTRY_STREAM
+            ? registry
+            : task;
       insert.run(
         source.projectionName,
         source.sourceStream,
@@ -897,9 +1282,42 @@ export class Ledger {
     const sql =
       sourceStream === INITIATIVE_STREAM
         ? "SELECT event_sha256 FROM initiative_events WHERE sequence = ?"
-        : "SELECT event_sha256 FROM control_plane_events WHERE sequence = ?";
+        : sourceStream === REGISTRY_STREAM
+          ? "SELECT event_sha256 FROM registry_events WHERE sequence = ?"
+          : "SELECT event_sha256 FROM control_plane_events WHERE sequence = ?";
     const row = this.#stmt(sql).get(sequence) as { readonly event_sha256: string } | undefined;
     return row === undefined ? null : row.event_sha256;
+  }
+
+  /**
+   * How many events a stream holds **through** a given sequence.
+   *
+   * The companion of `#digestAtSequence`, asked at the same position and for
+   * the same reason. A watermark carries two claims about where a projection
+   * stands — the digest it was built from and how many events it folded — and
+   * until now only the first was ever checked. An `event_count` nobody compares
+   * is a number `status()` publishes on the ledger's authority while nothing
+   * holds it to the log.
+   *
+   * Counted **at** `applied_sequence` rather than over the whole stream,
+   * because a watermark that lawfully lags is level with the count at ITS
+   * position, not with the tail. And counted rather than derived from the
+   * sequence itself: they coincide only while the stream is contiguous, and
+   * contiguity is a separate finding this check must not quietly assume.
+   *
+   * The table name is never interpolated from database content: the caller has
+   * already matched the row's stream against the closed set, and the three
+   * statements below are this module's own literals.
+   */
+  #countAtSequence(sourceStream: string, sequence: number): number {
+    const sql =
+      sourceStream === INITIATIVE_STREAM
+        ? "SELECT COUNT(*) AS n FROM initiative_events WHERE sequence <= ?"
+        : sourceStream === REGISTRY_STREAM
+          ? "SELECT COUNT(*) AS n FROM registry_events WHERE sequence <= ?"
+          : "SELECT COUNT(*) AS n FROM control_plane_events WHERE sequence <= ?";
+    const row = this.#stmt(sql).get(sequence) as { readonly n: number };
+    return row.n;
   }
 
   // -------------------------------------------------------------------------
@@ -1797,6 +2215,340 @@ export class Ledger {
   }
 
   // -------------------------------------------------------------------------
+  // The registry stream
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record one version of one configuration document (P-09/log-C).
+   *
+   * The third stream, on its own chain and its own head, under the same
+   * transaction discipline as the other two: one `BEGIN IMMEDIATE` covers the
+   * row, the projection, the head and the watermark, and a failure anywhere
+   * leaves the ledger exactly as it was.
+   *
+   * A unit door and not a batch. The task stream got `appendBatch` because a
+   * caller there has three facts to record at once; a configuration version is
+   * a single deliberate act, no negative in this packet asks for a registry
+   * batch, and a door added on speculation is a boundary somebody later has to
+   * defend. Adding one is additive when a caller needs it.
+   *
+   * This is STORAGE. The ledger does not decide whether the model version a
+   * document names is active, whether the policy it points at is admissible,
+   * or whether the author was allowed to record it. Those belong to the
+   * modules that own each `documentKind`. What it does refuse is what it alone
+   * can see: a replayed key with different content, a reused event id, a
+   * version the document already holds, and a causal reference that does not
+   * resolve.
+   */
+  appendRegistryEvent(
+    candidate: unknown,
+    causation?: CausationRef | null,
+  ): RegistryAppendResult {
+    this.#assertOpen("appendRegistryEvent");
+    this.#assertWritable("appendRegistryEvent");
+
+    const document = normalizeRegistryDocument(candidate);
+    const canonicalJson = canonicalJsonStringify(document);
+    assertRegistryBodyBounded(canonicalJson);
+    const reference = normalizeCausation(causation, "causation");
+
+    const run = this.#db.transaction(
+      (): RegistryAppendResult =>
+        this.#appendRegistryInTransaction(document, canonicalJson, reference),
+    );
+    return run.immediate();
+  }
+
+  #appendRegistryInTransaction(
+    document: RegistryDocument,
+    canonicalJson: string,
+    causation: CausationRef | null,
+  ): RegistryAppendResult {
+    const existingByKey = this.#stmt(
+      "SELECT " + REGISTRY_EVENT_COLUMNS + " FROM registry_events WHERE idempotency_key = ?",
+    ).get(document.idempotencyKey) as RegistryEventRow | undefined;
+
+    if (existingByKey !== undefined) {
+      const stored = causationFromRow(existingByKey, existingByKey.sequence);
+      if (existingByKey.event_json === canonicalJson && causationEquals(stored, causation)) {
+        return { inserted: false, record: this.#registryRowToRecord(existingByKey) };
+      }
+      throw new LedgerIdempotencyConflictError(
+        document.idempotencyKey,
+        appendContentDigest(existingByKey.event_json, stored),
+        appendContentDigest(canonicalJson, causation),
+      );
+    }
+
+    const existingById = this.#stmt(
+      "SELECT idempotency_key FROM registry_events WHERE event_id = ?",
+    ).get(document.eventId) as { readonly idempotency_key: string } | undefined;
+
+    if (existingById !== undefined) {
+      throw new LedgerEventIdConflictError(
+        document.eventId,
+        existingById.idempotency_key,
+        document.idempotencyKey,
+      );
+    }
+
+    this.#assertDocumentLineage(document);
+    this.#assertCausationResolves(causation);
+
+    const head = this.#readRegistryHead();
+    const previousSha256 = head.sha256;
+    const eventSha256 = chainDigest(previousSha256, canonicalJson);
+    const expectedSequence = head.sequence + 1;
+
+    const info = this.#stmt(
+      "INSERT INTO registry_events (" +
+        "event_id, idempotency_key, document_kind, document_id, document_version, " +
+        "content_digest, parent_document_version, recorded_by, effective_from, " +
+        "occurred_at, recorded_at, causation_stream, causation_sequence, causation_sha256, " +
+        "contract_version, event_json, previous_sha256, event_sha256" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      document.eventId,
+      document.idempotencyKey,
+      document.documentKind,
+      document.documentId,
+      document.documentVersion,
+      document.contentDigest,
+      document.parentDocumentVersion,
+      document.recordedBy,
+      document.effectiveFrom,
+      document.occurredAt,
+      document.recordedAt,
+      causation === null ? null : causation.stream,
+      causation === null ? null : causation.sequence,
+      causation === null ? null : causation.sha256,
+      document.contractVersion,
+      canonicalJson,
+      previousSha256,
+      eventSha256,
+    );
+
+    const sequence = Number(info.lastInsertRowid);
+    if (sequence !== expectedSequence) {
+      throw new LedgerSequenceError(expectedSequence, sequence);
+    }
+
+    this.#faults.beforeProjection?.();
+
+    this.#projectRegistryDocument(document, sequence);
+    this.#writeRegistryHead(sequence, eventSha256, head.count + 1);
+    // This stream's own watermark row, and no other's. The two-source
+    // projection has a second row that follows the initiative stream, and this
+    // `UPDATE` cannot reach it: it names the pair, not the projection.
+    this.#writeWatermarks(REGISTRY_WATERMARKS, {
+      sequence,
+      count: head.count + 1,
+      sha256: eventSha256,
+      updatedAt: document.recordedAt,
+    });
+
+    this.#faults.beforeAppendCommit?.();
+
+    return {
+      inserted: true,
+      record: {
+        sequence,
+        eventId: document.eventId,
+        idempotencyKey: document.idempotencyKey,
+        document,
+        canonicalJson,
+        previousSha256,
+        eventSha256,
+        causation,
+      },
+    };
+  }
+
+  /**
+   * The version lineage of one document, checked against the stream.
+   *
+   * `ux_registry_events__document_id__document_version` is the backstop and is
+   * what actually makes a duplicate impossible; this is what turns the refusal
+   * into a typed error naming the coordinate, rather than a raw uniqueness
+   * failure from SQLite that no caller can catch by class. The two other rules
+   * come from the same contract clause: a document keeps its kind across its
+   * versions, and a null parent is the *claim* that this is a first version
+   * rather than the absence of a claim.
+   */
+  #assertDocumentLineage(document: RegistryDocument): void {
+    const anyVersion = this.#stmt(
+      "SELECT document_kind FROM registry_events WHERE document_id = ? LIMIT 1",
+    ).get(document.documentId) as { readonly document_kind: string } | undefined;
+
+    if (anyVersion !== undefined && anyVersion.document_kind !== document.documentKind) {
+      throw new LedgerValidationError([
+        {
+          path: "documentKind",
+          message:
+            "document " +
+            document.documentId +
+            " is recorded as " +
+            safeIdentifier(anyVersion.document_kind) +
+            " and a document keeps its kind across its versions",
+        },
+      ]);
+    }
+
+    const clash = this.#stmt(
+      "SELECT sequence FROM registry_events WHERE document_id = ? AND document_version = ?",
+    ).get(document.documentId, document.documentVersion) as
+      | { readonly sequence: number }
+      | undefined;
+
+    if (clash !== undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "documentVersion",
+          message:
+            "document " +
+            document.documentId +
+            " already holds version " +
+            String(document.documentVersion) +
+            ", recorded at sequence " +
+            String(clash.sequence),
+        },
+      ]);
+    }
+
+    if (document.parentDocumentVersion === null) {
+      if (anyVersion !== undefined) {
+        throw new LedgerValidationError([
+          {
+            path: "parentDocumentVersion",
+            message:
+              "document " +
+              document.documentId +
+              " already has a first version, so this one names the version it supersedes",
+          },
+        ]);
+      }
+      return;
+    }
+
+    const parent = this.#stmt(
+      "SELECT sequence FROM registry_events WHERE document_id = ? AND document_version = ?",
+    ).get(document.documentId, document.parentDocumentVersion) as
+      | { readonly sequence: number }
+      | undefined;
+
+    if (parent === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "parentDocumentVersion",
+          message:
+            "document " +
+            document.documentId +
+            " has no version " +
+            String(document.parentDocumentVersion) +
+            " for this one to supersede",
+        },
+      ]);
+    }
+  }
+
+  /** Incremental projection of the registry stream. Same rules as replay. */
+  #projectRegistryDocument(document: RegistryDocument, sequence: number): void {
+    const projected = nextRoutingAssignmentProjection(document, sequence);
+    if (projected !== null) this.#applyRoutingAssignment(projected);
+  }
+
+  /**
+   * Write one routing projection, and mark the version it supersedes.
+   *
+   * The parent row keeps every fact it recorded and gains only its
+   * `superseded_by`: "which model was implementer slot 0 assigned in March" is
+   * a question this read model exists to be able to answer, and an overwrite
+   * would destroy it.
+   */
+  #applyRoutingAssignment(projected: RoutingAssignmentProjection): void {
+    const { assignment, fallbacks, supersedes } = projected;
+    this.#upsertRoutingAssignment(assignment);
+
+    // Replaced rather than merged, so a version with fewer fallbacks than the
+    // row already on disk cannot leave the extra ones behind. Nothing in an
+    // append-only stream re-folds one assignment id today; a rebuild that
+    // reached a half-written table would.
+    this.#stmt("DELETE FROM routing_assignment_fallback WHERE assignment_id = ?").run(
+      assignment.assignmentId,
+    );
+    for (const fallback of fallbacks) this.#insertRoutingFallback(fallback);
+
+    if (supersedes === null) return;
+    this.#stmt(
+      "UPDATE routing_assignment_read_model SET superseded_by = ? WHERE assignment_id = ?",
+    ).run(assignment.assignmentId, supersedes);
+  }
+
+  #upsertRoutingAssignment(assignment: RoutingAssignmentReadModel): void {
+    this.#stmt(
+      "INSERT INTO routing_assignment_read_model (" +
+        "assignment_id, scope_kind, scope_id, version, role, slot, provider, " +
+        "model_version_id, recorded_by, recorded_at, superseded_by, source_stream, " +
+        "source_sequence, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (assignment_id) DO UPDATE SET " +
+        "scope_kind = excluded.scope_kind, scope_id = excluded.scope_id, " +
+        "version = excluded.version, role = excluded.role, slot = excluded.slot, " +
+        "provider = excluded.provider, model_version_id = excluded.model_version_id, " +
+        "recorded_by = excluded.recorded_by, recorded_at = excluded.recorded_at, " +
+        "superseded_by = excluded.superseded_by, source_stream = excluded.source_stream, " +
+        "source_sequence = excluded.source_sequence, sequence = excluded.sequence",
+    ).run(
+      assignment.assignmentId,
+      assignment.scopeKind,
+      assignment.scopeId,
+      assignment.version,
+      assignment.role,
+      assignment.slot,
+      assignment.provider,
+      assignment.modelVersionId,
+      assignment.recordedBy,
+      assignment.recordedAt,
+      assignment.supersededBy,
+      assignment.sourceStream,
+      assignment.sourceSequence,
+      assignment.sequence,
+    );
+  }
+
+  #insertRoutingFallback(fallback: RoutingAssignmentFallbackRow): void {
+    this.#stmt(
+      "INSERT INTO routing_assignment_fallback (assignment_id, ordinal, model_version_id) " +
+        "VALUES (?, ?, ?) " +
+        "ON CONFLICT (assignment_id, ordinal) DO UPDATE SET " +
+        "model_version_id = excluded.model_version_id",
+    ).run(fallback.assignmentId, fallback.ordinal, fallback.modelVersionId);
+  }
+
+  #registryRowToRecord(row: RegistryEventRow): RegistryEventRecord {
+    const document = tryNormalizeRegistryDocument(JSON.parse(row.event_json));
+    if (document === null) {
+      // The read path fails closed on tampering rather than returning a
+      // plausible-looking document, exactly as the other two streams do.
+      throw new LedgerIntegrityError([
+        "registry document at sequence " +
+          String(row.sequence) +
+          " no longer satisfies the document shape",
+      ]);
+    }
+    return {
+      sequence: row.sequence,
+      eventId: row.event_id,
+      idempotencyKey: row.idempotency_key,
+      document,
+      canonicalJson: row.event_json,
+      previousSha256: row.previous_sha256,
+      eventSha256: row.event_sha256,
+      causation: causationFromRow(row, row.sequence),
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // Replay
   // -------------------------------------------------------------------------
 
@@ -2070,6 +2822,182 @@ export class Ledger {
     return problems;
   }
 
+  /**
+   * Walk the registry stream the way the other two walkers walk theirs.
+   *
+   * Separate for the reason `#replayInitiative` is separate from `#replay`:
+   * three streams, three sets of columns, three coordinate checks. What they
+   * share — the canonical-form check, the chain arithmetic, the contiguity
+   * rule — is mirrored deliberately, and a divergence between them is a defect.
+   */
+  #replayRegistry(
+    onDocument: (document: RegistryDocument, row: RegistryEventRow) => void,
+  ): ReplayOutcome {
+    const problems: IntegrityProblem[] = [];
+    let checked = 0;
+    let previous = GENESIS_SHA256;
+    let expectedSequence = 1;
+    let cursor = 0;
+
+    const select = this.#stmt(
+      "SELECT " +
+        REGISTRY_EVENT_COLUMNS +
+        " FROM registry_events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?",
+    );
+
+    for (;;) {
+      const rows = select.all(cursor, REPLAY_BATCH_SIZE) as RegistryEventRow[];
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        cursor = row.sequence;
+
+        if (row.sequence !== expectedSequence) {
+          problems.push({
+            kind: "SEQUENCE",
+            detail:
+              "registry_events expected sequence " +
+              String(expectedSequence) +
+              " but found " +
+              String(row.sequence) +
+              ", so the stream is not contiguous",
+            sequence: row.sequence,
+          });
+          expectedSequence = row.sequence;
+        }
+        expectedSequence += 1;
+        checked += 1;
+
+        const shapeProblems = this.#validateRegistryRowShape(row);
+        if (shapeProblems.length > 0) problems.push(...shapeProblems);
+
+        if (row.previous_sha256 !== previous) {
+          problems.push({
+            kind: "HASH_CHAIN",
+            detail:
+              "registry sequence " +
+              String(row.sequence) +
+              " records previous digest " +
+              row.previous_sha256 +
+              " but the chain has reached " +
+              previous,
+            sequence: row.sequence,
+          });
+        }
+
+        const recomputed = chainDigest(row.previous_sha256, row.event_json);
+        if (recomputed !== row.event_sha256) {
+          problems.push({
+            kind: "HASH_CHAIN",
+            detail:
+              "registry sequence " +
+              String(row.sequence) +
+              " records digest " +
+              row.event_sha256 +
+              " but its stored content hashes to " +
+              recomputed,
+            sequence: row.sequence,
+          });
+        }
+
+        previous = row.event_sha256;
+
+        if (shapeProblems.length === 0) {
+          const document = tryNormalizeRegistryDocument(JSON.parse(row.event_json));
+          if (document !== null) onDocument(document, row);
+        }
+      }
+    }
+
+    return { problems, checked, lastSequence: cursor, lastSha256: previous };
+  }
+
+  #validateRegistryRowShape(row: RegistryEventRow): IntegrityProblem[] {
+    const problems: IntegrityProblem[] = [];
+
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(row.event_json);
+    } catch {
+      problems.push({
+        kind: "EVENT_JSON",
+        detail:
+          "registry sequence " + String(row.sequence) + " holds event_json that is not valid JSON",
+        sequence: row.sequence,
+      });
+      return problems;
+    }
+
+    let canonical: string;
+    try {
+      canonical = canonicalJsonStringify(decoded);
+    } catch {
+      problems.push({
+        kind: "EVENT_JSON",
+        detail:
+          "registry sequence " +
+          String(row.sequence) +
+          " holds event_json that is not canonicalizable",
+        sequence: row.sequence,
+      });
+      return problems;
+    }
+
+    if (canonical !== row.event_json) {
+      problems.push({
+        kind: "EVENT_JSON",
+        detail:
+          "registry sequence " +
+          String(row.sequence) +
+          " holds event_json that is not in canonical form, so it was rewritten after it was appended",
+        sequence: row.sequence,
+      });
+    }
+
+    const document = tryNormalizeRegistryDocument(decoded);
+    if (document === null) {
+      problems.push({
+        kind: "EVENT_CONTRACT",
+        detail:
+          "registry sequence " +
+          String(row.sequence) +
+          " holds a document that no longer satisfies the registry document shape",
+        sequence: row.sequence,
+      });
+      return problems;
+    }
+
+    const mismatches: string[] = [];
+    if (document.eventId !== row.event_id) mismatches.push("event_id");
+    if (document.idempotencyKey !== row.idempotency_key) mismatches.push("idempotency_key");
+    if (document.documentKind !== row.document_kind) mismatches.push("document_kind");
+    if (document.documentId !== row.document_id) mismatches.push("document_id");
+    if (document.documentVersion !== row.document_version) mismatches.push("document_version");
+    if (document.contentDigest !== row.content_digest) mismatches.push("content_digest");
+    if (document.parentDocumentVersion !== row.parent_document_version) {
+      mismatches.push("parent_document_version");
+    }
+    if (document.recordedBy !== row.recorded_by) mismatches.push("recorded_by");
+    if (document.effectiveFrom !== row.effective_from) mismatches.push("effective_from");
+    if (document.occurredAt !== row.occurred_at) mismatches.push("occurred_at");
+    if (document.recordedAt !== row.recorded_at) mismatches.push("recorded_at");
+    if (document.contractVersion !== row.contract_version) mismatches.push("contract_version");
+
+    if (mismatches.length > 0) {
+      problems.push({
+        kind: "EVENT_COORDINATES",
+        detail:
+          "registry sequence " +
+          String(row.sequence) +
+          " has indexed columns that disagree with its stored document: " +
+          mismatches.join(", "),
+        sequence: row.sequence,
+      });
+    }
+
+    return problems;
+  }
+
   // -------------------------------------------------------------------------
   // Rebuild
   // -------------------------------------------------------------------------
@@ -2112,9 +3040,48 @@ export class Ledger {
         lastInitiativeRecordedAt = event.recordedAt;
       });
 
-      const problems = [...replay.problems, ...initiativeReplay.problems].map(
-        (problem) => problem.detail,
-      );
+      // And the third, on the same terms. A rebuild is a function of the whole
+      // VECTOR of heads: all three chains are replayed before anything is
+      // cleared, and any one of them being unsound refuses the rebuild.
+      const registrySnapshot = createRegistryProjectionSnapshot();
+      let lastRegistryRecordedAt = EPOCH_TIMESTAMP;
+
+      const registryReplay = this.#replayRegistry((document, row) => {
+        applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
+        lastRegistryRecordedAt = document.recordedAt;
+      });
+
+      const problems = [
+        ...replay.problems,
+        ...initiativeReplay.problems,
+        ...registryReplay.problems,
+      ].map((problem) => problem.detail);
+
+      const registryHead = this.#readRegistryHead();
+      if (registryHead.sequence !== registryReplay.lastSequence) {
+        problems.push(
+          "registry head is sequence " +
+            String(registryHead.sequence) +
+            " but the last stored registry event is sequence " +
+            String(registryReplay.lastSequence),
+        );
+      }
+      if (registryHead.sha256 !== registryReplay.lastSha256) {
+        problems.push(
+          "registry head digest " +
+            registryHead.sha256 +
+            " does not match the replayed registry chain head",
+        );
+      }
+      if (registryHead.count !== registryReplay.checked) {
+        problems.push(
+          "registry head counts " +
+            String(registryHead.count) +
+            " events but " +
+            String(registryReplay.checked) +
+            " are stored",
+        );
+      }
 
       const initiativeHead = this.#readInitiativeHead();
       if (initiativeHead.sequence !== initiativeReplay.lastSequence) {
@@ -2191,6 +3158,20 @@ export class Ledger {
         this.#upsertRoadmapVersion(version);
       }
 
+      // One table, two partitions, written from the two snapshots that folded
+      // them. The partitions are disjoint by
+      // `ck_routing_assignment_read_model__source_scope`, so this is a union
+      // and never a merge: neither source can write a row the other owns, and
+      // the initiative side is empty by construction in this build.
+      const routingAssignments = mergeRoutingAssignments(registrySnapshot, initiativeSnapshot);
+      const routingFallbacks = mergeRoutingFallbacks(registrySnapshot, initiativeSnapshot);
+      // The parent rows go in before the fallbacks, because the fallback table
+      // is the child of a foreign key and `foreign_keys` is ON.
+      for (const assignment of routingAssignments.values()) {
+        this.#upsertRoutingAssignment(assignment);
+      }
+      for (const fallback of routingFallbacks.values()) this.#insertRoutingFallback(fallback);
+
       // The watermark rows are deleted and written back, not updated in place.
       // A rebuild regenerates the derived tables from the log, so there is no
       // partial watermark worth keeping, and a row belonging to a projection
@@ -2209,6 +3190,12 @@ export class Ledger {
           sha256: initiativeReplay.lastSha256,
           updatedAt: lastInitiativeRecordedAt,
         },
+        {
+          sequence: registryReplay.lastSequence,
+          count: registryReplay.checked,
+          sha256: registryReplay.lastSha256,
+          updatedAt: lastRegistryRecordedAt,
+        },
       );
 
       this.#faults.beforeRebuildCommit?.();
@@ -2223,6 +3210,10 @@ export class Ledger {
         initiativeThroughSequence: initiativeReplay.lastSequence,
         initiativeRows: initiativeSnapshot.initiatives.size,
         roadmapVersionRows: initiativeSnapshot.roadmapVersions.size,
+        replayedRegistryEvents: registryReplay.checked,
+        registryThroughSequence: registryReplay.lastSequence,
+        routingAssignmentRows: routingAssignments.size,
+        routingFallbackRows: routingFallbacks.size,
       };
     });
 
@@ -2299,6 +3290,57 @@ export class Ledger {
       applyInitiativeEventToSnapshot(initiativeSnapshot, event, row.sequence);
     });
     problems.push(...initiativeReplay.problems);
+
+    const registrySnapshot = createRegistryProjectionSnapshot();
+    const registryReplay = this.#replayRegistry((document, row) => {
+      applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
+    });
+    problems.push(...registryReplay.problems);
+
+    try {
+      const registryHead = this.#readRegistryHead();
+      if (registryHead.sequence !== registryReplay.lastSequence) {
+        problems.push({
+          kind: "LEDGER_META",
+          detail:
+            "registry head is sequence " +
+            String(registryHead.sequence) +
+            " but the last stored registry event is sequence " +
+            String(registryReplay.lastSequence) +
+            ", so the tail is truncated or the head is stale",
+          sequence: null,
+        });
+      }
+      if (registryHead.sha256 !== registryReplay.lastSha256) {
+        problems.push({
+          kind: "LEDGER_META",
+          detail:
+            "registry head digest " +
+            registryHead.sha256 +
+            " does not match the replayed registry chain head " +
+            registryReplay.lastSha256,
+          sequence: null,
+        });
+      }
+      if (registryHead.count !== registryReplay.checked) {
+        problems.push({
+          kind: "LEDGER_META",
+          detail:
+            "registry head counts " +
+            String(registryHead.count) +
+            " events but " +
+            String(registryReplay.checked) +
+            " are stored",
+          sequence: null,
+        });
+      }
+    } catch (error: unknown) {
+      problems.push({
+        kind: "LEDGER_META",
+        detail: error instanceof Error ? error.message : "the registry head is unreadable",
+        sequence: null,
+      });
+    }
 
     try {
       const initiativeHead = this.#readInitiativeHead();
@@ -2452,10 +3494,12 @@ export class Ledger {
       // Comparing an initiative projection against the task head would report
       // every healthy ledger as broken the moment the two streams had different
       // lengths, which is to say almost always.
-      const onInitiativeStream = row.source_stream === INITIATIVE_STREAM;
-      const expectedSequence = onInitiativeStream
-        ? initiativeReplay.lastSequence
-        : replay.lastSequence;
+      const expectedSequence =
+        row.source_stream === INITIATIVE_STREAM
+          ? initiativeReplay.lastSequence
+          : row.source_stream === REGISTRY_STREAM
+            ? registryReplay.lastSequence
+            : replay.lastSequence;
 
       if (row.applied_sequence !== expectedSequence) {
         problems.push({
@@ -2503,6 +3547,28 @@ export class Ledger {
           sequence: null,
         });
       }
+
+      // The watermark's other claim. `applied_sequence` says how far, the
+      // digest says which history, and `event_count` says how much of it was
+      // folded — and that third number was published by `status()` on this
+      // ledger's authority while nothing compared it to the log.
+      const expectedCount = this.#countAtSequence(row.source_stream, row.applied_sequence);
+      if (row.event_count !== expectedCount) {
+        problems.push({
+          kind: "PROJECTION_META",
+          detail:
+            label +
+            " on " +
+            streamLabel +
+            " counts " +
+            String(row.event_count) +
+            " events through sequence " +
+            String(row.applied_sequence) +
+            " but that stream holds " +
+            String(expectedCount),
+          sequence: null,
+        });
+      }
     }
 
     for (const source of PROJECTION_SOURCES) {
@@ -2521,6 +3587,7 @@ export class Ledger {
 
     problems.push(...this.#compareProjections(snapshot));
     problems.push(...this.#compareInitiativeProjections(initiativeSnapshot));
+    problems.push(...this.#compareRoutingProjection(registrySnapshot, initiativeSnapshot));
 
     return {
       ok: problems.length === 0,
@@ -2620,6 +3687,101 @@ export class Ledger {
             "roadmap_version_read_model holds version " +
             versionId +
             " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
+
+    return problems;
+  }
+
+  /**
+   * Compare the stored routing projection against a fresh replay of BOTH
+   * streams that feed it.
+   *
+   * As exact sets in both directions, for the reason the association rows are:
+   * a substituted row leaves the count unchanged while the projection claims a
+   * role was assigned a model version it was never assigned, which is precisely
+   * the claim this projection exists to be able to make.
+   */
+  #compareRoutingProjection(
+    registry: RegistryProjectionSnapshot,
+    initiative: InitiativeProjectionSnapshot,
+  ): IntegrityProblem[] {
+    const problems: IntegrityProblem[] = [];
+
+    const expectedAssignments = mergeRoutingAssignments(registry, initiative);
+    const storedAssignments = new Map(
+      (
+        this.#stmt("SELECT * FROM routing_assignment_read_model").all() as RoutingAssignmentRow[]
+      ).map((row) => [row.assignment_id, routingAssignmentRowToModel(row)]),
+    );
+
+    for (const [assignmentId, expected] of expectedAssignments) {
+      const stored = storedAssignments.get(assignmentId);
+      if (stored === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "routing_assignment_read_model is missing the assignment " + assignmentId,
+          sequence: null,
+        });
+        continue;
+      }
+      if (canonicalJsonStringify(stored) !== canonicalJsonStringify(expected)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "routing_assignment_read_model row for " + assignmentId + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const assignmentId of storedAssignments.keys()) {
+      if (!expectedAssignments.has(assignmentId)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "routing_assignment_read_model holds the assignment " +
+            assignmentId +
+            " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
+
+    const expectedFallbacks = mergeRoutingFallbacks(registry, initiative);
+    const storedFallbacks = new Map(
+      (this.#stmt("SELECT * FROM routing_assignment_fallback").all() as RoutingFallbackRow[]).map(
+        (row) => [
+          routingFallbackKey(row.assignment_id, row.ordinal),
+          routingFallbackRowToModel(row),
+        ],
+      ),
+    );
+
+    for (const [key, expected] of expectedFallbacks) {
+      const stored = storedFallbacks.get(key);
+      if (stored === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "routing_assignment_fallback is missing " + key,
+          sequence: null,
+        });
+        continue;
+      }
+      if (canonicalJsonStringify(stored) !== canonicalJsonStringify(expected)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "routing_assignment_fallback row for " + key + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const key of storedFallbacks.keys()) {
+      if (!expectedFallbacks.has(key)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "routing_assignment_fallback holds " + key + " which no event accounts for",
           sequence: null,
         });
       }
@@ -3232,21 +4394,30 @@ export class Ledger {
     const head = this.#readHead();
     const initiativeHead = this.#readInitiativeHead();
 
-    // One row per projection, in the shape callers already parse.
+    // One row per SINGLE-SOURCE projection, in the shape callers already parse.
     //
-    // The watermark table is keyed by (projection, stream), so in principle a
-    // projection could contribute more than one row here. In this build no
-    // projection folds more than one stream, so the count and the shape are
-    // exactly what they were when this read came from projection_meta: five
-    // rows, ordered by name, with `appliedThroughSequence` carrying
-    // `applied_sequence`. The gateway forwards this array to a strict schema
-    // without mapping it, so a field added here would be a wire break; the
-    // vector's extra coordinates travel when that schema does, not before.
-    const projections: ProjectionStatus[] = this.#readWatermarks().map((row) => {
+    // The watermark table is keyed by (projection, stream), and since
+    // P-09/log-C one projection contributes two rows to it. `ProjectionStatus`
+    // has one `appliedThroughSequence`, and for a projection with two
+    // independent heads there is no such number — stamping it with either one
+    // makes the other unverifiable, which is the exact defect `projection_meta`
+    // had and the reason it was replaced. So the two-source projection is
+    // omitted here rather than described badly, and the count and the shape
+    // stay exactly what they were: five rows, ordered by name.
+    //
+    // The omission is not the vector being lost. It lives in
+    // `projection_watermark`, `verifyIntegrity()` checks every row of it, and a
+    // rebuild rewrites all of them. What is deferred is publishing it on the
+    // wire: the gateway forwards this array to a strict schema without mapping
+    // it, so a field added here would be a wire break, and the DTO that can
+    // carry a vector is P-09/log-D.
+    const projections: ProjectionStatus[] = [];
+    for (const row of this.#readWatermarks()) {
       // The name is database content, not a module constant. It is checked
       // against the closed set before it can ever be interpolated into SQL, so
       // a ledger whose metadata was edited fails loudly here instead of handing
-      // an attacker-chosen identifier to the query planner.
+      // an attacker-chosen identifier to the query planner. Every row is
+      // checked, including the ones this DTO does not publish.
       if (!PROJECTION_NAME_SET.has(row.projection_name)) {
         throw new LedgerIntegrityError([
           "projection_watermark holds the projection name " +
@@ -3254,18 +4425,21 @@ export class Ledger {
             " which this build does not define",
         ]);
       }
+      if (!STATUS_WATERMARK_KEYS.has(watermarkKey(row.projection_name, row.source_stream))) {
+        continue;
+      }
       const counted = this.#stmt("SELECT COUNT(*) AS n FROM " + row.projection_name).get() as {
         readonly n: number;
       };
-      return {
+      projections.push({
         name: row.projection_name,
         appliedThroughSequence: row.applied_sequence,
         eventCount: row.event_count,
         sourceHeadSha256: row.source_head_sha256,
         updatedAt: row.updated_at,
         rowCount: counted.n,
-      };
-    });
+      });
+    }
 
     const migrations: AppliedMigration[] = readAppliedMigrations(this.#db);
 
