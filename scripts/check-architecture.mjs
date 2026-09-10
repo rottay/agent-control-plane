@@ -7731,6 +7731,47 @@ const R19G_WRITE_SET = [
   "docs/architecture/index.md",
 ];
 
+/**
+ * P-09/log-A — a batch lands with its watermarks in one transaction.
+ *
+ * The first rung of P-09/log, adjudicated by the DT as scale A of four
+ * (`acp-p09-kimi-dt-adjudication-v1.md`, D2). Migration 7 adds
+ * `projection_watermark`, one row per `(projection, source stream)`, seeded
+ * from the heads each stream currently holds; `projection_meta` stays applied
+ * and inert. `appendBatch` is added **beside** `append`, so no call site moves.
+ *
+ * **Pins that do not move.** The write set gains **0 distinct paths**: all
+ * eight of the literals below are already admitted by historical blocks —
+ * `WRITE_SET_DISTINCT` holds. The block exists because D6/R8 requires a packet
+ * to carry its own registration rather than ride one it did not earn, not
+ * because any of these paths would otherwise be refused.
+ *
+ * The fence suite holds at 202 and the ADR corpus at 63: this packet adds no
+ * law and no record. It is a schema and an API inside one package, and no rule
+ * in `AGENTS.md` or in this file asks a schema migration for an ADR.
+ *
+ * No law here is falsified by the change. `L-X1-4` still finds
+ * `schema_migrations` named in the ledger's migration module and still finds
+ * the three stores' migration tables distinct — `projection_watermark` is a
+ * table inside the ledger, not a second migration table. `L-V2B5R10` is
+ * untouched: the legacy `correlation_id` and `causation_id` columns are neither
+ * read differently nor retired here. The README/barrel error law is untouched
+ * because no error class is added — a malformed batch is a
+ * `LedgerValidationError` and an inconsistent watermark a finding, not a
+ * fourteenth class. And `TEST_ONLY_DOMAINS` needs no entry: every test lands in
+ * the two test modules that already mirror a source module.
+ */
+const P09A_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -7918,6 +7959,7 @@ const WRITE_SET = [
   ...P03_WRITE_SET,
   ...P04_WRITE_SET,
   ...R19G_WRITE_SET,
+  ...P09A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

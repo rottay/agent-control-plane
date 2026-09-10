@@ -70,6 +70,25 @@ export interface AppendResult {
   readonly record: LedgerEventRecord;
 }
 
+/**
+ * The outcome of one `appendBatch` (P-09/log-A).
+ *
+ * Per event rather than per batch, because a batch is all-or-nothing about
+ * *writing* and not about *inserting*: an exact replay inside a batch is a
+ * no-op for that event alone, and a caller retrying a partially recorded batch
+ * needs to see which of its events were already there. A single boolean for the
+ * batch would have to lie about one case or the other.
+ */
+export interface AppendBatchResult {
+  /** One result per candidate, in the order they were given. */
+  readonly results: readonly AppendResult[];
+  /** How many were written. The rest were exact replays. */
+  readonly insertedCount: number;
+  /** The task stream's head after the batch committed. */
+  readonly headSequence: number;
+  readonly headEventSha256: string;
+}
+
 export interface EventQuery {
   /** Exclusive sequence cursor. Pass the previous page nextCursor. */
   readonly afterSequence?: number | undefined;

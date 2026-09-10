@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { MIGRATIONS, checkMigrationConformance } from "../../src/migrations/index.js";
+import {
+  EXPECTED_SCHEMA_OBJECTS,
+  INITIATIVE_PROJECTION_NAMES,
+  INITIATIVE_STREAM,
+  MIGRATIONS,
+  PROJECTION_NAMES,
+  PROJECTION_SOURCES,
+  TASK_STREAM,
+  checkMigrationConformance,
+} from "../../src/migrations/index.js";
 import type { AppliedMigration } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 
@@ -121,5 +130,128 @@ describe("migration conformance refuses every divergence, and suppresses the tai
       expect(Array.isArray(verdict.problems)).toBe(true);
       expect(Array.isArray(verdict.missing)).toBe(true);
     });
+  });
+});
+
+/**
+ * Migration 7 and the watermark vocabulary (P-09/log-A).
+ *
+ * These are structural assertions on the migration set itself, not on a
+ * database: the migration source is append-only by checksum, so the shape of
+ * the tail and the closed set of `(projection, stream)` pairs it seeds are
+ * decided here, once, and every open compares against them.
+ */
+describe("migration 7 appends the watermark table without touching the applied six", () => {
+  const SEVENTH = MIGRATIONS[6];
+
+  it("is the tail of the set, in position and in name", () => {
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
+      "control_plane_events",
+      "read_models",
+      "ledger_and_projection_meta",
+      "initiative_stream",
+      "account_events",
+      "execution_route_read_model",
+      "projection_watermark",
+    ]);
+  });
+
+  it("is the only migration that names the watermark table", () => {
+    const naming = MIGRATIONS.filter((migration) =>
+      migration.sql.includes("projection_watermark"),
+    );
+    expect(naming.map((migration) => migration.version)).toEqual([7]);
+  });
+
+  it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
+    const sql = SEVENTH?.sql ?? "";
+    expect(sql).toContain("CREATE TABLE projection_watermark");
+    expect(sql).toContain(") STRICT;");
+    expect(sql).toContain(
+      "CONSTRAINT pk_projection_watermark PRIMARY KEY (projection_name, source_stream)",
+    );
+    for (const rule of [
+      "ck_projection_watermark__source_stream",
+      "ck_projection_watermark__projector_version",
+      "ck_projection_watermark__applied_sequence",
+      "ck_projection_watermark__event_count",
+      "ck_projection_watermark__source_head_sha256",
+    ]) {
+      expect(sql, rule).toContain("CONSTRAINT " + rule);
+    }
+  });
+
+  it("admits all four contract streams in the CHECK, not only the two under discipline", () => {
+    // A CHECK cannot be widened without rewriting the table, and rewriting an
+    // applied migration is the one thing this file forbids. So the domain is
+    // the contract's four streams from the start; that only two of them carry a
+    // certified watermark today is a fact about the code's closed set, below.
+    const sql = SEVENTH?.sql ?? "";
+    for (const stream of [
+      "control_plane_events",
+      "initiative_events",
+      "account_events",
+      "registry_events",
+    ]) {
+      expect(sql, stream).toContain("'" + stream + "'");
+    }
+  });
+
+  it("seeds from the heads it finds, on each stream's own meta keys", () => {
+    const sql = SEVENTH?.sql ?? "";
+    // Never a literal zero seed: a row frozen at zero behind a non-zero head is
+    // what verifyIntegrity reports as corruption.
+    for (const key of [
+      "'head_sequence'",
+      "'event_count'",
+      "'head_event_sha256'",
+      "'initiative_head_sequence'",
+      "'initiative_event_count'",
+      "'initiative_head_event_sha256'",
+    ]) {
+      expect(sql, key).toContain(key);
+    }
+  });
+
+  it("inventories the new table, and adds no index or trigger to the schema shape", () => {
+    const added = EXPECTED_SCHEMA_OBJECTS.filter((object) =>
+      object.name.startsWith("projection_watermark"),
+    );
+    expect(added).toEqual([{ type: "table", name: "projection_watermark" }]);
+  });
+});
+
+describe("the closed set of watermark rows is exactly the streams under discipline", () => {
+  it("pairs every projection with the one stream it folds", () => {
+    expect(
+      PROJECTION_SOURCES.map((source) => source.projectionName + "@" + source.sourceStream),
+    ).toEqual([
+      "task_read_model@control_plane_events",
+      "worker_read_model@control_plane_events",
+      "execution_route_read_model@control_plane_events",
+      "initiative_read_model@initiative_events",
+      "roadmap_version_read_model@initiative_events",
+    ]);
+  });
+
+  it("covers both name lists exactly, with nothing left over", () => {
+    const taskNames = PROJECTION_SOURCES.filter(
+      (source) => source.sourceStream === TASK_STREAM,
+    ).map((source) => source.projectionName);
+    const initiativeNames = PROJECTION_SOURCES.filter(
+      (source) => source.sourceStream === INITIATIVE_STREAM,
+    ).map((source) => source.projectionName);
+
+    expect(taskNames).toEqual([...PROJECTION_NAMES]);
+    expect(initiativeNames).toEqual([...INITIATIVE_PROJECTION_NAMES]);
+  });
+
+  it("does not claim the account stream (D3)", () => {
+    // The account stream has no hash chain of its own, so no watermark of it is
+    // published as certified. Its absence here is the whole mechanism.
+    expect(
+      PROJECTION_SOURCES.some((source) => source.sourceStream === "account_events"),
+    ).toBe(false);
   });
 });

@@ -34,6 +34,7 @@ ledger.close();
 | --- | --- |
 | `openLedger(path, options?)` | Open writable or read-only. Applies missing migrations only when writable. |
 | `append(event)` | Validate, canonicalize and append atomically. Exact replay is a no-op. |
+| `appendBatch(events)` | The task stream only. One or more events, one transaction: rows, projections, head and watermarks commit together or not at all. Added beside `append`, which is unchanged. |
 | `getEvent(eventId)` | One record by event id, or null. |
 | `getEventBySequence(sequence)` | One record by position, or null. |
 | `getEventByIdempotencyKey(key)` | One record by idempotency key, or null. |
@@ -97,7 +98,33 @@ fourteenth class cannot arrive without appearing here.
 | `execution_route_read_model` | derived | the route each `(task, attempt)` was admitted on: provider, model, account, transport and the capability-policy version that chose them |
 | `initiative_read_model` | derived | current status, counts, first and last position |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
-| `projection_meta` | derived | applied-through sequence, source head digest |
+| `projection_watermark` | derived | one row per `(projection, source stream)`: projector version, applied sequence, event count, and the source digest at that sequence |
+| `projection_meta` | legacy | frozen at the values migration 7 found. Not written, and not read for truth. |
+
+`projection_watermark` replaced `projection_meta` in migration 7. The old table
+had one row per projection, which is only an answer while every projection folds
+exactly one stream: a projection fed by two streams has two independent heads,
+and stamping it with either one makes the other unverifiable. The composite key
+makes the question well posed before there is a projection that needs it.
+
+The old table is not dropped and not rewritten — the migrations that created it
+are applied and immutable by checksum — so it stays inert, and nothing derives a
+fact from it.
+
+Two properties are worth naming because they are what the table exists for. The
+`UPDATE` of `applied_sequence` is the single source of truth for how far a
+projection has been applied; `updated_at` is operational bookkeeping and never
+an authority on that question. And `source_head_sha256` is verified **at**
+`applied_sequence`, not against whatever the head has since become — the two
+coincide while a watermark is level, which is exactly why the weaker check would
+look correct until the first time it mattered.
+
+**The account stream carries no certified watermark.** `account_events` has no
+hash chain of its own — migration 5 gives it neither `previous_sha256` nor
+`event_sha256` — so there is nothing to verify a source digest against.
+`appendAccountAction` therefore publishes no watermark, and a row claiming that
+stream is refused by `verifyIntegrity()` rather than believed. Its integrity is a
+later packet's.
 
 Only the derived tables are ever cleared. Neither event table has a delete path
 at all: each carries its own `BEFORE UPDATE` and `BEFORE DELETE` triggers, which
@@ -116,8 +143,15 @@ of the stream it was built from, never the other's.
 `verifyIntegrity()` checks SQLite integrity and foreign keys, the migration set,
 the live schema shape, every stored body against its canonical form and the
 contract, columns against body, the whole hash chain, sequence contiguity, head
-and count metadata, projection metadata, and the stored projections against a
-fresh replay.
+and count metadata, the projection watermarks, and the stored projections
+against a fresh replay.
+
+The watermark checks are membership and level: exactly one row per
+`(projection, source stream)` pair this build defines — no unknown pair, and
+none missing — each at its own stream's head, each carrying that stream's digest
+at its `applied_sequence`, each written by this build's projector version. A
+watermark from another projector version invalidates the derived table without
+anything having happened to the stream.
 
 It cannot prove the events were true when written, and it cannot detect a
 coherent whole-file replacement. Both need an external anchor that P1A does not

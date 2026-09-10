@@ -140,6 +140,7 @@ export type {
 } from "./roadmap-version/index.js";
 
 export type {
+  AppendBatchResult,
   AppendResult,
   AppliedMigration,
   EventPage,

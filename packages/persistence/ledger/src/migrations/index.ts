@@ -348,6 +348,103 @@ SELECT
   '1970-01-01T00:00:00.000Z';
 `,
   },
+  {
+    version: 7,
+    name: "projection_watermark",
+    sql: `
+-- One row per (projection, source stream), replacing a table that could only
+-- hold one row per projection.
+--
+-- projection_meta answered "how far is this projection?" with a single number,
+-- which is only an answer while every projection folds exactly one stream. A
+-- projection fed by two streams has two independent heads and no single number
+-- describes it: stamping it with either one makes the other unverifiable. The
+-- composite key is what makes the question well posed before there is a
+-- projection that needs it.
+--
+-- projection_meta is not dropped and not rewritten. It stays exactly as this
+-- migration found it, read by nothing and written by nothing: the migrations
+-- that created it are applied and immutable by checksum, and a legacy table
+-- left inert costs a page nobody reads.
+--
+-- The naming here follows §3.2 of the database contract, which governs from
+-- migration 7 onward. Migrations 1 to 6 keep their own conventions forever.
+CREATE TABLE projection_watermark (
+  projection_name    TEXT    NOT NULL,
+  source_stream      TEXT    NOT NULL,
+  projector_version  INTEGER NOT NULL,
+  applied_sequence   INTEGER NOT NULL,
+  event_count        INTEGER NOT NULL,
+  source_head_sha256 TEXT    NOT NULL,
+  updated_at         TEXT    NOT NULL,
+  CONSTRAINT pk_projection_watermark PRIMARY KEY (projection_name, source_stream),
+  -- All four streams of the contract, not the two that carry a certified
+  -- watermark today. A CHECK cannot be widened without rewriting the table, and
+  -- rewriting an applied migration is the one thing this file forbids; which
+  -- streams are actually published is a fact about the code's closed set, which
+  -- can change without a migration.
+  CONSTRAINT ck_projection_watermark__source_stream CHECK (
+    source_stream IN (
+      'control_plane_events',
+      'initiative_events',
+      'account_events',
+      'registry_events'
+    )
+  ),
+  CONSTRAINT ck_projection_watermark__projector_version CHECK (projector_version >= 1),
+  CONSTRAINT ck_projection_watermark__applied_sequence CHECK (applied_sequence >= 0),
+  CONSTRAINT ck_projection_watermark__event_count CHECK (event_count >= 0),
+  CONSTRAINT ck_projection_watermark__source_head_sha256 CHECK (
+    length(source_head_sha256) = 64 AND source_head_sha256 NOT GLOB '*[^0-9a-f]*'
+  )
+) STRICT;
+
+-- Seeded from the heads this ledger CURRENTLY holds, per stream, exactly as
+-- migration 6 seeded its own row and for the same reason: a row frozen at zero
+-- behind a non-zero head is what verifyIntegrity reports as corruption, so a
+-- literal zero seed would make every ledger in the field fail its own integrity
+-- check immediately after a routine upgrade, with nothing wrong with it.
+--
+-- Each list is seeded from its OWN stream's meta keys. Seeding all five rows
+-- from head_sequence would be the same defect wearing a composite key: the two
+-- initiative projections would claim the task stream's position.
+--
+-- On a fresh ledger every subquery reads 0, 0 and the genesis digest, so this
+-- is identical to a literal zero seed there.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  projection.name,
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  '1970-01-01T00:00:00.000Z'
+FROM (
+  SELECT 'task_read_model' AS name
+  UNION ALL SELECT 'worker_read_model'
+  UNION ALL SELECT 'execution_route_read_model'
+) AS projection;
+
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  projection.name,
+  'initiative_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'initiative_head_event_sha256'),
+  '1970-01-01T00:00:00.000Z'
+FROM (
+  SELECT 'initiative_read_model' AS name
+  UNION ALL SELECT 'roadmap_version_read_model'
+) AS projection;
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -368,7 +465,7 @@ export const DERIVED_TABLES: readonly string[] = [
   "roadmap_version_read_model",
 ];
 
-/** Projection names tracked in projection_meta, for the task stream. */
+/** Projection names tracked in projection_watermark, for the task stream. */
 export const PROJECTION_NAMES: readonly string[] = [
   "task_read_model",
   "worker_read_model",
@@ -376,17 +473,66 @@ export const PROJECTION_NAMES: readonly string[] = [
 ];
 
 /**
- * Projection names tracked in projection_meta, for the initiative stream.
+ * Projection names tracked in projection_watermark, for the initiative stream.
  *
  * Kept separate from the task stream's names rather than merged into one list,
- * because each set follows its own chain: a projection's
- * `applied_through_sequence` and `source_head_sha256` only mean anything
- * against the head of the stream it was built from, and stamping an
- * initiative projection with the task head would make both unverifiable.
+ * because each set follows its own chain: a projection's `applied_sequence`
+ * and `source_head_sha256` only mean anything against the head of the stream
+ * it was built from, and stamping an initiative projection with the task head
+ * would make both unverifiable.
  */
 export const INITIATIVE_PROJECTION_NAMES: readonly string[] = [
   "initiative_read_model",
   "roadmap_version_read_model",
+];
+
+/** The task stream's table name, as `projection_watermark.source_stream` spells it. */
+export const TASK_STREAM = "control_plane_events";
+
+/** The initiative stream's table name, in the same vocabulary. */
+export const INITIATIVE_STREAM = "initiative_events";
+
+/**
+ * The fold algorithm's generation.
+ *
+ * A change to how any projection is folded is a change to what the derived
+ * tables mean, and rows written by an older algorithm are not rows this build
+ * would have written. Bumping this invalidates the derived tables without
+ * touching a single event: the stream is the authority and is not versioned by
+ * this number.
+ */
+export const PROJECTOR_VERSION = 1;
+
+/** One projection, and the one stream it folds. */
+export interface ProjectionSource {
+  readonly projectionName: string;
+  readonly sourceStream: string;
+}
+
+/**
+ * The closed set of watermark rows this build publishes.
+ *
+ * Written out in full rather than derived from the two name lists above, so
+ * that the lists and the pairs are two independent declarations of the same
+ * fact and a test can hold them against each other. A name that gained a
+ * stream, or lost one, would show up as a disagreement rather than as a
+ * silently regenerated set.
+ *
+ * `account_events` is deliberately absent (P-09 adjudication D3): that stream
+ * has no hash chain of its own — migration 5 gives it neither
+ * `previous_sha256` nor `event_sha256` — so there is nothing to verify a
+ * `source_head_sha256` against, and a watermark nobody can check is worse than
+ * no watermark at all. Its integrity is P-08's, and until it exists this build
+ * publishes no certified watermark for that stream.
+ *
+ * `registry_events` is absent because it does not exist yet (P-09/log-C).
+ */
+export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
+  { projectionName: "task_read_model", sourceStream: TASK_STREAM },
+  { projectionName: "worker_read_model", sourceStream: TASK_STREAM },
+  { projectionName: "execution_route_read_model", sourceStream: TASK_STREAM },
+  { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
+  { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
 ];
 
 export interface SchemaObject {
@@ -453,6 +599,11 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "table", name: "execution_route_read_model" },
   { type: "index", name: "execution_route_read_model_by_policy_version" },
   { type: "index", name: "execution_route_read_model_by_account" },
+  // P-09/log-A. Derived bookkeeping, so no append-only trigger and, for now,
+  // no index: the composite primary key is the only access path, and SQLite's
+  // own automatic index for it carries the reserved prefix this inventory
+  // excludes.
+  { type: "table", name: "projection_watermark" },
 ];
 
 export interface MigrationConformance {

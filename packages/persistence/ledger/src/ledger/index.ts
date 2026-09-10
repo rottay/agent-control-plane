@@ -26,13 +26,18 @@ import {
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
   INITIATIVE_PROJECTION_NAMES,
+  INITIATIVE_STREAM,
   MIGRATIONS,
   PROJECTION_NAMES,
+  PROJECTION_SOURCES,
+  PROJECTOR_VERSION,
   SCHEMA_MIGRATIONS_DDL,
+  TASK_STREAM,
   applyMigrations,
   checkMigrationConformance,
   readAppliedMigrations,
   schemaMigrationsTableExists,
+  type ProjectionSource,
 } from "../migrations/index.js";
 import {
   applyEventToSnapshot,
@@ -52,6 +57,7 @@ import {
   type WorkerTaskProjection,
 } from "../projection/index.js";
 import type {
+  AppendBatchResult,
   AppendResult,
   AppliedMigration,
   EventPage,
@@ -236,9 +242,11 @@ interface MetaRow {
   readonly value: string;
 }
 
-interface ProjectionMetaRow {
-  readonly name: string;
-  readonly applied_through_sequence: number;
+interface WatermarkRow {
+  readonly projection_name: string;
+  readonly source_stream: string;
+  readonly projector_version: number;
+  readonly applied_sequence: number;
   readonly event_count: number;
   readonly source_head_sha256: string;
   readonly updated_at: string;
@@ -248,6 +256,26 @@ interface HeadState {
   readonly sequence: number;
   readonly sha256: string;
   readonly count: number;
+}
+
+/** One event's outcome inside an open transaction, with the head it produced. */
+interface AppendedEvent {
+  readonly result: AppendResult;
+  /** The stream's head after this event. Null when it was an exact replay. */
+  readonly head: HeadState | null;
+}
+
+/** How far one stream has been folded, as a watermark row records it. */
+interface StreamLevel {
+  readonly sequence: number;
+  readonly count: number;
+  readonly sha256: string;
+  /**
+   * The recording event's own instant, never a clock read. Bookkeeping only:
+   * nothing derives how far a projection has been applied from this field —
+   * `applied_sequence` is the single answer to that question.
+   */
+  readonly updatedAt: string;
 }
 
 interface ReplayOutcome {
@@ -376,8 +404,36 @@ const PROJECTION_NAME_SET: ReadonlySet<string> = new Set([
   ...INITIATIVE_PROJECTION_NAMES,
 ]);
 
-/** Which stream a projection follows. */
-const INITIATIVE_PROJECTION_NAME_SET: ReadonlySet<string> = new Set(INITIATIVE_PROJECTION_NAMES);
+// Which stream a projection follows used to be a second name set here. It is
+// now a column: `projection_watermark.source_stream` says it per row, so the
+// answer comes from the same place the question is asked from.
+
+const WATERMARK_COLUMNS =
+  "projection_name, source_stream, projector_version, applied_sequence, event_count, " +
+  "source_head_sha256, updated_at";
+
+/**
+ * One key for the composite primary key, so membership is one lookup.
+ *
+ * The separator is a NUL because it cannot occur in a table or projection name,
+ * so no pair of legal names can collide with another pair.
+ */
+function watermarkKey(projectionName: string, sourceStream: string): string {
+  return projectionName + "\u0000" + sourceStream;
+}
+
+/** The `(projection, stream)` pairs this build publishes, as a membership set. */
+const WATERMARK_KEYS: ReadonlySet<string> = new Set(
+  PROJECTION_SOURCES.map((source) => watermarkKey(source.projectionName, source.sourceStream)),
+);
+
+const TASK_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filter(
+  (source) => source.sourceStream === TASK_STREAM,
+);
+
+const INITIATIVE_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filter(
+  (source) => source.sourceStream === INITIATIVE_STREAM,
+);
 
 /**
  * Render a database-supplied name safely for a diagnostic.
@@ -613,41 +669,93 @@ export class Ledger {
     this.#writeMeta(INITIATIVE_EVENT_COUNT, String(count));
   }
 
-  #writeInitiativeProjectionMeta(
-    appliedThroughSequence: number,
-    eventCount: number,
-    sourceHeadSha256: string,
-    updatedAt: string,
-  ): void {
+  /**
+   * Advance the watermark of every projection fed by one stream.
+   *
+   * This `UPDATE` is the single source of truth for how far a projection has
+   * been applied. Nothing derives that from a clock, from `updated_at`, or from
+   * counting rows in the derived table, and nothing may: two answers to "how
+   * far" is how a projector applies the same range twice.
+   *
+   * It targets the composite key rather than the projection name alone, so
+   * advancing one stream cannot move a row that follows another.
+   */
+  #writeWatermarks(sources: readonly ProjectionSource[], level: StreamLevel): void {
     const update = this.#stmt(
-      "UPDATE projection_meta SET applied_through_sequence = ?, event_count = ?, " +
-        "source_head_sha256 = ?, updated_at = ? WHERE name = ?",
+      "UPDATE projection_watermark SET projector_version = ?, applied_sequence = ?, " +
+        "event_count = ?, source_head_sha256 = ?, updated_at = ? " +
+        "WHERE projection_name = ? AND source_stream = ?",
     );
-    for (const name of INITIATIVE_PROJECTION_NAMES) {
-      update.run(appliedThroughSequence, eventCount, sourceHeadSha256, updatedAt, name);
+    for (const source of sources) {
+      update.run(
+        PROJECTOR_VERSION,
+        level.sequence,
+        level.count,
+        level.sha256,
+        level.updatedAt,
+        source.projectionName,
+        source.sourceStream,
+      );
     }
   }
 
-  #writeProjectionMeta(
-    appliedThroughSequence: number,
-    eventCount: number,
-    sourceHeadSha256: string,
-    updatedAt: string,
-  ): void {
-    const update = this.#stmt(
-      "UPDATE projection_meta SET applied_through_sequence = ?, event_count = ?, " +
-        "source_head_sha256 = ?, updated_at = ? WHERE name = ?",
+  /**
+   * Clear and rewrite the whole watermark table, for a rebuild.
+   *
+   * The contract is explicit that a rebuild deletes the row and writes it back
+   * rather than updating it in place: a read model that was dropped and
+   * regenerated has no partial state worth preserving, and a row left over from
+   * a projection this build no longer defines would survive an UPDATE that
+   * never named it.
+   */
+  #rewriteWatermarks(task: StreamLevel, initiative: StreamLevel): void {
+    this.#stmt("DELETE FROM projection_watermark").run();
+    const insert = this.#stmt(
+      "INSERT INTO projection_watermark (" + WATERMARK_COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
-    for (const name of PROJECTION_NAMES) {
-      update.run(appliedThroughSequence, eventCount, sourceHeadSha256, updatedAt, name);
+    for (const source of PROJECTION_SOURCES) {
+      const level = source.sourceStream === INITIATIVE_STREAM ? initiative : task;
+      insert.run(
+        source.projectionName,
+        source.sourceStream,
+        PROJECTOR_VERSION,
+        level.sequence,
+        level.count,
+        level.sha256,
+        level.updatedAt,
+      );
     }
   }
 
-  #readProjectionMeta(): ProjectionMetaRow[] {
+  #readWatermarks(): WatermarkRow[] {
     return this.#stmt(
-      "SELECT name, applied_through_sequence, event_count, source_head_sha256, updated_at " +
-        "FROM projection_meta ORDER BY name ASC",
-    ).all() as ProjectionMetaRow[];
+      "SELECT " +
+        WATERMARK_COLUMNS +
+        " FROM projection_watermark ORDER BY projection_name ASC, source_stream ASC",
+    ).all() as WatermarkRow[];
+  }
+
+  /**
+   * The chain digest of a stream **at** a given sequence.
+   *
+   * The verification the contract asks for is against the position the
+   * projection actually consumed, not against whatever the head has since
+   * become. While every projection is level with its stream the two coincide,
+   * which is exactly why comparing against the current head would look correct
+   * and would stop being correct the moment a watermark legitimately lagged.
+   *
+   * The table name is never interpolated from database content: the caller has
+   * already matched the row's stream against the closed set, and the two
+   * statements below are this module's own literals.
+   */
+  #digestAtSequence(sourceStream: string, sequence: number): string | null {
+    if (sequence === 0) return GENESIS_SHA256;
+    const sql =
+      sourceStream === INITIATIVE_STREAM
+        ? "SELECT event_sha256 FROM initiative_events WHERE sequence = ?"
+        : "SELECT event_sha256 FROM control_plane_events WHERE sequence = ?";
+    const row = this.#stmt(sql).get(sequence) as { readonly event_sha256: string } | undefined;
+    return row === undefined ? null : row.event_sha256;
   }
 
   // -------------------------------------------------------------------------
@@ -807,17 +915,142 @@ export class Ledger {
     return run.immediate();
   }
 
+  /**
+   * Append a batch of task-stream events, atomically, all or none.
+   *
+   * The batch is the unit: one `BEGIN IMMEDIATE` covers the rows, the
+   * projections, the head and the watermarks, so a caller that has three facts
+   * to record no longer records them across three transactions with two windows
+   * in between. A failure anywhere in the batch leaves the ledger exactly as it
+   * was, including the watermarks.
+   *
+   * It is added **beside** `append`, never in place of it: no call site moves in
+   * this packet, and a door that quietly changed the transaction boundary under
+   * ten existing callers would be a migration wearing a feature's clothes.
+   *
+   * The task stream only. The initiative and account doors keep their own
+   * single-event entries, because a batch that spanned two streams would be a
+   * batch across two independent chains and two independent heads.
+   *
+   * An exact replay inside a batch is a no-op for that event alone and does not
+   * spoil the rest, exactly as it is for `append`. A conflict — a reused key
+   * with different content, a reused event id, a transition the lifecycle does
+   * not allow — aborts the whole batch, because half a batch is not something
+   * the caller asked for.
+   */
+  appendBatch(candidates: readonly unknown[]): AppendBatchResult {
+    this.#assertOpen("appendBatch");
+    this.#assertWritable("appendBatch");
+
+    if (candidates.length === 0) {
+      throw new LedgerValidationError([
+        {
+          path: "<root>",
+          message: "a batch is one or more events, and an empty batch appends nothing",
+        },
+      ]);
+    }
+
+    // Every candidate is parsed and canonicalized before the transaction opens.
+    // A batch that validated lazily would take the write lock, insert the events
+    // it had already accepted and only then meet the malformed one: the rollback
+    // would be correct, and the contention would be gratuitous.
+    const prepared = candidates.map((candidate) => {
+      const parsed = ControlPlaneEvent.safeParse(candidate);
+      if (!parsed.success) {
+        throw new LedgerValidationError(toValidationIssues(parsed.error.issues));
+      }
+      return { event: parsed.data, canonicalJson: canonicalJsonStringify(parsed.data) };
+    });
+
+    const run = this.#db.transaction((): AppendBatchResult => {
+      const results: AppendResult[] = [];
+      let level: StreamLevel | null = null;
+      let insertedCount = 0;
+
+      for (const { event, canonicalJson } of prepared) {
+        const appended = this.#appendOneInTransaction(event, canonicalJson);
+        results.push(appended.result);
+        if (appended.head === null) continue;
+        insertedCount += 1;
+        // Each event's own recordedAt, so the watermark carries the instant of
+        // the last event actually written rather than a clock read here.
+        level = {
+          sequence: appended.head.sequence,
+          count: appended.head.count,
+          sha256: appended.head.sha256,
+          updatedAt: event.recordedAt,
+        };
+      }
+
+      if (level !== null) {
+        // One watermark write for the batch. The rows, the projections, the head
+        // and the watermarks commit together or not at all.
+        this.#writeWatermarks(TASK_WATERMARKS, level);
+
+        // The outbox intention belongs in this transaction and is deliberately
+        // empty: P-18 owns `outbox_message` and fills the gap here, so that the
+        // transaction boundary does not have to be reopened to add it. Nothing
+        // in this packet writes an intention, and nothing here is atomic with an
+        // arbiter — the ledger and a coordination store are separate files and
+        // never share a transaction.
+
+        this.#faults.beforeAppendCommit?.();
+      }
+
+      const head = level ?? this.#readHead();
+      return {
+        results,
+        insertedCount,
+        headSequence: head.sequence,
+        headEventSha256: head.sha256,
+      };
+    });
+
+    return run.immediate();
+  }
+
   #appendInTransaction(
     event: ControlPlaneEvent,
     canonicalJson: string,
   ): AppendResult {
+    const appended = this.#appendOneInTransaction(event, canonicalJson);
+    if (appended.head === null) return appended.result;
+
+    this.#writeWatermarks(TASK_WATERMARKS, {
+      sequence: appended.head.sequence,
+      count: appended.head.count,
+      sha256: appended.head.sha256,
+      updatedAt: event.recordedAt,
+    });
+
+    this.#faults.beforeAppendCommit?.();
+
+    return appended.result;
+  }
+
+  /**
+   * One event's worth of append, inside a transaction the caller opened.
+   *
+   * Everything except the watermark: the dedupe checks, the lifecycle guard, the
+   * chain, the insert, the contiguity check and the incremental projection. The
+   * watermark is left to the caller because a batch advances it once, after its
+   * last event, rather than once per event.
+   */
+  #appendOneInTransaction(
+    event: ControlPlaneEvent,
+    canonicalJson: string,
+  ): AppendedEvent {
     const existingByKey = this.#stmt(
       "SELECT " + EVENT_COLUMNS + " FROM control_plane_events WHERE idempotency_key = ?",
     ).get(event.idempotencyKey) as EventRow | undefined;
 
     if (existingByKey !== undefined) {
       if (existingByKey.event_json === canonicalJson) {
-        return { inserted: false, record: this.#rowToRecord(existingByKey) };
+        return {
+          result: { inserted: false, record: this.#rowToRecord(existingByKey) },
+          head: null,
+        };
       }
       throw new LedgerIdempotencyConflictError(
         event.idempotencyKey,
@@ -892,21 +1125,21 @@ export class Ledger {
 
     this.#projectEvent(event, sequence);
     this.#writeHead(sequence, eventSha256, head.count + 1);
-    this.#writeProjectionMeta(sequence, head.count + 1, eventSha256, event.recordedAt);
-
-    this.#faults.beforeAppendCommit?.();
 
     return {
-      inserted: true,
-      record: {
-        sequence,
-        eventId: event.eventId,
-        idempotencyKey: event.idempotencyKey,
-        event,
-        canonicalJson,
-        previousSha256,
-        eventSha256,
+      result: {
+        inserted: true,
+        record: {
+          sequence,
+          eventId: event.eventId,
+          idempotencyKey: event.idempotencyKey,
+          event,
+          canonicalJson,
+          previousSha256,
+          eventSha256,
+        },
       },
+      head: { sequence, sha256: eventSha256, count: head.count + 1 },
     };
   }
 
@@ -1181,12 +1414,15 @@ export class Ledger {
 
     this.#projectInitiativeEvent(event, sequence);
     this.#writeInitiativeHead(sequence, eventSha256, head.count + 1);
-    this.#writeInitiativeProjectionMeta(
+    // The same discipline as the task door, on this stream's own watermarks:
+    // an append that moves a head moves the watermark of every projection fed
+    // by that head, in the same transaction, and of no other.
+    this.#writeWatermarks(INITIATIVE_WATERMARKS, {
       sequence,
-      head.count + 1,
-      eventSha256,
-      event.recordedAt,
-    );
+      count: head.count + 1,
+      sha256: eventSha256,
+      updatedAt: event.recordedAt,
+    });
 
     this.#faults.beforeAppendCommit?.();
 
@@ -1692,17 +1928,24 @@ export class Ledger {
         this.#upsertRoadmapVersion(version);
       }
 
-      this.#writeProjectionMeta(
-        replay.lastSequence,
-        replay.checked,
-        replay.lastSha256,
-        lastRecordedAt,
-      );
-      this.#writeInitiativeProjectionMeta(
-        initiativeReplay.lastSequence,
-        initiativeReplay.checked,
-        initiativeReplay.lastSha256,
-        lastInitiativeRecordedAt,
+      // The watermark rows are deleted and written back, not updated in place.
+      // A rebuild regenerates the derived tables from the log, so there is no
+      // partial watermark worth keeping, and a row belonging to a projection
+      // this build no longer defines would survive an UPDATE that never named
+      // it.
+      this.#rewriteWatermarks(
+        {
+          sequence: replay.lastSequence,
+          count: replay.checked,
+          sha256: replay.lastSha256,
+          updatedAt: lastRecordedAt,
+        },
+        {
+          sequence: initiativeReplay.lastSequence,
+          count: initiativeReplay.checked,
+          sha256: initiativeReplay.lastSha256,
+          updatedAt: lastInitiativeRecordedAt,
+        },
       );
 
       this.#faults.beforeRebuildCommit?.();
@@ -1889,49 +2132,75 @@ export class Ledger {
       });
     }
 
-    // projection_meta membership is a closed set, and every row must be exactly
-    // level with the ledger head.
+    // projection_watermark membership is a closed set of (projection, stream)
+    // pairs, and every row must be exactly level with the head of the stream it
+    // names.
     //
-    // An earlier version only asserted that a projection was not applied BEYOND
-    // the head. That was too weak in both directions: a row frozen at an older
-    // sequence is stale rather than merely plausible, and a missing or extra
-    // row means the metadata no longer describes this build at all.
-    const projectionMetaRows = this.#readProjectionMeta();
-    const observedProjectionNames = new Set<string>();
+    // An earlier version of this check read projection_meta, which had one row
+    // per projection and so could only ask the question of a projection that
+    // folded exactly one stream. The pair is what makes the question decidable
+    // once a projection has two independent heads.
+    //
+    // The kind stays PROJECTION_META. The integrity vocabulary is owned by the
+    // wire contract, which is not in this packet's write-set, and a watermark
+    // problem is a projection-metadata problem — the table it lives in changed,
+    // not what it means to an operator reading the report.
+    const watermarkRows = this.#readWatermarks();
+    const observedWatermarks = new Set<string>();
 
-    for (const row of projectionMetaRows) {
-      const label = safeIdentifier(row.name);
+    for (const row of watermarkRows) {
+      const label = safeIdentifier(row.projection_name);
+      const streamLabel = safeIdentifier(row.source_stream);
+      const key = watermarkKey(row.projection_name, row.source_stream);
 
-      if (!PROJECTION_NAME_SET.has(row.name)) {
+      if (!WATERMARK_KEYS.has(key)) {
         problems.push({
           kind: "PROJECTION_META",
-          detail: "projection_meta holds " + label + " which this build does not define",
+          detail:
+            "projection_watermark holds " +
+            label +
+            " on " +
+            streamLabel +
+            ", which this build does not define",
           sequence: null,
         });
         continue;
       }
-      observedProjectionNames.add(row.name);
+      observedWatermarks.add(key);
 
-      // Each projection is level with the head of the stream it was built
-      // from. Comparing an initiative projection against the task head would
-      // report every healthy ledger as broken the moment the two streams had
-      // different lengths, which is to say almost always.
-      const onInitiativeStream = INITIATIVE_PROJECTION_NAME_SET.has(row.name);
+      // A fold written by another algorithm is not a fold this build would have
+      // written. The derived table is invalid whatever the sequence says.
+      if (row.projector_version !== PROJECTOR_VERSION) {
+        problems.push({
+          kind: "PROJECTION_META",
+          detail:
+            label +
+            " on " +
+            streamLabel +
+            " was written by projector version " +
+            String(row.projector_version) +
+            " but this build is version " +
+            String(PROJECTOR_VERSION),
+          sequence: null,
+        });
+      }
+
+      // Each projection is level with the head of the stream it was built from.
+      // Comparing an initiative projection against the task head would report
+      // every healthy ledger as broken the moment the two streams had different
+      // lengths, which is to say almost always.
+      const onInitiativeStream = row.source_stream === INITIATIVE_STREAM;
       const expectedSequence = onInitiativeStream
         ? initiativeReplay.lastSequence
         : replay.lastSequence;
-      const expectedSha256 = onInitiativeStream
-        ? initiativeReplay.lastSha256
-        : replay.lastSha256;
-      const streamLabel = onInitiativeStream ? "the initiative stream" : "the ledger";
 
-      if (row.applied_through_sequence !== expectedSequence) {
+      if (row.applied_sequence !== expectedSequence) {
         problems.push({
           kind: "PROJECTION_META",
           detail:
             label +
             " is applied through sequence " +
-            String(row.applied_through_sequence) +
+            String(row.applied_sequence) +
             " but the head of " +
             streamLabel +
             " is sequence " +
@@ -1940,25 +2209,48 @@ export class Ledger {
         });
       }
 
-      if (row.source_head_sha256 !== expectedSha256) {
+      // The digest is verified AT applied_sequence, not against the head the
+      // stream has since reached. The two coincide while the watermark is level
+      // — which is why comparing against the current head passes today and
+      // stops being an answer the moment a watermark lawfully lags.
+      const expectedSha256 = this.#digestAtSequence(row.source_stream, row.applied_sequence);
+      if (expectedSha256 === null) {
+        problems.push({
+          kind: "PROJECTION_META",
+          detail:
+            label +
+            " is applied through sequence " +
+            String(row.applied_sequence) +
+            " which " +
+            streamLabel +
+            " does not hold",
+          sequence: null,
+        });
+      } else if (row.source_head_sha256 !== expectedSha256) {
         problems.push({
           kind: "PROJECTION_META",
           detail:
             label +
             " was built from chain head " +
             row.source_head_sha256 +
-            " which is not the chain head of " +
-            streamLabel,
+            " which is not the digest of " +
+            streamLabel +
+            " at sequence " +
+            String(row.applied_sequence),
           sequence: null,
         });
       }
     }
 
-    for (const name of [...PROJECTION_NAMES, ...INITIATIVE_PROJECTION_NAMES]) {
-      if (!observedProjectionNames.has(name)) {
+    for (const source of PROJECTION_SOURCES) {
+      if (!observedWatermarks.has(watermarkKey(source.projectionName, source.sourceStream))) {
         problems.push({
           kind: "PROJECTION_META",
-          detail: "projection_meta is missing the row for " + name,
+          detail:
+            "projection_watermark is missing the row for " +
+            source.projectionName +
+            " on " +
+            source.sourceStream,
           sequence: null,
         });
       }
@@ -2677,24 +2969,34 @@ export class Ledger {
     const head = this.#readHead();
     const initiativeHead = this.#readInitiativeHead();
 
-    const projections: ProjectionStatus[] = this.#readProjectionMeta().map((row) => {
+    // One row per projection, in the shape callers already parse.
+    //
+    // The watermark table is keyed by (projection, stream), so in principle a
+    // projection could contribute more than one row here. In this build no
+    // projection folds more than one stream, so the count and the shape are
+    // exactly what they were when this read came from projection_meta: five
+    // rows, ordered by name, with `appliedThroughSequence` carrying
+    // `applied_sequence`. The gateway forwards this array to a strict schema
+    // without mapping it, so a field added here would be a wire break; the
+    // vector's extra coordinates travel when that schema does, not before.
+    const projections: ProjectionStatus[] = this.#readWatermarks().map((row) => {
       // The name is database content, not a module constant. It is checked
       // against the closed set before it can ever be interpolated into SQL, so
       // a ledger whose metadata was edited fails loudly here instead of handing
       // an attacker-chosen identifier to the query planner.
-      if (!PROJECTION_NAME_SET.has(row.name)) {
+      if (!PROJECTION_NAME_SET.has(row.projection_name)) {
         throw new LedgerIntegrityError([
-          "projection_meta holds the projection name " +
-            safeIdentifier(row.name) +
+          "projection_watermark holds the projection name " +
+            safeIdentifier(row.projection_name) +
             " which this build does not define",
         ]);
       }
-      const counted = this.#stmt("SELECT COUNT(*) AS n FROM " + row.name).get() as {
+      const counted = this.#stmt("SELECT COUNT(*) AS n FROM " + row.projection_name).get() as {
         readonly n: number;
       };
       return {
-        name: row.name,
-        appliedThroughSequence: row.applied_through_sequence,
+        name: row.projection_name,
+        appliedThroughSequence: row.applied_sequence,
         eventCount: row.event_count,
         sourceHeadSha256: row.source_head_sha256,
         updatedAt: row.updated_at,

@@ -268,8 +268,11 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    // Six since V2-B1c added the per-attempt route projection.
-    expect(status.migrations.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    // Seven since P-09/log-A added the projection watermark beside the route
+    // projection V2-B1c added.
+    expect(status.migrations.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7,
+    ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
     expect(status.initiativeEventCount).toBe(0);
@@ -1159,6 +1162,43 @@ function withRawDatabase(path: string, mutate: (raw: Database.Database) => void)
   }
 }
 
+/**
+ * The raw insert a tampering test uses to plant a watermark row.
+ *
+ * Written out once because every such test plants the same seven columns, and
+ * a test that spelled them differently each time would be asserting against a
+ * shape it had just invented rather than against the migration's.
+ */
+const INSERT_WATERMARK =
+  "INSERT INTO projection_watermark (projection_name, source_stream, projector_version, " +
+  "applied_sequence, event_count, source_head_sha256, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+interface WatermarkRow {
+  readonly projection_name: string;
+  readonly source_stream: string;
+  readonly projector_version: number;
+  readonly applied_sequence: number;
+  readonly event_count: number;
+  readonly source_head_sha256: string;
+  readonly updated_at: string;
+}
+
+/** Every watermark row of a closed ledger, in the table's own key order. */
+function readWatermarks(path: string): WatermarkRow[] {
+  const raw = new Database(path);
+  try {
+    return raw
+      .prepare(
+        "SELECT projection_name, source_stream, projector_version, applied_sequence, " +
+          "event_count, source_head_sha256, updated_at FROM projection_watermark " +
+          "ORDER BY projection_name ASC, source_stream ASC",
+      )
+      .all() as WatermarkRow[];
+  } finally {
+    raw.close();
+  }
+}
+
 function kindsOf(problems: readonly { readonly kind: string }[]): string[] {
   return problems.map((problem) => problem.kind);
 }
@@ -1279,25 +1319,91 @@ describe("worker task association verification", () => {
   });
 });
 
-describe("projection metadata verification", () => {
-  it("detects a missing projection metadata row", () => {
+describe("projection watermark verification", () => {
+  it("detects a missing projection watermark row", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
     ledger.close();
 
     withRawDatabase(path, (raw) => {
-      raw.prepare("DELETE FROM projection_meta WHERE name = ?").run("worker_read_model");
+      raw
+        .prepare("DELETE FROM projection_watermark WHERE projection_name = ?")
+        .run("worker_read_model");
     });
 
     const report = open(path).verifyIntegrity();
     expect(report.ok).toBe(false);
     expect(report.problems).toHaveLength(1);
     expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
-    expect(detailsOf(report.problems)).toContain("missing the row for worker_read_model");
+    expect(detailsOf(report.problems)).toContain(
+      "missing the row for worker_read_model on control_plane_events",
+    );
   });
 
-  it("detects an extra projection metadata row", () => {
+  it("detects an extra projection watermark row", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw.prepare(INSERT_WATERMARK).run(
+        "rogue_projection",
+        "control_plane_events",
+        1,
+        5,
+        5,
+        "0".repeat(64),
+        "2026-08-27T12:00:00.000Z",
+      );
+    });
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(report.problems).toHaveLength(1);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    expect(detailsOf(report.problems)).toContain(
+      "rogue_projection on control_plane_events, which this build does not define",
+    );
+  });
+
+  // Negative 1 of the P-09 map, in the shape the composite key gives it: the
+  // lag is per (projection, stream), and the row is internally consistent, so
+  // nothing but the comparison against that stream's own head can catch it.
+  it("detects a watermark frozen behind the head of its own stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      const at = raw
+        .prepare("SELECT event_sha256 FROM control_plane_events WHERE sequence = ?")
+        .get(3) as { readonly event_sha256: string };
+      raw
+        .prepare(
+          "UPDATE projection_watermark SET applied_sequence = ?, source_head_sha256 = ? " +
+            "WHERE projection_name = ? AND source_stream = ?",
+        )
+        .run(3, at.event_sha256, "task_read_model", "control_plane_events");
+    });
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(report.problems).toHaveLength(1);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    expect(detailsOf(report.problems)).toContain(
+      "is applied through sequence 3 but the head of control_plane_events is sequence 5",
+    );
+  });
+
+  // I3, in its structural form. The digest is checked AT applied_sequence, not
+  // against whatever the head happens to be now — so a row that kept the head's
+  // digest while rewinding its sequence is caught by the digest check as well
+  // as by the sequence check. A verifier that compared against the current head
+  // would report only one of these two problems.
+  it("verifies the source digest at applied_sequence, not against the later head", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
@@ -1306,22 +1412,27 @@ describe("projection metadata verification", () => {
     withRawDatabase(path, (raw) => {
       raw
         .prepare(
-          "INSERT INTO projection_meta (name, applied_through_sequence, event_count, " +
-            "source_head_sha256, updated_at) VALUES (?, ?, ?, ?, ?)",
+          "UPDATE projection_watermark SET applied_sequence = ? " +
+            "WHERE projection_name = ? AND source_stream = ?",
         )
-        .run("rogue_projection", 5, 5, "0".repeat(64), "2026-08-27T12:00:00.000Z");
+        .run(3, "task_read_model", "control_plane_events");
     });
 
     const report = open(path).verifyIntegrity();
     expect(report.ok).toBe(false);
-    expect(report.problems).toHaveLength(1);
-    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META", "PROJECTION_META"]);
     expect(detailsOf(report.problems)).toContain(
-      "rogue_projection which this build does not define",
+      "is applied through sequence 3 but the head of control_plane_events is sequence 5",
+    );
+    expect(detailsOf(report.problems)).toContain(
+      "which is not the digest of control_plane_events at sequence 3",
     );
   });
 
-  it("detects a projection frozen at a stale sequence", () => {
+  // I4. A fold algorithm that changed invalidates the derived table without
+  // anything happening to the stream, so the version is refused rather than
+  // read past.
+  it("refuses a watermark written by another projector version", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
@@ -1329,8 +1440,11 @@ describe("projection metadata verification", () => {
 
     withRawDatabase(path, (raw) => {
       raw
-        .prepare("UPDATE projection_meta SET applied_through_sequence = ? WHERE name = ?")
-        .run(3, "task_read_model");
+        .prepare(
+          "UPDATE projection_watermark SET projector_version = ? " +
+            "WHERE projection_name = ? AND source_stream = ?",
+        )
+        .run(2, "worker_read_model", "control_plane_events");
     });
 
     const report = open(path).verifyIntegrity();
@@ -1338,7 +1452,7 @@ describe("projection metadata verification", () => {
     expect(report.problems).toHaveLength(1);
     expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
     expect(detailsOf(report.problems)).toContain(
-      "is applied through sequence 3 but the head of the ledger is sequence 5",
+      "was written by projector version 2 but this build is version 1",
     );
   });
 
@@ -1382,12 +1496,15 @@ describe("status refuses an unexpected projection name", () => {
     ledger.close();
 
     withRawDatabase(path, (raw) => {
-      raw
-        .prepare(
-          "INSERT INTO projection_meta (name, applied_through_sequence, event_count, " +
-            "source_head_sha256, updated_at) VALUES (?, ?, ?, ?, ?)",
-        )
-        .run("not_a_real_table", 5, 5, "0".repeat(64), "2026-08-27T12:00:00.000Z");
+      raw.prepare(INSERT_WATERMARK).run(
+        "not_a_real_table",
+        "control_plane_events",
+        1,
+        5,
+        5,
+        "0".repeat(64),
+        "2026-08-27T12:00:00.000Z",
+      );
     });
 
     const reopened = open(path);
@@ -1407,18 +1524,15 @@ describe("status refuses an unexpected projection name", () => {
     ledger.close();
 
     withRawDatabase(path, (raw) => {
-      raw
-        .prepare(
-          "INSERT INTO projection_meta (name, applied_through_sequence, event_count, " +
-            "source_head_sha256, updated_at) VALUES (?, ?, ?, ?, ?)",
-        )
-        .run(
-          "task_read_model; DROP TABLE ledger_meta",
-          5,
-          5,
-          "0".repeat(64),
-          "2026-08-27T12:00:00.000Z",
-        );
+      raw.prepare(INSERT_WATERMARK).run(
+        "task_read_model; DROP TABLE ledger_meta",
+        "control_plane_events",
+        1,
+        5,
+        5,
+        "0".repeat(64),
+        "2026-08-27T12:00:00.000Z",
+      );
     });
 
     const reopened = open(path);
@@ -1469,7 +1583,11 @@ interface WorkerOutcome {
  * pays for a build when the tests are run on their own.
  */
 function ensureWorkerBuilt(): void {
-  if (existsSync(WORKER_ENTRY)) return;
+  // Always build, rather than returning early when the entry point exists.
+  // `tsc --build` is incremental, so this costs nothing when the tree is
+  // current; skipping it let a stale `dist-test` from an earlier commit run
+  // against a database this build had migrated further, and the failure
+  // arrived as an unrelated-looking migration error from a child process.
   const result = spawnSync(
     process.execPath,
     [
@@ -2327,20 +2445,25 @@ describe("the recorded execution route", () => {
     seeded.close();
 
     // Rewind to the pre-V2-B1c shape: no route table, no meta row, no
-    // migration 6. This is what such a ledger looks like on disk.
+    // migration 6. This is what such a ledger looks like on disk. Migration 7
+    // goes with it, because a migration set is applied in order and the
+    // watermark table did not exist before the route projection did.
     const raw = new Database(path);
     raw.exec("DROP TABLE execution_route_read_model");
+    raw.exec("DROP TABLE projection_watermark");
     raw.prepare("DELETE FROM projection_meta WHERE name = ?").run("execution_route_read_model");
-    raw.prepare("DELETE FROM schema_migrations WHERE version = ?").run(6);
+    raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(6);
     expect(
       (raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as { version: number }[])
         .map((row) => row.version),
     ).toEqual([1, 2, 3, 4, 5]);
     raw.close();
 
-    // The upgrade: migration 6 applies on open, and nothing else is done.
+    // The upgrade: migrations 6 and 7 apply on open, and nothing else is done.
     const migrated = open(path);
-    expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7,
+    ]);
 
     const report = migrated.verifyIntegrity();
     expect(report.problems.filter((problem) => problem.kind === "PROJECTION_META")).toEqual([]);
@@ -2375,5 +2498,398 @@ describe("the recorded execution route", () => {
     expect(rebuild.executionRouteRows).toBe(0);
     expect(ledger.listExecutionRoutes(taskId)).toEqual([]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-09/log-A: the batch door, and the watermark vector under it
+// ---------------------------------------------------------------------------
+
+/** A three event lifecycle for one task, as candidates rather than as appends. */
+function lifecycleBatch(taskId: string, emittedBy: string): Record<string, unknown>[] {
+  return [
+    makeEvent({ taskId, transitionId: "discover", toState: "DISCOVERED", emittedBy }),
+    makeEvent({
+      taskId,
+      transitionId: "classify",
+      type: "TASK_CLASSIFIED",
+      fromState: "DISCOVERED",
+      toState: "DT_CLASSIFIED",
+      emittedBy,
+    }),
+    makeEvent({
+      taskId,
+      transitionId: "ready",
+      type: "TASK_READY",
+      fromState: "DT_CLASSIFIED",
+      toState: "READY",
+      emittedBy,
+    }),
+  ];
+}
+
+/** The applied sequence of each projection, by name, as status() reports it. */
+function appliedByName(ledger: Ledger): Map<string, number> {
+  return new Map(
+    ledger
+      .status()
+      .projections.map((projection) => [projection.name, projection.appliedThroughSequence]),
+  );
+}
+
+describe("appendBatch lands a whole batch or none of it", () => {
+  it("appends every event of a batch in one transaction and advances the head once", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+
+    const batch = ledger.appendBatch(lifecycleBatch(taskId, KIMI));
+
+    expect(batch.results.map((result) => result.inserted)).toEqual([true, true, true]);
+    expect(batch.results.map((result) => result.record.sequence)).toEqual([1, 2, 3]);
+    expect(batch.insertedCount).toBe(3);
+    expect(batch.headSequence).toBe(3);
+    expect(batch.headEventSha256).toBe(batch.results[2]?.record.eventSha256);
+
+    // The chain is the ordinary one: each event links to the one before it.
+    expect(batch.results[1]?.record.previousSha256).toBe(batch.results[0]?.record.eventSha256);
+    expect(batch.results[2]?.record.previousSha256).toBe(batch.results[1]?.record.eventSha256);
+
+    // The lifecycle guard read the projection the previous event of this same
+    // batch had already written, inside the transaction.
+    expect(ledger.getTask(taskId)?.currentState).toBe("READY");
+    expect(ledger.status().eventCount).toBe(3);
+    expect(appliedByName(ledger).get("task_read_model")).toBe(3);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses an empty batch and writes nothing", () => {
+    const ledger = open(temporaryDatabase());
+    expect(caught(() => ledger.appendBatch([]))).toBeInstanceOf(LedgerValidationError);
+    expect(ledger.status().headSequence).toBe(0);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("validates every candidate before it writes anything", () => {
+    // Pre-validation is observable: with it, the fault seam that runs after the
+    // first INSERT never fires at all, because no INSERT is attempted. A batch
+    // that validated lazily would have inserted the first event and rolled it
+    // back, which is a weaker guarantee wearing the same green.
+    let projectionAttempts = 0;
+    const ledger = open(temporaryDatabase(), {
+      __testFaults: {
+        beforeProjection: () => {
+          projectionAttempts += 1;
+        },
+      },
+    });
+
+    const error = caught(() => ledger.appendBatch([makeEvent(), { not: "an event" }]));
+
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect(projectionAttempts).toBe(0);
+    expect(ledger.status().headSequence).toBe(0);
+  });
+
+  it("treats an exact replay inside a batch as a no-op for that event alone", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const events = lifecycleBatch(taskId, KIMI);
+    const first = events[0];
+    if (first === undefined) throw new Error("empty fixture");
+
+    ledger.append(first);
+    const batch = ledger.appendBatch(events);
+
+    expect(batch.results.map((result) => result.inserted)).toEqual([false, true, true]);
+    expect(batch.insertedCount).toBe(2);
+    expect(batch.results.map((result) => result.record.sequence)).toEqual([1, 2, 3]);
+    expect(ledger.status().eventCount).toBe(3);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("aborts the whole batch when one event conflicts", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const events = lifecycleBatch(taskId, KIMI);
+    const third = events[2];
+    if (third === undefined) throw new Error("empty fixture");
+
+    // The third event claims a prior state the batch never reaches, because the
+    // second has been dropped from it.
+    const error = caught(() => ledger.appendBatch([events[0], third]));
+
+    expect(error).toBeInstanceOf(LedgerLifecycleConflictError);
+    expect(ledger.status().headSequence).toBe(0);
+    expect(ledger.status().eventCount).toBe(0);
+    expect(ledger.getTask(taskId)).toBeNull();
+    expect(appliedByName(ledger).get("task_read_model")).toBe(0);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  // Negative 9 of the P-09 map.
+  it("rolls the whole batch back when an event in the middle of it fails", () => {
+    let seen = 0;
+    const ledger = open(temporaryDatabase(), {
+      __testFaults: {
+        beforeProjection: () => {
+          seen += 1;
+          if (seen === 2) throw new Error("injected mid-batch failure");
+        },
+      },
+    });
+
+    const taskId = randomUUID();
+    const error = caught(() => ledger.appendBatch(lifecycleBatch(taskId, KIMI)));
+    expect(error).toBeInstanceOf(Error);
+    expect(seen).toBe(2);
+
+    // Neither the head, nor the rows, nor the projection, nor the watermark.
+    expect(ledger.status().headSequence).toBe(0);
+    expect(ledger.status().eventCount).toBe(0);
+    expect(ledger.listEvents().events).toHaveLength(0);
+    expect(ledger.getTask(taskId)).toBeNull();
+    expect(ledger.listWorkers().workers).toHaveLength(0);
+    expect([...appliedByName(ledger).values()]).toEqual([0, 0, 0, 0, 0]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // The handle is still usable, so the rollback was clean rather than wedged.
+    seen = 99;
+    expect(ledger.append(makeEvent({ taskId })).record.sequence).toBe(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses a batch through a read-only handle", () => {
+    const path = temporaryDatabase();
+    open(path).close();
+    const reader = open(path, { readOnly: true });
+    expect(caught(() => reader.appendBatch([makeEvent()]))).toBeInstanceOf(LedgerReadOnlyError);
+  });
+});
+
+describe("the watermark advances with every door that moves a head", () => {
+  it("carries the task stream's own head, per projection, on append", () => {
+    const ledger = open(temporaryDatabase());
+    seedFixture(ledger);
+    ledger.close();
+
+    const rows = readWatermarks(ledger.path);
+    expect(rows).toHaveLength(5);
+    const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
+    expect(taskRows.map((row) => row.projection_name)).toEqual([
+      "execution_route_read_model",
+      "task_read_model",
+      "worker_read_model",
+    ]);
+    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5]);
+    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5]);
+    expect(new Set(taskRows.map((row) => row.projector_version))).toEqual(new Set([1]));
+
+    // The sibling stream stayed where it was. A single shared number is exactly
+    // what the composite key exists to prevent.
+    const initiativeRows = rows.filter((row) => row.source_stream === "initiative_events");
+    expect(initiativeRows.map((row) => row.projection_name)).toEqual([
+      "initiative_read_model",
+      "roadmap_version_read_model",
+    ]);
+    expect(initiativeRows.map((row) => row.applied_sequence)).toEqual([0, 0]);
+  });
+
+  it("carries the initiative stream's own head on appendInitiativeEvent", () => {
+    const ledger = open(temporaryDatabase());
+    seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.close();
+
+    const rows = readWatermarks(ledger.path);
+    const applied = new Map(rows.map((row) => [row.projection_name, row.applied_sequence]));
+    expect(applied.get("task_read_model")).toBe(5);
+    expect(applied.get("initiative_read_model")).toBe(1);
+    expect(applied.get("roadmap_version_read_model")).toBe(1);
+  });
+
+  it("clears and rewrites every watermark row inside the rebuild transaction", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.close();
+
+    const before = readWatermarks(path);
+
+    const reopened = open(path);
+    reopened.rebuildReadModel();
+    reopened.close();
+
+    // Byte-identical, and still exactly the closed set: a rebuild that left a
+    // stale row behind, or dropped one, would be visible here.
+    expect(readWatermarks(path)).toEqual(before);
+    expect(open(path).verifyIntegrity().ok).toBe(true);
+  });
+
+  // Negative 10 of the P-09 map, with the watermark clause the contract adds
+  // (`streams/index.md:478`): a refusal must not leave the row half-written.
+  it("refuses to rebuild over a broken chain and leaves the watermarks untouched", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.close();
+
+    const before = readWatermarks(path);
+    expect(before).toHaveLength(5);
+
+    tamper(path, (raw) => {
+      raw
+        .prepare("UPDATE control_plane_events SET event_sha256 = ? WHERE sequence = ?")
+        .run("f".repeat(64), 3);
+    });
+
+    const reopened = open(path);
+    expect(caught(() => reopened.rebuildReadModel())).toBeInstanceOf(LedgerIntegrityError);
+    reopened.close();
+
+    expect(readWatermarks(path)).toEqual(before);
+  });
+});
+
+describe("the account stream is declared, not certified", () => {
+  const ACCOUNT_AT = "2026-08-31T12:00:00.000Z";
+
+  function accountAction(): Record<string, unknown> {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: randomUUID(),
+      accountId: "acct-primary",
+      version: 1,
+      idempotencyKey: "acct-primary/1/action.1",
+      action: "DRAIN",
+      resultingState: "DRAINING",
+      actor: KIMI,
+      note: null,
+      occurredAt: ACCOUNT_AT,
+      recordedAt: ACCOUNT_AT,
+    };
+  }
+
+  // Negative 4 of the P-09 map, in the form D3 adjudicated: the account stream
+  // has no hash chain of its own (migration 5 carries neither previous_sha256
+  // nor event_sha256), so its watermark is not published as certified. The
+  // append must therefore claim nothing, and a row claiming it on the account
+  // stream's behalf must be refused rather than believed.
+  it("records an account action without publishing a watermark for that stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(accountAction());
+    expect(ledger.listAccountActions("acct-primary")).toHaveLength(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    expect(readWatermarks(path).filter((row) => row.source_stream === "account_events")).toEqual(
+      [],
+    );
+  });
+
+  it("refuses a watermark row planted on the account stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(accountAction());
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw.prepare(INSERT_WATERMARK).run(
+        "task_read_model",
+        "account_events",
+        1,
+        1,
+        1,
+        "0".repeat(64),
+        ACCOUNT_AT,
+      );
+    });
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
+    expect(detailsOf(report.problems)).toContain(
+      "task_read_model on account_events, which this build does not define",
+    );
+  });
+});
+
+describe("migration 7 seeds the watermarks from the heads it finds", () => {
+  // Negative 7 of the P-09 map, and the reason migration 6 carries the comment
+  // it does. The fixture populates BOTH streams on purpose: seeding all five
+  // rows from `head_*` would pass against a task-only fixture and would leave
+  // every field ledger reporting its initiative projections as corrupt.
+  it("migrates a ledger holding both streams without breaking its own integrity", () => {
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    const taskId = randomUUID();
+    seedTask(seeded, taskId, KIMI);
+    seeded.appendInitiativeEvent(makeInitiativeEvent());
+    seeded.appendInitiativeEvent(
+      makeInitiativeEvent({ initiativeId: INITIATIVE_B, transitionId: "register.b" }),
+    );
+    const taskHead = seeded.status().headSequence;
+    const initiativeHead = seeded.status().initiativeHeadSequence;
+    expect(taskHead).toBe(3);
+    expect(initiativeHead).toBe(2);
+    seeded.close();
+
+    // Rewind to the pre-P-09 shape: no watermark table, no migration 7. This
+    // is what such a ledger looks like on disk.
+    withRawDatabase(path, (raw) => {
+      raw.exec("DROP TABLE projection_watermark");
+      raw.prepare("DELETE FROM schema_migrations WHERE version = ?").run(7);
+    });
+
+    // The upgrade: migration 7 applies on open, and nothing else is done. No
+    // operator is asked to rebuild after an upgrade, so the seed has to be
+    // right the first time.
+    const migrated = open(path);
+    expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7,
+    ]);
+
+    const report = migrated.verifyIntegrity();
+    expect(report.problems.filter((problem) => problem.kind === "PROJECTION_META")).toEqual([]);
+    expect(report.ok).toBe(true);
+    migrated.close();
+
+    // Each row is level with the head of ITS OWN stream, not with a shared
+    // number and not with zero.
+    const applied = new Map(
+      readWatermarks(path).map((row) => [row.projection_name + "@" + row.source_stream, row]),
+    );
+    expect(applied.get("task_read_model@control_plane_events")?.applied_sequence).toBe(taskHead);
+    expect(applied.get("worker_read_model@control_plane_events")?.applied_sequence).toBe(taskHead);
+    expect(
+      applied.get("execution_route_read_model@control_plane_events")?.applied_sequence,
+    ).toBe(taskHead);
+    expect(applied.get("initiative_read_model@initiative_events")?.applied_sequence).toBe(
+      initiativeHead,
+    );
+    expect(applied.get("roadmap_version_read_model@initiative_events")?.applied_sequence).toBe(
+      initiativeHead,
+    );
+    expect(applied.get("task_read_model@control_plane_events")?.projector_version).toBe(1);
+
+    // And an append after the upgrade still lands, projects and verifies.
+    const reopened = open(path);
+    reopened.append(makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }));
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    expect(appliedByName(reopened).get("task_read_model")).toBe(taskHead + 1);
+    expect(appliedByName(reopened).get("initiative_read_model")).toBe(initiativeHead);
+  });
+
+  it("seeds a fresh ledger at zero, with the genesis digest on both streams", () => {
+    const path = temporaryDatabase();
+    open(path).close();
+
+    const rows = readWatermarks(path);
+    expect(rows).toHaveLength(5);
+    expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
+    expect(rows.every((row) => row.event_count === 0)).toBe(true);
+    expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
+    expect(rows.every((row) => row.updated_at === "1970-01-01T00:00:00.000Z")).toBe(true);
   });
 });
