@@ -212,13 +212,21 @@ Three things about it are stated here rather than left to be discovered.
   The fold over that stream is total and returns no row for every type that does
   exist, and a test names them one by one. What this build establishes is the
   mechanism, not the rows.
-- **It is not published in `status()`.** `ProjectionStatus` answers "how far?"
-  with one number, and a projection with two independent heads has no such
-  number — stamping it with either makes the other unverifiable, which is the
-  exact defect `projection_meta` had. So `status()` reports the same five
-  single-source projections it always did. The vector is not lost: it lives in
-  `projection_watermark`, `verifyIntegrity()` checks every row of it, and a
-  rebuild rewrites all of them. What is deferred is putting it on the wire.
+- **It is published in `status()` as a vector, since P-09/log-D.** A projection
+  fed by two streams has two independent heads and no single "how far"
+  describes it — stamping it with either makes the other unverifiable, which is
+  the exact defect `projection_meta` had. So `ProjectionStatus` carries a
+  `watermarks` array, one entry per source stream, each with its own
+  `appliedThroughSequence`, `eventCount` and `sourceHeadSha256`; the projection
+  level keeps only `name`, `rowCount` and `updatedAt`. Between C and D this
+  projection was omitted from `status()` altogether, because there was no shape
+  that could describe it honestly.
+
+  `updatedAt` for a projection with more than one row is the **latest** of
+  them: each stream's door updates only its own row, and "when did this
+  projection last move" has one answer. `status()` publishes the rows as
+  stored — it does not recompute a head and does not judge. That division is
+  deliberate: `verifyIntegrity()` is what judges.
 - **The fold validates no eligibility.** The contract has `model_version_id`
   checked fail-closed against an ACTIVE model version; that is the write gate of
   the module owning the semantics, not this one. The registry is storage, this

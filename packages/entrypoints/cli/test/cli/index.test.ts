@@ -955,6 +955,50 @@ describe("status", () => {
     expect(status.migrations.length).toBeGreaterThan(0);
     expect(status.projections.length).toBeGreaterThan(0);
     expect(status.observedAt).toBe(FIXED_NOW);
+
+    // The vector crosses the CLI's own mapper (P-09/log-D). Every projection
+    // carries at least one head, and the two-source one carries both.
+    for (const projection of status.projections) {
+      expect(projection.watermarks.length, projection.name).toBeGreaterThan(0);
+    }
+    const routing = status.projections.find(
+      (projection) => projection.name === "routing_assignment_read_model",
+    );
+    expect(routing?.watermarks.map((watermark) => watermark.sourceStream)).toEqual([
+      "initiative_events",
+      "registry_events",
+    ]);
+  });
+
+  it("renders one text row per projection and stream, not one per projection", async () => {
+    // The text render is where a lost mapping hides. JSON parity compares the
+    // parsed body and would not notice a table that silently dropped a head,
+    // and until now nothing exercised `renderStatus` at all.
+    //
+    // End to end through the real command, so the ledger's grouping, the CLI's
+    // mapper and the table all take part: a projection with two heads must
+    // produce two rows, each carrying its own stream.
+    const { path } = populatedLedger();
+    // `human` is the terminal render; the CLI has exactly two formats and the
+    // other one is `json`, which the parity tests already cover.
+    const result = await invoke(["status", "--database", path, "--format", "human"]);
+    expect(result.exitCode).toBe(0);
+
+    const rows = result.stdout
+      .split("\n")
+      .filter((line) => line.includes("routing_assignment_read_model"));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain("initiative_events");
+    expect(rows[1]).toContain("registry_events");
+    expect(result.stdout).toContain("STREAM");
+
+    // Every other projection has one head and so exactly one row.
+    for (const name of ["task_read_model", "worker_read_model", "initiative_read_model"]) {
+      expect(
+        result.stdout.split("\n").filter((line) => line.includes(name)),
+        name,
+      ).toHaveLength(1);
+    }
   });
 
   it("reports a zero head for an empty ledger", async () => {

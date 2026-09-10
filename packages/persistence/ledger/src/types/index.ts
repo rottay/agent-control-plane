@@ -273,14 +273,48 @@ export interface LedgerPragmaStatus {
   readonly queryOnly: boolean;
 }
 
-export interface ProjectionStatus {
-  readonly name: string;
+/**
+ * One fixed head of one stream, for one projection (P-09/log-D).
+ *
+ * `sourceStream` is database content, so it is typed as a string here rather
+ * than as a union: the closed set is enforced at the wire boundary, by a schema
+ * whose whole job is to be the one place a foreign value is refused. A union
+ * here would make a tampered row a type error the ledger cannot express and
+ * would say nothing at the boundary that matters.
+ */
+export interface ProjectionWatermarkStatus {
+  readonly sourceStream: string;
+  /** The head of this stream that this projection was built through. */
   readonly appliedThroughSequence: number;
   readonly eventCount: number;
-  /** Chain head the projection was built from. Detects a foreign history. */
+  /**
+   * Chain head the projection was built from, **at** `appliedThroughSequence`
+   * and not at whatever that stream has since reached. Detects a foreign
+   * history.
+   */
   readonly sourceHeadSha256: string;
-  readonly updatedAt: string;
+}
+
+/**
+ * One projection, with the vector of heads it was built from.
+ *
+ * Exactly the keys of `ProjectionStatusDto`, and that is a constraint rather
+ * than a coincidence: the gateway forwards this array raw into a strict schema,
+ * so a key added here "because the watermark row has it" — `projector_version`
+ * is the tempting one — is a runtime parse failure at the boundary, not a
+ * harmless extra.
+ */
+export interface ProjectionStatus {
+  readonly name: string;
   readonly rowCount: number;
+  /**
+   * When this projection's projector last ran. For a projection fed by more
+   * than one stream this is the latest of its rows: the question "when did
+   * this projection last move" has one answer, and it is the most recent one.
+   */
+  readonly updatedAt: string;
+  /** One entry per stream that feeds this projection, ordered by stream. */
+  readonly watermarks: readonly ProjectionWatermarkStatus[];
 }
 
 export interface LedgerStatus {

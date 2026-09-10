@@ -163,6 +163,7 @@ export type {
   LedgerTestFaults,
   OpenLedgerOptions,
   ProjectionStatus,
+  ProjectionWatermarkStatus,
   RebuildResult,
   RegistryAppendResult,
   RegistryDocument,

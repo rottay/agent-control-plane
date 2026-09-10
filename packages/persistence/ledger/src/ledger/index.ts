@@ -34,7 +34,6 @@ import {
   REGISTRY_STREAM,
   ROUTING_ASSIGNMENT_PROJECTION,
   SCHEMA_MIGRATIONS_DDL,
-  SINGLE_SOURCE_PROJECTION_SOURCES,
   TASK_STREAM,
   applyMigrations,
   checkMigrationConformance,
@@ -86,6 +85,7 @@ import {
   type LedgerTestFaults,
   type OpenLedgerOptions,
   type ProjectionStatus,
+  type ProjectionWatermarkStatus,
   type RebuildResult,
   type RegistryAppendResult,
   type RegistryDocument,
@@ -894,12 +894,11 @@ const REGISTRY_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filt
   (source) => source.sourceStream === REGISTRY_STREAM,
 );
 
-/** The pairs `status()` publishes, as a membership set. See the migrations module. */
-const STATUS_WATERMARK_KEYS: ReadonlySet<string> = new Set(
-  SINGLE_SOURCE_PROJECTION_SOURCES.map((source) =>
-    watermarkKey(source.projectionName, source.sourceStream),
-  ),
-);
+// The set of pairs `status()` publishes used to be a third list here, so that
+// the DTO could omit a projection it could not describe. P-09/log-D gave the
+// DTO a vector, so there is nothing left to omit: `status()` publishes every
+// row of `projection_watermark`, and a residual filter would be a second
+// source of truth about which heads exist.
 
 /**
  * Render a database-supplied name safely for a diagnostic.
@@ -4394,30 +4393,28 @@ export class Ledger {
     const head = this.#readHead();
     const initiativeHead = this.#readInitiativeHead();
 
-    // One row per SINGLE-SOURCE projection, in the shape callers already parse.
+    // One entry per projection, carrying the vector of heads it was built from
+    // (P-09/log-D).
     //
     // The watermark table is keyed by (projection, stream), and since
-    // P-09/log-C one projection contributes two rows to it. `ProjectionStatus`
-    // has one `appliedThroughSequence`, and for a projection with two
-    // independent heads there is no such number — stamping it with either one
-    // makes the other unverifiable, which is the exact defect `projection_meta`
-    // had and the reason it was replaced. So the two-source projection is
-    // omitted here rather than described badly, and the count and the shape
-    // stay exactly what they were: five rows, ordered by name.
+    // P-09/log-C one projection contributes two rows to it. Until D there was
+    // no DTO that could say so: `ProjectionStatus` had a single
+    // `appliedThroughSequence`, and for a projection with two independent heads
+    // there is no such number — stamping it with either one makes the other
+    // unverifiable, which is the exact defect `projection_meta` had. So that
+    // projection was omitted rather than described badly, and the omission was
+    // named here as D's to undo. This is D: the head fields moved inside
+    // `watermarks`, and every row of the table is published.
     //
-    // The omission is not the vector being lost. It lives in
-    // `projection_watermark`, `verifyIntegrity()` checks every row of it, and a
-    // rebuild rewrites all of them. What is deferred is publishing it on the
-    // wire: the gateway forwards this array to a strict schema without mapping
-    // it, so a field added here would be a wire break, and the DTO that can
-    // carry a vector is P-09/log-D.
-    const projections: ProjectionStatus[] = [];
+    // Rows are grouped by name BEFORE anything is emitted. Emitting per row
+    // would publish the two-source projection twice, with its `rowCount`
+    // counted twice for one table.
+    const grouped = new Map<string, WatermarkRow[]>();
     for (const row of this.#readWatermarks()) {
       // The name is database content, not a module constant. It is checked
       // against the closed set before it can ever be interpolated into SQL, so
       // a ledger whose metadata was edited fails loudly here instead of handing
-      // an attacker-chosen identifier to the query planner. Every row is
-      // checked, including the ones this DTO does not publish.
+      // an attacker-chosen identifier to the query planner.
       if (!PROJECTION_NAME_SET.has(row.projection_name)) {
         throw new LedgerIntegrityError([
           "projection_watermark holds the projection name " +
@@ -4425,20 +4422,39 @@ export class Ledger {
             " which this build does not define",
         ]);
       }
-      if (!STATUS_WATERMARK_KEYS.has(watermarkKey(row.projection_name, row.source_stream))) {
-        continue;
-      }
-      const counted = this.#stmt("SELECT COUNT(*) AS n FROM " + row.projection_name).get() as {
+      const existing = grouped.get(row.projection_name);
+      if (existing === undefined) grouped.set(row.projection_name, [row]);
+      else existing.push(row);
+    }
+
+    // `#readWatermarks` orders by projection name and then by source stream, and
+    // a Map keeps insertion order, so the projections come out by name and each
+    // vector comes out by stream — which is the order the wire schema requires,
+    // produced rather than sorted again here.
+    const projections: ProjectionStatus[] = [];
+    for (const [name, rows] of grouped) {
+      // Once per projection, not once per row: it counts a table, and the
+      // two-source projection has one table.
+      const counted = this.#stmt("SELECT COUNT(*) AS n FROM " + name).get() as {
         readonly n: number;
       };
-      projections.push({
-        name: row.projection_name,
-        appliedThroughSequence: row.applied_sequence,
-        eventCount: row.event_count,
-        sourceHeadSha256: row.source_head_sha256,
-        updatedAt: row.updated_at,
-        rowCount: counted.n,
-      });
+      // The latest of this projection's rows. Each stream's door updates only
+      // its own row, so a projection fed by two streams has two independent
+      // instants and "when did this projection last move" has exactly one
+      // answer: the most recent. Lexicographic max is exact for this form —
+      // fixed width, UTC, zero-padded throughout.
+      let updatedAt = EPOCH_TIMESTAMP;
+      const watermarks: ProjectionWatermarkStatus[] = [];
+      for (const row of rows) {
+        if (row.updated_at > updatedAt) updatedAt = row.updated_at;
+        watermarks.push({
+          sourceStream: row.source_stream,
+          appliedThroughSequence: row.applied_sequence,
+          eventCount: row.event_count,
+          sourceHeadSha256: row.source_head_sha256,
+        });
+      }
+      projections.push({ name, rowCount: counted.n, updatedAt, watermarks });
     }
 
     const migrations: AppliedMigration[] = readAppliedMigrations(this.#db);

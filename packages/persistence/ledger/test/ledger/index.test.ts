@@ -1542,9 +1542,9 @@ describe("projection watermark verification", () => {
     seedFixture(ledger);
     // The control: nothing is wrong with this ledger before the tamper.
     expect(ledger.verifyIntegrity().ok).toBe(true);
-    expect(ledger.status().projections.find((p) => p.name === "task_read_model")?.eventCount).toBe(
-      5,
-    );
+    expect(
+      watermarkOf(ledger, "task_read_model", "control_plane_events")?.eventCount,
+    ).toBe(5);
     ledger.close();
 
     tamperCount(path, "task_read_model", "control_plane_events", 7);
@@ -1560,7 +1560,7 @@ describe("projection watermark verification", () => {
     // And the number `status()` was publishing on the ledger's authority is
     // the very one that had nothing behind it.
     expect(
-      reopened.status().projections.find((p) => p.name === "task_read_model")?.eventCount,
+      watermarkOf(reopened, "task_read_model", "control_plane_events")?.eventCount,
     ).toBe(7);
   });
 
@@ -1663,11 +1663,18 @@ describe("projection watermark verification", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
-    // Five projections since V2-B1c: the two task-stream folds, the route
-    // fold, and the two initiative-stream folds.
-    expect(ledger.status().projections.map((projection) => projection.appliedThroughSequence)).toEqual(
-      [0, 0, 0, 0, 0],
-    );
+    // Six projections since P-09/log-C: the two task-stream folds, the route
+    // fold, the two initiative-stream folds, and the two-source routing fold.
+    // Seven heads, because the last one has two — every one of them at zero on
+    // a ledger that has never been appended to.
+    expect(ledger.status().projections).toHaveLength(6);
+    expect(
+      ledger
+        .status()
+        .projections.flatMap((projection) =>
+          projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
+        ),
+    ).toEqual([0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -1678,9 +1685,7 @@ describe("projection watermark verification", () => {
     // five seeded task events; the initiative projections stay at zero,
     // because nothing has been appended to the sibling stream. Holding them
     // all to one number would be the bug this separation exists to prevent.
-    const levels = new Map(
-      ledger.status().projections.map((projection) => [projection.name, projection.appliedThroughSequence]),
-    );
+    const levels = appliedByName(ledger);
     expect(levels.get("task_read_model")).toBe(5);
     expect(levels.get("worker_read_model")).toBe(5);
     expect(levels.get("initiative_read_model")).toBe(0);
@@ -2673,8 +2678,10 @@ describe("the recorded execution route", () => {
 
     // The new projection is level with the head it was seeded from, and holds
     // no rows, which is the truthful pair.
-    const meta = migrated.status().projections.find((p) => p.name === "execution_route_read_model");
-    expect(meta?.appliedThroughSequence).toBe(headBefore);
+    expect(
+      watermarkOf(migrated, "execution_route_read_model", "control_plane_events")
+        ?.appliedThroughSequence,
+    ).toBe(headBefore);
     expect(migrated.listExecutionRoutes(taskId)).toEqual([]);
 
     // And an append after the upgrade still lands, projects and verifies.
@@ -2730,13 +2737,35 @@ function lifecycleBatch(taskId: string, emittedBy: string): Record<string, unkno
   ];
 }
 
-/** The applied sequence of each projection, by name, as status() reports it. */
+/**
+ * The applied sequence of each SINGLE-headed projection, as status() reports it.
+ *
+ * A projection fed by two streams has two fixed heads and no single "how far",
+ * which is the whole reason the DTO carries a vector; it is read through
+ * `watermarkOf`, which names the stream it means. Skipping it here rather than
+ * picking one of its heads keeps this helper from answering a question it
+ * cannot answer.
+ */
 function appliedByName(ledger: Ledger): Map<string, number> {
-  return new Map(
-    ledger
-      .status()
-      .projections.map((projection) => [projection.name, projection.appliedThroughSequence]),
-  );
+  const applied = new Map<string, number>();
+  for (const projection of ledger.status().projections) {
+    if (projection.watermarks.length !== 1) continue;
+    const only = projection.watermarks[0];
+    if (only !== undefined) applied.set(projection.name, only.appliedThroughSequence);
+  }
+  return applied;
+}
+
+/** One projection's fixed head on one named stream, as status() reports it. */
+function watermarkOf(
+  ledger: Ledger,
+  name: string,
+  sourceStream: string,
+): { readonly appliedThroughSequence: number; readonly eventCount: number } | undefined {
+  return ledger
+    .status()
+    .projections.find((projection) => projection.name === name)
+    ?.watermarks.find((watermark) => watermark.sourceStream === sourceStream);
 }
 
 describe("appendBatch lands a whole batch or none of it", () => {
@@ -4017,27 +4046,139 @@ describe("two heads under one projection name advance independently (negative 2)
     expect(open(path).verifyIntegrity().ok).toBe(true);
   });
 
-  it("publishes exactly the five single-source rows in status(), and no more", () => {
-    // D2 keeps the status DTO exactly as it is, and no single
-    // `appliedThroughSequence` describes a projection with two heads. The
-    // vector travels when the wire schema can carry it, which is P-09/log-D.
+  it("publishes every projection in status(), the two-headed one with both heads", () => {
+    // The inverse of what this test asserted between C and D. C had a DTO with
+    // one `appliedThroughSequence` per projection, so the two-source projection
+    // could not be described and was omitted; the omission was named here and
+    // in `status()` as P-09/log-D's to undo. This is D.
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
     ledger.appendRegistryEvent(makeRegistryDocument());
 
-    const published = ledger.status().projections.map((projection) => projection.name);
-    expect(published).toEqual([
+    const status = ledger.status();
+    // Six projections, not seven entries: the vector lives INSIDE the
+    // projection, so a projection with two heads is still one projection.
+    expect(status.projections).toHaveLength(6);
+    expect(status.projections.map((projection) => projection.name)).toEqual([
       "execution_route_read_model",
       "initiative_read_model",
       "roadmap_version_read_model",
+      "routing_assignment_read_model",
       "task_read_model",
       "worker_read_model",
     ]);
+
+    const routing = status.projections.find(
+      (projection) => projection.name === "routing_assignment_read_model",
+    );
+    // Both heads, ordered by stream, each carrying its own position, count and
+    // digest. Neither is derivable from the other, which is the whole claim.
+    expect(routing?.watermarks.map((watermark) => watermark.sourceStream)).toEqual([
+      "initiative_events",
+      "registry_events",
+    ]);
+    expect(routing?.watermarks.map((watermark) => watermark.appliedThroughSequence)).toEqual([
+      1, 1,
+    ]);
+    expect(routing?.rowCount).toBe(1);
+
+    // Every single-headed projection publishes exactly one entry.
+    for (const projection of status.projections) {
+      if (projection.name === "routing_assignment_read_model") continue;
+      expect(projection.watermarks, projection.name).toHaveLength(1);
+    }
     ledger.close();
 
-    // Seven rows in the table, five in the DTO. The difference is the point.
+    // Seven rows in the table, seven entries across six projections. Nothing
+    // in the table is omitted from the DTO any more.
     expect(readWatermarks(path)).toHaveLength(7);
+    expect(
+      status.projections.flatMap((projection) => projection.watermarks),
+    ).toHaveLength(7);
+  });
+
+  it("publishes the latest instant of a projection's rows as its updatedAt", () => {
+    // A projection fed by two streams has two independent `updated_at`, because
+    // each stream's door updates only its own row. "When did this projection
+    // last move" has one answer and it is the most recent one — here the
+    // registry row is still at the epoch the migration seeded it with while the
+    // initiative row has moved.
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+
+    const routing = ledger
+      .status()
+      .projections.find((projection) => projection.name === "routing_assignment_read_model");
+
+    const stamps = new Map(
+      routing?.watermarks.map((watermark) => [watermark.sourceStream, watermark]) ?? [],
+    );
+    expect(stamps.get("registry_events")?.appliedThroughSequence).toBe(0);
+    expect(stamps.get("initiative_events")?.appliedThroughSequence).toBe(1);
+
+    const rows = readWatermarks(ledger.path).filter(
+      (row) => row.projection_name === "routing_assignment_read_model",
+    );
+    const instants = rows.map((row) => row.updated_at);
+    expect(new Set(instants).size).toBe(2);
+    expect(routing?.updatedAt).toBe(
+      instants.reduce((latest, instant) => (instant > latest ? instant : latest)),
+    );
+    // And it is the moved one, not the seeded epoch.
+    expect(routing?.updatedAt).not.toBe("1970-01-01T00:00:00.000Z");
+  });
+
+  it("publishes the stored row rather than recomputing it from the head", () => {
+    // Negative 5, in the only shape this build can produce it. There is no
+    // lawful lag: every door advances all of its stream's rows in one
+    // transaction, and a row behind its head is a `PROJECTION_META` finding.
+    // So the rewind is done through the raw seam, consistently across all three
+    // of the row's fields, and the claim is about the division of labour:
+    // `status()` REPORTS what the table says, it does not recompute from the
+    // stream and it does not judge. `verifyIntegrity()` is what judges.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.close();
+
+    const digestAtThree = (() => {
+      const raw = new Database(path);
+      try {
+        return (
+          raw
+            .prepare("SELECT event_sha256 FROM control_plane_events WHERE sequence = ?")
+            .get(3) as { readonly event_sha256: string }
+        ).event_sha256;
+      } finally {
+        raw.close();
+      }
+    })();
+
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare(
+          "UPDATE projection_watermark SET applied_sequence = ?, source_head_sha256 = ?, " +
+            "event_count = ? WHERE projection_name = ? AND source_stream = ?",
+        )
+        .run(3, digestAtThree, 3, "task_read_model", "control_plane_events");
+    });
+
+    const reopened = open(path);
+    const watermark = watermarkOf(reopened, "task_read_model", "control_plane_events");
+    expect(watermark?.appliedThroughSequence).toBe(3);
+    expect(watermark?.eventCount).toBe(3);
+    // The head of the stream is still 5. `status()` publishes 3 because that is
+    // what the row says.
+    expect(reopened.status().headSequence).toBe(5);
+
+    // And the judgement that status() declines to make is made where it lives.
+    const report = reopened.verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(detailsOf(report.problems)).toContain(
+      "is applied through sequence 3 but the head of control_plane_events is sequence 5",
+    );
   });
 });
 

@@ -49,6 +49,7 @@ import {
   initiativeRoadmapContentPath,
   initiativeRoadmapPath,
   INTEGRITY_PROBLEM_KINDS,
+  WATERMARK_SOURCE_STREAMS,
   IntegrityResult,
   LEDGER_CONTRACT_VERSION,
   LedgerDatabaseIdentity,
@@ -189,14 +190,40 @@ const LEDGER_STATUS = {
   projections: [
     {
       name: "task_read_model",
-      appliedThroughSequence: 7,
-      eventCount: 7,
-      sourceHeadSha256: SHA256,
-      updatedAt: AT,
       rowCount: 2,
+      updatedAt: AT,
+      watermarks: [
+        {
+          sourceStream: "control_plane_events",
+          appliedThroughSequence: 7,
+          eventCount: 7,
+          sourceHeadSha256: SHA256,
+        },
+      ],
     },
   ],
   observedAt: LATER,
+};
+
+/** A projection fed by two streams, which is the shape the vector exists for. */
+const TWO_HEADED_PROJECTION = {
+  name: "routing_assignment_read_model",
+  rowCount: 1,
+  updatedAt: AT,
+  watermarks: [
+    {
+      sourceStream: "initiative_events",
+      appliedThroughSequence: 4,
+      eventCount: 4,
+      sourceHeadSha256: SHA256,
+    },
+    {
+      sourceStream: "registry_events",
+      appliedThroughSequence: 0,
+      eventCount: 0,
+      sourceHeadSha256: "0".repeat(64),
+    },
+  ],
 };
 
 const INTEGRITY_OK = {
@@ -982,6 +1009,139 @@ describe("health, status and integrity", () => {
     const migration = { version: 1, name: "0001_initial", sha256: SHA256, appliedAt: AT };
     const bad = withKey(LEDGER_STATUS, "migrations", [migration, migration]);
     expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------
+  // The watermark vector (P-09/log-D)
+  //
+  // The gateway forwards the ledger's array raw, so this schema is the only
+  // boundary between a producer and every reader. What it does not refuse,
+  // a browser renders as a real head.
+  // ---------------------------------------------------------------------
+
+  it("accepts a projection fed by two streams, with both of its heads", () => {
+    const good = withKey(LEDGER_STATUS, "projections", [TWO_HEADED_PROJECTION]);
+    expect(LedgerStatusResponse.safeParse(good).success).toBe(true);
+  });
+
+  it("refuses a projection with no watermark at all", () => {
+    const bad = withKey(LEDGER_STATUS, "projections", [
+      { name: "task_read_model", rowCount: 2, updatedAt: AT, watermarks: [] },
+    ]);
+    expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses more watermarks than there are streams", () => {
+    const bad = withKey(LEDGER_STATUS, "projections", [
+      {
+        ...TWO_HEADED_PROJECTION,
+        watermarks: [
+          ...WATERMARK_SOURCE_STREAMS.map((sourceStream) => ({
+            sourceStream,
+            appliedThroughSequence: 1,
+            eventCount: 1,
+            sourceHeadSha256: SHA256,
+          })),
+          {
+            sourceStream: "registry_events",
+            appliedThroughSequence: 1,
+            eventCount: 1,
+            sourceHeadSha256: SHA256,
+          },
+        ],
+      },
+    ]);
+    expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses a stream named twice in one projection", () => {
+    // Two heads for one stream has no answer to "which is the real one".
+    const entry = TWO_HEADED_PROJECTION.watermarks[0];
+    const bad = withKey(LEDGER_STATUS, "projections", [
+      { ...TWO_HEADED_PROJECTION, watermarks: [entry, entry] },
+    ]);
+    expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses a vector that is not ordered by source stream", () => {
+    const bad = withKey(LEDGER_STATUS, "projections", [
+      { ...TWO_HEADED_PROJECTION, watermarks: [...TWO_HEADED_PROJECTION.watermarks].reverse() },
+    ]);
+    expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses a source stream the contract does not define", () => {
+    const bad = withKey(LEDGER_STATUS, "projections", [
+      {
+        ...TWO_HEADED_PROJECTION,
+        watermarks: [
+          { ...TWO_HEADED_PROJECTION.watermarks[0], sourceStream: "outbox_message" },
+        ],
+      },
+    ]);
+    expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses an extra or a missing field inside a watermark entry", () => {
+    // The uniform strictness loop above only reaches the top level; a strict
+    // object nested two deep has to be asserted where it lives.
+    const entry = TWO_HEADED_PROJECTION.watermarks[0];
+    const extra = withKey(LEDGER_STATUS, "projections", [
+      {
+        ...TWO_HEADED_PROJECTION,
+        watermarks: [{ ...entry, projectorVersion: 1 }],
+      },
+    ]);
+    expect(LedgerStatusResponse.safeParse(extra).success).toBe(false);
+
+    for (const field of [
+      "sourceStream",
+      "appliedThroughSequence",
+      "eventCount",
+      "sourceHeadSha256",
+    ]) {
+      const missing = withKey(LEDGER_STATUS, "projections", [
+        { ...TWO_HEADED_PROJECTION, watermarks: [without(entry as object, field)] },
+      ]);
+      expect(LedgerStatusResponse.safeParse(missing).success, field).toBe(false);
+    }
+  });
+
+  it("refuses a projection carrying the retired flat head fields", () => {
+    // The wire break is complete: there is no dual form, so the old shape does
+    // not parse as a courtesy to an un-upgraded producer.
+    const bad = withKey(LEDGER_STATUS, "projections", [
+      {
+        name: "task_read_model",
+        appliedThroughSequence: 7,
+        eventCount: 7,
+        sourceHeadSha256: SHA256,
+        updatedAt: AT,
+        rowCount: 2,
+      },
+    ]);
+    expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  it("counts projections and not heads against the fifty-projection bound", () => {
+    const projection = (index: number) => ({
+      ...TWO_HEADED_PROJECTION,
+      name: "projection_" + String(index),
+    });
+    // Twenty two-headed projections is forty heads, and passes.
+    const twenty = withKey(
+      LEDGER_STATUS,
+      "projections",
+      Array.from({ length: 20 }, (_, index) => projection(index)),
+    );
+    expect(LedgerStatusResponse.safeParse(twenty).success).toBe(true);
+
+    const fiftyOne = withKey(
+      LEDGER_STATUS,
+      "projections",
+      Array.from({ length: 51 }, (_, index) => projection(index)),
+    );
+    expect(LedgerStatusResponse.safeParse(fiftyOne).success).toBe(false);
   });
 
   it("mirrors exactly the ledger's integrity problem kinds", () => {

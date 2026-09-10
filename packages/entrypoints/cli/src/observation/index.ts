@@ -413,11 +413,17 @@ export function buildStatus(
     })),
     projections: status.projections.map((projection) => ({
       name: projection.name,
-      appliedThroughSequence: projection.appliedThroughSequence,
-      eventCount: projection.eventCount,
-      sourceHeadSha256: projection.sourceHeadSha256,
-      updatedAt: projection.updatedAt,
       rowCount: projection.rowCount,
+      updatedAt: projection.updatedAt,
+      // Entry by entry, for the same reason the fields above are copied one by
+      // one rather than spread: a spread forwards whatever the producer added,
+      // and the point of this mapper is that only what is named here crosses.
+      watermarks: projection.watermarks.map((watermark) => ({
+        sourceStream: watermark.sourceStream,
+        appliedThroughSequence: watermark.appliedThroughSequence,
+        eventCount: watermark.eventCount,
+        sourceHeadSha256: watermark.sourceHeadSha256,
+      })),
     })),
     observedAt: now(),
   });

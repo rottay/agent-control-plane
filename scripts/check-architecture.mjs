@@ -7912,6 +7912,81 @@ const P09C_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-09/log-D — the vector of watermarks reaches the wire.
+ *
+ * The last rung of P-09/log (D8 of `acp-p09-kimi-dt-adjudication-v1.md`).
+ * C's own block says `status()` does not move and that "the vector travels when
+ * a DTO can carry it, which is P-09/log-D". This is that packet, and the
+ * narration lives here rather than as an edit to C's: what C said was true when
+ * C shipped, and a record that is rewritten whenever the world moves on is not
+ * a record.
+ *
+ * **The shape.** `ProjectionStatusDto` keeps `name`, `rowCount` and
+ * `updatedAt`, and gains `watermarks` — one entry per source stream, each with
+ * that stream's own `appliedThroughSequence`, `eventCount` and
+ * `sourceHeadSha256`. The flat versions of those three fields are **gone** from
+ * the projection level. It is a complete wire break, taken in one packet
+ * because the alternative is worse: two accepted shapes of one DTO are two
+ * sources of truth about the same fact, and no reader could tell which producer
+ * it was talking to. There is no `.optional()`, no `.default([])` and no legacy
+ * field.
+ *
+ * **What holds the shape.** `sourceStream` is a four-name enum mirroring the
+ * contract's `ck_projection_watermark__source_stream`, restated here because
+ * the protocol may not depend on the ledger — the arrangement
+ * `INTEGRITY_PROBLEM_KINDS` already makes — and held to a real ledger in the
+ * gateway's parity lane, the one place both are in scope. The vector is
+ * `.min(1).max(4)` and refined to be unique and ascending by stream: the
+ * gateway forwards the ledger's array raw, so this schema is the only boundary,
+ * and a vector naming one stream twice has no answer to which head is real.
+ *
+ * **The flattening is presentation only.** The CLI's text table and the
+ * console's table both render one row per (projection, stream). Neither
+ * exports a type for that row, and the console's is a module-local interface:
+ * a "row per pair" DTO is precisely the alternative D8 rejected, and letting
+ * one out of a render module is how it would come back.
+ *
+ * **Retired here.** `SINGLE_SOURCE_PROJECTION_SOURCES` and the
+ * `STATUS_WATERMARK_KEYS` filter built from it existed so the DTO could omit
+ * the projection it could not describe. There is nothing left to omit, so both
+ * are removed rather than kept with corrected comments: a residual filter is a
+ * second source of truth about which heads exist. The edit to
+ * `migrations/index.ts` is confined to the constants region AFTER `SOURCES` —
+ * the migration checksum is `sha256Hex(source.sql)`, so no `sql:` template is
+ * touched and migrations 1 to 9 stay byte-identical.
+ *
+ * **Pins that do not move.** The write set gains **0 distinct paths**: every
+ * literal below is already admitted by a historical block, so
+ * `WRITE_SET_DISTINCT` holds. The block exists because D6/R8 requires a packet
+ * to carry its own registration, exactly as A, B and C did.
+ *
+ * No law here is falsified. The README/barrel law for the ledger is scoped to
+ * names ending in `Error` and no error class is added. `L-X1-4` is untouched:
+ * nothing in the migration SQL moves. The recorded-route law does not reach
+ * these files. And `TEST_ONLY_DOMAINS` needs no entry — every test lands in a
+ * module that already mirrors a source module.
+ */
+const P09D_WRITE_SET = [
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/cli/src/format/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/console/src/views/status-view/index.tsx",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8102,6 +8177,7 @@ const WRITE_SET = [
   ...P09A_WRITE_SET,
   ...P09B_WRITE_SET,
   ...P09C_WRITE_SET,
+  ...P09D_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

@@ -336,18 +336,29 @@ export function renderStatus(response: LedgerStatusResponse): string {
       ]),
     );
 
+  // One row per (projection, stream), flattened HERE and nowhere else.
+  //
+  // A projection fed by two streams has two fixed heads, and a table with one
+  // row per projection could only show one of them. The flattening is a
+  // rendering decision local to this function: there is deliberately no
+  // exported "row per pair" type, because that is the DTO shape the
+  // adjudication rejected, and it would come back through the presentation
+  // layer if anything but a table cell were allowed to hold it.
   const projections =
     "Projections\n" +
     table(
-      ["NAME", "THROUGH", "EVENTS", "ROWS", "SOURCE HEAD", "UPDATED AT"],
-      response.projections.map((projection) => [
-        projection.name,
-        count(projection.appliedThroughSequence),
-        count(projection.eventCount),
-        count(projection.rowCount),
-        shortDigest(projection.sourceHeadSha256),
-        projection.updatedAt,
-      ]),
+      ["NAME", "STREAM", "THROUGH", "EVENTS", "ROWS", "SOURCE HEAD", "UPDATED AT"],
+      response.projections.flatMap((projection) =>
+        projection.watermarks.map((watermark) => [
+          projection.name,
+          watermark.sourceStream,
+          count(watermark.appliedThroughSequence),
+          count(watermark.eventCount),
+          count(projection.rowCount),
+          shortDigest(watermark.sourceHeadSha256),
+          projection.updatedAt,
+        ]),
+      ),
     );
 
   return withNewline([head, migrations, projections].join("\n\n"));

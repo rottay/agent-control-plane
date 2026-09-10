@@ -24,8 +24,43 @@ const MIGRATION_COLUMNS: readonly Column<AppliedMigrationDto>[] = [
   },
 ];
 
-const PROJECTION_COLUMNS: readonly Column<ProjectionStatusDto>[] = [
+/**
+ * One table row per (projection, stream), flattened for rendering only.
+ *
+ * A projection fed by two streams carries two fixed heads, and a table with one
+ * row per projection could only show one of them. This type is deliberately
+ * local and unexported: a "row per pair" shape is the DTO the adjudication
+ * rejected, and letting one out of this module is how it would come back.
+ */
+interface ProjectionWatermarkRow {
+  readonly name: string;
+  readonly rowCount: number;
+  readonly updatedAt: string;
+  readonly sourceStream: string;
+  readonly appliedThroughSequence: number;
+  readonly eventCount: number;
+  readonly sourceHeadSha256: string;
+}
+
+function watermarkRows(
+  projections: readonly ProjectionStatusDto[],
+): readonly ProjectionWatermarkRow[] {
+  return projections.flatMap((projection) =>
+    projection.watermarks.map((watermark) => ({
+      name: projection.name,
+      rowCount: projection.rowCount,
+      updatedAt: projection.updatedAt,
+      sourceStream: watermark.sourceStream,
+      appliedThroughSequence: watermark.appliedThroughSequence,
+      eventCount: watermark.eventCount,
+      sourceHeadSha256: watermark.sourceHeadSha256,
+    })),
+  );
+}
+
+const PROJECTION_COLUMNS: readonly Column<ProjectionWatermarkRow>[] = [
   { key: "name", header: "Projection", priority: "essential", render: (row) => row.name },
+  { key: "sourceStream", header: "Stream", priority: "essential", render: (row) => row.sourceStream },
   { key: "appliedThrough", header: "Applied through", priority: "essential", align: "end", render: (row) => formatCount(row.appliedThroughSequence) },
   { key: "eventCount", header: "Events", priority: "secondary", align: "end", render: (row) => formatCount(row.eventCount) },
   { key: "rowCount", header: "Rows", priority: "secondary", align: "end", render: (row) => formatCount(row.rowCount) },
@@ -107,7 +142,12 @@ export function StatusView(): JSX.Element {
               {data.projections.length === 0 ? (
                 <p>No projections recorded.</p>
               ) : (
-                <DataTable caption="Read model projections" columns={[...PROJECTION_COLUMNS]} rows={data.projections} rowKey={(row) => row.name} />
+                <DataTable
+                  caption="Read model projections"
+                  columns={[...PROJECTION_COLUMNS]}
+                  rows={watermarkRows(data.projections)}
+                  rowKey={(row) => row.name + ":" + row.sourceStream}
+                />
               )}
             </section>
           </div>

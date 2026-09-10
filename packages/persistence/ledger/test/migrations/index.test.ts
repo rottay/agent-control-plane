@@ -8,7 +8,6 @@ import {
   MIGRATIONS,
   PROJECTION_NAMES,
   PROJECTION_SOURCES,
-  SINGLE_SOURCE_PROJECTION_SOURCES,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
@@ -254,16 +253,22 @@ describe("the closed set of watermark rows is exactly the streams under discipli
     // The two lists are each stream's own roster, and the two-source projection
     // is in neither: it is level with two chains, so putting it in either would
     // claim it follows one of them.
-    const taskNames = SINGLE_SOURCE_PROJECTION_SOURCES.filter(
-      (source) => source.sourceStream === TASK_STREAM,
-    ).map((source) => source.projectionName);
-    const initiativeNames = SINGLE_SOURCE_PROJECTION_SOURCES.filter(
-      (source) => source.sourceStream === INITIATIVE_STREAM,
-    ).map((source) => source.projectionName);
+    //
+    // The subset is derived here rather than read from a `migrations` export.
+    // That export existed only so the status DTO could omit the projection it
+    // could not describe; P-09/log-D gave the DTO a vector of heads, every pair
+    // is published, and a second list in the source of which pairs are real
+    // would now be a second source of truth about the first.
+    const singleSourceNamesOf = (stream: string): string[] =>
+      PROJECTION_SOURCES.filter(
+        (source) =>
+          source.sourceStream === stream &&
+          PROJECTION_SOURCES.filter((other) => other.projectionName === source.projectionName)
+            .length === 1,
+      ).map((source) => source.projectionName);
 
-    expect(taskNames).toEqual([...PROJECTION_NAMES]);
-    expect(initiativeNames).toEqual([...INITIATIVE_PROJECTION_NAMES]);
-    expect(SINGLE_SOURCE_PROJECTION_SOURCES).toHaveLength(5);
+    expect(singleSourceNamesOf(TASK_STREAM)).toEqual([...PROJECTION_NAMES]);
+    expect(singleSourceNamesOf(INITIATIVE_STREAM)).toEqual([...INITIATIVE_PROJECTION_NAMES]);
   });
 
   it("does not claim the account stream (D3)", () => {

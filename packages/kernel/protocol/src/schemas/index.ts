@@ -712,13 +712,98 @@ export const AppliedMigrationDto = z.strictObject({
 });
 export type AppliedMigrationDto = z.infer<typeof AppliedMigrationDto>;
 
-export const ProjectionStatusDto = z.strictObject({
-  name: z.string().min(1).max(80),
+/**
+ * The four event streams a watermark may name, mirrored from the ledger.
+ *
+ * This package may not depend on the ledger, so the list is restated rather
+ * than imported — the same arrangement `INTEGRITY_PROBLEM_KINDS` makes below,
+ * and asserted the same way: the server lane is the one place where both are in
+ * scope, and that is where a divergence is proved. The order is the contract's
+ * own `ck_projection_watermark__source_stream`, which is a closed SET; the
+ * ordering the vector below requires is a separate rule and is lexicographic,
+ * because that is what the producer's `ORDER BY source_stream` yields.
+ *
+ * A free `z.string()` here would let a stream the contract has never heard of
+ * cross the wire and render as a real head.
+ */
+export const WATERMARK_SOURCE_STREAMS = [
+  "control_plane_events",
+  "initiative_events",
+  "account_events",
+  "registry_events",
+] as const;
+
+export const WatermarkSourceStream = z.enum(WATERMARK_SOURCE_STREAMS);
+export type WatermarkSourceStream = z.infer<typeof WatermarkSourceStream>;
+
+/**
+ * One fixed head of one stream, for one projection.
+ *
+ * The three numbers travel together because they are only meaningful together:
+ * `sourceHeadSha256` is the digest **at** `appliedThroughSequence`, not at
+ * whatever that stream's head has since become, and `eventCount` is how much of
+ * that history was folded. Splitting them across a projection would be the
+ * defect `projection_meta` had.
+ */
+export const ProjectionWatermarkDto = z.strictObject({
+  sourceStream: WatermarkSourceStream,
   appliedThroughSequence: SequenceOrZero,
   eventCount: Count,
   sourceHeadSha256: Sha256Hex,
-  updatedAt: Timestamp,
+});
+export type ProjectionWatermarkDto = z.infer<typeof ProjectionWatermarkDto>;
+
+/**
+ * One projection, with the vector of heads it was built from.
+ *
+ * A projection fed by two streams has two independent heads and no single
+ * `appliedThroughSequence` describes it: stamping it with either one makes the
+ * other unverifiable. So the head fields live inside `watermarks`, one entry
+ * per source, and the projection level keeps only what is genuinely per
+ * projection — its name, how many rows it holds, and when its projector last
+ * ran over it.
+ *
+ * The flat `appliedThroughSequence`/`eventCount`/`sourceHeadSha256` fields are
+ * **gone**, not deprecated. There is no dual form: two shapes of one DTO would
+ * be two sources of truth about the same fact, and a reader would have to know
+ * which producer it was talking to before it could believe either.
+ *
+ * `.max(50)` on the array that holds these still counts PROJECTIONS, not pairs.
+ */
+export const ProjectionStatusDto = z.strictObject({
+  name: z.string().min(1).max(80),
   rowCount: Count,
+  updatedAt: Timestamp,
+  watermarks: z
+    .array(ProjectionWatermarkDto)
+    .min(1)
+    .max(WATERMARK_SOURCE_STREAMS.length)
+    .superRefine((value, ctx) => {
+      // Unique and ascending, because the producer emits them that way and the
+      // strict schema is the only boundary that holds it to it. The gateway
+      // forwards the ledger's array raw, so a vector that arrived shuffled or
+      // with one stream twice would be believed by everything downstream —
+      // and "which head is the real one for this stream" has no answer once a
+      // stream appears twice.
+      for (let index = 1; index < value.length; index += 1) {
+        const previous = value[index - 1];
+        const current = value[index];
+        if (previous === undefined || current === undefined) continue;
+        if (previous.sourceStream === current.sourceStream) {
+          ctx.addIssue({
+            code: "custom",
+            message: "a projection names each source stream at most once",
+            path: [index, "sourceStream"],
+          });
+        } else if (previous.sourceStream > current.sourceStream) {
+          ctx.addIssue({
+            code: "custom",
+            message: "a projection's watermarks are ordered by source stream",
+            path: [index, "sourceStream"],
+          });
+        }
+      }
+    }),
 });
 export type ProjectionStatusDto = z.infer<typeof ProjectionStatusDto>;
 

@@ -504,6 +504,21 @@ describe("status", () => {
     expect(body.eventCount).toBe(4);
     expect(body.pragmas.queryOnly).toBe(true);
     expect(body.migrations.length).toBeGreaterThan(0);
+
+    // The vector crosses the wire (P-09/log-D). The route forwards the ledger's
+    // array raw into a strict schema, so the fact that this parsed at all is
+    // the assertion; what is spelled out is that the two-headed projection
+    // arrives with BOTH heads rather than one of them.
+    const routing = body.projections.find(
+      (projection) => projection.name === "routing_assignment_read_model",
+    );
+    expect(routing?.watermarks.map((watermark) => watermark.sourceStream)).toEqual([
+      "initiative_events",
+      "registry_events",
+    ]);
+    for (const projection of body.projections) {
+      expect(projection.watermarks.length, projection.name).toBeGreaterThan(0);
+    }
     await app.close();
   });
 

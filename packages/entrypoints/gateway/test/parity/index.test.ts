@@ -16,6 +16,7 @@ import {
   PARITY_ROUTES,
   TaskDetailResponse,
   TaskPageResponse,
+  WATERMARK_SOURCE_STREAMS,
   ToolCallExecuteResponse,
   ToolCallPageResponse,
   toolCallsPath,
@@ -1739,6 +1740,48 @@ describe("the two lifecycle doors are equivalent on the write (V2 L3)", () => {
     // Neither surface carries the engine's status number.
     for (const surface of [apiBody, JSON.stringify(document)]) {
       expect(surface).not.toContain("inv_");
+    }
+  });
+
+  // The mirror the vector needs (P-09/log-D). The protocol may not depend on
+  // the ledger, so `WATERMARK_SOURCE_STREAMS` is a restatement of the
+  // contract's `ck_projection_watermark__source_stream`; this lane is the one
+  // place where a real ledger and the enum are both in scope, so it is where
+  // the restatement is held to the thing it restates.
+  //
+  // Asserted against what a ledger ACTUALLY emits rather than against the
+  // ledger's own constants: those are module-internal and exporting them to
+  // satisfy a test would widen a package's public surface for the test's
+  // convenience. A stream the ledger really publishes and this enum does not
+  // know is the drift that matters, and this catches it at the boundary the
+  // browser is on the other side of.
+  it("mirrors every source stream a real ledger publishes", () => {
+    const { path } = seed();
+    const ledger = openLedger(path, { readOnly: true });
+    try {
+      const published = new Set(
+        ledger
+          .status()
+          .projections.flatMap((projection) =>
+            projection.watermarks.map((watermark) => watermark.sourceStream),
+          ),
+      );
+      expect(published.size).toBeGreaterThan(0);
+      for (const sourceStream of published) {
+        expect(WATERMARK_SOURCE_STREAMS, sourceStream).toContain(sourceStream);
+      }
+      // And the enum is the contract's closed set, in the CHECK's own order —
+      // including the one stream nothing publishes a certified watermark for
+      // yet, which is why the set cannot be derived from what is published.
+      expect([...WATERMARK_SOURCE_STREAMS]).toEqual([
+        "control_plane_events",
+        "initiative_events",
+        "account_events",
+        "registry_events",
+      ]);
+      expect(published.has("account_events")).toBe(false);
+    } finally {
+      ledger.close();
     }
   });
 

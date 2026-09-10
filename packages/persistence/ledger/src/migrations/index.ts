@@ -1100,26 +1100,13 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: INITIATIVE_STREAM },
 ];
 
-/**
- * The pairs `status()` publishes, which is every projection with ONE source.
- *
- * `ProjectionStatus` answers "how far is this projection?" with a single
- * `appliedThroughSequence`, and for a projection with two independent heads
- * there is no such number — stamping it with either one makes the other
- * unverifiable, which is the exact defect `projection_meta` had. So the
- * two-source projection is omitted from the status DTO rather than described
- * badly in it, and its vector travels when the wire schema can carry it.
- *
- * Derived rather than written out, so a projection that gained or lost a
- * source moves in or out of the DTO by itself instead of by a second edit
- * somebody has to remember.
- */
-export const SINGLE_SOURCE_PROJECTION_SOURCES: readonly ProjectionSource[] =
-  PROJECTION_SOURCES.filter(
-    (source) =>
-      PROJECTION_SOURCES.filter((other) => other.projectionName === source.projectionName)
-        .length === 1,
-  );
+// A `SINGLE_SOURCE_PROJECTION_SOURCES` derived from the list above used to
+// stand here, documented as "the pairs `status()` publishes": while the status
+// DTO carried one head per projection, the two-source projection had to be
+// omitted from it, and that subset was how. P-09/log-D gave the DTO a vector of
+// heads, so every pair above is published and the subset has no meaning left.
+// It is removed rather than kept with a corrected comment, because a second
+// list of which pairs are real is a second source of truth about the first.
 
 export interface SchemaObject {
   readonly type: string;
