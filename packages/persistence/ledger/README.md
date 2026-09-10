@@ -33,8 +33,8 @@ ledger.close();
 | Member | Purpose |
 | --- | --- |
 | `openLedger(path, options?)` | Open writable or read-only. Applies missing migrations only when writable. |
-| `append(event)` | Validate, canonicalize and append atomically. Exact replay is a no-op. |
-| `appendBatch(events)` | The task stream only. One or more events, one transaction: rows, projections, head and watermarks commit together or not at all. Added beside `append`, which is unchanged. |
+| `append(event, causation?)` | Validate, canonicalize and append atomically. Exact replay is a no-op. The optional reference is resolved, not merely stored. |
+| `appendBatch(events, causations?)` | The task stream only. One or more events, one transaction: rows, projections, head and watermarks commit together or not at all. Added beside `append`, which is unchanged. The references, when given, are one per event. |
 | `getEvent(eventId)` | One record by event id, or null. |
 | `getEventBySequence(sequence)` | One record by position, or null. |
 | `getEventByIdempotencyKey(key)` | One record by idempotency key, or null. |
@@ -42,7 +42,7 @@ ledger.close();
 | `getTask(taskId)` / `listTasks(query?)` | Derived task read model, ordered by task id. |
 | `getWorker(identity)` / `listWorkers(query?)` | Derived worker read model, ordered by identity. |
 | `getExecutionRoute(taskId, attempt)` / `listExecutionRoutes(taskId)` | The route an attempt was admitted on, keyed by the pair. Null, or empty, when nothing recorded one. |
-| `appendInitiativeEvent(event)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
+| `appendInitiativeEvent(event, causation?)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
@@ -54,6 +54,62 @@ ledger.close();
 
 Options are `{ readOnly?, busyTimeoutMs? }`. Pages are bounded: default 100,
 maximum 1000, and cursors are exclusive.
+
+### Typed causality
+
+Two streams' sequences are not comparable, so "this happened because of that"
+cannot be said by ordering. It is said by a triple — which stream, which
+position in it, and the digest of the event found there:
+
+```ts
+const cause = ledger.appendInitiativeEvent(registration);
+
+ledger.append(discovery, {
+  stream: "initiative_events",
+  sequence: cause.record.sequence,
+  sha256: cause.record.eventSha256,
+});
+```
+
+Every record carries `causation`, a `CausationRef` or `null`. Omitting the
+argument is the ordinary case: the first event of a chain, or one an owner
+action outside the system provoked.
+
+The digest is the whole point. A reference whose digest is not the referenced
+event's own is refused as an **invalid reference**, not recorded as a weak link,
+and so is one naming a position no row occupies. Both refusals are a
+`LedgerValidationError` from the door, and the same rules are carried underneath
+by a `BEFORE INSERT` trigger per stream, so reaching past the door with raw SQL
+does not get a caller a triple the door would have refused. The trigger is where
+the contract's `ck_<table>__causation_pair` and the 64-hex digest shape live,
+because SQLite cannot add a `CHECK` to a table that already exists and an applied
+migration is never rewritten.
+
+**Only the two streams with a hash chain may be named.** `account_events` has no
+`event_sha256` at all, and `registry_events` does not exist yet, so a reference
+to either could be believed but never checked. Both are refused as a value of
+`causation_stream`; widening the vocabulary belongs to the packets that give
+those streams a digest.
+
+A retry under the same idempotency key is still a silent no-op only when the
+reference matches too. The triple is not part of `event_json`, so a comparison
+of bodies alone would answer `inserted: false` to a caller claiming a different
+cause; the discrepancy is a `LedgerIdempotencyConflictError`, as any other reuse
+of one key for two different appends is.
+
+Two things this does **not** give you, stated because the alternative is to let
+a reader assume them:
+
+- **The triple is outside the hash chain.** `event_sha256` is computed over the
+  canonical event body alone and cannot be widened to cover these columns
+  without rehashing every event ever written. What protects a triple already on
+  disk is therefore physical, not cryptographic: the append-only triggers refuse
+  every `UPDATE` and `DELETE`, and the validating trigger refuses a bad triple at
+  the door.
+- **`verifyIntegrity()` does not re-verify historical triples.** It reports what
+  it always reported. Adding a finding for a reference that no longer resolves
+  needs a new `IntegrityProblemKind`, which lives in `@acp/protocol`; reusing an
+  existing kind would misname the cause. That check is a later packet's.
 
 Raw SQLite access is deliberately absent. A caller holding the connection could
 bypass the append-only triggers and the hash chain, and the ledger would have no
@@ -89,8 +145,8 @@ fourteenth class cannot arrive without appearing here.
 | Table | Kind | Contents |
 | --- | --- | --- |
 | `schema_migrations` | authority | applied version, name, SHA-256, timestamp |
-| `control_plane_events` | authority | the append-only log, with `previous_sha256` and `event_sha256` |
-| `initiative_events` | authority | the sibling append-only stream, on its own hash chain |
+| `control_plane_events` | authority | the append-only log, with `previous_sha256` and `event_sha256`, and the nullable causal triple |
+| `initiative_events` | authority | the sibling append-only stream, on its own hash chain, with the same triple |
 | `ledger_meta` | authority | head sequence, head digest and event count, one set per stream |
 | `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable) |
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
@@ -128,7 +184,10 @@ later packet's.
 
 Only the derived tables are ever cleared. Neither event table has a delete path
 at all: each carries its own `BEFORE UPDATE` and `BEFORE DELETE` triggers, which
-abort unconditionally.
+abort unconditionally, and a `BEFORE INSERT` trigger that refuses a malformed
+digest or a broken causal triple on the way in. All of them are inventoried by
+name, because dropping one leaves `schema_migrations` untouched and no other
+check would notice.
 
 The two streams share a database and the transaction discipline, and nothing
 else. An initiative registration has no task and no lifecycle state, so it

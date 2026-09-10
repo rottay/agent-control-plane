@@ -7772,6 +7772,61 @@ const P09A_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-09/log-B — causality is typed, verified, or absent.
+ *
+ * The second rung of P-09/log (D2 of `acp-p09-kimi-dt-adjudication-v1.md`),
+ * landing on A. Migration 8 adds the contract's causal triple —
+ * `causation_stream`, `causation_sequence`, `causation_sha256` — to the two
+ * streams that carry a hash chain, nullable and additive, and imposes it with a
+ * `BEFORE INSERT` trigger per stream because SQLite cannot add a CHECK to a
+ * table that already exists. The doors gain an optional reference; the ledger
+ * resolves it and refuses the discrepancy before the INSERT, and the trigger
+ * holds the same line underneath for anyone reaching past the door.
+ *
+ * **Two streams, not three.** `account_events` carries no `causation_*` by
+ * contract (`docs/audit/architecture/database/streams/index.md:219-221`): it has
+ * no `event_sha256`, so a reference naming it could be believed but never
+ * checked. `registry_events` does not exist. Both are refused as a *value* of
+ * `causation_stream`, and neither is named anywhere in migration 8 — a trigger
+ * branch naming a table that does not exist is compiled on every INSERT into
+ * the table and would break all of them, not lie dormant.
+ *
+ * **Pins that do not move.** The write set gains **0 distinct paths**: the eight
+ * literals below are A's, one for one. The block exists because D6/R8 requires a
+ * packet to carry its own registration, not because a path would be refused.
+ *
+ * The fence suite holds at 202 and the ADR corpus at 63: no law and no record
+ * are added. `L-X1-4` still finds `schema_migrations` named in the ledger's
+ * migration module and the three stores' migration tables distinct.
+ * `L-V2B5R10` is untouched, and this is the packet where that is worth being
+ * precise about: the legacy `correlation_id` and `causation_id` columns stay,
+ * are neither read differently nor retired, and remain what P8-8E2 called them
+ * — advisory free text the telemetry edge reads. The typed triple is a second,
+ * additive mechanism beside them, not a replacement for them. The README/barrel
+ * error law is untouched because no error class is added: a malformed or
+ * unresolvable reference is a `LedgerValidationError`, and a replay under a
+ * different reference a `LedgerIdempotencyConflictError`, both existing.
+ * `TEST_ONLY_DOMAINS` needs no entry — every test lands in the two test modules
+ * that already mirror a source module.
+ *
+ * Declared out of scope, in the README rather than merely here:
+ * `verifyIntegrity` does not check historical triples (`IntegrityProblemKind`
+ * lives in `@acp/protocol`, outside this write set), and the triple is outside
+ * the `event_sha256` preimage, so what protects one already written is the
+ * append-only triggers, not the chain.
+ */
+const P09B_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -7960,6 +8015,7 @@ const WRITE_SET = [
   ...P04_WRITE_SET,
   ...R19G_WRITE_SET,
   ...P09A_WRITE_SET,
+  ...P09B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

@@ -143,6 +143,8 @@ export type {
   AppendBatchResult,
   AppendResult,
   AppliedMigration,
+  CausationRef,
+  CausationStream,
   EventPage,
   EventQuery,
   ExecutionRouteReadModel,

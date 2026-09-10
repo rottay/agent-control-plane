@@ -31,6 +31,7 @@ import {
   canonicalJsonStringify,
   chainDigest,
   openLedger,
+  type CausationRef,
   type Ledger,
 } from "../../src/index.js";
 
@@ -268,10 +269,10 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    // Seven since P-09/log-A added the projection watermark beside the route
-    // projection V2-B1c added.
+    // Eight since P-09/log-B added the typed causal triple beside the watermark
+    // table P-09/log-A added.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7,
+      1, 2, 3, 4, 5, 6, 7, 8,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1153,6 +1154,27 @@ describe("tamper detection", () => {
 const GHOST_TASK = "cccccccc-0000-4000-8000-000000000003";
 
 /** A raw handle that leaves the append-only triggers and the schema intact. */
+/**
+ * Undo migration 8's schema objects.
+ *
+ * A migration set is applied in order and compared by position, so a test that
+ * rewinds a ledger to migration N has to take everything after N with it: an
+ * applied set of 1-6 and 8 is a divergent history rather than a pending tail,
+ * and re-applying 8 over columns that are still there is a duplicate-column
+ * error rather than an upgrade.
+ */
+function dropTypedCausality(raw: Database.Database): void {
+  raw.exec(
+    "DROP TRIGGER tr_control_plane_events__validate_new_rows; " +
+      "DROP TRIGGER tr_initiative_events__validate_new_rows;",
+  );
+  for (const table of ["control_plane_events", "initiative_events"]) {
+    for (const column of ["causation_stream", "causation_sequence", "causation_sha256"]) {
+      raw.exec("ALTER TABLE " + table + " DROP COLUMN " + column);
+    }
+  }
+}
+
 function withRawDatabase(path: string, mutate: (raw: Database.Database) => void): void {
   const raw = new Database(path);
   try {
@@ -2445,10 +2467,12 @@ describe("the recorded execution route", () => {
     seeded.close();
 
     // Rewind to the pre-V2-B1c shape: no route table, no meta row, no
-    // migration 6. This is what such a ledger looks like on disk. Migration 7
-    // goes with it, because a migration set is applied in order and the
-    // watermark table did not exist before the route projection did.
+    // migration 6. This is what such a ledger looks like on disk. Migrations 7
+    // and 8 go with it, because a migration set is applied in order and neither
+    // the watermark table nor the causal triple existed before the route
+    // projection did.
     const raw = new Database(path);
+    dropTypedCausality(raw);
     raw.exec("DROP TABLE execution_route_read_model");
     raw.exec("DROP TABLE projection_watermark");
     raw.prepare("DELETE FROM projection_meta WHERE name = ?").run("execution_route_read_model");
@@ -2459,10 +2483,10 @@ describe("the recorded execution route", () => {
     ).toEqual([1, 2, 3, 4, 5]);
     raw.close();
 
-    // The upgrade: migrations 6 and 7 apply on open, and nothing else is done.
+    // The upgrade: migrations 6, 7 and 8 apply on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7,
+      1, 2, 3, 4, 5, 6, 7, 8,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -2835,19 +2859,22 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     expect(initiativeHead).toBe(2);
     seeded.close();
 
-    // Rewind to the pre-P-09 shape: no watermark table, no migration 7. This
-    // is what such a ledger looks like on disk.
+    // Rewind to the pre-P-09 shape: no watermark table, no typed causality, and
+    // neither migration recorded. This is what such a ledger looks like on disk.
+    // Both tails come off together because conformance is compared by position:
+    // an applied set of 1-6 and 8 is a divergent history, not a pending one.
     withRawDatabase(path, (raw) => {
+      dropTypedCausality(raw);
       raw.exec("DROP TABLE projection_watermark");
-      raw.prepare("DELETE FROM schema_migrations WHERE version = ?").run(7);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(7);
     });
 
-    // The upgrade: migration 7 applies on open, and nothing else is done. No
-    // operator is asked to rebuild after an upgrade, so the seed has to be
+    // The upgrade: the pending tail applies on open, and nothing else is done.
+    // No operator is asked to rebuild after an upgrade, so the seed has to be
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7,
+      1, 2, 3, 4, 5, 6, 7, 8,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -2891,5 +2918,487 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
     expect(rows.every((row) => row.updated_at === "1970-01-01T00:00:00.000Z")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Typed causality (P-09/log-B)
+//
+// The triple is additive and optional: an event with no recorded cause is the
+// ordinary case and stays exactly as it was. What is new is that a reference,
+// when present, is a *verifiable* one — the digest must be the referenced
+// event's own `event_sha256` at the named position of the named stream.
+//
+// Two layers, deliberately, and both are exercised here. The typed door
+// resolves the reference and refuses the discrepancy before the INSERT, which
+// is what makes the refusal a `LedgerValidationError` rather than a raw SQLite
+// error. The `BEFORE INSERT` trigger holds the same line underneath, for the
+// caller who reaches past the door with raw SQL — the second class of tests
+// below is what proves the base is not merely trusting the code above it.
+// ---------------------------------------------------------------------------
+
+/** A reference in the shape the doors take. */
+function ref(stream: string, sequence: number, sha256: string): CausationRef {
+  return { stream, sequence, sha256 } as unknown as CausationRef;
+}
+
+/** Two initiative events, so a test has two distinct verifiable causes. */
+function seedTwoCauses(ledger: Ledger): readonly [CausationRef, CausationRef] {
+  const first = ledger.appendInitiativeEvent(makeInitiativeEvent());
+  const second = ledger.appendInitiativeEvent(
+    makeInitiativeEvent({ initiativeId: INITIATIVE_B, transitionId: "register.b" }),
+  );
+  return [
+    ref("initiative_events", first.record.sequence, first.record.eventSha256),
+    ref("initiative_events", second.record.sequence, second.record.eventSha256),
+  ];
+}
+
+describe("a causal reference is typed, verified, or absent", () => {
+  it("leaves an event with no recorded cause exactly as it was", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+
+    const result = ledger.append(makeEvent({ taskId, transitionId: "discover", emittedBy: KIMI }));
+
+    expect(result.inserted).toBe(true);
+    expect(result.record.causation).toBeNull();
+    expect(result.record.previousSha256).toBe(GENESIS_SHA256);
+    expect(ledger.getEventBySequence(1)?.causation).toBeNull();
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("records a task event caused by an initiative event, and reads the reference back", () => {
+    // The cross-stream case the triple exists for. Two sequences that are not
+    // comparable, related by a digest that either resolves or does not.
+    const ledger = open(temporaryDatabase());
+    const cause = ledger.appendInitiativeEvent(makeInitiativeEvent());
+    const expected = ref(
+      "initiative_events",
+      cause.record.sequence,
+      cause.record.eventSha256,
+    );
+
+    const result = ledger.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+      expected,
+    );
+
+    expect(result.record.causation).toEqual(expected);
+    expect(ledger.getEventBySequence(result.record.sequence)?.causation).toEqual(expected);
+    expect(ledger.getEvent(result.record.eventId)?.causation).toEqual(expected);
+    // The chain is untouched: the triple is not in the hash preimage, and the
+    // first event of the task stream still links to genesis.
+    expect(result.record.previousSha256).toBe(GENESIS_SHA256);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("records an initiative event caused by a task event, in the other direction", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const cause = ledger.append(
+      makeEvent({ taskId, transitionId: "discover", emittedBy: KIMI }),
+    );
+    const expected = ref("control_plane_events", cause.record.sequence, cause.record.eventSha256);
+
+    const result = ledger.appendInitiativeEvent(makeInitiativeEvent(), expected);
+
+    expect(result.record.causation).toEqual(expected);
+    expect(ledger.listInitiativeEvents().events[0]?.causation).toEqual(expected);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses a digest that is not the referenced event's own", () => {
+    // Negative 5 of the P-09 map. An invalid reference, not a weak link.
+    const ledger = open(temporaryDatabase());
+    const cause = ledger.appendInitiativeEvent(makeInitiativeEvent());
+
+    const error = caught(() =>
+      ledger.append(
+        makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+        ref("initiative_events", cause.record.sequence, "a".repeat(64)),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect(ledger.status().headSequence).toBe(0);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses a reference to a position the named stream does not hold", () => {
+    const ledger = open(temporaryDatabase());
+    const cause = ledger.appendInitiativeEvent(makeInitiativeEvent());
+
+    const error = caught(() =>
+      ledger.append(
+        makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+        ref("initiative_events", cause.record.sequence + 7, cause.record.eventSha256),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect(ledger.status().headSequence).toBe(0);
+  });
+
+  it("refuses a stream whose digest this build cannot verify", () => {
+    // `account_events` has no `event_sha256` at all and `registry_events` does
+    // not exist. A reference nobody can check is the weak link the contract
+    // refuses, so the vocabulary is the two streams that carry a chain — and
+    // widening it belongs to the packets that give those streams one.
+    const ledger = open(temporaryDatabase());
+    ledger.append(makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }));
+    const digest = ledger.getEventBySequence(1)?.eventSha256 ?? "";
+
+    for (const stream of ["account_events", "registry_events", "not_a_stream"]) {
+      const error = caught(() =>
+        ledger.appendInitiativeEvent(makeInitiativeEvent(), ref(stream, 1, digest)),
+      );
+      expect(error, stream).toBeInstanceOf(LedgerValidationError);
+    }
+    expect(ledger.status().initiativeHeadSequence).toBe(0);
+  });
+
+  it("refuses sequence zero, which is the genesis of no stream", () => {
+    const ledger = open(temporaryDatabase());
+
+    const error = caught(() =>
+      ledger.append(
+        makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+        ref("control_plane_events", 0, GENESIS_SHA256),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect(ledger.status().headSequence).toBe(0);
+  });
+
+  it("refuses a malformed digest without reading the database at all", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+
+    for (const digest of ["", "A".repeat(64), "a".repeat(63), "z".repeat(64)]) {
+      const error = caught(() =>
+        ledger.append(
+          makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+          ref("initiative_events", 1, digest),
+        ),
+      );
+      expect(error, digest).toBeInstanceOf(LedgerValidationError);
+    }
+    expect(ledger.status().headSequence).toBe(0);
+  });
+
+  it("carries a reference on each event of a batch, and refuses the batch if one fails", () => {
+    const ledger = open(temporaryDatabase());
+    const [first, second] = seedTwoCauses(ledger);
+
+    const taskId = randomUUID();
+    const batch = ledger.appendBatch(lifecycleBatch(taskId, KIMI), [first, null, second]);
+
+    expect(batch.results.map((result) => result.record.causation)).toEqual([first, null, second]);
+    expect(batch.insertedCount).toBe(3);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // One unverifiable reference anywhere in the batch, and none of it lands.
+    const headBefore = ledger.status().headSequence;
+    const error = caught(() =>
+      ledger.appendBatch(lifecycleBatch(randomUUID(), KIMI), [
+        null,
+        null,
+        ref("initiative_events", 1, "b".repeat(64)),
+      ]),
+    );
+
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect(ledger.status().headSequence).toBe(headBefore);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses a batch whose references do not line up with its events", () => {
+    const ledger = open(temporaryDatabase());
+    const [first] = seedTwoCauses(ledger);
+
+    const error = caught(() =>
+      ledger.appendBatch(lifecycleBatch(randomUUID(), KIMI), [first]),
+    );
+
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect(ledger.status().headSequence).toBe(0);
+  });
+
+  it("refuses a replay of the same key under a different reference", () => {
+    // The triple is not in `event_json`, so a replay that compared bodies alone
+    // would answer `inserted: false` to a caller claiming a different cause and
+    // lose the discrepancy in silence.
+    const ledger = open(temporaryDatabase());
+    const [first, second] = seedTwoCauses(ledger);
+    const event = makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI });
+
+    ledger.append(event, first);
+
+    const error = caught(() => ledger.append(event, second));
+    expect(error).toBeInstanceOf(LedgerIdempotencyConflictError);
+    const conflict = error as LedgerIdempotencyConflictError;
+    expect(conflict.storedContentSha256).not.toBe(conflict.incomingContentSha256);
+
+    // Dropping the reference on a retry is the same discrepancy.
+    expect(caught(() => ledger.append(event))).toBeInstanceOf(LedgerIdempotencyConflictError);
+
+    // And the honest retry is still the silent no-op it has always been.
+    const replay = ledger.append(event, first);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.causation).toEqual(first);
+    expect(ledger.status().eventCount).toBe(1);
+  });
+
+  it("refuses a replay of an initiative event under a different reference", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const one = ledger.append(makeEvent({ taskId, transitionId: "discover", emittedBy: KIMI }));
+    const two = ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "classify",
+        type: "TASK_CLASSIFIED",
+        fromState: "DISCOVERED",
+        toState: "DT_CLASSIFIED",
+        emittedBy: KIMI,
+      }),
+    );
+    const first = ref("control_plane_events", one.record.sequence, one.record.eventSha256);
+    const second = ref("control_plane_events", two.record.sequence, two.record.eventSha256);
+    const event = makeInitiativeEvent();
+
+    ledger.appendInitiativeEvent(event, first);
+
+    expect(caught(() => ledger.appendInitiativeEvent(event, second))).toBeInstanceOf(
+      LedgerIdempotencyConflictError,
+    );
+    expect(ledger.appendInitiativeEvent(event, first).inserted).toBe(false);
+    expect(ledger.status().initiativeEventCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The same law, one layer down
+//
+// SQLite does not allow a CHECK to be added to a table that already exists, so
+// the constraints the contract writes as `ck_<table>__causation_pair` are
+// carried by a `BEFORE INSERT` trigger instead. These tests reach past the
+// typed door with raw SQL, which is the only way to prove the trigger is
+// holding the line rather than the TypeScript above it.
+// ---------------------------------------------------------------------------
+
+const RAW_INSTANT = "2026-09-02T12:00:00.000Z";
+
+interface RawTriple {
+  readonly stream: string | null;
+  readonly sequence: number | null;
+  readonly sha256: string | null;
+}
+
+/**
+ * The reason an insert was refused, not merely the fact that it was.
+ *
+ * A raw insert of a column the table does not have also throws, so asserting
+ * `instanceof Error` alone would go green against a schema with no triple at
+ * all. Every refusal below is held to the wording of the rule that produced it.
+ */
+function refusalMessage(outcome: unknown, label: string): string {
+  expect(outcome, label).toBeInstanceOf(Error);
+  return (outcome as Error).message;
+}
+
+/**
+ * Insert a row into `control_plane_events` behind the ledger's back.
+ *
+ * The body is deliberately not a lawful event: what is under test is the
+ * trigger's verdict on the columns, and every caller here throws the database
+ * away immediately afterwards.
+ */
+function rawTaskInsert(
+  path: string,
+  triple: RawTriple,
+  digests: { readonly previous?: string; readonly event?: string } = {},
+): unknown {
+  const raw = new Database(path);
+  try {
+    return caught(() =>
+      raw
+        .prepare(
+          "INSERT INTO control_plane_events (" +
+            "event_id, idempotency_key, task_id, attempt, transition_id, type, from_state, " +
+            "to_state, emitted_by, occurred_at, recorded_at, correlation_id, causation_id, " +
+            "causation_stream, causation_sequence, causation_sha256, " +
+            "contract_version, event_json, previous_sha256, event_sha256" +
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          1,
+          "raw",
+          "TASK_DISCOVERED",
+          null,
+          "DISCOVERED",
+          KIMI,
+          RAW_INSTANT,
+          RAW_INSTANT,
+          null,
+          null,
+          triple.stream,
+          triple.sequence,
+          triple.sha256,
+          CONTRACT_VERSION,
+          "{}",
+          digests.previous ?? GENESIS_SHA256,
+          digests.event ?? "c".repeat(64),
+        ),
+    );
+  } finally {
+    raw.close();
+  }
+}
+
+describe("the base refuses a broken causal triple even with the ledger bypassed", () => {
+  it("rejects a triple that is only half written", () => {
+    // Negative 6 of the P-09 map. All three columns or none of them.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const cause = ledger.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+    );
+    const digest = cause.record.eventSha256;
+    ledger.close();
+
+    const halves: readonly RawTriple[] = [
+      { stream: "control_plane_events", sequence: null, sha256: null },
+      { stream: "control_plane_events", sequence: 1, sha256: null },
+      { stream: "control_plane_events", sequence: null, sha256: digest },
+      { stream: null, sequence: 1, sha256: digest },
+      { stream: null, sequence: 1, sha256: null },
+      { stream: null, sequence: null, sha256: digest },
+    ];
+
+    for (const triple of halves) {
+      const label = JSON.stringify(triple);
+      expect(refusalMessage(rawTaskInsert(path, triple), label), label).toContain(
+        "all three columns or none",
+      );
+    }
+  });
+
+  it("rejects a digest that is not the referenced row's own", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.append(makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }));
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.close();
+
+    const cases: readonly RawTriple[] = [
+      { stream: "control_plane_events", sequence: 1, sha256: "d".repeat(64) },
+      { stream: "initiative_events", sequence: 1, sha256: "d".repeat(64) },
+      // A position no row occupies is refused for the same reason: the
+      // reference does not resolve.
+      { stream: "initiative_events", sequence: 99, sha256: "d".repeat(64) },
+    ];
+
+    for (const triple of cases) {
+      const label = JSON.stringify(triple);
+      expect(refusalMessage(rawTaskInsert(path, triple), label), label).toContain(
+        "does not resolve",
+      );
+    }
+  });
+
+  it("rejects a stream name outside the verifiable vocabulary", () => {
+    // Without an explicit guard a name with no branch of its own would pass in
+    // silence, which is exactly the weak link the triple exists to rule out.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const cause = ledger.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+    );
+    const digest = cause.record.eventSha256;
+    ledger.close();
+
+    for (const stream of ["account_events", "registry_events", "control_plane_event"]) {
+      expect(
+        refusalMessage(rawTaskInsert(path, { stream, sequence: 1, sha256: digest }), stream),
+        stream,
+      ).toContain("no verifiable digest");
+    }
+  });
+
+  it("rejects a non-positive causal position", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.append(makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }));
+    ledger.close();
+
+    for (const sequence of [0, -1]) {
+      const triple = { stream: "control_plane_events", sequence, sha256: "e".repeat(64) };
+      expect(
+        refusalMessage(rawTaskInsert(path, triple), String(sequence)),
+        String(sequence),
+      ).toContain("positive position");
+    }
+  });
+
+  it("rejects digests that are not 64 lowercase hex characters", () => {
+    // The shape §0 of the contract gives `event_sha256`, imposed forward by the
+    // trigger because migration 1 shipped the column without a CHECK and an
+    // applied migration is never rewritten.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const cause = ledger.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+    );
+    const digest = cause.record.eventSha256;
+    ledger.close();
+
+    const absent: RawTriple = { stream: null, sequence: null, sha256: null };
+
+    expect(
+      refusalMessage(rawTaskInsert(path, absent, { event: "nope" }), "short event digest"),
+    ).toContain("event_sha256 is not 64 lowercase hex characters");
+    expect(
+      refusalMessage(rawTaskInsert(path, absent, { event: "C".repeat(64) }), "upper event digest"),
+    ).toContain("event_sha256 is not 64 lowercase hex characters");
+    expect(
+      refusalMessage(rawTaskInsert(path, absent, { previous: "nope" }), "previous digest"),
+    ).toContain("previous_sha256 is not 64 lowercase hex characters");
+    expect(
+      refusalMessage(
+        rawTaskInsert(path, {
+          stream: "control_plane_events",
+          sequence: 1,
+          sha256: digest.toUpperCase(),
+        }),
+        "upper causal digest",
+      ),
+    ).toContain("causation_sha256 is not 64 lowercase hex characters");
+  });
+
+  it("admits a row whose triple is wholly absent, and one that verifies", () => {
+    // The guard must not over-reach: the ordinary event has no recorded cause,
+    // and a reference that resolves is the whole point of allowing one.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const cause = ledger.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+    );
+    const digest = cause.record.eventSha256;
+    ledger.close();
+
+    expect(rawTaskInsert(path, { stream: null, sequence: null, sha256: null })).toBeUndefined();
+    expect(
+      rawTaskInsert(
+        path,
+        { stream: "control_plane_events", sequence: 1, sha256: digest },
+        { event: "f".repeat(64) },
+      ),
+    ).toBeUndefined();
   });
 });

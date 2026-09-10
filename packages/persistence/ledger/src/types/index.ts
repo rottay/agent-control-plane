@@ -51,6 +51,38 @@ export interface OpenLedgerOptions {
   readonly __testFaults?: LedgerTestFaults | undefined;
 }
 
+/**
+ * A stream that can be referenced as a cause, in this build.
+ *
+ * The contract's vocabulary is four names; this is the subset whose events
+ * carry an `event_sha256`, and therefore the subset a reference can be checked
+ * against. `account_events` has no chain of its own and `registry_events` does
+ * not exist yet, so a reference to either could only ever be believed, and a
+ * reference nobody can check is the weak link the typed triple exists to rule
+ * out. Widening this belongs to the packets that give those streams a digest.
+ */
+export type CausationStream = "control_plane_events" | "initiative_events";
+
+/**
+ * A verifiable reference to the event that caused this one (P-09/log-B).
+ *
+ * Two streams' sequences are not comparable, so causality between them cannot
+ * be expressed by ordering. It is expressed by naming the stream, the position
+ * in it, and the digest of the event found there — and the digest is the whole
+ * point: a triple whose digest does not match the row it names is refused as an
+ * invalid reference rather than recorded as a weak link.
+ *
+ * Optional everywhere. `null` is the ordinary case: the first event of a chain,
+ * or one an owner action outside the system provoked.
+ */
+export interface CausationRef {
+  readonly stream: CausationStream;
+  /** The referenced event's position in its own stream. One or greater. */
+  readonly sequence: number;
+  /** The referenced event's own `event_sha256`, 64 lowercase hex characters. */
+  readonly sha256: string;
+}
+
 /** One durable ledger row, with the event and its chain position. */
 export interface LedgerEventRecord {
   /** Monotonic integer position. The only ordering the ledger guarantees. */
@@ -62,6 +94,13 @@ export interface LedgerEventRecord {
   readonly canonicalJson: string;
   readonly previousSha256: string;
   readonly eventSha256: string;
+  /**
+   * The event this one was recorded as caused by, or null.
+   *
+   * Not part of `canonicalJson` and not part of `eventSha256`: the chain covers
+   * the body alone, and widening it would mean rehashing history.
+   */
+  readonly causation: CausationRef | null;
 }
 
 export interface AppendResult {
@@ -309,6 +348,8 @@ export interface InitiativeEventRecord {
   readonly canonicalJson: string;
   readonly previousSha256: string;
   readonly eventSha256: string;
+  /** The event this one was recorded as caused by, or null. See CausationRef. */
+  readonly causation: CausationRef | null;
 }
 
 export interface InitiativeAppendResult {

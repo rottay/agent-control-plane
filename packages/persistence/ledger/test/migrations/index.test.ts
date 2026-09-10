@@ -144,8 +144,10 @@ describe("migration conformance refuses every divergence, and suppresses the tai
 describe("migration 7 appends the watermark table without touching the applied six", () => {
   const SEVENTH = MIGRATIONS[6];
 
-  it("is the tail of the set, in position and in name", () => {
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  it("sits at position seven of a set whose order is fixed", () => {
+    expect(SEVENTH?.version).toBe(7);
+    expect(SEVENTH?.name).toBe("projection_watermark");
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
       "read_models",
@@ -154,6 +156,7 @@ describe("migration 7 appends the watermark table without touching the applied s
       "account_events",
       "execution_route_read_model",
       "projection_watermark",
+      "causation_triplet",
     ]);
   });
 
@@ -253,5 +256,107 @@ describe("the closed set of watermark rows is exactly the streams under discipli
     expect(
       PROJECTION_SOURCES.some((source) => source.sourceStream === "account_events"),
     ).toBe(false);
+  });
+});
+
+/**
+ * Migration 8 and the causal triple (P-09/log-B).
+ *
+ * The same kind of structural assertion as migration 7's: what the tail of the
+ * append-only migration set says is decided here, once. Two facts carry real
+ * weight and are asserted rather than described.
+ *
+ * The triple lands on the two streams that carry a hash chain and on no other,
+ * because a reference whose digest nobody can check is the weak link the
+ * contract refuses. And the trigger never names a table this build does not
+ * create: SQLite compiles a trigger body when it prepares an INSERT on the
+ * table, not when the trigger is created, so a branch naming a table that does
+ * not exist would break *every* append rather than lying dormant.
+ */
+describe("migration 8 types causality without touching the applied seven", () => {
+  const EIGHTH = MIGRATIONS[7];
+
+  it("is the tail of the set, and the only migration that names the triple", () => {
+    expect(EIGHTH?.version).toBe(8);
+    expect(EIGHTH?.name).toBe("causation_triplet");
+    const naming = MIGRATIONS.filter((migration) =>
+      migration.sql.includes("causation_stream"),
+    );
+    expect(naming.map((migration) => migration.version)).toEqual([8]);
+  });
+
+  it("adds three nullable columns to each stream that carries a chain", () => {
+    const sql = EIGHTH?.sql ?? "";
+    for (const table of ["control_plane_events", "initiative_events"]) {
+      for (const column of ["causation_stream", "causation_sequence", "causation_sha256"]) {
+        expect(sql, table + "." + column).toContain(
+          "ALTER TABLE " + table + "\n  ADD COLUMN " + column,
+        );
+      }
+    }
+  });
+
+  it("leaves the account stream out entirely (contract §3)", () => {
+    // `account_events` carries no `causation_*` by contract: it has no
+    // `event_sha256`, so it can neither be referenced verifiably nor hold a
+    // reference under the same rule. Adding it is a separate migration, for the
+    // packet that gives it a chain.
+    expect(EIGHTH?.name, "the migration under test must exist").toBe("causation_triplet");
+    expect(EIGHTH?.sql ?? "").not.toContain("account_events");
+  });
+
+  it("never names a table this build does not create", () => {
+    // `registry_events` is P-09/log-C. A branch naming it would be compiled on
+    // every INSERT into these tables and would break all of them.
+    expect(EIGHTH?.name, "the migration under test must exist").toBe("causation_triplet");
+    expect(EIGHTH?.sql ?? "").not.toContain("registry_events");
+  });
+
+  it("admits exactly the two verifiable streams as a causal source", () => {
+    const sql = EIGHTH?.sql ?? "";
+    expect(sql).toContain("NOT IN ('control_plane_events', 'initiative_events')");
+  });
+
+  it("imposes shape, the pair, the position and the digest in one trigger per stream", () => {
+    const sql = EIGHTH?.sql ?? "";
+    for (const table of ["control_plane_events", "initiative_events"]) {
+      expect(sql, table).toContain(
+        "CREATE TRIGGER tr_" + table + "__validate_new_rows\nBEFORE INSERT ON " + table,
+      );
+    }
+    // The four guards the contract asks of this trigger, plus the digest
+    // resolution the map's negative 5 asks of the packet.
+    expect(sql).toContain("length(NEW.event_sha256) <> 64");
+    expect(sql).toContain("length(NEW.previous_sha256) <> 64");
+    expect(sql).toContain("length(NEW.causation_sha256) <> 64");
+    expect(sql).toContain("(NEW.causation_stream IS NULL) <> (NEW.causation_sequence IS NULL)");
+    expect(sql).toContain("(NEW.causation_stream IS NULL) <> (NEW.causation_sha256 IS NULL)");
+    expect(sql).toContain("NEW.causation_sequence < 1");
+    expect((sql.match(/NOT EXISTS/g) ?? []).length).toBe(4);
+  });
+
+  it("does not touch the v2 coordinate trigger, which is another packet's", () => {
+    expect(EIGHTH?.name, "the migration under test must exist").toBe("causation_triplet");
+    expect(EIGHTH?.sql ?? "").not.toContain("validate_v2_coordinate");
+  });
+
+  it("inventories both new triggers, and nothing else", () => {
+    // Without the inventory, dropping a trigger would leave `schema_migrations`
+    // untouched and no check would notice.
+    const added = EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"));
+    expect(added).toEqual([
+      { type: "trigger", name: "tr_control_plane_events__validate_new_rows" },
+      { type: "trigger", name: "tr_initiative_events__validate_new_rows" },
+    ]);
+  });
+
+  it("leaves the applied seven unable to declare the columns themselves", () => {
+    // Migrations 1 and 4 created these tables and are immutable by checksum, so
+    // the columns can only ever arrive by ALTER. If they appeared in a CREATE
+    // TABLE, an applied migration had been rewritten.
+    for (const migration of MIGRATIONS.slice(0, 7)) {
+      expect(migration.sql, migration.name).not.toContain("causation_stream");
+      expect(migration.sql, migration.name).not.toContain("validate_new_rows");
+    }
   });
 });

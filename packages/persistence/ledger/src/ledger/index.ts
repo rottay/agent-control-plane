@@ -60,6 +60,8 @@ import type {
   AppendBatchResult,
   AppendResult,
   AppliedMigration,
+  CausationRef,
+  CausationStream,
   EventPage,
   EventQuery,
   ExecutionRouteReadModel,
@@ -103,7 +105,8 @@ const EPOCH_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 const EVENT_COLUMNS =
   "sequence, event_id, idempotency_key, task_id, attempt, transition_id, type, " +
   "from_state, to_state, emitted_by, occurred_at, recorded_at, correlation_id, " +
-  "causation_id, contract_version, event_json, previous_sha256, event_sha256";
+  "causation_id, causation_stream, causation_sequence, causation_sha256, " +
+  "contract_version, event_json, previous_sha256, event_sha256";
 
 const HEAD_SEQUENCE = "head_sequence";
 const HEAD_EVENT_SHA256 = "head_event_sha256";
@@ -111,7 +114,8 @@ const EVENT_COUNT = "event_count";
 
 const INITIATIVE_EVENT_COLUMNS =
   "sequence, event_id, idempotency_key, initiative_id, transition_id, type, " +
-  "from_status, to_status, emitted_by, occurred_at, recorded_at, contract_version, " +
+  "from_status, to_status, emitted_by, occurred_at, recorded_at, " +
+  "causation_stream, causation_sequence, causation_sha256, contract_version, " +
   "event_json, previous_sha256, event_sha256";
 
 const INITIATIVE_HEAD_SEQUENCE = "initiative_head_sequence";
@@ -133,6 +137,9 @@ interface EventRow {
   readonly recorded_at: string;
   readonly correlation_id: string | null;
   readonly causation_id: string | null;
+  readonly causation_stream: string | null;
+  readonly causation_sequence: number | null;
+  readonly causation_sha256: string | null;
   readonly contract_version: string;
   readonly event_json: string;
   readonly previous_sha256: string;
@@ -151,10 +158,147 @@ interface InitiativeEventRow {
   readonly emitted_by: string;
   readonly occurred_at: string;
   readonly recorded_at: string;
+  readonly causation_stream: string | null;
+  readonly causation_sequence: number | null;
+  readonly causation_sha256: string | null;
   readonly contract_version: string;
   readonly event_json: string;
   readonly previous_sha256: string;
   readonly event_sha256: string;
+}
+
+/** The columns a causal reference occupies, in either stream's table. */
+interface CausationColumns {
+  readonly causation_stream: string | null;
+  readonly causation_sequence: number | null;
+  readonly causation_sha256: string | null;
+}
+
+/**
+ * The streams a reference may name in this build (P-09/log-B).
+ *
+ * The contract's vocabulary is four names; these are the two whose events carry
+ * an `event_sha256`. A reference to `account_events` or `registry_events` could
+ * only be believed, never checked, and the contract is explicit that a digest
+ * which does not match is an invalid reference rather than a weak link — so a
+ * reference that *cannot* be matched at all is refused here rather than stored.
+ */
+const CAUSATION_STREAMS: readonly CausationStream[] = [
+  "control_plane_events",
+  "initiative_events",
+];
+
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+function isCausationStream(value: unknown): value is CausationStream {
+  return typeof value === "string" && CAUSATION_STREAMS.includes(value as CausationStream);
+}
+
+/**
+ * The table a reference resolves against.
+ *
+ * A total function over the closed set, returning one of two literals written
+ * in this module. Nothing a caller supplies is ever concatenated into SQL, for
+ * the reason `safeIdentifier` exists a few lines below.
+ */
+function causationTable(stream: CausationStream): string {
+  return stream === "control_plane_events" ? "control_plane_events" : "initiative_events";
+}
+
+/** Read a reference out of a stored row, refusing a triple the base should not hold. */
+function causationFromRow(row: CausationColumns, sequence: number): CausationRef | null {
+  const { causation_stream: stream, causation_sequence: at, causation_sha256: digest } = row;
+  if (stream === null && at === null && digest === null) return null;
+  if (stream === null || at === null || digest === null || !isCausationStream(stream)) {
+    // Only reachable if the BEFORE INSERT trigger was dropped after the row was
+    // written. Reading it as "no cause" would launder the tampering.
+    throw new LedgerIntegrityError([
+      "sequence " + String(sequence) + " holds a causal reference this build cannot resolve",
+    ]);
+  }
+  return { stream, sequence: at, sha256: digest };
+}
+
+/** Shape-check a caller's reference. Pure: this reads no database. */
+function normalizeCausation(
+  candidate: CausationRef | null | undefined,
+  path: string,
+): CausationRef | null {
+  if (candidate === undefined || candidate === null) return null;
+
+  const issues: LedgerValidationIssue[] = [];
+  if (typeof candidate !== "object") {
+    throw new LedgerValidationError([
+      { path, message: "a causal reference is an object with a stream, a sequence and a digest" },
+    ]);
+  }
+  if (!isCausationStream(candidate.stream)) {
+    issues.push({
+      path: path + ".stream",
+      message:
+        "a causal reference names a stream whose digest this build can verify: " +
+        CAUSATION_STREAMS.join(" or "),
+    });
+  }
+  if (!Number.isSafeInteger(candidate.sequence) || candidate.sequence < 1) {
+    // Zero is the genesis digest's position and belongs to no row of any
+    // stream, so it is not a reference anything could resolve.
+    issues.push({
+      path: path + ".sequence",
+      message: "a causal reference names a position of one or greater",
+    });
+  }
+  if (typeof candidate.sha256 !== "string" || !SHA256_PATTERN.test(candidate.sha256)) {
+    issues.push({
+      path: path + ".sha256",
+      message: "a causal digest is 64 lowercase hexadecimal characters",
+    });
+  }
+  if (issues.length > 0) throw new LedgerValidationError(issues);
+
+  // Copied rather than kept, so a caller mutating its own object after the call
+  // cannot change what the record says was written.
+  return {
+    stream: candidate.stream,
+    sequence: candidate.sequence,
+    sha256: candidate.sha256,
+  };
+}
+
+function causationEquals(left: CausationRef | null, right: CausationRef | null): boolean {
+  if (left === null || right === null) return left === right;
+  return (
+    left.stream === right.stream &&
+    left.sequence === right.sequence &&
+    left.sha256 === right.sha256
+  );
+}
+
+/**
+ * What an idempotent replay compares, when it asks whether two appends of one
+ * key are the same append.
+ *
+ * The body alone is not enough any more. The triple is deliberately outside
+ * `event_json` — the event contract lives in another package and is not this
+ * packet's to widen — so a retry under the same key with a *different* recorded
+ * cause has an identical body, and a comparison of bodies would answer
+ * `inserted: false` and lose the discrepancy in silence.
+ *
+ * With no reference on either side this is exactly `sha256Hex(canonicalJson)`,
+ * which is what the digests carried by `LedgerIdempotencyConflictError` have
+ * always meant. A reference widens the preimage, and only then.
+ */
+function appendContentDigest(canonicalJson: string, causation: CausationRef | null): string {
+  if (causation === null) return sha256Hex(canonicalJson);
+  return sha256Hex(
+    canonicalJson +
+      "\n" +
+      causation.stream +
+      "\n" +
+      String(causation.sequence) +
+      "\n" +
+      causation.sha256,
+  );
 }
 
 interface InitiativeRow {
@@ -789,6 +933,7 @@ export class Ledger {
       canonicalJson: row.event_json,
       previousSha256: row.previous_sha256,
       eventSha256: row.event_sha256,
+      causation: causationFromRow(row, row.sequence),
     };
   }
 
@@ -896,8 +1041,12 @@ export class Ledger {
    * the original record with inserted false and writes nothing. That is what
    * makes a durable step safe to retry. Reusing the same coordinates for
    * different content is the opposite case and fails closed.
+   *
+   * The optional second argument records **why** this event happened, as a
+   * reference the ledger resolves rather than a string it stores. Omitting it
+   * is the ordinary case and is exactly what every caller did before.
    */
-  append(candidate: unknown): AppendResult {
+  append(candidate: unknown, causation?: CausationRef | null): AppendResult {
     this.#assertOpen("append");
     this.#assertWritable("append");
 
@@ -907,8 +1056,14 @@ export class Ledger {
     }
     const event = parsed.data;
     const canonicalJson = canonicalJsonStringify(event);
+    // Shape before the lock, resolution inside it: a malformed reference does
+    // not deserve the write lock, and a well-formed one cannot be resolved
+    // without reading the stream it names.
+    const reference = normalizeCausation(causation, "causation");
 
-    const run = this.#db.transaction((): AppendResult => this.#appendInTransaction(event, canonicalJson));
+    const run = this.#db.transaction(
+      (): AppendResult => this.#appendInTransaction(event, canonicalJson, reference),
+    );
     // IMMEDIATE takes the write lock at BEGIN rather than at first write, so
     // two processes serialize here instead of discovering the conflict late and
     // failing with a busy snapshot they cannot upgrade.
@@ -937,8 +1092,17 @@ export class Ledger {
    * with different content, a reused event id, a transition the lifecycle does
    * not allow — aborts the whole batch, because half a batch is not something
    * the caller asked for.
+   *
+   * Causal references travel in a parallel array rather than folded into the
+   * candidates, because a candidate is whatever the caller has and is parsed
+   * against a contract this package does not own. When the array is given it
+   * must be the same length as the batch: one that lined up by luck would
+   * quietly attribute one event's cause to another.
    */
-  appendBatch(candidates: readonly unknown[]): AppendBatchResult {
+  appendBatch(
+    candidates: readonly unknown[],
+    causations?: readonly (CausationRef | null)[],
+  ): AppendBatchResult {
     this.#assertOpen("appendBatch");
     this.#assertWritable("appendBatch");
 
@@ -951,16 +1115,34 @@ export class Ledger {
       ]);
     }
 
+    if (causations !== undefined && causations.length !== candidates.length) {
+      throw new LedgerValidationError([
+        {
+          path: "causations",
+          message:
+            "a batch's causal references are one per event: " +
+            String(candidates.length) +
+            " events were given " +
+            String(causations.length) +
+            " references",
+        },
+      ]);
+    }
+
     // Every candidate is parsed and canonicalized before the transaction opens.
     // A batch that validated lazily would take the write lock, insert the events
     // it had already accepted and only then meet the malformed one: the rollback
     // would be correct, and the contention would be gratuitous.
-    const prepared = candidates.map((candidate) => {
+    const prepared = candidates.map((candidate, index) => {
       const parsed = ControlPlaneEvent.safeParse(candidate);
       if (!parsed.success) {
         throw new LedgerValidationError(toValidationIssues(parsed.error.issues));
       }
-      return { event: parsed.data, canonicalJson: canonicalJsonStringify(parsed.data) };
+      return {
+        event: parsed.data,
+        canonicalJson: canonicalJsonStringify(parsed.data),
+        causation: normalizeCausation(causations?.[index], "causations[" + String(index) + "]"),
+      };
     });
 
     const run = this.#db.transaction((): AppendBatchResult => {
@@ -968,8 +1150,8 @@ export class Ledger {
       let level: StreamLevel | null = null;
       let insertedCount = 0;
 
-      for (const { event, canonicalJson } of prepared) {
-        const appended = this.#appendOneInTransaction(event, canonicalJson);
+      for (const { event, canonicalJson, causation } of prepared) {
+        const appended = this.#appendOneInTransaction(event, canonicalJson, causation);
         results.push(appended.result);
         if (appended.head === null) continue;
         insertedCount += 1;
@@ -1013,8 +1195,9 @@ export class Ledger {
   #appendInTransaction(
     event: ControlPlaneEvent,
     canonicalJson: string,
+    causation: CausationRef | null,
   ): AppendResult {
-    const appended = this.#appendOneInTransaction(event, canonicalJson);
+    const appended = this.#appendOneInTransaction(event, canonicalJson, causation);
     if (appended.head === null) return appended.result;
 
     this.#writeWatermarks(TASK_WATERMARKS, {
@@ -1040,13 +1223,15 @@ export class Ledger {
   #appendOneInTransaction(
     event: ControlPlaneEvent,
     canonicalJson: string,
+    causation: CausationRef | null,
   ): AppendedEvent {
     const existingByKey = this.#stmt(
       "SELECT " + EVENT_COLUMNS + " FROM control_plane_events WHERE idempotency_key = ?",
     ).get(event.idempotencyKey) as EventRow | undefined;
 
     if (existingByKey !== undefined) {
-      if (existingByKey.event_json === canonicalJson) {
+      const stored = causationFromRow(existingByKey, existingByKey.sequence);
+      if (existingByKey.event_json === canonicalJson && causationEquals(stored, causation)) {
         return {
           result: { inserted: false, record: this.#rowToRecord(existingByKey) },
           head: null,
@@ -1054,8 +1239,8 @@ export class Ledger {
       }
       throw new LedgerIdempotencyConflictError(
         event.idempotencyKey,
-        sha256Hex(existingByKey.event_json),
-        sha256Hex(canonicalJson),
+        appendContentDigest(existingByKey.event_json, stored),
+        appendContentDigest(canonicalJson, causation),
       );
     }
 
@@ -1083,6 +1268,13 @@ export class Ledger {
       throw new LedgerLifecycleConflictError(event.taskId, event.fromState, task.current_state);
     }
 
+    // Resolved here, with the transaction already open, so that a reference to
+    // an event appended moments ago by this same batch resolves against a row
+    // that is really there. The trigger holds the same line underneath; this
+    // layer exists so the refusal is a typed LedgerValidationError rather than
+    // a raw SQLite error nobody can catch by class.
+    this.#assertCausationResolves(causation);
+
     const head = this.#readHead();
     const previousSha256 = head.sha256;
     const eventSha256 = chainDigest(previousSha256, canonicalJson);
@@ -1092,8 +1284,9 @@ export class Ledger {
       "INSERT INTO control_plane_events (" +
         "event_id, idempotency_key, task_id, attempt, transition_id, type, from_state, " +
         "to_state, emitted_by, occurred_at, recorded_at, correlation_id, causation_id, " +
+        "causation_stream, causation_sequence, causation_sha256, " +
         "contract_version, event_json, previous_sha256, event_sha256" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       event.eventId,
       event.idempotencyKey,
@@ -1108,6 +1301,9 @@ export class Ledger {
       event.recordedAt,
       event.correlationId,
       event.causationId,
+      causation === null ? null : causation.stream,
+      causation === null ? null : causation.sequence,
+      causation === null ? null : causation.sha256,
       event.contractVersion,
       canonicalJson,
       previousSha256,
@@ -1137,10 +1333,58 @@ export class Ledger {
           canonicalJson,
           previousSha256,
           eventSha256,
+          causation,
         },
       },
       head: { sequence, sha256: eventSha256, count: head.count + 1 },
     };
+  }
+
+  /**
+   * Resolve a causal reference against the stream it names, or refuse it.
+   *
+   * The digest must be the referenced event's own `event_sha256` at that exact
+   * position. A digest that does not match is an invalid reference, not a weak
+   * link, and a position no row occupies is the same failure: in both cases the
+   * claim "this was caused by that" names nothing this ledger holds.
+   */
+  #assertCausationResolves(causation: CausationRef | null): void {
+    if (causation === null) return;
+
+    const row = this.#stmt(
+      "SELECT event_sha256 FROM " + causationTable(causation.stream) + " WHERE sequence = ?",
+    ).get(causation.sequence) as { readonly event_sha256: string } | undefined;
+
+    if (row === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "causation.sequence",
+          message:
+            "a causal reference names sequence " +
+            String(causation.sequence) +
+            " of " +
+            causation.stream +
+            ", which holds no event",
+        },
+      ]);
+    }
+    if (row.event_sha256 !== causation.sha256) {
+      // Digests only: the referenced body never appears in a diagnostic.
+      throw new LedgerValidationError([
+        {
+          path: "causation.sha256",
+          message:
+            "a causal reference to sequence " +
+            String(causation.sequence) +
+            " of " +
+            causation.stream +
+            " carries digest " +
+            causation.sha256 +
+            " but that event's digest is " +
+            row.event_sha256,
+        },
+      ]);
+    }
   }
 
   /** Incremental projection. Same rules as replay, applied to one event. */
@@ -1304,8 +1548,15 @@ export class Ledger {
    * sequence, a digest chain or a head, because an initiative registration is
    * not an event about a task and must not be able to move the task stream's
    * head.
+   *
+   * Takes the same optional causal reference as `append`, and resolves it under
+   * the same rule: the initiative stream is one of the two a reference may name,
+   * so causality crosses in both directions or in neither.
    */
-  appendInitiativeEvent(candidate: unknown): InitiativeAppendResult {
+  appendInitiativeEvent(
+    candidate: unknown,
+    causation?: CausationRef | null,
+  ): InitiativeAppendResult {
     this.#assertOpen("appendInitiativeEvent");
     this.#assertWritable("appendInitiativeEvent");
 
@@ -1315,9 +1566,11 @@ export class Ledger {
     }
     const event = parsed.data;
     const canonicalJson = canonicalJsonStringify(event);
+    const reference = normalizeCausation(causation, "causation");
 
     const run = this.#db.transaction(
-      (): InitiativeAppendResult => this.#appendInitiativeInTransaction(event, canonicalJson),
+      (): InitiativeAppendResult =>
+        this.#appendInitiativeInTransaction(event, canonicalJson, reference),
     );
     return run.immediate();
   }
@@ -1325,19 +1578,21 @@ export class Ledger {
   #appendInitiativeInTransaction(
     event: InitiativeEvent,
     canonicalJson: string,
+    causation: CausationRef | null,
   ): InitiativeAppendResult {
     const existingByKey = this.#stmt(
       "SELECT " + INITIATIVE_EVENT_COLUMNS + " FROM initiative_events WHERE idempotency_key = ?",
     ).get(event.idempotencyKey) as InitiativeEventRow | undefined;
 
     if (existingByKey !== undefined) {
-      if (existingByKey.event_json === canonicalJson) {
+      const stored = causationFromRow(existingByKey, existingByKey.sequence);
+      if (existingByKey.event_json === canonicalJson && causationEquals(stored, causation)) {
         return { inserted: false, record: this.#initiativeRowToRecord(existingByKey) };
       }
       throw new LedgerIdempotencyConflictError(
         event.idempotencyKey,
-        sha256Hex(existingByKey.event_json),
-        sha256Hex(canonicalJson),
+        appendContentDigest(existingByKey.event_json, stored),
+        appendContentDigest(canonicalJson, causation),
       );
     }
 
@@ -1374,6 +1629,8 @@ export class Ledger {
       );
     }
 
+    this.#assertCausationResolves(causation);
+
     const head = this.#readInitiativeHead();
     const previousSha256 = head.sha256;
     const eventSha256 = chainDigest(previousSha256, canonicalJson);
@@ -1382,9 +1639,10 @@ export class Ledger {
     const info = this.#stmt(
       "INSERT INTO initiative_events (" +
         "event_id, idempotency_key, initiative_id, transition_id, type, from_status, " +
-        "to_status, emitted_by, occurred_at, recorded_at, contract_version, event_json, " +
-        "previous_sha256, event_sha256" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "to_status, emitted_by, occurred_at, recorded_at, " +
+        "causation_stream, causation_sequence, causation_sha256, " +
+        "contract_version, event_json, previous_sha256, event_sha256" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       event.eventId,
       event.idempotencyKey,
@@ -1396,6 +1654,9 @@ export class Ledger {
       event.emittedBy,
       event.occurredAt,
       event.recordedAt,
+      causation === null ? null : causation.stream,
+      causation === null ? null : causation.sequence,
+      causation === null ? null : causation.sha256,
       event.contractVersion,
       canonicalJson,
       previousSha256,
@@ -1436,6 +1697,7 @@ export class Ledger {
         canonicalJson,
         previousSha256,
         eventSha256,
+        causation,
       },
     };
   }
@@ -1530,6 +1792,7 @@ export class Ledger {
       canonicalJson: row.event_json,
       previousSha256: row.previous_sha256,
       eventSha256: row.event_sha256,
+      causation: causationFromRow(row, row.sequence),
     };
   }
 

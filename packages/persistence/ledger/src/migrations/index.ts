@@ -445,6 +445,149 @@ FROM (
 ) AS projection;
 `,
   },
+  {
+    version: 8,
+    name: "causation_triplet",
+    sql: `
+-- Typed causality between streams, as three additive nullable columns.
+--
+-- Two sequences from two streams are not comparable, so "this happened because
+-- of that" cannot be expressed by ordering. The contract expresses it as a
+-- triple -- which stream, which position in it, and the digest of the event
+-- found there -- and the digest is what makes the reference verifiable rather
+-- than decorative: a reference whose digest does not match the row it names is
+-- an INVALID reference, not a weak one.
+--
+-- Additive, and only additive. The legacy \`correlation_id\` and \`causation_id\`
+-- columns stay exactly where they are and keep meaning exactly what they meant:
+-- free text, advisory, read by the telemetry edge. Nothing is retired here.
+--
+-- The triple is deliberately OUTSIDE the hash chain. \`event_sha256\` is computed
+-- over the canonical event body alone, and it cannot be widened to cover these
+-- columns without rehashing every event ever written. What protects a triple
+-- already on disk is therefore physical, not cryptographic: the append-only
+-- triggers refuse any UPDATE or DELETE, and the trigger below refuses a bad one
+-- at the door. That is worth stating plainly rather than leaving a reader to
+-- infer a guarantee this migration does not provide.
+--
+-- Only the two streams that carry a chain take part. The account stream has no
+-- \`event_sha256\` at all (migration 5 is immutable, and the sidecar that would
+-- supply one is a later packet), and the registry stream does not exist yet, so
+-- neither can be referenced verifiably. Neither is named anywhere in this
+-- migration, in a comment or otherwise, and the suite asserts that literally.
+-- Widening the vocabulary belongs to the packets that give those streams a
+-- digest, by another migration, by name.
+
+ALTER TABLE control_plane_events
+  ADD COLUMN causation_stream TEXT;
+ALTER TABLE control_plane_events
+  ADD COLUMN causation_sequence INTEGER;
+ALTER TABLE control_plane_events
+  ADD COLUMN causation_sha256 TEXT;
+
+ALTER TABLE initiative_events
+  ADD COLUMN causation_stream TEXT;
+ALTER TABLE initiative_events
+  ADD COLUMN causation_sequence INTEGER;
+ALTER TABLE initiative_events
+  ADD COLUMN causation_sha256 TEXT;
+
+-- A trigger, because SQLite cannot add a CHECK to a table that already exists.
+--
+-- The contract writes these rules as \`ck_<table>__causation_pair\` and as the
+-- 64-hex shape of §0. Neither can be added by ALTER TABLE, and rewriting an
+-- applied migration is the one thing this file forbids, so the rules are
+-- imposed forward on every NEW row instead. Rows written before this migration
+-- are neither validated nor corrected: they were written under the law of their
+-- day, and a trigger that claimed otherwise would be claiming to have checked
+-- something it never saw.
+--
+-- The last two branches of each trigger resolve the reference against the
+-- stream it names. They are safe inside a multi-row transaction: rows are
+-- inserted one at a time, so an event referring to one inserted moments earlier
+-- in the same transaction already sees it.
+--
+-- Every branch is written so that a NULL \`causation_stream\` yields NULL rather
+-- than true, which is why an event with no recorded cause passes all of them.
+CREATE TRIGGER tr_control_plane_events__validate_new_rows
+BEFORE INSERT ON control_plane_events
+BEGIN
+  SELECT RAISE(ABORT, 'control_plane_events.event_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.event_sha256) <> 64 OR NEW.event_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'control_plane_events.previous_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.previous_sha256) <> 64 OR NEW.previous_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference is all three columns or none')
+  WHERE (NEW.causation_stream IS NULL) <> (NEW.causation_sequence IS NULL)
+     OR (NEW.causation_stream IS NULL) <> (NEW.causation_sha256 IS NULL);
+
+  SELECT RAISE(ABORT, 'control_plane_events.causation_sha256 is not 64 lowercase hex characters')
+  WHERE NEW.causation_sha256 IS NOT NULL
+    AND (length(NEW.causation_sha256) <> 64 OR NEW.causation_sha256 GLOB '*[^0-9a-f]*');
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference names a stream with no verifiable digest')
+  WHERE NEW.causation_stream IS NOT NULL
+    AND NEW.causation_stream NOT IN ('control_plane_events', 'initiative_events');
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference needs a positive position')
+  WHERE NEW.causation_sequence IS NOT NULL AND NEW.causation_sequence < 1;
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'control_plane_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM control_plane_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'initiative_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM initiative_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+END;
+
+CREATE TRIGGER tr_initiative_events__validate_new_rows
+BEFORE INSERT ON initiative_events
+BEGIN
+  SELECT RAISE(ABORT, 'initiative_events.event_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.event_sha256) <> 64 OR NEW.event_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'initiative_events.previous_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.previous_sha256) <> 64 OR NEW.previous_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference is all three columns or none')
+  WHERE (NEW.causation_stream IS NULL) <> (NEW.causation_sequence IS NULL)
+     OR (NEW.causation_stream IS NULL) <> (NEW.causation_sha256 IS NULL);
+
+  SELECT RAISE(ABORT, 'initiative_events.causation_sha256 is not 64 lowercase hex characters')
+  WHERE NEW.causation_sha256 IS NOT NULL
+    AND (length(NEW.causation_sha256) <> 64 OR NEW.causation_sha256 GLOB '*[^0-9a-f]*');
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference names a stream with no verifiable digest')
+  WHERE NEW.causation_stream IS NOT NULL
+    AND NEW.causation_stream NOT IN ('control_plane_events', 'initiative_events');
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference needs a positive position')
+  WHERE NEW.causation_sequence IS NOT NULL AND NEW.causation_sequence < 1;
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'control_plane_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM control_plane_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'initiative_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM initiative_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+END;
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -604,6 +747,14 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   // own automatic index for it carries the reserved prefix this inventory
   // excludes.
   { type: "table", name: "projection_watermark" },
+  // P-09/log-B. The two triggers that impose the digest shape and the causal
+  // triple on new rows. They are inventoried for exactly the reason the
+  // append-only triggers are: dropping one leaves `schema_migrations` intact,
+  // and the columns would still be there to be filled with a reference that
+  // resolves to nothing. Migration 8 adds columns, so the inventory gains no
+  // table and no index — a column is not a schema object here.
+  { type: "trigger", name: "tr_control_plane_events__validate_new_rows" },
+  { type: "trigger", name: "tr_initiative_events__validate_new_rows" },
 ];
 
 export interface MigrationConformance {
