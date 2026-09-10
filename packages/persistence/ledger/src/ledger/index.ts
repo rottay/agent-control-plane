@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import Database from "better-sqlite3";
 
 import { AccountActionEvent, ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
@@ -81,6 +83,7 @@ import {
   type IntegrityProblem,
   type IntegrityReport,
   type LedgerEventRecord,
+  type LedgerIdentity,
   type LedgerStatus,
   type LedgerTestFaults,
   type OpenLedgerOptions,
@@ -147,6 +150,35 @@ const REGISTRY_EVENT_COLUMNS =
 const REGISTRY_HEAD_SEQUENCE = "registry_head_sequence";
 const REGISTRY_HEAD_EVENT_SHA256 = "registry_head_event_sha256";
 const REGISTRY_EVENT_COUNT = "registry_event_count";
+
+const INSTANCE_ID = "instance_id";
+const RESTORE_ID = "restore_id";
+const RESTORE_EPOCH = "restore_epoch";
+
+/** The three identity keys, as one list, so no reader can ask for a subset. */
+const IDENTITY_KEYS: readonly string[] = [INSTANCE_ID, RESTORE_ID, RESTORE_EPOCH];
+
+/**
+ * A version 4 UUID, lowercase, in the one form `randomUUID` produces.
+ *
+ * Strict on the version and variant nibbles rather than merely on the shape:
+ * the contract says "UUID v4", and a value that is 36 characters of hex and
+ * dashes but was produced by a counter would satisfy a looser pattern while
+ * being exactly the defect this identity exists to rule out.
+ */
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/**
+ * A non-negative integer in the one form `String(n)` produces.
+ *
+ * No sign, no exponent, no radix prefix, no surrounding space, no leading zero
+ * except the number zero itself. `Number` accepts all of those and returns
+ * something `Number.isInteger` is happy with, so a text check has to come
+ * first: the question is not "what does this coerce to" but "is this a value
+ * this code could have written".
+ */
+const CANONICAL_COUNT_PATTERN = /^(0|[1-9][0-9]*)$/;
 
 /**
  * The byte budget of one registry document's canonical body.
@@ -901,6 +933,54 @@ const REGISTRY_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filt
 // source of truth about which heads exist.
 
 /**
+ * Give this ledger file an identity, once, and never touch it again.
+ *
+ * A free function rather than a method because it runs during `open`, before
+ * the handle exists, and because it must be able to say "already done" without
+ * reading anything else about the ledger.
+ *
+ * **Why the code writes this and no migration does.** A migration's checksum is
+ * `sha256Hex(source.sql)` over fixed text. An `instance_id` embedded in that
+ * text would be the same UUID in every ledger ever created by this build, which
+ * is the exact opposite of an instance identity. So the row is written here,
+ * and `ledger_meta` needs no schema change to hold it: it has been `(key,
+ * value)` since migration 3, and the contract's key vocabulary is explicitly
+ * additive.
+ *
+ * **Written once, on the first writable open by a build that knows about it,
+ * and never rewritten.** The contract says "generated once when the physical
+ * file is created", which is literally true for a new file and cannot be for
+ * one that already exists in the field. This is the same argument migrations 6,
+ * 7 and 9 make about their seeds: a ledger that predates the field gets it on
+ * the next writable open, and nothing asks an operator to do anything.
+ *
+ * The presence of `instance_id` is the whole test. A `restore_id` without it,
+ * or the reverse, is tampering rather than a state this ever produces — the
+ * three rows are written in one transaction — and it is the read path that
+ * refuses it, not this one, because refusing here would make a corrupt file
+ * unopenable rather than merely unreadable.
+ */
+function ensureLedgerIdentity(db: Database.Database): void {
+  db.transaction(() => {
+    const existing = db
+      .prepare("SELECT value FROM ledger_meta WHERE key = ?")
+      .get(INSTANCE_ID) as { readonly value: string } | undefined;
+    if (existing !== undefined) return;
+
+    // INSERT, not the UPDATE the head writers use. `#writeMeta` is an `UPDATE
+    // ... WHERE key = ?`, which on an absent key neither fails nor writes: it
+    // reports one changed row of zero and moves on. Every key it was written
+    // for is created by a migration; these three are not.
+    const insert = db.prepare("INSERT INTO ledger_meta (key, value) VALUES (?, ?)");
+    insert.run(INSTANCE_ID, randomUUID());
+    // A restore id from birth, so the tuple a client compares is never partly
+    // absent, and a formal restore is a CHANGE rather than an appearance.
+    insert.run(RESTORE_ID, randomUUID());
+    insert.run(RESTORE_EPOCH, "0");
+  }).immediate();
+}
+
+/**
  * Render a database-supplied name safely for a diagnostic.
  *
  * A name that reaches a diagnostic came out of the database, and a tampered
@@ -1037,6 +1117,13 @@ export class Ledger {
           applyMigrations(db, pending, appliedAt);
         }).immediate();
       }
+
+      // After the migrations, because the table it writes into is created by
+      // one of them; and only on a writable handle, because a read-only open
+      // may not write and a ledger's identity is not something a reader gets
+      // to invent. A read-only handle over a ledger that predates this build
+      // reports the identity as absent rather than making one up.
+      if (!readOnly) ensureLedgerIdentity(db);
     } catch (error: unknown) {
       db.close();
       throw error;
@@ -1187,6 +1274,129 @@ export class Ledger {
     this.#writeMeta(REGISTRY_HEAD_SEQUENCE, String(sequence));
     this.#writeMeta(REGISTRY_HEAD_EVENT_SHA256, sha256);
     this.#writeMeta(REGISTRY_EVENT_COUNT, String(count));
+  }
+
+  /**
+   * This file's identity, read with the same suspicion as a head (P-10/id-A).
+   *
+   * Three outcomes, and the middle one is the point:
+   *
+   * - **all three absent** → the null triple. A ledger written before this
+   *   build exists and has not yet been opened writably. That is a lawful
+   *   state and a reader is told so plainly.
+   * - **some present, some absent** → `LedgerIntegrityError`. The three rows
+   *   are written in one transaction and nothing ever removes one, so a
+   *   partial set means somebody reached past the door.
+   * - **present but malformed** → `LedgerIntegrityError`. A value that is not
+   *   a v4 UUID is not an identity, and returning it as one would launder the
+   *   tampering into a cursor a client would then trust.
+   *
+   * Returning an invented identity for any of these would be worse than
+   * refusing: the whole point of the value is that a client compares it and
+   * throws its cache away when it moves.
+   */
+  #readIdentity(): LedgerIdentity {
+    const meta = this.#readMetaMap();
+    const present = IDENTITY_KEYS.filter((key) => meta.get(key) !== undefined);
+
+    if (present.length === 0) {
+      return { instanceId: null, restoreId: null, restoreEpoch: null };
+    }
+    if (present.length !== IDENTITY_KEYS.length) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds part of this ledger's identity and not the rest: " +
+          present.map(safeIdentifier).join(", "),
+      ]);
+    }
+
+    const instanceId = meta.get(INSTANCE_ID) ?? "";
+    const restoreId = meta.get(RESTORE_ID) ?? "";
+    const epochText = meta.get(RESTORE_EPOCH) ?? "";
+
+    if (!UUID_V4_PATTERN.test(instanceId)) {
+      throw new LedgerIntegrityError(["ledger_meta holds an instance id that is not a uuid"]);
+    }
+    if (!UUID_V4_PATTERN.test(restoreId)) {
+      throw new LedgerIntegrityError(["ledger_meta holds a restore id that is not a uuid"]);
+    }
+    // The text is matched before it is converted, because `Number` is a
+    // coercion and not a parse: it reads `""` as 0, `"1e3"` as 1000, `"0x1f"`
+    // as 31, `" 7 "` as 7 and `"+2"` as 2, and every one of those passes
+    // `Number.isInteger`. A row edited to any of them would be laundered into a
+    // plausible count by the check meant to refuse it. This is the one form
+    // this code writes: `String(restoreEpoch)` of a non-negative integer.
+    if (!CANONICAL_COUNT_PATTERN.test(epochText)) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds a restore epoch that is not a count",
+      ]);
+    }
+    const restoreEpoch = Number(epochText);
+    if (!Number.isSafeInteger(restoreEpoch)) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds a restore epoch too large to be a count",
+      ]);
+    }
+
+    return { instanceId, restoreId, restoreEpoch };
+  }
+
+  /**
+   * This ledger's identity: which file, and which restore of it.
+   *
+   * A read, so it works through a read-only handle — which is the ordinary
+   * case, because the observers that need it open read-only.
+   */
+  identity(): LedgerIdentity {
+    this.#assertOpen("identity");
+    return this.#readIdentity();
+  }
+
+  /**
+   * Record that this file is the product of a formal restore (P-10/id-A).
+   *
+   * The door a restorer calls **after** putting the bytes in place and
+   * **before** admitting any work. It writes a fresh random `restore_id` and
+   * advances `restore_epoch`, in a transaction of its own — the contract is
+   * explicit that this lands before any later `appendBatch`, and the reason is
+   * ordering rather than atomicity: a client that reconnects between the two
+   * must see the new identity, never the old identity over new events.
+   *
+   * **The new id is random and is not derived from the epoch.** A counter
+   * collides when the same backup is restored twice, and two restores a client
+   * cannot tell apart is the entire defect this closes. The epoch moves beside
+   * it as a human-readable ordering and carries no uniqueness.
+   *
+   * What this does NOT do: copy anything, verify anything about the bytes, or
+   * coordinate the ledger with its WAL and the artifact store. A consistent
+   * backup window is a different packet's; this is the identity such a packet
+   * writes, and its ordering rule.
+   */
+  recordRestore(): LedgerIdentity {
+    this.#assertOpen("recordRestore");
+    this.#assertWritable("recordRestore");
+
+    const run = this.#db.transaction((): LedgerIdentity => {
+      const current = this.#readIdentity();
+      if (current.instanceId === null || current.restoreEpoch === null) {
+        // Unreachable through the door: a writable open seeds the identity
+        // before it hands back a handle. Reachable by tampering, and a restore
+        // recorded against a file with no identity would be a restore of
+        // nothing.
+        throw new LedgerIntegrityError([
+          "this ledger has no identity to restore; it was never opened writably by this build",
+        ]);
+      }
+
+      const restoreId = randomUUID();
+      const restoreEpoch = current.restoreEpoch + 1;
+      this.#writeMeta(RESTORE_ID, restoreId);
+      this.#writeMeta(RESTORE_EPOCH, String(restoreEpoch));
+
+      // The instance id is untouched, deliberately: a restore produces the
+      // same file's contents at an earlier point, not a different file.
+      return { instanceId: current.instanceId, restoreId, restoreEpoch };
+    });
+    return run.immediate();
   }
 
   /**
@@ -3436,6 +3646,32 @@ export class Ledger {
       });
     }
 
+    // This file's identity, judged rather than merely read (P-10/id-A).
+    //
+    // `status()` reads the same rows and fails closed on a bad one, but a read
+    // path that refuses is not a verifier: an operator asking "is this ledger
+    // sound?" would have been told yes while `status()` threw. That asymmetry —
+    // one door refusing what the judge never looks at — is the same shape of
+    // gap this package has closed before, and it is closed here rather than
+    // left for a later packet.
+    //
+    // A ledger with no identity at all is NOT a finding: that is the lawful
+    // state of a file written before this build and not yet opened writably,
+    // and `#readIdentity` returns the null triple for it. What is reported is a
+    // value that is not a v4 UUID, an epoch that is not a count, or a partial
+    // set — none of which this code can produce, so all of which mean somebody
+    // reached past the door.
+    try {
+      this.#readIdentity();
+    } catch (error: unknown) {
+      problems.push({
+        kind: "LEDGER_META",
+        detail:
+          error instanceof Error ? error.message : "this ledger's identity is unreadable",
+        sequence: null,
+      });
+    }
+
     // projection_watermark membership is a closed set of (projection, stream)
     // pairs, and every row must be exactly level with the head of the stream it
     // names.
@@ -4462,6 +4698,10 @@ export class Ledger {
     return {
       path: this.#path,
       readOnly: this.#readOnly,
+      // Which file this is, beside the pragmas that say how it is open. Null
+      // on a read-only handle over a ledger that predates this build; see
+      // `#readIdentity`.
+      instance: this.#readIdentity(),
       pragmas: {
         journalMode: this.#db.pragma("journal_mode", { simple: true }) as string,
         foreignKeys: (this.#db.pragma("foreign_keys", { simple: true }) as number) === 1,

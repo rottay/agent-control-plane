@@ -317,9 +317,40 @@ export interface ProjectionStatus {
   readonly watermarks: readonly ProjectionWatermarkStatus[];
 }
 
+/**
+ * Which ledger file this is, and which restore of it (P-10/id-A).
+ *
+ * Deliberately **not** the same question as "which path is this". The path
+ * digest a server computes identifies a LOCATION: it is stable when the file
+ * behind it is replaced, and it changes when the same file is moved. These
+ * three answer the other half — identity of the file itself, and of the restore
+ * that produced its current contents.
+ *
+ * - `instanceId` is written once, on the first writable open by a build that
+ *   knows about it, and is never rewritten. It is stable for the life of the
+ *   file.
+ * - `restoreId` is rewritten by every formal restore, with a fresh random
+ *   value. It is **not** derived from `restoreEpoch`: a counter collides when
+ *   the same backup is restored twice, which is the whole defect this exists to
+ *   close.
+ * - `restoreEpoch` is a monotone integer, informative only — a human-readable
+ *   ordering of restores. It participates in no uniqueness claim whatsoever.
+ *
+ * All three are `null` together, and only together, on a ledger that predates
+ * this build and has not yet been opened writably. A partial set is corruption,
+ * not a state.
+ */
+export interface LedgerIdentity {
+  readonly instanceId: string | null;
+  readonly restoreId: string | null;
+  readonly restoreEpoch: number | null;
+}
+
 export interface LedgerStatus {
   readonly path: string;
   readonly readOnly: boolean;
+  /** Which file, and which restore of it. See LedgerIdentity. */
+  readonly instance: LedgerIdentity;
   readonly pragmas: LedgerPragmaStatus;
   readonly migrations: readonly AppliedMigration[];
   readonly headSequence: number;

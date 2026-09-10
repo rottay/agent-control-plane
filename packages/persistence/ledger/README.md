@@ -50,7 +50,9 @@ ledger.close();
 | `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head; nothing here reads a ledger. |
 | `rebuildReadModel()` | Drop and replay every projection of both streams, transactionally. |
 | `verifyIntegrity()` | Full report. Never throws on a finding; returns problems. |
-| `status()` | Effective pragmas, applied migrations, head, counts, projections. |
+| `status()` | Effective pragmas, applied migrations, head, counts, projections, this file's identity. |
+| `identity()` | Which file this is and which restore of it. A read; works read-only. |
+| `recordRestore()` | Record that this file is the product of a formal restore. Writes a fresh random restore id before any later append. |
 | `close()` | Release the handle. |
 
 Options are `{ readOnly?, busyTimeoutMs? }`. Pages are bounded: default 100,
@@ -154,7 +156,7 @@ fourteenth class cannot arrive without appearing here.
 | `control_plane_events` | authority | the append-only log, with `previous_sha256` and `event_sha256`, and the nullable causal triple |
 | `initiative_events` | authority | the sibling append-only stream, on its own hash chain, with the same triple |
 | `registry_events` | authority | versioned configuration documents, on a third hash chain, with the common field profile complete from its first migration |
-| `ledger_meta` | authority | head sequence, head digest and event count, one set per stream |
+| `ledger_meta` | authority | head sequence, head digest and event count, one set per stream; plus this file's own identity: `instance_id`, `restore_id`, `restore_epoch` |
 | `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable) |
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
 | `worker_task_read_model` | derived | emitter to task associations |
@@ -283,6 +285,48 @@ operator decides.
 It cannot prove the events were true when written, and it cannot detect a
 coherent whole-file replacement. Both need an external anchor that P1A does not
 have.
+
+## Instance and restore identity
+
+**Which ledger this is, and which ledger this is, are two questions.** A server
+identifies the file it serves by a digest of its absolute path. That answers
+*which location*: it is unchanged when the file behind it is replaced, and it
+changes when the same file is moved. Three rows in `ledger_meta` answer the
+other half.
+
+| Key | Rule |
+| --- | --- |
+| `instance_id` | A v4 UUID, written **once** and never rewritten. Stable for the life of the file. |
+| `restore_id` | A v4 UUID, rewritten by **every** formal restore with a fresh random value. |
+| `restore_epoch` | A monotone integer, informative only. Participates in no uniqueness claim. |
+
+**The restore id is random, and that is the point.** An identifier derived from
+a counter collides when the same backup is restored twice: both copies compute
+the same next value, and a client holding a cursor cannot tell the two restores
+apart. A random UUID per restore cannot collide, and `restore_epoch` exists
+beside it only so a human can read the order — never as an identity.
+
+**No migration writes these.** A migration's checksum is taken over fixed SQL
+text, so a UUID embedded in one would be the same UUID in every ledger this
+build ever created. They are written by `openLedger` on the first **writable**
+open by a build that knows about them, and never again. A ledger written before
+this build gets its identity on its next writable open, with nothing asked of an
+operator — the same upgrade path the migration seeds take.
+
+**A reader never invents one.** A read-only handle over a ledger that has no
+identity yet reports all three as `null`, together. It does not write, because
+an identity a reader made up would give every observer a different answer to
+"which file is this". A *partial* set is not that state: the three rows are
+written in one transaction and nothing removes one, so a missing member is
+tampering and is refused, as is a value that is not a v4 UUID.
+
+**What this does not promise.** It detects a **formal** restore — one where the
+restoring process wrote a new `restore_id` before admitting work. It does not
+detect an arbitrary manual copy of the file with identical metadata; nothing
+inside the file can, without external state. And it is not a backup: making the
+ledger, its WAL and the artifact store consistent under one window is a separate
+concern, and this package supplies the identity such a mechanism writes and the
+ordering rule it must obey, not the mechanism.
 
 ## Concurrency
 

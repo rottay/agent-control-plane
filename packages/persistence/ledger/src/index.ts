@@ -158,6 +158,7 @@ export type {
   IntegrityProblemKind,
   IntegrityReport,
   LedgerEventRecord,
+  LedgerIdentity,
   LedgerPragmaStatus,
   LedgerStatus,
   LedgerTestFaults,

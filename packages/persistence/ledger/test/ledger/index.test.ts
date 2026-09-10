@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import Database from "better-sqlite3";
@@ -4424,5 +4424,386 @@ describe("the base refuses a broken registry triple with the ledger bypassed", (
     expect(
       rawRegistryInsert(path, { stream: "control_plane_events", sequence: 1, sha256: digest }),
     ).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Instance and restore identity (P-10/id-A)
+//
+// Which ledger a client is reading is two questions, not one. The path digest a
+// server computes answers "which location"; it is stable when the file behind
+// it is replaced and it changes when the same file is moved. These three keys
+// answer the other half — which FILE, and which restore of it.
+//
+// The defect they close is DB08, and it is specific: a restore identifier
+// derived from a counter collides when the same backup is restored twice, so a
+// client cannot tell the two apart. The identifier is therefore a fresh random
+// UUID per restore, and the monotone epoch beside it carries no uniqueness at
+// all.
+//
+// This is the ledger half. Putting the identity on the wire, and making the
+// browser's cursor obey it, is the other half of the packet.
+// ---------------------------------------------------------------------------
+
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** The identity rows exactly as they sit on disk, read past the ledger. */
+function readIdentityRows(path: string): Map<string, string> {
+  const raw = new Database(path);
+  try {
+    const rows = raw
+      .prepare(
+        "SELECT key, value FROM ledger_meta WHERE key IN " +
+          "('instance_id', 'restore_id', 'restore_epoch')",
+      )
+      .all() as { key: string; value: string }[];
+    return new Map(rows.map((row) => [row.key, row.value]));
+  } finally {
+    raw.close();
+  }
+}
+
+/** A ledger as it looked before this build: migrated, with no identity rows. */
+function stripIdentity(path: string): void {
+  withRawDatabase(path, (raw) => {
+    raw
+      .prepare("DELETE FROM ledger_meta WHERE key IN ('instance_id', 'restore_id', 'restore_epoch')")
+      .run();
+  });
+}
+
+describe("a ledger file knows which file it is", () => {
+  it("refuses to rewrite an instance id that already exists", () => {
+    // "Written once, and never rewritten" is the whole of `instanceId`. The way
+    // to break it is an upsert that looks harmless, so this reopens the ledger
+    // three times and works it in between.
+    const path = temporaryDatabase();
+    const first = open(path);
+    const original = first.identity();
+    expect(original.instanceId).toMatch(UUID_V4);
+    first.close();
+
+    const second = open(path);
+    seedFixture(second);
+    expect(second.identity().instanceId).toBe(original.instanceId);
+    second.close();
+
+    const third = open(path);
+    expect(third.identity().instanceId).toBe(original.instanceId);
+    // And the restore id has not drifted either: only a restore moves it.
+    expect(third.identity().restoreId).toBe(original.restoreId);
+    expect(third.identity().restoreEpoch).toBe(0);
+  });
+
+  it("writes a different instance id into each new ledger file", () => {
+    // If the id were derived from the path, from the schema, or from a
+    // constant in a migration, these would be equal. A migration cannot do
+    // this job at all: its checksum is taken over fixed SQL text.
+    const one = open(temporaryDatabase()).identity();
+    const two = open(temporaryDatabase()).identity();
+
+    expect(one.instanceId).toMatch(UUID_V4);
+    expect(two.instanceId).toMatch(UUID_V4);
+    expect(one.instanceId).not.toBe(two.instanceId);
+    // Fresh files start unrestored, and their restore ids are independent too.
+    expect(one.restoreEpoch).toBe(0);
+    expect(two.restoreEpoch).toBe(0);
+    expect(one.restoreId).not.toBe(two.restoreId);
+  });
+
+  it("publishes the identity through status(), on a read-only handle too", () => {
+    const path = temporaryDatabase();
+    const writer = open(path);
+    const expected = writer.identity();
+    writer.close();
+
+    const reader = open(path, { readOnly: true });
+    expect(reader.status().instance).toEqual(expected);
+    expect(reader.status().instance.instanceId).toMatch(UUID_V4);
+  });
+});
+
+describe("a formal restore is visible to whoever was reading", () => {
+  it("refuses a restore that does not move the restore id", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const before = ledger.identity();
+
+    const after = ledger.recordRestore();
+
+    // The claim, in three parts: the restore id moved, it is a fresh random
+    // UUID rather than anything derived from the epoch, and the file is still
+    // the same file.
+    expect(after.restoreId).not.toBe(before.restoreId);
+    expect(after.restoreId).toMatch(UUID_V4);
+    expect(after.restoreEpoch).toBe(1);
+    expect(after.instanceId).toBe(before.instanceId);
+
+    // And it is durable, not merely returned.
+    expect(ledger.identity()).toEqual(after);
+    expect(readIdentityRows(path).get("restore_id")).toBe(after.restoreId);
+  });
+
+  it("restores twice from the same backup and gets two different restore ids", () => {
+    // DB08, literally. One backup, restored twice. A counter would hand both
+    // copies the same next value and a client could not tell the two restores
+    // apart; that is precisely why the contract says the id is random and
+    // says, in the same breath, that it is not a counter.
+    const source = temporaryDatabase();
+    const origin = open(source);
+    seedFixture(origin);
+    const backup = origin.identity();
+    origin.close();
+
+    const first = join(dirname(source), "restored-once.sqlite");
+    const second = join(dirname(source), "restored-twice.sqlite");
+    copyFileSync(source, first);
+    copyFileSync(source, second);
+
+    const one = open(first).recordRestore();
+    const two = open(second).recordRestore();
+
+    // Same bytes, so the same file identity survives into both copies — which
+    // is correct: a restore reproduces a file, it does not create a new one.
+    expect(one.instanceId).toBe(backup.instanceId);
+    expect(two.instanceId).toBe(backup.instanceId);
+    // Same epoch, for the same reason: both are the first restore of that
+    // backup. The epoch cannot tell them apart, and is not asked to.
+    expect(one.restoreEpoch).toBe(1);
+    expect(two.restoreEpoch).toBe(1);
+    // The restore id can, and does. This is the whole packet in one assertion.
+    expect(one.restoreId).not.toBe(two.restoreId);
+    expect(one.restoreId).not.toBe(backup.restoreId);
+    expect(two.restoreId).not.toBe(backup.restoreId);
+  });
+
+  it("writes the restore id before any append is admitted", () => {
+    // The ordering the contract states: the restore id lands in a transaction
+    // of its own, before any later append. A client that reconnects in the gap
+    // must see the new identity over no new events — never the OLD identity
+    // over new events, which is the reading that would let it keep a cursor it
+    // should have discarded.
+    const path = temporaryDatabase();
+    let armed = false;
+    const ledger = open(path, {
+      __testFaults: {
+        beforeAppendCommit: () => {
+          if (armed) throw new Error("deliberate fault");
+        },
+      },
+    });
+
+    const restored = ledger.recordRestore();
+    armed = true;
+    expect(
+      caught(() =>
+        ledger.append(makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI })),
+      ),
+    ).toBeInstanceOf(Error);
+    ledger.close();
+
+    // The append rolled back; the restore did not go with it.
+    expect(readIdentityRows(path).get("restore_id")).toBe(restored.restoreId);
+    expect(readIdentityRows(path).get("restore_epoch")).toBe("1");
+    const reopened = open(path);
+    expect(reopened.status().headSequence).toBe(0);
+    expect(reopened.identity().restoreId).toBe(restored.restoreId);
+  });
+
+  it("keeps the restore epoch monotone and out of every uniqueness claim", () => {
+    const ledger = open(temporaryDatabase());
+    const seen: string[] = [ledger.identity().restoreId ?? ""];
+    const epochs: (number | null)[] = [ledger.identity().restoreEpoch];
+
+    for (let index = 0; index < 3; index += 1) {
+      const restored = ledger.recordRestore();
+      seen.push(restored.restoreId ?? "");
+      epochs.push(restored.restoreEpoch);
+    }
+
+    // Monotone, human-readable, and that is all it is.
+    expect(epochs).toEqual([0, 1, 2, 3]);
+    // Uniqueness is the id's job, and it does it independently: four distinct
+    // random UUIDs, none of them a function of the epoch beside it.
+    expect(new Set(seen).size).toBe(4);
+    for (const restoreId of seen) expect(restoreId).toMatch(UUID_V4);
+  });
+
+  it("survives a rebuild without moving the instance id", () => {
+    // A rebuild regenerates every derived table from the log. Identity is not
+    // derived from the log and must come through untouched — a rebuild that
+    // reset it would make every reader throw away a cache for no reason.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    const restored = ledger.recordRestore();
+
+    ledger.rebuildReadModel();
+
+    expect(ledger.identity()).toEqual(restored);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+describe("an identity nobody wrote is refused, never invented", () => {
+  it("refuses to create an instance id through a read-only handle", () => {
+    // A ledger from before this build, opened by a reader. It has no identity
+    // and the reader may not give it one: inventing one would hand every
+    // observer a different answer to "which file is this", which is worse than
+    // no answer.
+    const path = temporaryDatabase();
+    open(path).close();
+    stripIdentity(path);
+    expect(readIdentityRows(path).size).toBe(0);
+
+    const reader = open(path, { readOnly: true });
+    expect(reader.identity()).toEqual({
+      instanceId: null,
+      restoreId: null,
+      restoreEpoch: null,
+    });
+    expect(reader.status().instance.instanceId).toBeNull();
+    // Nothing was written to get that answer.
+    expect(readIdentityRows(path).size).toBe(0);
+    // And the restore door is shut on a reader, as every other write is.
+    expect(caught(() => reader.recordRestore())).toBeInstanceOf(LedgerReadOnlyError);
+    reader.close();
+
+    // The next writable open is what gives it one, with no operator asked to
+    // do anything — the same upgrade path the migration seeds take.
+    const writer = open(path);
+    expect(writer.identity().instanceId).toMatch(UUID_V4);
+    expect(writer.identity().restoreEpoch).toBe(0);
+  });
+
+  it("refuses a malformed instance id read back from ledger_meta", () => {
+    const path = temporaryDatabase();
+    open(path).close();
+
+    withRawDatabase(path, (raw) => {
+      raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run("not-a-uuid", "instance_id");
+    });
+
+    const reopened = open(path, { readOnly: true });
+    const error = caught(() => reopened.identity());
+    expect(error).toBeInstanceOf(LedgerIntegrityError);
+    expect((error as Error).message).toContain("instance id that is not a uuid");
+    // The same refusal on the published surface: status() does not hand back a
+    // plausible-looking identity for a row that was edited.
+    expect(caught(() => reopened.status())).toBeInstanceOf(LedgerIntegrityError);
+  });
+
+  it("reports a tampered instance id through verifyIntegrity, not only through status", () => {
+    // The asymmetry this closes: a read path that refuses is not a verifier.
+    // Before this, an operator asking "is this ledger sound?" was told yes
+    // while `status()` threw on the very same rows.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    // The control, on the same database, before anything is touched.
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run("not-a-uuid", "instance_id");
+    });
+
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toEqual(["LEDGER_META"]);
+    expect(detailsOf(report.problems)).toContain("instance id that is not a uuid");
+  });
+
+  it("refuses a restore epoch that is not a canonical count", () => {
+    // `Number` is a coercion, not a parse. Every text below converts to a
+    // non-negative integer and satisfies `Number.isInteger`, so a check built
+    // on conversion alone would read an edited row back as a count and hand it
+    // out as this ledger's restore ordering.
+    const notCounts = ["", "1e3", "0x1f", " 7 ", "+2", "0.0", "00", "-0", "Infinity"];
+
+    for (const text of notCounts) {
+      const path = temporaryDatabase();
+      open(path).close();
+      withRawDatabase(path, (raw) => {
+        raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run(text, "restore_epoch");
+      });
+
+      const reopened = open(path, { readOnly: true });
+      const error = caught(() => reopened.identity());
+      expect(error, JSON.stringify(text)).toBeInstanceOf(LedgerIntegrityError);
+      expect((error as Error).message, JSON.stringify(text)).toContain(
+        "restore epoch that is not a count",
+      );
+      // And the verifier says so too, rather than only the read path.
+      const report = reopened.verifyIntegrity();
+      expect(report.ok, JSON.stringify(text)).toBe(false);
+      expect(kindsOf(report.problems), JSON.stringify(text)).toEqual(["LEDGER_META"]);
+      reopened.close();
+    }
+  });
+
+  it("accepts the canonical counts this code actually writes", () => {
+    // The guard must not over-reach: zero is a count, and so is every value a
+    // real sequence of restores produces.
+    for (const text of ["0", "1", "9", "10", "4096"]) {
+      const path = temporaryDatabase();
+      open(path).close();
+      withRawDatabase(path, (raw) => {
+        raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run(text, "restore_epoch");
+      });
+
+      const reopened = open(path, { readOnly: true });
+      expect(reopened.identity().restoreEpoch, text).toBe(Number(text));
+      expect(reopened.verifyIntegrity().ok, text).toBe(true);
+      reopened.close();
+    }
+  });
+
+  it("reports a half-present identity through verifyIntegrity", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedFixture(ledger);
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw.prepare("DELETE FROM ledger_meta WHERE key = ?").run("restore_epoch");
+    });
+
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsOf(report.problems)).toEqual(["LEDGER_META"]);
+    expect(detailsOf(report.problems)).toContain("part of this ledger's identity");
+  });
+
+  it("does not report a ledger that has no identity yet", () => {
+    // The lawful absence. A file written before this build and not yet opened
+    // writably has no identity rows at all, and that is not a finding — a
+    // verifier that called it corruption would fail every ledger in the field
+    // on the upgrade that introduced the check.
+    const path = temporaryDatabase();
+    open(path).close();
+    stripIdentity(path);
+
+    const reader = open(path, { readOnly: true });
+    expect(reader.identity().instanceId).toBeNull();
+    expect(reader.verifyIntegrity().ok).toBe(true);
+    expect(reader.verifyIntegrity().problems).toEqual([]);
+  });
+
+  it("refuses a half-present identity rather than reading it as absent", () => {
+    // The three rows are written in one transaction and nothing removes one,
+    // so a partial set is tampering. Reading it as "absent" would launder a
+    // deleted restore id into a clean null triple.
+    const path = temporaryDatabase();
+    open(path).close();
+
+    withRawDatabase(path, (raw) => {
+      raw.prepare("DELETE FROM ledger_meta WHERE key = ?").run("restore_id");
+    });
+
+    const reopened = open(path, { readOnly: true });
+    const error = caught(() => reopened.identity());
+    expect(error).toBeInstanceOf(LedgerIntegrityError);
+    expect((error as Error).message).toContain("part of this ledger's identity");
   });
 });

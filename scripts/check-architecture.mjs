@@ -7987,6 +7987,61 @@ const P09D_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-10/id-A — a ledger file knows which file it is, and which restore of it.
+ *
+ * The first rung of P-10 (T4 of `acp-p10-kimi-dt-adjudication-v1.md`), landing
+ * on the closed P-09/log. Three keys join `ledger_meta`: `instance_id`, written
+ * once and never rewritten; `restore_id`, rewritten with a fresh random value
+ * by every formal restore; and `restore_epoch`, a monotone integer that is
+ * informative only.
+ *
+ * **Which ledger this is, is two questions.** The digest a server computes over
+ * the absolute path identifies a LOCATION: unchanged when the file behind it is
+ * replaced, changed when the same file is moved. These three answer the other
+ * half, and the gap between them is a live defect — a formal restore into the
+ * same path is, today, invisible to a browser holding a cursor. Closing that on
+ * the wire is P-10/id-B; this rung is the identity such a fix compares.
+ *
+ * **No migration, and none is possible.** A migration's checksum is
+ * `sha256Hex(source.sql)` over fixed text, so a UUID embedded in one would be
+ * the same UUID in every ledger this build ever created — the opposite of an
+ * instance identity. `ledger_meta` has been `(key, value)` since migration 3
+ * and the contract's key vocabulary is explicitly additive, so the rows are
+ * written by `openLedger` on the first WRITABLE open and by nothing else.
+ * Migrations 1 to 9 are untouched and `MIGRATIONS` stays at nine.
+ *
+ * **A reader never invents one.** A read-only handle over a ledger that has no
+ * identity reports all three as `null`, together, and writes nothing. That
+ * absence is lawful and is not an integrity finding; a *partial* set is, and so
+ * is a value that is not a v4 UUID. Both are reported by `verifyIntegrity()`
+ * under the existing `LEDGER_META` kind — no new vocabulary — because a read
+ * path that refuses is not a verifier, and an operator asking whether the
+ * ledger is sound must not be told yes about rows `status()` refuses to serve.
+ *
+ * **Pins that do not move.** The write set gains **0 distinct paths**: the five
+ * ledger literals below are admitted by the P-09 blocks, one for one, and this
+ * file is admitted by every block that has ever edited it. `WRITE_SET_DISTINCT`
+ * holds. The block exists because D6/R8 requires a packet to carry its own
+ * registration, exactly as A, B, C and D did.
+ *
+ * The ADR corpus holds at 63: no record is added here. The one this packet's
+ * second rung will need — extending 0028, which records why the resumed-stream
+ * identity comparison is a client law — belongs with the change to that law,
+ * not with the rows underneath it. No error class is added either, so the
+ * README/barrel law is untouched: a malformed identity is a
+ * `LedgerIntegrityError` and a restore through a read-only handle a
+ * `LedgerReadOnlyError`, both of the standing thirteen.
+ */
+const P10A_WRITE_SET = [
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8178,6 +8233,7 @@ const WRITE_SET = [
   ...P09B_WRITE_SET,
   ...P09C_WRITE_SET,
   ...P09D_WRITE_SET,
+  ...P10A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
