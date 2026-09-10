@@ -4807,3 +4807,120 @@ describe("an identity nobody wrote is refused, never invented", () => {
     expect((error as Error).message).toContain("part of this ledger's identity");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stored counts are parsed, never coerced (P-10A2)
+//
+// The same defect the restore epoch had, in the three head readers. `Number` is
+// a coercion: every text below converts to a non-negative integer that
+// `Number.isInteger` accepts, so a check built on conversion alone reads an
+// edited row back as a position and hands it out as the head of a stream. A
+// head is the anchor a chain is verified against; believing a laundered one is
+// how a truncated log passes for a whole one.
+// ---------------------------------------------------------------------------
+
+/** Texts that `Number` turns into a plausible count and this code never wrote. */
+const NON_CANONICAL_COUNTS = ["", "1e3", "0x1f", " 7 ", "+2", "0.0", "00", "-0", "Infinity"];
+
+/** One stream's head key, and the words its reader uses when it refuses. */
+const HEAD_KEYS: readonly { key: string; refusal: string }[] = [
+  { key: "head_sequence", refusal: "a head or count that is not a count" },
+  { key: "initiative_head_sequence", refusal: "an initiative head or count that is not a count" },
+  { key: "registry_head_sequence", refusal: "a registry head or count that is not a count" },
+];
+
+describe("a stored head is a count this code wrote, or it is refused", () => {
+  for (const { key, refusal } of HEAD_KEYS) {
+    it("refuses a " + key + " that is not a canonical count", () => {
+      for (const text of NON_CANONICAL_COUNTS) {
+        const path = temporaryDatabase();
+        open(path).close();
+        withRawDatabase(path, (raw) => {
+          raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run(text, key);
+        });
+
+        const label = key + " = " + JSON.stringify(text);
+        const reopened = open(path, { readOnly: true });
+
+        // `verifyIntegrity` reads all three heads and reports rather than
+        // throws, so it is the one probe that reaches every stream.
+        const report = reopened.verifyIntegrity();
+        expect(report.ok, label).toBe(false);
+        expect(detailsOf(report.problems), label).toContain(refusal);
+        expect(kindsOf(report.problems), label).toContain("LEDGER_META");
+
+        reopened.close();
+      }
+    });
+  }
+
+  it("refuses a laundered head on the direct read path too, not only in the report", () => {
+    // `verifyIntegrity` reports; `status()` reads. The task and initiative
+    // heads are read directly by `status()`, and a reader must not receive a
+    // head of 1000 because somebody wrote "1e3" into the row.
+    for (const key of ["head_sequence", "initiative_head_sequence"]) {
+      const path = temporaryDatabase();
+      open(path).close();
+      withRawDatabase(path, (raw) => {
+        raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run("1e3", key);
+      });
+
+      const reopened = open(path, { readOnly: true });
+      expect(caught(() => reopened.status()), key).toBeInstanceOf(LedgerIntegrityError);
+      reopened.close();
+    }
+
+    // The registry head has no read on `status()`; its direct reader is the
+    // append door, which must refuse for the same reason before it chains
+    // anything onto a position that was never there.
+    const path = temporaryDatabase();
+    open(path).close();
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare("UPDATE ledger_meta SET value = ? WHERE key = ?")
+        .run("1e3", "registry_head_sequence");
+    });
+    const writer = open(path);
+    expect(caught(() => writer.appendRegistryEvent(makeRegistryDocument()))).toBeInstanceOf(
+      LedgerIntegrityError,
+    );
+  });
+
+  it("still reads the healthy heads of all three streams", () => {
+    // The control against over-reach. Genesis is the literal "0" the migrations
+    // seed, and a pattern that refused it would break every ledger the moment
+    // it was created — which is exactly the failure a hurried fix introduces.
+    const fresh = open(temporaryDatabase());
+    expect(fresh.status().headSequence).toBe(0);
+    expect(fresh.status().initiativeHeadSequence).toBe(0);
+    expect(fresh.verifyIntegrity().ok).toBe(true);
+
+    // And after real work, on all three streams at once.
+    const ledger = open(temporaryDatabase());
+    seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendRegistryEvent(makeRegistryDocument());
+
+    expect(ledger.status().headSequence).toBe(5);
+    expect(ledger.status().eventCount).toBe(5);
+    expect(ledger.status().initiativeHeadSequence).toBe(1);
+    expect(ledger.status().initiativeEventCount).toBe(1);
+    expect(readRegistryMeta(ledger.path).get("registry_head_sequence")).toBe("1");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses a count too large to be a safe integer", () => {
+    // Twenty nines satisfy the pattern and are not a safe integer. Reading one
+    // back would give a head that cannot be compared for equality with the
+    // sequence of any row.
+    const path = temporaryDatabase();
+    open(path).close();
+    withRawDatabase(path, (raw) => {
+      raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run("9".repeat(20), "event_count");
+    });
+
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(detailsOf(report.problems)).toContain("a head or count that is not a count");
+  });
+});

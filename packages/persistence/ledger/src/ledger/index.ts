@@ -181,6 +181,31 @@ const UUID_V4_PATTERN =
 const CANONICAL_COUNT_PATTERN = /^(0|[1-9][0-9]*)$/;
 
 /**
+ * Read a stored count, or refuse it. Null means "this is not one".
+ *
+ * Every number this module keeps in `ledger_meta` is written as `String(n)` of
+ * a non-negative safe integer, and genesis is the literal `"0"` that the
+ * migrations seed — so the pattern above is the exact set of texts this code
+ * can have produced, zero included.
+ *
+ * The text is matched before it is converted because `Number` is a coercion
+ * rather than a parse, and `Number.isInteger` is happy with what it returns:
+ * `""` becomes 0, `"1e3"` becomes 1000, `"0x1f"` becomes 31, `" 7 "` becomes 7,
+ * `"+2"` becomes 2 and `"-0"` becomes a negative zero that no `< 0` test
+ * catches. A head row edited to any of those would be laundered into a
+ * plausible position by the very check written to refuse it.
+ *
+ * Returning null rather than throwing keeps each caller's own diagnostic: a
+ * head, a count and a restore ordering are different facts and say so
+ * differently when they are wrong.
+ */
+function readCanonicalCount(text: string): number | null {
+  if (!CANONICAL_COUNT_PATTERN.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+/**
  * The byte budget of one registry document's canonical body.
  *
  * The contract says `event_json` is bounded and does not say by how much; a
@@ -1189,9 +1214,9 @@ export class Ledger {
     if (sequenceText === undefined || shaText === undefined || countText === undefined) {
       throw new LedgerIntegrityError(["ledger_meta is missing a head or count row"]);
     }
-    const sequence = Number(sequenceText);
-    const count = Number(countText);
-    if (!Number.isInteger(sequence) || sequence < 0 || !Number.isInteger(count) || count < 0) {
+    const sequence = readCanonicalCount(sequenceText);
+    const count = readCanonicalCount(countText);
+    if (sequence === null || count === null) {
       throw new LedgerIntegrityError(["ledger_meta holds a head or count that is not a count"]);
     }
     if (!/^[0-9a-f]{64}$/.test(shaText)) {
@@ -1224,9 +1249,9 @@ export class Ledger {
     if (sequenceText === undefined || shaText === undefined || countText === undefined) {
       throw new LedgerIntegrityError(["ledger_meta is missing an initiative head or count row"]);
     }
-    const sequence = Number(sequenceText);
-    const count = Number(countText);
-    if (!Number.isInteger(sequence) || sequence < 0 || !Number.isInteger(count) || count < 0) {
+    const sequence = readCanonicalCount(sequenceText);
+    const count = readCanonicalCount(countText);
+    if (sequence === null || count === null) {
       throw new LedgerIntegrityError([
         "ledger_meta holds an initiative head or count that is not a count",
       ]);
@@ -1255,9 +1280,9 @@ export class Ledger {
     if (sequenceText === undefined || shaText === undefined || countText === undefined) {
       throw new LedgerIntegrityError(["ledger_meta is missing a registry head or count row"]);
     }
-    const sequence = Number(sequenceText);
-    const count = Number(countText);
-    if (!Number.isInteger(sequence) || sequence < 0 || !Number.isInteger(count) || count < 0) {
+    const sequence = readCanonicalCount(sequenceText);
+    const count = readCanonicalCount(countText);
+    if (sequence === null || count === null) {
       throw new LedgerIntegrityError([
         "ledger_meta holds a registry head or count that is not a count",
       ]);
