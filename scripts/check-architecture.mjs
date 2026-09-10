@@ -4,7 +4,7 @@
  *
  * This runs first in `pnpm check`. It is deterministic and imports almost
  * nothing: node builtins, its own `./architecture/roots.mjs`, and the
- * `typescript` scanner, which section 22b uses to decide whether an evidence
+ * `typescript` parser, which section 22b uses to decide whether an evidence
  * anchor sits in code or in a comment. It imports no package of THIS
  * repository, which is the property the laws below actually rely on when they
  * compare tables as text -- the fence runs before any build, so a compiled
@@ -7693,6 +7693,44 @@ const P04_WRITE_SET = [
   "docs/architecture/index.md",
 ];
 
+/**
+ * R19g — the extractor reads grammar, not lexical luck.
+ *
+ * One novel path and the same paths a packet on this law always touches. P-03
+ * made the comment removal a hand-driven token scan, and R19c, R19e and R19f
+ * each answered one more question the scan had to guess at: whether a `/`
+ * divides or opens a regular expression. The guess is a list of tokens, and a
+ * list of tokens does not know grammar — `value! / 2` and `4 as number / 2`
+ * divide after a token no list can name, so the comment behind them came back
+ * as evidence. The scan becomes a parse: the parser says where the literals
+ * are, and every `//` or `/*` outside one opens a comment.
+ *
+ * **Pins that move.** ADR corpus 62 -> 63; the write set gains one distinct
+ * path, and the repository scan counts one more file.
+ *
+ * **Pins that do not.** The record does not move: the text this extractor
+ * returns is byte-identical to the scanner's over all 325 `.ts` and `.mjs`
+ * files this repository versions, so all 39 pointers resolve unchanged and no
+ * row is re-anchored. `FENCE_IMPORTS_AUTHORIZED` is untouched — `typescript`
+ * was already there for the scanner and the parser is the same package — and
+ * `BE_CODE_EVIDENCE` still admits exactly `.ts`, `.mts`, `.js` and `.mjs`.
+ *
+ * The certification record is in this set for one paragraph: it describes the
+ * mechanism as a lexical scanner, which stops being true here. ADR 0059 is why
+ * that is not left for later — prose that describes a mechanism outlives the
+ * mechanism, and nothing goes red.
+ *
+ * Record: `docs/architecture/0063-the-extractor-reads-grammar-not-lexical-luck.md`.
+ */
+const R19G_WRITE_SET = [
+  "docs/architecture/0063-the-extractor-reads-grammar-not-lexical-luck.md",
+  "docs/architecture/0060-no-anchor-resolves-from-emptiness-or-a-comment.md",
+  "docs/certification/v2-backend-certification.md",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "docs/architecture/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -7879,6 +7917,7 @@ const WRITE_SET = [
   ...V2BER19B_WRITE_SET,
   ...P03_WRITE_SET,
   ...P04_WRITE_SET,
+  ...R19G_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -22662,7 +22701,7 @@ if (apiReference === null) {
 // This file used to open by calling itself "deliberately dependency free", and
 // five laws elsewhere cited that self-description as the reason they compare
 // tables as text instead of importing them. Section 22b now needs a real
-// lexical scanner, so one word of it stopped being true.
+// parser, so one word of it stopped being true.
 //
 // Correcting the sentence would have been the wrong repair, and R19b is the
 // reason: a sentence describing a mechanism outlives the mechanism, and nothing
@@ -22689,7 +22728,7 @@ if (apiReference === null) {
 // list does not name is a dependency that arrived unannounced, and a name this
 // file no longer imports is a list nobody pruned, which is how a register stops
 // meaning anything. `typescript` is a root devDependency already named in
-// `ROOT_DEV_DEPENDENCIES`; the scanner is the only reason it is here.
+// `ROOT_DEV_DEPENDENCIES`; the parser is the only reason it is here.
 //
 // The ceiling of this instrument, stated rather than left to be discovered.
 // This law reads syntax, so it sees every form that names a module in the
@@ -22814,7 +22853,7 @@ function fenceDependencies(source) {
     notes.push(
       "the fence imports exactly what it authorizes: " +
         declared.filter((specifier) => specifier.startsWith("node:")).length +
-        " node builtins, its own resolver, and the scanner section 22b reads code with",
+        " node builtins, its own resolver, and the parser section 22b reads code with",
     );
   }
 }
@@ -22954,170 +22993,172 @@ const BE_CODE_EVIDENCE = /\.(?:ts|mts|js|mjs)$/;
 const BE_PROSE_EVIDENCE = /\.(?:md|json)$/;
 
 /**
- * Tokens after which a `/` is division rather than the start of a regex.
+ * The literal kinds whose text is code, as the parser labels them.
  *
- * `CloseParenToken` is in this set and is the one entry that cannot decide the
- * question by kind alone, because `)` ends both `(a + b)` and `if (…)`. What
- * separates them is `TS_CONTROL_HEAD` below.
+ * These are the nodes whose interior this extractor must not look inside: a
+ * `//` in a string, in a template's text, in a regular expression or in the
+ * text of a JSX element is content rather than the start of a comment. Every
+ * one of them is a node with a range, so the question "does this `/` begin a
+ * comment" is answered by where the parser put the node, not by guessing from
+ * the token before it.
+ *
+ * `JsxText` is here and `.tsx` is still not admitted evidence, which is not a
+ * contradiction: `ScriptKind.JS` parses JSX, so a `.mjs` holding JSX reaches
+ * this extractor with zero diagnostics and its text has to stay code (`N55`).
  */
-const TS_DIVISION_AFTER = new Set([
-  ts.SyntaxKind.Identifier,
-  ts.SyntaxKind.PrivateIdentifier,
-  ts.SyntaxKind.NumericLiteral,
-  ts.SyntaxKind.BigIntLiteral,
+const BE_LITERAL_KINDS = new Set([
   ts.SyntaxKind.StringLiteral,
-  ts.SyntaxKind.RegularExpressionLiteral,
   ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+  ts.SyntaxKind.TemplateHead,
+  ts.SyntaxKind.TemplateMiddle,
   ts.SyntaxKind.TemplateTail,
-  ts.SyntaxKind.CloseParenToken,
-  ts.SyntaxKind.CloseBracketToken,
-  ts.SyntaxKind.PlusPlusToken,
-  ts.SyntaxKind.MinusMinusToken,
-  ts.SyntaxKind.ThisKeyword,
-  ts.SyntaxKind.SuperKeyword,
-  ts.SyntaxKind.TrueKeyword,
-  ts.SyntaxKind.FalseKeyword,
-  ts.SyntaxKind.NullKeyword,
+  ts.SyntaxKind.RegularExpressionLiteral,
+  ts.SyntaxKind.JsxText,
 ]);
 
 /**
- * Keywords whose parenthesis is a control head rather than an operand.
+ * The compiler options the admission rule is defined against.
  *
- * The `)` that closes `if (…)` is followed by a STATEMENT, so a `/` after it
- * opens a regular expression; the `)` that closes `(a + b)` is followed by an
- * operator, so a `/` after it divides. Both are `CloseParenToken`, which is why
- * the answer is a stack rather than a kind.
- *
- * `if`, `for`, `while` and `with` admit a bare statement, so those four are the
- * ones a program can put a `/` directly after. `switch` and `catch` require a
- * block and no valid source exercises them here; they are named because this
- * set states the grammar's control heads rather than the shapes that happened
- * to be measured.
+ * Declared rather than implied, because "syntactic diagnostic" means what THIS
+ * configuration reports: no library, no resolution, no type roots, and the
+ * newest grammar the pinned compiler knows. Nothing here reaches the disk —
+ * the host below answers from the source already in memory — so the rule
+ * depends on the file and on nothing else in the checkout.
  */
-const TS_CONTROL_HEAD = new Set([
-  ts.SyntaxKind.IfKeyword,
-  ts.SyntaxKind.ForKeyword,
-  ts.SyntaxKind.WhileKeyword,
-  ts.SyntaxKind.SwitchKeyword,
-  ts.SyntaxKind.CatchKeyword,
-  ts.SyntaxKind.WithKeyword,
-]);
+const BE_PARSE_OPTIONS = Object.freeze({
+  allowJs: true,
+  noLib: true,
+  noResolve: true,
+  target: ts.ScriptTarget.Latest,
+  types: [],
+});
 
 /**
- * Tokens after which the NEXT name is a property rather than a fresh expression.
+ * Which grammar a cited file is read under, by extension.
  *
- * `.` and `?.` are the two the grammar admits, and the two questions this scan
- * asks about a keyword reduce to this one: `o.if(x)` does not open a control
- * head, and `o.default / 2` divides. Stated once so neither reading can be
- * weakened without the other noticing.
+ * `.ts` and `.mts` are TypeScript; `.js` and `.mjs` are JavaScript, and that
+ * is deliberately the stricter reading for them rather than a convenience —
+ * a type annotation in a `.mjs` is not JavaScript, and a file this repository
+ * could not run is not a file that states evidence. `BE_CODE_EVIDENCE` admits
+ * no other extension, so no third case can arrive here.
  */
-const TS_MEMBER_ACCESS = new Set([ts.SyntaxKind.DotToken, ts.SyntaxKind.QuestionDotToken]);
+function beScriptKind(path) {
+  return /\.(?:ts|mts)$/.test(path) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+}
 
 /**
- * The code of a file, with its comments deleted, by lexical scan (P-03).
+ * The syntactic diagnostics of one cited file, through the public API.
  *
- * `skipTrivia: false` so the comments can be seen and decided about rather than
- * silently dropped, and each one is replaced by a SPACE rather than by nothing:
- * `flatten` collapses any run of whitespace to one space, so a removed comment
- * cannot glue two fragments of code that the source kept apart.
+ * `sourceFile.parseDiagnostics` holds the same answer and is an internal
+ * field — absent from `typescript.d.ts` — so the rule would rest on something
+ * the package does not promise. A `Program` over a single in-memory file
+ * costs a few milliseconds more and is the supported question; it also
+ * reports TypeScript syntax used in a `.js` or `.mjs`, which `beScriptKind`
+ * wants and the raw parse does not give.
  *
- * **`reScanSlashToken` is not a detail.** Reading `/^https?:\/\//` left to
- * right, a lexer with no context sees `//` and takes the rest of the line as a
- * comment — which deletes real code and makes this gate refuse an honest
- * citation. Measured on this file: 955 scanner errors without the re-scan and 0
- * with it; across the 318 `.ts` and 7 `.mjs` files this repository versions, 0
- * either way once the re-scan is in place.
+ * The host is minimal on purpose: nine methods, no `ts.sys`, and every one of
+ * them answers about this one path. A host that could read the disk would
+ * make the extractor's answer depend on the checkout around the file.
+ */
+function beSyntacticDiagnostics(path, source) {
+  const host = {
+    getSourceFile: (name) => (name === path ? source : undefined),
+    getDefaultLibFileName: () => "lib.d.ts",
+    writeFile: () => {},
+    getCurrentDirectory: () => "",
+    getCanonicalFileName: (name) => name,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+    fileExists: (name) => name === path,
+    readFile: (name) => (name === path ? source.text : undefined),
+  };
+  return ts.createProgram([path], BE_PARSE_OPTIONS, host).getSyntacticDiagnostics(source);
+}
+
+/**
+ * The code of a file, with its comments deleted, by PARSE (P-03, R19g).
  *
- * **`reScanTemplateToken` is not a detail either, and R19c is why.** A `}` that
- * closes a `${` substitution is scanned as an ordinary close brace unless the
- * caller asks for it to be re-read, so `` `hello ${1}` `` left the closing
- * backtick to be taken as the OPENING of a fresh template — one that terminates
- * at the next backtick, or at end of file when there is none, swallowing every
- * comment below it as string text. Measured on this fence before the repair:
- * `` const x = `hello ${1}`; `` followed by an anchor stated in a line comment
- * and nothing else RESOLVED, which is precisely the defect R19b closed, reopened
- * through the lexer. The same held for a block comment and for two
- * substitutions; a nested template escaped only when its stray backticks
- * happened to re-pair, which is luck rather than a rule.
+ * The rule is three sentences, and they are the whole of it:
  *
- * **The stack is what makes it hold under nesting.** Each unclosed brace records
- * whether it opened a substitution, so a `}` is re-read as template only when a
- * `${` is what it closes: an object literal inside a substitution, a block, a
- * string or a regular expression holding a brace, and a template nested inside
- * another template's substitution all stay correct. The template's own TEXT
- * remains code, because it is code — an anchor may quote what a template
- * interpolates, and nothing here changes that. What stops being code is a real
- * comment.
+ *   1. the file is parsed, and any syntactic diagnostic leaves it stating no
+ *      code at all;
+ *   2. the literals — string, the parts of a template, regular expression,
+ *      JSX text — are code, with exactly the text the parser gives them;
+ *   3. every `//` or `/*` outside a literal opens a comment, which becomes one
+ *      space.
  *
- * **R19e: a regex is not a division, and that is how a comment became code.**
- * `)` sits in `TS_DIVISION_AFTER` and closes both `(a + b)` and `if (…)`, so
- * the `/` in `if (true) /` + backtick + `/.test("x")` was read as division —
- * and the backtick inside what was really a regular expression opened a
- * template that ran to end of file and returned the comment below it as string
- * text. Measured on this fence before the repair, on the real section: an
- * anchor renamed out of its cited file and restated in a line comment after
- * that statement RESOLVED, with 39 resolving pointers printed. The same `)` was
- * wrong in the other direction too — `if (u) /[//]/.test(u)` had the rest of
- * its line deleted at the `//` its character class holds, which manufactures a
- * refusal against honest code.
+ * A comment becomes a SPACE rather than nothing because `flatten` collapses
+ * any run of whitespace to one space, so a removed comment cannot glue two
+ * fragments of code that the source kept apart. Everything that is not a
+ * comment is emitted byte for byte, and that is measured rather than intended:
+ * over the 325 `.ts` and `.mjs` files this repository versions, the text this
+ * returns is byte-identical to the text the scanner it replaces returned.
  *
- * **A parenthesis stack answers it, in the grammar's terms.** Each open
- * parenthesis records whether a control keyword introduced it, so the `)` that
- * closes `if (…)` is regex context and the `)` that closes `(a + b)` stays
- * division context. A keyword reached through a property access is not a
- * control head: `o.if(x) / 2` divides, and this scanner reads that `if` as a
- * keyword whatever precedes it, so the token before the keyword is consulted.
+ * **Why the second sentence is enough to make the third safe.** Outside a
+ * literal the grammar admits identifiers, keywords, numbers, punctuation and
+ * comments. The only punctuation that begins with `/` is `/` and `/=`, and a
+ * `/` followed by `/` or `*` is neither. A division followed by a regular
+ * expression — `a / /re/` — puts the second slash inside a literal's range,
+ * so it is never read as a gap. There is no case left to guess at.
  *
- * **R19f: that lookback answered half the question.** It settled the keyword
- * that HEADS a parenthesis and left the keyword that IS the operand:
- * `({ default: 4 }).default / 2` is valid TypeScript, and `default` is not in
- * `TS_DIVISION_AFTER` — rightly not, because the `default` that opens a switch
- * clause is followed by a statement, so a `/` after THAT one starts a regular
- * expression. Adding the keyword to the set is therefore the wrong repair; the
- * position it stands in is what differs. Read as a regex, the `/` that divides
- * here closed on the first `/` of the `//` after it and handed the comment's
- * text back as identifiers. Measured on the real section 22b before the repair,
- * with an anchor renamed out of its cited file and restated in a line comment
- * after that statement: RESOLVED, 39 resolving pointers. Parentheses balanced,
- * braces balanced, no literal left open — R19e's invariant is blind to this one
- * by construction, and only a classification can answer it.
+ * **Guessing is what R19g removes, and four packets is how long it took.**
+ * P-03 made this a token scan and asked, at each `/`, whether the token before
+ * it was one after which division is legal. R19c had to re-read a `}` that
+ * closes a `${…}` as template; R19e had to distinguish the `)` of `if (…)`
+ * from the `)` of `(a + b)` with a stack; R19f had to notice that a keyword
+ * behind a `.` is a property. Each was a real repair and each left the same
+ * hole open, because a list of token kinds cannot express a grammar: `value! /
+ * 2` and `4 as number / 2` are divisions after a `!` and after a type, and
+ * `{} / 2`, `f()! / 2`, `1 as const / 2`, `4 satisfies number / 2` are seven
+ * more shapes no list names. Measured on the real section 22b before this
+ * repair, with the anchor renamed out of its cited file and restated in a line
+ * comment after such a statement: RESOLVED, 39 resolving pointers, for every
+ * one of those shapes. The parser answers all of them without being told about
+ * any of them, and `TS_DIVISION_AFTER`, `TS_CONTROL_HEAD` and
+ * `TS_MEMBER_ACCESS` are gone rather than extended — adding tokens to a list
+ * is the repair that keeps failing.
  *
- * **The rule is about the token before the name, and `?.` is the same rule.** A
- * name immediately preceded by `.` or `?.` is a member access, an operand, so a
- * `/` after it divides whatever the name is — `x.if / 2` and `a?.default / 2`
- * alike. `TS_MEMBER_ACCESS` states those two tokens once and both readings
- * consult it, because the control-head lookback above asks the identical
- * question one token earlier and a rule written twice is a rule that can be
- * weakened in one copy. `switch (x) { default: /re/.test(s); }` is untouched:
- * that `default` follows `:` or `{` rather than a dot, so its regular
- * expression is still read as one.
+ * **The degradation, and it is a rule of admission rather than of validity.**
+ * A file with any syntactic diagnostic states no code, so every anchor into it
+ * is refused BY NAME (`beAnchorDefect`, the fifth refusal). "Diagnostic" means
+ * what `program.getSyntacticDiagnostics` reports for the `typescript` version
+ * this repository pins — 5.9.3, exact in `package.json` and in the lockfile —
+ * under `BE_PARSE_OPTIONS` and the `beScriptKind` map. Raising that version is
+ * a change to what this gate admits, and the corpus measurement above has to
+ * be re-run with it. What the rule does NOT claim is semantic validity: an
+ * unknown regular-expression flag (`/a/q`) has no syntactic diagnostic at all
+ * and is admitted, which is correct here, because a checker's complaint about
+ * a literal does not move where that literal ends.
  *
- * **And the rule is about a NAME, which is narrower than "after a dot".** `?.`
- * does not have to be followed by one: `f?.(…)` is an optional call and
- * `a?.[…]` an optional element access, and both put the token after them in
- * OPERAND position, where a `/` opens a regular expression. Asking only what
- * precedes the previous token gets those two wrong in the erase-code direction
- * — `f?.(/[//]/.test(s))` read as a division turns its character class into a
- * comment that eats the rest of the line, and the file that stated an anchor
- * honestly is refused for holding no code. So `(` and `[` are excluded by
- * name: the clause fires when a property name is what the dot reached, and not
- * when the dot reached a call or an index. `.` needs no such guard, since
- * `a.(` and `a.[` are not grammatical at all.
+ * **Why `getTrailingCommentRanges` and not `getLeadingCommentRanges`.** The
+ * leading variant collects only after a line break, so it returns nothing at
+ * the `//` of `a = 1; // c` — the commonest shape there is.
  *
- * **The error direction is chosen, and R19e is why choosing it needs an
- * invariant.** The predecessor's theory was that a misjudged `/` keeps text and
- * therefore only fails to remove something. That is false in both directions:
- * a regex misread as division swallows the comments after it into an
- * unterminated literal, and a division misread as a regex swallows the `//` of
- * a real comment into a terminated one. So the scan carries an invariant
- * instead — parentheses balance, braces balance, and no literal is left
- * unterminated — and a scan that breaks it has lost sync with the source and
- * returns NOTHING. A file whose scan is not trustworthy states no code, so
- * every anchor pointing at it is refused: the degradation is a refusal, never
- * an acceptance, and no comment can survive a scan that produced no text at
- * all. Measured over the 325 `.ts` and `.mjs` files this repository versions:
- * every one satisfies the invariant, and the text this returns is byte
- * identical before and after R19e — the invariant costs an honest tree nothing.
+ * **Why not the token tree.** The obvious implementation walks
+ * `node.getChildren()` to the leaves and takes each token's trivia. It agrees
+ * with this one over all 325 versioned files and then disagrees where it
+ * matters: a `/** … *\/` after the last statement of a file is attached to the
+ * `EndOfFileToken` as `jsDoc`, which stops that token being a leaf, so its
+ * trivia is never read and the docblock comes back as code. That is this
+ * law's own defect class, in the shape a writer produces by accident. `N52`
+ * is the probe; ADR 0063 records the measurement.
+ *
+ * **The shebang is protected before the sweep, and it is not cosmetic.** The
+ * parser treats `#!…` as trivia rather than as a node, so the sweep would meet
+ * the `/*` in `#!/usr/bin/env node /* X` and take a comment running to end of
+ * file — deleting real code below it and refusing an honest citation. That
+ * source has zero diagnostics, so nothing else would have caught it.
+ *
+ * **What the four scanner packets are now, and why they stay written down.**
+ * R19c's template re-scan, R19e's parenthesis stack and invariant, R19f's
+ * property-name clause: each was the correct repair to the mechanism it was
+ * repairing, and each is history rather than law here. Their behavioural
+ * probes are not history — `N22b`, `N24b`–`N24e`, `N31`–`N35`, `N41`–`N45`
+ * assert what this extractor must do about templates, control heads, regular
+ * expressions holding comment delimiters, and keywords behind a dot, and they
+ * are green under the parser without one of them being rewritten. ADR 0060
+ * records the scanner; ADR 0063 records why a scanner was the wrong shape for
+ * the question.
  *
  * **Why not `stripComments`.** The obvious move is the `stripComments` helper
  * this file already uses in a hundred places, and it is wrong HERE — uniquely
@@ -23126,89 +23167,74 @@ const TS_MEMBER_ACCESS = new Set([ts.SyntaxKind.DotToken, ts.SyntaxKind.Question
  * necessarily quotes comment syntax in its refusal messages: a literal holding
  * `/**` opens a block that runs to the next `*\/` anywhere below, which measured
  * at 460 lines swallowed — including the policy-pin law's own refusal. A real
- * scanner is exactly what tells those apart, and it is confined to this law:
+ * parser is exactly what tells those apart, and it is confined to this law:
  * generalizing it to the others is a packet with its own negatives.
  */
-function beCodeTokens(content) {
-  const scanner = ts.createScanner(
-    ts.ScriptTarget.Latest,
-    /* skipTrivia */ false,
-    ts.LanguageVariant.Standard,
+function beCodeTokens(path, content) {
+  const source = ts.createSourceFile(
+    path,
     content,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ false,
+    beScriptKind(path),
   );
+  if (beSyntacticDiagnostics(path, source).length > 0) return "";
+
+  /** Every literal's range, in source order; a `/` inside one is content. */
+  const literals = [];
+  const collect = (node) => {
+    if (BE_LITERAL_KINDS.has(node.kind)) {
+      literals.push([node.getStart(source), node.end]);
+      return;
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
+  literals.sort((a, b) => a[0] - b[0]);
+
   let text = "";
-  let previous = ts.SyntaxKind.Unknown;
-  /** The significant token before `previous`, so a `.if(` is not a control head. */
-  let beforePrevious = ts.SyntaxKind.Unknown;
-  /** Whether `previous` is the `)` of a control head, so a `/` after it is a regex. */
-  let afterControlHead = false;
-  /** One entry per brace still open: `true` when a `${…}` is what opened it. */
-  const substitutions = [];
-  /** One entry per parenthesis still open: `true` when a control keyword opened it. */
-  const controlHeads = [];
-  /** False once the scan has lost sync with the source, and never true again. */
-  let inSync = true;
-  let kind;
-  while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
-    /**
-     * Whether `previous` is a property name, so a `/` after it is a division.
-     * `?.` may also be followed by `(` or `[` (optional call, optional element
-     * access); those open an operand position, not a property, and a `/`
-     * after them starts a regular expression.
-     */
-    const afterPropertyName =
-      TS_MEMBER_ACCESS.has(beforePrevious) &&
-      previous !== ts.SyntaxKind.OpenParenToken &&
-      previous !== ts.SyntaxKind.OpenBracketToken;
-    if (
-      (kind === ts.SyntaxKind.SlashToken || kind === ts.SyntaxKind.SlashEqualsToken) &&
-      !afterPropertyName &&
-      (!TS_DIVISION_AFTER.has(previous) || afterControlHead)
-    ) {
-      kind = scanner.reScanSlashToken();
-    }
-    if (kind === ts.SyntaxKind.OpenBraceToken) {
-      substitutions.push(false);
-    } else if (kind === ts.SyntaxKind.CloseBraceToken) {
-      if (substitutions.length === 0) inSync = false;
-      const closesSubstitution = substitutions.pop() === true;
-      if (closesSubstitution) kind = scanner.reScanTemplateToken(/* isTaggedTemplate */ false);
-    }
-    if (kind === ts.SyntaxKind.TemplateHead || kind === ts.SyntaxKind.TemplateMiddle) {
-      substitutions.push(true);
-    }
-    let closesControlHead = false;
-    if (kind === ts.SyntaxKind.OpenParenToken) {
-      controlHeads.push(TS_CONTROL_HEAD.has(previous) && !afterPropertyName);
-    } else if (kind === ts.SyntaxKind.CloseParenToken) {
-      if (controlHeads.length === 0) inSync = false;
-      closesControlHead = controlHeads.pop() === true;
-    }
-    if ((scanner.getTokenFlags() & ts.TokenFlags.Unterminated) !== 0) inSync = false;
-    if (
-      kind === ts.SyntaxKind.SingleLineCommentTrivia ||
-      kind === ts.SyntaxKind.MultiLineCommentTrivia
-    ) {
-      text += " ";
+  let pos = 0;
+  // Before the sweep, because the parser reads `#!…` as trivia rather than as
+  // a node: an unterminated `/*` inside it would otherwise swallow the file.
+  const shebang = ts.getShebang(content);
+  if (shebang !== undefined) {
+    text += shebang;
+    pos = shebang.length;
+  }
+  let index = 0;
+  while (pos < content.length) {
+    while (index < literals.length && literals[index][1] <= pos) index += 1;
+    const literal = literals[index];
+    if (literal !== undefined && literal[0] <= pos) {
+      text += content.slice(pos, literal[1]);
+      pos = literal[1];
       continue;
     }
-    text += scanner.getTokenText();
-    if (kind !== ts.SyntaxKind.WhitespaceTrivia && kind !== ts.SyntaxKind.NewLineTrivia) {
-      beforePrevious = previous;
-      previous = kind;
-      afterControlHead = closesControlHead;
+    if (content.charCodeAt(pos) === 47 /* / */) {
+      const next = content.charCodeAt(pos + 1);
+      if (next === 47 /* / */ || next === 42 /* * */) {
+        const [comment] = ts.getTrailingCommentRanges(content, pos) ?? [];
+        // Unreachable while the parser and this API agree about what a comment
+        // is, and fail-closed rather than fatal if they ever do not: a file
+        // this extractor cannot account for states no code.
+        if (comment === undefined || comment.pos !== pos) return "";
+        text += " ";
+        pos = comment.end;
+        continue;
+      }
     }
+    text += content[pos];
+    pos += 1;
   }
-  if (controlHeads.length > 0 || substitutions.length > 0) inSync = false;
-  return inSync ? text : "";
+  return text;
 }
 
 /**
- * The scanned form of each cited path, computed once (P-03).
+ * The extracted code of each cited path, computed once (P-03).
  *
  * The record cites 19 code files over 39 rows and this file up to seven times;
- * without the cache a 1.1 MB source is tokenized once per citation. It is
- * filled by the one section that reads these files and does not outlive the run.
+ * without the cache a 1.1 MB source is parsed once per citation. It is filled
+ * by the one section that reads these files and does not outlive the run.
  */
 const BE_SCANNED = new Map();
 
@@ -23224,18 +23250,23 @@ const BE_SCANNED = new Map();
  * pointers`. Six of the thirty-nine were bound to prose that way.
  *
  * **The rule, and it is now one line of policy.** For a code path the anchor
- * must appear in code, which `beCodeTokens` decides lexically; `.md` and
- * `.json` are returned whole, because in those a sentence or a key IS the
+ * must appear in code, which `beCodeTokens` decides by PARSING the file; `.md`
+ * and `.json` are returned whole, because in those a sentence or a key IS the
  * content and there is nothing to strip. The line-oriented removal this
  * replaced kept the interior line of a block comment and cut real code inside a
  * URL-shaped regular expression, so it was wrong in both directions; ADR 0060
- * carries the measurement.
+ * carries the measurement, and ADR 0063 carries why the lexical scan that
+ * replaced it could not answer the question either.
+ *
+ * The path is passed and not merely reported: it decides which grammar the
+ * file is read under (`beScriptKind`), so this signature is part of the rule
+ * rather than a convenience for the cache.
  */
 function beEvidenceText(path, content) {
   if (!BE_CODE_EVIDENCE.test(path)) return content;
   const scanned = BE_SCANNED.get(path);
   if (scanned !== undefined) return scanned;
-  const computed = beCodeTokens(content);
+  const computed = beCodeTokens(path, content);
   BE_SCANNED.set(path, computed);
   return computed;
 }
@@ -23247,6 +23278,20 @@ function beEvidenceText(path, content) {
  * refusal say the most useful true thing. Emptiness comes first because an
  * empty anchor is contained in every file that has ever existed, so reporting
  * it as "the file does not state it" would be false as well as unhelpful.
+ *
+ * **The two ways of holding no code are not the same fact, and R19g keeps them
+ * apart.** A file of nothing but comments states no code and the reader should
+ * go and write some; a file the parser reports diagnostics for states no code
+ * because this gate will not read a file it cannot account for, and the reader
+ * should go and fix the syntax. Telling the second one it "holds no code
+ * outside its comments" is simply false.
+ *
+ * The two are distinguished without asking twice, and the invariant that makes
+ * that sound is `beCodeTokens`'s: every character that is not a comment is
+ * emitted, and every comment becomes one space, so a file with any content at
+ * all comes back with at least one character in it. The empty string therefore
+ * has exactly one source — the diagnostic gate — and `content.trim()` above
+ * has already refused the empty file that could otherwise reach it.
  *
  * The last sentence is byte-identical to the refusal R19b shipped, because
  * three probes assert it and the anchor that genuinely is absent has not
@@ -23261,6 +23306,9 @@ function beAnchorDefect(path, content, anchor) {
     return "whose cited file is empty; an empty file is evidence of nothing";
   }
   const evidence = beEvidenceText(path, content);
+  if (evidence === "") {
+    return "whose cited file has syntactic diagnostics; no code from that file is admitted as evidence";
+  }
   if (evidence.trim() === "") {
     return "whose cited file holds no code outside its comments";
   }
@@ -23433,13 +23481,16 @@ const BE_DISCLOSURE_ID = /^OWED-[A-Z0-9-]+$/;
             pointerDefects += 1;
             continue;
           }
-          // The declared limit, fail-closed (P-03). An extension the scanner
+          // The declared limit, fail-closed (P-03). An extension this record
           // cannot read must not fall through to "read the file whole", which
           // is how R19b's defect would come back through the extension door.
-          // `.tsx` is the live case: 343 scanner errors over this repository's
-          // 56 of them even with the JSX variant, against 0 over the 318 `.ts`
-          // and 7 `.mjs`. Widening the table needs another technique and is
-          // another packet; ADR 0060 records why.
+          // `.tsx` is the live case. ADR 0060 excluded it because the scanner
+          // raised 343 errors over this repository's 56 of them even with the
+          // JSX variant; R19g's parser reads all 56 with no diagnostic at all,
+          // so the reason is now the other one 0060 gave — widening what a
+          // certification may cite is a decision with its own write-set and
+          // its own negatives, not a side effect of changing an instrument.
+          // The guard stands until that packet; ADR 0063 records both.
           if (!BE_CODE_EVIDENCE.test(pointer.path) && !BE_PROSE_EVIDENCE.test(pointer.path)) {
             fail(
               BE_RECORD_PATH +

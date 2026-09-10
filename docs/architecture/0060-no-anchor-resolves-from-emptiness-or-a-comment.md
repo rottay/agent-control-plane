@@ -2,7 +2,8 @@
 
 - Status: accepted.
 - Supersedes: none.
-- Superseded-by: none.
+- Superseded-by: ADR 0063, in its mechanism clauses only; its refusals, ceiling
+  and `.tsx` exclusion stand.
 - Amends: ADR 0053, in one clause of its reasoning and nothing else. The
   decision recorded there — every API error code is answered by name, and the
   fence pins the two tables to each other as text — stands unchanged, and its

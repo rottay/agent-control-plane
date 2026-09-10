@@ -64,10 +64,11 @@ file must still contain the anchor. The comparison is whitespace-normalised and
 case-insensitive, so a reflowed paragraph does not break a citation, but a
 renamed suite does.
 
-**In a code file the anchor must be in the code.** The file is tokenized with a
-lexical scanner and its comments are removed before the comparison, so a
-`describe` title, a refusal string, a computed note or a declaration satisfies a
-pointer and a docblock never does. This is not a detail of the comparison; it is
+**In a code file the anchor must be in the code.** The file is parsed and its
+comments are removed before the comparison, so a `describe` title, a refusal
+string, a computed note or a declaration satisfies a pointer and a docblock
+never does. A file the parser reports a syntactic diagnostic for states no code
+at all, and every pointer into it is refused by name. This is not a detail of the comparison; it is
 what makes the sentence at the top of this page true. A law in the fence is a
 block of code under a header comment that names it, and until R19b six of the
 rows below quoted the comment. Deleting such a law entirely, header left
