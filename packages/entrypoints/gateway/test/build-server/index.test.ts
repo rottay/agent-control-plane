@@ -502,6 +502,11 @@ describe("status", () => {
     const body = LedgerStatusResponse.parse(response.json());
     expect(body.readOnly).toBe(true);
     expect(body.eventCount).toBe(4);
+    // Which file, beside which path (P-10/id-B). The seeded ledger was opened
+    // writably, so it has an identity and the whole triple is present.
+    expect(body.instance.instanceId).not.toBeNull();
+    expect(body.instance.restoreId).not.toBeNull();
+    expect(body.instance.restoreEpoch).toBe(0);
     expect(body.pragmas.queryOnly).toBe(true);
     expect(body.migrations.length).toBeGreaterThan(0);
 

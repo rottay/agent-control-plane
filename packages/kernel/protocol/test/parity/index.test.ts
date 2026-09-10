@@ -190,6 +190,9 @@ describe("the binding table matches the schemas it claims to bind", () => {
       "channel",
       "item",
       "database",
+      // P-10/id-B. The other half of "which ledger is this", and a `hello`
+      // field like `resumedFrom` below.
+      "instance",
       "headSequence",
       "reason",
       // V2-B3c. A `hello` field, so it is exactly the kind of key a table bound

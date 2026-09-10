@@ -1142,6 +1142,13 @@ function buildStatus(source: LedgerSource) {
     apiContractVersion: API_CONTRACT_VERSION,
     ledgerContractVersion: LEDGER_CONTRACT_VERSION,
     database,
+    // Copied field by field like everything else here: the point of this
+    // builder is that only what it names crosses the boundary.
+    instance: {
+      instanceId: status.instance.instanceId,
+      restoreId: status.instance.restoreId,
+      restoreEpoch: status.instance.restoreEpoch,
+    },
     readOnly: status.readOnly,
     headSequence: status.headSequence,
     headEventSha256: status.headEventSha256,

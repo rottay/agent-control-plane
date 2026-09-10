@@ -158,6 +158,7 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
       bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
       bind("database", "LEDGER"),
+      bind("instance", "LEDGER"),
       bind("readOnly", "LIVENESS", "a structural property of the server, always true"),
       bind("headSequence", "LEDGER"),
       bind("headEventSha256", "LEDGER"),
@@ -356,6 +357,11 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("channel", "LEDGER"),
       bind("item", "LEDGER"),
       bind("database", "LEDGER"),
+      // Which file, not which connection. It is read out of the ledger on every
+      // open, so two clients reading the same file agree on it — which is what
+      // makes it comparable, and why it is not one of the two LIVENESS
+      // exceptions beside it.
+      bind("instance", "LEDGER"),
       bind("headSequence", "LEDGER"),
       bind("reason", "LIVENESS", "why this process's handle cannot serve the anchor; never a fact in the ledger"),
       bind(

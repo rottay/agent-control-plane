@@ -279,7 +279,15 @@ class StreamConnection {
    */
   async #open(): Promise<boolean> {
     const { anchor, database } = this.#context;
-    const headSequence = this.#context.ledger.status().headSequence;
+    // One read, per open, for both facts. `instance` is deliberately NOT cached
+    // on the context beside `database`: that one is a function of the path and
+    // cannot change under a live process, but a file's identity can — a formal
+    // restore is exactly the event that moves it. An identity computed once at
+    // startup would make the restore this packet exists to expose invisible
+    // again, and more subtly than before.
+    const status = this.#context.ledger.status();
+    const headSequence = status.headSequence;
+    const instance = status.instance;
 
     if (anchor.kind === "at") {
       if (anchor.sequence > headSequence) {
@@ -319,6 +327,7 @@ class StreamConnection {
             ledgerContractVersion: LEDGER_CONTRACT_VERSION,
             kind: "hello",
             database,
+            instance,
             headSequence,
             resumedFrom: anchor.sequence,
           }),
@@ -342,6 +351,7 @@ class StreamConnection {
           ledgerContractVersion: LEDGER_CONTRACT_VERSION,
           kind: "hello",
           database,
+          instance,
           headSequence,
           resumedFrom: null,
         }),

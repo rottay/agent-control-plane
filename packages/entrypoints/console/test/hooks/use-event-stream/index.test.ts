@@ -66,6 +66,11 @@ function helloFrame(databaseId: string, headSequence: number): string {
     ledgerContractVersion: LEDGER_CONTRACT_VERSION,
     kind: "hello",
     database: { id: databaseId, label: "acp.db", pathRedacted: true },
+    instance: {
+      instanceId: "11111111-1111-4111-8111-111111111111",
+      restoreId: "22222222-2222-4222-8222-222222222222",
+      restoreEpoch: 0,
+    },
     headSequence,
     resumedFrom: null,
   });

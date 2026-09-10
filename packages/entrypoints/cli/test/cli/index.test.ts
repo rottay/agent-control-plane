@@ -358,10 +358,14 @@ describe("usage", () => {
       // to 0.12.0 at V2-B3c for one new required field on the stream's `hello`
       // frame — every arm is a `z.strictObject`, so a reader pinned at 0.11.0
       // rejects the frame rather than ignoring the key, which is what makes it
-      // a minor. Asserted as a literal on purpose: the CLI's job here is to
+      // a minor. To 0.13.0 at V2 L3 for a fourth write route and two error
+      // codes, and to 0.14.0 at P-10/id-B for one more required field on the
+      // same `hello` — `instance`, which ledger FILE this is — for exactly the
+      // strictness reason 0.12.0 moved.
+      // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.13.0",
+      apiContractVersion: "0.14.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });
@@ -955,6 +959,11 @@ describe("status", () => {
     expect(status.migrations.length).toBeGreaterThan(0);
     expect(status.projections.length).toBeGreaterThan(0);
     expect(status.observedAt).toBe(FIXED_NOW);
+
+    // Which file, beside which path (P-10/id-B). Crosses the CLI's own mapper.
+    expect(status.instance.instanceId).not.toBeNull();
+    expect(status.instance.restoreId).not.toBeNull();
+    expect(status.instance.restoreEpoch).toBe(0);
 
     // The vector crosses the CLI's own mapper (P-09/log-D). Every projection
     // carries at least one head, and the two-source one carries both.

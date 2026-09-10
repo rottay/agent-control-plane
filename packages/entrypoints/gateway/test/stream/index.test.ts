@@ -510,6 +510,11 @@ describe("only a ledger row carries an id, and the id is its sequence", () => {
           label: "control-plane.sqlite",
           pathRedacted: true,
         },
+        instance: {
+          instanceId: "11111111-1111-4111-8111-111111111111",
+          restoreId: "22222222-2222-4222-8222-222222222222",
+          restoreEpoch: 0,
+        },
         headSequence: 12,
         resumedFrom: null,
       }),
@@ -778,6 +783,77 @@ describe("a reconnect loses nothing and repeats nothing", () => {
     // head is replayed at a client that did not ask to resume.
     expect(client.frames().filter((frame) => frame.id !== null)).toHaveLength(0);
     client.abort();
+  });
+
+  it("carries the instance identity on every open, resumed or live", async () => {
+    // Invariant 7: `instance_id` and `restore_id` travel in the `hello` frame.
+    // Both arms of `#open()`, because the resumed one is precisely the arm a
+    // client cannot learn identity from any other way — `Last-Event-ID` is a
+    // bare decimal and has nowhere to put one.
+    const { path } = seed({ perTask: 4 });
+    const expected = (() => {
+      const reader = openLedger(path, { readOnly: true });
+      try {
+        return reader.status().instance;
+      } finally {
+        reader.close();
+      }
+    })();
+    expect(expected.instanceId).not.toBeNull();
+
+    const running = await serve(path);
+
+    const live = await openStream(running.port, STREAM_PATH);
+    await live.waitForFrames(1);
+    const liveHello = parsedFrames(live)[0];
+    expect(liveHello?.kind).toBe("hello");
+    if (liveHello?.kind !== "hello") throw new Error("expected a hello");
+    expect(liveHello.instance).toEqual(expected);
+    live.abort();
+
+    const resumed = await openStream(running.port, STREAM_PATH, { "last-event-id": "2" });
+    await resumed.waitForFrames(1);
+    const resumedHello = parsedFrames(resumed)[0];
+    expect(resumedHello?.kind).toBe("hello");
+    if (resumedHello?.kind !== "hello") throw new Error("expected a hello");
+    expect(resumedHello.instance).toEqual(expected);
+    resumed.abort();
+  });
+
+  it("restates a moved restore id under an unchanged path", async () => {
+    // The server half of DB08, and the only proof that the identity is read per
+    // open rather than computed once at startup. The path does not move, so
+    // `database` is identical across the two connections; a gateway that cached
+    // the identity beside it would serve the OLD restore id after a restore and
+    // the client law would never fire.
+    const { path } = seed({ perTask: 3 });
+    const running = await serve(path);
+
+    const before = await openStream(running.port, STREAM_PATH);
+    await before.waitForFrames(1);
+    const first = parsedFrames(before)[0];
+    if (first?.kind !== "hello") throw new Error("expected a hello");
+    before.abort();
+
+    // A formal restore, recorded through the ledger's own door while the
+    // gateway stays up.
+    const writer = openLedger(path);
+    const restored = writer.recordRestore();
+    writer.close();
+
+    const after = await openStream(running.port, STREAM_PATH);
+    await after.waitForFrames(1);
+    const second = parsedFrames(after)[0];
+    if (second?.kind !== "hello") throw new Error("expected a hello");
+    after.abort();
+
+    // Same location, same file, different restore. This is the tuple the
+    // client compares, and only its third member moved.
+    expect(second.database).toEqual(first.database);
+    expect(second.instance.instanceId).toBe(first.instance.instanceId);
+    expect(second.instance.restoreId).not.toBe(first.instance.restoreId);
+    expect(second.instance.restoreId).toBe(restored.restoreId);
+    expect(second.instance.restoreEpoch).toBe(1);
   });
 
   it("delivers an event appended after the connection opened", async () => {

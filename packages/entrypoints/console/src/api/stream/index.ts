@@ -271,6 +271,13 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
   let state: StreamConnectionState = "connecting";
   let detail: string | null = null;
   let databaseId: string | null = null;
+  // The other half of "which ledger is this" (P-10/id-B). `databaseId` is a
+  // digest of the PATH and does not move when a formal restore replaces the
+  // file behind it; these two do. Both are `string | null` so `!==` is already
+  // the rule "null is equal only to null" — the lawful null being a ledger
+  // whose identity predates the build serving it.
+  let instanceId: string | null = null;
+  let restoreId: string | null = null;
   let anchored = false;
   let lastApplied = 0;
   let items: readonly TimelineItem[] = NO_ITEMS;
@@ -486,8 +493,15 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
     detail = null;
   }
 
-  function resetScope(nextDatabaseId: string, headSequence: number): void {
+  function resetScope(
+    nextDatabaseId: string,
+    nextInstanceId: string | null,
+    nextRestoreId: string | null,
+    headSequence: number,
+  ): void {
     databaseId = nextDatabaseId;
+    instanceId = nextInstanceId;
+    restoreId = nextRestoreId;
     anchored = true;
     lastApplied = headSequence;
     backfillTarget = headSequence;
@@ -507,10 +521,22 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
       // exists only because this `EventSource` instance was handed an `id:`,
       // and a scope that has never been anchored has never had one. A reload
       // builds a new scope and a new `EventSource`, so it opens live.
-      resetScope(frame.database.id, frame.headSequence);
+      // The whole tuple is adopted, nulls included: a scope anchored to a
+      // ledger with no identity yet is lawful, and must not reconnect into a
+      // reset every time simply because it holds two nulls.
+      resetScope(
+        frame.database.id,
+        frame.instance.instanceId,
+        frame.instance.restoreId,
+        frame.headSequence,
+      );
       return;
     }
-    if (frame.database.id !== databaseId) {
+    if (
+      frame.database.id !== databaseId ||
+      frame.instance.instanceId !== instanceId ||
+      frame.instance.restoreId !== restoreId
+    ) {
       // A different ledger behind the same URL. The server cannot enforce this
       // — `EventSource` sends no custom header, so it has nothing to compare —
       // which makes it a client law, and this is where the client keeps it.
@@ -520,6 +546,20 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
       // client law never ran on the one case it exists for. The server now
       // restates identity on every open, and this arm is what that buys.
       //
+      // Since P-10/id-B the comparison is the whole tuple, and the added part
+      // is the one this arm could not see before. `database.id` is a digest of
+      // the PATH: a formal restore into the same path leaves it identical while
+      // replacing every row behind it, so a browser holding sequence 3 resumed
+      // against a file whose sequence 3 was a different event — and neither end
+      // noticed. `restoreId` is what moves then; `instanceId` is what moves
+      // when a different file is put at the same path. `restoreEpoch` is
+      // deliberately NOT compared: it is a human-readable ordering and carries
+      // no uniqueness, so two restores could share one.
+      //
+      // The comparison is by VALUE, field by field. Comparing `frame.instance`
+      // as an object would reset on every reconnection, because each frame is
+      // freshly parsed JSON and never the same reference twice.
+      //
       // `resetScope` to the FOREIGN head is what discards the old ledger's
       // rows, and it also disposes of the replay that is about to arrive: the
       // server will replay the foreign ledger from the anchor to its head, and
@@ -528,7 +568,12 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
       // them and counts it. No foreign row is applied to the old scope, and
       // none is applied to the new one either — the view refetches, because
       // rows read from a ledger this one is not are not rows about this one.
-      resetScope(frame.database.id, frame.headSequence);
+      resetScope(
+        frame.database.id,
+        frame.instance.instanceId,
+        frame.instance.restoreId,
+        frame.headSequence,
+      );
       options.onDatabaseChanged?.();
       emit();
       return;
@@ -627,6 +672,8 @@ export function createStreamStore(options: StreamStoreOptions): StreamStore {
     items = NO_ITEMS;
     anchored = false;
     databaseId = null;
+    instanceId = null;
+    restoreId = null;
     lastApplied = 0;
     backfillTarget = 0;
     halt(

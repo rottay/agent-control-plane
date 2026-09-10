@@ -308,8 +308,10 @@ beside it only so a human can read the order — never as an identity.
 
 **No migration writes these.** A migration's checksum is taken over fixed SQL
 text, so a UUID embedded in one would be the same UUID in every ledger this
-build ever created. They are written by `openLedger` on the first **writable**
-open by a build that knows about them, and never again. A ledger written before
+build ever created. `instance_id` is written by `openLedger` on the first
+**writable** open by a build that knows about it, and never again; `restore_id`
+is seeded beside it and then rewritten by every formal restore, which is what
+`recordRestore()` is for. A ledger written before
 this build gets its identity on its next writable open, with nothing asked of an
 operator — the same upgrade path the migration seeds take.
 

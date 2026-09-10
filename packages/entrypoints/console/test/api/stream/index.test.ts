@@ -82,16 +82,47 @@ function frameData(value: unknown): string {
  * file is exercising. The parameter is what lets the new drills build the other
  * kind without a second helper that could drift from this one.
  */
+/**
+ * The file identity a fixture carries when it is not the subject of the drill.
+ *
+ * Literals rather than `randomUUID`: `CONSOLE_SEQUENCE_MINTS` forbids minting
+ * in the store's own module, and a fixture that generated a fresh identity per
+ * call would make every reconnection look like a restore.
+ */
+const INSTANCE_A = "11111111-1111-4111-8111-111111111111";
+const RESTORE_A = "22222222-2222-4222-8222-222222222222";
+
+interface HelloIdentity {
+  readonly instanceId: string | null;
+  readonly restoreId: string | null;
+  readonly restoreEpoch: number | null;
+}
+
+const IDENTITY_A: HelloIdentity = {
+  instanceId: INSTANCE_A,
+  restoreId: RESTORE_A,
+  restoreEpoch: 0,
+};
+
+/** A ledger written before the identity existed: all three null, together. */
+const IDENTITY_ABSENT: HelloIdentity = {
+  instanceId: null,
+  restoreId: null,
+  restoreEpoch: null,
+};
+
 function helloFrame(
   databaseId: string,
   headSequence: number,
   resumedFrom: number | null = null,
+  instance: HelloIdentity = IDENTITY_A,
 ): string {
   return frameData({
     apiContractVersion: API_CONTRACT_VERSION,
     ledgerContractVersion: LEDGER_CONTRACT_VERSION,
     kind: "hello",
     database: { id: databaseId, label: "acp.db", pathRedacted: true },
+    instance,
     headSequence,
     resumedFrom,
   });
@@ -617,6 +648,124 @@ describe("ledger identity", () => {
     expect(snapshot.items).toHaveLength(0);
     expect(snapshot.databaseId).toBe(DATABASE_B);
     expect(snapshot.lastApplied).toBe(40);
+    expect(refetched).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // The restore under an unchanged path (P-10/id-B, DB08)
+  //
+  // The arm above compares `database.id`, a digest of the PATH. A formal
+  // restore replaces every row behind that path and leaves the digest
+  // identical, so until this packet a browser resumed its cursor into a file
+  // whose sequence 3 was a different event — and neither end noticed. These
+  // drills are the client half of closing that.
+  // -------------------------------------------------------------------------
+
+  const INSTANCE_B = "33333333-3333-4333-8333-333333333333";
+  const RESTORE_B = "44444444-4444-4444-8444-444444444444";
+
+  it("resets the scope when the restore id changes under an unchanged path", () => {
+    let refetched = 0;
+    const { store } = storeWith(() => page([]), {
+      onDatabaseChanged: () => {
+        refetched += 1;
+      },
+    });
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    store.acceptFrame(eventFrame(item(1)));
+    store.acceptFrame(eventFrame(item(2)));
+    expect(sequences(store)).toEqual([1, 2]);
+
+    // Same path, same file, restored: only the restore id moves.
+    store.acceptFrame(helloFrame(DATABASE_A, 40, null, {
+      instanceId: INSTANCE_A,
+      restoreId: RESTORE_B,
+      restoreEpoch: 1,
+    }));
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.items).toHaveLength(0);
+    expect(snapshot.databaseId).toBe(DATABASE_A);
+    expect(snapshot.lastApplied).toBe(40);
+    expect(refetched).toBe(1);
+  });
+
+  it("resets the scope when the instance id changes under an unchanged path", () => {
+    let refetched = 0;
+    const { store } = storeWith(() => page([]), {
+      onDatabaseChanged: () => {
+        refetched += 1;
+      },
+    });
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    store.acceptFrame(eventFrame(item(1)));
+
+    // A different FILE moved to the same path.
+    store.acceptFrame(helloFrame(DATABASE_A, 40, null, {
+      instanceId: INSTANCE_B,
+      restoreId: RESTORE_B,
+      restoreEpoch: 0,
+    }));
+
+    expect(store.getSnapshot().items).toHaveLength(0);
+    expect(store.getSnapshot().lastApplied).toBe(40);
+    expect(refetched).toBe(1);
+  });
+
+  it("does not reset the scope when the whole identity is unchanged", () => {
+    // The control against the other failure mode. Each frame is freshly parsed
+    // JSON, so an identity compared by reference rather than by value would
+    // reset on every single reconnection and refetch the view forever.
+    let refetched = 0;
+    const { store } = storeWith(() => page([]), {
+      onDatabaseChanged: () => {
+        refetched += 1;
+      },
+    });
+    store.acceptFrame(helloFrame(DATABASE_A, 0));
+    store.acceptFrame(eventFrame(item(1)));
+    store.acceptFrame(eventFrame(item(2)));
+
+    store.acceptFrame(helloFrame(DATABASE_A, 2));
+    store.acceptFrame(helloFrame(DATABASE_A, 2));
+
+    expect(sequences(store)).toEqual([1, 2]);
+    expect(refetched).toBe(0);
+    // `restoreEpoch` is informative and is NOT compared: a hello that moved
+    // only the epoch is not a restore anybody can act on.
+    store.acceptFrame(helloFrame(DATABASE_A, 2, null, {
+      instanceId: INSTANCE_A,
+      restoreId: RESTORE_A,
+      restoreEpoch: 9,
+    }));
+    expect(refetched).toBe(0);
+    expect(sequences(store)).toEqual([1, 2]);
+  });
+
+  it("resets exactly once when a live upgrade introduces the identity", () => {
+    // The pre-upgrade window (T2). A ledger with no identity yet publishes the
+    // whole triple as null, and reconnecting into that must NOT reset — null is
+    // equal only to null. When the first writable open gives the file an
+    // identity, that IS a change, and it resets once and not again.
+    let refetched = 0;
+    const { store } = storeWith(() => page([]), {
+      onDatabaseChanged: () => {
+        refetched += 1;
+      },
+    });
+    store.acceptFrame(helloFrame(DATABASE_A, 0, null, IDENTITY_ABSENT));
+    store.acceptFrame(eventFrame(item(1)));
+    // Reconnection inside the window: still nothing known, still no reset.
+    store.acceptFrame(helloFrame(DATABASE_A, 1, null, IDENTITY_ABSENT));
+    expect(refetched).toBe(0);
+    expect(sequences(store)).toEqual([1]);
+
+    // The identity appears.
+    store.acceptFrame(helloFrame(DATABASE_A, 1, null, IDENTITY_A));
+    expect(refetched).toBe(1);
+
+    // And stays. A second hello carrying the same identity is not a change.
+    store.acceptFrame(helloFrame(DATABASE_A, 1, null, IDENTITY_A));
     expect(refetched).toBe(1);
   });
 

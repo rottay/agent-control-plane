@@ -310,6 +310,21 @@ export function renderStatus(response: LedgerStatusResponse): string {
     ["database", response.database.label],
     ["database id", shortDigest(response.database.id)],
     ["path", "redacted"],
+    // Which file, beside which path. Null until the first writable open of a
+    // build that knows the identity, rendered as "-" like every other absent
+    // value in this package.
+    [
+      "instance id",
+      response.instance.instanceId === null ? "-" : shortDigest(response.instance.instanceId),
+    ],
+    [
+      "restore id",
+      response.instance.restoreId === null ? "-" : shortDigest(response.instance.restoreId),
+    ],
+    [
+      "restore epoch",
+      response.instance.restoreEpoch === null ? "-" : count(response.instance.restoreEpoch),
+    ],
     ["read only", String(response.readOnly)],
     ["events", count(response.eventCount)],
     ["head sequence", count(response.headSequence)],

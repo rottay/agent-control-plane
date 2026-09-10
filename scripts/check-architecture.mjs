@@ -8042,6 +8042,97 @@ const P10A_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-10/id-B — the file identity travels, and the client obeys it.
+ *
+ * The second rung of P-10 (T4), and the one that closes DB08. `hello` and the
+ * status response each gain one required field, `instance`: which ledger FILE
+ * this is and which restore of it, beside `database`, which says which PATH.
+ *
+ * **Why a sibling and not a member of `LedgerDatabaseIdentity`.** That object
+ * is a function of the path and of nothing else, computed at two independent
+ * producers without opening the ledger, and that is what makes the parity
+ * contract cheap: two clients agree on it without coordinating. Folding a
+ * ledger fact into it would force both to open the ledger. Identity of location
+ * and identity of file are two facts and travel as two fields, so
+ * `database-identity/` and `ledger-source/` are untouched here.
+ *
+ * **The defect this closes was live.** `database.id` is `sha256(absolute
+ * path)`, so a formal restore over the same path leaves it byte-identical while
+ * replacing every row behind it. A browser holding sequence 3 resumed into a
+ * file whose sequence 3 was a different event, and neither end noticed;
+ * `ANCHOR_AHEAD_OF_HEAD` catches only a *shorter* replacement. The client law
+ * in `console/src/api/stream/index.ts` now compares the tuple `(database.id,
+ * instanceId, restoreId)` by value. Not by reference — every frame is freshly
+ * parsed JSON, so that would reset the scope on every reconnection, which is
+ * the opposite failure and just as silent. Not `restoreEpoch` — it is a
+ * monotone integer carrying no uniqueness, so two restores can share one.
+ *
+ * **Read per open, never cached.** The gateway takes `headSequence` and
+ * `instance` from one `status()` call inside `#open()`. An identity computed
+ * once at startup would make a restore under a live gateway invisible, and no
+ * client-side drill would catch it, so `restates a moved restore id under an
+ * unchanged path` is a gateway test rather than a store test.
+ *
+ * **All three null together, or none**, enforced by a `superRefine` on the
+ * schema rather than by three independent `.nullable()` fields, which would
+ * admit six mixed shapes on the wire. The one lawful null is a ledger written
+ * before this identity existed.
+ *
+ * `API_CONTRACT_VERSION` moves `0.13.0` → `0.14.0`, minor for the mechanical
+ * reason `0.12.0` moved: every arm of `StreamFrame` is a `z.strictObject`, so a
+ * reader pinned at the older version rejects the frame on the unknown key.
+ * `LEDGER_CONTRACT_VERSION` does not move — no event changes shape and no
+ * migration is implied — and `MIGRATIONS` stays at nine.
+ *
+ * That move is why two of the test paths below are here (T7). Five assertions
+ * in the tree pin the version as a bare literal, on purpose: the point of each
+ * is to report the number a reader can pin against, and comparing it to the
+ * constant it prints would assert only that the code can echo itself. Three are
+ * in the protocol's own suite; the other two are in the tool-call documents,
+ * which carry `apiContractVersion` like every other response. Each is one
+ * literal with no logic around it, and neither has anything to do with file
+ * identity — they are the version's blast radius, not this packet's design.
+ *
+ * **Pins.** The write set gains **1 distinct path**, the ADR, and the ADR
+ * corpus goes 63 → 64. Everything else below is admitted by a historical
+ * block. `assertAdrNumbering()` counts the corpus in the tree rather than
+ * against a constant and requires a row in `docs/architecture/index.md`, which
+ * is why that file is here; there is no number to edit outside this prose.
+ *
+ * No error class is added, so the README/barrel law is untouched. The console
+ * does not render `instance` in this packet: a strict parse accepts the field
+ * without displaying it, and which restore a browser is looking at is a
+ * presentation decision this packet does not make.
+ */
+const P10B_WRITE_SET = [
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/src/stream/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/test/stream/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/cli/src/format/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/console/src/api/stream/index.ts",
+  "packages/entrypoints/console/test/api/stream/index.test.ts",
+  "packages/entrypoints/console/test/hooks/use-event-stream/index.test.ts",
+  "packages/entrypoints/console/test/live-dom/index.test.tsx",
+  "packages/persistence/ledger/README.md",
+  "docs/api-reference.md",
+  "docs/architecture/index.md",
+  "docs/architecture/0064-a-restored-ledger-is-a-different-ledger.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8234,6 +8325,7 @@ const WRITE_SET = [
   ...P09C_WRITE_SET,
   ...P09D_WRITE_SET,
   ...P10A_WRITE_SET,
+  ...P10B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

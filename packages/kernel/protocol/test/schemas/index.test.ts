@@ -97,6 +97,23 @@ const DATABASE: unknown = {
   pathRedacted: true,
 };
 
+/** Which FILE, beside DATABASE's which PATH (P-10/id-B). */
+const INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
+const RESTORE_ID = "22222222-2222-4222-8222-222222222222";
+
+const INSTANCE: unknown = {
+  instanceId: INSTANCE_ID,
+  restoreId: RESTORE_ID,
+  restoreEpoch: 0,
+};
+
+/** The one lawful null: a ledger whose identity predates the build serving it. */
+const INSTANCE_ABSENT: unknown = {
+  instanceId: null,
+  restoreId: null,
+  restoreEpoch: null,
+};
+
 const TIMELINE_ITEM = {
   sequence: 7,
   eventId: EVENT_ID,
@@ -173,6 +190,7 @@ const LEDGER_STATUS = {
   apiContractVersion: API_CONTRACT_VERSION,
   ledgerContractVersion: LEDGER_CONTRACT_VERSION,
   database: DATABASE,
+  instance: INSTANCE,
   readOnly: true,
   headSequence: 7,
   headEventSha256: SHA256,
@@ -1068,6 +1086,54 @@ describe("health, status and integrity", () => {
       { ...TWO_HEADED_PROJECTION, watermarks: [...TWO_HEADED_PROJECTION.watermarks].reverse() },
     ]);
     expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------
+  // The file identity on the wire (P-10/id-B)
+  // ---------------------------------------------------------------------
+
+  it("refuses an instance id that is not a uuid", () => {
+    const bad = withKey(LEDGER_STATUS, "instance", {
+      instanceId: "not-a-uuid",
+      restoreId: RESTORE_ID,
+      restoreEpoch: 0,
+    });
+    expect(LedgerStatusResponse.safeParse(bad).success).toBe(false);
+  });
+
+  it("refuses a restore epoch that is not a non-negative integer", () => {
+    for (const restoreEpoch of [-1, 1.5, "3", Number.NaN]) {
+      const bad = withKey(LEDGER_STATUS, "instance", {
+        instanceId: INSTANCE_ID,
+        restoreId: RESTORE_ID,
+        restoreEpoch,
+      });
+      expect(LedgerStatusResponse.safeParse(bad).success, String(restoreEpoch)).toBe(false);
+    }
+  });
+
+  it("refuses a half-present instance identity on the wire", () => {
+    // Three independently nullable fields would admit six mixed shapes, and
+    // "an instance with no restore" is a question with no answer: the ledger
+    // writes the three rows in one transaction. The one lawful null is the
+    // whole triple.
+    const mixed = [
+      { instanceId: INSTANCE_ID, restoreId: null, restoreEpoch: null },
+      { instanceId: null, restoreId: RESTORE_ID, restoreEpoch: null },
+      { instanceId: null, restoreId: null, restoreEpoch: 0 },
+      { instanceId: INSTANCE_ID, restoreId: RESTORE_ID, restoreEpoch: null },
+      { instanceId: INSTANCE_ID, restoreId: null, restoreEpoch: 0 },
+      { instanceId: null, restoreId: RESTORE_ID, restoreEpoch: 0 },
+    ];
+    for (const instance of mixed) {
+      const bad = withKey(LEDGER_STATUS, "instance", instance);
+      expect(LedgerStatusResponse.safeParse(bad).success, JSON.stringify(instance)).toBe(false);
+    }
+  });
+
+  it("accepts an identity that is wholly absent, which is the pre-upgrade window", () => {
+    const good = withKey(LEDGER_STATUS, "instance", INSTANCE_ABSENT);
+    expect(LedgerStatusResponse.safeParse(good).success).toBe(true);
   });
 
   it("refuses a source stream the contract does not define", () => {
@@ -2040,6 +2106,7 @@ describe("the stream frame", () => {
         ...VERSIONS,
         kind: "hello",
         database: DATABASE,
+        instance: INSTANCE,
         headSequence: 7,
         resumedFrom: null,
       }).success,
@@ -2064,10 +2131,32 @@ describe("the stream frame", () => {
         ...VERSIONS,
         kind: "hello",
         database: DATABASE,
+        instance: INSTANCE,
         headSequence: 0,
         resumedFrom: null,
       }).success,
     ).toBe(true);
+  });
+
+  it("refuses a hello frame missing the instance identity", () => {
+    // Strict and required: this is the shape a reader pinned at 0.13.0 has
+    // never seen, which is why the API version moved minor rather than patch.
+    const base = {
+      ...VERSIONS,
+      kind: "hello",
+      database: DATABASE,
+      headSequence: 7,
+      resumedFrom: null,
+    };
+    expect(StreamFrame.safeParse(base).success).toBe(false);
+    expect(StreamFrame.safeParse({ ...base, instance: INSTANCE }).success).toBe(true);
+    expect(StreamFrame.safeParse({ ...base, instance: INSTANCE_ABSENT }).success).toBe(true);
+    expect(
+      StreamFrame.safeParse({
+        ...base,
+        instance: { instanceId: INSTANCE_ID, restoreId: null, restoreEpoch: null },
+      }).success,
+    ).toBe(false);
   });
 
   it("requires resumedFrom on hello, and lets it be null (V2-B3c)", () => {
@@ -2077,7 +2166,13 @@ describe("the stream frame", () => {
     // server is older than the field". Required makes the answer always
     // present, which is also what forces the minor version bump — every arm is
     // a `z.strictObject`, so a reader at `0.11.0` rejects the frame outright.
-    const base = { ...VERSIONS, kind: "hello", database: DATABASE, headSequence: 7 };
+    const base = {
+      ...VERSIONS,
+      kind: "hello",
+      database: DATABASE,
+      instance: INSTANCE,
+      headSequence: 7,
+    };
 
     expect(StreamFrame.safeParse({ ...base, resumedFrom: null }).success).toBe(true);
     expect(StreamFrame.safeParse({ ...base, resumedFrom: 0 }).success).toBe(true);
@@ -2276,7 +2371,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.13.0");
+    expect(API_CONTRACT_VERSION).toBe("0.14.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -2293,7 +2388,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.13.0");
+    expect(API_CONTRACT_VERSION).toBe("0.14.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -2306,7 +2401,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(15);
-    expect(API_CONTRACT_VERSION).toBe("0.13.0");
+    expect(API_CONTRACT_VERSION).toBe("0.14.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape

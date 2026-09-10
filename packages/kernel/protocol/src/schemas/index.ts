@@ -198,6 +198,52 @@ export const LedgerDatabaseIdentity = z.strictObject({
 });
 export type LedgerDatabaseIdentity = z.infer<typeof LedgerDatabaseIdentity>;
 
+/**
+ * Which ledger FILE this is, and which restore of it (P-10/id-B).
+ *
+ * A sibling of `LedgerDatabaseIdentity` and deliberately not a part of it. That
+ * one is a digest of the absolute path, computed by two independent producers
+ * without opening anything, and it answers *which location*: it does not move
+ * when the file behind a path is replaced, and it does move when the same file
+ * is copied elsewhere. These three come out of the ledger itself and answer the
+ * other half.
+ *
+ * The distinction is the whole packet. A formal restore into the same path
+ * leaves `database.id` untouched, so a client comparing only that resumes a
+ * cursor against a file whose sequence 4 is no longer the sequence 4 it was
+ * reading. `restoreId` is what moves.
+ *
+ * **All three are null together, or none of them is.** Three independently
+ * nullable fields would admit six mixed shapes on the wire, and a reader would
+ * have to decide what "an instance with no restore" means — a question with no
+ * answer, because the ledger writes the three rows in one transaction. The one
+ * lawful null is the whole triple: a ledger written before this identity
+ * existed, not yet opened writably by a build that knows about it.
+ *
+ * `restoreEpoch` travels for completeness but is informative only: it is a
+ * human-readable ordering of restores and participates in no uniqueness claim,
+ * so a client compares `instanceId` and `restoreId` and not this.
+ */
+export const LedgerInstanceIdentity = z
+  .strictObject({
+    instanceId: Uuid.nullable(),
+    restoreId: Uuid.nullable(),
+    restoreEpoch: Count.nullable(),
+  })
+  .superRefine((value, ctx) => {
+    const nulls = [value.instanceId, value.restoreId, value.restoreEpoch].filter(
+      (field) => field === null,
+    ).length;
+    if (nulls !== 0 && nulls !== 3) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a ledger's identity is absent as a whole or present as a whole",
+        path: ["instanceId"],
+      });
+    }
+  });
+export type LedgerInstanceIdentity = z.infer<typeof LedgerInstanceIdentity>;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -820,6 +866,8 @@ export const LedgerStatusResponse = z
     apiContractVersion: ApiContractVersion,
     ledgerContractVersion: LedgerContractVersion,
     database: LedgerDatabaseIdentity,
+    /** Which file, and which restore of it. See LedgerInstanceIdentity. */
+    instance: LedgerInstanceIdentity,
     readOnly: z.boolean(),
     headSequence: SequenceOrZero,
     headEventSha256: Sha256Hex,
@@ -1439,6 +1487,14 @@ export const StreamFrame = z
       ...streamFrameVersions,
       kind: z.literal("hello"),
       database: LedgerDatabaseIdentity,
+      /**
+       * Which FILE, beside `database`'s which LOCATION (P-10/id-B).
+       *
+       * A formal restore into the same path leaves `database` identical, so a
+       * client comparing only that resumes against a file whose sequences no
+       * longer mean what its cursor thinks. This is what moves.
+       */
+      instance: LedgerInstanceIdentity,
       headSequence: SequenceOrZero,
       resumedFrom: SequenceOrZero.nullable(),
     }),

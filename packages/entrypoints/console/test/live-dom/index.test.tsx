@@ -400,6 +400,11 @@ function streamHello(headSequence: number, databaseId = STREAM_DATABASE): string
     ledgerContractVersion: LEDGER_CONTRACT_VERSION,
     kind: "hello",
     database: { id: databaseId, label: "acp.db", pathRedacted: true },
+    instance: {
+      instanceId: "11111111-1111-4111-8111-111111111111",
+      restoreId: "22222222-2222-4222-8222-222222222222",
+      restoreEpoch: 0,
+    },
     headSequence,
     resumedFrom: null,
   });
@@ -784,6 +789,14 @@ describe("the live stream's privacy boundary, measured on the DOM", () => {
         ledgerContractVersion: LEDGER_CONTRACT_VERSION,
         kind: "hello",
         database: { id: STREAM_DATABASE, label: "/Users/someone/acp.db", pathRedacted: true },
+        // Stated for the same reason `resumedFrom` is, below: this frame is
+        // hand-written and deliberately invalid, and every OTHER required key
+        // has to be valid or the client refuses for the wrong reason.
+        instance: {
+          instanceId: "11111111-1111-4111-8111-111111111111",
+          restoreId: "22222222-2222-4222-8222-222222222222",
+          restoreEpoch: 0,
+        },
         headSequence: 0,
         // Stated even though this frame is deliberately hand-written and
         // invalid: without it the client would refuse for the WRONG reason — a

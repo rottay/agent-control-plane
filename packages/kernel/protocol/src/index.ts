@@ -111,6 +111,7 @@ export {
   IntegrityProblemKind,
   IntegrityResult,
   LedgerDatabaseIdentity,
+  LedgerInstanceIdentity,
   LedgerPragmaStatusDto,
   LedgerStatusResponse,
   MAX_DETAIL_TIMELINE_ITEMS,

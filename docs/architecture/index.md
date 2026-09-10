@@ -79,6 +79,7 @@ new records from `_template.md`, which carries the required fields.
 | 0061 | [The fence admits a living specification, not a frozen record](0061-the-fence-admits-a-living-specification.md) | accepted |
 | 0062 | [The gate proves the coverage it runs, and owes the runs it never had](0062-the-gate-proves-the-coverage-it-runs.md) | accepted |
 | 0063 | [The extractor reads grammar, not lexical luck](0063-the-extractor-reads-grammar-not-lexical-luck.md) | accepted |
+| 0064 | [A restored ledger is a different ledger, and the path digest cannot say so](0064-a-restored-ledger-is-a-different-ledger.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

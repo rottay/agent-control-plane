@@ -131,8 +131,12 @@ repeated. Omit the header and the stream serves live from the current head —
 history is `events`' job, not the stream's.
 
 **Every open begins with a `hello`, resumed or not.** It carries the ledger's
-redacted identity, its `headSequence`, and `resumedFrom`: the anchor this
-connection resumed at, or `null` if you opened live. The frame carries **no**
+redacted identity, its `instance`, its `headSequence`, and `resumedFrom`: the
+anchor this connection resumed at, or `null` if you opened live. `instance` is
+`instanceId`, `restoreId` and `restoreEpoch` — which **file** this is and which
+restore of it, as against `database`, which says which **path**. The three are
+`null` only together, and only until the first writable open of a build that
+knows about them. The frame carries **no**
 `id:` line, so reading it moves no cursor. It arrives *before* any replayed row,
 which is what lets a client decide whether it is still reading the same ledger
 before it applies anything from the new one.
@@ -141,17 +145,23 @@ before it applies anything from the new one.
 opened live"; `0` means "you asked for the whole log"; these are different
 answers and a client must be able to tell them apart. Because the frame is
 strict, a client pinned to an older `apiContractVersion` will reject it — see
-`API_CONTRACT_VERSION`, which moved to `0.12.0` with this field and stands at
-`0.13.0` since the lifecycle route arrived.
+`API_CONTRACT_VERSION`, which moved to `0.12.0` with this field, to `0.13.0`
+when the lifecycle route arrived, and to `0.14.0` with `instance` — a required
+key on a strict frame, for the same reason `resumedFrom` moved it.
 
 **The server does not detect a foreign resume, and cannot.** `Last-Event-ID` is
 a bare decimal sequence: only event frames carry an `id:`, and its value is that
 row's `sequence` verbatim, so the header has nowhere to put a ledger identity.
 The server's obligation is to restate identity on every open; comparing it
-against what you anchored to is **yours**. If `hello.database.id` is not the one
-you were reading, discard your cache and refetch — the rows the server is about
-to replay belong to a different file, and their sequences will collide with
-yours. `docs/architecture/0028-the-resumed-stream-identity.md` records why the
+against what you anchored to is **yours**. What you compare is the tuple
+`(database.id, instance.instanceId, instance.restoreId)`: if any member is not
+the one you were reading, discard your cache and refetch — the rows the server
+is about to replay belong to a different file, or to a different restore of
+this one, and their sequences will collide with yours. `null` is equal only to
+`null`, so a ledger with no identity yet does not look like a change on every
+reconnection. `instance.restoreEpoch` is informative — a human-readable
+ordering of restores — and is deliberately **not** compared: it carries no
+uniqueness, so two restores can share one. `docs/architecture/0028-the-resumed-stream-identity.md` records why the
 division of labour is this way round.
 
 **The two unusable anchors, and how they differ.** An anchor that is not a
@@ -164,8 +174,16 @@ never pruned.
 Note what that refusal does and does not cover. It fires only when your anchor
 is beyond this ledger's head — a *shorter* replacement. A rebuilt or different
 ledger whose head is at or beyond your anchor produces no refusal at all and is
-served as an ordinary resume; the `hello`'s `database.id` is the only thing that
-tells you, which is why it is now sent on resumed connections too. A server
+served as an ordinary resume; the `hello`'s identity is the only thing that
+tells you, which is why it is now sent on resumed connections too.
+
+And `database.id` alone is **not** enough to tell you, which is what
+`instance` is for. It is a digest of the ledger's absolute path, so a formal
+restore that replaces every row behind that path leaves it identical; what
+moves then is `restoreId`. What that detects is a **formal** restore — one
+where the restoring process recorded a new restore id before admitting work. A
+manual copy of the file with identical metadata is not detectable from inside
+the file, by this or by anything else, without external state. A server
 refusal and a client-side scope reset are deliberately different events: one
 closes the connection, the other continues against the new ledger.
 

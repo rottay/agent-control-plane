@@ -117,8 +117,28 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * payload key or migration is added, and no history is reinterpreted. What
  * changed is that the API can now ask for the settlement the CLI could already
  * ask for. ADR 0031 carries the reasoning.
+ *
+ * `0.13.0` → `0.14.0` at P-10/id-B: the `hello` frame and the status response
+ * each gain one required field, `instance` — which ledger FILE this is, and
+ * which restore of it, beside the `database` digest that says which PATH.
+ *
+ * Minor for exactly the mechanical reason `0.12.0` was, and the precedent is
+ * the field two paragraphs up: both are `z.strictObject`, so a reader pinned at
+ * `0.13.0` parsing a `0.14.0` `hello` **rejects it** on the unknown key. That is
+ * a shape a `0.13.0` reader has never seen, which is this file's own rule for
+ * the minor. Making the key optional to spare that reader was rejected for the
+ * same reason it was rejected then: it would make "this server does not know
+ * its file identity" and "this file has none yet" the same wire shape, and
+ * telling those apart is the entire point of the field.
+ *
+ * The route surface does not move: `API_ROUTES` and `API_WRITE_ROUTES` are
+ * untouched. Neither does `LEDGER_CONTRACT_VERSION` — no recorded event changes
+ * shape and no migration is implied; the three rows this publishes are additive
+ * keys in a table that has held `(key, value)` since migration 3. What changed
+ * is what a connection tells a client about the file behind it. ADR 0064
+ * carries the reasoning, and extends ADR 0028 rather than replacing it.
  */
-export const API_CONTRACT_VERSION = "0.13.0" as const;
+export const API_CONTRACT_VERSION = "0.14.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

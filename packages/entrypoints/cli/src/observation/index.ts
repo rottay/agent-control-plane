@@ -394,6 +394,12 @@ export function buildStatus(
     apiContractVersion: API_VERSION,
     ledgerContractVersion: LEDGER_VERSION,
     database,
+    // Field by field, never a spread: only what is named here crosses.
+    instance: {
+      instanceId: status.instance.instanceId,
+      restoreId: status.instance.restoreId,
+      restoreEpoch: status.instance.restoreEpoch,
+    },
     readOnly: status.readOnly,
     headSequence: status.headSequence,
     headEventSha256: status.headEventSha256,
