@@ -1412,8 +1412,34 @@ export class Ledger {
         ]);
       }
 
-      const restoreId = randomUUID();
       const restoreEpoch = current.restoreEpoch + 1;
+      if (!Number.isSafeInteger(restoreEpoch)) {
+        // Refused BEFORE anything is written, which is the whole point.
+        //
+        // `#readIdentity` requires a safe integer, so an epoch one past the
+        // ceiling is a value this door can write and can never read back: the
+        // next `identity()`, `status()` or `verifyIntegrity()` would refuse the
+        // file's own identity, and the restore id written beside it would be
+        // unreachable. A door that bricks the thing it was asked to record is
+        // worse than a door that refuses.
+        //
+        // Unreachable by counting — it would take more restores than there are
+        // safe integers — and that is exactly why it is worth refusing rather
+        // than trusting: the only way to arrive here is for the stored epoch to
+        // have been put there by something other than this counter.
+        throw new LedgerValidationError([
+          {
+            path: "restoreEpoch",
+            message:
+              "this ledger's restore epoch is at " +
+              String(current.restoreEpoch) +
+              " and the next one is not representable; recording another restore " +
+              "would write an identity this build cannot read back",
+          },
+        ]);
+      }
+
+      const restoreId = randomUUID();
       this.#writeMeta(RESTORE_ID, restoreId);
       this.#writeMeta(RESTORE_EPOCH, String(restoreEpoch));
 

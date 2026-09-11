@@ -4629,6 +4629,68 @@ describe("a formal restore is visible to whoever was reading", () => {
     for (const restoreId of seen) expect(restoreId).toMatch(UUID_V4);
   });
 
+  it("refuses a restore whose epoch would not be representable, writing nothing", () => {
+    // The epoch is a safe integer on the way out and on the way back in, and
+    // this is the one place the two could disagree: `recordRestore()` computes
+    // `epoch + 1` and `#readIdentity` requires a safe integer, so at the
+    // ceiling the door would write a value it can never read back. The next
+    // `identity()` would refuse the file's own identity, and the fresh restore
+    // id written beside it would be unreachable — the door would have bricked
+    // the thing it was asked to record.
+    //
+    // Seeded through the raw seam rather than by counting: arriving here by
+    // restoring would take more restores than there are safe integers.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const ceiling = String(Number.MAX_SAFE_INTEGER);
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run(ceiling, "restore_epoch");
+    });
+
+    const reopened = open(path);
+    // The seeded state is lawful: the ceiling itself is a safe integer, so the
+    // identity reads back cleanly and the refusal below is about the NEXT one.
+    const before = reopened.identity();
+    expect(before.restoreEpoch).toBe(Number.MAX_SAFE_INTEGER);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+
+    const error = caught(() => reopened.recordRestore());
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect((error as Error).message).toContain("not representable");
+
+    // Nothing was written. All three fields are exactly as they were — the
+    // restore id in particular, because a door that refused after minting one
+    // would have moved the identity while reporting that it had not.
+    expect(reopened.identity()).toEqual(before);
+    const rows = readIdentityRows(path);
+    expect(rows.get("restore_epoch")).toBe(ceiling);
+    expect(rows.get("restore_id")).toBe(before.restoreId);
+    expect(rows.get("instance_id")).toBe(before.instanceId);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("still records a restore one below the ceiling", () => {
+    // The control against over-reach: the guard must refuse the value it
+    // cannot represent and nothing else.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare("UPDATE ledger_meta SET value = ? WHERE key = ?")
+        .run(String(Number.MAX_SAFE_INTEGER - 1), "restore_epoch");
+    });
+
+    const reopened = open(path);
+    const restored = reopened.recordRestore();
+    expect(restored.restoreEpoch).toBe(Number.MAX_SAFE_INTEGER);
+    expect(reopened.identity().restoreEpoch).toBe(Number.MAX_SAFE_INTEGER);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
   it("survives a rebuild without moving the instance id", () => {
     // A rebuild regenerates every derived table from the log. Identity is not
     // derived from the log and must come through untouched — a rebuild that
