@@ -164,14 +164,38 @@ export function nextTaskProjection(
     };
   }
 
-  // A later revision replaces all three together; a late event from an older
-  // revision replaces none of them. Moving them independently would let a task
-  // advertise revision 3's number beside revision 2's envelope, which is the
-  // one thing a denormalization must never do.
-  const advances =
+  // Three cases, not two, and the middle one is what a single `>=` predicate
+  // gets wrong:
+  //
+  // - a HIGHER revision replaces the envelope and the number together;
+  // - the SAME revision keeps the highest attempt and moves nothing else;
+  // - an OLDER revision moves nothing at all.
+  //
+  // The envelope and the number move only on `newer` because they must move
+  // together: a task advertising revision 3's number beside revision 2's
+  // envelope is the one thing a denormalization must never do, and both are
+  // facts of the revision rather than of the attempt.
+  //
+  // The attempt is a different question. Within one revision the attempts are a
+  // sequence, and a late event announcing attempt 1 after attempt 3 has already
+  // been seen must not lower it — the projection would claim the task went
+  // backwards, which is exactly what `latestAttempt` above refuses for the
+  // legacy counter.
+  const newer =
     revision !== null &&
     (current.latestRevisionNumber === null ||
-      revision.revisionNumber >= current.latestRevisionNumber);
+      revision.revisionNumber > current.latestRevisionNumber);
+  const same = revision !== null && revision.revisionNumber === current.latestRevisionNumber;
+
+  let latestAttemptNumber = current.latestAttemptNumber;
+  if (newer) {
+    latestAttemptNumber = attemptNumber;
+  } else if (same) {
+    // Both `??` are defensive only: a row holding a revision number holds the
+    // attempt that arrived with it, because `nextTaskRevisionProjection` yields
+    // null unless the whole key set is present.
+    latestAttemptNumber = Math.max(current.latestAttemptNumber ?? 0, attemptNumber ?? 0);
+  }
 
   return {
     ...base,
@@ -185,9 +209,9 @@ export function nextTaskProjection(
     eventCount: current.eventCount + 1,
     firstSequence: current.firstSequence,
     createdAt: current.createdAt,
-    envelopeSha256: advances ? revision.envelopeSha256 : current.envelopeSha256,
-    latestRevisionNumber: advances ? revision.revisionNumber : current.latestRevisionNumber,
-    latestAttemptNumber: advances ? attemptNumber : current.latestAttemptNumber,
+    envelopeSha256: newer ? revision.envelopeSha256 : current.envelopeSha256,
+    latestRevisionNumber: newer ? revision.revisionNumber : current.latestRevisionNumber,
+    latestAttemptNumber,
   };
 }
 

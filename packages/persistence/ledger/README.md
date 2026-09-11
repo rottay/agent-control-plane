@@ -312,10 +312,24 @@ records the deferral; P-36/local adds the column with a cohort trigger.
 
 `envelope_sha256`, `latest_revision_number` and `latest_attempt_number` are a
 convenience denormalization of the latest revision — never the authority, which
-is the revision row. They move **together** or not at all: a task advertising
-revision 3's number beside revision 2's envelope is the one failure a
-convenience column must never produce. A later revision replaces all three; a
-late event from an older revision replaces none.
+is the revision row.
+
+The rule, in one sentence: **the envelope and the revision number move together
+with the higher revision; the attempt keeps the highest within the same
+revision; an older revision moves nothing.**
+
+The first two move together or not at all — a task advertising revision 3's
+number beside revision 2's envelope is the one failure a convenience column must
+never produce, and both are facts of the revision rather than of the attempt.
+The attempt answers a different question. Within one revision the attempts are a
+sequence, and a late event announcing attempt 1 after attempt 3 has been seen
+must not lower it, exactly as `latest_attempt` never decreases. A *higher*
+revision does reset it: attempt 1 of revision 3 is not lower than attempt 3 of
+revision 2, it is a different unit of work.
+
+A ledger written before this rule can hold a lowered attempt, and it stays that
+way until `rebuildReadModel()` — as with every change to a fold. It is a
+`PROJECTION` finding, not a chain finding, and nothing is rehashed.
 
 `role`, `step_id` and `commit_policy` are additive and have **no producer
 today**. The nullity is documented rather than accidental: no event carries
@@ -355,6 +369,26 @@ its own module and is pinned by fixed vectors, because a mistake in it would
 produce a chain that is internally consistent and wrong over history that cannot
 be rehashed.
 
+**"The stored values" is meant literally, and the readers are shaped by it.**
+The TEXT columns are selected as `CAST(col AS BLOB)` and the row reaches the
+encoder as bytes; the INTEGER columns are read in `safeIntegers` mode and reach
+it as `bigint`. Both are the same claim twice. A TEXT column holds bytes SQLite
+never checked for well-formed UTF-8, and reading it as a string replaces every
+invalid sequence with U+FFFD — so a note holding the single byte `80` and one
+holding the three bytes of U+FFFD would hash alike, and substituting one for the
+other would verify clean. An INTEGER column is 64 bits, and reading it as a
+JavaScript number rounds anything past `2**53` — the digest would cover an
+integer the row does not hold. Neither is a hypothetical: both are exactly what
+a writer reaching past the door can leave behind, which is what the sidecar is
+for.
+
+This changed the fidelity of the read, **not the shape of the preimage**. `v1` is
+still `v1`. For every row whose TEXT is valid UTF-8 — every row any door of this
+system has ever written — the bytes read as a BLOB are byte-for-byte the bytes
+the previous reader re-encoded, so no digest already recorded moves and nothing
+is re-anchored. The rows whose digests change are precisely the rows the chain
+used to describe wrongly, and they are **reported, never repaired**.
+
 **Activation happens once, inside migration 10's own transaction**: the duplicate
 preflight, then the DDL, then the retroactive load of every historical row, then
 the five activation keys, then the migration row. All of it or none of it. `H` is
@@ -383,6 +417,13 @@ that does not verify, a baseline that no longer names its row, coverage that
 stops short of the stream, or an activation partly or wholly missing. It repairs
 nothing, re-anchors nothing and moves the coverage point nowhere: repair is an
 explicit, recorded decision outside the migration flow.
+
+**And it reports rather than throws.** A row the preimage cannot encode at all
+is recorded as a `HASH_CHAIN` finding at its own sequence and the walk continues,
+so the links after it are still checked. A verifier that let that refusal escape
+would answer "is this ledger sound?" with an exception naming no sequence —
+which reads as a broken verifier rather than as the broken ledger it is, and
+says nothing about the rest of the chain.
 
 ### The projection with two heads
 

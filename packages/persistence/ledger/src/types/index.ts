@@ -770,21 +770,32 @@ export interface RegistryProjectionSnapshot {
  *
  * `note` is the one nullable column, and SQL NULL is encoded distinctly from
  * the empty string.
+ *
+ * **The TEXT columns are `Buffer`, and the INTEGER columns admit `bigint`.**
+ * Both are the same claim: a row enters the digest as the values the column
+ * holds, not as what a driver made of them. A TEXT column holds bytes SQLite
+ * never validated as UTF-8, and reading it as a string replaces every invalid
+ * sequence with U+FFFD — two different stored rows would then hash alike. An
+ * INTEGER column is 64 bits wide, and reading it as a `number` rounds anything
+ * past `2**53` — the digest would cover an integer the row does not hold, and
+ * the encoder would refuse a value that is perfectly lawful on disk. The
+ * readers therefore select these columns as `CAST(col AS BLOB)` and in
+ * `safeIntegers` mode; this type is where that obligation is stated.
  */
 export interface AccountEventRow {
-  readonly sequence: number;
-  readonly event_id: string;
-  readonly idempotency_key: string;
-  readonly account_id: string;
-  readonly version: number;
-  readonly action: string;
-  readonly resulting_state: string;
-  readonly actor: string;
-  readonly note: string | null;
-  readonly occurred_at: string;
-  readonly recorded_at: string;
-  readonly contract_version: string;
-  readonly event_json: string;
+  readonly sequence: number | bigint;
+  readonly event_id: Buffer;
+  readonly idempotency_key: Buffer;
+  readonly account_id: Buffer;
+  readonly version: number | bigint;
+  readonly action: Buffer;
+  readonly resulting_state: Buffer;
+  readonly actor: Buffer;
+  readonly note: Buffer | null;
+  readonly occurred_at: Buffer;
+  readonly recorded_at: Buffer;
+  readonly contract_version: Buffer;
+  readonly event_json: Buffer;
 }
 
 /**

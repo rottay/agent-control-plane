@@ -7,6 +7,7 @@ import { AccountActionEvent, ControlPlaneEvent, InitiativeEvent } from "@acp/con
 import {
   ACCOUNT_INTEGRITY_GENESIS_SHA256,
   accountIntegrityDigestV1,
+  sameStoredInteger,
 } from "../account-integrity/index.js";
 import {
   GENESIS_SHA256,
@@ -179,10 +180,31 @@ const ACCOUNT_INTEGRITY_KEYS: readonly string[] = [
   ACCOUNT_INTEGRITY_HEAD_EVENT_SHA256,
 ];
 
-/** The columns of one `account_events` row, in the order the preimage reads them. */
+/**
+ * The columns of one `account_events` row, in the order the preimage reads them.
+ *
+ * Every TEXT column is selected as `CAST(col AS BLOB)`, aliased back to its own
+ * name so the row keeps the shape of the table. That is not a stylistic choice:
+ * SQLite does not validate that a TEXT column holds well-formed UTF-8, and a
+ * driver hands such a column over as a JavaScript string with every invalid
+ * sequence already replaced by U+FFFD. Hashing the string would give the single
+ * stored byte `80` and the three stored bytes `EF BF BD` one digest, so
+ * substituting one for the other would verify clean — and detecting exactly
+ * that substitution is what the sidecar is for.
+ *
+ * The two INTEGER columns need no cast; they need `safeIntegers`, which is a
+ * property of the prepared statement rather than of the column list, and every
+ * reader of this constant sets it. See `AccountEventRow`.
+ */
 const ACCOUNT_EVENT_COLUMNS =
-  "sequence, event_id, idempotency_key, account_id, version, action, resulting_state, " +
-  "actor, note, occurred_at, recorded_at, contract_version, event_json";
+  "sequence, CAST(event_id AS BLOB) AS event_id, " +
+  "CAST(idempotency_key AS BLOB) AS idempotency_key, " +
+  "CAST(account_id AS BLOB) AS account_id, version, CAST(action AS BLOB) AS action, " +
+  "CAST(resulting_state AS BLOB) AS resulting_state, CAST(actor AS BLOB) AS actor, " +
+  "CAST(note AS BLOB) AS note, CAST(occurred_at AS BLOB) AS occurred_at, " +
+  "CAST(recorded_at AS BLOB) AS recorded_at, " +
+  "CAST(contract_version AS BLOB) AS contract_version, " +
+  "CAST(event_json AS BLOB) AS event_json";
 
 const INSTANCE_ID = "instance_id";
 const RESTORE_ID = "restore_id";
@@ -1265,6 +1287,7 @@ function assertNoDuplicateAccountVersions(db: Database.Database): void {
 function activateAccountIntegrity(db: Database.Database, activatedAt: string): void {
   const rows = db
     .prepare("SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC")
+    .safeIntegers(true)
     .all() as AccountEventRow[];
 
   const insert = db.prepare(
@@ -1275,13 +1298,19 @@ function activateAccountIntegrity(db: Database.Database, activatedAt: string): v
   let previousSha256 = ACCOUNT_INTEGRITY_GENESIS_SHA256;
   let expectedSequence = 1;
   for (const row of rows) {
-    if (row.sequence !== expectedSequence) {
+    // `sequence` arrives as a `bigint` under `safeIntegers`, so the contiguity
+    // check compares by value. The position the sidecar then uses is
+    // `expectedSequence`, the `number` this loop counts with: it has just been
+    // proved equal to the row's own, and it is the one of the two that the
+    // preimage's `accountSequence` is typed for.
+    const accountSequence = expectedSequence;
+    if (!sameStoredInteger(row.sequence, accountSequence)) {
       // The sidecar is one-to-one from sequence 1. A gap means the stream this
       // chain would describe is not the stream on disk, and a chain built over
       // a gap would be evidence of the wrong thing.
       throw new LedgerMigrationError([
         "account_events is not contiguous: expected sequence " +
-          String(expectedSequence) +
+          String(accountSequence) +
           " but found " +
           String(row.sequence),
       ]);
@@ -1293,11 +1322,11 @@ function activateAccountIntegrity(db: Database.Database, activatedAt: string): v
     // were computed now, long after the rows were written, and saying otherwise
     // would be the one claim the sidecar must never make.
     const eventSha256 = accountIntegrityDigestV1({
-      accountSequence: row.sequence,
+      accountSequence,
       previousSha256,
       row,
     });
-    insert.run(row.sequence, previousSha256, eventSha256, activatedAt);
+    insert.run(accountSequence, previousSha256, eventSha256, activatedAt);
     previousSha256 = eventSha256;
   }
 
@@ -4585,7 +4614,9 @@ export class Ledger {
 
     const rows = this.#stmt(
       "SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC",
-    ).all() as AccountEventRow[];
+    )
+      .safeIntegers(true)
+      .all() as AccountEventRow[];
     const links = this.#stmt(
       "SELECT account_sequence, previous_sha256, event_sha256 FROM account_event_integrity " +
         "ORDER BY account_sequence ASC",
@@ -4627,7 +4658,7 @@ export class Ledger {
         });
         break;
       }
-      if (row === undefined || row.sequence !== link.account_sequence) {
+      if (row === undefined || !sameStoredInteger(row.sequence, link.account_sequence)) {
         problems.push({
           kind: "PROJECTION_META",
           detail:
@@ -4652,12 +4683,47 @@ export class Ledger {
         });
       }
 
-      const recomputed = accountIntegrityDigestV1({
-        accountSequence: link.account_sequence,
-        previousSha256: link.previous_sha256,
-        row,
-      });
-      if (recomputed !== link.event_sha256) {
+      // A row this verifier cannot hash is a FINDING, not an exception.
+      //
+      // The preimage refuses a value it cannot encode exactly, and a foreign
+      // writer can put such a value in the table — that is the entire scenario
+      // the sidecar exists for. Letting the refusal escape would turn "row 1 is
+      // unhashable" into "verifyIntegrity() threw", which reports nothing about
+      // the other links and reads to an operator as a broken verifier rather
+      // than as a broken ledger. So the digest is taken inside a guard, the
+      // failure is recorded at its own sequence, and the walk continues with
+      // this link's stored digest so every later link is still checked.
+      //
+      // `HASH_CHAIN` because the vocabulary of kinds is closed by the protocol
+      // and this is the one that means "the stored row does not answer for the
+      // digest filed against it".
+      //
+      // Only `LedgerValidationError` is caught, and only its message is
+      // carried. That message is the preimage's own refusal, and every one of
+      // them names coordinates and digests — a sequence, an integer that is not
+      // exact, a malformed previous digest — never a stored TEXT value, which
+      // is what keeps `detail` loggable. Anything else thrown here is a defect
+      // in this package rather than a fact about the ledger, and it goes up.
+      let recomputed: string | null = null;
+      try {
+        recomputed = accountIntegrityDigestV1({
+          accountSequence: link.account_sequence,
+          previousSha256: link.previous_sha256,
+          row,
+        });
+      } catch (error: unknown) {
+        if (!(error instanceof LedgerValidationError)) throw error;
+        problems.push({
+          kind: "HASH_CHAIN",
+          detail:
+            "account integrity sequence " +
+            String(link.account_sequence) +
+            " holds a row that cannot be hashed: " +
+            error.message,
+          sequence: link.account_sequence,
+        });
+      }
+      if (recomputed !== null && recomputed !== link.event_sha256) {
         problems.push({
           kind: "HASH_CHAIN",
           detail:
@@ -5514,7 +5580,9 @@ export class Ledger {
 
     const row = this.#stmt(
       "SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events WHERE sequence = ?",
-    ).get(sequence) as AccountEventRow | undefined;
+    )
+      .safeIntegers(true)
+      .get(sequence) as AccountEventRow | undefined;
     if (row === undefined) {
       throw new LedgerIntegrityError([
         "account_events holds no row at sequence " + String(sequence) + " to hash",
@@ -5526,10 +5594,16 @@ export class Ledger {
       previousSha256: state.headEventSha256,
       row,
     });
+    // `computed_at` is TEXT and the row now arrives as bytes, so the one
+    // binding that goes back to the database is decoded for it. That is lawful
+    // exactly here and nowhere else: this process wrote `recorded_at` from a
+    // JavaScript string moments ago, in this same transaction, so the round
+    // trip is lossless — and `computed_at` is metadata of the sidecar row,
+    // deliberately outside the preimage, so no digest depends on it.
     this.#stmt(
       "INSERT INTO account_event_integrity " +
         "(account_sequence, previous_sha256, event_sha256, computed_at) VALUES (?, ?, ?, ?)",
-    ).run(sequence, state.headEventSha256, eventSha256, row.recorded_at);
+    ).run(sequence, state.headEventSha256, eventSha256, row.recorded_at.toString("utf8"));
 
     this.#writeMeta(ACCOUNT_INTEGRITY_HEAD_SEQUENCE, String(sequence));
     this.#writeMeta(ACCOUNT_INTEGRITY_HEAD_EVENT_SHA256, eventSha256);

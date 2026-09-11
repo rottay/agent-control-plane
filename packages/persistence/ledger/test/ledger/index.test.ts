@@ -5103,6 +5103,53 @@ function readActivation(path: string): Map<string, string> {
   }
 }
 
+/**
+ * The bytes a TEXT column actually holds, as hex.
+ *
+ * Asked through `hex()` in SQLite rather than through the driver, because the
+ * driver is the layer these drills are about: it would hand back a string with
+ * every invalid sequence already replaced, which is exactly the substitution
+ * being staged.
+ */
+function storedNoteHex(path: string, sequence: number): string {
+  const raw = new Database(path);
+  try {
+    const row = raw
+      .prepare("SELECT lower(hex(note)) AS hex FROM account_events WHERE sequence = ?")
+      .get(sequence) as { readonly hex: string } | undefined;
+    return row?.hex ?? "";
+  } finally {
+    raw.close();
+  }
+}
+
+/** The stored `version`, rendered by SQLite so no JavaScript number rounds it. */
+function storedVersionText(path: string, sequence: number): string {
+  const raw = new Database(path);
+  try {
+    const row = raw
+      .prepare("SELECT CAST(version AS TEXT) AS text FROM account_events WHERE sequence = ?")
+      .get(sequence) as { readonly text: string } | undefined;
+    return row?.text ?? "";
+  } finally {
+    raw.close();
+  }
+}
+
+/**
+ * A report's findings reduced to kind and sequence.
+ *
+ * Used with `toContainEqual` rather than with an equality against the whole
+ * array: a drill that drops a trigger to reach the row it wants also changes
+ * the shape of the database, and that is a second, legitimate finding which
+ * has nothing to do with the claim under test.
+ */
+function kindsAndSequences(
+  problems: readonly { readonly kind: string; readonly sequence: number | null }[],
+): { readonly kind: string; readonly sequence: number | null }[] {
+  return problems.map((problem) => ({ kind: problem.kind, sequence: problem.sequence }));
+}
+
 const P08_AT = "2026-09-11T09:00:00.000Z";
 
 function action(version: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -5636,6 +5683,98 @@ describe("the account chain fails closed and preserves what it found", () => {
     expect(readActivation(path)).toEqual(before.activation);
   });
 
+  it("reports a note whose bytes were substituted under an identical decoding", () => {
+    // The substitution a string-shaped read cannot see. The stored note is
+    // U+FFFD — the three bytes `EF BF BD` — and a foreign writer replaces it
+    // with the single byte `80`, which is not valid UTF-8 at all. Both decode
+    // to U+FFFD, so a verifier that hashed the DECODED text would recompute
+    // the same digest and declare the chain sound. `CAST(note AS BLOB)` is
+    // what makes the two different again.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(action(1, { note: "�" }));
+    ledger.close();
+
+    const before = { sidecar: readSidecar(path), activation: readActivation(path) };
+    expect(storedNoteHex(path, 1)).toBe("efbfbd");
+
+    withRawDatabase(path, (raw) => {
+      // A STRICT table still accepts these bytes as `text`: SQLite stores what
+      // it is handed and never validates the encoding, which is the property
+      // this whole drill turns on.
+      raw.exec("DROP TRIGGER account_events_deny_update");
+      raw.prepare("UPDATE account_events SET note = CAST(x'80' AS TEXT) WHERE sequence = 1").run();
+    });
+    expect(storedNoteHex(path, 1)).toBe("80");
+
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    // Contains, not equals: the dropped trigger is itself a finding about the
+    // shape of the database, and this assertion is about the chain.
+    expect(kindsAndSequences(report.problems)).toContainEqual({ kind: "HASH_CHAIN", sequence: 1 });
+    expect(detailsOf(report.problems)).toContain("but its stored row hashes to");
+
+    // Preserved, as every finding on this chain is: nothing re-anchored and
+    // nothing repaired. A row whose bytes are not UTF-8 is reported, not fixed.
+    expect(readSidecar(path)).toEqual(before.sidecar);
+    expect(readActivation(path)).toEqual(before.activation);
+  });
+
+  it("reports a version outside the safe range instead of throwing out of the verifier", () => {
+    // A SQLite INTEGER is 64 bits. A foreign writer can put `2**53` in the
+    // column — and used to make `verifyIntegrity()` throw, because the row was
+    // read as a rounded `number` and the encoder rightly refused to guess which
+    // integer it stood for. An operator asking "is this ledger sound?" then got
+    // an exception naming no sequence instead of a report naming one.
+    //
+    // Read in `safeIntegers` mode the value arrives exact, hashes exactly, and
+    // the mismatch with the recorded digest is an ordinary finding.
+    for (const version of ["9007199254740992", "9007199254740993", "9223372036854775807"]) {
+      const path = temporaryDatabase();
+      const ledger = open(path);
+      ledger.appendAccountAction(action(1));
+      ledger.close();
+
+      withRawDatabase(path, (raw) => {
+        raw.exec("DROP TRIGGER account_events_deny_update");
+        // Written as a SQL literal: passing it through a JavaScript number
+        // would round it before it ever reached the column.
+        raw.exec("UPDATE account_events SET version = " + version + " WHERE sequence = 1");
+      });
+      expect(storedVersionText(path, 1), version).toBe(version);
+
+      const reopened = open(path, { readOnly: true });
+      const report = reopened.verifyIntegrity();
+      expect(report.ok, version).toBe(false);
+      expect(kindsAndSequences(report.problems), version).toContainEqual({
+        kind: "HASH_CHAIN",
+        sequence: 1,
+      });
+      // The exact stored integer is what was hashed: the two values a `number`
+      // collapses into one are told apart, which is the whole reason the read
+      // is widened rather than merely guarded.
+      expect(detailsOf(report.problems), version).toContain("but its stored row hashes to");
+    }
+  });
+
+  it("still verifies a version at the edge of the safe range", () => {
+    // The control. `2**53 - 1` was already reported correctly, and a widening
+    // that broke it would have traded one failure for another.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(action(1));
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw.exec("DROP TRIGGER account_events_deny_update");
+      raw.exec("UPDATE account_events SET version = 9007199254740991 WHERE sequence = 1");
+    });
+
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(kindsAndSequences(report.problems)).toContainEqual({ kind: "HASH_CHAIN", sequence: 1 });
+  });
+
   it("does not rebuild the sidecar as if it were a read model", () => {
     // The structural negative. `rebuildReadModel()` clears every derived table
     // and replays it from the log; the sidecar is evidence, not a projection,
@@ -6083,6 +6222,60 @@ describe("the V2 coordinate travels on the stream, or does not travel at all", (
     // The legacy `attempt` is still populated on the V2 row: every query
     // written before this migration still finds it.
     expect(readCoordinates(ledger.path).map((row) => row.attempt)).toEqual([1, 1]);
+  });
+
+  it("keeps the highest attempt of a revision on the task row, and a rebuild agrees", () => {
+    // The fold's rule through the real door. Two events at ONE revision, the
+    // higher attempt first: the denormalized attempt must stay at the higher
+    // one, because within a revision the attempts are a sequence and a late
+    // arrival must not make the task claim it went backwards.
+    //
+    // The two events are deliberately twins in everything the revision record
+    // is made of — same `revisionId`, same envelope, same `occurredAt`, same
+    // emitter — because the revision row is written once: a second event at the
+    // same coordinate with different content is refused, so the only way to
+    // reach this fold at all is with a second event that differs in the attempt
+    // and in nothing else.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const coordinate = {
+      revisionId: randomUUID(),
+      revisionNumber: 2,
+      envelopeSha256: REVISION_ENVELOPE,
+    };
+
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r2-a3",
+        payload: revisionPayload({ ...coordinate, attemptNumber: 3 }),
+      }),
+    );
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r2-a1",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        payload: revisionPayload({ ...coordinate, attemptNumber: 1 }),
+      }),
+    );
+
+    const incremental = ledger.getTask(taskId);
+    expect(incremental?.latestAttemptNumber).toBe(3);
+    // And the other two columns are where the revision left them.
+    expect(incremental?.latestRevisionNumber).toBe(2);
+    expect(incremental?.envelopeSha256).toBe(REVISION_ENVELOPE);
+    // One revision, one row: the twin event replayed the record, it did not
+    // write a second one.
+    expect(readRevisions(ledger.path)).toHaveLength(1);
+
+    // The equivalence that makes the fold trustworthy: the incremental path and
+    // a full replay have to agree, or `verifyIntegrity` is comparing a read
+    // model against a rebuild that computes something else.
+    ledger.rebuildReadModel();
+    expect(ledger.getTask(taskId)).toEqual(incremental);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 
   it("N10: a migrated ledger with no V2 row reports an empty projection, inventing nothing", () => {

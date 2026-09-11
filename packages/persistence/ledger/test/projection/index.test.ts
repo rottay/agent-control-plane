@@ -584,10 +584,12 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
     expect(restored?.restoredFromRevisionId).toBe(REVISION_ID);
   });
 
-  it("carries the revision into the task row, all three fields together", () => {
-    // The denormalization on `task_read_model`. The three move as one or not at
-    // all: a task advertising revision 3's number beside revision 2's envelope
-    // is the one failure a convenience column must never produce.
+  it("carries the envelope and the number together, and the attempt at its highest", () => {
+    // The denormalization on `task_read_model`. The envelope and the number
+    // move as one or not at all: a task advertising revision 3's number beside
+    // revision 2's envelope is the one failure a convenience column must never
+    // produce. The attempt answers a different question and has its own rule,
+    // drilled in the test below.
     const first = nextTaskProjection(null, revisionEvent(COMPLETE), 1);
     expect([first.latestRevisionNumber, first.envelopeSha256, first.latestAttemptNumber]).toEqual([
       2,
@@ -628,5 +630,66 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
       null,
       null,
     ]);
+  });
+
+  it("keeps the highest attempt within one revision, whichever order they arrive in", () => {
+    // Within a single revision the attempts are a sequence, and the fold must
+    // not let a late event lower the one already recorded — the task would
+    // claim it went backwards, which is precisely what `latestAttempt` refuses
+    // for the legacy counter.
+    //
+    // The two orders are BOTH asserted on purpose. Folding 3 then 1 is the
+    // failing case; folding 1 then 3 succeeds under a fold that simply takes
+    // the last arrival, so a test written only that way agrees with the bug.
+    const highFirst = nextTaskProjection(
+      nextTaskProjection(null, revisionEvent({ ...COMPLETE, attemptNumber: 3 }), 1),
+      revisionEvent({ ...COMPLETE, attemptNumber: 1 }),
+      2,
+    );
+    expect(highFirst.latestAttemptNumber).toBe(3);
+
+    const lowFirst = nextTaskProjection(
+      nextTaskProjection(null, revisionEvent({ ...COMPLETE, attemptNumber: 1 }), 1),
+      revisionEvent({ ...COMPLETE, attemptNumber: 3 }),
+      2,
+    );
+    expect(lowFirst.latestAttemptNumber).toBe(3);
+
+    // The same revision moves nothing else. The envelope and the number belong
+    // to the revision, and a second event at the same coordinate is the same
+    // revision — carrying them again would be a write with no fact behind it.
+    expect([highFirst.latestRevisionNumber, highFirst.envelopeSha256]).toEqual([2, ENVELOPE]);
+
+    // A HIGHER revision restarts the attempt rather than keeping the maximum:
+    // attempt 1 of revision 3 is not "lower" than attempt 3 of revision 2, it
+    // is a different unit of work. This is the case a plain `Math.max` over the
+    // attempt alone would get wrong in the other direction.
+    const nextRevision = nextTaskProjection(
+      highFirst,
+      revisionEvent({
+        ...COMPLETE,
+        revisionNumber: 3,
+        envelopeSha256: "f".repeat(64),
+        attemptNumber: 1,
+      }),
+      3,
+    );
+    expect([
+      nextRevision.latestRevisionNumber,
+      nextRevision.envelopeSha256,
+      nextRevision.latestAttemptNumber,
+    ]).toEqual([3, "f".repeat(64), 1]);
+
+    // And an OLDER revision announcing a huge attempt moves nothing at all.
+    const stale = nextTaskProjection(
+      nextRevision,
+      revisionEvent({ ...COMPLETE, revisionNumber: 2, attemptNumber: 99 }),
+      4,
+    );
+    expect([
+      stale.latestRevisionNumber,
+      stale.envelopeSha256,
+      stale.latestAttemptNumber,
+    ]).toEqual([3, "f".repeat(64), 1]);
   });
 });

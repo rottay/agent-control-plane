@@ -30,6 +30,26 @@ import type { AccountEventRow } from "../../src/types/index.js";
  *    **independently written** encoder below. Agreement between two
  *    implementations that share no code is the only evidence available before
  *    there is a ledger to compare against.
+ *
+ * ## Two shapes of fixture, and why both exist
+ *
+ * The module takes a row whose TEXT columns are `Buffer` and whose INTEGER
+ * columns may be `bigint`, because that is what the columns hold. The fixtures
+ * below are written as *text*, and `storedRow` converts them at what stands in
+ * here for the SQLite boundary.
+ *
+ * That split is load-bearing rather than cosmetic. The independent encoder
+ * keeps taking the **text** fixture and doing its own UTF-8 encoding, so the
+ * two implementations still share no code and the pinned literals still mean
+ * what they meant: for a value that is valid UTF-8 the stored bytes and the
+ * re-encoded bytes are the same, which is exactly why reading the column as
+ * bytes moves no digest that was ever lawfully written. Handing the independent
+ * encoder a `Buffer` produced by the same path as the module's input would make
+ * the agreement a tautology.
+ *
+ * The vectors that a text fixture cannot express — a TEXT column holding bytes
+ * that are not UTF-8 at all — are built as byte rows directly, and they are the
+ * ones the substitution drill is about.
  */
 
 // ---------------------------------------------------------------------------
@@ -49,13 +69,60 @@ function textOf(value: string): Buffer {
   return Buffer.concat([ascii("T"), ascii(String(bytes.length)), ascii(":"), bytes]);
 }
 
-function integerOf(value: number): Buffer {
+function integerOf(value: number | bigint): Buffer {
   return Buffer.concat([ascii("I"), ascii(String(value)), ascii(";")]);
 }
 
 const NULL_OF = ascii("N;");
 
-function independentPreimage(previousSha256: string, row: AccountEventRow): Buffer {
+/**
+ * One `account_events` row written as text.
+ *
+ * The same thirteen columns as `AccountEventRow`, with the TEXT ones as
+ * strings. It is what a fixture can be written in and what the independent
+ * encoder reads; `storedRow` turns it into the byte row the module takes.
+ */
+interface AccountEventTextRow {
+  readonly sequence: number | bigint;
+  readonly event_id: string;
+  readonly idempotency_key: string;
+  readonly account_id: string;
+  readonly version: number | bigint;
+  readonly action: string;
+  readonly resulting_state: string;
+  readonly actor: string;
+  readonly note: string | null;
+  readonly occurred_at: string;
+  readonly recorded_at: string;
+  readonly contract_version: string;
+  readonly event_json: string;
+}
+
+/**
+ * The SQLite boundary, as this suite stands in for it.
+ *
+ * Spreads first so a fixture carrying an extra key keeps it — the `computed_at`
+ * drill depends on that key actually reaching the module rather than being
+ * quietly filtered out on the way.
+ */
+function storedRow(text: AccountEventTextRow): AccountEventRow {
+  return {
+    ...text,
+    event_id: utf8(text.event_id),
+    idempotency_key: utf8(text.idempotency_key),
+    account_id: utf8(text.account_id),
+    action: utf8(text.action),
+    resulting_state: utf8(text.resulting_state),
+    actor: utf8(text.actor),
+    note: text.note === null ? null : utf8(text.note),
+    occurred_at: utf8(text.occurred_at),
+    recorded_at: utf8(text.recorded_at),
+    contract_version: utf8(text.contract_version),
+    event_json: utf8(text.event_json),
+  };
+}
+
+function independentPreimage(previousSha256: string, row: AccountEventTextRow): Buffer {
   return Buffer.concat([
     Buffer.concat([utf8("acp/account-event-integrity/v1"), Buffer.from([0x0a])]),
     textOf(previousSha256),
@@ -75,7 +142,7 @@ function independentPreimage(previousSha256: string, row: AccountEventRow): Buff
   ]);
 }
 
-function independentDigest(previousSha256: string, row: AccountEventRow): string {
+function independentDigest(previousSha256: string, row: AccountEventTextRow): string {
   return createHash("sha256").update(independentPreimage(previousSha256, row)).digest("hex");
 }
 
@@ -88,7 +155,7 @@ function independentDigest(previousSha256: string, row: AccountEventRow): string
  * wrong: a note whose byte length differs from its character length, and an
  * `event_json` whose spacing a canonicalizer would rewrite.
  */
-const ROW_ONE: AccountEventRow = {
+const ROW_ONE: AccountEventTextRow = {
   sequence: 1,
   event_id: "6f1a3c2e-0000-4000-8000-000000000001",
   idempotency_key: "acct-primary/1/action.1",
@@ -105,7 +172,7 @@ const ROW_ONE: AccountEventRow = {
 };
 
 /** The second, with a NULL note, chained onto the first. */
-const ROW_TWO: AccountEventRow = {
+const ROW_TWO: AccountEventTextRow = {
   sequence: 2,
   event_id: "6f1a3c2e-0000-4000-8000-000000000002",
   idempotency_key: "acct-primary/1/action.2",
@@ -132,12 +199,36 @@ const ROW_TWO: AccountEventRow = {
 const ROW_ONE_SHA256 = "98367204673355d5e62023038503ade290f405047c43505403ee27e8f80ca2f8";
 const ROW_TWO_SHA256 = "e5eabc99c295c448c598f81bc1b7efb47edd00159eee9b424f291a9d396931ff";
 
-function digestOf(previousSha256: string, row: AccountEventRow): string {
-  return accountIntegrityDigestV1({ accountSequence: row.sequence, previousSha256, row });
+/** The module's digest for a text fixture, taken across the stored-row boundary. */
+function digestOf(previousSha256: string, row: AccountEventTextRow): string {
+  return rawDigestOf(previousSha256, storedRow(row));
 }
 
-function preimageOf(previousSha256: string, row: AccountEventRow): Buffer {
-  return accountIntegrityPreimageV1({ accountSequence: row.sequence, previousSha256, row });
+function preimageOf(previousSha256: string, row: AccountEventTextRow): Buffer {
+  return rawPreimageOf(previousSha256, storedRow(row));
+}
+
+/**
+ * The same, for a row built as bytes.
+ *
+ * Every vector about a column that is NOT valid UTF-8 has to go through here:
+ * there is no string that stands for the single byte `80`, which is the whole
+ * point of those vectors.
+ */
+function rawDigestOf(previousSha256: string, row: AccountEventRow): string {
+  return accountIntegrityDigestV1({
+    accountSequence: Number(row.sequence),
+    previousSha256,
+    row,
+  });
+}
+
+function rawPreimageOf(previousSha256: string, row: AccountEventRow): Buffer {
+  return accountIntegrityPreimageV1({
+    accountSequence: Number(row.sequence),
+    previousSha256,
+    row,
+  });
 }
 
 function caught(action: () => unknown): unknown {
@@ -318,6 +409,55 @@ describe("the encoding refuses every ambiguity it was written to remove", () => 
     }
   });
 
+  it("hashes the whole 64-bit range, which only a bigint can name", () => {
+    // The column is a SQLite INTEGER: 64 bits, `2**63 - 1` at the top. Refusing
+    // everything a `number` cannot hold made the encoder honest and left the
+    // verifier unable to report on a row a foreign writer really can write —
+    // the refusal escaped as an exception instead of arriving as a finding. So
+    // the readers select in `safeIntegers` mode and these values arrive exact.
+    const vectors: readonly (readonly [bigint, string])[] = [
+      [2n ** 53n, "I9007199254740992;"],
+      [2n ** 53n + 1n, "I9007199254740993;"],
+      [2n ** 63n - 1n, "I9223372036854775807;"],
+    ];
+
+    const digests: string[] = [];
+    for (const [version, rendered] of vectors) {
+      const preimage = preimageOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, { ...ROW_ONE, version });
+      // Pinned as bytes, not merely as "different": the decimal is the stable
+      // thing, and a renderer that drifted to an exponent or a grouped form
+      // would still produce three distinct digests.
+      expect(preimage.includes(Buffer.from(rendered, "ascii")), rendered).toBe(true);
+      digests.push(digestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, { ...ROW_ONE, version }));
+    }
+
+    // Three stored integers, three digests. The first two are the pair that a
+    // `number` collapses into one value, which is the whole reason this vector
+    // is written in `bigint`.
+    expect(new Set(digests).size).toBe(3);
+    expect(Number(2n ** 53n)).toBe(Number(2n ** 53n + 1n));
+
+    // Stability: the same value hashes the same on a second pass.
+    expect(digestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, { ...ROW_ONE, version: 2n ** 53n })).toBe(
+      digests[0],
+    );
+
+    // And the sequence column takes the same widening, so a row is hashed at
+    // the position it holds rather than at a rounded one.
+    expect(
+      preimageOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, { ...ROW_ONE, sequence: 1n }).includes(
+        Buffer.from("I1;", "ascii"),
+      ),
+    ).toBe(true);
+
+    // The refusal is narrower now, and not gone: `2**53` as a `number` is still
+    // a value no 64-bit integer can be recovered from, and is still refused.
+    const stillRefused = caught(() =>
+      digestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, { ...ROW_ONE, version: 2 ** 53 }),
+    );
+    expect(stillRefused).toBeInstanceOf(LedgerValidationError);
+  });
+
   it("does not include computed_at in the preimage", () => {
     // `computed_at` is metadata of the sidecar row, not a field of the historic
     // account row. If it were hashed, the same history recomputed at a
@@ -342,7 +482,7 @@ describe("the encoding refuses every ambiguity it was written to remove", () => 
       accountIntegrityDigestV1({
         accountSequence: 7,
         previousSha256: ACCOUNT_INTEGRITY_GENESIS_SHA256,
-        row: ROW_ONE,
+        row: storedRow(ROW_ONE),
       }),
     );
     expect(error).toBeInstanceOf(LedgerValidationError);
@@ -353,9 +493,34 @@ describe("the encoding refuses every ambiguity it was written to remove", () => 
       accountIntegrityDigestV1({
         accountSequence: 1,
         previousSha256: ACCOUNT_INTEGRITY_GENESIS_SHA256,
-        row: ROW_ONE,
+        row: storedRow(ROW_ONE),
       }),
     ).toBe(ROW_ONE_SHA256);
+
+    // The comparison is by VALUE, across the two number types. The sidecar's
+    // own key is a `number` and the column arrives as a `bigint`, so a `!==`
+    // here would refuse every row on a correctly read ledger — the guard would
+    // fire on the one case it must not, and no vector written in `number`
+    // alone would show it.
+    expect(
+      accountIntegrityDigestV1({
+        accountSequence: 1,
+        previousSha256: ACCOUNT_INTEGRITY_GENESIS_SHA256,
+        row: storedRow({ ...ROW_ONE, sequence: 1n }),
+      }),
+    ).toBe(ROW_ONE_SHA256);
+    expect(Object.is(1n, 1)).toBe(false);
+
+    // And a `bigint` that names a different position is still refused.
+    expect(
+      caught(() =>
+        accountIntegrityDigestV1({
+          accountSequence: 1,
+          previousSha256: ACCOUNT_INTEGRITY_GENESIS_SHA256,
+          row: storedRow({ ...ROW_ONE, sequence: 7n }),
+        }),
+      ),
+    ).toBeInstanceOf(LedgerValidationError);
   });
 
   it("refuses a previous digest that is not a lowercase sha-256", () => {
@@ -374,7 +539,7 @@ describe("the encoding refuses every ambiguity it was written to remove", () => 
         accountIntegrityDigestV1({
           accountSequence,
           previousSha256: ACCOUNT_INTEGRITY_GENESIS_SHA256,
-          row: { ...ROW_ONE, sequence: accountSequence },
+          row: storedRow({ ...ROW_ONE, sequence: accountSequence }),
         }),
       );
       expect(error, String(accountSequence)).toBeInstanceOf(LedgerValidationError);
@@ -386,7 +551,7 @@ describe("the encoding refuses every ambiguity it was written to remove", () => 
     // would leave two different rows sharing a digest, and no other test here
     // would notice which one it was.
     const base = digestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, ROW_ONE);
-    const mutations: readonly AccountEventRow[] = [
+    const mutations: readonly AccountEventTextRow[] = [
       { ...ROW_ONE, event_id: "6f1a3c2e-0000-4000-8000-00000000ffff" },
       { ...ROW_ONE, idempotency_key: "acct-other/1/action.1" },
       { ...ROW_ONE, account_id: "acct-other" },
@@ -406,5 +571,119 @@ describe("the encoding refuses every ambiguity it was written to remove", () => 
     }
     // All twelve differ from each other too, not merely from the base.
     expect(new Set([base, ...digests]).size).toBe(13);
+  });
+});
+
+describe("the encoding hashes the bytes the column holds, not a decoding of them", () => {
+  /** The single byte `80`: a continuation byte with nothing in front of it. */
+  const LONE_CONTINUATION = Buffer.from([0x80]);
+  /** The three bytes of U+FFFD, which is what a decoder turns `80` into. */
+  const REPLACEMENT = Buffer.from([0xef, 0xbf, 0xbd]);
+
+  it("is a real trap: both byte strings decode to the same text", () => {
+    // The premise the next test rests on, asserted rather than assumed. If
+    // these two did not decode alike there would be nothing to collide, and a
+    // passing test below would be proving nothing at all.
+    expect(LONE_CONTINUATION.toString("utf8")).toBe(REPLACEMENT.toString("utf8"));
+    expect(LONE_CONTINUATION.toString("utf8")).toBe("�");
+    // And re-encoding the decoded text loses the original: this is the exact
+    // step that used to sit between the column and the digest.
+    expect(Buffer.from(LONE_CONTINUATION.toString("utf8"), "utf8")).toEqual(REPLACEMENT);
+  });
+
+  it("gives one byte and three bytes different lengths and different digests", () => {
+    const one: AccountEventRow = { ...storedRow(ROW_ONE), note: LONE_CONTINUATION };
+    const three: AccountEventRow = { ...storedRow(ROW_ONE), note: REPLACEMENT };
+
+    // The declared length is the stored length, and the bytes that follow are
+    // the stored bytes. `T1:` + `80` is a sequence no re-encoder can produce.
+    expect(
+      rawPreimageOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, one).includes(
+        Buffer.concat([Buffer.from("T1:", "ascii"), LONE_CONTINUATION]),
+      ),
+    ).toBe(true);
+    expect(
+      rawPreimageOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, three).includes(
+        Buffer.concat([Buffer.from("T3:", "ascii"), REPLACEMENT]),
+      ),
+    ).toBe(true);
+
+    // The finding itself: two different stored rows, two different digests.
+    // Before this, substituting one note for the other left the chain green.
+    expect(rawDigestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, one)).not.toBe(
+      rawDigestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, three),
+    );
+  });
+
+  it("applies to every TEXT column, not only to the nullable one", () => {
+    // `note` is where the drill is easiest to plant, but the rule is about the
+    // encoding, so an invalid byte anywhere in the closed list has to move the
+    // digest. A fix applied to one column would pass the test above.
+    const base = storedRow(ROW_ONE);
+    const columns = [
+      "event_id",
+      "idempotency_key",
+      "account_id",
+      "action",
+      "resulting_state",
+      "actor",
+      "occurred_at",
+      "recorded_at",
+      "contract_version",
+      "event_json",
+    ] as const;
+
+    for (const column of columns) {
+      const lone: AccountEventRow = { ...base, [column]: LONE_CONTINUATION };
+      const replaced: AccountEventRow = { ...base, [column]: REPLACEMENT };
+      expect(
+        rawDigestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, lone),
+        column,
+      ).not.toBe(rawDigestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, replaced));
+    }
+    // Eleven TEXT columns enter the preimage: these ten and `note`.
+    expect(columns).toHaveLength(10);
+  });
+
+  it("leaves every well-formed row exactly where it was", () => {
+    // The compatibility claim, and the reason no history is rehashed: for a
+    // column that really is UTF-8, the stored bytes and the bytes a re-encoder
+    // produces are the same bytes. The two pinned literals are the assertion —
+    // they were computed before this change and they have not moved.
+    expect(digestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, ROW_ONE)).toBe(ROW_ONE_SHA256);
+    expect(digestOf(ROW_ONE_SHA256, ROW_TWO)).toBe(ROW_TWO_SHA256);
+
+    // Including for multibyte text, which is where a byte/character confusion
+    // would surface first: `á` and `é` are two bytes each, `☃` is three.
+    const multibyte = "áé☃";
+    expect(multibyte).toHaveLength(3);
+    expect(utf8(multibyte)).toHaveLength(7);
+    const preimage = preimageOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, {
+      ...ROW_ONE,
+      note: multibyte,
+    });
+    expect(preimage.includes(Buffer.concat([Buffer.from("T7:", "ascii"), utf8(multibyte)]))).toBe(
+      true,
+    );
+    expect(digestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, { ...ROW_ONE, note: multibyte })).toBe(
+      independentDigest(ACCOUNT_INTEGRITY_GENESIS_SHA256, { ...ROW_ONE, note: multibyte }),
+    );
+  });
+
+  it("still tells a null column from an empty one, now that both are bytes", () => {
+    // `N;` against `T0:` survives the change from string to Buffer: `null` is
+    // still null, and a zero-length Buffer is still the empty string. A guard
+    // written as a falsy check rather than as `=== null` would collapse them.
+    const asNull: AccountEventRow = { ...storedRow(ROW_ONE), note: null };
+    const asEmpty: AccountEventRow = { ...storedRow(ROW_ONE), note: Buffer.alloc(0) };
+
+    expect(rawDigestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, asNull)).not.toBe(
+      rawDigestOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, asEmpty),
+    );
+    expect(
+      rawPreimageOf(ACCOUNT_INTEGRITY_GENESIS_SHA256, asEmpty).includes(
+        Buffer.from("T0:", "ascii"),
+      ),
+    ).toBe(true);
   });
 });

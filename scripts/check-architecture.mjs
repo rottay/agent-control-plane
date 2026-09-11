@@ -8546,6 +8546,81 @@ const P05B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * CORR-1 — three owner findings, reproduced first and then corrected.
+ *
+ * A corrective packet, not a feature. Each of the three was reproduced against
+ * `cac03f4` before a line was written, each had no test that could go red, and
+ * each is a place where a mechanism described something other than what is on
+ * disk. ADR 0068 records all three and **amends ADR 0067 §6**; 0067's own file
+ * is untouched, because the corpus is append-only.
+ *
+ * **H1 — the task row's attempt went backwards.** `nextTaskProjection` decided
+ * with `revisionNumber >= current` and moved all three denormalized columns on
+ * that one predicate, so a second event at the SAME revision replaced the
+ * attempt with whichever arrived last: revision 2 attempt 3 then revision 2
+ * attempt 1 left 1. The predicate is now split three ways — `newer` (strictly
+ * greater) replaces the envelope and the number together, `same` keeps both and
+ * takes `Math.max` of the attempt, anything else keeps all three. The rule is
+ * written into `execution/index.md` §1 (both the `envelope_sha256` and the
+ * `latest_attempt_number` rows) and into the ledger README. No migration: a
+ * ledger already holding a lowered attempt is a `PROJECTION` finding until
+ * `rebuildReadModel()`, as with every change to a fold.
+ *
+ * **H2 — the account sidecar hashed a decoding, not the bytes.** §8.1 defines
+ * `T(s)` over the stored bytes "sin volver a parsear su contenido"; the readers
+ * selected TEXT, so the driver replaced every invalid sequence with U+FFFD and
+ * `encodeText` re-encoded the result. A note of the single byte `80` and a note
+ * of the three bytes `EF BF BD` hashed alike, so substituting one for the other
+ * verified clean. The eleven TEXT columns of the preimage are now selected as
+ * `CAST(col AS BLOB)` and `encodeText` prefixes the buffer's own length.
+ *
+ * **The preimage `v1` does not change shape and no history is rehashed.** For
+ * every row whose TEXT is valid UTF-8 the bytes read as a BLOB are exactly the
+ * bytes the previous reader re-encoded, so every recorded digest is unmoved —
+ * `ROW_ONE_SHA256` and `ROW_TWO_SHA256` are the assertion of that and did not
+ * move, and the suite's independent encoder still takes text and still agrees.
+ * Only the rows the chain described wrongly change, and they are reported,
+ * never repaired.
+ *
+ * **H3 — an out-of-range integer escaped the verifier.** `version = 2**53` is a
+ * lawful 64-bit INTEGER and a rounded JavaScript number, and the unguarded
+ * digest call let `LedgerValidationError` out of `verifyIntegrity()` instead of
+ * a report. Two pieces: the three `account_events` reads take
+ * `.safeIntegers(true)` and `encodeInteger` accepts `bigint`, so the value is
+ * hashed exactly; and `#checkAccountIntegrity` guards the digest, records the
+ * failure at the row's own sequence under the existing `HASH_CHAIN` kind, and
+ * continues the walk so later links are still checked. With the read widened,
+ * that guard is unreachable by SQL — it is kept because totality is the
+ * property being decided.
+ *
+ * **Pins that do NOT move, declared.** No event type, no error class, no
+ * migration, no DDL, no column, no trigger, no projection.
+ * `CONTRACT_VERSION` and `API_CONTRACT_VERSION` stay where they are, and the
+ * protocol is untouched — `HASH_CHAIN` is an existing kind and the vocabulary
+ * is closed. `assertAdrNumbering()` counts the corpus in the tree, so the ADR
+ * carries no number to edit outside this prose.
+ *
+ * The write set gains **1 distinct path**: the ADR. The other eleven are
+ * admitted by historical blocks — nine by `P05B_WRITE_SET`, and the sidecar's
+ * own module and suite by `P08A1_WRITE_SET`, which is where the encoding was
+ * pinned by vector in the first place.
+ */
+const CORR1_WRITE_SET = [
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/account-integrity/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/account-integrity/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "docs/architecture/0068-the-fold-keeps-the-highest-attempt-and-the-sidecar-reads-what-is-stored.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8744,6 +8819,7 @@ const WRITE_SET = [
   ...P08B_WRITE_SET,
   ...P05A_WRITE_SET,
   ...P05B_WRITE_SET,
+  ...CORR1_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

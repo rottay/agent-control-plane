@@ -37,14 +37,25 @@ import type { AccountEventRow } from "../types/index.js";
  * For the same reason nothing here normalizes Unicode, trims whitespace,
  * re-formats a timestamp or touches a line ending.
  *
+ * **And for the same reason the TEXT columns arrive as `Buffer`, not as
+ * `string`.** A SQLite TEXT column holds bytes, and SQLite does not validate
+ * that they are well-formed UTF-8; a driver that hands them over as a
+ * JavaScript string has already replaced every invalid sequence with U+FFFD,
+ * and re-encoding that string produces `EF BF BD` whatever the stored byte was.
+ * A row holding the single byte `80` and a row holding the three bytes
+ * `EF BF BD` would then share a digest, and substituting one for the other —
+ * which is precisely a foreign writer's edit — would verify clean. So the
+ * callers read these columns with `CAST(col AS BLOB)` and this module never
+ * takes a decoded string for a stored value.
+ *
  * ## The encoding
  *
  * Three encoders, and the length prefixes are what make concatenation
  * unambiguous — without them `("ab", "c")` and `("a", "bc")` would produce the
  * same bytes, and two different histories could share a digest:
  *
- * - `T(s)` — `"T" + <byte length in decimal> + ":"` in ASCII, then the UTF-8
- *   bytes of the value. The length is **bytes, not characters**.
+ * - `T(s)` — `"T" + <byte length in decimal> + ":"` in ASCII, then the value's
+ *   stored bytes, verbatim. The length is **bytes, not characters**.
  * - `I(n)` — `"I" + <exact decimal> + ";"` in ASCII.
  * - `N;` — SQL NULL. Distinct from `T(0):` (the empty string) and from
  *   `T4:null` (the text "null"), which is the distinction a careless encoder
@@ -73,33 +84,43 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const NULL_MARKER = Buffer.from("N;", "ascii");
 
 /**
- * `T(s)`: type tag, byte length, colon, then the value's UTF-8 bytes.
+ * `T(s)`: type tag, byte length, colon, then the stored bytes.
  *
- * `Buffer.from(value, "utf8")` is taken first and its `length` used, so the
- * declared length is always the number of bytes that actually follow. Deriving
- * it from `value.length` instead would be the count of UTF-16 code units, which
- * differs for anything outside the Basic Latin range and would make the
- * encoding ambiguous for exactly the inputs a reader is least likely to test.
+ * The bytes are written through untouched and the length is `bytes.length`, so
+ * the declared length is always the number of bytes that actually follow.
+ * Nothing here decodes and re-encodes: the value arrived from the column as
+ * bytes and leaves as the same bytes, which is what lets two rows differing
+ * only in an invalid UTF-8 sequence hash differently.
+ *
+ * Deriving the length from a string's `.length` instead would be the count of
+ * UTF-16 code units, which differs for anything outside the Basic Latin range
+ * and would make the encoding ambiguous for exactly the inputs a reader is
+ * least likely to test.
  */
-function encodeText(value: string): Buffer {
-  const bytes = Buffer.from(value, "utf8");
+function encodeText(bytes: Buffer): Buffer {
   return Buffer.concat([Buffer.from("T" + String(bytes.length) + ":", "ascii"), bytes]);
 }
 
 /**
  * `I(n)`: type tag, exact decimal, semicolon.
  *
- * Refuses anything that is not a safe integer rather than rendering it. Beyond
+ * A `bigint` is the ordinary case: a SQLite INTEGER is 64 bits wide, and the
+ * callers read these columns in `safeIntegers` mode so the full range arrives
+ * exactly. `String()` of a `bigint` is exact decimal, with no `+`, no leading
+ * zero and no exponent, which is precisely the form §8.1 asks for.
+ *
+ * A `number` is accepted only when it is a safe integer. Beyond
  * `Number.MAX_SAFE_INTEGER` a JavaScript number no longer identifies a single
  * 64-bit integer — `2**53` and `2**53 + 1` are the same value — so a decimal
  * rendered from one would be a guess, and two different stored integers could
  * receive the same digest. Refusing is the only answer that cannot be wrong.
  *
- * `String()` of a safe integer is exact and carries no `+`, no leading zero and
- * no exponent, which is precisely the form §8.1 asks for.
+ * What is refused is therefore narrower than it was, and deliberately: a
+ * 64-bit integer no `number` can hold is now hashed correctly rather than
+ * rejected, and the refusal is left for a value that is not an integer at all.
  */
-function encodeInteger(value: number, path: string): Buffer {
-  if (!Number.isSafeInteger(value)) {
+function encodeInteger(value: number | bigint, path: string): Buffer {
+  if (typeof value === "number" && !Number.isSafeInteger(value)) {
     throw new LedgerValidationError([
       {
         path,
@@ -113,6 +134,26 @@ function encodeInteger(value: number, path: string): Buffer {
   return Buffer.from("I" + String(value) + ";", "ascii");
 }
 
+/**
+ * Do two stored integers name the same value, across `number` and `bigint`?
+ *
+ * `===` is false for `1` and `1n`, and `==` is a coercion this codebase does
+ * not use. The sidecar's own key is a `number` and the row's `sequence` arrives
+ * as a `bigint`, so every comparison that decides whether a digest is being
+ * filed under the row's own position has to be made by value. Exported because
+ * there are three such comparisons — here, at activation and in the verifier —
+ * and three spellings of one rule is how two of them come to disagree.
+ *
+ * A `number` that is not a safe integer answers `false` rather than throwing:
+ * `BigInt(1.5)` is a `RangeError`, and a comparison is not the place to raise
+ * one. The encoder refuses that value a moment later, by name.
+ */
+export function sameStoredInteger(left: number | bigint, right: number | bigint): boolean {
+  if (typeof left === "number" && !Number.isSafeInteger(left)) return false;
+  if (typeof right === "number" && !Number.isSafeInteger(right)) return false;
+  return BigInt(left) === BigInt(right);
+}
+
 /** One row of `account_events`, with the chain position it is being hashed at. */
 export interface AccountIntegrityInput {
   /**
@@ -124,7 +165,10 @@ export interface AccountIntegrityInput {
   readonly accountSequence: number;
   /** The previous row's `event_sha256`, or sixty-four zeros at sequence one. */
   readonly previousSha256: string;
-  /** The stored row, exactly as `account_events` holds it. */
+  /**
+   * The stored row, exactly as `account_events` holds it: TEXT as bytes,
+   * INTEGER wide enough for the column's whole range.
+   */
   readonly row: AccountEventRow;
 }
 
@@ -152,7 +196,7 @@ export function accountIntegrityPreimageV1(input: AccountIntegrityInput): Buffer
       { path: "accountSequence", message: "a sidecar position is an integer of one or greater" },
     ]);
   }
-  if (row.sequence !== accountSequence) {
+  if (!sameStoredInteger(row.sequence, accountSequence)) {
     // §8.1: "`r.sequence` debe ser igual al `account_sequence` del sidecar".
     // Hashing a row under a foreign position would produce a chain that links
     // correctly and describes the wrong history.
@@ -172,7 +216,10 @@ export function accountIntegrityPreimageV1(input: AccountIntegrityInput): Buffer
   // a new preimage version, not an entry here.
   return Buffer.concat([
     Buffer.from(ACCOUNT_INTEGRITY_PREIMAGE_PREFIX_V1, "utf8"),
-    encodeText(previousSha256),
+    // The one `T(s)` whose value is not a stored column: the previous digest is
+    // the sidecar's own, and the pattern above has already established that it
+    // is sixty-four ASCII hex characters, so its bytes are itself.
+    encodeText(Buffer.from(previousSha256, "ascii")),
     encodeInteger(row.sequence, "row.sequence"),
     encodeText(row.event_id),
     encodeText(row.idempotency_key),
