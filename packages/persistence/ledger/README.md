@@ -244,6 +244,93 @@ task coordinates, the instant and the elected route and not one envelope field.
 This is the half that can be a pure function; the wiring is a later packet.
 ADR 0066 carries the reasoning.
 
+## The revision coordinate, and the revision's own record
+
+Migration 11 gives the task stream the second rung of the identity ladder.
+`task_id` is stable for life; `(task_id, revision_number)` is a unit of work,
+and a change to any field of the envelope produces a new one. A retry of the
+same revision is a new **attempt**, and attempts are not here — they are P-18's.
+
+**Two additive columns, `NULL` only on legacy rows.** Migration 1 is immutable
+and `attempt` is `NOT NULL`, so the coordinate arrives beside the flat integer
+rather than replacing it: `control_plane_events.revision_number` and
+`.attempt_number`, both absent or both present, both positive when present, and
+both equal to what the event's own body says.
+
+`tr_control_plane_events__validate_v2_coordinate` enforces that **in both
+directions**. Forward, a column that disagrees with `event_json` is refused.
+Backward, a payload carrying the V2 keys may not arrive with the columns empty:
+without that half, a writer could record the coordinate in the body, leave the
+columns `NULL`, and the row would read as legacy for ever while its own event
+said otherwise.
+
+**The "migrated but not populated" window is real and lawful**, and it is the
+opposite of the account sidecar's activation. Nothing in migration 11 writes a
+coordinate. Rows written before it keep both columns `NULL` for ever, and a
+ledger that has applied 11 and holds no V2 row at all is a **correct** ledger.
+Migration 10 activated as it migrated, so absence there was tampering; here it
+is the ordinary state until a producer exists.
+
+**No new event type.** The coordinate rides payload keys on the stream that
+already exists, so `CONTROL_PLANE_EVENT_TYPES` does not move. The fold therefore
+keys off the **presence** of a complete key set rather than off a type —
+`revisionId`, `revisionNumber`, `attemptNumber`, `envelopeSha256`, plus the
+optional `restoredFromRevisionId`. A partial set is not a malformed revision; it
+is not a revision, and it projects no row.
+
+`CONTRACT_VERSION` does **not** move with this migration. The cohort is told
+apart by `revision_number IS NOT NULL`, not by a version literal — moving the
+literal without a supported-versions mechanism would make every event already
+recorded under the previous one unreadable. The first V2 producer moves it,
+together with that mechanism. ADR 0067 carries the reasoning.
+
+### `task_revision_read_model`
+
+One row per revision. `revision_id` is the stable global handle for naming a
+revision without carrying the coordinate.
+
+**The row is insert-only.** A second arrival at the same coordinate with the
+same content is an idempotent replay and writes nothing; with *different*
+content it is `LedgerValidationError`, never an update. A revision is a record
+of what was asked, and rewriting it would destroy the thing it preserves. The
+replay path takes the same two branches, so a rebuild refuses exactly the
+histories the incremental path refused.
+
+**There is deliberately no `UNIQUE(task_id, envelope_sha256)`.** Restoring an
+earlier envelope is a *new* revision with the *same* digest, and that uniqueness
+would forbid exactly the case the model exists to allow;
+`restored_from_revision_id` is what says why the two agree. The index over the
+digest answers "which revisions share this envelope" and is not unique.
+
+`envelope_artifact_reference_id` is **absent, not forgotten**. The artifact
+plane is P-36/local, the column is `NOT NULL` in the target dictionary, and a
+`NOT NULL` column cannot be populated without the plane that mints the
+reference. Nothing here ever derives a reference from a digest. Decision 41
+records the deferral; P-36/local adds the column with a cohort trigger.
+
+### What `task_read_model` gained, and what is still empty
+
+`envelope_sha256`, `latest_revision_number` and `latest_attempt_number` are a
+convenience denormalization of the latest revision — never the authority, which
+is the revision row. They move **together** or not at all: a task advertising
+revision 3's number beside revision 2's envelope is the one failure a
+convenience column must never produce. A later revision replaces all three; a
+late event from an older revision replaces none.
+
+`role`, `step_id` and `commit_policy` are additive and have **no producer
+today**. The nullity is documented rather than accidental: no event carries
+them, nobody invents a payload key to fill them, and a reader treats `NULL` as
+"not recorded yet" rather than as "absent". `duel_id` and `state_vocabulary` are
+**not** created at all — their producers are the model-duel flow and the state
+vocabulary transition, and each goes with its own packet.
+
+**The preflight.** Before any of the above, the migration checks that no
+historical `idempotency_key` already occupies the `v2/` namespace the V2 key
+will use, and refuses — naming the rows and repairing nothing — if one does. It
+has to be asked now: the column is `UNIQUE`, so a collision discovered later is
+a constraint failure naming one row and no coordinate, on a ledger already in
+production.
+
 ## The account stream's hash chain
 
 `account_events` shipped in migration 5 with no `previous_sha256` and no

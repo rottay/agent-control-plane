@@ -30,6 +30,7 @@ import {
 } from "../errors/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
+  TASK_REVISION_MIGRATION,
   ACCOUNT_STREAM,
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
@@ -58,6 +59,8 @@ import {
   createRegistryProjectionSnapshot,
   executionRouteKey,
   nextExecutionRouteProjection,
+  nextTaskRevisionProjection,
+  taskRevisionKey,
   nextInitiativeProjection,
   nextRoadmapVersionProjection,
   nextRoutingAssignmentProjection,
@@ -108,6 +111,7 @@ import {
   type TaskPage,
   type TaskQuery,
   type TaskReadModel,
+  type TaskRevisionReadModel,
   type WorkerPage,
   type WorkerQuery,
   type WorkerReadModel,
@@ -714,6 +718,33 @@ interface TaskRow {
   readonly created_at: string;
   readonly updated_at: string;
   readonly is_terminal: number;
+  /** Additive at migration 11; `NULL` on every row written before it. */
+  readonly envelope_sha256: string | null;
+  readonly latest_revision_number: number | null;
+  readonly latest_attempt_number: number | null;
+  /**
+   * Additive at migration 11 and **with no producer yet**, which is documented
+   * rather than accidental (execution §1). Nothing reads them into a model:
+   * inventing a payload key to fill them would be a read model built to satisfy
+   * a column. They exist so the table stops drifting from the dictionary one
+   * packet at a time, and a reader treats `NULL` as "not recorded yet".
+   */
+  readonly role: string | null;
+  readonly step_id: string | null;
+  readonly commit_policy: string | null;
+}
+
+/** One stored revision row. Snake case, because it is a row. */
+interface TaskRevisionRow {
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly revision_id: string;
+  readonly envelope_sha256: string;
+  readonly restored_from_revision_id: string | null;
+  readonly created_at: string;
+  readonly created_by: string;
+  readonly contract_version: string;
+  readonly sequence: number;
 }
 
 interface WorkerRow {
@@ -817,6 +848,23 @@ function taskRowToModel(row: TaskRow): TaskReadModel {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     isTerminal: row.is_terminal === 1,
+    envelopeSha256: row.envelope_sha256,
+    latestRevisionNumber: row.latest_revision_number,
+    latestAttemptNumber: row.latest_attempt_number,
+  };
+}
+
+function taskRevisionRowToModel(row: TaskRevisionRow): TaskRevisionReadModel {
+  return {
+    taskId: row.task_id,
+    revisionNumber: row.revision_number,
+    revisionId: row.revision_id,
+    envelopeSha256: row.envelope_sha256,
+    restoredFromRevisionId: row.restored_from_revision_id,
+    createdAt: row.created_at,
+    createdBy: row.created_by,
+    contractVersion: row.contract_version,
+    sequence: row.sequence,
   };
 }
 
@@ -1053,6 +1101,110 @@ const REGISTRY_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filt
  */
 function safeAccountId(accountId: string): string {
   return /^[A-Za-z0-9_.:-]{1,80}$/.test(accountId) ? accountId : "<unprintable account id>";
+}
+
+/**
+ * The namespace every V2 idempotency key begins with (streams §1.1).
+ *
+ * The full preimage is `"v2" · stream · task_id · revision_number ·
+ * attempt_number · transition_id`, and composing it belongs to the producer
+ * (P-18). What migration 11 owns is narrower and is the part that cannot be
+ * deferred: **reserving the namespace**, and refusing to open the door if a
+ * historical key already sits inside it.
+ *
+ * The separator is declared here and nowhere else. When the producer arrives it
+ * imports this constant rather than restating it, for the reason every shared
+ * literal in this package is imported rather than restated.
+ */
+const V2_IDEMPOTENCY_NAMESPACE = "v2/";
+
+/**
+ * Refuse the migration if a historical key already occupies the V2 namespace.
+ *
+ * Streams §1.1 requires the migration that enables the V2 key to "comprobar que
+ * ninguna clave V2 colisione con una clave histórica" and to "rechazar
+ * explícitamente" on a collision. Before any V2 row exists that is exactly one
+ * checkable question: is the namespace free?
+ *
+ * It has to be asked **now**, not when the first V2 key is written. The column
+ * is `UNIQUE`, so a collision discovered later surfaces as a constraint failure
+ * naming one row and no coordinate — and by then the ledger is already in
+ * production with a key it cannot use. Asked here, the answer names every
+ * offending row while the upgrade can still be declined.
+ *
+ * Named and never repaired, on the shape `assertNoDuplicateAccountVersions`
+ * set: two rows claiming one key are two claims about what happened, and
+ * choosing between them is an owner's decision recorded in the decisions
+ * register, not a migration's.
+ */
+/**
+ * The V2 coordinate an event carries in its payload, or the legacy pair of nulls.
+ *
+ * Both or neither, decided here once rather than at the two call sites, because
+ * the trigger refuses a half pair and a caller that got it wrong would see a
+ * SQLite abort instead of a typed answer. `revisionNumber` without
+ * `attemptNumber` — or either as something that is not a positive integer —
+ * reads as **no coordinate at all**, and the trigger's reverse direction then
+ * refuses the row for carrying keys the columns do not: a malformed coordinate
+ * is never quietly downgraded to a legacy row.
+ */
+function v2CoordinateOf(event: ControlPlaneEvent): {
+  readonly revisionNumber: number | null;
+  readonly attemptNumber: number | null;
+} {
+  const read = (key: string): number | null => {
+    const value = event.payload[key];
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 ? value : null;
+  };
+  const revisionNumber = read("revisionNumber");
+  const attemptNumber = read("attemptNumber");
+  if (revisionNumber === null || attemptNumber === null) {
+    return { revisionNumber: null, attemptNumber: null };
+  }
+  return { revisionNumber, attemptNumber };
+}
+
+function assertNoV2KeyCollisions(db: Database.Database): void {
+  const claimed = db
+    .prepare(
+      "SELECT sequence, idempotency_key FROM control_plane_events " +
+        "WHERE idempotency_key LIKE ? ESCAPE '\\' ORDER BY sequence ASC",
+    )
+    .all(V2_IDEMPOTENCY_NAMESPACE + "%") as {
+    readonly sequence: number;
+    readonly idempotency_key: string;
+  }[];
+
+  if (claimed.length === 0) return;
+
+  // Bounded for the same reason the duplicate list is: a diagnostic that prints
+  // a million rows is a diagnostic nobody reads. The count stays exact.
+  const named = claimed
+    .slice(0, 20)
+    .map((row) => "sequence " + String(row.sequence) + " holds " + safeIdempotencyKey(row.idempotency_key));
+  if (claimed.length > 20) {
+    named.push("and " + String(claimed.length - 20) + " further row(s)");
+  }
+
+  throw new LedgerMigrationError([
+    "control_plane_events holds " +
+      String(claimed.length) +
+      " historical idempotency key(s) inside the V2 namespace '" +
+      V2_IDEMPOTENCY_NAMESPACE +
+      "', which this migration will not rewrite: " +
+      named.join("; "),
+  ]);
+}
+
+/**
+ * An idempotency key, safe to print in a refusal.
+ *
+ * The same guard `safeAccountId` applies and for the same reason: the value is
+ * caller data reaching a message an operator reads, and a key is composed of
+ * identifiers and separators. Anything outside that set is not printed.
+ */
+function safeIdempotencyKey(value: string): string {
+  return /^[A-Za-z0-9_.:/-]{1,200}$/.test(value) ? value : "<unprintable key>";
 }
 
 function assertNoDuplicateAccountVersions(db: Database.Database): void {
@@ -1324,6 +1476,13 @@ export class Ledger {
             beforeSql: (migration) => {
               if (migration.version === ACCOUNT_INTEGRITY_MIGRATION) {
                 assertNoDuplicateAccountVersions(db);
+              }
+              // Migration 11's preflight, on the same terms and in the same
+              // transaction: the V2 idempotency namespace has to be free before
+              // the columns that will use it exist, because after that a
+              // collision is a UNIQUE failure naming one row and no coordinate.
+              if (migration.version === TASK_REVISION_MIGRATION) {
+                assertNoV2KeyCollisions(db);
               }
             },
             afterSql: (migration) => {
@@ -2150,18 +2309,29 @@ export class Ledger {
     const eventSha256 = chainDigest(previousSha256, canonicalJson);
     const expectedSequence = head.sequence + 1;
 
+    // The V2 coordinate, taken from the payload the event already carries
+    // (P-05/B). The columns are a projection of the body, never a second
+    // source: the trigger compares them against `event_json` in both
+    // directions, so a row whose columns and body disagree cannot be written at
+    // all. `null` for an event in V1 form, which is the lawful shape of every
+    // row this build writes until the V2 producer exists.
+    const coordinate = v2CoordinateOf(event);
+
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
-        "event_id, idempotency_key, task_id, attempt, transition_id, type, from_state, " +
+        "event_id, idempotency_key, task_id, attempt, revision_number, attempt_number, " +
+        "transition_id, type, from_state, " +
         "to_state, emitted_by, occurred_at, recorded_at, correlation_id, causation_id, " +
         "causation_stream, causation_sequence, causation_sha256, " +
         "contract_version, event_json, previous_sha256, event_sha256" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       event.eventId,
       event.idempotencyKey,
       event.taskId,
       event.attempt,
+      coordinate.revisionNumber,
+      coordinate.attemptNumber,
       event.transitionId,
       event.type,
       event.fromState,
@@ -2307,6 +2477,13 @@ export class Ledger {
     // come to disagree about which events produce a row.
     const route = nextExecutionRouteProjection(event, sequence);
     if (route !== null) this.#upsertExecutionRoute(route);
+
+    // The revision record, when the payload constitutes one. Same function as
+    // the replay path uses, for the same reason the route row is: the
+    // incremental projection and a rebuild cannot come to disagree about which
+    // events produce a row.
+    const revision = nextTaskRevisionProjection(event, sequence);
+    if (revision !== null) this.#insertTaskRevision(revision);
   }
 
   #upsertExecutionRoute(route: ExecutionRouteReadModel): void {
@@ -2340,8 +2517,9 @@ export class Ledger {
       "INSERT INTO task_read_model (" +
         "task_id, initiative_id, current_state, latest_attempt, event_count, first_sequence, " +
         "last_sequence, last_event_id, last_event_type, last_transition_id, last_emitted_by, " +
-        "created_at, updated_at, is_terminal" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "created_at, updated_at, is_terminal, " +
+        "envelope_sha256, latest_revision_number, latest_attempt_number" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (task_id) DO UPDATE SET " +
         "initiative_id = excluded.initiative_id, " +
         "current_state = excluded.current_state, latest_attempt = excluded.latest_attempt, " +
@@ -2349,7 +2527,14 @@ export class Ledger {
         "last_event_id = excluded.last_event_id, last_event_type = excluded.last_event_type, " +
         "last_transition_id = excluded.last_transition_id, " +
         "last_emitted_by = excluded.last_emitted_by, updated_at = excluded.updated_at, " +
-        "is_terminal = excluded.is_terminal",
+        "is_terminal = excluded.is_terminal, " +
+        // The three revision columns are written from the fold's answer, which
+        // already carried the previous value forward when this event announced
+        // no newer revision. `excluded` is therefore always the correct value
+        // and never a blank overwriting a known one.
+        "envelope_sha256 = excluded.envelope_sha256, " +
+        "latest_revision_number = excluded.latest_revision_number, " +
+        "latest_attempt_number = excluded.latest_attempt_number",
     ).run(
       task.taskId,
       task.initiativeId,
@@ -2365,6 +2550,70 @@ export class Ledger {
       task.createdAt,
       task.updatedAt,
       task.isTerminal ? 1 : 0,
+      task.envelopeSha256,
+      task.latestRevisionNumber,
+      task.latestAttemptNumber,
+    );
+  }
+
+  /**
+   * Write one revision row, or refuse (P-05/B).
+   *
+   * **Insert-only, and never `ON CONFLICT DO UPDATE`** (execution §2). A
+   * revision is a record of what was asked; rewriting it would destroy exactly
+   * the thing it exists to preserve, and a coordinate that could be overwritten
+   * would make "revision 2" a name for whichever event arrived last.
+   *
+   * The same coordinate with the same content twice is an idempotent replay and
+   * writes nothing — a retry of an append has to stay safe. The same coordinate
+   * with different content is refused. The replay path takes the same two
+   * branches in `applyEventToSnapshot`, so a rebuild refuses exactly the
+   * histories the incremental path refused and N7 stays deterministic.
+   */
+  #insertTaskRevision(revision: TaskRevisionReadModel): void {
+    const existing = this.#stmt(
+      "SELECT * FROM task_revision_read_model WHERE task_id = ? AND revision_number = ?",
+    ).get(revision.taskId, revision.revisionNumber) as TaskRevisionRow | undefined;
+
+    if (existing !== undefined) {
+      const stored = taskRevisionRowToModel(existing);
+      // `sequence` is excluded from the comparison for the reason the snapshot
+      // excludes it: an exact replay landing at a later position is the same
+      // revision, and refusing it for the position alone would turn an
+      // idempotent retry into a conflict.
+      const comparable = (value: TaskRevisionReadModel): string =>
+        canonicalJsonStringify({ ...value, sequence: 0 });
+      if (comparable(stored) !== comparable(revision)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload.revisionNumber",
+            message:
+              "revision " +
+              String(revision.revisionNumber) +
+              " of task " +
+              revision.taskId +
+              " is already recorded with different content, and a revision record is written once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    this.#stmt(
+      "INSERT INTO task_revision_read_model (" +
+        "task_id, revision_number, revision_id, envelope_sha256, " +
+        "restored_from_revision_id, created_at, created_by, contract_version, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      revision.taskId,
+      revision.revisionNumber,
+      revision.revisionId,
+      revision.envelopeSha256,
+      revision.restoredFromRevisionId,
+      revision.createdAt,
+      revision.createdBy,
+      revision.contractVersion,
+      revision.sequence,
     );
   }
 
@@ -3602,6 +3851,11 @@ export class Ledger {
       for (const worker of snapshot.workers.values()) this.#upsertWorker(worker);
       for (const pair of snapshot.workerTasks.values()) this.#upsertWorkerTask(pair);
       for (const route of snapshot.executionRoutes.values()) this.#upsertExecutionRoute(route);
+      // The revision rows the replay folded. `DERIVED_TABLES` cleared the table
+      // above, so every insert here lands on an empty coordinate — the
+      // conflict branch of `#insertTaskRevision` cannot fire, and a history the
+      // snapshot already refused never reaches this loop at all.
+      for (const revision of snapshot.taskRevisions.values()) this.#insertTaskRevision(revision);
 
       for (const initiative of initiativeSnapshot.initiatives.values()) {
         this.#upsertInitiative(initiative);
@@ -4768,6 +5022,51 @@ export class Ledger {
           kind: "PROJECTION",
           detail:
             "execution_route_read_model holds the route for " + key + " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
+
+    // The revision rows, compared as exact sets in both directions like every
+    // projection above. A revision row that no event accounts for is the more
+    // interesting half here: the table is insert-only and the coordinate is the
+    // identity of a unit of work, so a row nobody wrote is a claim that a
+    // revision was asked for when it was not.
+    const storedRevisions = new Map(
+      (this.#stmt("SELECT * FROM task_revision_read_model").all() as TaskRevisionRow[]).map(
+        (row) => [
+          taskRevisionKey(row.task_id, row.revision_number),
+          taskRevisionRowToModel(row),
+        ],
+      ),
+    );
+
+    for (const [key, expected] of snapshot.taskRevisions) {
+      const stored = storedRevisions.get(key);
+      if (stored === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "task_revision_read_model is missing the revision for " + key,
+          sequence: null,
+        });
+        continue;
+      }
+      if (canonicalJsonStringify(stored) !== canonicalJsonStringify(expected)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "task_revision_read_model row for " + key + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const key of storedRevisions.keys()) {
+      if (!snapshot.taskRevisions.has(key)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "task_revision_read_model holds the revision for " +
+            key +
+            " which no event accounts for",
           sequence: null,
         });
       }

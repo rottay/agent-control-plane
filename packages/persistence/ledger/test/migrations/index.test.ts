@@ -8,6 +8,8 @@ import {
   MIGRATIONS,
   PROJECTION_NAMES,
   PROJECTION_SOURCES,
+  TASK_REVISION_MIGRATION,
+  TASK_REVISION_PROJECTION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
@@ -150,7 +152,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -163,12 +165,13 @@ describe("migration 7 appends the watermark table without touching the applied s
       "causation_triplet",
       "registry_stream",
       "account_event_integrity",
+      "task_revision_identity",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migration 9 seeds two rows into it, which is what a migration that adds
-    // a projection does; it does not create, alter or drop the table.
+    // Migrations 9 and 11 seed rows into it, which is what a migration that
+    // adds a projection does; neither creates, alters or drops the table.
     const creating = MIGRATIONS.filter((migration) =>
       migration.sql.includes("CREATE TABLE projection_watermark"),
     );
@@ -176,7 +179,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -245,6 +248,7 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "task_read_model@control_plane_events",
       "worker_read_model@control_plane_events",
       "execution_route_read_model@control_plane_events",
+      "task_revision_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
       "routing_assignment_read_model@registry_events",
@@ -371,7 +375,7 @@ describe("migration 8 types causality without touching the applied seven", () =>
     expect(EIGHTH?.sql ?? "").not.toContain("validate_v2_coordinate");
   });
 
-  it("inventories every trigger named by the §3.2 convention, and there are seven", () => {
+  it("inventories every trigger named by the §3.2 convention, and there are eight", () => {
     // Without the inventory, dropping a trigger would leave `schema_migrations`
     // untouched and no check would notice. Migration 9 recreates the first two
     // under the same names, so the inventory does not move for them; the other
@@ -391,6 +395,10 @@ describe("migration 8 types causality without touching the applied seven", () =>
       // so it does not inherit the legacy shape its neighbour carries.
       { type: "trigger", name: "tr_account_event_integrity__deny_update" },
       { type: "trigger", name: "tr_account_event_integrity__deny_delete" },
+      // P-05/B: the V2 coordinate's pairing rule. Not an append-only pair — it
+      // is a shape check on insert, like the two `__validate_new_rows` above,
+      // and it exists because SQLite cannot add a CHECK to an applied table.
+      { type: "trigger", name: "tr_control_plane_events__validate_v2_coordinate" },
     ]);
     // And the legacy prefix still names exactly the three streams that coined
     // it, so the rename did not quietly move one of theirs.
@@ -451,7 +459,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     ]);
   });
 
@@ -669,12 +677,147 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(7);
+    expect(PROJECTION_SOURCES).toHaveLength(8);
   });
 
   it("still does not claim the account stream (D3)", () => {
     expect(
       PROJECTION_SOURCES.some((source) => source.sourceStream === "account_events"),
     ).toBe(false);
+  });
+});
+
+describe("migration 11 adds the revision coordinate without touching the applied ten", () => {
+  const ELEVENTH = MIGRATIONS[10];
+
+  /**
+   * The migration's statements with its commentary removed.
+   *
+   * Every "does not contain" assertion below runs against this rather than the
+   * raw SQL, because the header comments explain at length what the migration
+   * deliberately does NOT do — and a test that read those sentences as
+   * statements would fail on the prose that exists to prevent the very mistake
+   * it is checking for.
+   */
+  const statements = (ELEVENTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed, and rewrites none of it", () => {
+    expect(ELEVENTH?.version).toBe(11);
+    expect(ELEVENTH?.name).toBe("task_revision_identity");
+
+    // The ten before it are byte-identical to what a ledger in the field
+    // already applied. A migration set is checksummed on every open, so a
+    // single edited character above would refuse every existing database.
+    for (const migration of MIGRATIONS.slice(0, 10)) {
+      expect(migration.sha256, migration.name).toMatch(/^[0-9a-f]{64}$/);
+    }
+    expect(statements).not.toContain("DROP TABLE");
+    expect(statements).not.toContain("DROP TRIGGER");
+  });
+
+  it("adds the two coordinate columns as additive, never as a table rewrite", () => {
+    const sql = ELEVENTH?.sql ?? "";
+    // `ALTER TABLE ... ADD COLUMN` and nothing else: migration 1 is immutable,
+    // so the coordinate arrives beside `attempt` rather than replacing it.
+    expect(sql).toContain("ALTER TABLE control_plane_events ADD COLUMN revision_number INTEGER");
+    expect(sql).toContain("ALTER TABLE control_plane_events ADD COLUMN attempt_number INTEGER");
+    expect(statements).not.toContain("CREATE TABLE control_plane_events");
+
+    // Neither column is NOT NULL, and that is the lawful window: every row
+    // written before this migration keeps both empty, for ever.
+    expect(statements).not.toContain("ADD COLUMN revision_number INTEGER NOT NULL");
+    expect(statements).not.toContain("ADD COLUMN attempt_number INTEGER NOT NULL");
+  });
+
+  it("names the revision table's constraints by the §3.2 convention", () => {
+    const sql = ELEVENTH?.sql ?? "";
+    expect(sql).toContain("CREATE TABLE task_revision_read_model");
+    expect(sql).toContain(") STRICT;");
+    expect(sql).toContain(
+      "CONSTRAINT pk_task_revision_read_model PRIMARY KEY (task_id, revision_number)",
+    );
+    expect(sql).toContain(
+      "CONSTRAINT ck_task_revision_read_model__revision_number CHECK (revision_number >= 1)",
+    );
+    expect(sql).toContain("CREATE UNIQUE INDEX ux_task_revision_read_model__revision_id");
+
+    // The digest index is deliberately NOT unique: restoring an earlier
+    // envelope is a new revision with the same digest (§7.3), and a unique
+    // index there would forbid exactly the case the model exists to allow.
+    expect(sql).toContain(
+      "CREATE INDEX ix_task_revision_read_model__envelope_sha256\n  ON task_revision_read_model (envelope_sha256, task_id, revision_number)",
+    );
+    expect(statements).not.toContain(
+      "CREATE UNIQUE INDEX ix_task_revision_read_model__envelope_sha256",
+    );
+    expect(statements).not.toContain("UNIQUE (task_id, envelope_sha256)");
+
+    // And the column P-36/local owns is absent rather than nullable-here.
+    expect(statements).not.toContain("envelope_artifact_reference_id");
+  });
+
+  it("seeds its watermark from the head, never from a literal zero", () => {
+    const sql = ELEVENTH?.sql ?? "";
+    // The `INSERT ... SELECT` form, which is migration 9's second case: this
+    // projection arrives over a stream that may already hold a long history.
+    expect(sql).toContain("INSERT INTO projection_watermark");
+    expect(sql).toContain("'task_revision_read_model',\n  'control_plane_events',");
+    for (const key of ["head_sequence", "event_count", "head_event_sha256"]) {
+      expect(sql, key).toContain("WHERE key = '" + key + "'");
+    }
+    // A literal zero seed would be the shape migrations 6 and 7 carry a comment
+    // about: a projection frozen behind a non-zero head, reported as corrupt
+    // immediately after a routine upgrade.
+    expect(statements).not.toContain("'control_plane_events',\n  1,\n  0,\n  0,");
+  });
+
+  it("adds six additive columns to the task projection, all of them nullable", () => {
+    const sql = ELEVENTH?.sql ?? "";
+    // Three with a producer in this packet, three without. The second group is
+    // documented nullity rather than accident: execution §1 authorizes it, and
+    // nobody invents a payload key to fill a column.
+    for (const column of ["envelope_sha256", "latest_revision_number", "latest_attempt_number"]) {
+      expect(sql, column).toContain("ALTER TABLE task_read_model ADD COLUMN " + column);
+    }
+    for (const column of ["role", "step_id", "commit_policy"]) {
+      expect(sql, column).toContain("ALTER TABLE task_read_model ADD COLUMN " + column);
+    }
+    // `duel_id` and `state_vocabulary` are NOT here: their producers are other
+    // packets, and a column with no producer and no CHECK would be a shape the
+    // dictionary does not authorize yet.
+    expect(statements).not.toContain("duel_id");
+    expect(statements).not.toContain("state_vocabulary");
+    // No DROP COLUMN anywhere: an applied migration admits none.
+    expect(statements).not.toContain("DROP COLUMN");
+  });
+
+  it("declares the projection in all four places that have to agree", () => {
+    // The name is spelled in the derived-table list, the projection names, the
+    // source pairs and the object inventory. A projection missing from any one
+    // of them is a projection that a rebuild, a watermark or the schema check
+    // silently skips.
+    expect(TASK_REVISION_PROJECTION).toBe("task_revision_read_model");
+    expect(DERIVED_TABLES).toContain(TASK_REVISION_PROJECTION);
+    expect(PROJECTION_NAMES).toContain(TASK_REVISION_PROJECTION);
+    expect(
+      PROJECTION_SOURCES.filter((source) => source.projectionName === TASK_REVISION_PROJECTION),
+    ).toEqual([{ projectionName: TASK_REVISION_PROJECTION, sourceStream: "control_plane_events" }]);
+    expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({
+      type: "table",
+      name: TASK_REVISION_PROJECTION,
+    });
+
+    // It is cleared before `task_read_model`, which is the order the derived
+    // list documents: the rebuild clears children before parents.
+    expect(DERIVED_TABLES.indexOf(TASK_REVISION_PROJECTION)).toBeLessThan(
+      DERIVED_TABLES.indexOf("task_read_model"),
+    );
+
+    // And the named migration number matches where the SQL actually sits.
+    expect(TASK_REVISION_MIGRATION).toBe(11);
+    expect(MIGRATIONS[TASK_REVISION_MIGRATION - 1]?.name).toBe("task_revision_identity");
   });
 });

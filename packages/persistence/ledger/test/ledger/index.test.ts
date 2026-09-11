@@ -276,7 +276,7 @@ describe("open", () => {
     // Nine since P-09/log-C opened the registry stream, beside the typed causal
     // triple of B and the watermark table of A.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1231,8 +1231,42 @@ function dropAccountIntegrity(raw: Database.Database): void {
   );
 }
 
-/** The whole P-08 and P-09 tail, undone in the reverse of the order applied. */
+/**
+ * Migration 11 undone: the revision record, the coordinate and the trigger.
+ *
+ * The order is forced rather than stylistic. SQLite refuses `DROP COLUMN` for a
+ * column a trigger references, so the trigger goes first; and the eight columns
+ * have to go at all, because `ALTER TABLE ... ADD COLUMN` is not idempotent and
+ * a re-applied migration 11 would abort on "duplicate column name".
+ */
+function dropTaskRevisionIdentity(raw: Database.Database): void {
+  raw.exec(
+    "DROP TRIGGER tr_control_plane_events__validate_v2_coordinate; " +
+      "DROP INDEX ix_task_revision_read_model__envelope_sha256; " +
+      "DROP INDEX ux_task_revision_read_model__revision_id; " +
+      "DROP TABLE task_revision_read_model;",
+  );
+  raw
+    .prepare("DELETE FROM projection_watermark WHERE projection_name = ?")
+    .run("task_revision_read_model");
+  for (const column of ["revision_number", "attempt_number"]) {
+    raw.exec("ALTER TABLE control_plane_events DROP COLUMN " + column);
+  }
+  for (const column of [
+    "envelope_sha256",
+    "latest_revision_number",
+    "latest_attempt_number",
+    "role",
+    "step_id",
+    "commit_policy",
+  ]) {
+    raw.exec("ALTER TABLE task_read_model DROP COLUMN " + column);
+  }
+}
+
+/** The whole P-05, P-08 and P-09 tail, undone in the reverse of the order applied. */
 function dropProjectionVector(raw: Database.Database): void {
+  dropTaskRevisionIdentity(raw);
   dropAccountIntegrity(raw);
   dropRegistryStream(raw);
   dropTypedCausality(raw);
@@ -1685,17 +1719,17 @@ describe("projection watermark verification", () => {
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
     // Six projections since P-09/log-C: the two task-stream folds, the route
-    // fold, the two initiative-stream folds, and the two-source routing fold.
-    // Seven heads, because the last one has two — every one of them at zero on
-    // a ledger that has never been appended to.
-    expect(ledger.status().projections).toHaveLength(6);
+    // fold, the revision fold, the two initiative-stream folds, and the
+    // two-source routing fold. Eight heads, because the last one has two —
+    // every one of them at zero on a ledger that has never been appended to.
+    expect(ledger.status().projections).toHaveLength(7);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -2690,7 +2724,7 @@ describe("the recorded execution route", () => {
     // The upgrade: migrations 6 to 9 apply on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -2901,7 +2935,7 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.listEvents().events).toHaveLength(0);
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
-    expect([...appliedByName(ledger).values()]).toEqual([0, 0, 0, 0, 0]);
+    expect([...appliedByName(ledger).values()]).toEqual([0, 0, 0, 0, 0, 0]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
     // The handle is still usable, so the rollback was clean rather than wedged.
@@ -2925,15 +2959,20 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(8);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "execution_route_read_model",
       "task_read_model",
+      "task_revision_read_model",
       "worker_read_model",
     ]);
-    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5]);
-    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5]);
+    // The revision projection moves with the stream exactly as its three
+    // siblings do, and it is level at five having folded no row at all: none of
+    // the seeded events carries a V2 coordinate. A watermark tracks the cut a
+    // projection has SEEN, not the rows it chose to write.
+    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5, 5]);
+    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5, 5]);
     expect(new Set(taskRows.map((row) => row.projector_version))).toEqual(new Set([1]));
 
     // The sibling stream stayed where it was. A single shared number is exactly
@@ -2988,7 +3027,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(7);
+    expect(before).toHaveLength(8);
 
     tamper(path, (raw) => {
       raw
@@ -3103,7 +3142,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3152,7 +3191,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(8);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -4079,15 +4118,16 @@ describe("two heads under one projection name advance independently (negative 2)
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     const status = ledger.status();
-    // Six projections, not seven entries: the vector lives INSIDE the
+    // Seven projections, not eight entries: the vector lives INSIDE the
     // projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(6);
+    expect(status.projections).toHaveLength(7);
     expect(status.projections.map((projection) => projection.name)).toEqual([
       "execution_route_read_model",
       "initiative_read_model",
       "roadmap_version_read_model",
       "routing_assignment_read_model",
       "task_read_model",
+      "task_revision_read_model",
       "worker_read_model",
     ]);
 
@@ -4112,12 +4152,12 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Seven rows in the table, seven entries across six projections. Nothing
+    // Eight rows in the table, eight entries across seven projections. Nothing
     // in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(7);
+    expect(readWatermarks(path)).toHaveLength(8);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(7);
+    ).toHaveLength(8);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -4280,7 +4320,7 @@ describe("a projector version invalidates a pair, not a projection (negative 3)"
 });
 
 describe("a rebuild is a function of the vector of three heads (negative 8)", () => {
-  it("produces identical rows twice over, in both routing tables and all seven watermarks", () => {
+  it("produces identical rows twice over, in both routing tables and all eight watermarks", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
@@ -4307,7 +4347,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       fallbacks: readFallbacks(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(7);
+    expect(live.watermarks).toHaveLength(8);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -5085,6 +5125,9 @@ function action(version: number, overrides: Record<string, unknown> = {}): Recor
 /** A ledger written before the sidecar existed: migrated to 9, no activation. */
 function rewindPastSidecar(path: string): void {
   withRawDatabase(path, (raw) => {
+    // Migration 11 goes first, because a set is applied in order and re-opening
+    // would otherwise re-run its `ADD COLUMN` over columns that are still there.
+    dropTaskRevisionIdentity(raw);
     dropAccountIntegrity(raw);
     raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(10);
   });
@@ -5123,7 +5166,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -5761,5 +5804,710 @@ describe("the duplicate preflight names what it finds and repairs nothing", () =
 
     // And the failure is repeatable rather than a one-off that half-applied.
     expect(caught(() => open(path))).toBeInstanceOf(LedgerMigrationError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The revision coordinate and its record (P-05/B, migration 11)
+// ---------------------------------------------------------------------------
+//
+// The second rung of the identity ladder. `task_id` is stable for life;
+// `(task_id, revision_number)` is a unit of work, and a change to any field of
+// the envelope produces a new one.
+//
+// Two things about this migration are the opposite of migration 10's, and a
+// reader who carries the wrong intuition across will misread both:
+//
+// 1. **"Migrated but not populated" is LAWFUL here.** Nothing in migration 11
+//    writes a coordinate. A ledger that has applied it and holds no V2 row at
+//    all is correct, not half-applied, and its legacy rows keep both columns
+//    NULL for ever. Migration 10 activated as it migrated, so absence there was
+//    tampering; here absence is the ordinary state until a producer exists.
+// 2. **No new event type.** The coordinate rides payload keys on the stream
+//    that already exists, so `CONTROL_PLANE_EVENT_TYPES` does not move and the
+//    fold keys off the PRESENCE of the key set rather than off a type.
+
+const REVISION_ENVELOPE = "e".repeat(64);
+
+/** The payload keys that constitute a revision record. */
+function revisionPayload(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    revisionId: randomUUID(),
+    revisionNumber: 1,
+    attemptNumber: 1,
+    envelopeSha256: REVISION_ENVELOPE,
+    ...overrides,
+  };
+}
+
+interface StreamCoordinateRow {
+  readonly sequence: number;
+  readonly attempt: number;
+  readonly revision_number: number | null;
+  readonly attempt_number: number | null;
+}
+
+function readCoordinates(path: string): StreamCoordinateRow[] {
+  const raw = new Database(path);
+  try {
+    return raw
+      .prepare(
+        "SELECT sequence, attempt, revision_number, attempt_number FROM control_plane_events " +
+          "ORDER BY sequence ASC",
+      )
+      .all() as StreamCoordinateRow[];
+  } finally {
+    raw.close();
+  }
+}
+
+interface RevisionRow {
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly revision_id: string;
+  readonly envelope_sha256: string;
+  readonly restored_from_revision_id: string | null;
+  readonly created_at: string;
+  readonly created_by: string;
+  readonly contract_version: string;
+  readonly sequence: number;
+}
+
+function readRevisions(path: string): RevisionRow[] {
+  const raw = new Database(path);
+  try {
+    return raw
+      .prepare(
+        "SELECT * FROM task_revision_read_model ORDER BY task_id ASC, revision_number ASC",
+      )
+      .all() as RevisionRow[];
+  } finally {
+    raw.close();
+  }
+}
+
+/**
+ * Plant a row on the stream by raw SQL, bypassing the append door.
+ *
+ * The trigger is the subject of these drills, and the door composes the
+ * coordinate correctly by construction — so a test that went through the door
+ * could never reach the states the trigger exists to refuse.
+ */
+function plantStreamRow(
+  path: string,
+  columns: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): string {
+  withRawDatabase(path, (raw) => {
+    const event = {
+      contractVersion: CONTRACT_VERSION,
+      eventId: randomUUID(),
+      taskId: columns["task_id"],
+      attempt: columns["attempt"] ?? 1,
+      transitionId: "planted",
+      idempotencyKey: randomUUID(),
+      type: "TASK_DISCOVERED",
+      fromState: null,
+      toState: "DISCOVERED",
+      emittedBy: "kimi/k3/coordinator/01",
+      occurredAt: "2026-09-11T09:00:00.000Z",
+      recordedAt: "2026-09-11T09:00:00.000Z",
+      correlationId: null,
+      causationId: null,
+      payload,
+    };
+    raw
+      .prepare(
+        "INSERT INTO control_plane_events (" +
+          "event_id, idempotency_key, task_id, attempt, revision_number, attempt_number, " +
+          "transition_id, type, from_state, to_state, emitted_by, occurred_at, recorded_at, " +
+          "contract_version, event_json, previous_sha256, event_sha256" +
+          ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        event.eventId,
+        event.idempotencyKey,
+        event.taskId,
+        columns["attempt"] ?? 1,
+        columns["revision_number"] ?? null,
+        columns["attempt_number"] ?? null,
+        event.transitionId,
+        event.type,
+        null,
+        event.toState,
+        event.emittedBy,
+        event.occurredAt,
+        event.recordedAt,
+        CONTRACT_VERSION,
+        JSON.stringify(event),
+        "0".repeat(64),
+        randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, ""),
+      );
+  });
+  // A value rather than `void`, so a caller can write the refusal as an arrow
+  // shorthand without tripping the no-confusing-void-expression rule.
+  return "planted";
+}
+
+describe("the V2 coordinate travels on the stream, or does not travel at all", () => {
+  it("N1: the trigger refuses every half of a coordinate, and lets a legacy row through", () => {
+    const path = temporaryDatabase();
+    open(path).close();
+    const taskId = randomUUID();
+
+    // A legacy row: both columns NULL, `attempt` populated. This is what every
+    // row written before migration 11 looks like and what every row this build
+    // writes looks like until a V2 producer exists — so it must pass, and a
+    // trigger that refused it would make the migration unusable.
+    expect(() => plantStreamRow(path, { task_id: taskId, attempt: 1 }, {})).not.toThrow();
+
+    // One half without the other, in both directions.
+    expect(() =>
+      plantStreamRow(
+        path,
+        { task_id: taskId, attempt: 2, revision_number: 1 },
+        { revisionNumber: 1 },
+      ),
+    ).toThrow(/both columns or neither/);
+    expect(() =>
+      plantStreamRow(
+        path,
+        { task_id: taskId, attempt: 2, attempt_number: 1 },
+        { attemptNumber: 1 },
+      ),
+    ).toThrow(/both columns or neither/);
+
+    // Zero and negative are not counts.
+    for (const value of [0, -1]) {
+      expect(() =>
+        plantStreamRow(
+          path,
+          { task_id: taskId, attempt: 2, revision_number: value, attempt_number: 1 },
+          { revisionNumber: value, attemptNumber: 1 },
+        ),
+        String(value),
+      ).toThrow(/must be a positive count/);
+      expect(() =>
+        plantStreamRow(
+          path,
+          { task_id: taskId, attempt: 2, revision_number: 1, attempt_number: value },
+          { revisionNumber: 1, attemptNumber: value },
+        ),
+        String(value),
+      ).toThrow(/must be a positive count/);
+    }
+
+    // A column that disagrees with the body it travels in. This is the case the
+    // whole trigger exists for: two answers to one question, in one row.
+    expect(() =>
+      plantStreamRow(
+        path,
+        { task_id: taskId, attempt: 2, revision_number: 9, attempt_number: 1 },
+        { revisionNumber: 1, attemptNumber: 1 },
+      ),
+    ).toThrow(/revision_number disagrees with its own event_json/);
+    expect(() =>
+      plantStreamRow(
+        path,
+        { task_id: taskId, attempt: 2, revision_number: 1, attempt_number: 9 },
+        { revisionNumber: 1, attemptNumber: 1 },
+      ),
+    ).toThrow(/attempt_number disagrees with its own event_json/);
+
+    // A complete, agreeing V2 row passes — so none of the refusals above is
+    // refusing the shape itself.
+    expect(() =>
+      plantStreamRow(
+        path,
+        { task_id: taskId, attempt: 2, revision_number: 1, attempt_number: 1 },
+        { revisionNumber: 1, attemptNumber: 1 },
+      ),
+    ).not.toThrow();
+
+    expect(readCoordinates(path).map((row) => [row.revision_number, row.attempt_number])).toEqual([
+      [null, null],
+      [1, 1],
+    ]);
+  });
+
+  it("N13: the trigger refuses a body that claims a coordinate the columns do not", () => {
+    // The reverse direction, and the one a forward-only trigger would miss.
+    // Without it a writer could record the coordinate in the payload and leave
+    // the columns NULL: the row would read as legacy for ever while its own
+    // event said otherwise, and every query written against the columns would
+    // silently skip it.
+    const path = temporaryDatabase();
+    open(path).close();
+    const taskId = randomUUID();
+
+    expect(() =>
+      plantStreamRow(path, { task_id: taskId, attempt: 1 }, { revisionNumber: 2, attemptNumber: 1 }),
+    ).toThrow(/event_json carries a V2 coordinate the columns do not/);
+
+    // Either key alone is enough to trip it: a body half-claiming a coordinate
+    // is not a legacy row either.
+    expect(() =>
+      plantStreamRow(path, { task_id: taskId, attempt: 1 }, { revisionNumber: 2 }),
+    ).toThrow(/event_json carries a V2 coordinate the columns do not/);
+    expect(() =>
+      plantStreamRow(path, { task_id: taskId, attempt: 1 }, { attemptNumber: 1 }),
+    ).toThrow(/event_json carries a V2 coordinate the columns do not/);
+
+    expect(readCoordinates(path)).toHaveLength(0);
+  });
+
+  it("populates the columns from the payload the caller already sent", () => {
+    // The door's half of the same law. The columns are a projection of the
+    // body, never a second source a caller has to remember to fill.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "v1" }));
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "v2",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        payload: revisionPayload({ revisionNumber: 2, attemptNumber: 3 }),
+      }),
+    );
+    ledger.close();
+
+    expect(readCoordinates(ledger.path).map((row) => [row.revision_number, row.attempt_number])).toEqual([
+      [null, null],
+      [2, 3],
+    ]);
+
+    // The legacy `attempt` is still populated on the V2 row: every query
+    // written before this migration still finds it.
+    expect(readCoordinates(ledger.path).map((row) => row.attempt)).toEqual([1, 1]);
+  });
+
+  it("N10: a migrated ledger with no V2 row reports an empty projection, inventing nothing", () => {
+    // The lawful window this migration deliberately opens. Everything is
+    // applied, nothing is populated, and the correct report is emptiness —
+    // not a zero, not a guess, and above all not a finding.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedTask(ledger, taskId, "kimi/k3/coordinator/01");
+
+    expect(readRevisions(ledger.path)).toEqual([]);
+    expect(ledger.getTask(taskId)?.latestRevisionNumber).toBeNull();
+    expect(ledger.getTask(taskId)?.envelopeSha256).toBeNull();
+    expect(ledger.getTask(taskId)?.latestAttemptNumber).toBeNull();
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // And the watermark is LEVEL with the head rather than frozen at zero: the
+    // fold saw every event and wrote no row, which is current, not behind.
+    const watermark = ledger
+      .status()
+      .projections.find((projection) => projection.name === "task_revision_read_model");
+    expect(watermark?.watermarks[0]?.appliedThroughSequence).toBe(ledger.status().headSequence);
+  });
+});
+
+describe("the revision record is written once, or refused", () => {
+  it("N3 and N4: the coordinate and the revision id are each unique", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const revisionId = randomUUID();
+    ledger.append(
+      makeEvent({ taskId, transitionId: "r1", payload: revisionPayload({ revisionId }) }),
+    );
+    ledger.close();
+
+    // N4: `(task_id, revision_number)` is the primary key. A second row at the
+    // same coordinate is not an update — the coordinate IS the identity of a
+    // unit of work, and two rows would be two answers to "what was asked".
+    withRawDatabase(path, (raw) => {
+      expect(() =>
+        raw
+          .prepare(
+            "INSERT INTO task_revision_read_model (task_id, revision_number, revision_id, " +
+              "envelope_sha256, restored_from_revision_id, created_at, created_by, " +
+              "contract_version, sequence) VALUES (?, 1, ?, ?, NULL, ?, ?, ?, 2)",
+          )
+          .run(taskId, randomUUID(), REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION),
+      ).toThrow(/UNIQUE|PRIMARY KEY/i);
+
+      // N3: and the revision id is globally unique, so a handle cannot name two
+      // revisions — which is the whole reason it exists beside the coordinate.
+      expect(() =>
+        raw
+          .prepare(
+            "INSERT INTO task_revision_read_model (task_id, revision_number, revision_id, " +
+              "envelope_sha256, restored_from_revision_id, created_at, created_by, " +
+              "contract_version, sequence) VALUES (?, 2, ?, ?, NULL, ?, ?, ?, 3)",
+          )
+          .run(randomUUID(), revisionId, REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION),
+      ).toThrow(/UNIQUE/i);
+
+      // The CHECK is real too: revision numbering starts at one.
+      expect(() =>
+        raw
+          .prepare(
+            "INSERT INTO task_revision_read_model (task_id, revision_number, revision_id, " +
+              "envelope_sha256, restored_from_revision_id, created_at, created_by, " +
+              "contract_version, sequence) VALUES (?, 0, ?, ?, NULL, ?, ?, ?, 4)",
+          )
+          .run(randomUUID(), randomUUID(), REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION),
+      ).toThrow(/CHECK|constraint/i);
+    });
+  });
+
+  it("N14: a second arrival at one coordinate is a replay, or a refusal, never a rewrite", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const revisionId = randomUUID();
+    const payload = revisionPayload({ revisionId });
+
+    ledger.append(makeEvent({ taskId, transitionId: "r1", payload }));
+
+    // The SAME content again, under a different transition so it is a genuinely
+    // new event rather than an idempotent append. The revision row is already
+    // there and identical: nothing is written and nothing is refused, because a
+    // retry that says the same thing has to stay safe.
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r1-again",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        payload,
+      }),
+    );
+    expect(readRevisions(path)).toHaveLength(1);
+
+    // DIFFERENT content at the same coordinate is refused. The row is a record
+    // of what was asked; rewriting it would destroy the thing it preserves.
+    const conflict = caught(() =>
+      ledger.append(
+        makeEvent({
+          taskId,
+          transitionId: "r1-conflict",
+          fromState: "DISCOVERED",
+          toState: "DISCOVERED",
+          payload: revisionPayload({ revisionId, envelopeSha256: "f".repeat(64) }),
+        }),
+      ),
+    );
+    expect(conflict).toBeInstanceOf(LedgerValidationError);
+    expect((conflict as Error).message).toContain("already recorded with different content");
+
+    // The refusal rolled the whole append back: no event, no row, no drift.
+    expect(readRevisions(path)).toHaveLength(1);
+    expect(readRevisions(path)[0]?.envelope_sha256).toBe(REVISION_ENVELOPE);
+    expect(ledger.listEvents().events).toHaveLength(2);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // And a REPLAY refuses the same history, so the incremental path and a
+    // rebuild agree about which ledgers are writable.
+    ledger.close();
+    const reopened = open(path);
+    expect(reopened.rebuildReadModel().replayedEvents).toBe(2);
+    expect(readRevisions(path)).toHaveLength(1);
+  });
+
+  it("N8: two revisions may share an envelope digest, which is what restore means", () => {
+    // §7.3. Restoring an earlier envelope is a NEW revision with the SAME
+    // digest, and a `UNIQUE(task_id, envelope_sha256)` would forbid exactly the
+    // case the model exists to allow. The index over the digest is therefore
+    // NOT unique, and `restored_from_revision_id` is what says why the two
+    // agree rather than leaving a reader to guess.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const first = randomUUID();
+
+    ledger.append(
+      makeEvent({ taskId, transitionId: "r1", payload: revisionPayload({ revisionId: first }) }),
+    );
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r2",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        payload: revisionPayload({ revisionNumber: 2, envelopeSha256: "a".repeat(64) }),
+      }),
+    );
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r3",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        payload: revisionPayload({
+          revisionNumber: 3,
+          envelopeSha256: REVISION_ENVELOPE,
+          restoredFromRevisionId: first,
+        }),
+      }),
+    );
+
+    const rows = readRevisions(path);
+    expect(rows.map((row) => [row.revision_number, row.envelope_sha256])).toEqual([
+      [1, REVISION_ENVELOPE],
+      [2, "a".repeat(64)],
+      [3, REVISION_ENVELOPE],
+    ]);
+    expect(rows[2]?.restored_from_revision_id).toBe(first);
+    expect(rows[0]?.restored_from_revision_id).toBeNull();
+
+    // The task row follows the LATEST revision, all three fields together.
+    expect([
+      ledger.getTask(taskId)?.latestRevisionNumber,
+      ledger.getTask(taskId)?.envelopeSha256,
+    ]).toEqual([3, REVISION_ENVELOPE]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N7: a pre-artifact revision rebuilds identically twice, touching no filesystem", () => {
+    // B-4, which is negative 12 of datos §16 applied to this cohort. The
+    // revision record carries no artifact reference in this contract version,
+    // so a rebuild has nothing outside the file to consult — and the proof is
+    // that two rebuilds at one head produce byte-identical rows.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedTask(ledger, taskId, "kimi/k3/coordinator/01");
+    const afterSeed = ledger.getTask(taskId)?.currentState ?? "DISCOVERED";
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r1",
+        fromState: afterSeed,
+        toState: afterSeed,
+        payload: revisionPayload({ revisionNumber: 1 }),
+      }),
+    );
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r2",
+        fromState: afterSeed,
+        toState: afterSeed,
+        payload: revisionPayload({ revisionNumber: 2 }),
+      }),
+    );
+    const live = readRevisions(path);
+    expect(live).toHaveLength(2);
+    ledger.close();
+
+    const first = open(path);
+    first.rebuildReadModel();
+    first.close();
+    const afterFirst = readRevisions(path);
+
+    const second = open(path);
+    second.rebuildReadModel();
+    second.close();
+    const afterSecond = readRevisions(path);
+
+    expect(afterFirst).toEqual(live);
+    expect(afterSecond).toEqual(afterFirst);
+
+    // No column of the record names anything outside this file. That is the
+    // claim B-4 is really about, and it is asserted over the row rather than
+    // over the code that wrote it.
+    for (const row of afterSecond) {
+      expect(Object.keys(row).sort()).toEqual([
+        "contract_version",
+        "created_at",
+        "created_by",
+        "envelope_sha256",
+        "restored_from_revision_id",
+        "revision_id",
+        "revision_number",
+        "sequence",
+        "task_id",
+      ]);
+    }
+  });
+});
+
+describe("migration 11 applies whole, over a ledger that already has a history", () => {
+  it("N12: a ledger written under the previous build opens, reads, verifies and rebuilds", () => {
+    // The regression the preaudit's C-2 is about. `CONTRACT_VERSION` does NOT
+    // move in this packet, precisely so that a ledger full of history under the
+    // previous build stays readable — a version literal moved without a
+    // supported-set mechanism would make every one of those events unparseable.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    const taskId = randomUUID();
+    seedTask(seeded, taskId, "kimi/k3/coordinator/01");
+    const headBefore = seeded.status().headSequence;
+    const tasksBefore = seeded.listTasks().tasks.length;
+    seeded.close();
+
+    // Rewind to the pre-migration-11 shape. This is what such a ledger looks
+    // like on disk when a build that predates this packet last touched it.
+    withRawDatabase(path, (raw) => {
+      dropTaskRevisionIdentity(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(11);
+    });
+
+    const migrated = open(path);
+    expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    ]);
+
+    // Reads still answer, with the same rows and the same head.
+    expect(migrated.status().headSequence).toBe(headBefore);
+    expect(migrated.listTasks().tasks).toHaveLength(tasksBefore);
+    expect(migrated.listEvents().events).toHaveLength(headBefore);
+    expect(migrated.getTask(taskId)).not.toBeNull();
+
+    // It verifies clean, which is the assertion that would fail if the
+    // watermark had been seeded at a literal zero behind a non-zero head.
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+
+    // And it rebuilds, producing the same projections a live fold produced.
+    const rebuilt = migrated.rebuildReadModel();
+    expect(rebuilt.replayedEvents).toBe(headBefore);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    expect(readRevisions(path)).toEqual([]);
+
+    // Every legacy row keeps both columns NULL. Nothing backfilled a number it
+    // could not know.
+    expect(readCoordinates(path).every((row) => row.revision_number === null)).toBe(true);
+  });
+
+  it("N2: the preflight refuses a ledger whose history already claims the V2 namespace", () => {
+    // Streams §1.1 requires the migration that enables the V2 idempotency key
+    // to check that no V2 key collides with a historical one, and to refuse
+    // explicitly. Before any V2 row exists the checkable question is exactly
+    // "is the namespace free", and it has to be asked NOW: the column is
+    // UNIQUE, so a collision found later is a constraint failure naming one row
+    // and no coordinate, on a ledger already in production.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    seedTask(seeded, randomUUID(), "kimi/k3/coordinator/01");
+    seeded.close();
+
+    withRawDatabase(path, (raw) => {
+      dropTaskRevisionIdentity(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(11);
+      // Two historical rows squatting in the namespace, planted the only way
+      // they could have arrived: by a writer that predates the reservation.
+      raw.exec(
+        "DROP TRIGGER control_plane_events_deny_update; " +
+          "DROP TRIGGER control_plane_events_deny_delete;",
+      );
+      raw
+        .prepare("UPDATE control_plane_events SET idempotency_key = ? WHERE sequence = 1")
+        .run("v2/control_plane_events/a/1/1/discover");
+      raw
+        .prepare("UPDATE control_plane_events SET idempotency_key = ? WHERE sequence = 2")
+        .run("v2/control_plane_events/a/1/2/classify");
+    });
+
+    const refusal = caught(() => open(path));
+    expect(refusal).toBeInstanceOf(LedgerMigrationError);
+    // Named, counted, and not repaired: the message says which rows and how
+    // many, and the migration declines rather than rewriting anybody's key.
+    expect((refusal as Error).message).toContain("2 historical idempotency key(s)");
+    expect((refusal as Error).message).toContain("sequence 1 holds v2/control_plane_events/a/1/1/discover");
+    expect((refusal as Error).message).toContain("will not rewrite");
+
+    // Nothing was applied. The refusal left the ledger exactly where it was,
+    // and it is repeatable rather than a half-migration.
+    withRawDatabase(path, (raw) => {
+      const applied = (
+        raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
+          version: number;
+        }[]
+      ).map((row) => row.version);
+      expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(
+        (raw.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name = ?").get(
+          "task_revision_read_model",
+        ) as { n: number }).n,
+      ).toBe(0);
+    });
+    expect(caught(() => open(path))).toBeInstanceOf(LedgerMigrationError);
+  });
+
+  it("N9: a failure in the middle of the migration leaves nothing applied", () => {
+    // The same claim P-08/A2 makes about migration 10, made here: preflight,
+    // DDL, watermark seed and the migration row are one transaction. A ledger
+    // holding the table but not the watermark — or the columns but not the
+    // trigger — is not a state anything may observe.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    seedTask(seeded, randomUUID(), "kimi/k3/coordinator/01");
+    seeded.close();
+
+    withRawDatabase(path, (raw) => {
+      dropTaskRevisionIdentity(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(11);
+      // The fault: a table by the name the migration is about to create. The
+      // CREATE TABLE aborts, and everything that ran before it in the same
+      // transaction has to go with it.
+      raw.exec("CREATE TABLE task_revision_read_model (planted TEXT) STRICT;");
+    });
+
+    expect(caught(() => open(path))).toBeInstanceOf(Error);
+
+    withRawDatabase(path, (raw) => {
+      const applied = (
+        raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as {
+          version: number;
+        }[]
+      ).map((row) => row.version);
+      expect(applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+
+      // The columns the ALTER statements would have added are absent, which is
+      // the half a non-transactional migration would have leaked: SQLite runs
+      // DDL inside a transaction, and this asserts that it really did.
+      const columns = (
+        raw.prepare("SELECT name FROM pragma_table_info('control_plane_events')").all() as {
+          name: string;
+        }[]
+      ).map((row) => row.name);
+      expect(columns).not.toContain("revision_number");
+      expect(columns).not.toContain("attempt_number");
+
+      // And no watermark row was left behind for a projection that does not
+      // exist.
+      expect(
+        (raw.prepare("SELECT COUNT(*) AS n FROM projection_watermark WHERE projection_name = ?").get(
+          "task_revision_read_model",
+        ) as { n: number }).n,
+      ).toBe(0);
+    });
+  });
+
+  it("seeds the watermark from the head it finds, never from a literal zero", () => {
+    // Migration 9's second case, inherited. A literal zero would make every
+    // ledger in the field fail its own integrity check immediately after a
+    // routine upgrade, with nothing whatsoever wrong with it — so the seed
+    // reads the head out of `ledger_meta` and the fold over the legacy rows is
+    // legitimately empty.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    seedTask(seeded, randomUUID(), "kimi/k3/coordinator/01");
+    const head = seeded.status().headSequence;
+    const count = seeded.status().eventCount;
+    expect(head).toBeGreaterThan(0);
+    seeded.close();
+
+    withRawDatabase(path, (raw) => {
+      dropTaskRevisionIdentity(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(11);
+    });
+
+    const migrated = open(path);
+    const watermark = migrated
+      .status()
+      .projections.find((projection) => projection.name === "task_revision_read_model")
+      ?.watermarks[0];
+    expect([watermark?.appliedThroughSequence, watermark?.eventCount]).toEqual([head, count]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    expect(readRevisions(path)).toEqual([]);
   });
 });

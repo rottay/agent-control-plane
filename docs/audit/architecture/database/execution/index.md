@@ -21,15 +21,15 @@ attempt_number)` → `route_segment_id` → `effect_id` → `dispatch_attempt_id
 | --- | --- | --- | --- |
 | `task_id` | TEXT | NOT NULL | PK. Estable de por vida (§6.1 canónico). |
 | `initiative_id` | TEXT | NULL | Aditivo mig. 4; `NULL` sólo en filas de antes de esa migración, nunca en escritura nueva. |
-| `step_id` | TEXT | NULL | **Aditivo.** `NULL` para tareas fuera de un roadmap (si el caso de uso lo permite); documentado explícitamente, no un `NULL` accidental. |
-| `role` | TEXT | NULL | **Aditivo.** Vigente desde la primera revisión; `NULL` sólo antes de existir la primera revisión. |
-| `envelope_sha256` | TEXT | NULL | **Aditivo.** Denormalización de conveniencia del `envelope_sha256` de la **revisión vigente** (`task_revision_read_model`, §2); no autoritativo — la autoridad es la fila de revisión. |
-| `commit_policy` | TEXT | NULL | **Aditivo.** — |
-| `duel_id` | TEXT | NULL | **Aditivo.** `NULL` fuera de un duelo de modelos; ver [planning](../planning/index.md) §9 `adjudication_read_model`. |
+| `step_id` | TEXT | NULL | **Aditivo, aplicado en migración 11, sin productor todavía.** `NULL` para tareas fuera de un roadmap (si el caso de uso lo permite); documentado explícitamente, no un `NULL` accidental. |
+| `role` | TEXT | NULL | **Aditivo, aplicado en migración 11, sin productor todavía.** Vigente desde la primera revisión; `NULL` sólo antes de existir la primera revisión. Ningún evento la trae hoy y nadie inventa una clave de payload para llenarla: `NULL` significa «no registrado aún», no «ausente». |
+| `envelope_sha256` | TEXT | NULL | **Aditivo, aplicado en migración 11.** Denormalización de conveniencia del `envelope_sha256` de la **revisión vigente** (`task_revision_read_model`, §2); no autoritativo — la autoridad es la fila de revisión. Se mueve junto con las dos siguientes o no se mueve: una tarea que anunciara el número de una revisión y el envelope de otra es el único fallo que una columna de conveniencia no puede producir. |
+| `commit_policy` | TEXT | NULL | **Aditivo, aplicado en migración 11, sin productor todavía.** |
+| `duel_id` | TEXT | NULL | **Aditivo, NO aplicado en migración 11.** Su productor es el flujo de duelos ([planning](../planning/index.md) §9 `adjudication_read_model`) y la columna va con ese packet: una columna sin productor apunta a un puerto vacío. `NULL` fuera de un duelo de modelos. |
 | `current_state` | TEXT | NOT NULL | Valor preservado de la cohorte indicada por `state_vocabulary`, nunca traducción por similitud de nombre ([contratos §2.2](../../contracts/index.md)). |
-| `state_vocabulary` | TEXT | NOT NULL | **Aditivo** en esta proyección mutable, con default de migración `LEGACY` para filas preexistentes; `CHECK IN ('LEGACY','TASK_V2')`. El fold siempre escribe el valor explícito según la cohorte del evento; el default no autoriza inserts nuevos sin versión. No se modifica ningún evento histórico. |
-| `latest_revision_number` | INTEGER | NULL | **Aditivo.** `NULL` sólo antes de existir la primera revisión (transición desde el legacy `latest_attempt`). |
-| `latest_attempt_number` | INTEGER | NULL | **Aditivo.** Igual nulidad. |
+| `state_vocabulary` | TEXT | NOT NULL | **Aditivo, NO aplicado en migración 11.** Va con la transición de vocabulario de estados ([contratos §2.2](../../contracts/index.md)), que trae su `CHECK` y su escritura por cohorte; separarla de su productor dejaría una columna `NOT NULL` con default y sin nadie que escriba el valor explícito. Cuando llegue: default de migración `LEGACY` para filas preexistentes; `CHECK IN ('LEGACY','TASK_V2')`; el fold siempre escribe el valor explícito según la cohorte del evento y el default no autoriza inserts nuevos sin versión. No se modifica ningún evento histórico. |
+| `latest_revision_number` | INTEGER | NULL | **Aditivo, aplicado en migración 11.** `NULL` sólo antes de existir la primera revisión (transición desde el legacy `latest_attempt`), y `NULL` para siempre en una tarea cuya historia entera precede a esa migración. |
+| `latest_attempt_number` | INTEGER | NULL | **Aditivo, aplicado en migración 11.** Igual nulidad. |
 | `latest_attempt` | INTEGER | NOT NULL | **Legacy, congelado.** Contador plano pre-revisión; se sigue poblando por compatibilidad de lectura mientras conviven ambas formas (§15.4 canónico), no se lee para lógica nueva. |
 | `event_count` | INTEGER | NOT NULL | — |
 | `first_sequence` | INTEGER | NOT NULL | — |
@@ -53,9 +53,16 @@ attempt_number)` → `route_segment_id` → `effect_id` → `dispatch_attempt_id
 
 ## 2. `task_revision_read_model`
 
-**Nuevo.** `revision_id` único, PK compuesta `(task_id, revision_number)` (§6.1
-canónico). Cambiar de cuenta no crea revisión; cambiar cualquier campo del envelope, sí
-(§6.2 canónico).
+**Aplicado en migración 11 (P-05/B)**, salvo la columna de artefacto que la fila
+siguiente declara diferida. `revision_id` único, PK compuesta
+`(task_id, revision_number)` (§6.1 canónico). Cambiar de cuenta no crea revisión;
+cambiar cualquier campo del envelope, sí (§6.2 canónico).
+
+La fila es **insert-only**: una segunda llegada a la misma coordenada con el mismo
+contenido es replay idempotente y no escribe; con contenido distinto se rechaza.
+`ON CONFLICT DO UPDATE` está prohibido — una revisión registra lo que se pidió, y
+una coordenada sobreescribible haría de «revisión 2» el nombre del último evento
+que llegó. **Todavía sin productor**: ninguna fila existe hasta P-18.
 
 | Columna | Tipo | Nullable | Semántica |
 | --- | --- | --- | --- |
@@ -63,7 +70,7 @@ canónico). Cambiar de cuenta no crea revisión; cambiar cualquier campo del env
 | `revision_number` | INTEGER | NOT NULL | PK (compuesta). `CHECK >= 1`. |
 | `revision_id` | TEXT | NOT NULL | `UNIQUE`. Identificador global estable de esta revisión, para referenciarla sin la coordenada compuesta. |
 | `envelope_sha256` | TEXT | NOT NULL | Cubre **todos** los campos de `TaskEnvelope` — objetivo, autoridad, `allowedCommands`, `forbiddenActions`, `conflictKeys`, reglas de validación, criterios de elegibilidad, forma de salida esperada, política de checkpoint, `visualEvidenceRequired`, clasificación y emisor de la autoridad (§6.2 canónico). **No** se duplica campo por campo acá: la preimagen exacta vive en el contrato maestro `kernel/contracts`. |
-| `envelope_artifact_reference_id` | TEXT | NOT NULL | El contenido íntegro del envelope es un artefacto de `artifact_class = 'TASK_ENVELOPE'` ([artifacts §2](../artifacts/index.md)). **Se recupera por esta referencia autorizada, no por el digest**: conocer `envelope_sha256` no concede acceso a los bytes. |
+| `envelope_artifact_reference_id` | TEXT | NULL en la cohorte anterior; NOT NULL desde P-36/local | **Aditivo en P-36/local** (decisión 41): la columna no existe en las migraciones anteriores; `NULL` sólo en revisiones registradas antes de esa migración, y nunca se inventa una referencia por digest. El contenido íntegro del envelope es un artefacto de `artifact_class = 'TASK_ENVELOPE'` ([artifacts §2](../artifacts/index.md)). **Se recupera por esta referencia autorizada, no por el digest**: conocer `envelope_sha256` no concede acceso a los bytes. |
 | `restored_from_revision_id` | TEXT | NULL | `NULL` salvo que esta revisión sea la restauración de un envelope anterior. Puede compartir `envelope_sha256` con la revisión restaurada: eso es exactamente el caso que impide una `UNIQUE(task_id, envelope_sha256)` (§7.3 canónico). |
 | `created_at` | TEXT | NOT NULL | — |
 | `created_by` | TEXT | NOT NULL | — |

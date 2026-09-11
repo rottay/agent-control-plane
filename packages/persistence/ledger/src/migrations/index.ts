@@ -1058,6 +1058,155 @@ CREATE UNIQUE INDEX ux_account_events__account_id__version
   ON account_events (account_id, version);
 `,
   },
+  {
+    version: 11,
+    name: "task_revision_identity",
+    sql: `
+-- The revision coordinate, on a stream whose first migration cannot be rewritten.
+--
+-- Migration 1 is immutable and \`attempt\` is \`NOT NULL\`, so a task with
+-- revisions and attempts does not fit the flat integer it already has — and
+-- every new row still has to populate it. Streams §1.1 settles it: two additive
+-- columns, \`NULL\` **only** on legacy rows, agreeing with the \`event_json\`
+-- wherever they are present.
+--
+-- **The "migrated but not populated" window is real and lawful here**, unlike
+-- the account sidecar's activation. Nothing in this migration writes a
+-- coordinate: rows written before it keep both columns \`NULL\` for ever, and a
+-- ledger that has applied 11 and holds no V2 row at all is a correct ledger, not
+-- a half-applied one. That is the opposite of migration 10, where the migration
+-- itself performed the activation and absence was therefore tampering.
+--
+-- **No new event type.** The coordinate travels as payload keys on the stream
+-- that already exists (streams §1.1: the columns "coinciden con el valor del
+-- event_json", and "No son eventos nuevos de composición"), so
+-- \`CONTROL_PLANE_EVENT_TYPES\` does not move and neither does the channel map.
+-- The contract version does not move either: this migration records no event,
+-- and the cohort is told apart by \`revision_number IS NOT NULL\` rather than by
+-- a version literal. The first V2 producer moves it, together with the
+-- supported-versions mechanism a reader needs — ADR 0067.
+ALTER TABLE control_plane_events ADD COLUMN revision_number INTEGER;
+ALTER TABLE control_plane_events ADD COLUMN attempt_number INTEGER;
+
+-- The pairing rule, in both directions.
+--
+-- Forward: the two columns are both absent or both present, positive, and equal
+-- to what the payload says. Backward: a payload that carries the V2 keys may not
+-- arrive with the columns empty or disagreeing. Without the second direction a
+-- writer could record the coordinate in the body and leave the columns \`NULL\`,
+-- and the row would read as legacy for ever while its own event said otherwise.
+CREATE TRIGGER tr_control_plane_events__validate_v2_coordinate
+BEFORE INSERT ON control_plane_events
+BEGIN
+  SELECT RAISE(ABORT, 'control_plane_events V2 coordinate is both columns or neither')
+  WHERE (NEW.revision_number IS NULL) <> (NEW.attempt_number IS NULL);
+
+  SELECT RAISE(ABORT, 'control_plane_events.revision_number must be a positive count')
+  WHERE NEW.revision_number IS NOT NULL AND NEW.revision_number < 1;
+
+  SELECT RAISE(ABORT, 'control_plane_events.attempt_number must be a positive count')
+  WHERE NEW.attempt_number IS NOT NULL AND NEW.attempt_number < 1;
+
+  -- The legacy coordinate is still written on a V2 row: it carries the flat
+  -- \`legacy_attempt_number\` its coordinate was assigned. A V2 row that left it
+  -- empty would be unreachable by every query written before this migration.
+  SELECT RAISE(ABORT, 'control_plane_events.attempt must stay populated on a V2 row')
+  WHERE NEW.attempt IS NULL OR NEW.attempt < 1;
+
+  SELECT RAISE(ABORT, 'control_plane_events.revision_number disagrees with its own event_json')
+  WHERE NEW.revision_number IS NOT NULL
+    AND NEW.revision_number IS NOT json_extract(NEW.event_json, '$.payload.revisionNumber');
+
+  SELECT RAISE(ABORT, 'control_plane_events.attempt_number disagrees with its own event_json')
+  WHERE NEW.attempt_number IS NOT NULL
+    AND NEW.attempt_number IS NOT json_extract(NEW.event_json, '$.payload.attemptNumber');
+
+  SELECT RAISE(ABORT, 'control_plane_events event_json carries a V2 coordinate the columns do not')
+  WHERE NEW.revision_number IS NULL
+    AND (json_extract(NEW.event_json, '$.payload.revisionNumber') IS NOT NULL
+      OR json_extract(NEW.event_json, '$.payload.attemptNumber') IS NOT NULL);
+END;
+
+-- The revision, as its own record (execution §2).
+--
+-- \`(task_id, revision_number)\` is the coordinate; \`revision_id\` is the stable
+-- global handle for referring to a revision without carrying the pair.
+--
+-- **There is deliberately no \`UNIQUE(task_id, envelope_sha256)\`** (§7.3):
+-- restoring an earlier envelope is a NEW revision with the SAME digest, and
+-- that uniqueness would forbid exactly the case the model exists to allow. The
+-- index below answers "which revisions share this envelope" and is not unique.
+--
+-- \`envelope_artifact_reference_id\` is **absent on purpose**, not forgotten:
+-- the artifact plane is P-36/local, the column is \`NOT NULL\` in the target
+-- dictionary, and a \`NOT NULL\` column cannot be populated without the plane
+-- that mints the reference. Decision 41 records it; P-36/local adds the column
+-- with a cohort trigger. Nothing here ever derives a reference from a digest.
+CREATE TABLE task_revision_read_model (
+  task_id                   TEXT    NOT NULL,
+  revision_number           INTEGER NOT NULL,
+  revision_id               TEXT    NOT NULL,
+  envelope_sha256           TEXT    NOT NULL,
+  restored_from_revision_id TEXT,
+  created_at                TEXT    NOT NULL,
+  created_by                TEXT    NOT NULL,
+  contract_version          TEXT    NOT NULL,
+  sequence                  INTEGER NOT NULL,
+  CONSTRAINT pk_task_revision_read_model PRIMARY KEY (task_id, revision_number),
+  CONSTRAINT ck_task_revision_read_model__revision_number CHECK (revision_number >= 1)
+) STRICT;
+
+CREATE UNIQUE INDEX ux_task_revision_read_model__revision_id
+  ON task_revision_read_model (revision_id);
+
+-- Not unique, and that is the point: the restore case above shares a digest.
+CREATE INDEX ix_task_revision_read_model__envelope_sha256
+  ON task_revision_read_model (envelope_sha256, task_id, revision_number);
+
+-- The task projection learns to carry what the revision says.
+--
+-- Every column is additive and \`NULL\`-able, because an applied migration
+-- admits no \`DROP COLUMN\` and rows written before this one legitimately have
+-- no answer. The three below have a producer in this packet: the revision fold
+-- derives them from the record it just wrote.
+ALTER TABLE task_read_model ADD COLUMN envelope_sha256 TEXT;
+ALTER TABLE task_read_model ADD COLUMN latest_revision_number INTEGER;
+ALTER TABLE task_read_model ADD COLUMN latest_attempt_number INTEGER;
+
+-- These three have NO producer today, and the nullity is documented rather
+-- than accidental (execution §1 authorizes exactly this). They are created now
+-- so the shape of the table stops drifting from the dictionary one packet at a
+-- time; nobody invents a payload key to fill them, and a reader must treat
+-- \`NULL\` here as "not recorded yet" rather than as "absent".
+ALTER TABLE task_read_model ADD COLUMN role TEXT;
+ALTER TABLE task_read_model ADD COLUMN step_id TEXT;
+ALTER TABLE task_read_model ADD COLUMN commit_policy TEXT;
+
+-- The watermark, seeded from the head this stream already has.
+--
+-- This is migration 9's second case, not its first: the projection arrives over
+-- \`control_plane_events\`, which may already hold a long history, and the fold
+-- over all of it is legitimately empty because no legacy row carries a V2
+-- coordinate. So the projection IS level with the stream the moment the table
+-- exists, and its metadata must say so. A literal zero would make every ledger
+-- in the field fail its own integrity check immediately after a routine
+-- upgrade, with nothing whatsoever wrong with it.
+--
+-- On a fresh ledger the three subqueries read 0, 0 and the genesis digest, so
+-- this is identical to a literal zero seed there.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  'task_revision_read_model',
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  '1970-01-01T00:00:00.000Z';
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -1077,6 +1226,7 @@ export const MIGRATIONS: readonly Migration[] = SOURCES.map((source) => ({
  */
 export const DERIVED_TABLES: readonly string[] = [
   "worker_task_read_model",
+  "task_revision_read_model",
   "task_read_model",
   "worker_read_model",
   "execution_route_read_model",
@@ -1091,6 +1241,10 @@ export const PROJECTION_NAMES: readonly string[] = [
   "task_read_model",
   "worker_read_model",
   "execution_route_read_model",
+  // Spelled out here and named `TASK_REVISION_PROJECTION` below, because this
+  // list is evaluated before that declaration and the three names above it are
+  // literals too. The pair is asserted equal by the suite.
+  "task_revision_read_model",
 ];
 
 /**
@@ -1118,6 +1272,25 @@ export const REGISTRY_STREAM = "registry_events";
 
 /** The account stream's table name, in the same vocabulary. */
 export const ACCOUNT_STREAM = "account_events";
+
+/**
+ * The projection that holds one row per revision of a task (P-05/B).
+ *
+ * Named rather than spelled out at each of its four use sites — the derived
+ * table list, the projection names, the source pairs and the fold — for the
+ * reason `ROUTING_ASSIGNMENT_PROJECTION` is: a string repeated four times is
+ * four chances to typo one of them into a row nothing reads.
+ */
+export const TASK_REVISION_PROJECTION = "task_revision_read_model";
+
+/**
+ * The migration that adds the revision coordinate and its record.
+ *
+ * Named for the same reason `ACCOUNT_INTEGRITY_MIGRATION` is: the ledger has to
+ * hang a preflight off this exact version, and a bare `11` at the hook would be
+ * a number nobody could search for.
+ */
+export const TASK_REVISION_MIGRATION = 11;
 
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
@@ -1187,6 +1360,7 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: "task_read_model", sourceStream: TASK_STREAM },
   { projectionName: "worker_read_model", sourceStream: TASK_STREAM },
   { projectionName: "execution_route_read_model", sourceStream: TASK_STREAM },
+  { projectionName: TASK_REVISION_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -1316,6 +1490,10 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "trigger", name: "tr_account_event_integrity__deny_update" },
   { type: "trigger", name: "tr_account_event_integrity__deny_delete" },
   { type: "index", name: "ux_account_events__account_id__version" },
+  { type: "trigger", name: "tr_control_plane_events__validate_v2_coordinate" },
+  { type: "table", name: "task_revision_read_model" },
+  { type: "index", name: "ux_task_revision_read_model__revision_id" },
+  { type: "index", name: "ix_task_revision_read_model__envelope_sha256" },
 ];
 
 export interface MigrationConformance {

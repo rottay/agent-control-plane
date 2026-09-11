@@ -7,8 +7,10 @@ import {
   nextRoutingAssignmentFromInitiative,
   nextRoutingAssignmentProjection,
   nextTaskProjection,
+  nextTaskRevisionProjection,
   routingAssignmentId,
 } from "../../src/projection/index.js";
+import { LedgerValidationError } from "../../src/errors/index.js";
 import type { RegistryDocument, TaskReadModel } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 
@@ -433,5 +435,198 @@ describe("the routing assignment fold", () => {
         row: null,
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The revision fold (P-05/B)
+// ---------------------------------------------------------------------------
+
+/**
+ * `nextTaskRevisionProjection`, asserted directly.
+ *
+ * The fold is the whole of B's reading side: a record of a revision is born
+ * from the payload of an event of **any** type that carries the complete key
+ * set, because the adjudication forbids a new event type and a fold that keyed
+ * off a type would therefore have nothing to key off.
+ *
+ * That makes "what counts as complete" the load-bearing decision, and these
+ * drills are where it is pinned. A fold that accepted a partial set would mint
+ * a revision record out of an event that never claimed to be one.
+ */
+describe("the revision fold reads a coordinate, or reads nothing", () => {
+  const REVISION_TASK = "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c01";
+  const REVISION_ID = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d01";
+  const ENVELOPE = "e".repeat(64);
+
+  function revisionEvent(payload: Record<string, unknown>): ControlPlaneEvent {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "2e2e2e2e-2e2e-4e2e-8e2e-2e2e2e2e2e01",
+      taskId: REVISION_TASK,
+      attempt: 3,
+      transitionId: "revise",
+      idempotencyKey: buildIdempotencyKey({
+        taskId: REVISION_TASK,
+        attempt: 3,
+        transitionId: "revise",
+      }),
+      type: "TASK_CLASSIFIED",
+      fromState: "DISCOVERED",
+      toState: "DT_CLASSIFIED",
+      emittedBy: EMITTED_BY,
+      occurredAt: "2026-09-11T09:00:00.000Z",
+      recordedAt: "2026-09-11T09:00:00.000Z",
+      correlationId: null,
+      causationId: null,
+      payload,
+    } as unknown as ControlPlaneEvent;
+  }
+
+  const COMPLETE = {
+    revisionId: REVISION_ID,
+    revisionNumber: 2,
+    attemptNumber: 1,
+    envelopeSha256: ENVELOPE,
+  };
+
+  it("N5: an event with no revision keys leaves the projection untouched", () => {
+    expect(nextTaskRevisionProjection(revisionEvent({}), 7)).toBeNull();
+    expect(nextTaskRevisionProjection(revisionEvent({ route: "irrelevant" }), 7)).toBeNull();
+  });
+
+  it("N11: an event in V1 form is not reinterpreted as a revision", () => {
+    // The shape a ledger written before migration 11 is full of. It must fold
+    // to no revision at all — not to a partial row, and not to an error. A
+    // replay over a legacy ledger has to stay total.
+    for (const payload of [
+      {},
+      { initiativeId: "3f3f3f3f-3f3f-4f3f-8f3f-3f3f3f3f3f01" },
+      { route: { provider: "claude", model: "opus" } },
+      { accountId: "acct-primary", tokens: 12 },
+    ]) {
+      expect(nextTaskRevisionProjection(revisionEvent(payload), 7), JSON.stringify(payload)).toBeNull();
+    }
+  });
+
+  it("requires the whole key set, and a partial set is no revision at all", () => {
+    // Each key removed in turn. A fold that accepted three of four would mint a
+    // record with a field it invented, and the record is the authority for what
+    // was asked — there is nothing to invent it from.
+    for (const missing of Object.keys(COMPLETE)) {
+      const partial = Object.fromEntries(
+        Object.entries(COMPLETE).filter(([key]) => key !== missing),
+      );
+      expect(nextTaskRevisionProjection(revisionEvent(partial), 7), missing).toBeNull();
+    }
+
+    // And a key of the wrong shape is the same as a key absent: a revision
+    // number that is not a positive integer is not a revision number.
+    for (const bad of [0, -1, 1.5, "2", null, Number.MAX_SAFE_INTEGER + 2]) {
+      expect(
+        nextTaskRevisionProjection(revisionEvent({ ...COMPLETE, revisionNumber: bad }), 7),
+        JSON.stringify(bad),
+      ).toBeNull();
+    }
+  });
+
+  it("N6: refuses a revision that carries an artifact reference this contract has no column for", () => {
+    // B-5. The key belongs to P-36/local, and this build has nowhere to put it.
+    // Ignoring it would silently drop a fact the writer believed it recorded;
+    // interpreting it would be a reader pretending to understand a plane that
+    // does not exist here. So the event is refused and the refusal names the
+    // key — which is the one case where this fold does NOT stay total, and the
+    // distinction is deliberate: a payload this contract has no opinion about
+    // is ignored, a payload claiming a fact it cannot represent is not.
+    const carrying = revisionEvent({
+      ...COMPLETE,
+      envelopeArtifactReferenceId: "4a4a4a4a-4a4a-4a4a-8a4a-4a4a4a4a4a01",
+    });
+    expect(() => nextTaskRevisionProjection(carrying, 7)).toThrow(LedgerValidationError);
+    expect(() => nextTaskRevisionProjection(carrying, 7)).toThrow(/artifact reference/);
+
+    // The same payload without that key folds cleanly, so the refusal is about
+    // the key and not about the rest of the record.
+    expect(nextTaskRevisionProjection(revisionEvent(COMPLETE), 7)).not.toBeNull();
+  });
+
+  it("takes every field from the event, never from the payload's say-so", () => {
+    const row = nextTaskRevisionProjection(revisionEvent(COMPLETE), 42);
+    expect(row).toEqual({
+      // The task is the EVENT's, so a payload cannot claim another task's
+      // revision — the same structural binding the route row has.
+      taskId: REVISION_TASK,
+      revisionNumber: 2,
+      revisionId: REVISION_ID,
+      envelopeSha256: ENVELOPE,
+      restoredFromRevisionId: null,
+      createdAt: "2026-09-11T09:00:00.000Z",
+      createdBy: EMITTED_BY,
+      contractVersion: CONTRACT_VERSION,
+      sequence: 42,
+    });
+
+    // A payload that names another task is ignored on that point: `taskId` is
+    // not a key of the revision record at all.
+    const foreign = nextTaskRevisionProjection(
+      revisionEvent({ ...COMPLETE, taskId: "5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a01" }),
+      42,
+    );
+    expect(foreign?.taskId).toBe(REVISION_TASK);
+
+    // `restoredFromRevisionId` is the one optional key, and it is carried when
+    // present: it is what tells a reader that two revisions sharing a digest do
+    // so because one restored the other.
+    const restored = nextTaskRevisionProjection(
+      revisionEvent({ ...COMPLETE, restoredFromRevisionId: REVISION_ID }),
+      42,
+    );
+    expect(restored?.restoredFromRevisionId).toBe(REVISION_ID);
+  });
+
+  it("carries the revision into the task row, all three fields together", () => {
+    // The denormalization on `task_read_model`. The three move as one or not at
+    // all: a task advertising revision 3's number beside revision 2's envelope
+    // is the one failure a convenience column must never produce.
+    const first = nextTaskProjection(null, revisionEvent(COMPLETE), 1);
+    expect([first.latestRevisionNumber, first.envelopeSha256, first.latestAttemptNumber]).toEqual([
+      2,
+      ENVELOPE,
+      1,
+    ]);
+
+    // An event with no revision leaves all three exactly where they were.
+    const carried = nextTaskProjection(first, revisionEvent({}), 2);
+    expect([carried.latestRevisionNumber, carried.envelopeSha256, carried.latestAttemptNumber]).toEqual([
+      2,
+      ENVELOPE,
+      1,
+    ]);
+
+    // A LATER revision replaces all three.
+    const later = nextTaskProjection(
+      carried,
+      revisionEvent({ ...COMPLETE, revisionNumber: 3, envelopeSha256: "f".repeat(64), attemptNumber: 1 }),
+      3,
+    );
+    expect([later.latestRevisionNumber, later.envelopeSha256]).toEqual([3, "f".repeat(64)]);
+
+    // An EARLIER one replaces none of them: a late event from an older revision
+    // must not make the task claim it went backwards, exactly as `latestAttempt`
+    // never decreases.
+    const late = nextTaskProjection(
+      later,
+      revisionEvent({ ...COMPLETE, revisionNumber: 1, envelopeSha256: "0".repeat(64) }),
+      4,
+    );
+    expect([late.latestRevisionNumber, late.envelopeSha256]).toEqual([3, "f".repeat(64)]);
+
+    // And a task whose whole history is V1 keeps all three null, for ever.
+    const legacy = nextTaskProjection(null, revisionEvent({}), 1);
+    expect([legacy.latestRevisionNumber, legacy.envelopeSha256, legacy.latestAttemptNumber]).toEqual([
+      null,
+      null,
+      null,
+    ]);
   });
 });

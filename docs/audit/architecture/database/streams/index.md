@@ -56,8 +56,8 @@ migración.
 | `idempotency_key` | TEXT | NOT NULL | — | `UNIQUE`. |
 | `task_id` | TEXT | NOT NULL | — | Sujeto del stream. |
 | `attempt` | INTEGER | NOT NULL | — | **Legacy, congelado y `NOT NULL`.** Coordenada `(task_id, attempt)` sólo válida para eventos ya escritos con esta forma. Una fila V2 **igual debe poblarla**: lleva su `legacy_attempt_number` asignado (§1.1). |
-| `revision_number` | INTEGER | NULL | — | **Aditiva V2.** `NULL` sólo en filas legacy. En una fila V2 es `NOT NULL` y `> 0`, y **coincide con el valor del `event_json`**. |
-| `attempt_number` | INTEGER | NULL | — | **Aditiva V2.** `NULL` sólo en filas legacy. En una fila V2 es `NOT NULL` y `> 0`, y **coincide con el valor del `event_json`**. Presente **junto con** `revision_number`: las dos o ninguna. |
+| `revision_number` | INTEGER | NULL | — | **Aditiva V2, aplicada en migración 11.** `NULL` sólo en filas legacy. En una fila V2 es `NOT NULL` y `> 0`, y **coincide con el valor del `event_json`**. Todavía **sin productor**: ninguna fila V2 existe hasta P-18. |
+| `attempt_number` | INTEGER | NULL | — | **Aditiva V2, aplicada en migración 11.** `NULL` sólo en filas legacy. En una fila V2 es `NOT NULL` y `> 0`, y **coincide con el valor del `event_json`**. Presente **junto con** `revision_number`: las dos o ninguna. Sin productor hasta P-18. |
 | `transition_id` | TEXT | NOT NULL | — | Perfil común. |
 | `type` | TEXT | NOT NULL | — | Catálogo en [execution](../execution/index.md). |
 | `from_state` | TEXT | NULL | — | `NULL` en el evento que abre la tarea. |
@@ -87,7 +87,7 @@ migración.
 | `control_plane_events_deny_update` | `TRIGGER BEFORE UPDATE ... RAISE(ABORT)` | Legacy. Inventario de objetos lo verifica al abrir. |
 | `control_plane_events_deny_delete` | `TRIGGER BEFORE DELETE ... RAISE(ABORT)` | Legacy. |
 | `tr_control_plane_events__validate_new_rows` | **Aditivo.** `TRIGGER BEFORE INSERT` que valida forma de `event_sha256`/`previous_sha256` (§0) y el par `causation_*` en toda fila **nueva**; no valida ni corrige filas históricas ya escritas sin esa forma comprobada. | Sustituto de un `CHECK` que SQLite no permite agregar a una tabla existente. |
-| `tr_control_plane_events__validate_v2_coordinate` | **Aditivo.** `TRIGGER BEFORE INSERT`: `revision_number` y `attempt_number` son ambos `NULL` o ambos `NOT NULL` y `> 0`; cuando no son `NULL`, coinciden con los valores del `event_json`; y `attempt` sigue poblado. | §1.1 |
+| `tr_control_plane_events__validate_v2_coordinate` | **Aditivo, aplicado en migración 11.** `TRIGGER BEFORE INSERT`: `revision_number` y `attempt_number` son ambos `NULL` o ambos `NOT NULL` y `> 0`; cuando no son `NULL`, coinciden con los valores del `event_json`; y `attempt` sigue poblado. Impone además la **dirección inversa**: un `event_json` con claves V2 y columnas ausentes o distintas rechaza — sin eso, la coordenada podría quedar sólo en el cuerpo y la fila leerse como legacy para siempre. | §1.1 |
 | OCC | `UNIQUE(event_id)`, `UNIQUE(idempotency_key)`, `UNIQUE(event_sha256)` | Un reintento con la misma clave de idempotencia no duplica fila. |
 | Transacción | `appendBatch`: cabeza (`ledger_meta.head_*`) + fila(s) + proyección afectada + intención de outbox, una sola transacción `BEGIN IMMEDIATE` (§11 canónico). | |
 | Rebuild | No aplica: es autoridad, nunca se borra ni reconstruye. | |
@@ -141,6 +141,17 @@ preimagen canónica es:
 La migración que la habilita **comprueba que ninguna clave V2 colisione con una
 clave histórica** y **rechaza explícitamente** si encuentra una colisión. **Nada
 rehashea eventos antiguos.**
+
+**Aplicado en migración 11 (P-05/B), con un alcance acotado que hay que leer
+literal.** Antes de que exista una sola fila V2 la única pregunta comprobable es
+si el namespace está libre, y ésa es la que el preflight hace: rehúsa si alguna
+`idempotency_key` histórica ya empieza con `v2/`, nombrando las filas y sin
+reparar ninguna. Tiene que preguntarse **ahí** y no cuando se escriba la primera
+clave V2 — la columna es `UNIQUE`, así que una colisión descubierta después llega
+como fallo de restricción que nombra una fila y ninguna coordenada, sobre un
+ledger que ya está en producción. La **composición** de la preimagen completa
+sigue siendo del productor (P-18); B sólo reserva el namespace y declara el
+separador.
 
 **Lectores legacy.** Un lector que sólo entiende la forma V1 **no interpreta** una
 fila V2 como si fuera V1: la versión de contrato no soportada produce un rechazo o

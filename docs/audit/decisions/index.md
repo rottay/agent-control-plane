@@ -82,6 +82,7 @@ de test o de atomicidad. Cada una tiene su desarrollo en el documento dueño.
 | 38 | Espera humana con plazo/CAS y cota temporal durable; grant sólo habilita revalidación, aviso/timer no conceden permiso | [interacción §3](../architecture/contracts/interaction/index.md) |
 | 39 | Duelo QUALITY_ONLY compara dos tareas READ_ONLY/NO_COMMIT con árbitro independiente; costo UNKNOWN visible no impide ganador técnico ni acredita ventaja económica | [interacción §4](../architecture/contracts/interaction/index.md) |
 | 40 | Anomalías reutilizan la estadística de estimación; detección, intención y confirmación son distintas. No repausar ni ampliar autoridad por detecciones repetidas | [interacción §5](../architecture/contracts/interaction/index.md) |
+| 41 | `task_revision_read_model` nace sin `envelope_artifact_reference_id`: la columna la agrega P-36/local por `ADD COLUMN` + trigger `BEFORE INSERT` por cohorte de `contract_version` + clave en el payload del evento de revisión; `NULL` en toda revisión anterior; **nunca** se inventa una referencia por digest | [execution §2](../architecture/database/execution/index.md); ADR de P-05/B |
 
 ---
 

@@ -171,6 +171,55 @@ export interface TaskReadModel {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly isTerminal: boolean;
+  /**
+   * What the latest revision of this task says (P-05/B).
+   *
+   * All three are `null` until a revision record arrives, and they are `null`
+   * **for ever** on a task whose whole history predates migration 11 — which is
+   * a lawful state, not a gap: the coordinate is written by a producer that
+   * does not exist yet, and nothing backfills a number it cannot know.
+   *
+   * A convenience denormalization and never the authority: the authority is the
+   * row in `task_revision_read_model`. A reader that needs certainty asks
+   * there.
+   */
+  readonly envelopeSha256: string | null;
+  readonly latestRevisionNumber: number | null;
+  readonly latestAttemptNumber: number | null;
+}
+
+/**
+ * One revision of a task's work — execution §2, the second rung of the identity
+ * ladder (P-05/B).
+ *
+ * The coordinate is `(taskId, revisionNumber)`; `revisionId` is the stable
+ * global handle for naming a revision without carrying the pair. A change to
+ * any field of the envelope is a new revision; a retry of the same revision is
+ * a new attempt, and attempts are not here.
+ *
+ * **The row is insert-only.** A second arrival at the same coordinate with
+ * different content is refused, not merged: a revision is a record of what was
+ * asked, and rewriting it would destroy the thing it exists to preserve.
+ *
+ * `envelopeSha256` is NOT unique per task, on purpose. Restoring an earlier
+ * envelope is a new revision with the same digest (§7.3), and a uniqueness
+ * constraint there would forbid exactly the case the model exists to allow —
+ * which is why `restoredFromRevisionId` exists to say so explicitly.
+ *
+ * `envelopeArtifactReferenceId` is absent, not forgotten: the artifact plane is
+ * P-36/local and a `NOT NULL` reference cannot be minted without it. Decision
+ * 41 and ADR 0067 record the deferral.
+ */
+export interface TaskRevisionReadModel {
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly revisionId: string;
+  readonly envelopeSha256: string;
+  readonly restoredFromRevisionId: string | null;
+  readonly createdAt: string;
+  readonly createdBy: string;
+  readonly contractVersion: string;
+  readonly sequence: number;
 }
 
 export interface TaskQuery {

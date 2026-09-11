@@ -208,6 +208,7 @@ export type {
   TaskPage,
   TaskQuery,
   TaskReadModel,
+  TaskRevisionReadModel,
   WorkerPage,
   WorkerQuery,
   WorkerReadModel,

@@ -608,6 +608,13 @@ describe("integrity", () => {
     // stream that ALREADY holds three rows. That is what fixes the baseline at
     // 3 rather than at 0 — a ledger created empty and then grown has a baseline
     // of 0, and 0 is never ahead of anything.
+    //
+    // Rewinding to before 10 means undoing 11 as well, because the reopen
+    // re-applies everything the row set no longer claims. `ALTER TABLE ... ADD
+    // COLUMN` is not idempotent, so a re-applied 11 over a schema that still
+    // carries the coordinate aborts on "duplicate column name". The order is
+    // forced rather than stylistic: SQLite refuses `DROP COLUMN` for a column a
+    // trigger references, so the coordinate trigger goes before the columns.
     const rewind = new DatabaseSync(path);
     rewind.exec("DELETE FROM ledger_meta WHERE key LIKE 'account_integrity_%'");
     rewind.exec(
@@ -615,6 +622,22 @@ describe("integrity", () => {
         "DROP TRIGGER tr_account_event_integrity__deny_update;" +
         "DROP INDEX ux_account_events__account_id__version;" +
         "DROP TABLE account_event_integrity;",
+    );
+    rewind.exec(
+      "DROP TRIGGER tr_control_plane_events__validate_v2_coordinate;" +
+        "DROP INDEX ix_task_revision_read_model__envelope_sha256;" +
+        "DROP INDEX ux_task_revision_read_model__revision_id;" +
+        "DROP TABLE task_revision_read_model;" +
+        "ALTER TABLE control_plane_events DROP COLUMN revision_number;" +
+        "ALTER TABLE control_plane_events DROP COLUMN attempt_number;" +
+        "ALTER TABLE task_read_model DROP COLUMN envelope_sha256;" +
+        "ALTER TABLE task_read_model DROP COLUMN latest_revision_number;" +
+        "ALTER TABLE task_read_model DROP COLUMN latest_attempt_number;" +
+        "ALTER TABLE task_read_model DROP COLUMN role;" +
+        "ALTER TABLE task_read_model DROP COLUMN step_id;" +
+        "ALTER TABLE task_read_model DROP COLUMN commit_policy;" +
+        "DELETE FROM projection_watermark " +
+        "WHERE projection_name = 'task_revision_read_model';",
     );
     rewind.exec("DELETE FROM schema_migrations WHERE version >= 10");
     rewind.close();

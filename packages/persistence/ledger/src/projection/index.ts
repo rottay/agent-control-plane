@@ -9,6 +9,7 @@ import {
   type WorkerRole,
 } from "@acp/contracts";
 
+import { LedgerValidationError } from "../errors/index.js";
 import type {
   ExecutionRouteReadModel,
   InitiativeReadModel,
@@ -19,6 +20,7 @@ import type {
   RoutingAssignmentProjection,
   RoutingAssignmentReadModel,
   TaskReadModel,
+  TaskRevisionReadModel,
   WorkerReadModel,
 } from "../types/index.js";
 
@@ -34,6 +36,54 @@ import type {
  * `initiativeId`, which this module has always read as a literal.
  */
 const RECORDED_ROUTE_KEY = "route";
+
+/**
+ * The payload keys that constitute a revision record (P-05/B, V8/C-5).
+ *
+ * Declared **once**, here, and deliberately not mirrored anywhere yet. The
+ * producer is P-18; when it arrives it inherits these names and the fence pins
+ * the equality of the two declarations, exactly as it does for
+ * `RECORDED_ROUTE_KEY` above. Adding that law now would pin one declaration
+ * against nothing.
+ *
+ * **Presence, not type.** A revision record is born from the first event of
+ * **any** type that carries the complete set. That is the only reading
+ * consistent with the adjudication that no new event type is created: if the
+ * fold keyed off a type, the coordinate would need a type of its own, and it
+ * does not have one. An event carrying a partial set produces no row at all —
+ * it is not a malformed revision, it is not a revision.
+ *
+ * `restoredFromRevisionId` is optional and is the one key that may legitimately
+ * be absent: most revisions restore nothing.
+ */
+const REVISION_ID_KEY = "revisionId";
+const REVISION_NUMBER_KEY = "revisionNumber";
+const ATTEMPT_NUMBER_KEY = "attemptNumber";
+const ENVELOPE_SHA256_KEY = "envelopeSha256";
+const RESTORED_FROM_REVISION_ID_KEY = "restoredFromRevisionId";
+
+/**
+ * The key a revision record may NOT carry in this version of the contract.
+ *
+ * `envelope_artifact_reference_id` belongs to P-36/local. A reader of this
+ * build that met the key would have to either ignore it — silently dropping a
+ * fact the writer thought it recorded — or interpret a reference to a plane
+ * that does not exist here. Neither is acceptable, so the fold refuses the
+ * event outright and the refusal names the key.
+ */
+const ARTIFACT_REFERENCE_KEY = "envelopeArtifactReferenceId";
+
+/** A payload value that is a non-empty string, or null. */
+function payloadText(payload: ControlPlaneEvent["payload"], key: string): string | null {
+  const value = payload[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** A payload value that is a positive safe integer, or null. */
+function payloadCount(payload: ControlPlaneEvent["payload"], key: string): number | null {
+  const value = payload[key];
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 ? value : null;
+}
 
 /**
  * Pure projection rules.
@@ -90,6 +140,16 @@ export function nextTaskProjection(
     isTerminal: isTerminalState(event.toState),
   } as const;
 
+  // What the latest revision says, carried here as a convenience (P-05/B,
+  // V8/C-6). The authority is the revision row; these three are a shortcut so a
+  // task list does not have to join to answer "which envelope is this on".
+  //
+  // Read from the SAME fold the revision row comes from, not from a second
+  // reading of the payload, so the denormalization cannot come to disagree with
+  // the record it denormalizes.
+  const revision = nextTaskRevisionProjection(event, sequence);
+  const attemptNumber = revisionAttemptNumber(event);
+
   if (current === null) {
     return {
       ...base,
@@ -98,8 +158,20 @@ export function nextTaskProjection(
       eventCount: 1,
       firstSequence: sequence,
       createdAt: event.occurredAt,
+      envelopeSha256: revision?.envelopeSha256 ?? null,
+      latestRevisionNumber: revision?.revisionNumber ?? null,
+      latestAttemptNumber: revision === null ? null : attemptNumber,
     };
   }
+
+  // A later revision replaces all three together; a late event from an older
+  // revision replaces none of them. Moving them independently would let a task
+  // advertise revision 3's number beside revision 2's envelope, which is the
+  // one thing a denormalization must never do.
+  const advances =
+    revision !== null &&
+    (current.latestRevisionNumber === null ||
+      revision.revisionNumber >= current.latestRevisionNumber);
 
   return {
     ...base,
@@ -113,6 +185,9 @@ export function nextTaskProjection(
     eventCount: current.eventCount + 1,
     firstSequence: current.firstSequence,
     createdAt: current.createdAt,
+    envelopeSha256: advances ? revision.envelopeSha256 : current.envelopeSha256,
+    latestRevisionNumber: advances ? revision.revisionNumber : current.latestRevisionNumber,
+    latestAttemptNumber: advances ? attemptNumber : current.latestAttemptNumber,
   };
 }
 
@@ -234,6 +309,95 @@ export function nextExecutionRouteProjection(
 }
 
 /**
+ * The revision one event records, if its payload constitutes one (P-05/B).
+ *
+ * Modelled on `nextExecutionRouteProjection` above and making the same
+ * allocation of duties: **at the producer**, a malformed revision must never be
+ * appended; **here**, a payload that does not constitute a revision projects no
+ * row while the event still stands. Refusing the event at replay would let a
+ * projection disown history the log accepted, and the event tables have no
+ * delete path at all — replay has to stay total.
+ *
+ * There is one exception to that totality, and it is deliberate: an event whose
+ * payload carries an artifact reference key is **refused** rather than folded.
+ * See `ARTIFACT_REFERENCE_KEY`. The distinction is between a payload this
+ * contract has no opinion about — which is ignored — and a payload that claims
+ * a fact this contract cannot represent, which is a reader being asked to
+ * pretend it understood something.
+ *
+ * The row's identity comes from the EVENT's `taskId` and the payload's
+ * `revisionNumber`; a payload cannot claim another task's revision. `createdBy`
+ * is `emittedBy`, `createdAt` is `occurredAt` and `contractVersion` is the
+ * event's own, so every field of the record is traceable to the row that
+ * produced it.
+ */
+export function nextTaskRevisionProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): TaskRevisionReadModel | null {
+  const payload = event.payload;
+
+  const revisionId = payloadText(payload, REVISION_ID_KEY);
+  const revisionNumber = payloadCount(payload, REVISION_NUMBER_KEY);
+  const attemptNumber = payloadCount(payload, ATTEMPT_NUMBER_KEY);
+  const envelopeSha256 = payloadText(payload, ENVELOPE_SHA256_KEY);
+
+  if (
+    revisionId === null ||
+    revisionNumber === null ||
+    attemptNumber === null ||
+    envelopeSha256 === null
+  ) {
+    return null;
+  }
+
+  if (payload[ARTIFACT_REFERENCE_KEY] !== undefined) {
+    throw new LedgerValidationError([
+      {
+        path: "payload." + ARTIFACT_REFERENCE_KEY,
+        message:
+          "a revision record in this contract version carries no artifact reference; " +
+          "the key belongs to a later migration and this reader will not guess at it",
+      },
+    ]);
+  }
+
+  return {
+    taskId: event.taskId,
+    revisionNumber,
+    revisionId,
+    envelopeSha256,
+    restoredFromRevisionId: payloadText(payload, RESTORED_FROM_REVISION_ID_KEY),
+    createdAt: event.occurredAt,
+    createdBy: event.emittedBy,
+    contractVersion: event.contractVersion,
+    sequence,
+  };
+}
+
+/**
+ * The key of one revision row, for the in-memory snapshot.
+ *
+ * A task id is a uuid and a revision number is a positive integer, so neither
+ * can contain the separator — the same argument `executionRouteKey` makes.
+ */
+export function taskRevisionKey(taskId: string, revisionNumber: number): string {
+  return taskId + " " + String(revisionNumber);
+}
+
+/**
+ * The attempt number a revision record announces, for `task_read_model`.
+ *
+ * Read from the same payload as the revision itself rather than stored on the
+ * revision row: `task_revision_read_model` is about revisions, and the attempt
+ * belongs to `task_attempt_read_model`, which is P-18's. This is the one place
+ * B needs the value, and it reads it where it lands.
+ */
+export function revisionAttemptNumber(event: ControlPlaneEvent): number | null {
+  return payloadCount(event.payload, ATTEMPT_NUMBER_KEY);
+}
+
+/**
  * In-memory projection of an entire event stream.
  *
  * Used by rebuildReadModel to replay, and by verifyIntegrity to compute what
@@ -244,6 +408,7 @@ export interface ProjectionSnapshot {
   readonly workers: Map<string, WorkerReadModel>;
   readonly workerTasks: Map<string, WorkerTaskProjection>;
   readonly executionRoutes: Map<string, ExecutionRouteReadModel>;
+  readonly taskRevisions: Map<string, TaskRevisionReadModel>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -252,6 +417,7 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     workers: new Map<string, WorkerReadModel>(),
     workerTasks: new Map<string, WorkerTaskProjection>(),
     executionRoutes: new Map<string, ExecutionRouteReadModel>(),
+    taskRevisions: new Map<string, TaskRevisionReadModel>(),
   };
 }
 
@@ -305,6 +471,51 @@ export function applyEventToSnapshot(
   if (route !== null) {
     snapshot.executionRoutes.set(executionRouteKey(route.taskId, route.attempt), route);
   }
+
+  // The revision record, when the event's payload constitutes one. Insert-only
+  // here as it is in the table: a second arrival at the same coordinate with
+  // different content fails the rebuild rather than overwriting, so a replay
+  // and the incremental path refuse the same histories.
+  const revision = nextTaskRevisionProjection(event, sequence);
+  if (revision !== null) {
+    const key = taskRevisionKey(revision.taskId, revision.revisionNumber);
+    const existing = snapshot.taskRevisions.get(key);
+    if (existing !== undefined) {
+      if (canonicalRevision(existing) !== canonicalRevision(revision)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + REVISION_NUMBER_KEY,
+            message:
+              "revision " +
+              key +
+              " is already recorded with different content, and a revision record is written once",
+          },
+        ]);
+      }
+    } else {
+      snapshot.taskRevisions.set(key, revision);
+    }
+  }
+}
+
+/**
+ * The comparable form of a revision row, ignoring where it was recorded.
+ *
+ * `sequence` is excluded on purpose: an exact replay of the same revision
+ * arriving at a later sequence is the SAME revision, and refusing it for the
+ * position alone would make an idempotent retry look like a conflict.
+ */
+function canonicalRevision(revision: TaskRevisionReadModel): string {
+  return [
+    revision.taskId,
+    String(revision.revisionNumber),
+    revision.revisionId,
+    revision.envelopeSha256,
+    revision.restoredFromRevisionId ?? "",
+    revision.createdAt,
+    revision.createdBy,
+    revision.contractVersion,
+  ].join("\u0000");
 }
 
 // ---------------------------------------------------------------------------

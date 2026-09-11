@@ -8415,6 +8415,137 @@ const P05A_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-05/B — the revision coordinate, and the revision's own record (migration 11).
+ *
+ * A2 gave a revision its identity; ADR 0066 pinned the digest. Neither gave the
+ * ledger anywhere to PUT it: there was `task_id` and a flat `attempt` and
+ * nothing between them. Migration 11 builds the place.
+ *
+ * **No new event type, and the fold therefore keys off presence.** Streams §1.1
+ * says the columns agree with the `event_json` and that the new payloads are not
+ * new composition events, so `CONTROL_PLANE_EVENT_TYPES` does not move and the
+ * channel map is untouched. The consequence is the load-bearing one: a revision
+ * record is born from the first event of ANY type carrying the complete key set
+ * — `revisionId`, `revisionNumber`, `attemptNumber`, `envelopeSha256`, plus the
+ * optional `restoredFromRevisionId`. A fold keyed off a type would need a type
+ * of its own. A partial set is not a malformed revision; it is not a revision,
+ * and it projects no row, which keeps replay total over every legacy ledger.
+ *
+ * The key set is declared ONCE, in the projection. P-18 inherits it and the
+ * fence pins the equality then; a law added here would pin one declaration
+ * against nothing.
+ *
+ * **`CONTRACT_VERSION` does NOT move, and that is a correction.** `ContractVersion`
+ * is a single shared `z.literal`, so moving it without a supported-versions
+ * mechanism makes every event already recorded under the previous literal
+ * unparseable — every ledger with history, unreadable, for a migration that adds
+ * two columns. B records no event and the cohort is told apart by
+ * `revision_number IS NOT NULL`. The version moves with the first V2 producer
+ * (P-18) together with that mechanism. `API_CONTRACT_VERSION` does not move
+ * either: `status().projections` is a list, and a list gaining an entry is not a
+ * new key on a strict object.
+ *
+ * **The trigger runs in both directions.** Forward: both columns or neither,
+ * positive when present, equal to the body. Backward: a payload carrying the V2
+ * keys may not arrive with the columns empty. Without the second half a writer
+ * could put the coordinate in the body alone and the row would read as legacy
+ * for ever while its own event said otherwise.
+ *
+ * **The window migration 10 did not have.** "Migrated but not populated" is
+ * LAWFUL here: nothing in this migration writes a coordinate, legacy rows keep
+ * both columns `NULL` for ever, and a ledger holding no V2 row is correct rather
+ * than half-applied. Migration 10 activated as it migrated, so absence there was
+ * tampering. A reader carrying that intuition across misjudges both.
+ *
+ * **Insert-only, and the digest is not unique.** Same coordinate + same content
+ * is an idempotent replay; same coordinate + different content is refused.
+ * `ON CONFLICT DO UPDATE` is forbidden — a coordinate that could be overwritten
+ * would make "revision 2" the name of whichever event arrived last. And there is
+ * deliberately no `UNIQUE(task_id, envelope_sha256)` (§7.3): restoring an earlier
+ * envelope is a new revision with the same digest.
+ *
+ * **The deferred column is absent, not nullable.** `envelope_artifact_reference_id`
+ * is `NOT NULL` in the dictionary and only the artifact plane can mint its value,
+ * so P-36/local adds it by `ADD COLUMN` with a cohort trigger; decision 41
+ * records it. The fold REFUSES an event carrying that key rather than ignoring
+ * it: a payload this contract has no opinion about is ignored, a payload claiming
+ * a fact it cannot represent is a reader pretending to understand.
+ *
+ * **Three task columns get a producer, three do not, two are not created.**
+ * `envelope_sha256`, `latest_revision_number` and `latest_attempt_number` are
+ * derived from the revision record and move together or not at all. `role`,
+ * `step_id` and `commit_policy` are created with documented nullity, which
+ * execution §1 authorizes. `duel_id` and `state_vocabulary` are NOT created:
+ * each goes with its producer, and a column with neither a producer nor its
+ * CHECK is a shape the dictionary does not authorize yet.
+ *
+ * **Atomic, and it refuses before it builds.** Preflight, DDL, watermark seed
+ * and the migration row are one transaction, on migration 10's shape. The
+ * preflight is streams §1.1's: the `v2/` idempotency namespace must be free, and
+ * the question has to be asked now because the column is `UNIQUE` and a later
+ * collision is a constraint failure naming one row and no coordinate on a ledger
+ * already in production. It names what it finds and repairs nothing. The
+ * watermark is seeded from the head in `ledger_meta`, never a literal zero — a
+ * zero would make every ledger in the field fail its own integrity check after a
+ * routine upgrade.
+ *
+ * **Declared: there is no producer.** Nothing in this build writes a coordinate.
+ * `task_attempt_read_model`, `legacy_attempt_number` and its CAS are P-18/M4; B
+ * creates the columns and the pairing rule that make that assignment safe and no
+ * more. The envelope digest is still compared at no door, so N01 stays open.
+ *
+ * **Pins that move.** `MIGRATIONS` 10 → 11; `tr_` triggers 7 → 8;
+ * `EXPECTED_SCHEMA_OBJECTS` 56 → 60 (table, two indexes, trigger);
+ * `DERIVED_TABLES` 8 → 9; `PROJECTION_NAMES` 3 → 4; `PROJECTION_SOURCES` 7 → 8;
+ * `status().projections` 6 → 7; the ADR corpus 66 → 67. No error class is added
+ * — `LedgerMigrationError` for the preflight, `LedgerValidationError` for the
+ * conflicting revision — so the README `### Errors` pin is untouched. The write
+ * set gains **1 distinct path**, the ADR; the other sixteen are admitted by
+ * historical blocks.
+ *
+ * Two of those arrive already modified, by the DT and before this packet
+ * opened: decision 41 in `docs/audit/decisions/index.md` and the deferral note
+ * in `execution/index.md`. They are carried into this diff rather than
+ * reverted, and they commit with it.
+ *
+ * **The delta: two rewinds written before this migration existed.** P-08/B's
+ * integrity negatives — one at the CLI, one at the gateway door — plant a ledger
+ * from before migration 10 by dropping its objects and deleting its
+ * `schema_migrations` rows, then reopen so the sidecar activates over a stream
+ * that already holds history. Migration 11 sits above 10, so `WHERE version >=
+ * 10` now unclaims it too and the reopen re-applies it over a schema that still
+ * carries the coordinate: `ALTER TABLE ... ADD COLUMN` is not idempotent and the
+ * open aborts on "duplicate column name". Both fixtures extend their rewind to
+ * cover 11, in the order SQLite forces — the trigger, then the table and its two
+ * indexes, then the eight columns, then the new projection's watermark row —
+ * which is `dropTaskRevisionIdentity`'s order, moved one migration down. No new
+ * logic, and the assertions are untouched. That is why
+ * `packages/entrypoints/cli/test/cli/index.test.ts` and
+ * `packages/entrypoints/gateway/test/build-server/index.test.ts` join this
+ * block; neither is a new distinct path, since 30 and 16 historical blocks
+ * already admit them, so the count above still stands at one.
+ */
+const P05B_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "docs/architecture/0067-the-revision-coordinate-rides-the-stream-it-already-has.md",
+  "docs/architecture/index.md",
+  "docs/audit/architecture/database/streams/index.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "docs/audit/decisions/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8612,6 +8743,7 @@ const WRITE_SET = [
   ...P08A2_WRITE_SET,
   ...P08B_WRITE_SET,
   ...P05A_WRITE_SET,
+  ...P05B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
