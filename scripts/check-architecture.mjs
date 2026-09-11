@@ -8622,6 +8622,59 @@ const CORR1_WRITE_SET = [
 ];
 
 /**
+ * P-12 — one payload-keys projection serves both doors.
+ *
+ * Structure §4.1 named a defect with three live implementations of one
+ * concept that did not agree: the gateway's mapper listed payload keys in
+ * insertion order with no ceiling (so an over-sized payload broke the strict
+ * downstream parse), the CLI sorted and cut at sixty four locally, and only
+ * the wire contract knew the ceiling was sixty four. The product answered
+ * differently per door. The remedy is one projection owned by
+ * `domains/observation/model/read-model`, exposed by
+ * `usecases/queries/payload-keys` (the name fixed by §2 :100) and consumed by
+ * both doors: the gateway's `timelineItem` delegates, the CLI's local
+ * function and its orphan constant retire, and the CLI gains the
+ * `@acp/observation` workspace edge the gateway already had.
+ *
+ * Canonical order is code-unit (`.sort()`), not locale; the wire schema fixes
+ * no order, so the gateway's bytes change without a contract version — an
+ * observable wire change, recorded as such in ADR 0070. The ceiling stays
+ * sixty four with a named semantic owner: the projection declares it, and the
+ * gateway's mapper suite ties it to the contract empirically (the schema
+ * parses N key names and refuses N+1), because this package may not import
+ * `@acp/protocol` and the remedy for that is a test, not a second number.
+ * Each door's fixture is independent, with every expected array written by
+ * hand — comparing two calls to one helper proves nothing (§4.1 :205-206).
+ *
+ * **Pins that move.** `OBSERVATION_PUBLIC_EXPORTS` gains two names
+ * (`MAX_PAYLOAD_KEYS`, `payloadKeys`); `CLI_ALLOWED_PACKAGES` and the CLI
+ * manifest law move 6 → 7, with the lockfile importer block following; the
+ * register and the `requireScope` call sites move 118 → 119 for L-P12-1 — no
+ * source outside the owner file may derive a payload's key list for a DTO,
+ * with the provider telemetry redaction codified as the non-DTO negative;
+ * the ADR corpus moves 69 → 70. The write set gains **7 distinct paths**: the
+ * six new source, test and ADR routes below appear for the first time, and
+ * the packets index records the freeze against the opening HEAD.
+ */
+const P12_WRITE_SET = [
+  "packages/domains/observation/src/index.ts",
+  "packages/domains/observation/src/model/read-model/index.ts",
+  "packages/domains/observation/test/model/read-model/index.test.ts",
+  "packages/domains/observation/src/usecases/queries/payload-keys/index.ts",
+  "packages/domains/observation/test/usecases/queries/payload-keys/index.test.ts",
+  "packages/entrypoints/gateway/src/mappers/index.ts",
+  "packages/entrypoints/gateway/test/mappers/index.test.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/cli/test/observation/index.test.ts",
+  "packages/entrypoints/cli/package.json",
+  "pnpm-lock.yaml",
+  "scripts/check-architecture.mjs",
+  "docs/audit/implementation/packets/index.md",
+  "docs/architecture/0070-one-payload-keys-projection-serves-both-doors.md",
+  "docs/architecture/index.md",
+];
+
+/**
  * P-11 — a tool error is never a success, whatever the transport said.
  *
  * Closes the defect the external audit's N07 named at the coordinates it
@@ -8877,6 +8930,7 @@ const WRITE_SET = [
   ...P05A_WRITE_SET,
   ...P05B_WRITE_SET,
   ...CORR1_WRITE_SET,
+  ...P12_WRITE_SET,
   ...P11_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
@@ -10131,6 +10185,16 @@ const PATH_SCOPED_LAWS = [
     scope: "packages/edges/telemetry/src/http/index.ts",
   },
   { law: "no production source names the telemetry edge", scope: "packages/*/*/src/**" },
+  // P-12 (L-P12-1). One new path-shaped surface, so one new row: the register
+  // and the `requireScope` call sites both move 118 -> 119, and
+  // `assertPathScopedInventory` fails printing both numbers if only one side
+  // of this edit lands. The law keeps §4.1's remedy true after the packet that
+  // built it: the payload-key projection stays single-owned by refusing any
+  // other source that derives a payload's key list for a DTO.
+  {
+    law: "the payload-key projection has exactly one owner",
+    scope: "packages/*/*/src/** (every tracked source file)",
+  },
 ];
 
 /**
@@ -11754,16 +11818,20 @@ const P1B_DEPENDENCY_LAW = [
     // the DT authorized by name, not a widening of what the CLI may reach.
     // V2 L2 adds `@acp/durability` on the same terms: the lifecycle door
     // constructs the Restate driver, which is the one thing a door must do
-    // that no domain can do for it. Six here, six in `CLI_ALLOWED_PACKAGES`,
-    // six in the manifest and six `link:` entries in the lockfile importer
-    // block — a manifest edge the import scan refuses is a dependency that
-    // exists on paper, and the reverse is one that exists in code and not in
-    // the graph.
+    // that no domain can do for it.
+    // P-12 adds `@acp/observation` on the same terms again: the observation
+    // door delegates the payload-key projection to the domain that owns it
+    // (structure §4.1), exactly as the API door already did. Seven here,
+    // seven in `CLI_ALLOWED_PACKAGES`, seven in the manifest and seven
+    // `link:` entries in the lockfile importer block — a manifest edge the
+    // import scan refuses is a dependency that exists on paper, and the
+    // reverse is one that exists in code and not in the graph.
     dependencies: [
       "@acp/accounts",
       "@acp/durability",
       "@acp/protocol",
       "@acp/ledger",
+      "@acp/observation",
       "@acp/runtime",
       "@acp/tools",
     ],
@@ -13483,6 +13551,64 @@ if (tracked.status === 0) {
         );
       }
     }
+
+  // --- L-P12-1: the payload-key projection has exactly one owner.
+  //
+  // Structure §4.1 named three implementations of the payload-key projection
+  // that did not agree, and the product answered differently per door. The
+  // remedy has one owner — observation's read model — and this law is the
+  // negative half that keeps the remedy true: no production source outside
+  // the owner file may derive the list of keys of a payload for a DTO. The
+  // scope phrase "for a DTO" is carried by a codified negatives set rather
+  // than by a cleverer pattern, exactly as the recorded-route law above
+  // carries its declarer set: the provider telemetry redaction enumerates
+  // keys to scrub a provider record and builds no DTO, so it stays lawful by
+  // name, on the record, instead of being left to a regex that must guess
+  // intent. The ledger fold reads named keys for its own semantics and is
+  // untouched. Both halves are pinned: a new derivation fails with the file
+  // that introduced it, and an owner that stops deriving fails too, so the
+  // law cannot be satisfied by deleting the projection.
+  {
+    const srcSources = present.filter((relativePath) => /\/src\/.*\.tsx?$/.test(relativePath));
+    const PAYLOAD_KEYS_OWNER = "packages/domains/observation/src/model/read-model/index.ts";
+    const PAYLOAD_KEYS_NEGATIVES = new Set([
+      // Telemetry redaction lists keys to scrub them from a provider record;
+      // it names no timeline item and builds no DTO. Codified, not guessed.
+      "packages/edges/providers/src/redact/index.ts",
+    ]);
+    const PAYLOAD_KEY_DERIVATION = /Object\.keys\([^)]*\bpayload\b[^)]*\)/;
+
+    requireScope("the payload-key projection has exactly one owner", srcSources.length);
+    if (PAYLOAD_KEYS_NEGATIVES.size === 0) {
+      fail("the payload-key law's negatives set is empty; a vacuous pass proves nothing");
+    }
+    for (const relativePath of srcSources) {
+      if (relativePath === PAYLOAD_KEYS_OWNER || PAYLOAD_KEYS_NEGATIVES.has(relativePath)) continue;
+      const content = stripComments(readIfPresent(relativePath) ?? "");
+      if (PAYLOAD_KEY_DERIVATION.test(content)) {
+        fail(
+          relativePath +
+            " derives the list of keys of a payload for a DTO outside " +
+            PAYLOAD_KEYS_OWNER +
+            "; the projection is owned by observation (structure §4.1), and a second derivation is the defect returning",
+        );
+      }
+    }
+    const owner = stripComments(readIfPresent(PAYLOAD_KEYS_OWNER) ?? "");
+    if (!PAYLOAD_KEY_DERIVATION.test(owner)) {
+      fail(
+        PAYLOAD_KEYS_OWNER +
+          " no longer derives the payload-key list though the law pins it as the owner; re-pin the owner",
+      );
+    }
+    notes.push(
+      "the payload-key projection has exactly one owner (" +
+        PAYLOAD_KEYS_OWNER +
+        "), with " +
+        PAYLOAD_KEYS_NEGATIVES.size +
+        " codified non-DTO negative(s)",
+    );
+  }
 
   // --- L-V2B5R10: the span context is a fold of the causal columns.
   //
@@ -15876,6 +16002,10 @@ const OBSERVATION_PUBLIC_EXPORTS = [
   "LangfuseTrace",
   "LANGFUSE_TRACE_NAME",
   "toLangfuseTrace",
+  // P-12: the payload-keys projection (structure §4.1). The model owns the
+  // algorithm; the barrel carries the query surface the two doors consume.
+  "MAX_PAYLOAD_KEYS",
+  "payloadKeys",
 ];
 
 const observationIndex = readIfPresent("packages/domains/observation/src/index.ts");
@@ -16564,7 +16694,12 @@ const CLI_ALLOWED_PACKAGES = new Set(["@acp/accounts", "@acp/ledger", "@acp/prot
   // reaches `@acp/daemon` or `@acp/providers`. The door names no engine
   // concept of its own — it hands the driver an invocation it recovered from
   // the ledger and prints the ledger coordinate that comes back.
-  "@acp/durability"]);
+  "@acp/durability",
+  // P-12: the observation door delegates the payload-key projection to its
+  // owner. One edge on the same terms as the gateway's, which has carried it
+  // since P8-8A: the door consumes the domain's pure read model and nothing
+  // in observation learns that a door exists.
+  "@acp/observation"]);
 const CLI_ALLOWED_BUILTINS = new Set([
   "node:crypto",
   "node:fs",

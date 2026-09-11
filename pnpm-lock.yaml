@@ -189,6 +189,9 @@ importers:
       '@acp/ledger':
         specifier: workspace:*
         version: link:../../persistence/ledger
+      '@acp/observation':
+        specifier: workspace:*
+        version: link:../../domains/observation
       '@acp/protocol':
         specifier: workspace:*
         version: link:../../kernel/protocol

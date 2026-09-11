@@ -117,7 +117,7 @@ La planificación de olas y conflictos vive en [paralelización](../../roadmap/p
 | ID | Packet | Diseño | Contratos y schemas | Depende de | Falta congelar |
 | --- | --- | --- | --- | --- | --- |
 | P-36 | Puertos de ledger, artefactos y credenciales, con backup, restore y retención | `DESIGN_READY` | integraciones filas 8, 9 y 11; base de datos §12 | local: P-09/log, P-18/protocolo; cierre M12: P-10, P-18/recuperación, P-23 | operativa: rutas; segundo backend sólo si se anuncia |
-| P-12 | Proyección única de claves de payload | `DESIGN_READY` | [estructura §4.1](../../architecture/structure/index.md) | P-01 | operativa: rutas |
+| P-12 | Proyección única de claves de payload | `DESIGN_READY` | [estructura §4.1](../../architecture/structure/index.md) | P-01 | rutas congeladas contra HEAD 9fe129e0: write-set P12, 15 rutas (canónico en `P12_WRITE_SET`; [ADR 0070](../../architecture/0070-one-payload-keys-projection-serves-both-doors.md)) |
 | P-13 | Extracción de la composición del daemon | `DESIGN_READY` | [estructura §3](../../architecture/structure/index.md) | P-01 | operativa: mapa de paths contra HEAD |
 | P-37 | Extracciones restantes de estructura y separación de tipos | `DESIGN_READY` | estructura §3 y §5; [arquitectura §7](../../architecture/index.md) | P-13, incremental por seam; cierre M13: P-29, P-36 | operativa: mapa de paths contra HEAD |
 | P-38 | Distribución e instalación en ambos sistemas operativos | `DESIGN_READY` | §3.3; integraciones §5 | P-04, P-37; superficie de paquetes del perfil estable | operativa: pins que faltan y runners |

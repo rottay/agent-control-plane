@@ -111,3 +111,7 @@ export {
   ShadowLedgerError,
   buildShadowLedger,
 } from "./shadow-ledger/index.js";
+
+// P-12 (structure §4.1): one payload-key projection serves both doors. The
+// model owns the algorithm; the query below is the surface a door may call.
+export { MAX_PAYLOAD_KEYS, payloadKeys } from "./usecases/queries/payload-keys/index.js";

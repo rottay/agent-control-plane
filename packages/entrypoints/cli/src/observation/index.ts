@@ -43,6 +43,7 @@ import {
 } from "@acp/protocol";
 import { canonicalRows } from "@acp/protocol";
 import type { ApiRouteName, OverviewState } from "@acp/protocol";
+import { payloadKeys } from "@acp/observation";
 import type {
   EventQuery,
   IntegrityReport,
@@ -54,17 +55,6 @@ import type {
   WorkerQuery,
   WorkerReadModel,
 } from "@acp/ledger";
-
-/**
- * Ceiling on the payload key names a single timeline item may carry.
- *
- * The contract caps the array at sixty four names. An event payload is capped
- * by bytes rather than by key count, so a pathological payload of very short
- * keys can exceed it. Such an item is rendered with its first sixty four key
- * names in sort order, and the byte size, which is exact, is what tells a reader
- * the item was larger than the name list suggests.
- */
-const MAX_TIMELINE_PAYLOAD_KEYS = 64;
 
 /**
  * What one tool-call page is asked for (V2-B4b stage 3D).
@@ -125,10 +115,6 @@ export function databaseIdentity(path: string): LedgerDatabaseIdentity {
     label: basename(resolved),
     pathRedacted: true,
   });
-}
-
-function payloadKeys(payload: Readonly<Record<string, unknown>>): string[] {
-  return Object.keys(payload).sort().slice(0, MAX_TIMELINE_PAYLOAD_KEYS);
 }
 
 function payloadByteSize(payload: Readonly<Record<string, unknown>>): number {

@@ -27,6 +27,7 @@
     "@acp/durability": "workspace:*",
     "@acp/protocol": "workspace:*",
     "@acp/ledger": "workspace:*",
+    "@acp/observation": "workspace:*",
     "@acp/runtime": "workspace:*",
     "@acp/tools": "workspace:*"
   },

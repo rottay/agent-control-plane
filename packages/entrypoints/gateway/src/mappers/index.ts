@@ -10,6 +10,7 @@ import type {
   WorkerSummary,
 } from "@acp/protocol";
 import type { LedgerEventRecord, RoadmapVersionReadModel, TaskReadModel, WorkerReadModel } from "@acp/ledger";
+import { payloadKeys } from "@acp/observation";
 
 import type { InitiativeDetailModel, InitiativePortfolioRow } from "../initiatives/index.js";
 
@@ -80,7 +81,10 @@ export function workerDetail(
  * A ledger event record to the timeline item a reader is allowed to see.
  *
  * The payload itself never crosses. Only its key names and its serialized
- * byte size do, computed here rather than imported: this package depends on
+ * byte size do. The key names are projected by `@acp/observation` — the
+ * single owner of that algorithm since P-12 (structure §4.1) — so this mapper
+ * cannot drift from the CLI's answer on order or ceiling. The byte size is
+ * computed here rather than imported: this package depends on
  * `@acp/protocol` and `@acp/ledger` only, so the byte-counting helper
  * `@acp/contracts` exports is out of reach by design, and it is one line to
  * restate.
@@ -108,7 +112,7 @@ export function timelineItem(record: LedgerEventRecord): TimelineItem {
     previousSha256: record.previousSha256,
     eventSha256: record.eventSha256,
     payloadByteSize: new TextEncoder().encode(payloadJson).byteLength,
-    payloadKeys: Object.keys(event.payload),
+    payloadKeys: payloadKeys(event.payload),
   };
 }
 
