@@ -19,6 +19,60 @@ import {
 import { PathDigest } from "../shared-references/index.js";
 import { WORKER_ROLES, WorkerIdentityString, WorkerRole } from "../worker-identity/index.js";
 
+/**
+ * The version prefix of the envelope revision preimage (P-05/A).
+ *
+ * ## What the digest is for
+ *
+ * `envelope_sha256` identifies **the revision of the work**, and it is the
+ * third of the four digests the contract keeps apart. It is not
+ * `authority_sha256`, which moves when the authority document moves and the
+ * work does not; it is not `prompt_sha256` or `content_sha256`, which are bytes
+ * of an instruction or an artifact. A change to any field of this envelope is a
+ * new revision, and a new revision does not inherit the marker, the result or
+ * the cost of the one before it.
+ *
+ * ## The preimage, stated once
+ *
+ *     preimage = ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJson(TaskEnvelope.parse(value))
+ *
+ * There is **no separator between the two**: the LF is the last byte of the
+ * prefix itself, exactly as `ACCOUNT_INTEGRITY_PREIMAGE_PREFIX_V1` carries its
+ * own. One LF, and it belongs to the prefix — a formula that added a second
+ * would be a different byte string and every pinned vector would move.
+ *
+ * ## Why the rule lives here and the function does not
+ *
+ * `docs/audit/architecture/database/index.md` §6.2 makes this package the
+ * master contract for the preimage, and it refuses to enumerate the fields
+ * because a list written down twice goes stale. So the rule is stated and the
+ * enumeration is not: the preimage is the **whole parsed envelope**, and
+ * "covers every field" is a property of `TaskEnvelope` being a
+ * `z.strictObject` rather than of a list somebody has to remember to extend.
+ * A field added to the schema enters the preimage the day it is added.
+ *
+ * The function that computes it is in `@acp/ledger`, and the split is forced
+ * rather than chosen. This package may import `zod` and nothing else — no
+ * `node:` builtin at all — because every other package imports it, **including
+ * the browser client**, and one `node:crypto` here would make the whole
+ * contract surface unloadable in a page. `@acp/ledger` already owns
+ * `canonicalJsonStringify` and `sha256Hex`, and a second canonicalizer or a
+ * second sha-256 declared here — including one reached through
+ * `crypto.subtle` — would be a second authority on a question already answered.
+ *
+ * ## Versioned, and never changed in place
+ *
+ * `v1` is frozen. A change to the encoding is a **new** prefix with a new name;
+ * this constant is never edited, and no history is ever rehashed. That is the
+ * rule `ACCOUNT_INTEGRITY_PREIMAGE_PREFIX_V1` set at P-08/A1 and it holds for
+ * the same reason: a digest whose preimage can be redefined identifies nothing.
+ *
+ * The `\n` is a single LF byte (`0x0a`), not the two characters a backslash and
+ * an `n` would be if this were written into a document by hand. A test pins the
+ * byte.
+ */
+export const ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 = "acp/task-envelope/v1\n";
+
 export const TaskClassification = z.enum(["MECHANICAL", "SEMANTIC", "ARCHITECTURAL"]);
 export type TaskClassification = z.infer<typeof TaskClassification>;
 

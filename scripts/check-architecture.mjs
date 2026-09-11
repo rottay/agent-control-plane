@@ -8343,6 +8343,78 @@ const P08B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-05/A — the envelope revision preimage, as a pure function.
+ *
+ * Finding N01 says the identity of a submission does not incorporate the
+ * objective or the authority. The reason is structural: the only digest on that
+ * path covers the task coordinates, the instant and the elected route — three
+ * of which datos §6.2 excludes from the envelope's identity by name — and not
+ * one envelope field. This packet builds the digest that does.
+ *
+ * **The preimage is the whole parsed envelope, and there is NO list of fields.**
+ * §6.2 requires coverage of every field and refuses to enumerate them, because a
+ * list written twice goes stale. So coverage is a property of `TaskEnvelope`
+ * being a `z.strictObject`: hashing the parse output covers a new field the day
+ * it is added, and the exclusions §6.2 names are enforced from the other side by
+ * the same strictness — none is a field, and an object carrying one is refused
+ * rather than filtered. The drill derives its keys from
+ * `Object.keys(TaskEnvelope.shape)` at test time; a hand-written list there
+ * would be exactly the enumeration §6.2 rejects.
+ *
+ * **The rule is in contracts, the function is in the ledger, and the split is
+ * forced.** `CONTRACTS_ALLOWED_BUILTINS` is empty and must stay empty — every
+ * package imports contracts including the browser client, and one `node:crypto`
+ * there makes the whole contract surface unloadable in a page. So contracts
+ * declares the prefix and states the rule, and `@acp/ledger` computes it with
+ * the `canonicalJsonStringify` and `sha256Hex` it already owns. No second
+ * canonicalizer and no second sha-256 in contracts, including via
+ * `crypto.subtle` — which is not an import and would evade the letter of that
+ * law while breaking its intent.
+ *
+ * **One LF, and it belongs to the prefix.** `acp/task-envelope/v1` plus a single
+ * `0x0a`, with no separator in the formula, exactly as
+ * `ACCOUNT_INTEGRITY_PREIMAGE_PREFIX_V1` carries its own. Pinned as a byte: last
+ * byte `0x0a`, exactly one, and the JSON's opening brace after it. `v1` is
+ * frozen — a change to the encoding is a new constant with a new name, and no
+ * history is rehashed.
+ *
+ * **The function takes `unknown` and parses.** A signature typed against
+ * `TaskEnvelope` would trust the caller's cast and digest a value that is not an
+ * envelope.
+ *
+ * **Declared, so nobody marks it closed: this packet does NOT close N01.** The
+ * digest exists; nothing is wired to it. `daemon-child` still compares the
+ * submission digest, so two packets differing in objective and authority still
+ * reach that door under one identity. The wiring is a named successor, not a
+ * vague later. Nor is there a revision coordinate — `revision_number`,
+ * `revision_id`, `task_revision_read_model` are P-05/B — and no CAS assignment,
+ * which is P-18/M4.
+ *
+ * **Pins.** Neither `CONTRACT_VERSION` nor `API_CONTRACT_VERSION` moves: nothing
+ * here is a recorded event and nothing crosses the wire. No migration, no DDL,
+ * no column, no event. **No error class is added**, so the README `### Errors`
+ * pin is untouched — refusals are `ZodError` from the parse and the existing
+ * `LedgerCanonicalizationError`. `CONTRACTS_SCHEMA_EXPORTS` gains exactly one
+ * name and its narration moves 85 to 86. The ADR corpus moves **65 to 66**. The
+ * write set gains **3 distinct paths** — the module, its mirrored test, and the
+ * ADR; the other nine are admitted by historical blocks.
+ */
+const P05A_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/persistence/ledger/src/envelope-identity/index.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "docs/architecture/0066-the-revision-digest-covers-the-whole-envelope.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8539,6 +8611,7 @@ const WRITE_SET = [
   ...P08A1_WRITE_SET,
   ...P08A2_WRITE_SET,
   ...P08B_WRITE_SET,
+  ...P05A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -17112,8 +17185,12 @@ if (accountsIndex === null) {
   // nothing can falsify is not a claim: this is the pre-split exported-name set,
   // written out as a literal and asserted by equality in both directions.
   //
-  // 85 names: G6's 82 plus the three G7 D1/D2 unifications (`EXIT_OK`,
-  // `EXIT_USAGE`, `TOKENS_USED_MAX`). The G6 file carried 126 exported
+  // 86 names: G6's 82, the three G7 D1/D2 unifications (`EXIT_OK`,
+  // `EXIT_USAGE`, `TOKENS_USED_MAX`), and P-05/A's
+  // `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1` — the version prefix of the envelope
+  // revision preimage, declared in this package because datos §6.2 makes it the
+  // master contract for that preimage, and computed in `@acp/ledger` because
+  // this one may reach no `node:` builtin. The G6 file carried 126 exported
   // *declaration lines*, which
   // is the same surface counted differently — 44 of the names are the zod
   // `const X` / `type X` pair declared on two lines, and 82 + 44 = 126. The set
@@ -17161,6 +17238,7 @@ if (accountsIndex === null) {
   "EVENT_PAYLOAD_MAX_BYTES",
   "EXCEPTIONAL_STATES",
   "EXECUTION_REFUSALS",
+  "ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1",
   "EXIT_OK",
   "EXIT_USAGE",
   "ExceptionalState",

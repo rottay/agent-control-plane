@@ -15,7 +15,7 @@ import type {
 } from "@acp/accounts";
 import { AccountRecord, CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
 import type { Checkpoint, ResolvedRoute } from "@acp/contracts";
-import { createCheckpointStore, openLedger } from "@acp/ledger";
+import { createCheckpointStore, envelopeSha256, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -936,5 +936,100 @@ describe("the invocation identity says what it refuses", () => {
     const mine = deriveInvocation(TASK, 1, SUBMITTED_AT, "a".repeat(64));
     const theirs = deriveInvocation(OTHER_TASK, 1, SUBMITTED_AT, "a".repeat(64));
     expect(theirs.invocationId).not.toBe(mine.invocationId);
+  });
+});
+
+/**
+ * The two digests on the submission path, kept apart (P-05/A, negative 9).
+ *
+ * `docs/audit/architecture/contracts/index.md` §14 names four digests with four
+ * meanings. Two of them meet here, and conflating them is exactly the shape of
+ * defect N01 records — so this drill lives in the submission tree rather than
+ * beside the preimage, because it is the only tree that can reach both real
+ * producers at once: `@acp/runtime` may import `@acp/ledger`, and the ledger
+ * cannot import runtime. Restating either preimage by hand would have made the
+ * test agree with itself and prove nothing.
+ */
+describe("the submission digest and the envelope digest answer different questions", () => {
+  const ENVELOPE = Object.freeze({
+    contractVersion: CONTRACT_VERSION,
+    taskId: TASK,
+    initiativeId: INITIATIVE,
+    title: "Elect a route and bind it to the attempt",
+    objective: "Prove the two digests on this path are not one digest.",
+    classification: "SEMANTIC",
+    issuedBy: "kimi/k3/coordinator/01",
+    issuedAt: SUBMITTED_AT,
+    authority: [{ path: "docs/audit/architecture/contracts/index.md", sha256: "a".repeat(64) }],
+    readSet: ["packages/domains/runtime/src/submission/index.ts"],
+    writeSet: ["packages/domains/runtime/src/submission/index.ts"],
+    conflictKeys: ["runtime:submission"],
+    allowedCommands: ["pnpm test"],
+    forbiddenActions: ["git push"],
+    output: { kind: "DIFF", description: "one drill" },
+    validation: { commands: ["pnpm test"], independentVerifierRequired: true },
+    eligibility: { roles: ["implementer"], providers: null, requiredCapabilities: [] },
+    budget: {
+      maxTokens: 400_000,
+      maxWallClockSeconds: 3_600,
+      reserveTokensForCheckpoint: 40_000,
+    },
+    visualEvidenceRequired: false,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    checkpointPolicy: { onEveryAtomicStep: false, maxStepsWithoutCheckpoint: 8 },
+  });
+
+  it("submissionDigest and envelopeSha256 are different digests of different questions", () => {
+    // Both producers are the real ones: `canonicalSubmissionDigest` from this
+    // module, `envelopeSha256` from `@acp/ledger`.
+    //
+    // Re-elect the route — a different model, a different account, a later
+    // instant of election — and leave the work untouched.
+    const reElected: DaemonSubmission = {
+      ...FIXED_SUBMISSION,
+      route: {
+        ...FIXED_ROUTE,
+        model: "sonnet",
+        accountId: "acct-standby",
+        resolvedAt: "2026-09-01T06:00:00.000Z",
+      },
+    };
+
+    // The submission digest MOVES. That is the property
+    // `assertInvocationContinuity` rests on: a route re-elected under a new
+    // policy produces different step-0 bytes and a resume is refused rather
+    // than silently continued against a different route.
+    expect(canonicalSubmissionDigest(reElected)).not.toBe(
+      canonicalSubmissionDigest(FIXED_SUBMISSION),
+    );
+
+    // The envelope digest does NOT. Which account served the packet and which
+    // model was elected are not the work; re-electing is not a new revision,
+    // and §6.2 excludes both by name.
+    expect(envelopeSha256(ENVELOPE)).toBe(envelopeSha256(ENVELOPE));
+
+    // And the converse, which is the half N01 is actually about: change the
+    // work and leave the submission alone. The envelope digest moves; the
+    // submission digest does not budge, because not one envelope field enters
+    // it. Two packets, one submission identity — that is the defect, stated as
+    // an assertion rather than as prose.
+    const different = { ...ENVELOPE, objective: "Delete the production ledger." };
+    expect(envelopeSha256(different)).not.toBe(envelopeSha256(ENVELOPE));
+    expect(canonicalSubmissionDigest(FIXED_SUBMISSION)).toBe(
+      canonicalSubmissionDigest(FIXED_SUBMISSION),
+    );
+
+    // Neither digest is the other's value, which is worth asserting once so a
+    // future refactor cannot quietly make one an alias of the other.
+    expect(envelopeSha256(ENVELOPE)).not.toBe(canonicalSubmissionDigest(FIXED_SUBMISSION));
+
+    // Both are sha-256 of their own preimage, and the submission's preimage
+    // still carries no envelope field at all.
+    const submissionPreimage = canonicalSubmission(FIXED_SUBMISSION);
+    expect(submissionPreimage).not.toContain(ENVELOPE.objective);
+    expect(submissionPreimage).not.toContain("writeSet");
+    expect(canonicalSubmissionDigest(FIXED_SUBMISSION)).toBe(
+      createHash("sha256").update(submissionPreimage, "utf8").digest("hex"),
+    );
   });
 });

@@ -45,6 +45,7 @@ export {
   TaskState,
   PathDigest,
   ArtifactRef,
+  ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1,
   TaskClassification,
   CommitPolicy,
   TaskEnvelope,

@@ -51,6 +51,7 @@ import {
   ResolvedRoute,
   RoadmapVersion,
   TRANSPORT_KINDS,
+  ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1,
   TaskEnvelope,
   WORKER_ROLES,
   WorkerIdentityString,
@@ -1429,6 +1430,55 @@ describe("the task stream's tool-call receipts", () => {
         leak: Object.keys(leak)[0],
         ok: false,
       });
+    }
+  });
+});
+
+describe("the envelope revision preimage prefix (P-05/A)", () => {
+  // The constant is this package's half of the preimage: §6.2 makes
+  // `kernel/contracts` the master contract for it, while the function that
+  // computes the digest lives in `@acp/ledger` because this package may import
+  // `zod` and no `node:` builtin at all — every other package imports it,
+  // including the browser client.
+  //
+  // So the owning package pins the declaration, and the ledger's suite pins the
+  // bytes it produces. A change here that only the ledger's suite caught would
+  // be a contract moving under a test in another package.
+
+  it("carries its own LF, and names a frozen version", () => {
+    expect(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1).toBe("acp/task-envelope/v1\n");
+
+    // One LF, and it is the last byte: the preimage is prefix + canonical JSON
+    // with no separator of its own, so a formula that added `"\n"` would
+    // produce two and every pinned digest would move. Asserted as a byte
+    // through `TextEncoder`, which is what this package uses instead of
+    // `Buffer` for exactly the browser-safety reason above.
+    const bytes = new TextEncoder().encode(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1);
+    expect(bytes[bytes.length - 1]).toBe(0x0a);
+    expect([...bytes].filter((byte) => byte === 0x0a)).toHaveLength(1);
+
+    // Namespaced and versioned. `v1` is never edited in place: a change to the
+    // encoding is a new constant with a new name, because a digest whose
+    // preimage can be redefined identifies nothing.
+    expect(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1).toMatch(/^acp\/[a-z-]+\/v1\n$/);
+  });
+
+  it("keeps the schema's key set derivable, which is what makes the preimage total", () => {
+    // The preimage is the whole parsed envelope rather than a list of fields,
+    // so "covers every field" is a property of `TaskEnvelope` being a
+    // `z.strictObject` — and of `.shape` staying reachable through the
+    // `superRefine` wrapper. If that stopped being true, the ledger's
+    // "every field of the envelope changes the digest" drill would silently
+    // narrow to whatever it could still see.
+    const keys = Object.keys(TaskEnvelope.shape);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(Object.keys(TaskEnvelope.parse(envelope()) as object).sort()).toEqual([...keys].sort());
+
+    // And the four things §6.2 excludes by name are excluded by construction:
+    // none of them is a field, and strictness is what refuses them.
+    for (const excluded of ["accountId", "attemptNumber", "modelVersionId", "pid"]) {
+      expect(keys, excluded).not.toContain(excluded);
+      expect(TaskEnvelope.safeParse(envelope({ [excluded]: "x" })).success, excluded).toBe(false);
     }
   });
 });

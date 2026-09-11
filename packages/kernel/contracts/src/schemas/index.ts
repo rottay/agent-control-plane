@@ -70,6 +70,7 @@ export {
   ArtifactRef,
 } from "./shared-references/index.js";
 export {
+  ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1,
   TaskClassification,
   CommitPolicy,
   TaskEnvelope,

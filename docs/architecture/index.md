@@ -81,6 +81,7 @@ new records from `_template.md`, which carries the required fields.
 | 0063 | [The extractor reads grammar, not lexical luck](0063-the-extractor-reads-grammar-not-lexical-luck.md) | accepted |
 | 0064 | [A restored ledger is a different ledger, and the path digest cannot say so](0064-a-restored-ledger-is-a-different-ledger.md) | accepted |
 | 0065 | [Coverage says since when, not whether it was true](0065-coverage-says-since-when-not-whether-it-was-true.md) | accepted |
+| 0066 | [The revision digest covers the whole envelope, or it identifies nothing](0066-the-revision-digest-covers-the-whole-envelope.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

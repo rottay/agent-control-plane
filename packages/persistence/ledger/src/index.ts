@@ -101,6 +101,21 @@ export {
 export type { AccountIntegrityInput } from "./account-integrity/index.js";
 
 /**
+ * P-05/A: the envelope revision preimage and its digest, version 1.
+ *
+ * The third of the four digests `docs/audit/architecture/contracts/index.md`
+ * §14 keeps apart, and the one that says **which revision of the work** this
+ * is. Exported for the reason the sidecar preimage above is: the packet that
+ * wires it into the submission path and the suite that pins it by vector must
+ * reach one implementation.
+ *
+ * It is canonical JSON, unlike the sidecar's encoding, and the two must never
+ * be confused: that one hashes stored bytes exactly as they are, this one
+ * hashes a value rewritten into its canonical form.
+ */
+export { envelopeIdentityPreimageV1, envelopeSha256 } from "./envelope-identity/index.js";
+
+/**
  * V2 concurrency C1: the worktree arbitration store.
  *
  * A separate database from the ledger, answering the one question history

@@ -54,6 +54,8 @@ ledger.close();
 | `identity()` | Which file this is and which restore of it. A read; works read-only. |
 | `recordRestore()` | Record that this file is the product of a formal restore. Writes a fresh random restore id before any later append. |
 | `close()` | Release the handle. |
+| `envelopeSha256(value)` | Pure. The revision identity of a task envelope; parses before it hashes. |
+| `envelopeIdentityPreimageV1(value)` | Pure. The bytes that digest is taken over. |
 
 Options are `{ readOnly?, busyTimeoutMs? }`. Pages are bounded: default 100,
 maximum 1000, and cursors are exclusive.
@@ -197,6 +199,50 @@ packet that creates an account read model; until then nothing is blocked, becaus
 nothing consumes an account watermark — `listAccountActions` reads the stream
 directly. A row claiming that stream today is still refused by
 `verifyIntegrity()` rather than believed.
+
+## The envelope revision digest
+
+`envelopeSha256(value)` and `envelopeIdentityPreimageV1(value)` compute the
+identity of a **revision of the work** — the third of the four digests
+`docs/audit/architecture/contracts/index.md` §14 keeps apart, beside the
+authority document's, the prompt's and an artifact's.
+
+```
+preimage = ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(TaskEnvelope.parse(value))
+digest   = sha256(preimage)
+```
+
+There is **no separator between the two**: the LF is the last byte of the
+prefix, exactly as `ACCOUNT_INTEGRITY_PREIMAGE_PREFIX_V1` carries its own. One
+LF, and a formula that added a second would move every digest.
+
+**No list of fields, anywhere.** `docs/audit/architecture/database/index.md`
+§6.2 requires the preimage to cover every field of the contract and refuses to
+enumerate them, because a list written twice goes stale. This code refuses for
+the same reason: the preimage is the whole parsed envelope, so coverage is a
+property of `TaskEnvelope` being a `z.strictObject` and a field added to the
+schema is in the digest the day it is added. The exclusions §6.2 names — the
+default clock, the attempt, the account, the resolved model, any process id —
+are enforced from the other side by the same strictness: none is a field, and an
+object carrying one is refused rather than hashed.
+
+**The function takes `unknown` and parses.** A signature typed against
+`TaskEnvelope` would trust its caller's cast and hand back a digest of something
+that is not an envelope. Refusals are `ZodError` from the parse, and
+`LedgerCanonicalizationError` for a value that parses and still has no canonical
+form — today exactly negative zero, which `int().nonnegative()` accepts and
+`JSON.stringify` would rewrite to `0`. **No error class is added.**
+
+Two consequences are deliberate. `issuedAt` is a field, so re-issuing the same
+packet at a later instant is a new revision. `contractVersion` is a field, so
+moving `CONTRACT_VERSION` changes the digest of envelopes issued under the new
+contract — and no historical digest is migrated, because no history is rehashed.
+
+**This does not close finding N01.** Nothing here is wired into the submission
+path yet: `daemon-child` still compares the submission digest, which covers the
+task coordinates, the instant and the elected route and not one envelope field.
+This is the half that can be a pure function; the wiring is a later packet.
+ADR 0066 carries the reasoning.
 
 ## The account stream's hash chain
 
