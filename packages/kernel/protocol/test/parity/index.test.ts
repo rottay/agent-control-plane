@@ -301,6 +301,33 @@ describe("the canonical row model", () => {
     expect(canonicalize(good)).not.toEqual(canonicalize(bad));
   });
 
+  it("binds the integrity coverage to the ledger, and does not call it volatile", () => {
+    // Both halves matter, and the second is the one a reader would get wrong.
+    //
+    // Every field of a coverage entry is read from `ledger_meta` and the stored
+    // streams, so two clients over one file emit the same values — LEDGER, like
+    // the problem list beside it.
+    const coverage = PARITY_BINDINGS.integrity.find((binding) => binding.field === "coverage");
+    expect(coverage?.source).toBe("LEDGER");
+
+    // `integrityActivatedAt` is an instant and is NOT volatile. It says when
+    // the chain was computed — recorded once at activation and never rewritten
+    // — not when this process looked, which is what `checkedAt` and
+    // `observedAt` say. Declaring it volatile would strip the one field that
+    // makes the baseline auditable, and the comparison would still pass.
+    expect(VOLATILE_FIELDS).not.toContain("integrityActivatedAt");
+    expect(VOLATILE_FIELDS).not.toContain("coverage");
+    expect(VOLATILE_FIELDS).toEqual(["observedAt", "checkedAt"]);
+
+    const kept = canonicalize({
+      coverage: [{ integrityActivatedAt: "2026-08-27T00:00:00.000Z", baselineSequence: 3 }],
+      checkedAt: "2026-08-27T00:00:00.000Z",
+    });
+    expect(kept).toEqual({
+      coverage: [{ integrityActivatedAt: "2026-08-27T00:00:00.000Z", baselineSequence: 3 }],
+    });
+  });
+
   it("refuses a route it has no binding for", () => {
     expect(() => canonicalRows("nope" as never, {})).toThrow(/no parity binding/);
   });

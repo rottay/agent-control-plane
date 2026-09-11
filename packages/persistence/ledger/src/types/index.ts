@@ -375,6 +375,51 @@ export interface LedgerStatus {
 export type { IntegrityProblemKind } from "@acp/protocol";
 import type { IntegrityProblemKind } from "@acp/protocol";
 
+/**
+ * The coverage vocabulary, owned by the wire contract for the same reason
+ * (P-08/B).
+ *
+ * `CoverageKind` says how a stream came to be covered; `WatermarkSourceStream`
+ * says which stream. Both are closed enumerations that the integrity route
+ * serializes verbatim, so the protocol owns them and this package imports
+ * rather than restates — the precedent directly above, set at G7 D4. Typing
+ * `sourceStream` against the wire union is deliberate and is the one place this
+ * package does so: everywhere else `sourceStream` is a column read back from
+ * the database and is honestly a `string`, but here it is a name this code
+ * chooses from a fixed set, and a mismatch should be a compile error rather
+ * than a parse failure at the door.
+ */
+export type { CoverageKind } from "@acp/protocol";
+import type { CoverageKind, WatermarkSourceStream } from "@acp/protocol";
+
+/**
+ * One stream's integrity coverage — §8.2, as `verifyIntegrity()` reports it.
+ *
+ * This says **from when** a stream's chain is evidence, and it is a different
+ * claim from `problems`, which says whether the evidence holds. Neither asserts
+ * authenticity of anything recorded before coverage began: a baselined stream
+ * proves that rows 1..H are unchanged *since activation*, and says nothing
+ * whatsoever about what happened to them before it.
+ *
+ * `checkedThroughSequence` is the head of the cut that was examined, so an
+ * empty stream reports `coveredSinceSequence: 1` with `checkedThroughSequence:
+ * 0` — covered from the first row it will ever hold, holding none yet.
+ *
+ * The three baseline fields travel together and are read from `ledger_meta`,
+ * never recomputed: they are the activation's own record of where retroactive
+ * coverage was taken, and a verifier that recomputed them would be asserting
+ * the very thing it is supposed to be checking.
+ */
+export interface StreamIntegrityCoverage {
+  readonly sourceStream: WatermarkSourceStream;
+  readonly coverageKind: CoverageKind;
+  readonly coveredSinceSequence: number | null;
+  readonly checkedThroughSequence: number;
+  readonly integrityActivatedAt: string | null;
+  readonly baselineSequence: number | null;
+  readonly baselineSha256: string | null;
+}
+
 export interface IntegrityProblem {
   readonly kind: IntegrityProblemKind;
   /** Safe to log. Never contains event content, only coordinates and digests. */
@@ -388,6 +433,15 @@ export interface IntegrityReport {
   readonly headSequence: number;
   readonly headEventSha256: string;
   readonly problems: readonly IntegrityProblem[];
+  /**
+   * One entry per stream, ordered by name — exactly four, never a subset.
+   *
+   * Deliberately beside `problems` rather than folded into it. A finding is
+   * something wrong; coverage is true of a sound ledger as much as a broken
+   * one, and an operator asking "how far back does this prove anything?"
+   * deserves an answer that does not depend on something having gone wrong.
+   */
+  readonly coverage: readonly StreamIntegrityCoverage[];
 }
 
 export interface RebuildResult {

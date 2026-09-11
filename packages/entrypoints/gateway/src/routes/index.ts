@@ -1176,6 +1176,19 @@ function buildIntegrity(source: LedgerSource) {
       detail: problem.detail,
       sequence: problem.sequence,
     })),
+    // Copied field by field rather than spread, on this file's standing habit:
+    // a spread would carry whatever the ledger's shape gains next straight to
+    // the wire, and `IntegrityResult` is strict, so the first such addition
+    // would be a 500 on a route that was working. The list is the contract.
+    coverage: report.coverage.map((entry) => ({
+      sourceStream: entry.sourceStream,
+      coverageKind: entry.coverageKind,
+      coveredSinceSequence: entry.coveredSinceSequence,
+      checkedThroughSequence: entry.checkedThroughSequence,
+      integrityActivatedAt: entry.integrityActivatedAt,
+      baselineSequence: entry.baselineSequence,
+      baselineSha256: entry.baselineSha256,
+    })),
     truncated: report.problems.length > problems.length,
     checkedAt: new Date().toISOString(),
   });

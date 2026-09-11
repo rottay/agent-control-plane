@@ -389,8 +389,31 @@ export function renderIntegrity(response: IntegrityResult): string {
     ["checked at", response.checkedAt],
   ]);
 
+  // Coverage prints on EVERY run, including a clean one, and that is the whole
+  // point of the section. "No problems" answers whether the evidence holds;
+  // this answers how far back there is any, and a reader who saw it only when
+  // something was wrong would learn the difference at the worst moment.
+  //
+  // `coverageKind` prints verbatim — `BASELINED_AT_ACTIVATION`, not "Baselined
+  // at activation". It is a closed wire vocabulary a reader can grep for and
+  // match against the contract; prettifying it would make the word on screen
+  // and the word in the JSON two different strings for one fact.
+  const coverage =
+    "Coverage\n" +
+    table(
+      ["STREAM", "COVERAGE", "FROM", "THROUGH", "BASELINE", "ACTIVATED"],
+      response.coverage.map((entry) => [
+        entry.sourceStream,
+        entry.coverageKind,
+        entry.coveredSinceSequence === null ? "-" : count(entry.coveredSinceSequence),
+        count(entry.checkedThroughSequence),
+        entry.baselineSequence === null ? "-" : count(entry.baselineSequence),
+        entry.integrityActivatedAt ?? "-",
+      ]),
+    );
+
   if (response.problems.length === 0) {
-    return withNewline(head);
+    return withNewline(head + "\n\n" + coverage);
   }
 
   const problems =
@@ -404,7 +427,7 @@ export function renderIntegrity(response: IntegrityResult): string {
       ]),
     );
 
-  return withNewline(head + "\n\n" + problems);
+  return withNewline(head + "\n\n" + coverage + "\n\n" + problems);
 }
 
 /**

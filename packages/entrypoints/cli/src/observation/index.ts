@@ -449,6 +449,15 @@ export function buildIntegrity(report: IntegrityReport, now: Clock): IntegrityRe
       detail: problem.detail.slice(0, 500),
       sequence: problem.sequence,
     })),
+    coverage: report.coverage.map((entry) => ({
+      sourceStream: entry.sourceStream,
+      coverageKind: entry.coverageKind,
+      coveredSinceSequence: entry.coveredSinceSequence,
+      checkedThroughSequence: entry.checkedThroughSequence,
+      integrityActivatedAt: entry.integrityActivatedAt,
+      baselineSequence: entry.baselineSequence,
+      baselineSha256: entry.baselineSha256,
+    })),
     truncated: kept.length < report.problems.length,
     checkedAt: now(),
   });

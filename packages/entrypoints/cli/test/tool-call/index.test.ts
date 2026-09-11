@@ -259,7 +259,7 @@ describe("the verb executes one tool call and records it", () => {
     expect(document["replayed"]).toBe(false);
     expect(document["content"]).toEqual(["the answer"]);
     expect(typeof document["sequence"]).toBe("number");
-    expect(document["apiContractVersion"]).toBe("0.14.0");
+    expect(document["apiContractVersion"]).toBe("0.15.0");
 
     const observed = pids(f.pidLog);
     expect(observed.length).toBeGreaterThan(0);

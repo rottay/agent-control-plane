@@ -941,6 +941,111 @@ export const IntegrityProblemDto = z.strictObject({
 });
 export type IntegrityProblemDto = z.infer<typeof IntegrityProblemDto>;
 
+/**
+ * How a stream's integrity coverage came to be, and from when (P-08/B).
+ *
+ * Three values, and the distinction between the first two is the whole point of
+ * publishing this at all:
+ *
+ * - `CHAIN_FROM_APPEND` — every event was hashed as it was appended, so the
+ *   chain is evidence from the moment each row existed.
+ * - `BASELINED_AT_ACTIVATION` — the chain was computed retroactively over rows
+ *   that were already there. It proves nothing changed **since** it was taken;
+ *   it does not prove those rows were authentic **before** that, because nobody
+ *   hashed them when they were written.
+ * - `NOT_ACTIVATED` — there is no chain. A legacy read may still be possible,
+ *   and it does not satisfy the integrity gate.
+ *
+ * This is a statement of **provenance, not a score**. A reader that collapsed
+ * the first two into "verified" would be asserting the one thing the second one
+ * cannot support.
+ */
+export const COVERAGE_KINDS = [
+  "CHAIN_FROM_APPEND",
+  "BASELINED_AT_ACTIVATION",
+  "NOT_ACTIVATED",
+] as const;
+
+export const CoverageKind = z.enum(COVERAGE_KINDS);
+export type CoverageKind = z.infer<typeof CoverageKind>;
+
+/**
+ * One stream's integrity coverage, as `verifyIntegrity()` reports it.
+ *
+ * `checkedThroughSequence` is the head of the cut examined, so `1` with `0`
+ * denotes an empty stream rather than a contradiction. The three baseline
+ * fields travel together: they are the account sidecar's activation, read from
+ * `ledger_meta` rather than recomputed, and they are all present or all absent.
+ */
+export const StreamIntegrityCoverageDto = z
+  .strictObject({
+    sourceStream: WatermarkSourceStream,
+    coverageKind: CoverageKind,
+    coveredSinceSequence: Sequence.nullable(),
+    checkedThroughSequence: SequenceOrZero,
+    integrityActivatedAt: Timestamp.nullable(),
+    baselineSequence: SequenceOrZero.nullable(),
+    baselineSha256: Sha256Hex.nullable(),
+  })
+  .superRefine((value, ctx) => {
+    // The shape is a function of the kind, and enforcing it here is what stops
+    // a producer emitting the shape of one kind under the label of another —
+    // a chained stream wearing a baseline, or a baselined one with its
+    // provenance fields blanked.
+    const baseline = [value.integrityActivatedAt, value.baselineSequence, value.baselineSha256];
+    const reject = (message: string, path: string): void => {
+      ctx.addIssue({ code: "custom", message, path: [path] });
+    };
+
+    if (value.coverageKind === "CHAIN_FROM_APPEND") {
+      if (value.coveredSinceSequence !== 1) {
+        reject("a chain from append covers the stream from sequence one", "coveredSinceSequence");
+      }
+      if (baseline.some((field) => field !== null)) {
+        reject("a chain from append has no baseline: it was never activated", "baselineSequence");
+      }
+    }
+
+    if (value.coverageKind === "BASELINED_AT_ACTIVATION") {
+      if (value.coveredSinceSequence !== 1) {
+        reject("a baselined chain covers the stream from sequence one", "coveredSinceSequence");
+      }
+      if (baseline.some((field) => field === null)) {
+        reject("a baselined chain carries all three baseline fields", "baselineSequence");
+      }
+      // What is DELIBERATELY not checked here: `baselineSequence` against
+      // `checkedThroughSequence`. This refine fixes the shape a kind must have,
+      // not whether the values agree with each other — and a baseline ahead of
+      // the cut is precisely a disagreement the verifier already names, as a
+      // `LEDGER_META` finding reading "the account integrity baseline names
+      // sequence H which the chain does not reach".
+      //
+      // A tampered ledger has to be able to SAY that on the wire, beside
+      // `ok: false`. Refusing the pair here would turn the honest report of a
+      // tampered ledger into a 500 at the door — the report would die of the
+      // very defect it exists to disclose.
+    }
+
+    if (value.coverageKind === "NOT_ACTIVATED") {
+      if (value.coveredSinceSequence !== null) {
+        reject("an unactivated stream covers nothing", "coveredSinceSequence");
+      }
+      if (baseline.some((field) => field !== null)) {
+        reject("an unactivated stream has no baseline", "baselineSequence");
+      }
+    }
+
+    // Only the account stream has a sidecar. The other three carry their chain
+    // inside them, so they cannot be baselined and cannot be unactivated.
+    if (value.sourceStream !== "account_events" && value.coverageKind !== "CHAIN_FROM_APPEND") {
+      reject(
+        "only account_events has a sidecar; the other streams chain as they append",
+        "coverageKind",
+      );
+    }
+  });
+export type StreamIntegrityCoverageDto = z.infer<typeof StreamIntegrityCoverageDto>;
+
 export const IntegrityResult = z
   .strictObject({
     apiContractVersion: ApiContractVersion,
@@ -950,6 +1055,36 @@ export const IntegrityResult = z
     headSequence: SequenceOrZero,
     headEventSha256: Sha256Hex,
     problems: z.array(IntegrityProblemDto).max(500),
+    /**
+     * One entry per stream of the contract, ordered by name (P-08/B).
+     *
+     * Exactly four, never a subset: a report that omitted `account_events`
+     * would be silent about the one stream whose coverage is retroactive,
+     * which is the only stream where the question has an interesting answer.
+     */
+    coverage: z
+      .array(StreamIntegrityCoverageDto)
+      .length(WATERMARK_SOURCE_STREAMS.length)
+      .superRefine((value, ctx) => {
+        for (let index = 1; index < value.length; index += 1) {
+          const previous = value[index - 1];
+          const current = value[index];
+          if (previous === undefined || current === undefined) continue;
+          if (previous.sourceStream === current.sourceStream) {
+            ctx.addIssue({
+              code: "custom",
+              message: "a report names each source stream at most once",
+              path: [index, "sourceStream"],
+            });
+          } else if (previous.sourceStream > current.sourceStream) {
+            ctx.addIssue({
+              code: "custom",
+              message: "a report's coverage is ordered by source stream",
+              path: [index, "sourceStream"],
+            });
+          }
+        }
+      }),
     /** True when the problem list was cut to the ceiling above. */
     truncated: z.boolean(),
     checkedAt: Timestamp,
@@ -961,6 +1096,17 @@ export const IntegrityResult = z
       ctx.addIssue({
         code: "custom",
         message: "an ok integrity result must carry no problems",
+        path: ["ok"],
+      });
+    }
+    // "Does not satisfy the integrity gate, even though a legacy read may be
+    // possible." A stream with no chain cannot be part of a passing verdict, so
+    // the value stays in the vocabulary — another build may legitimately emit
+    // it — while never crossing the wire as a PASS.
+    if (value.ok && value.coverage.some((entry) => entry.coverageKind === "NOT_ACTIVATED")) {
+      ctx.addIssue({
+        code: "custom",
+        message: "an ok integrity result cannot report a stream with no integrity coverage",
         path: ["ok"],
       });
     }

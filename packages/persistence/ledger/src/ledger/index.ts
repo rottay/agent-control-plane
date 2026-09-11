@@ -30,6 +30,7 @@ import {
 } from "../errors/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
+  ACCOUNT_STREAM,
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
   INITIATIVE_PROJECTION_NAMES,
@@ -98,6 +99,7 @@ import {
   type RegistryAppendResult,
   type RegistryDocument,
   type RegistryEventRecord,
+  type StreamIntegrityCoverage,
   type RegistryProjectionSnapshot,
   type RoadmapVersionReadModel,
   type RoutingAssignmentFallbackRow,
@@ -4081,7 +4083,116 @@ export class Ledger {
       headSequence,
       headEventSha256,
       problems,
+      coverage: this.#buildCoverage(
+        replay.lastSequence,
+        initiativeReplay.lastSequence,
+        registryReplay.lastSequence,
+      ),
     };
+  }
+
+  /**
+   * Say, per stream, from when its chain is evidence — §8.2's coverage report.
+   *
+   * This answers a different question from every other line of
+   * `verifyIntegrity()`. The problem list says whether the evidence holds; this
+   * says how far back there is any. A caller that had only the first would read
+   * `ok: true` on a ledger whose account stream was baselined this morning and
+   * conclude that a row written last year had been verified, which is exactly
+   * the conflation the contract forbids.
+   *
+   * Nothing here recomputes a digest or a head. Three of the four streams chain
+   * as they append, so their coverage is a constant of their construction —
+   * `CHAIN_FROM_APPEND` from sequence one, with no baseline because there was
+   * never a moment when they were not covered. The fourth is read out of
+   * `ledger_meta`: the sidecar's activation triple is the record of where
+   * retroactive coverage was taken, and recomputing it would make the report
+   * assert what the chain is supposed to prove.
+   *
+   * `checkedThroughSequence` is the cut this run examined, and each of the four
+   * comes from the same replay the problem list was built from rather than a
+   * second query — so the two halves of the report describe one pass over one
+   * file, not two passes that might disagree.
+   *
+   * **The account entry never asserts authenticity before its baseline.** A
+   * `BASELINED_AT_ACTIVATION` stream proves rows 1..H unchanged *since* the
+   * instant in `integrityActivatedAt`; what happened to them before it is
+   * outside what any chain here can speak to, and no field of this report
+   * claims otherwise.
+   */
+  #buildCoverage(
+    taskThrough: number,
+    initiativeThrough: number,
+    registryThrough: number,
+  ): StreamIntegrityCoverage[] {
+    const chained = (
+      sourceStream: StreamIntegrityCoverage["sourceStream"],
+      checkedThroughSequence: number,
+    ): StreamIntegrityCoverage => ({
+      sourceStream,
+      coverageKind: "CHAIN_FROM_APPEND",
+      // One even on an empty stream: covered from the first row it will ever
+      // hold, holding none yet. Reporting `null` here would say "covers
+      // nothing", which is the vocabulary for a stream with no chain at all.
+      coveredSinceSequence: 1,
+      checkedThroughSequence,
+      integrityActivatedAt: null,
+      baselineSequence: null,
+      baselineSha256: null,
+    });
+
+    // Read straight from the stream rather than from the chain head in
+    // `ledger_meta`. The cut this run examined is what the account table holds,
+    // and taking it from the metadata would make the report agree with a stale
+    // head instead of noticing one — `#checkAccountIntegrity()` is what
+    // compares the two, and it cannot if this borrows the answer.
+    const accountThrough = (
+      this.#stmt("SELECT COALESCE(MAX(sequence), 0) AS head FROM account_events").get() as {
+        readonly head: number;
+      }
+    ).head;
+
+    let account: StreamIntegrityCoverage;
+    try {
+      const state = this.#readAccountIntegrity();
+      account = {
+        sourceStream: ACCOUNT_STREAM,
+        coverageKind: "BASELINED_AT_ACTIVATION",
+        coveredSinceSequence: 1,
+        checkedThroughSequence: accountThrough,
+        integrityActivatedAt: state.activatedAt,
+        baselineSequence: state.baselineSequence,
+        baselineSha256: state.baselineSha256,
+      };
+    } catch {
+      // The activation is unreadable — partly or wholly gone, or holding a
+      // value this code cannot have written. `#checkAccountIntegrity()` has
+      // already pushed that as a finding with its detail; the error is
+      // swallowed HERE and only here, because a report that threw would leave
+      // the operator with no coverage report at all on precisely the ledger
+      // that most needs one. What it says instead is the honest thing: this
+      // stream carries no coverage this code can stand behind.
+      account = {
+        sourceStream: ACCOUNT_STREAM,
+        coverageKind: "NOT_ACTIVATED",
+        coveredSinceSequence: null,
+        checkedThroughSequence: accountThrough,
+        integrityActivatedAt: null,
+        baselineSequence: null,
+        baselineSha256: null,
+      };
+    }
+
+    // Ordered by stream name, which is the order the wire contract requires and
+    // is NOT the order `WATERMARK_SOURCE_STREAMS` declares. Sorting a fixed
+    // four-element list would hide that; writing them out in the required order
+    // makes a future stream a compile-visible edit rather than a silent one.
+    return [
+      account,
+      chained(TASK_STREAM, taskThrough),
+      chained(INITIATIVE_STREAM, initiativeThrough),
+      chained(REGISTRY_STREAM, registryThrough),
+    ];
   }
 
   /** Compare the stored projections against a fresh replay of the ledger. */
@@ -4983,7 +5094,7 @@ export class Ledger {
             path: "version",
             message:
               "account " +
-              safeIdentifier(event.accountId) +
+              safeAccountId(event.accountId) +
               " is at version " +
               String(held.highest ?? 0) +
               ", so the next action is version " +

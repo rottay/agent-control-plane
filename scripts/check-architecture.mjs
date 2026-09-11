@@ -8252,6 +8252,97 @@ const P08A2_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-08/B — the §8.2 coverage report crosses the wire.
+ *
+ * A2 gave `account_events` a chain. It could say whether the chain held. It
+ * could not say **from when** it held anything, and on a retroactively
+ * activated stream those are different facts that an operator reading
+ * `ok: true` will otherwise collapse into one. `verifyIntegrity()` now carries
+ * `coverage`: exactly four entries, one per stream, ordered by stream name.
+ *
+ * **Coverage is not provenance of authenticity, and this packet says so in
+ * every place it can be read.** Coverage of `1..H` on accounts means bytes
+ * preserved **since activation**. It is not authenticity before that instant
+ * and it is not evidence that those rows were hashed when they were inserted —
+ * nobody hashed them when they were written. The DTO docblock, the README-side
+ * prose in `docs/api-reference.md`, ADR 0065 and the ledger's own type all
+ * state it; no field of the response claims otherwise.
+ *
+ * **Beside the problem list, never inside it.** A problem is something wrong;
+ * coverage is true of a sound ledger as much as a broken one. Folding it into
+ * `problems` would mean an operator only learns how far back the evidence goes
+ * on a ledger where something has already failed.
+ *
+ * **Four entries, never a subset**, with unique ascending stream names enforced
+ * by a refine: the interesting answer is `account_events`, and a report free to
+ * omit a stream is free to omit exactly that one.
+ *
+ * **`NOT_ACTIVATED` cannot sit inside a passing verdict.** §8.2's own words are
+ * that such a stream does not satisfy the integrity gate even where a legacy
+ * read is possible, so `IntegrityResult` rejects `ok` beside it. The value
+ * stays in the vocabulary because it is the honest answer when an activation
+ * has been reached past and deleted — reported **beside** a `LEDGER_META`
+ * finding, never instead of one, and never as a quiet degradation of a partial
+ * activation, which is exactly how a tampered baseline would pass for an
+ * honest absence.
+ *
+ * **Read, not recomputed.** Every baseline field comes from `ledger_meta`
+ * verbatim; a verifier that recomputed them from the current head would assert
+ * the very thing the chain exists to prove. That is also why
+ * `integrityActivatedAt` is bound to LEDGER and is NOT volatile:
+ * `VOLATILE_FIELDS` stays exactly `["observedAt", "checkedAt"]`, because the
+ * instant says when the chain was computed, not when this process looked.
+ *
+ * **The enum is the protocol's; the ledger imports the type** (G7 D4, the same
+ * shape `IntegrityProblemKind` already uses in that file). One vocabulary, not
+ * two lists that nothing would notice disagreeing.
+ *
+ * **`status()` is untouched** (U5). Coverage carries `checkedThroughSequence`,
+ * which is only meaningful about a pass that happened; `status()` runs no pass.
+ *
+ * **Declared, so the next reader does not have to discover it: the console does
+ * not render `coverage`.** The field crosses the wire and both the API and the
+ * CLI publish it; the browser UI is not touched by this packet and shows the
+ * verdict and the problem list as it did before. That is a UI packet.
+ *
+ * **Pins.** `API_CONTRACT_VERSION` 0.14.0 → 0.15.0 — `IntegrityResult` is a
+ * `z.strictObject` gaining a required key, so a reader pinned at 0.14.0 rejects
+ * the result; the six test pins move with the constant. `API_ROUTES` and
+ * `API_WRITE_ROUTES` do not move, and neither does `LEDGER_CONTRACT_VERSION`:
+ * migration 10 is ledger schema, not the shape of a recorded event. No
+ * migration and no DDL here. The ADR corpus moves **64 → 65** with
+ * `0065-coverage-says-since-when-not-whether-it-was-true.md` and its row in
+ * `docs/architecture/index.md`. No error class is added, so the README/barrel
+ * law is untouched. The write set gains **1 distinct path** — the ADR itself,
+ * which is a file that did not exist; every other literal below is admitted by
+ * a historical block.
+ */
+const P08B_WRITE_SET = [
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/cli/src/format/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "docs/api-reference.md",
+  "docs/architecture/0065-coverage-says-since-when-not-whether-it-was-true.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8447,6 +8538,7 @@ const WRITE_SET = [
   ...P10B_WRITE_SET,
   ...P08A1_WRITE_SET,
   ...P08A2_WRITE_SET,
+  ...P08B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

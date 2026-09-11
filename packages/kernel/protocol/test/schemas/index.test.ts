@@ -49,6 +49,7 @@ import {
   initiativeRoadmapContentPath,
   initiativeRoadmapPath,
   INTEGRITY_PROBLEM_KINDS,
+  COVERAGE_KINDS,
   WATERMARK_SOURCE_STREAMS,
   IntegrityResult,
   LEDGER_CONTRACT_VERSION,
@@ -244,6 +245,45 @@ const TWO_HEADED_PROJECTION = {
   ],
 };
 
+/**
+ * One chained stream's coverage entry (P-08/B).
+ *
+ * Three of the four streams look exactly like this: covered from sequence one
+ * because they were chained as they appended, and carrying no baseline because
+ * there was never an instant at which they were not covered.
+ */
+const chainedCoverage = (
+  sourceStream: string,
+  checkedThroughSequence: number,
+): Record<string, unknown> => ({
+  sourceStream,
+  coverageKind: "CHAIN_FROM_APPEND",
+  coveredSinceSequence: 1,
+  checkedThroughSequence,
+  integrityActivatedAt: null,
+  baselineSequence: null,
+  baselineSha256: null,
+});
+
+/** The account stream's, which is the only one that can carry a baseline. */
+const BASELINED_COVERAGE = {
+  sourceStream: "account_events",
+  coverageKind: "BASELINED_AT_ACTIVATION",
+  coveredSinceSequence: 1,
+  checkedThroughSequence: 5,
+  integrityActivatedAt: AT,
+  baselineSequence: 3,
+  baselineSha256: SHA256,
+};
+
+/** Ordered by stream name, which is what the array's own refine requires. */
+const COVERAGE = [
+  BASELINED_COVERAGE,
+  chainedCoverage("control_plane_events", 7),
+  chainedCoverage("initiative_events", 0),
+  chainedCoverage("registry_events", 2),
+];
+
 const INTEGRITY_OK = {
   apiContractVersion: API_CONTRACT_VERSION,
   ledgerContractVersion: LEDGER_CONTRACT_VERSION,
@@ -252,6 +292,7 @@ const INTEGRITY_OK = {
   headSequence: 7,
   headEventSha256: SHA256,
   problems: [],
+  coverage: COVERAGE,
   truncated: false,
   checkedAt: AT,
 };
@@ -987,6 +1028,7 @@ describe("overview", () => {
       );
     }
   });
+
 });
 
 // ---------------------------------------------------------------------------
@@ -1245,6 +1287,208 @@ describe("health, status and integrity", () => {
       problems: [{ kind: "HASH_CHAIN", detail: "sequence 3 digest mismatch", sequence: 3 }],
     };
     expect(IntegrityResult.safeParse(failing).success).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // The coverage report (P-08/B)
+  // -------------------------------------------------------------------------
+  //
+  // Coverage says FROM WHEN each stream's chain is evidence. It is a different
+  // claim from the problem list, which says whether that evidence holds, and
+  // NEITHER of them asserts authenticity of anything recorded before coverage
+  // began. These refines exist so a producer cannot blur the two on the wire.
+
+  it("requires exactly one coverage entry per stream, in stream order", () => {
+    expect(IntegrityResult.safeParse(INTEGRITY_OK).success).toBe(true);
+    expect(INTEGRITY_OK.coverage).toHaveLength(WATERMARK_SOURCE_STREAMS.length);
+
+    // A subset is refused rather than tolerated: the interesting answer is the
+    // account stream's, and a report free to omit a stream is free to omit
+    // exactly that one.
+    const short = withKey(INTEGRITY_OK, "coverage", COVERAGE.slice(1));
+    expect(IntegrityResult.safeParse(short).success).toBe(false);
+
+    // Four entries naming three streams. The length alone would pass.
+    const duplicated = withKey(INTEGRITY_OK, "coverage", [
+      BASELINED_COVERAGE,
+      BASELINED_COVERAGE,
+      chainedCoverage("control_plane_events", 7),
+      chainedCoverage("initiative_events", 0),
+    ]);
+    expect(IntegrityResult.safeParse(duplicated).success).toBe(false);
+
+    const unordered = withKey(INTEGRITY_OK, "coverage", [
+      COVERAGE[1],
+      COVERAGE[0],
+      COVERAGE[2],
+      COVERAGE[3],
+    ]);
+    expect(IntegrityResult.safeParse(unordered).success).toBe(false);
+  });
+
+  it("refuses an ok integrity result that reports a stream with no coverage", () => {
+    // The gate. `NOT_ACTIVATED` means "does not satisfy the integrity gate,
+    // even though a legacy read may be possible" — so it cannot sit inside a
+    // passing verdict. The value stays in the vocabulary because another build
+    // may legitimately emit it; what is refused is emitting it beside `ok`.
+    const unactivated = [
+      {
+        sourceStream: "account_events",
+        coverageKind: "NOT_ACTIVATED",
+        coveredSinceSequence: null,
+        checkedThroughSequence: 0,
+        integrityActivatedAt: null,
+        baselineSequence: null,
+        baselineSha256: null,
+      },
+      ...COVERAGE.slice(1),
+    ];
+    const bad = withKey(INTEGRITY_OK, "coverage", unactivated);
+    expect(IntegrityResult.safeParse(bad).success).toBe(false);
+
+    // The same coverage under a failing verdict is exactly what a tampered
+    // ledger reports, and must parse.
+    expect(
+      IntegrityResult.safeParse({
+        ...INTEGRITY_OK,
+        ok: false,
+        coverage: unactivated,
+        problems: [{ kind: "LEDGER_META", detail: "none of the five keys", sequence: null }],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("makes the shape of a coverage entry a function of its kind", () => {
+    const replace = (entry: Record<string, unknown>): unknown =>
+      withKey(INTEGRITY_OK, "coverage", [entry, ...COVERAGE.slice(1)]);
+
+    // A chained stream wearing a baseline. This is the shape that would let a
+    // producer present retroactive coverage as if it had always been there.
+    expect(
+      IntegrityResult.safeParse(
+        replace({ ...chainedCoverage("account_events", 5), baselineSequence: 3 }),
+      ).success,
+    ).toBe(false);
+
+    // A baselined stream with its provenance blanked — the same lie pointing
+    // the other way: coverage claimed from sequence one with nothing recording
+    // when, or from what, it was taken.
+    for (const field of ["integrityActivatedAt", "baselineSequence", "baselineSha256"]) {
+      expect(
+        IntegrityResult.safeParse(replace({ ...BASELINED_COVERAGE, [field]: null })).success,
+        field,
+      ).toBe(false);
+    }
+
+    // An unactivated stream that claims to cover something.
+    expect(
+      IntegrityResult.safeParse(
+        replace({
+          sourceStream: "account_events",
+          coverageKind: "NOT_ACTIVATED",
+          coveredSinceSequence: 1,
+          checkedThroughSequence: 0,
+          integrityActivatedAt: null,
+          baselineSequence: null,
+          baselineSha256: null,
+        }),
+      ).success,
+    ).toBe(false);
+
+    // A baseline ahead of the cut examined PARSES, and that is the point.
+    //
+    // `{baselineSequence: 3, checkedThroughSequence: 2}` is exactly what a
+    // ledger whose account stream was truncated below its own baseline reports
+    // — truthfully — and the verifier already names it as a `LEDGER_META`
+    // finding. The wire has to be able to carry that beside `ok: false`.
+    // Refusing the pair as a shape violation would turn the honest report of a
+    // tampered ledger into a 500 at the door, which is the one outcome the
+    // report exists to prevent.
+    expect(
+      IntegrityResult.safeParse({
+        ...INTEGRITY_OK,
+        ok: false,
+        problems: [
+          {
+            kind: "LEDGER_META",
+            detail:
+              "the account integrity baseline names sequence 3 which the chain does not reach",
+            sequence: null,
+          },
+        ],
+        coverage: [
+          { ...BASELINED_COVERAGE, checkedThroughSequence: 2 },
+          ...COVERAGE.slice(1),
+        ],
+      }).success,
+    ).toBe(true);
+
+    // And only the account stream has a sidecar at all. The other three chain
+    // as they append, so they can be neither baselined nor unactivated, and a
+    // report that said otherwise would be describing a mechanism that does not
+    // exist.
+    expect(
+      IntegrityResult.safeParse(
+        withKey(INTEGRITY_OK, "coverage", [
+          COVERAGE[0],
+          { ...BASELINED_COVERAGE, sourceStream: "control_plane_events" },
+          COVERAGE[2],
+          COVERAGE[3],
+        ]),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("accepts an empty stream as covered from one through zero", () => {
+    // `[1, 0]` is the positive, and it is not a contradiction: covered from the
+    // first row it will ever hold, holding none yet. `null` there would say
+    // "covers nothing", which is the vocabulary for a stream with no chain.
+    const empty = COVERAGE[2] as Record<string, unknown>;
+    expect([empty["coveredSinceSequence"], empty["checkedThroughSequence"]]).toEqual([1, 0]);
+    expect(IntegrityResult.safeParse(INTEGRITY_OK).success).toBe(true);
+
+    // Zero is the floor. A head below it is not a shorter cut, it is nonsense.
+    expect(
+      IntegrityResult.safeParse(
+        withKey(INTEGRITY_OK, "coverage", [
+          COVERAGE[0],
+          COVERAGE[1],
+          { ...chainedCoverage("initiative_events", 0), checkedThroughSequence: -1 },
+          COVERAGE[3],
+        ]),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("refuses an unknown coverage kind", () => {
+    const bad = withKey(INTEGRITY_OK, "coverage", [
+      { ...BASELINED_COVERAGE, coverageKind: "PROBABLY_FINE" },
+      ...COVERAGE.slice(1),
+    ]);
+    expect(IntegrityResult.safeParse(bad).success).toBe(false);
+    expect(COVERAGE_KINDS).toEqual([
+      "CHAIN_FROM_APPEND",
+      "BASELINED_AT_ACTIVATION",
+      "NOT_ACTIVATED",
+    ]);
+  });
+
+  it("refuses an extra or a missing key inside a coverage entry", () => {
+    const missing: Record<string, unknown> = { ...BASELINED_COVERAGE };
+    delete missing["baselineSha256"];
+    expect(
+      IntegrityResult.safeParse(withKey(INTEGRITY_OK, "coverage", [missing, ...COVERAGE.slice(1)]))
+        .success,
+    ).toBe(false);
+
+    expect(
+      IntegrityResult.safeParse(
+        withKey(INTEGRITY_OK, "coverage", [
+          { ...BASELINED_COVERAGE, coveredThrough: 9 },
+          ...COVERAGE.slice(1),
+        ]),
+      ).success,
+    ).toBe(false);
   });
 
   it("refuses an unknown integrity problem kind", () => {
@@ -2371,7 +2615,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.14.0");
+    expect(API_CONTRACT_VERSION).toBe("0.15.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -2388,7 +2632,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.14.0");
+    expect(API_CONTRACT_VERSION).toBe("0.15.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -2401,7 +2645,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(15);
-    expect(API_CONTRACT_VERSION).toBe("0.14.0");
+    expect(API_CONTRACT_VERSION).toBe("0.15.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape

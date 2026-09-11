@@ -146,8 +146,10 @@ opened live"; `0` means "you asked for the whole log"; these are different
 answers and a client must be able to tell them apart. Because the frame is
 strict, a client pinned to an older `apiContractVersion` will reject it — see
 `API_CONTRACT_VERSION`, which moved to `0.12.0` with this field, to `0.13.0`
-when the lifecycle route arrived, and to `0.14.0` with `instance` — a required
-key on a strict frame, for the same reason `resumedFrom` moved it.
+when the lifecycle route arrived, to `0.14.0` with `instance` — a required
+key on a strict frame, for the same reason `resumedFrom` moved it — and to
+`0.15.0` with `coverage` on the integrity result, which is a strict object for
+the same reason every frame here is.
 
 **The server does not detect a foreign resume, and cannot.** `Last-Event-ID` is
 a bare decimal sequence: only event frames carry an `id:`, and its value is that
@@ -196,6 +198,59 @@ contract's own vocabulary, so a new event type cannot appear unmapped.
 **The tail is a polled read, not a push.** This process opens the ledger
 read-only and the writer is a different process, so there is no change
 notification to subscribe to. ADR 0017 records why a broker was refused.
+
+## The integrity report
+
+`GET /api/v1/integrity` answers two different questions, and the whole design of
+the response is about keeping them apart.
+
+`ok` and `problems` say **whether the evidence holds**: the chains recompute,
+the heads agree with the streams, the stored projections match a fresh replay.
+
+`coverage` says **from when there is any evidence at all**. It is an array of
+exactly four entries, one per stream, ordered by stream name — never a subset,
+because the interesting answer is the account stream's and a report free to omit
+a stream would be free to omit exactly that one.
+
+| Field | Shape | Meaning |
+| --- | --- | --- |
+| `sourceStream` | one of the four streams | which stream this entry is about |
+| `coverageKind` | `CHAIN_FROM_APPEND` / `BASELINED_AT_ACTIVATION` / `NOT_ACTIVATED` | how the coverage came to be — provenance, not a score |
+| `coveredSinceSequence` | `>= 1`, or `null` | `1` wherever a verified chain is installed; `null` only for `NOT_ACTIVATED` |
+| `checkedThroughSequence` | `>= 0` | the head of the cut examined; `[1, 0]` denotes an empty stream |
+| `integrityActivatedAt` | instant, or `null` | when the chain was computed; present only for a baselined stream |
+| `baselineSequence` | `>= 0`, or `null` | the `H` fixed at activation, including `H = 0` |
+| `baselineSha256` | sha-256, or `null` | the baseline digest; sixty-four zeroes when `H = 0` |
+
+`control_plane_events`, `initiative_events` and `registry_events` chain as they
+append, so they report `CHAIN_FROM_APPEND` from sequence one with all three
+baseline fields `null` — there was never an instant at which they were not
+covered, so there is nothing for a baseline to record. `account_events` is the
+only stream whose chain lives beside it and was installed after the fact, so it
+is the only one that can report `BASELINED_AT_ACTIVATION`, and the only one that
+can report `NOT_ACTIVATED`.
+
+**Read the account entry exactly.** Coverage of `1..H` means **bytes preserved
+since activation**. It is not authenticity before that instant, and it is not
+evidence that those rows were hashed when they were inserted — nobody hashed
+them when they were written. Those are two different facts and nothing in this
+response presents them as one.
+
+**A partial or divergent activation is an integrity error, never a quiet
+`NOT_ACTIVATED`.** Degrading it to the word for "never activated" is precisely
+how a tampered baseline would pass for an honest absence. What you get instead
+is `ok: false`, a `LEDGER_META` problem naming what is missing, *and* a
+`NOT_ACTIVATED` entry with every nullable field `null` — the finding and the
+honest coverage claim, together. A result that is `ok` and reports any
+`NOT_ACTIVATED` stream does not parse: that value does not satisfy the integrity
+gate even where a legacy read is still possible.
+
+Nothing in `coverage` is recomputed. The baseline fields are read from
+`ledger_meta` verbatim, because a verifier that recomputed them from the current
+head would be asserting the very thing the chain exists to prove. That is also
+why `integrityActivatedAt` is **not** a volatile field: it says when the chain
+was computed, not when this process looked, so two clients reading one file emit
+it identically. ADR 0065 carries the reasoning.
 
 ## Parameter validation
 

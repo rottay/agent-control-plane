@@ -361,11 +361,15 @@ describe("usage", () => {
       // a minor. To 0.13.0 at V2 L3 for a fourth write route and two error
       // codes, and to 0.14.0 at P-10/id-B for one more required field on the
       // same `hello` — `instance`, which ledger FILE this is — for exactly the
-      // strictness reason 0.12.0 moved.
+      // strictness reason 0.12.0 moved. To 0.15.0 at P-08/B for one more
+      // required field, this time on the integrity result: `coverage`, which
+      // says from when each stream's chain is evidence. Same strictness reason
+      // again — `IntegrityResult` is a `z.strictObject`, so a reader pinned at
+      // 0.14.0 rejects the result rather than ignoring the key.
       // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.14.0",
+      apiContractVersion: "0.15.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });
@@ -1038,6 +1042,48 @@ describe("integrity", () => {
     expect(result.stdout).toContain("ok");
   });
 
+  it("prints coverage on a clean run, and prints the kind verbatim", async () => {
+    // Coverage prints even when nothing is wrong, which is the whole point:
+    // "no problems" answers whether the evidence holds, coverage answers how
+    // far back there is any, and a reader who only ever saw the second when
+    // something had already gone wrong would learn the difference too late.
+    const { path } = populatedLedger();
+    const result = await invoke(["integrity", "--database", path]);
+    expect(result.exitCode).toBe(EXIT_OK);
+    expect(result.stdout).toContain("Coverage");
+    expect(result.stdout).not.toContain("Problems");
+
+    // Verbatim, not prettified. The literal is asserted rather than derived:
+    // this is a closed wire vocabulary a reader greps for, and the word on the
+    // screen and the word in the JSON must be one string.
+    expect(result.stdout).toContain("BASELINED_AT_ACTIVATION");
+    expect(result.stdout).toContain("CHAIN_FROM_APPEND");
+    expect(result.stdout).not.toContain("Baselined at activation");
+
+    // The account row carries its provenance in the same line: where the
+    // baseline was taken, and when the chain behind it was computed. Without
+    // both, "covered from sequence 1" is a claim with nothing behind it.
+    const accounts = result.stdout
+      .split("\n")
+      .find((line) => line.includes("account_events") && line.includes("BASELINED"));
+    expect(accounts).toBeDefined();
+    const report = IntegrityResult.parse(
+      json(await invoke(["integrity", "--database", path, "--format", "json"])),
+    );
+    const entry = report.coverage.find((candidate) => candidate.sourceStream === "account_events");
+    expect(entry?.integrityActivatedAt).not.toBeNull();
+    expect(accounts).toContain(entry?.integrityActivatedAt ?? "unreachable");
+    expect(accounts).toContain(String(entry?.baselineSequence ?? "unreachable"));
+
+    // And the report is four streams, in stream order, every one of them named.
+    expect(report.coverage.map((candidate) => candidate.sourceStream)).toEqual([
+      "account_events",
+      "control_plane_events",
+      "initiative_events",
+      "registry_events",
+    ]);
+  });
+
   it("exits with the integrity code when the stored chain is broken", async () => {
     const { path } = populatedLedger();
     tamperWithStoredDigest(path);
@@ -1047,6 +1093,76 @@ describe("integrity", () => {
     const report = IntegrityResult.parse(json(result));
     expect(report.ok).toBe(false);
     expect(report.problems.length).toBeGreaterThan(0);
+  });
+
+  it("exits with the integrity code, not the internal one, when the account stream is shorter than its baseline", async () => {
+    // The CLI twin of the gateway's "still answers 200 with the findings".
+    //
+    // A baseline of 3 against a cut that reaches 2 is what a ledger reports
+    // after somebody dropped the append-only triggers and deleted the last
+    // account row. `EXIT_INTEGRITY` is the CLI saying "I checked and it is
+    // broken"; `EXIT_INTERNAL` would be the CLI saying "I could not check",
+    // and those are different facts. A contract that refused the pair as a
+    // malformed shape would turn the first into the second — the verb would
+    // compute an accurate report and then die serializing it.
+    const path = emptyLedger();
+    const ledger = openLedger(path);
+    for (const version of [1, 2, 3]) {
+      ledger.appendAccountAction({
+        contractVersion: LEDGER_CONTRACT_VERSION,
+        eventId: randomUUID(),
+        accountId: B7S_ACCOUNT,
+        version,
+        idempotencyKey: B7S_ACCOUNT + "/1/action." + String(version),
+        action: version % 2 === 1 ? "DRAIN" : "ACCOUNT_READY",
+        resultingState: version % 2 === 1 ? "DRAINING" : "AVAILABLE",
+        actor: B1E_ACTOR,
+        note: null,
+        occurredAt: "2026-08-27T00:00:00.000Z",
+        recordedAt: "2026-08-27T00:00:00.000Z",
+      });
+    }
+    ledger.close();
+
+    // Rewind past migration 10 and reopen, so the sidecar activates over a
+    // stream that already holds three rows. A ledger created empty and then
+    // grown has a baseline of 0, and 0 is never ahead of anything.
+    const rewind = new DatabaseSync(path);
+    rewind.exec("DELETE FROM ledger_meta WHERE key LIKE 'account_integrity_%'");
+    rewind.exec(
+      "DROP TRIGGER tr_account_event_integrity__deny_delete;" +
+        "DROP TRIGGER tr_account_event_integrity__deny_update;" +
+        "DROP INDEX ux_account_events__account_id__version;" +
+        "DROP TABLE account_event_integrity;",
+    );
+    rewind.exec("DELETE FROM schema_migrations WHERE version >= 10");
+    rewind.close();
+    openLedger(path).close();
+
+    const raw = new DatabaseSync(path);
+    raw.exec(
+      "DROP TRIGGER tr_account_event_integrity__deny_delete; " +
+        "DROP TRIGGER account_events_deny_delete;",
+    );
+    raw.exec("DELETE FROM account_event_integrity WHERE account_sequence = 3");
+    raw.exec("DELETE FROM account_events WHERE sequence = 3");
+    raw.close();
+
+    const result = await invoke(["integrity", "--database", path, "--format", "json"]);
+    expect(result.exitCode).toBe(EXIT_INTEGRITY);
+
+    const report = IntegrityResult.parse(json(result));
+    expect(report.ok).toBe(false);
+    expect(report.problems.map((problem) => problem.detail)).toContain(
+      "the account integrity baseline names sequence 3 which the chain does not reach",
+    );
+    expect(report.coverage[0]).toMatchObject({
+      sourceStream: "account_events",
+      coverageKind: "BASELINED_AT_ACTIVATION",
+      coveredSinceSequence: 1,
+      checkedThroughSequence: 2,
+      baselineSequence: 3,
+    });
   });
 
   it("reports a tampered ledger as DEGRADED rather than ACTIVE", async () => {

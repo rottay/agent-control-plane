@@ -17,6 +17,8 @@ import {
   TaskDetailResponse,
   TaskPageResponse,
   WATERMARK_SOURCE_STREAMS,
+  COVERAGE_KINDS,
+  API_CONTRACT_VERSION,
   ToolCallExecuteResponse,
   ToolCallPageResponse,
   toolCallsPath,
@@ -1780,6 +1782,54 @@ describe("the two lifecycle doors are equivalent on the write (V2 L3)", () => {
         "registry_events",
       ]);
       expect(published.has("account_events")).toBe(false);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  // The sibling of the mirror above, for the second closed vocabulary the
+  // coverage report serializes (P-08/B). Same reason and same method: asserted
+  // against what a real ledger emits, not against a constant the ledger could
+  // be wrong about in the same direction as the test.
+  it("mirrors the coverage vocabulary a real ledger emits", () => {
+    const { path } = seed();
+    const ledger = openLedger(path, { readOnly: true });
+    try {
+      const report = ledger.verifyIntegrity();
+      const coverage = report.coverage;
+
+      // Every stream is named, including `account_events` — which the
+      // watermark mirror above proves publishes NO watermark. That asymmetry is
+      // the point: a stream can be covered by a chain and still have no
+      // projection reading it, and coverage is about the first.
+      expect(coverage.map((entry) => entry.sourceStream).sort()).toEqual(
+        [...WATERMARK_SOURCE_STREAMS].sort(),
+      );
+
+      for (const entry of coverage) {
+        expect(WATERMARK_SOURCE_STREAMS, entry.sourceStream).toContain(entry.sourceStream);
+        expect(COVERAGE_KINDS, entry.coverageKind).toContain(entry.coverageKind);
+      }
+
+      // And what the ledger actually emitted parses as the wire shape — order,
+      // per-kind shape rules and all. This is the claim the browser on the
+      // other side of this boundary depends on, and asserting it against the
+      // real report is the difference between testing the contract and testing
+      // a fixture that agrees with it.
+      expect(
+        IntegrityResult.safeParse({
+          apiContractVersion: API_CONTRACT_VERSION,
+          ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+          ok: report.ok,
+          checkedEvents: report.checkedEvents,
+          headSequence: report.headSequence,
+          headEventSha256: report.headEventSha256,
+          problems: report.problems,
+          coverage,
+          truncated: false,
+          checkedAt: new Date().toISOString(),
+        }).success,
+      ).toBe(true);
     } finally {
       ledger.close();
     }

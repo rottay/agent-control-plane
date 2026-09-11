@@ -176,6 +176,13 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("headSequence", "LEDGER"),
       bind("headEventSha256", "LEDGER"),
       bind("problems", "LEDGER"),
+      // From when each stream's chain is evidence, and how that coverage came
+      // to be. Every field of it is read from `ledger_meta` and the sidecar, so
+      // two clients over one file emit the same values — including
+      // `integrityActivatedAt`, which is an instant and is NOT volatile: it is
+      // when the chain was computed, recorded once and never rewritten, not
+      // when this process looked.
+      bind("coverage", "LEDGER"),
       bind("truncated", "LEDGER"),
       bind("checkedAt", "OBSERVED_AT", "the instant of the verification"),
     ]),

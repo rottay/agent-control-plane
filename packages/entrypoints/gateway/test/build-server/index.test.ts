@@ -550,6 +550,108 @@ describe("integrity", () => {
     expect(body.ok).toBe(true);
     expect(body.problems).toHaveLength(0);
     expect(body.checkedEvents).toBe(4);
+
+    // The coverage report crosses the wire with the verdict (P-08/B). Four
+    // entries, in stream order, and the account stream carries the baseline
+    // the other three cannot have — it is the only one covered retroactively.
+    expect(body.coverage.map((entry) => entry.sourceStream)).toEqual([
+      "account_events",
+      "control_plane_events",
+      "initiative_events",
+      "registry_events",
+    ]);
+    const accounts = body.coverage[0];
+    expect(accounts?.coverageKind).toBe("BASELINED_AT_ACTIVATION");
+    expect(accounts?.integrityActivatedAt).not.toBeNull();
+    expect(accounts?.baselineSequence).not.toBeNull();
+    for (const entry of body.coverage.slice(1)) {
+      expect(entry.coverageKind, entry.sourceStream).toBe("CHAIN_FROM_APPEND");
+      expect(entry.baselineSequence, entry.sourceStream).toBeNull();
+    }
+    await app.close();
+  });
+
+  it("still answers 200 with the findings when the account stream is shorter than its baseline", async () => {
+    // The report has to survive the ledger it is reporting on.
+    //
+    // A baseline of 3 against a cut that reaches 2 is a real, reachable state:
+    // somebody dropped the append-only triggers and deleted the last account
+    // row and its link. The verifier NAMES that — a `LEDGER_META` problem
+    // saying the baseline reaches a sequence the chain does not — and the
+    // coverage entry reports the pair truthfully.
+    //
+    // So the wire must carry it. A contract that refused `baselineSequence >
+    // checkedThroughSequence` as a malformed shape would turn this 200 into a
+    // 500: the door would compute an accurate report of a tampered ledger and
+    // then fail to serialize it, and the operator would learn nothing except
+    // that the endpoint is broken. Disclosing the defect is the whole job.
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    for (const version of [1, 2, 3]) {
+      ledger.appendAccountAction({
+        contractVersion: LEDGER_CONTRACT_VERSION,
+        eventId: randomUUID(),
+        accountId: "acct-primary",
+        version,
+        idempotencyKey: "acct-primary/1/action." + String(version),
+        action: version % 2 === 1 ? "DRAIN" : "ACCOUNT_READY",
+        resultingState: version % 2 === 1 ? "DRAINING" : "AVAILABLE",
+        actor: WORKER_A,
+        note: null,
+        occurredAt: "2026-08-27T00:00:00.000Z",
+        recordedAt: "2026-08-27T00:00:00.000Z",
+      });
+    }
+    ledger.close();
+
+    // Rewind past migration 10 and reopen, so the sidecar activates over a
+    // stream that ALREADY holds three rows. That is what fixes the baseline at
+    // 3 rather than at 0 — a ledger created empty and then grown has a baseline
+    // of 0, and 0 is never ahead of anything.
+    const rewind = new DatabaseSync(path);
+    rewind.exec("DELETE FROM ledger_meta WHERE key LIKE 'account_integrity_%'");
+    rewind.exec(
+      "DROP TRIGGER tr_account_event_integrity__deny_delete;" +
+        "DROP TRIGGER tr_account_event_integrity__deny_update;" +
+        "DROP INDEX ux_account_events__account_id__version;" +
+        "DROP TABLE account_event_integrity;",
+    );
+    rewind.exec("DELETE FROM schema_migrations WHERE version >= 10");
+    rewind.close();
+    openLedger(path).close();
+
+    // Now reach past the door. Both tables are append-only by trigger, which is
+    // exactly why this state cannot arise through the ledger's API and has to
+    // be planted to be tested at all.
+    const raw = new DatabaseSync(path);
+    raw.exec("DROP TRIGGER tr_account_event_integrity__deny_delete");
+    raw.exec("DROP TRIGGER account_events_deny_delete");
+    raw.exec("DELETE FROM account_event_integrity WHERE account_sequence = 3");
+    raw.exec("DELETE FROM account_events WHERE sequence = 3");
+    raw.close();
+
+    const app = buildServer({ ledgerPath: path });
+    const response = await app.inject({ method: "GET", url: "/api/v1/integrity" });
+    expect(response.statusCode).toBe(200);
+
+    const body = IntegrityResult.parse(response.json());
+    expect(body.ok).toBe(false);
+    expect(body.problems.map((problem) => problem.detail)).toContain(
+      "the account integrity baseline names sequence 3 which the chain does not reach",
+    );
+
+    // And the coverage entry states the divergence rather than hiding it: the
+    // baseline is still 3, because it is read from `ledger_meta` and nothing
+    // repaired it, while the cut actually examined stops at 2.
+    expect(body.coverage[0]).toEqual({
+      sourceStream: "account_events",
+      coverageKind: "BASELINED_AT_ACTIVATION",
+      coveredSinceSequence: 1,
+      checkedThroughSequence: 2,
+      integrityActivatedAt: expect.any(String),
+      baselineSequence: 3,
+      baselineSha256: expect.any(String),
+    });
     await app.close();
   });
 });

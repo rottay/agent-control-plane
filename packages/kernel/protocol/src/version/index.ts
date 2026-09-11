@@ -137,8 +137,28 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * keys in a table that has held `(key, value)` since migration 3. What changed
  * is what a connection tells a client about the file behind it. ADR 0064
  * carries the reasoning, and extends ADR 0028 rather than replacing it.
+ *
+ * `0.14.0` → `0.15.0` at P-08/B: the integrity result gains one required field,
+ * `coverage` — one entry per stream saying **from when** its chain is evidence
+ * and **how that coverage came to be**, which is a different question from
+ * whether the check passed.
+ *
+ * Minor for the mechanical reason every one of these has been: `IntegrityResult`
+ * is a `z.strictObject`, so a reader pinned at `0.14.0` parsing a `0.15.0`
+ * result **rejects it** on the unknown key. Optional was rejected for the
+ * reason it keeps being rejected — it would make "an older server that does not
+ * say" and "a ledger with no coverage" the same wire shape, and telling those
+ * apart is the entire point of a field whose three values include
+ * `NOT_ACTIVATED`.
+ *
+ * The route surface does not move: `API_ROUTES` and `API_WRITE_ROUTES` are
+ * untouched. Neither does `LEDGER_CONTRACT_VERSION`, and here that deserves
+ * saying out loud because this packet's sibling added a migration: migration 10
+ * creates the account integrity sidecar, which is **ledger schema**, not the
+ * shape of a recorded event. No event type, payload key or history is
+ * reinterpreted. ADR 0065 carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.14.0" as const;
+export const API_CONTRACT_VERSION = "0.15.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

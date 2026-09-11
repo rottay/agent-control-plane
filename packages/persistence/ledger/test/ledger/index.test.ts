@@ -33,7 +33,9 @@ import {
   chainDigest,
   openLedger,
   type CausationRef,
+  type IntegrityReport,
   type Ledger,
+  type StreamIntegrityCoverage,
 } from "../../src/index.js";
 import { DERIVED_TABLES } from "../../src/migrations/index.js";
 
@@ -5273,6 +5275,167 @@ describe("the account sidecar is activated once, over everything, atomically", (
   });
 });
 
+describe("the integrity report says from when each stream is evidence", () => {
+  // §8.2's coverage report, which answers a question the problem list does not.
+  // `problems` says whether the evidence holds; `coverage` says how far back
+  // there is any — and the two must stay apart, because a caller that read
+  // `ok: true` on a ledger baselined this morning and concluded that a row
+  // written last year had been verified would have been told something false by
+  // a report that was, field for field, correct.
+  //
+  // Nothing in this block asserts authenticity before activation, and nothing
+  // in the code it exercises claims it.
+
+  function coverageOf(report: IntegrityReport, stream: string): StreamIntegrityCoverage {
+    const entry = report.coverage.find((candidate) => candidate.sourceStream === stream);
+    if (entry === undefined) {
+      throw new Error("the coverage report omits " + stream);
+    }
+    return entry;
+  }
+
+  it("reports the three chained streams as CHAIN_FROM_APPEND with null baselines", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.append(makeEvent());
+    ledger.appendAccountAction(action(1));
+
+    const report = ledger.verifyIntegrity();
+    expect(report.ok).toBe(true);
+
+    // Exactly four, ordered by name, and never a subset: a report that omitted
+    // `account_events` would be silent about the one stream whose coverage is
+    // retroactive, which is the only stream where the question is interesting.
+    expect(report.coverage.map((entry) => entry.sourceStream)).toEqual([
+      "account_events",
+      "control_plane_events",
+      "initiative_events",
+      "registry_events",
+    ]);
+
+    for (const stream of ["control_plane_events", "initiative_events", "registry_events"]) {
+      const entry = coverageOf(report, stream);
+      expect(entry.coverageKind, stream).toBe("CHAIN_FROM_APPEND");
+      expect(entry.coveredSinceSequence, stream).toBe(1);
+      // No baseline, and the three fields are null TOGETHER. These streams
+      // chain as they append, so there was never an instant at which they were
+      // not covered — there is nothing for a baseline to record.
+      expect(entry.integrityActivatedAt, stream).toBeNull();
+      expect(entry.baselineSequence, stream).toBeNull();
+      expect(entry.baselineSha256, stream).toBeNull();
+    }
+
+    // An empty stream still reports `coveredSinceSequence: 1` against a head of
+    // zero: covered from the first row it will ever hold, holding none yet.
+    // `null` there would mean "covers nothing", which is a different claim.
+    const initiative = coverageOf(report, "initiative_events");
+    expect([initiative.coveredSinceSequence, initiative.checkedThroughSequence]).toEqual([1, 0]);
+    expect(coverageOf(report, "control_plane_events").checkedThroughSequence).toBe(1);
+  });
+
+  it("takes the baseline from ledger_meta rather than recomputing H", () => {
+    // The distinction that makes the baseline worth publishing. Coverage was
+    // taken at H = 3; the stream then grew to 5. A report that recomputed the
+    // baseline from the current head would say 5 and would be asserting the
+    // very thing the chain is supposed to prove — that nothing moved.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    seeded.appendAccountAction(action(1));
+    seeded.appendAccountAction(action(2));
+    seeded.appendAccountAction(action(3));
+    seeded.close();
+
+    rewindPastSidecar(path);
+    const migrated = open(path);
+    migrated.appendAccountAction(action(4));
+    migrated.appendAccountAction(action(5));
+
+    const entry = coverageOf(migrated.verifyIntegrity(), "account_events");
+    expect({
+      coveredSinceSequence: entry.coveredSinceSequence,
+      checkedThroughSequence: entry.checkedThroughSequence,
+      baselineSequence: entry.baselineSequence,
+    }).toEqual({ coveredSinceSequence: 1, checkedThroughSequence: 5, baselineSequence: 3 });
+
+    expect(entry.coverageKind).toBe("BASELINED_AT_ACTIVATION");
+
+    // Read, not recomputed: every published field is the row `ledger_meta`
+    // holds, byte for byte.
+    const activation = readActivation(path);
+    expect(entry.baselineSha256).toBe(activation.get("account_integrity_baseline_sha256"));
+    expect(entry.integrityActivatedAt).toBe(activation.get("account_integrity_activated_at"));
+  });
+
+  it("reports an unreadable activation as no coverage, beside the finding", () => {
+    // The rewrite of the old negative 21. "Before activation" is not a state
+    // this build can reach — the sibling test two blocks up proves a ledger
+    // with migration 10 pending cannot be opened at all — so what is reachable
+    // is an activation somebody reached past the door and deleted.
+    //
+    // Two things must be true at once, and either alone would be a defect: the
+    // finding is reported, AND the coverage entry says `NOT_ACTIVATED` with
+    // every nullable field null. A report that threw would leave the operator
+    // with no coverage at all on exactly the ledger that most needs one; a
+    // report that said `BASELINED_AT_ACTIVATION` anyway would be the
+    // degradation §8.2 forbids, pointing the other way.
+    const path = temporaryDatabase();
+    open(path).close();
+    withRawDatabase(path, (raw) => {
+      raw.prepare("DELETE FROM ledger_meta WHERE key LIKE ?").run("account_integrity_%");
+    });
+
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(detailsOf(report.problems)).toContain("none of the five keys");
+
+    const entry = coverageOf(report, "account_events");
+    expect(entry).toEqual({
+      sourceStream: "account_events",
+      coverageKind: "NOT_ACTIVATED",
+      coveredSinceSequence: null,
+      checkedThroughSequence: 0,
+      integrityActivatedAt: null,
+      baselineSequence: null,
+      baselineSha256: null,
+    });
+
+    // The other three are untouched by the account stream's trouble. Coverage
+    // is per stream because the streams are covered by different mechanisms,
+    // and collapsing them to one verdict would lose exactly that.
+    expect(
+      report.coverage
+        .filter((candidate) => candidate.sourceStream !== "account_events")
+        .map((candidate) => candidate.coverageKind),
+    ).toEqual(["CHAIN_FROM_APPEND", "CHAIN_FROM_APPEND", "CHAIN_FROM_APPEND"]);
+  });
+
+  it("emits the same coverage fields on two independent runs over one file", () => {
+    // The positive. Coverage is a property of the FILE, not of the process that
+    // asked — every field is read from `ledger_meta` and the stored streams, so
+    // nothing here is an observation instant. `integrityActivatedAt` looks like
+    // one and is not: it is when the chain was computed, recorded once at
+    // activation and never rewritten, which is why it is bound to LEDGER in the
+    // parity table rather than declared volatile.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    seeded.appendAccountAction(action(1));
+    seeded.appendAccountAction(action(2));
+    seeded.close();
+
+    const first = open(path, { readOnly: true });
+    const firstCoverage = first.verifyIntegrity().coverage;
+    first.close();
+
+    const second = open(path, { readOnly: true });
+    const secondCoverage = second.verifyIntegrity().coverage;
+    second.close();
+
+    expect(secondCoverage).toEqual(firstCoverage);
+    expect(coverageOf({ coverage: firstCoverage } as IntegrityReport, "account_events")).toEqual(
+      coverageOf({ coverage: secondCoverage } as IntegrityReport, "account_events"),
+    );
+  });
+});
+
 describe("an account append moves the stream and its chain together", () => {
   it("writes the event, its link and the chain head in one transaction", () => {
     const path = temporaryDatabase();
@@ -5332,7 +5495,13 @@ describe("an account append moves the stream and its chain together", () => {
     //    that claim rather than believing it.
     const skipped = caught(() => ledger.appendAccountAction(action(9)));
     expect(skipped).toBeInstanceOf(LedgerValidationError);
-    expect((skipped as Error).message).toContain("is at version 2");
+    // The account is NAMED, and naming it is the whole value of the message:
+    // an operator reading this refusal has to know which account is at which
+    // version. `safeIdentifier` would have blanked `acct-primary` to
+    // `<unprintable name>` on the hyphen alone, which is why the preflight's
+    // `safeAccountId` guard is the one this message uses too.
+    expect((skipped as Error).message).toContain("account acct-primary is at version 2");
+    expect((skipped as Error).message).not.toContain("<unprintable name>");
     expect(ledger.listAccountActions("acct-primary")).toHaveLength(2);
     expect(ledger.verifyIntegrity().ok).toBe(true);
   });
