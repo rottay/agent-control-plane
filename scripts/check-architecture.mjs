@@ -8133,6 +8133,55 @@ const P10B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-08/A1 — the account sidecar's preimage, pinned before a row exists.
+ *
+ * The first rung of P-08, and deliberately the smallest: a pure byte encoding
+ * and the vectors that fix it. No migration, no table, no activation — those
+ * are A2.
+ *
+ * **Why it is a rung of its own.** `account_events` shipped in migration 5 with
+ * no hash chain, and an applied migration is never rewritten, so the chain
+ * arrives beside the stream in a sidecar that covers rows `1..H`
+ * **retroactively**. The contract forbids re-anchoring a chain once written. An
+ * error in this encoding therefore produces a chain that is internally
+ * consistent and wrong, over history, with no lawful way to correct it — and no
+ * later test would catch it, because every later test would compute the wrong
+ * digest the same wrong way. So it is fixed by vector first, against a second
+ * encoder written independently, and pinned to literal digests.
+ *
+ * **What the encoding must not do.** This package owns a canonical-JSON
+ * encoder, and reaching for it here would be the defect. The two solve opposite
+ * problems: canonical JSON gives one logical value one byte form, necessarily
+ * rewriting key order and spacing; this hashes the bytes that are on disk,
+ * unchanged. §8.1 is explicit that `event_json` enters as complete TEXT, never
+ * re-parsed and never re-ordered. A test asserts that three JSON texts
+ * differing only in spacing and key order hash to three different digests,
+ * which is precisely what a canonicalizer would collapse.
+ *
+ * `AccountEventRow` is the only snake_case type in the package, and that is the
+ * point rather than an oversight: its field names are the column names, so the
+ * preimage can be read against the DDL with no mapping table in between. A
+ * camelCase DTO would insert exactly one renaming step between the stored value
+ * and the digest.
+ *
+ * **Pins.** The write set gains **2 distinct paths**, the new source domain and
+ * its mirrored test domain. Both satisfy the mirrored-topology law by
+ * construction — lowercase kebab-case, `src/<domain>/index.ts` against
+ * `test/<domain>/index.test.ts` — so no `TEST_ONLY_DOMAINS` entry is owed: that
+ * register is for test domains which mirror no source module, and this one
+ * mirrors its own. `MIGRATIONS` stays at nine, the ADR corpus at 64, and no
+ * error class is added: a row the encoder cannot represent exactly is a
+ * `LedgerValidationError` naming the field.
+ */
+const P08A1_WRITE_SET = [
+  "packages/persistence/ledger/src/account-integrity/index.ts",
+  "packages/persistence/ledger/test/account-integrity/index.test.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8326,6 +8375,7 @@ const WRITE_SET = [
   ...P09D_WRITE_SET,
   ...P10A_WRITE_SET,
   ...P10B_WRITE_SET,
+  ...P08A1_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

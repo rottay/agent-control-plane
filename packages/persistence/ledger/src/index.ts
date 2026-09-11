@@ -85,6 +85,22 @@ export type { LedgerErrorCode, LedgerValidationIssue } from "./errors/index.js";
 export type { Migration } from "./migrations/index.js";
 
 /**
+ * P-08: the account sidecar's preimage, version 1.
+ *
+ * A pure byte encoding, exported so the packet that builds the sidecar and the
+ * suite that pins it by vector reach one implementation rather than two. It is
+ * not canonical JSON and must never be confused with it: this hashes stored
+ * bytes unchanged, that one rewrites a value into a canonical form.
+ */
+export {
+  ACCOUNT_INTEGRITY_GENESIS_SHA256,
+  ACCOUNT_INTEGRITY_PREIMAGE_PREFIX_V1,
+  accountIntegrityDigestV1,
+  accountIntegrityPreimageV1,
+} from "./account-integrity/index.js";
+export type { AccountIntegrityInput } from "./account-integrity/index.js";
+
+/**
  * V2 concurrency C1: the worktree arbitration store.
  *
  * A separate database from the ledger, answering the one question history
@@ -191,7 +207,11 @@ export type {
  */
 export { DOCUMENT_KINDS } from "./types/index.js";
 
-export type { AccountActionAppendResult, AccountActionRecordRow } from "./types/index.js";
+export type {
+  AccountActionAppendResult,
+  AccountActionRecordRow,
+  AccountEventRow,
+} from "./types/index.js";
 
 /**
  * The account-action vocabulary, re-exported for the server (P8-8G packet 2).

@@ -653,6 +653,37 @@ export interface RegistryProjectionSnapshot {
   readonly routingFallbacks: Map<string, RoutingAssignmentFallbackRow>;
 }
 
+/**
+ * One stored row of `account_events`, in the column names the table uses (P-08).
+ *
+ * Snake case, deliberately, and the only type in this package that is. It is
+ * the input to the integrity sidecar's preimage, which hashes **the values as
+ * stored**; every other type here is a read model or a DTO, where renaming a
+ * field is a presentation choice. Here it would be a reinterpretation step
+ * between the column and the digest, and a mistake in that step produces a
+ * chain that is internally consistent and wrong over history that cannot be
+ * rehashed. The names are the columns so that a reader can check the preimage
+ * against the DDL without a mapping table in between.
+ *
+ * `note` is the one nullable column, and SQL NULL is encoded distinctly from
+ * the empty string.
+ */
+export interface AccountEventRow {
+  readonly sequence: number;
+  readonly event_id: string;
+  readonly idempotency_key: string;
+  readonly account_id: string;
+  readonly version: number;
+  readonly action: string;
+  readonly resulting_state: string;
+  readonly actor: string;
+  readonly note: string | null;
+  readonly occurred_at: string;
+  readonly recorded_at: string;
+  readonly contract_version: string;
+  readonly event_json: string;
+}
+
 /** One recorded operator action, as the ledger returns it (P8-8G packet 2). */
 export interface AccountActionRecordRow {
   readonly sequence: number;
