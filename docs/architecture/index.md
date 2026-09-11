@@ -86,6 +86,7 @@ new records from `_template.md`, which carries the required fields.
 | 0068 | [The fold keeps the highest attempt, and the sidecar reads what is stored](0068-the-fold-keeps-the-highest-attempt-and-the-sidecar-reads-what-is-stored.md) | accepted |
 | 0069 | [A tool error is never a success, whatever the transport said](0069-a-tool-error-is-never-a-success-whatever-the-transport-said.md) | accepted |
 | 0070 | [One payload-keys projection serves both doors](0070-one-payload-keys-projection-serves-both-doors.md) | accepted |
+| 0071 | [The daemon composition root leaves the barrel](0071-the-daemon-composition-root-leaves-the-barrel.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

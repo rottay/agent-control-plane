@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { readOwnStatus } from "../../../src/index.js";
+import { readOwnStatus } from "../../../src/composition/index.js";
 import { removeScenarioRoot } from "@acp/runtime";
 import { daemonRootPath } from "../../../src/paths/index.js";
 import { writeLaunchAgentAt } from "../../../src/launchd/render/index.js";

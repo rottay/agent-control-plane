@@ -16,7 +16,7 @@ import {
   resolveDaemonRoot,
   statusPath,
 } from "../../src/paths/index.js";
-import { readOwnStatus } from "../../src/index.js";
+import { readOwnStatus } from "../../src/composition/index.js";
 
 afterEach(() => {
   rmSync(daemonRootPath(), { recursive: true, force: true });

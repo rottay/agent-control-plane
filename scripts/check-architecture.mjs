@@ -8731,6 +8731,90 @@ const P11_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-13 — the daemon's composition root leaves the barrel.
+ *
+ * Structure §3 rows E1/E2, in two fence-green steps per the DT adjudication
+ * (`.acp-local/evidence/p13/acp-p13-kimi-dt-adjudication-v1.md`):
+ *
+ * - **Escalón 1 (extracción pura).** The composition root — `startDaemon` and
+ *   every seam builder, with both walk forms still inline — moves from
+ *   `src/index.ts` to `src/composition/index.ts`, byte for byte: no symbol is
+ *   renamed and no behaviour changes. The barrel is reduced to exactly what
+ *   §2 :108 reserves for it: `startDaemon`, `stopDaemon`, `terminateDaemon`
+ *   and the types, re-exported, never declared. `readOwnStatus`,
+ *   `recoverOwnStaleLock` and the seven launchd names land in the composition
+ *   module (no compatibility re-exports: there are no external importers),
+ *   and the suites that imported them from the barrel now import them from
+ *   their new home. The fence's composition laws re-scope to the new file in
+ *   the same step, so no law ever reads an empty site.
+ * - **Escalón 2 (one walk construction).** The two inline `createExecutionEffects`
+ *   copies collapse into a single builder with explicit dependencies in
+ *   `src/composition/walk/index.ts`, with `composition/ports/` and
+ *   `composition/usecases/` completing the §2 :109 partition, and a
+ *   hand-written equivalence fixture over the single/scheduled/one-item
+ *   scenarios. Pines 3, 5 and 6 re-scope from `composition/index.ts` to
+ *   `composition/walk/index.ts`, and the multi-walk registry row retires with
+ *   the region it named.
+ *
+ * No folder is renamed in this packet — `process/`, `supervision/`, `modes/`,
+ * `observability/` and `shared/` are P-37 seams, and `src/constants/` stays
+ * where it is — and `daemon-child` does not move: L-C-3b re-scopes only its
+ * `index.ts` leg. Nothing retires either: the barrel survives, reduced, so
+ * `RETIRED_PATHS` gains no entry and every historical array that names
+ * `src/index.ts` stays valid as written.
+ *
+ * **Pins that move (escalón 1).** `DAEMON_PUBLIC_EXPORTS` is redefined to the
+ * closed barrel (the observation/recovery functions and the launchd spread
+ * leave; the launchd subset is pinned by equality over the composition
+ * module instead); `SPEND_HOME`, `HARNESS_OWNER`, `PRESSURE_COMPOSITION_HOME`,
+ * `SWITCH_COMPOSITION_HOME`, `INSTRUCTION_PRODUCER` and
+ * `DAEMON_COMPOSITION_SITE` re-scope to `src/composition/index.ts`; the
+ * L-F3-2 anti-vacuity site and L-C-3b's `startDaemon` leg (with the
+ * `startRestateMode` walks check) re-scope with them; nine
+ * `PATH_SCOPED_LAWS` scopes follow, register and `requireScope` counts
+ * unchanged. The ADR corpus moves 70 → 71.
+ *
+ * **The write set gains 9 distinct paths** — the four composition sources,
+ *   the four mirrored suites, and ADR 0071. The other entries revisit paths
+ *   earlier packets own: the barrel and its mirror suite, the paths,
+ *   launchd-lifecycle and drills suites (which now import from the
+ *   composition module), the daemon README, this file, the packets index and
+ *   the ADR index — eleven of them, plus the two suites the V10 correction
+ *   adds below.
+ *
+ * **V10 correction (DT adjudication).** Two suites the fence laws reach were
+ * missing from the block: `scripts/architecture/roots.test.mjs`, whose L7
+ * synthetic drills write daemon composition fixtures, and
+ * `packages/domains/runtime/test/switch-landing/index.test.ts`, whose N13
+ * pins the daemon's lawful `.find((entry` reads. Both move with the
+ * composition root in escalón 1 — the drills write `src/composition/index.ts`
+ * and N13 reads it — so the block carries them from the start: 18 → 20
+ * entries, still 9 distinct new paths.
+ */
+const P13_WRITE_SET = [
+  "packages/entrypoints/daemon/src/index.ts",
+  "packages/entrypoints/daemon/test/index.test.ts",
+  "packages/entrypoints/daemon/test/paths/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/README.md",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/entrypoints/daemon/src/composition/walk/index.ts",
+  "packages/entrypoints/daemon/src/composition/ports/index.ts",
+  "packages/entrypoints/daemon/src/composition/usecases/index.ts",
+  "packages/entrypoints/daemon/test/composition/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/walk/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/ports/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/usecases/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "scripts/architecture/roots.test.mjs",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+  "docs/audit/implementation/packets/index.md",
+  "docs/architecture/0071-the-daemon-composition-root-leaves-the-barrel.md",
+  "docs/architecture/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8932,6 +9016,7 @@ const WRITE_SET = [
   ...CORR1_WRITE_SET,
   ...P12_WRITE_SET,
   ...P11_WRITE_SET,
+  ...P13_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -9740,7 +9825,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the production walk records what it spends",
-    scope: "packages/entrypoints/daemon/src/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts",
   },
   {
     law: "the usage sink runs before the marker",
@@ -9817,7 +9902,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the production daemon owns a harness",
-    scope: "packages/entrypoints/daemon/src/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts",
   },
   {
     law: "no leg forgets the reattach refusal",
@@ -9937,11 +10022,11 @@ const PATH_SCOPED_LAWS = [
   // of this edit lands.
   {
     law: "the production daemon holds a fenced lease before it walks",
-    scope: "packages/entrypoints/daemon/src/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts",
   },
   {
     law: "children are reaped before the lease is released",
-    scope: "packages/entrypoints/daemon/src/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts",
   },
   {
     law: "no driver property substitutes for the lease",
@@ -9961,11 +10046,11 @@ const PATH_SCOPED_LAWS = [
   // rows: the register and the `requireScope` call sites both move 73 -> 75.
   {
     law: "every acquired walk beats, and a lost lease reaps only its own session",
-    scope: "packages/entrypoints/daemon/src/index.ts (the multi-walk region)",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts (the multi-walk region)",
   },
   {
     law: "the multi-walk unwind reaps before it releases",
-    scope: "packages/entrypoints/daemon/src/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts",
   },
   // V2 concurrency C4. Three new path-shaped surfaces, so three new rows: the
   // register and the `requireScope` call sites both move 75 -> 78.
@@ -9979,7 +10064,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the gate runs before the marker, at every seam",
-    scope: "runtime/src/execution-effects and daemon/src/index.ts",
+    scope: "runtime/src/execution-effects and daemon/src/composition/index.ts",
   },
   // V2 X1a. Four new path-shaped surfaces, so four new rows: the register and
   // the `requireScope` call sites both move 78 -> 82.
@@ -10094,7 +10179,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the production walk records the pressure it observes, at every seam",
-    scope: "packages/entrypoints/daemon/src/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts",
   },
   {
     law: "the observation and decision vocabularies agree on quota, both ways",
@@ -10138,7 +10223,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the switch port carries the real lease, at every seam",
-    scope: "packages/entrypoints/daemon/src/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts",
   },
   // V2-B1f/F4c. One new path-shaped surface, so one new row: the register and
   // the `requireScope` call sites both move 109 -> 110. It keeps the account
@@ -15073,6 +15158,13 @@ if (tracked.status === 0) {
     "LaunchdVerdict",
   ];
 
+  // P-13 (structure §2 :108, adjudication b): the barrel is exactly the three
+  // lifecycle functions and the types. `readOwnStatus`,
+  // `recoverOwnStaleLock` and the seven launchd names moved with the
+  // composition root into `src/composition/index.ts`; there are no external
+  // importers, so nothing keeps a compatibility re-export. The membership
+  // check below is what makes a withdrawn name returning to this file a
+  // failure rather than a silent widening.
   const DAEMON_PUBLIC_EXPORTS = new Set([
     // lifecycle
     "startDaemon",
@@ -15082,9 +15174,7 @@ if (tracked.status === 0) {
     "DaemonRun",
     "StopResult",
     "DaemonMode",
-    // observation and recovery
-    "readOwnStatus",
-    "recoverOwnStaleLock",
+    // observation and recovery types
     "DaemonPhase",
     "DaemonStatusDocument",
     "RecoveryResult",
@@ -15100,17 +15190,25 @@ if (tracked.status === 0) {
     "StaleLockError",
     "StartupError",
     "SupervisionError",
-    // P2E: the launchd rendering and validation surface, exactly seven names.
-    // A rendering surface, not an adoption API: nothing here installs, loads,
-    // copies or schedules anything.
-    //
-    // These seven are pinned by EQUALITY below, not merely allowed. An earlier
-    // version of this list still authorised eight internals that C3 had already
-    // withdrawn from the entry point, so each of them could have been silently
-    // re-exported with the fence green — an allow-list is an upper bound, and an
-    // upper bound cannot detect a surface growing back to it.
-    ...LAUNCHD_PUBLIC_EXPORTS,
   ]);
+
+  const parseDaemonExports = (code) => {
+    const exported = new Set();
+    // Named re-export and export blocks.
+    const blocks = code.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g);
+    for (const block of blocks) {
+      for (const piece of (block[1] ?? "").split(",")) {
+        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
+        if (name !== undefined && name !== "") exported.add(name);
+      }
+    }
+    // Direct declarations.
+    const declared = code.matchAll(
+      /export\s+(?:async\s+)?(?:function|interface|class|const|type)\s+([A-Za-z0-9_$]+)/g,
+    );
+    for (const item of declared) exported.add(item[1]);
+    return exported;
+  };
 
   const indexCode = readIfPresent("packages/entrypoints/daemon/src/index.ts");
   if (indexCode === null) {
@@ -15119,35 +15217,49 @@ if (tracked.status === 0) {
     if (/export\s*\*\s*from/.test(indexCode)) {
       fail("packages/entrypoints/daemon/src/index.ts uses `export *`, which cannot stay closed");
     }
-    const exported = new Set();
-    // Named re-export and export blocks.
-    const blocks = indexCode.matchAll(/export\s+(?:type\s+)?\{([^}]*)\}/g);
-    for (const block of blocks) {
-      for (const piece of (block[1] ?? "").split(",")) {
-        const name = piece.trim().split(/\s+as\s+/).pop()?.trim();
-        if (name !== undefined && name !== "") exported.add(name);
-      }
-    }
-    // Direct declarations.
-    const declared = indexCode.matchAll(
-      /export\s+(?:async\s+)?(?:function|interface|class|const|type)\s+([A-Za-z0-9_$]+)/g,
-    );
-    for (const item of declared) exported.add(item[1]);
+    const exported = parseDaemonExports(indexCode);
 
     for (const name of exported) {
       if (!DAEMON_PUBLIC_EXPORTS.has(name)) {
         fail("packages/entrypoints/daemon exports " + name + ", which is outside its closed public surface");
       }
     }
+    notes.push(exported.size + " daemon barrel exports, all inside the closed public surface");
+  }
 
+  // The launchd subset and the observation/recovery helpers moved with the
+  // composition root (P-13); they are pinned where they live now, over
+  // `src/composition/index.ts`, in both directions where equality is the
+  // point. A name quietly returning to the barrel fails the membership check
+  // above instead of silently re-widening the surface.
+  const DAEMON_COMPOSITION_MODULE = "packages/entrypoints/daemon/src/composition/index.ts";
+  const COMPOSITION_PUBLIC_EXPORTS = ["readOwnStatus", "recoverOwnStaleLock"];
+  const compositionCode = readIfPresent(DAEMON_COMPOSITION_MODULE);
+  if (compositionCode === null) {
+    fail(
+      DAEMON_COMPOSITION_MODULE +
+        " is missing; the surface P-13 moved out of the barrel would stand over nothing",
+    );
+  } else {
+    const exported = parseDaemonExports(compositionCode);
+    for (const name of COMPOSITION_PUBLIC_EXPORTS) {
+      if (!exported.has(name)) {
+        fail(
+          DAEMON_COMPOSITION_MODULE +
+            " no longer exports " +
+            name +
+            "; the suites import it from the composition module since P-13",
+        );
+      }
+    }
     // Equality for the launchd subset, in both directions. Membership alone is
     // an upper bound: it fails a name nobody authorised, and says nothing about
-    // an authorised name quietly returning to the entry point. Both halves are
-    // needed, and both are cheap.
+    // an authorised name quietly vanishing from the module that now carries it.
+    // Both halves are needed, and both are cheap.
     const launchdExported = LAUNCHD_PUBLIC_EXPORTS.filter((name) => exported.has(name));
     if (launchdExported.length !== LAUNCHD_PUBLIC_EXPORTS.length) {
       const missing = LAUNCHD_PUBLIC_EXPORTS.filter((name) => !exported.has(name));
-      fail("packages/entrypoints/daemon no longer exports pinned launchd name(s): " + missing.join(", "));
+      fail(DAEMON_COMPOSITION_MODULE + " no longer exports pinned launchd name(s): " + missing.join(", "));
     }
     const LAUNCHD_WITHDRAWN = [
       "PlistValue",
@@ -15163,15 +15275,17 @@ if (tracked.status === 0) {
     for (const name of LAUNCHD_WITHDRAWN) {
       if (exported.has(name)) {
         fail(
-          "packages/entrypoints/daemon re-exports " +
+          DAEMON_COMPOSITION_MODULE +
+            " re-exports " +
             name +
             ", which C3 withdrew from the public surface; tests import it by relative path",
         );
       }
     }
     notes.push(
-      exported.size +
-        " daemon exports, all inside the closed public surface; the launchd subset is pinned by equality",
+      "the launchd subset is pinned by equality over " +
+        DAEMON_COMPOSITION_MODULE +
+        ", where the composition root re-exports it",
     );
   }
 
@@ -15264,7 +15378,7 @@ if (tracked.status === 0) {
   // behaviourally-empty defect the whole B7 wave exists to fix: the one
   // production construction site must pass a sink, and it must reach the
   // recorder.
-  const SPEND_HOME = "packages/entrypoints/daemon/src/index.ts";
+  const SPEND_HOME = "packages/entrypoints/daemon/src/composition/index.ts";
   {
     const source = stripComments(readIfPresent(SPEND_HOME) ?? "");
     requireScope("the production walk records what it spends", source.length === 0 ? 0 : 1);
@@ -15528,7 +15642,7 @@ if (tracked.status === 0) {
   // to fix. The production root must build one, hand it to the port, AND push
   // a release resource — the third is the one that makes an abandoned child
   // get reaped rather than merely named.
-  const HARNESS_OWNER = "packages/entrypoints/daemon/src/index.ts";
+  const HARNESS_OWNER = "packages/entrypoints/daemon/src/composition/index.ts";
   {
     const source = stripComments(readIfPresent(HARNESS_OWNER) ?? "");
     requireScope("the production daemon owns a harness", source.length === 0 ? 0 : 1);
@@ -20126,7 +20240,7 @@ if (tracked.status === 0) {
     // declared further down this file: these laws run during module evaluation,
     // so a reference to a later `const` would be a temporal dead zone rather
     // than a shared name.
-    const compositionSite = "packages/entrypoints/daemon/src/index.ts";
+    const compositionSite = "packages/entrypoints/daemon/src/composition/index.ts";
     const composition = readIfPresent(compositionSite);
     if (composition === null) {
       fail(
@@ -20271,7 +20385,7 @@ if (tracked.status === 0) {
   // reach the recorder -- which is what stops the optionality on
   // `ExecutionEffectsInput` becoming a production path that observes a refusal
   // and records nothing.
-  const PRESSURE_COMPOSITION_HOME = "packages/entrypoints/daemon/src/index.ts";
+  const PRESSURE_COMPOSITION_HOME = "packages/entrypoints/daemon/src/composition/index.ts";
   {
     const source = stripComments(readIfPresent(PRESSURE_COMPOSITION_HOME) ?? "");
     requireScope(
@@ -20780,7 +20894,7 @@ if (tracked.status === 0) {
   // The second half is the boundary itself: the daemon reaches the executor
   // through the composed port and by no other path, so it never plays a plan
   // of its own.
-  const SWITCH_COMPOSITION_HOME = "packages/entrypoints/daemon/src/index.ts";
+  const SWITCH_COMPOSITION_HOME = "packages/entrypoints/daemon/src/composition/index.ts";
   {
     const source = stripComments(readIfPresent(SWITCH_COMPOSITION_HOME) ?? "");
     requireScope("the switch port carries the real lease, at every seam", source.length === 0 ? 0 : 1);
@@ -21149,7 +21263,7 @@ if (tracked.status === 0) {
   // configs carry no envelope, so they cannot read one, and a deterministic
   // module-level constant is what keeps drill ledgers byte-stable across runs.
   // Each is asserted to be exactly that: a constant, not an envelope read.
-  const INSTRUCTION_PRODUCER = "packages/entrypoints/daemon/src/index.ts";
+  const INSTRUCTION_PRODUCER = "packages/entrypoints/daemon/src/composition/index.ts";
   const DRILL_INSTRUCTION_EXCEPTIONS = [
     "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
     "packages/edges/durability/src/drivers/restate-child/index.ts",
@@ -22327,7 +22441,7 @@ if (tracked.status === 0) {
 // it, in the one order that is safe, without letting a durability engine stand
 // in for it.
 
-const DAEMON_COMPOSITION_SITE = "packages/entrypoints/daemon/src/index.ts";
+const DAEMON_COMPOSITION_SITE = "packages/entrypoints/daemon/src/composition/index.ts";
 
 // L-C-2a -- the production daemon holds a fenced lease before it walks.
 //
@@ -22521,7 +22635,7 @@ const DAEMON_CHILD_DOOR = "packages/entrypoints/daemon/src/daemon-child/index.ts
 // through "just for now".
 {
   let capScanned = 0;
-  for (const site of ["packages/entrypoints/daemon/src/index.ts", DAEMON_CHILD_DOOR]) {
+  for (const site of ["packages/entrypoints/daemon/src/composition/index.ts", DAEMON_CHILD_DOOR]) {
     const source = readIfPresent(site);
     if (source === null) {
       fail(site + " is missing; the Restate walk cap cannot be checked");
@@ -22542,7 +22656,7 @@ const DAEMON_CHILD_DOOR = "packages/entrypoints/daemon/src/daemon-child/index.ts
     }
   }
   // And nothing may hand a multi-walk set to the Restate mode entry point.
-  const composition = readIfPresent("packages/entrypoints/daemon/src/index.ts");
+  const composition = readIfPresent("packages/entrypoints/daemon/src/composition/index.ts");
   if (composition !== null) {
     const code = stripComments(composition);
     const at = code.indexOf("startRestateMode(");
@@ -22550,7 +22664,7 @@ const DAEMON_CHILD_DOOR = "packages/entrypoints/daemon/src/daemon-child/index.ts
       const call = code.slice(at, at + 800);
       if (call.includes("walks")) {
         fail(
-          "packages/entrypoints/daemon/src/index.ts passes walks to startRestateMode; the Restate" +
+          "packages/entrypoints/daemon/src/composition/index.ts passes walks to startRestateMode; the Restate" +
             " endpoint is closed over one walk's ledger, effects and route",
         );
       }

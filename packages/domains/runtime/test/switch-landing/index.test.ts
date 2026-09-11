@@ -947,7 +947,9 @@ describe("F5 N1-N14: the landing refuses rather than guessing", () => {
     const packages = resolve(HERE, "..", "..", "..", "..");
     const lawful = [
       join(packages, "entrypoints", "daemon", "src", "daemon-child", "index.ts"),
-      join(packages, "entrypoints", "daemon", "src", "index.ts"),
+      // P-13: the composition root left the barrel; the `.find((entry` that
+      // serves the route's account lives in the composition module now.
+      join(packages, "entrypoints", "daemon", "src", "composition", "index.ts"),
       join(packages, "domains", "runtime", "src", "switch-executor", "index.ts"),
     ];
     for (const path of lawful) {

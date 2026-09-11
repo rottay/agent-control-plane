@@ -41,7 +41,7 @@ import { daemonRootPath, pidfilePath, resolveDaemonRoot, statusPath } from "../.
 import { recoverStaleLock } from "../../src/singleton/index.js";
 import { readStatusFrom } from "../../src/status/index.js";
 import { createPsInspector } from "../../src/identity-probe/index.js";
-import { recoverOwnStaleLock, startDaemon } from "../../src/index.js";
+import { recoverOwnStaleLock, startDaemon } from "../../src/composition/index.js";
 
 /**
  * Make a fixture directory an actual worktree.

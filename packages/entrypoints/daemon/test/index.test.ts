@@ -50,6 +50,8 @@ describe("importing the daemon package", () => {
       "    sigint: process.listenerCount('SIGINT'),",
       "    resources: process.getActiveResourcesInfo(),",
       "    exportsStartDaemon: typeof module.startDaemon === 'function',",
+      "    exportsReadOwnStatus: typeof module.readOwnStatus,",
+      "    exportsRenderLaunchAgent: typeof module.renderLaunchAgent,",
       "  }));",
       "});",
     ].join("\n");
@@ -71,10 +73,18 @@ describe("importing the daemon package", () => {
       sigint: number;
       resources: string[];
       exportsStartDaemon: boolean;
+      exportsReadOwnStatus: string;
+      exportsRenderLaunchAgent: string;
     };
 
     // The module really did load, so the absences below mean something.
     expect(observed.exportsStartDaemon).toBe(true);
+    // P-13 moved the observation helper and the launchd surface out of the
+    // barrel into `src/composition/index.ts`; the barrel is the three
+    // lifecycle functions and the types only, and the fence pins the closed
+    // set by membership in both directions.
+    expect(observed.exportsReadOwnStatus).toBe("undefined");
+    expect(observed.exportsRenderLaunchAgent).toBe("undefined");
     expect(observed.before).toBe(false);
     expect(observed.rootExists).toBe(false);
     expect(observed.sigterm).toBe(0);

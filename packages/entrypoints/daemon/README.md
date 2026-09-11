@@ -26,6 +26,15 @@ before the check.
 **P2E is not product adoption**, and adoption is a separate owner decision at P9
 that nothing here anticipates.
 
+The package keeps its two roles in two files. `src/index.ts` is the closed
+public surface only — `startDaemon`, `stopDaemon`, `terminateDaemon` and the
+public types, re-exported and never declared there. Everything `startDaemon`
+composes — the seam builders, both walk forms, the observation and recovery
+helpers, and the launchd rendering/validation surface — lives in
+`src/composition/index.ts` (P-13, ADR 0071). Tests import the relative
+modules directly; that is deliberate, and the mirror suites sit beside the
+sources they prove.
+
 ## The daemon adds no authority
 
 `packages/persistence/ledger` remains the only one. The daemon opens it, and
