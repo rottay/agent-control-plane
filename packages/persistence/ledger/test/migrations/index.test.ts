@@ -149,7 +149,9 @@ describe("migration 7 appends the watermark table without touching the applied s
   it("sits at position seven of a set whose order is fixed", () => {
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
       "read_models",
@@ -160,6 +162,7 @@ describe("migration 7 appends the watermark table without touching the applied s
       "projection_watermark",
       "causation_triplet",
       "registry_stream",
+      "account_event_integrity",
     ]);
   });
 
@@ -368,7 +371,7 @@ describe("migration 8 types causality without touching the applied seven", () =>
     expect(EIGHTH?.sql ?? "").not.toContain("validate_v2_coordinate");
   });
 
-  it("inventories every trigger named by the §3.2 convention, and there are five", () => {
+  it("inventories every trigger named by the §3.2 convention, and there are seven", () => {
     // Without the inventory, dropping a trigger would leave `schema_migrations`
     // untouched and no check would notice. Migration 9 recreates the first two
     // under the same names, so the inventory does not move for them; the other
@@ -383,6 +386,11 @@ describe("migration 8 types causality without touching the applied seven", () =>
       { type: "trigger", name: "tr_registry_events__deny_update" },
       { type: "trigger", name: "tr_registry_events__deny_delete" },
       { type: "trigger", name: "tr_registry_events__validate_new_rows" },
+      // P-08/A2: the account sidecar's append-only pair, named by the same
+      // convention for the same reason — it was created after migration 7,
+      // so it does not inherit the legacy shape its neighbour carries.
+      { type: "trigger", name: "tr_account_event_integrity__deny_update" },
+      { type: "trigger", name: "tr_account_event_integrity__deny_delete" },
     ]);
     // And the legacy prefix still names exactly the three streams that coined
     // it, so the rename did not quietly move one of theirs.
@@ -398,6 +406,8 @@ describe("migration 8 types causality without touching the applied seven", () =>
       "account_events_deny_delete",
       "tr_registry_events__deny_update",
       "tr_registry_events__deny_delete",
+      "tr_account_event_integrity__deny_update",
+      "tr_account_event_integrity__deny_delete",
     ]);
   });
 
@@ -440,7 +450,9 @@ describe("migration 9 opens the registry stream without touching the applied eig
   it("sits at the tail of a set whose order is fixed", () => {
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
-    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
   });
 
   it("is the only migration that creates the registry stream", () => {

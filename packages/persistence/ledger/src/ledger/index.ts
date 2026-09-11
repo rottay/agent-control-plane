@@ -5,6 +5,10 @@ import Database from "better-sqlite3";
 import { AccountActionEvent, ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 
 import {
+  ACCOUNT_INTEGRITY_GENESIS_SHA256,
+  accountIntegrityDigestV1,
+} from "../account-integrity/index.js";
+import {
   GENESIS_SHA256,
   canonicalJsonStringify,
   chainDigest,
@@ -25,6 +29,7 @@ import {
   type LedgerValidationIssue,
 } from "../errors/index.js";
 import {
+  ACCOUNT_INTEGRITY_MIGRATION,
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
   INITIATIVE_PROJECTION_NAMES,
@@ -106,6 +111,8 @@ import {
   type WorkerReadModel,
   type AccountActionAppendResult,
   type AccountActionRecordRow,
+  type AccountEventRow,
+  type AccountIntegrityState,
 } from "../types/index.js";
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
@@ -150,6 +157,26 @@ const REGISTRY_EVENT_COLUMNS =
 const REGISTRY_HEAD_SEQUENCE = "registry_head_sequence";
 const REGISTRY_HEAD_EVENT_SHA256 = "registry_head_event_sha256";
 const REGISTRY_EVENT_COUNT = "registry_event_count";
+
+const ACCOUNT_INTEGRITY_BASELINE_SEQUENCE = "account_integrity_baseline_sequence";
+const ACCOUNT_INTEGRITY_BASELINE_SHA256 = "account_integrity_baseline_sha256";
+const ACCOUNT_INTEGRITY_ACTIVATED_AT = "account_integrity_activated_at";
+const ACCOUNT_INTEGRITY_HEAD_SEQUENCE = "account_integrity_head_sequence";
+const ACCOUNT_INTEGRITY_HEAD_EVENT_SHA256 = "account_integrity_head_event_sha256";
+
+/** The five activation keys, as one list, so no reader can ask for a subset. */
+const ACCOUNT_INTEGRITY_KEYS: readonly string[] = [
+  ACCOUNT_INTEGRITY_BASELINE_SEQUENCE,
+  ACCOUNT_INTEGRITY_BASELINE_SHA256,
+  ACCOUNT_INTEGRITY_ACTIVATED_AT,
+  ACCOUNT_INTEGRITY_HEAD_SEQUENCE,
+  ACCOUNT_INTEGRITY_HEAD_EVENT_SHA256,
+];
+
+/** The columns of one `account_events` row, in the order the preimage reads them. */
+const ACCOUNT_EVENT_COLUMNS =
+  "sequence, event_id, idempotency_key, account_id, version, action, resulting_state, " +
+  "actor, note, occurred_at, recorded_at, contract_version, event_json";
 
 const INSTANCE_ID = "instance_id";
 const RESTORE_ID = "restore_id";
@@ -985,6 +1012,152 @@ const REGISTRY_WATERMARKS: readonly ProjectionSource[] = PROJECTION_SOURCES.filt
  * refuses it, not this one, because refusing here would make a corrupt file
  * unopenable rather than merely unreadable.
  */
+/**
+ * Count the duplicate account versions this schema is about to forbid, and
+ * refuse the migration naming them (P-08/A2).
+ *
+ * §15.5.1 of the database contract: a migration that adds a `UNIQUE` counts the
+ * violations first and **fails naming them**. It never deduplicates. Two rows
+ * claiming one version of one account are two claims about what an operator
+ * did, and choosing between them is an owner's decision recorded in the
+ * decisions register — not something a migration gets to do at 3am while an
+ * upgrade runs.
+ *
+ * The refusal has to happen before the `CREATE UNIQUE INDEX`, or the same
+ * condition arrives as a constraint failure that names one row and no
+ * coordinates.
+ *
+ * In practice this is expected to find nothing, and that is not luck: the
+ * account contract derives `idempotencyKey` from `accountId` and `version`, and
+ * `UNIQUE(idempotency_key)` has been in the schema since migration 5, so a
+ * duplicate pair would have had to arrive with a key the contract would never
+ * have produced. The check exists for exactly that case — a row written past
+ * the door — and because a rule that holds by derivation is a rule the base
+ * cannot enforce on a writer that skips the derivation.
+ */
+/**
+ * Render an account id for a diagnostic, safely.
+ *
+ * `safeIdentifier` is deliberately not reused here: it exists for SCHEMA names
+ * — tables, projections, streams — which really are `[A-Za-z0-9_]`, and an
+ * account id is not one. Realistic ids carry hyphens and dots, and blanking
+ * every one of them would leave the preflight naming `<unprintable name>` for
+ * exactly the rows an operator has to make a decision about, which would make
+ * the diagnostic useless at the only moment it matters.
+ *
+ * The guard is still a guard: anything outside a bounded, printable set is
+ * replaced rather than echoed, so a tampered column cannot turn a refusal
+ * message into an output channel.
+ */
+function safeAccountId(accountId: string): string {
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(accountId) ? accountId : "<unprintable account id>";
+}
+
+function assertNoDuplicateAccountVersions(db: Database.Database): void {
+  const duplicates = db
+    .prepare(
+      "SELECT account_id, version, COUNT(*) AS n FROM account_events " +
+        "GROUP BY account_id, version HAVING n > 1 ORDER BY account_id ASC, version ASC",
+    )
+    .all() as { readonly account_id: string; readonly version: number; readonly n: number }[];
+
+  if (duplicates.length === 0) return;
+
+  // Named, bounded, and never repaired here. The list is capped because a
+  // diagnostic that prints a million rows is a diagnostic nobody reads; the
+  // count is exact either way.
+  const named = duplicates
+    .slice(0, 20)
+    .map(
+      (row) =>
+        safeAccountId(row.account_id) +
+        " version " +
+        String(row.version) +
+        " appears " +
+        String(row.n) +
+        " times",
+    );
+  if (duplicates.length > 20) {
+    named.push("and " + String(duplicates.length - 20) + " further pair(s)");
+  }
+  throw new LedgerMigrationError([
+    "account_events holds " +
+      String(duplicates.length) +
+      " duplicate (account_id, version) pair(s), which this migration will not " +
+      "deduplicate: " +
+      named.join("; "),
+  ]);
+}
+
+/**
+ * Build the account sidecar over every historical row, once (P-08/A2).
+ *
+ * Runs inside the migration's own transaction, after the sidecar's DDL and
+ * before the migration is recorded, so there is no observable state in which
+ * the table exists and the chain does not.
+ *
+ * **The code does this and the SQL cannot.** Each row's digest is SHA-256 over
+ * the versioned preimage of the contract's §8.1, and SQLite has no SHA-256
+ * here. That is the same shape of constraint `instance_id` ran into and the
+ * opposite reason: there the value must not be deterministic, here it cannot be
+ * computed in SQL.
+ *
+ * `H` is the account stream's head at this instant. For `H = 0` there are no
+ * sidecar rows and both the baseline and head digests are the genesis sixty-four
+ * zeros; for `H > 0` both are the digest of row `H`. They are equal at
+ * activation and diverge only as the stream grows past the baseline, which is
+ * exactly the distinction the two pairs of keys exist to keep.
+ */
+function activateAccountIntegrity(db: Database.Database, activatedAt: string): void {
+  const rows = db
+    .prepare("SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC")
+    .all() as AccountEventRow[];
+
+  const insert = db.prepare(
+    "INSERT INTO account_event_integrity " +
+      "(account_sequence, previous_sha256, event_sha256, computed_at) VALUES (?, ?, ?, ?)",
+  );
+
+  let previousSha256 = ACCOUNT_INTEGRITY_GENESIS_SHA256;
+  let expectedSequence = 1;
+  for (const row of rows) {
+    if (row.sequence !== expectedSequence) {
+      // The sidecar is one-to-one from sequence 1. A gap means the stream this
+      // chain would describe is not the stream on disk, and a chain built over
+      // a gap would be evidence of the wrong thing.
+      throw new LedgerMigrationError([
+        "account_events is not contiguous: expected sequence " +
+          String(expectedSequence) +
+          " but found " +
+          String(row.sequence),
+      ]);
+    }
+    expectedSequence += 1;
+
+    // Every historical row carries the same `computed_at`, and it is the
+    // activation instant rather than the row's own `recorded_at`: these digests
+    // were computed now, long after the rows were written, and saying otherwise
+    // would be the one claim the sidecar must never make.
+    const eventSha256 = accountIntegrityDigestV1({
+      accountSequence: row.sequence,
+      previousSha256,
+      row,
+    });
+    insert.run(row.sequence, previousSha256, eventSha256, activatedAt);
+    previousSha256 = eventSha256;
+  }
+
+  const head = rows.length === 0 ? 0 : expectedSequence - 1;
+  // INSERT, never `#writeMeta`: that helper is an `UPDATE ... WHERE key = ?`,
+  // which on an absent key neither fails nor writes.
+  const meta = db.prepare("INSERT INTO ledger_meta (key, value) VALUES (?, ?)");
+  meta.run(ACCOUNT_INTEGRITY_BASELINE_SEQUENCE, String(head));
+  meta.run(ACCOUNT_INTEGRITY_BASELINE_SHA256, previousSha256);
+  meta.run(ACCOUNT_INTEGRITY_ACTIVATED_AT, activatedAt);
+  meta.run(ACCOUNT_INTEGRITY_HEAD_SEQUENCE, String(head));
+  meta.run(ACCOUNT_INTEGRITY_HEAD_EVENT_SHA256, previousSha256);
+}
+
 function ensureLedgerIdentity(db: Database.Database): void {
   db.transaction(() => {
     const existing = db
@@ -1139,7 +1312,24 @@ export class Ledger {
         const appliedAt = new Date().toISOString();
         const pending = conformance.missing;
         db.transaction(() => {
-          applyMigrations(db, pending, appliedAt);
+          // The account sidecar's activation is part of THIS transaction, and
+          // its order is fixed: the duplicate preflight before the DDL that
+          // would turn a count into a constraint failure, and the retroactive
+          // hash load after the table exists but before the migration is
+          // recorded. All of it or none of it — a ledger with the sidecar
+          // table and no chain in it is not a state anything may observe.
+          applyMigrations(db, pending, appliedAt, {
+            beforeSql: (migration) => {
+              if (migration.version === ACCOUNT_INTEGRITY_MIGRATION) {
+                assertNoDuplicateAccountVersions(db);
+              }
+            },
+            afterSql: (migration) => {
+              if (migration.version === ACCOUNT_INTEGRITY_MIGRATION) {
+                activateAccountIntegrity(db, appliedAt);
+              }
+            },
+          });
         }).immediate();
       }
 
@@ -3697,6 +3887,16 @@ export class Ledger {
       });
     }
 
+    // The account stream's chain, which lives beside it (P-08/A2).
+    //
+    // Unlike the file identity, absence IS a finding: this activation is
+    // written by the migration that creates the sidecar, so any ledger this
+    // build can open has it. What is reported is a chain that does not verify,
+    // a baseline that disagrees with the row it names, coverage that stops
+    // short of the stream, or an activation that is partly or wholly gone —
+    // which §8.2 forbids degrading to "not activated".
+    problems.push(...this.#checkAccountIntegrity());
+
     // This file's identity, judged rather than merely read (P-10/id-A).
     //
     // `status()` reads the same rows and fails closed on a bad one, but a read
@@ -3976,6 +4176,184 @@ export class Ledger {
           sequence: null,
         });
       }
+    }
+
+    return problems;
+  }
+
+  /**
+   * Verify the account sidecar end to end (P-08/A2).
+   *
+   * Four questions, and they are different questions:
+   *
+   * 1. **Does the chain verify?** Every sidecar row's digest is recomputed from
+   *    the account row it names and the link before it. This is what detects a
+   *    historical row rewritten after activation.
+   * 2. **Does the baseline still name row `H`?** The activation triple is
+   *    frozen evidence of where retroactive coverage was taken; a baseline that
+   *    drifted would move the coverage claim without anything being verified.
+   * 3. **Does coverage reach the stream's head?** A sidecar that stops short
+   *    means account rows exist with no link, and the chain describes less than
+   *    it appears to.
+   * 4. **Does the head metadata match the last link?**
+   *
+   * On a finding the segment is **preserved**: nothing here repairs, re-anchors
+   * or moves `covered_since`. The contract is explicit that repair is an
+   * explicit, recorded decision outside the migration flow, and a verifier that
+   * quietly fixed what it found would destroy the evidence of what happened.
+   */
+  #checkAccountIntegrity(): IntegrityProblem[] {
+    const problems: IntegrityProblem[] = [];
+
+    let state: AccountIntegrityState;
+    try {
+      state = this.#readAccountIntegrity();
+    } catch (error: unknown) {
+      problems.push({
+        kind: "LEDGER_META",
+        detail:
+          error instanceof Error ? error.message : "the account integrity metadata is unreadable",
+        sequence: null,
+      });
+      return problems;
+    }
+
+    const rows = this.#stmt(
+      "SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC",
+    ).all() as AccountEventRow[];
+    const links = this.#stmt(
+      "SELECT account_sequence, previous_sha256, event_sha256 FROM account_event_integrity " +
+        "ORDER BY account_sequence ASC",
+    ).all() as {
+      readonly account_sequence: number;
+      readonly previous_sha256: string;
+      readonly event_sha256: string;
+    }[];
+
+    if (links.length !== rows.length) {
+      problems.push({
+        kind: "PROJECTION_META",
+        detail:
+          "the account integrity chain covers " +
+          String(links.length) +
+          " of " +
+          String(rows.length) +
+          " account events",
+        sequence: null,
+      });
+    }
+
+    let previous = ACCOUNT_INTEGRITY_GENESIS_SHA256;
+    let last = ACCOUNT_INTEGRITY_GENESIS_SHA256;
+    let baselineSeen: string | null = state.baselineSequence === 0 ? previous : null;
+
+    for (const [index, link] of links.entries()) {
+      const row = rows[index];
+      const expectedSequence = index + 1;
+      if (link.account_sequence !== expectedSequence) {
+        problems.push({
+          kind: "SEQUENCE",
+          detail:
+            "the account integrity chain expected sequence " +
+            String(expectedSequence) +
+            " but found " +
+            String(link.account_sequence),
+          sequence: link.account_sequence,
+        });
+        break;
+      }
+      if (row === undefined || row.sequence !== link.account_sequence) {
+        problems.push({
+          kind: "PROJECTION_META",
+          detail:
+            "the account integrity chain names sequence " +
+            String(link.account_sequence) +
+            " which account_events does not hold",
+          sequence: link.account_sequence,
+        });
+        break;
+      }
+      if (link.previous_sha256 !== previous) {
+        problems.push({
+          kind: "HASH_CHAIN",
+          detail:
+            "account integrity sequence " +
+            String(link.account_sequence) +
+            " records previous digest " +
+            link.previous_sha256 +
+            " but the chain has reached " +
+            previous,
+          sequence: link.account_sequence,
+        });
+      }
+
+      const recomputed = accountIntegrityDigestV1({
+        accountSequence: link.account_sequence,
+        previousSha256: link.previous_sha256,
+        row,
+      });
+      if (recomputed !== link.event_sha256) {
+        problems.push({
+          kind: "HASH_CHAIN",
+          detail:
+            "account integrity sequence " +
+            String(link.account_sequence) +
+            " records digest " +
+            link.event_sha256 +
+            " but its stored row hashes to " +
+            recomputed,
+          sequence: link.account_sequence,
+        });
+      }
+
+      previous = link.event_sha256;
+      last = link.event_sha256;
+      if (link.account_sequence === state.baselineSequence) baselineSeen = link.event_sha256;
+    }
+
+    if (baselineSeen === null) {
+      problems.push({
+        kind: "LEDGER_META",
+        detail:
+          "the account integrity baseline names sequence " +
+          String(state.baselineSequence) +
+          " which the chain does not reach",
+        sequence: null,
+      });
+    } else if (baselineSeen !== state.baselineSha256) {
+      problems.push({
+        kind: "LEDGER_META",
+        detail:
+          "the account integrity baseline digest " +
+          state.baselineSha256 +
+          " is not the digest of the chain at sequence " +
+          String(state.baselineSequence),
+        sequence: null,
+      });
+    }
+
+    if (state.headSequence !== links.length) {
+      problems.push({
+        kind: "LEDGER_META",
+        detail:
+          "the account integrity head is sequence " +
+          String(state.headSequence) +
+          " but the chain holds " +
+          String(links.length) +
+          " links",
+        sequence: null,
+      });
+    }
+    if (state.headEventSha256 !== last) {
+      problems.push({
+        kind: "LEDGER_META",
+        detail:
+          "the account integrity head digest " +
+          state.headEventSha256 +
+          " does not match the chain head " +
+          last,
+        sequence: null,
+      });
     }
 
     return problems;
@@ -4585,6 +4963,37 @@ export class Ledger {
         );
       }
 
+      // Compare-and-set on the version this account is actually at (§9).
+      //
+      // The contract says `version` is assigned by the seam from the folded
+      // history, and this is the ledger checking that claim rather than
+      // believing it: an event claiming version N is admitted only when the
+      // account is at N-1. Two seams racing on one account therefore cannot
+      // both win, and a gap cannot open silently.
+      //
+      // It is NOT a lifecycle guard. Which transitions an account may make is
+      // still the seam's to know, and nothing here duplicates that.
+      const held = this.#stmt(
+        "SELECT MAX(version) AS highest FROM account_events WHERE account_id = ?",
+      ).get(event.accountId) as { readonly highest: number | null };
+      const expected = (held.highest ?? 0) + 1;
+      if (event.version !== expected) {
+        throw new LedgerValidationError([
+          {
+            path: "version",
+            message:
+              "account " +
+              safeIdentifier(event.accountId) +
+              " is at version " +
+              String(held.highest ?? 0) +
+              ", so the next action is version " +
+              String(expected) +
+              " and not " +
+              String(event.version),
+          },
+        ]);
+      }
+
       const info = this.#stmt(
         "INSERT INTO account_events (event_id, idempotency_key, account_id, version, action," +
           " resulting_state, actor, note, occurred_at, recorded_at, contract_version, event_json)" +
@@ -4604,12 +5013,116 @@ export class Ledger {
         canonicalJson,
       );
 
+      const sequence = Number(info.lastInsertRowid);
+
+      this.#faults.beforeProjection?.();
+
+      // The row, its digest and the sidecar head, in this transaction. An
+      // account event that landed without its link would leave a chain with a
+      // hole that no later append could close, because the chain is
+      // append-only and the missing link is in the middle.
+      this.#appendAccountIntegrity(sequence);
+
+      this.#faults.beforeAppendCommit?.();
+
       return {
         inserted: true,
-        record: { sequence: Number(info.lastInsertRowid), eventId: event.eventId, event },
+        record: { sequence, eventId: event.eventId, event },
       };
     });
     return run.immediate();
+  }
+
+  /**
+   * The sidecar's head, read with the same suspicion as a stream's.
+   *
+   * **Any absence is a finding here, unlike the file identity.** The two look
+   * alike and are not. `instance_id` is written by code at open, so a ledger
+   * migrated by an older build legitimately lacks it and a reader reports the
+   * absence plainly. This activation is written by migration 10 itself, inside
+   * the transaction that creates the sidecar — so a ledger this build can open
+   * at all has it, because a read-only handle refuses a pending migration and a
+   * writable one applies it. There is no lawful "migrated but not activated".
+   *
+   * A partial set is refused for the reason §8.2 states outright: hiding it
+   * behind the word for "never activated" is exactly how a tampered baseline
+   * would pass for an honest absence. A whole set missing is the same tampering
+   * at a larger scale and gets the same answer.
+   */
+  #readAccountIntegrity(): AccountIntegrityState {
+    const meta = this.#readMetaMap();
+    const present = ACCOUNT_INTEGRITY_KEYS.filter((key) => meta.get(key) !== undefined);
+    if (present.length !== ACCOUNT_INTEGRITY_KEYS.length) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds part of the account integrity activation and not the rest: " +
+          (present.length === 0 ? "none of the five keys" : present.map(safeIdentifier).join(", ")),
+      ]);
+    }
+
+    const baselineSequence = readCanonicalCount(meta.get(ACCOUNT_INTEGRITY_BASELINE_SEQUENCE) ?? "");
+    const headSequence = readCanonicalCount(meta.get(ACCOUNT_INTEGRITY_HEAD_SEQUENCE) ?? "");
+    if (baselineSequence === null || headSequence === null) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds an account integrity sequence that is not a count",
+      ]);
+    }
+    const baselineSha256 = meta.get(ACCOUNT_INTEGRITY_BASELINE_SHA256) ?? "";
+    const headEventSha256 = meta.get(ACCOUNT_INTEGRITY_HEAD_EVENT_SHA256) ?? "";
+    if (!SHA256_PATTERN.test(baselineSha256) || !SHA256_PATTERN.test(headEventSha256)) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds an account integrity digest that is not a sha-256",
+      ]);
+    }
+    const activatedAt = meta.get(ACCOUNT_INTEGRITY_ACTIVATED_AT) ?? "";
+    if (!INSTANT_PATTERN.test(activatedAt)) {
+      throw new LedgerIntegrityError([
+        "ledger_meta holds an account integrity activation instant that is not an instant",
+      ]);
+    }
+
+    return { baselineSequence, baselineSha256, activatedAt, headSequence, headEventSha256 };
+  }
+
+  /**
+   * Link one freshly appended account row into the sidecar, and move its head.
+   *
+   * Called inside the append transaction, never on its own. The activation
+   * triple — baseline sequence, baseline digest, activation instant — is
+   * deliberately untouched: it records where the retroactive coverage started
+   * and must not drift as the stream grows past it.
+   */
+  #appendAccountIntegrity(sequence: number): void {
+    const state = this.#readAccountIntegrity();
+    if (state.headSequence !== sequence - 1) {
+      throw new LedgerIntegrityError([
+        "the account integrity chain reaches sequence " +
+          String(state.headSequence) +
+          " but the row being appended is sequence " +
+          String(sequence),
+      ]);
+    }
+
+    const row = this.#stmt(
+      "SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events WHERE sequence = ?",
+    ).get(sequence) as AccountEventRow | undefined;
+    if (row === undefined) {
+      throw new LedgerIntegrityError([
+        "account_events holds no row at sequence " + String(sequence) + " to hash",
+      ]);
+    }
+
+    const eventSha256 = accountIntegrityDigestV1({
+      accountSequence: sequence,
+      previousSha256: state.headEventSha256,
+      row,
+    });
+    this.#stmt(
+      "INSERT INTO account_event_integrity " +
+        "(account_sequence, previous_sha256, event_sha256, computed_at) VALUES (?, ?, ?, ?)",
+    ).run(sequence, state.headEventSha256, eventSha256, row.recorded_at);
+
+    this.#writeMeta(ACCOUNT_INTEGRITY_HEAD_SEQUENCE, String(sequence));
+    this.#writeMeta(ACCOUNT_INTEGRITY_HEAD_EVENT_SHA256, eventSha256);
   }
 
   /**

@@ -35,6 +35,7 @@ import {
   type CausationRef,
   type Ledger,
 } from "../../src/index.js";
+import { DERIVED_TABLES } from "../../src/migrations/index.js";
 
 // ---------------------------------------------------------------------------
 // Temporary databases
@@ -273,7 +274,7 @@ describe("open", () => {
     // Nine since P-09/log-C opened the registry stream, beside the typed causal
     // triple of B and the watermark table of A.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1211,8 +1212,26 @@ function dropTypedCausality(raw: Database.Database): void {
   }
 }
 
-/** The whole P-09 tail, undone in the reverse of the order it was applied. */
+/**
+ * Undo migration 10's schema objects and its activation.
+ *
+ * The sidecar, its unique index on the stream, and the five activation keys.
+ * Rewinding past 10 without them leaves a table the re-applied migration would
+ * try to create again, and an activation the load would try to write twice.
+ */
+function dropAccountIntegrity(raw: Database.Database): void {
+  raw.prepare("DELETE FROM ledger_meta WHERE key LIKE ?").run("account_integrity_%");
+  raw.exec(
+    "DROP TRIGGER tr_account_event_integrity__deny_delete; " +
+      "DROP TRIGGER tr_account_event_integrity__deny_update; " +
+      "DROP INDEX ux_account_events__account_id__version; " +
+      "DROP TABLE account_event_integrity;",
+  );
+}
+
+/** The whole P-08 and P-09 tail, undone in the reverse of the order applied. */
 function dropProjectionVector(raw: Database.Database): void {
+  dropAccountIntegrity(raw);
   dropRegistryStream(raw);
   dropTypedCausality(raw);
   raw.exec("DROP TABLE projection_watermark");
@@ -2669,7 +2688,7 @@ describe("the recorded execution route", () => {
     // The upgrade: migrations 6 to 9 apply on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3082,7 +3101,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -4984,5 +5003,594 @@ describe("a stored head is a count this code wrote, or it is refused", () => {
     const report = open(path, { readOnly: true }).verifyIntegrity();
     expect(report.ok).toBe(false);
     expect(detailsOf(report.problems)).toContain("a head or count that is not a count");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The account stream's hash chain, beside it (P-08/A2)
+//
+// `account_events` shipped in migration 5 with no chain and no way to gain one:
+// an applied migration is never rewritten. The chain therefore arrives as a
+// sidecar, `account_event_integrity`, one row per row of the stream from
+// sequence 1 — built retroactively over every historical row at the moment the
+// sidecar is activated.
+//
+// What that proves is bounded, and the bound is the point: it detects any
+// change made AFTER activation, and proves nothing about whether the rows were
+// authentic BEFORE it. Nobody hashed them when they were written. Those are two
+// different facts and nothing here may present them as one.
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_INTEGRITY_KEY_NAMES = [
+  "account_integrity_activated_at",
+  "account_integrity_baseline_sequence",
+  "account_integrity_baseline_sha256",
+  "account_integrity_head_event_sha256",
+  "account_integrity_head_sequence",
+] as const;
+
+const SIDECAR_GENESIS = "0".repeat(64);
+
+interface SidecarRow {
+  readonly account_sequence: number;
+  readonly previous_sha256: string;
+  readonly event_sha256: string;
+  readonly computed_at: string;
+}
+
+function readSidecar(path: string): SidecarRow[] {
+  const raw = new Database(path);
+  try {
+    return raw
+      .prepare("SELECT * FROM account_event_integrity ORDER BY account_sequence ASC")
+      .all() as SidecarRow[];
+  } finally {
+    raw.close();
+  }
+}
+
+function readActivation(path: string): Map<string, string> {
+  const raw = new Database(path);
+  try {
+    const rows = raw
+      .prepare("SELECT key, value FROM ledger_meta WHERE key LIKE 'account_integrity_%'")
+      .all() as { key: string; value: string }[];
+    return new Map(rows.map((row) => [row.key, row.value]));
+  } finally {
+    raw.close();
+  }
+}
+
+const P08_AT = "2026-09-11T09:00:00.000Z";
+
+function action(version: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: randomUUID(),
+    accountId: "acct-primary",
+    version,
+    idempotencyKey: "acct-primary/1/action." + String(version),
+    action: version % 2 === 1 ? "DRAIN" : "ACCOUNT_READY",
+    resultingState: version % 2 === 1 ? "DRAINING" : "AVAILABLE",
+    actor: KIMI,
+    note: null,
+    occurredAt: P08_AT,
+    recordedAt: P08_AT,
+    ...overrides,
+  };
+}
+
+/** A ledger written before the sidecar existed: migrated to 9, no activation. */
+function rewindPastSidecar(path: string): void {
+  withRawDatabase(path, (raw) => {
+    dropAccountIntegrity(raw);
+    raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(10);
+  });
+}
+
+describe("the account sidecar is activated once, over everything, atomically", () => {
+  it("activates an empty account stream with H zero and the genesis digest", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    const activation = readActivation(path);
+    expect([...activation.keys()].sort()).toEqual([...ACCOUNT_INTEGRITY_KEY_NAMES]);
+    expect(activation.get("account_integrity_baseline_sequence")).toBe("0");
+    expect(activation.get("account_integrity_baseline_sha256")).toBe(SIDECAR_GENESIS);
+    expect(activation.get("account_integrity_head_sequence")).toBe("0");
+    expect(activation.get("account_integrity_head_event_sha256")).toBe(SIDECAR_GENESIS);
+    expect(readSidecar(path)).toEqual([]);
+  });
+
+  it("covers every historical row from one, not only from the activation point", () => {
+    // The retroactive half. A ledger that already holds account events gets a
+    // chain over ALL of them, starting at sequence 1 — not a chain that begins
+    // where the upgrade happened and leaves the history unlinked.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    seeded.appendAccountAction(action(1));
+    seeded.appendAccountAction(action(2));
+    seeded.appendAccountAction(action(3));
+    seeded.close();
+
+    rewindPastSidecar(path);
+    expect(readActivation(path).size).toBe(0);
+
+    // The upgrade: migration 10 applies on open and nothing else is done.
+    const migrated = open(path);
+    expect(migrated.status().migrations.map((m) => m.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    migrated.close();
+
+    const sidecar = readSidecar(path);
+    expect(sidecar.map((row) => row.account_sequence)).toEqual([1, 2, 3]);
+    expect(sidecar[0]?.previous_sha256).toBe(SIDECAR_GENESIS);
+    expect(sidecar[1]?.previous_sha256).toBe(sidecar[0]?.event_sha256);
+    expect(sidecar[2]?.previous_sha256).toBe(sidecar[1]?.event_sha256);
+
+    // Every historical link carries the ACTIVATION instant, not the row's own
+    // `recorded_at`: these digests were computed now, long after the rows were
+    // written, and saying otherwise would be the one claim the sidecar must
+    // never make.
+    const activatedAt = readActivation(path).get("account_integrity_activated_at");
+    expect(sidecar.map((row) => row.computed_at)).toEqual([activatedAt, activatedAt, activatedAt]);
+    expect(activatedAt).not.toBe(P08_AT);
+  });
+
+  it("fixes the baseline at H and never moves it as the stream grows", () => {
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    seeded.appendAccountAction(action(1));
+    seeded.appendAccountAction(action(2));
+    seeded.close();
+    rewindPastSidecar(path);
+
+    const migrated = open(path);
+    const atActivation = readActivation(path);
+    expect(atActivation.get("account_integrity_baseline_sequence")).toBe("2");
+    // At activation the baseline and the head are the same row, which is why
+    // there are two pairs rather than one: they diverge afterwards.
+    expect(atActivation.get("account_integrity_head_sequence")).toBe("2");
+    expect(atActivation.get("account_integrity_baseline_sha256")).toBe(
+      atActivation.get("account_integrity_head_event_sha256"),
+    );
+
+    migrated.appendAccountAction(action(3));
+    migrated.close();
+
+    const afterGrowth = readActivation(path);
+    expect(afterGrowth.get("account_integrity_baseline_sequence")).toBe("2");
+    expect(afterGrowth.get("account_integrity_baseline_sha256")).toBe(
+      atActivation.get("account_integrity_baseline_sha256"),
+    );
+    expect(afterGrowth.get("account_integrity_activated_at")).toBe(
+      atActivation.get("account_integrity_activated_at"),
+    );
+    expect(afterGrowth.get("account_integrity_head_sequence")).toBe("3");
+    expect(afterGrowth.get("account_integrity_head_event_sha256")).not.toBe(
+      atActivation.get("account_integrity_head_event_sha256"),
+    );
+  });
+
+  it("refuses to activate twice", () => {
+    // The migration is recorded, so a second open has nothing pending and the
+    // activation triple is untouched. Re-running the load would rewrite a
+    // baseline the contract says is frozen.
+    const path = temporaryDatabase();
+    const first = open(path);
+    first.appendAccountAction(action(1));
+    first.close();
+    const before = readActivation(path);
+
+    open(path).close();
+    open(path).close();
+
+    expect(readActivation(path)).toEqual(before);
+    expect(readSidecar(path)).toHaveLength(1);
+  });
+
+  it("refuses a partial activation rather than reading it as never activated", () => {
+    // §8.2 forbids degrading a partial or divergent baseline to NOT_ACTIVATED:
+    // hiding a tampered activation behind the word for an honest absence is
+    // exactly how it would pass.
+    for (const key of ACCOUNT_INTEGRITY_KEY_NAMES) {
+      const path = temporaryDatabase();
+      open(path).close();
+      withRawDatabase(path, (raw) => {
+        raw.prepare("DELETE FROM ledger_meta WHERE key = ?").run(key);
+      });
+
+      const report = open(path, { readOnly: true }).verifyIntegrity();
+      expect(report.ok, key).toBe(false);
+      expect(detailsOf(report.problems), key).toContain(
+        "part of the account integrity activation",
+      );
+    }
+  });
+
+  it("cannot be opened at all while the migration is pending, so there is no unactivated state", () => {
+    // The difference from the file identity, which looks the same and is not.
+    // `instance_id` is written by code at open, so a ledger migrated by an
+    // older build legitimately lacks it and a reader reports that plainly.
+    // THIS activation is written by migration 10 itself, so the only ledger
+    // without it is one the migration has not reached — and such a ledger
+    // cannot be read: a read-only handle refuses a pending migration, and a
+    // writable one applies it and activates. "Migrated but not activated" is
+    // not a state this build can produce.
+    const path = temporaryDatabase();
+    open(path).close();
+    rewindPastSidecar(path);
+    expect(readActivation(path).size).toBe(0);
+
+    const refused = caught(() => open(path, { readOnly: true }));
+    expect(refused).toBeInstanceOf(LedgerMigrationError);
+    expect((refused as Error).message).toContain("account_event_integrity is not applied");
+
+    // A writable open closes the gap without asking an operator for anything.
+    const writer = open(path);
+    expect(readActivation(path).size).toBe(5);
+    expect(writer.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("reports an activation deleted wholesale, rather than calling it absent", () => {
+    // The other half of the partial case. Since every openable ledger is
+    // activated, five missing keys is tampering at a larger scale than one —
+    // not an honest absence — and reading it as "never activated" is precisely
+    // the degradation §8.2 forbids.
+    const path = temporaryDatabase();
+    open(path).close();
+    withRawDatabase(path, (raw) => {
+      raw.prepare("DELETE FROM ledger_meta WHERE key LIKE ?").run("account_integrity_%");
+    });
+
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(detailsOf(report.problems)).toContain("none of the five keys");
+  });
+
+  it("refuses a baseline sequence that is not a canonical count", () => {
+    // The same rule the heads and the restore epoch carry: `Number` is a
+    // coercion, and a baseline edited to "1e3" would be read as 1000.
+    for (const text of ["", "1e3", "0x1f", " 2 ", "+2", "02", "-0"]) {
+      const path = temporaryDatabase();
+      open(path).close();
+      withRawDatabase(path, (raw) => {
+        raw
+          .prepare("UPDATE ledger_meta SET value = ? WHERE key = ?")
+          .run(text, "account_integrity_baseline_sequence");
+      });
+
+      const report = open(path, { readOnly: true }).verifyIntegrity();
+      expect(report.ok, JSON.stringify(text)).toBe(false);
+      expect(detailsOf(report.problems), JSON.stringify(text)).toContain(
+        "account integrity sequence that is not a count",
+      );
+    }
+  });
+});
+
+describe("an account append moves the stream and its chain together", () => {
+  it("writes the event, its link and the chain head in one transaction", () => {
+    const path = temporaryDatabase();
+    let armed = false;
+    const ledger = open(path, {
+      __testFaults: {
+        beforeAppendCommit: () => {
+          if (armed) throw new Error("deliberate fault");
+        },
+      },
+    });
+    ledger.appendAccountAction(action(1));
+    const before = readActivation(path);
+
+    armed = true;
+    expect(caught(() => ledger.appendAccountAction(action(2)))).toBeInstanceOf(Error);
+    ledger.close();
+
+    // Neither the row, nor the link, nor the head. An account event that landed
+    // without its link would leave a hole in the middle of an append-only
+    // chain, which no later append could close.
+    expect(readSidecar(path)).toHaveLength(1);
+    expect(readActivation(path)).toEqual(before);
+    const reopened = open(path);
+    expect(reopened.listAccountActions("acct-primary")).toHaveLength(1);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses a second event for a version the account already holds", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendAccountAction(action(1));
+    ledger.appendAccountAction(action(2));
+
+    // A version already recorded, reached three ways, and each is refused by a
+    // different layer — which is worth spelling out because it is the reason
+    // the historical duplicate this packet preflights for has never occurred.
+    //
+    // 1. A DIFFERENT idempotency key for the same version never reaches the
+    //    ledger at all: the contract derives the key from the account and the
+    //    version, so a key that does not match is refused before the door.
+    const forged = caught(() =>
+      ledger.appendAccountAction(action(2, { idempotencyKey: "acct-primary/1/action.2b" })),
+    );
+    expect(forged).toBeInstanceOf(LedgerValidationError);
+    expect((forged as Error).message).toContain("idempotencyKey must be exactly");
+
+    // 2. The SAME key with the same body is an idempotent replay, which is what
+    //    makes a retry safe, and writes nothing.
+    const first = ledger.listAccountActions("acct-primary")[1];
+    const replay = ledger.appendAccountAction(
+      action(2, { eventId: first?.eventId, occurredAt: P08_AT }),
+    );
+    expect(replay.inserted).toBe(false);
+
+    // 3. A version that skips ahead is what the compare-and-set is for: the
+    //    seam assigns from the folded history, and this is the ledger checking
+    //    that claim rather than believing it.
+    const skipped = caught(() => ledger.appendAccountAction(action(9)));
+    expect(skipped).toBeInstanceOf(LedgerValidationError);
+    expect((skipped as Error).message).toContain("is at version 2");
+    expect(ledger.listAccountActions("acct-primary")).toHaveLength(2);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses to append when the chain head disagrees with the stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(action(1));
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare("UPDATE ledger_meta SET value = ? WHERE key = ?")
+        .run("0", "account_integrity_head_sequence");
+    });
+
+    const reopened = open(path);
+    const error = caught(() => reopened.appendAccountAction(action(2)));
+    expect(error).toBeInstanceOf(LedgerIntegrityError);
+    expect((error as Error).message).toContain("reaches sequence 0");
+    // Nothing landed: the stream is where it was.
+    expect(reopened.listAccountActions("acct-primary")).toHaveLength(1);
+  });
+
+  it("refuses two rows claiming one account version, in the base itself", () => {
+    // The uniqueness migration 5 did not impose, imposed now. Through the door
+    // the contract's derived idempotency key has always refused this; a writer
+    // that reaches past the door meets the index instead.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(action(1));
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      const insert = raw.prepare(
+        "INSERT INTO account_events (event_id, idempotency_key, account_id, version, action," +
+          " resulting_state, actor, note, occurred_at, recorded_at, contract_version, event_json)" +
+          " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      const duplicate = (): void => {
+        insert.run(
+          randomUUID(),
+          "acct-primary/1/action.1-again",
+          "acct-primary",
+          1,
+          "DRAIN",
+          "DRAINING",
+          KIMI,
+          null,
+          P08_AT,
+          P08_AT,
+          CONTRACT_VERSION,
+          "{}",
+        );
+      };
+      expect(caught(duplicate)).toBeInstanceOf(Error);
+      expect((caught(duplicate) as Error).message).toContain("UNIQUE");
+    });
+
+    expect(readSidecar(path)).toHaveLength(1);
+  });
+});
+
+describe("the account chain fails closed and preserves what it found", () => {
+  it("reports a tampered historical row and leaves the segment untouched", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(action(1));
+    ledger.appendAccountAction(action(2));
+    ledger.close();
+
+    const before = { sidecar: readSidecar(path), activation: readActivation(path) };
+
+    withRawDatabase(path, (raw) => {
+      // The append-only trigger denies UPDATE, so the row is rewritten the only
+      // way a tamperer could: by dropping the trigger first.
+      raw.exec("DROP TRIGGER account_events_deny_update");
+      raw.prepare("UPDATE account_events SET note = ? WHERE sequence = 1").run("edited later");
+    });
+
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(detailsOf(report.problems)).toContain("but its stored row hashes to");
+
+    // Preserved: nothing re-anchored, nothing recomputed, the baseline where it
+    // was. Repair is an explicit recorded decision, not something a verifier
+    // does on the way past.
+    expect(readSidecar(path)).toEqual(before.sidecar);
+    expect(readActivation(path)).toEqual(before.activation);
+  });
+
+  it("does not rebuild the sidecar as if it were a read model", () => {
+    // The structural negative. `rebuildReadModel()` clears every derived table
+    // and replays it from the log; the sidecar is evidence, not a projection,
+    // and a rebuild that dropped it would destroy the only thing that can
+    // detect a change to the account stream.
+    expect(DERIVED_TABLES).not.toContain("account_event_integrity");
+
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(action(1));
+    ledger.appendAccountAction(action(2));
+    const before = { sidecar: readSidecar(path), activation: readActivation(path) };
+
+    ledger.rebuildReadModel();
+
+    expect(readSidecar(path)).toEqual(before.sidecar);
+    expect(readActivation(path)).toEqual(before.activation);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("leaves the activation untouched across a restore", () => {
+    // §8.2: rebuild and restore change neither the activation, nor H, nor its
+    // digest. A restore reproduces a file's contents; it does not re-date the
+    // evidence that those contents were hashed.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendAccountAction(action(1));
+    const before = { sidecar: readSidecar(path), activation: readActivation(path) };
+
+    ledger.recordRestore();
+
+    expect(readSidecar(path)).toEqual(before.sidecar);
+    expect(readActivation(path)).toEqual(before.activation);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("verifies an activated ledger clean from end to end", () => {
+    const ledger = open(temporaryDatabase());
+    seedFixture(ledger);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.appendAccountAction(action(1));
+    ledger.appendAccountAction(action(2));
+    ledger.appendAccountAction(action(3));
+
+    const report = ledger.verifyIntegrity();
+    expect(report.problems).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(readSidecar(ledger.path)).toHaveLength(3);
+  });
+});
+
+describe("the duplicate preflight names what it finds and repairs nothing", () => {
+  /**
+   * A ledger migrated to 9 that holds duplicate account versions.
+   *
+   * The duplicates have to be planted by raw SQL, because no door produces
+   * them: the contract derives the idempotency key from the account and the
+   * version, and `UNIQUE(idempotency_key)` has refused the pair since migration
+   * 5. That is exactly why the preflight exists — for a row written past the
+   * door — and exactly why fabricating one takes this much work.
+   */
+  function seedDuplicates(pairs: readonly (readonly [string, number])[]): string {
+    const path = temporaryDatabase();
+    open(path).close();
+    rewindPastSidecar(path);
+
+    withRawDatabase(path, (raw) => {
+      const insert = raw.prepare(
+        "INSERT INTO account_events (event_id, idempotency_key, account_id, version, action," +
+          " resulting_state, actor, note, occurred_at, recorded_at, contract_version, event_json)" +
+          " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      let key = 0;
+      for (const [accountId, version] of pairs) {
+        key += 1;
+        insert.run(
+          randomUUID(),
+          accountId + "/1/action." + String(version) + "#" + String(key),
+          accountId,
+          version,
+          "DRAIN",
+          "DRAINING",
+          KIMI,
+          null,
+          P08_AT,
+          P08_AT,
+          CONTRACT_VERSION,
+          "{}",
+        );
+      }
+    });
+    return path;
+  }
+
+  it("fails the migration naming every duplicate account version", () => {
+    const path = seedDuplicates([
+      ["acct-primary", 1],
+      ["acct-primary", 1],
+      ["acct-second", 4],
+      ["acct-second", 4],
+      ["acct-second", 4],
+    ]);
+
+    const error = caught(() => open(path));
+    expect(error).toBeInstanceOf(LedgerMigrationError);
+    const message = (error as Error).message;
+    // Named, with coordinates and counts. A migration that said only "there
+    // are duplicates" would leave an operator no way to decide anything.
+    expect(message).toContain("2 duplicate (account_id, version) pair(s)");
+    expect(message).toContain("acct-primary version 1 appears 2 times");
+    expect(message).toContain("acct-second version 4 appears 3 times");
+    // And it says outright that it will not fix them: resolving a historical
+    // conflict is an owner's decision recorded in the decisions register, not
+    // something a migration does while an upgrade runs.
+    expect(message).toContain("will not deduplicate");
+  });
+
+  it("leaves the database exactly as it was when the preflight fails", () => {
+    const path = seedDuplicates([
+      ["acct-primary", 1],
+      ["acct-primary", 1],
+    ]);
+    const before = {
+      migrations: (() => {
+        const raw = new Database(path);
+        try {
+          return raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all();
+        } finally {
+          raw.close();
+        }
+      })(),
+      rows: (() => {
+        const raw = new Database(path);
+        try {
+          return raw.prepare("SELECT * FROM account_events ORDER BY sequence").all();
+        } finally {
+          raw.close();
+        }
+      })(),
+      activation: readActivation(path),
+    };
+    expect(before.rows).toHaveLength(2);
+    expect(before.activation.size).toBe(0);
+
+    expect(caught(() => open(path))).toBeInstanceOf(LedgerMigrationError);
+
+    // The whole activation is one transaction, so a preflight that refuses
+    // leaves no table, no index, no link and no key behind.
+    const raw = new Database(path);
+    try {
+      expect(raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual(
+        before.migrations,
+      );
+      expect(raw.prepare("SELECT * FROM account_events ORDER BY sequence").all()).toEqual(
+        before.rows,
+      );
+      const tables = raw
+        .prepare("SELECT name FROM sqlite_schema WHERE name = ?")
+        .all("account_event_integrity");
+      expect(tables).toEqual([]);
+    } finally {
+      raw.close();
+    }
+    expect(readActivation(path).size).toBe(0);
+
+    // And the failure is repeatable rather than a one-off that half-applied.
+    expect(caught(() => open(path))).toBeInstanceOf(LedgerMigrationError);
   });
 });

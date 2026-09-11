@@ -684,6 +684,26 @@ export interface AccountEventRow {
   readonly event_json: string;
 }
 
+/**
+ * The account sidecar's activation, as `ledger_meta` records it (P-08/A2).
+ *
+ * Two pairs that are equal at activation and diverge afterwards, which is the
+ * whole reason there are two. The **baseline** is where the retroactive
+ * coverage was taken and never moves again; the **head** follows the chain as
+ * the stream grows. Collapsing them would lose the answer to "how much of this
+ * was hashed when it was written, and how much was hashed later".
+ */
+export interface AccountIntegrityState {
+  /** `H`: the account head fixed at activation. Zero for an empty stream. */
+  readonly baselineSequence: number;
+  /** The digest of row `H`, or sixty-four zeros when `H` is zero. */
+  readonly baselineSha256: string;
+  /** When the retroactive coverage was computed. Never a row's own instant. */
+  readonly activatedAt: string;
+  readonly headSequence: number;
+  readonly headEventSha256: string;
+}
+
 /** One recorded operator action, as the ledger returns it (P8-8G packet 2). */
 export interface AccountActionRecordRow {
   readonly sequence: number;

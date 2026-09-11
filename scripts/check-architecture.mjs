@@ -8182,6 +8182,76 @@ const P08A1_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-08/A2 — the account stream gets the chain migration 5 could not give it.
+ *
+ * Migration 10 creates `account_event_integrity`: one link per row of
+ * `account_events`, keyed by and foreign-keyed to its sequence, from sequence 1.
+ * The chain is beside the stream because migration 5 is applied and never
+ * rewritten, so the columns cannot be added to it.
+ *
+ * **What the sidecar proves is bounded, and the bound is the point.** It covers
+ * the historical bytes `1..H` as they stood at activation and detects any change
+ * after that. It does NOT prove those rows were authentic before it — nobody
+ * hashed them when they were written. Two different facts, and nothing in the
+ * code, the README or a future report may present them as one.
+ *
+ * **Activation is one transaction, and its order is fixed.** Inside migration
+ * 10's own transaction: the duplicate preflight, the DDL, the retroactive load
+ * of every historical row, the five activation keys, the migration row.
+ * `applyMigrations` gained `beforeSql`/`afterSql` hooks precisely so the
+ * preflight can see the schema before the `CREATE UNIQUE INDEX` turns a count
+ * into an opaque constraint failure, and so the load — which SQLite cannot do,
+ * having no SHA-256 here — lands before the migration is recorded. There is no
+ * observable state in which the table exists and the chain does not.
+ *
+ * **A duplicate is named, never repaired.** The preflight counts rows sharing an
+ * `(account_id, version)` and fails naming them; it does not deduplicate,
+ * because two rows claiming one version of one account are two claims about what
+ * an operator did and choosing between them is an owner's decision recorded in
+ * the decisions register. `ux_account_events__account_id__version` then adds the
+ * constraint migration 5 omitted — the rule existed only as a derivation at the
+ * door, and a rule the base cannot see is a rule a raw writer does not meet.
+ *
+ * **The sidecar is NOT in `DERIVED_TABLES`, and a test asserts it.** A rebuild
+ * clears every derived table and replays it from the log; this is evidence, not
+ * a projection, and a rebuild that dropped it would destroy the only thing that
+ * can detect a change to the account stream.
+ *
+ * **Absence is a finding here, unlike the file identity — and the difference is
+ * real.** `instance_id` is written by code at open, so a ledger migrated by an
+ * older build legitimately lacks it. This activation is written by the migration
+ * itself, so any ledger this build can open has it: a read-only handle refuses a
+ * pending migration and a writable one applies it. "Migrated but not activated"
+ * is not a state this build can produce, and a test pins that rather than
+ * leaving a branch nobody can reach.
+ *
+ * **D3 reconciled (U3).** `account_events` still has no certified watermark, but
+ * not for the old reason — it has a chain now. What keeps it out is the other
+ * half of the pair: no projection of accounts exists, and inventing one to fill
+ * a row would be a read model built to satisfy a table. The pair is seeded by
+ * the first packet that creates one; nothing is blocked meanwhile because
+ * nothing consumes an account watermark.
+ *
+ * **Pins.** `MIGRATIONS` 9 → 10 and `EXPECTED_SCHEMA_OBJECTS` 51 → 56, both
+ * asserted by the suite. The write set gains **0 distinct paths** — every
+ * literal below is admitted by a historical block. The ADR corpus holds at 64:
+ * the record belongs with the coverage report that changes the wire, which is
+ * the next rung. No error class is added — a duplicate version is a
+ * `LedgerValidationError`, a preflight refusal a `LedgerMigrationError`, a
+ * broken chain a finding — so the README/barrel law is untouched.
+ */
+const P08A2_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8376,6 +8446,7 @@ const WRITE_SET = [
   ...P10A_WRITE_SET,
   ...P10B_WRITE_SET,
   ...P08A1_WRITE_SET,
+  ...P08A2_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

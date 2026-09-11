@@ -156,6 +156,7 @@ fourteenth class cannot arrive without appearing here.
 | `control_plane_events` | authority | the append-only log, with `previous_sha256` and `event_sha256`, and the nullable causal triple |
 | `initiative_events` | authority | the sibling append-only stream, on its own hash chain, with the same triple |
 | `registry_events` | authority | versioned configuration documents, on a third hash chain, with the common field profile complete from its first migration |
+| `account_event_integrity` | authority | the account stream's hash chain, one link per row from sequence 1. Evidence, not a projection: a rebuild never touches it |
 | `ledger_meta` | authority | head sequence, head digest and event count, one set per stream; plus this file's own identity: `instance_id`, `restore_id`, `restore_epoch` |
 | `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable) |
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
@@ -186,12 +187,69 @@ an authority on that question. And `source_head_sha256` is verified **at**
 coincide while a watermark is level, which is exactly why the weaker check would
 look correct until the first time it mattered.
 
-**The account stream carries no certified watermark.** `account_events` has no
-hash chain of its own — migration 5 gives it neither `previous_sha256` nor
-`event_sha256` — so there is nothing to verify a source digest against.
-`appendAccountAction` therefore publishes no watermark, and a row claiming that
-stream is refused by `verifyIntegrity()` rather than believed. Its integrity is a
-later packet's.
+**The account stream carries no certified watermark, and the reason has moved.**
+It was excluded because it had no hash chain to verify a source digest against;
+P-08 gave it one, in the sidecar below. What keeps it excluded now is the other
+half of the pair: a watermark row is `(projection, stream)`, and no projection of
+accounts exists. Inventing one to fill a row would be a read model built to
+satisfy a table rather than to answer a question. The pair is seeded by the first
+packet that creates an account read model; until then nothing is blocked, because
+nothing consumes an account watermark — `listAccountActions` reads the stream
+directly. A row claiming that stream today is still refused by
+`verifyIntegrity()` rather than believed.
+
+## The account stream's hash chain
+
+`account_events` shipped in migration 5 with no `previous_sha256` and no
+`event_sha256`, and an applied migration is never rewritten. The chain therefore
+arrives **beside** the stream rather than inside it: `account_event_integrity`,
+one row per row of the stream, keyed by and foreign-keyed to its sequence,
+starting at sequence 1.
+
+**What it proves, and what it does not.** It covers the historical bytes `1..H`
+exactly as they stood when it was activated, and detects any change made after
+that. It does **not** prove those rows were authentic *before* that moment —
+nobody hashed them when they were written, so an earlier change is not excluded.
+Those are two different facts, and no text in this system may present them as
+one.
+
+The digest of each link is SHA-256 over the versioned preimage of the data
+contract's §8.1: a type-and-length encoding over the stored values, in a closed
+field order, with `event_json` entering as complete TEXT. It is **not** canonical
+JSON and must never be confused with it — canonical JSON rewrites a value into a
+canonical form, and this hashes what is on disk unchanged. The encoding lives in
+its own module and is pinned by fixed vectors, because a mistake in it would
+produce a chain that is internally consistent and wrong over history that cannot
+be rehashed.
+
+**Activation happens once, inside migration 10's own transaction**: the duplicate
+preflight, then the DDL, then the retroactive load of every historical row, then
+the five activation keys, then the migration row. All of it or none of it. `H` is
+therefore fixed at the first **writable** open of a build that knows the sidecar —
+literally true for a new file and the closest honest statement for one that
+already exists. A read-only handle cannot activate and refuses a pending
+migration, so there is no readable ledger in a "migrated but not activated"
+state.
+
+The **baseline** pair records where the retroactive coverage was taken and never
+moves again; the **head** pair follows the chain as the stream grows. They are
+equal at activation and diverge afterwards, which is why there are two.
+
+**A duplicate is named, never repaired.** Before the sidecar's DDL, the migration
+counts rows sharing an `(account_id, version)` and fails naming them. It does not
+deduplicate: two rows claiming one version of one account are two claims about
+what an operator did, and choosing between them is an owner's decision recorded
+in the decisions register. In practice the count is expected to be zero, and not
+by luck — the account contract derives the idempotency key from those two fields
+and `UNIQUE(idempotency_key)` has been in the schema since migration 5, so a
+duplicate would have had to arrive past the door. Migration 10 adds the
+constraint the base was missing.
+
+**On corruption the segment is preserved.** `verifyIntegrity()` reports a link
+that does not verify, a baseline that no longer names its row, coverage that
+stops short of the stream, or an activation partly or wholly missing. It repairs
+nothing, re-anchors nothing and moves the coverage point nowhere: repair is an
+explicit, recorded decision outside the migration flow.
 
 ### The projection with two heads
 

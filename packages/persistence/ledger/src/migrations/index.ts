@@ -983,6 +983,81 @@ SELECT
   '1970-01-01T00:00:00.000Z';
 `,
   },
+  {
+    version: 10,
+    name: "account_event_integrity",
+    sql: `
+-- A hash chain for the account stream, beside it rather than inside it.
+--
+-- \`account_events\` shipped in migration 5 with no \`previous_sha256\` and no
+-- \`event_sha256\`, and an applied migration is never rewritten, so the chain
+-- cannot be added to the stream. It arrives as a sidecar: one row per row of
+-- the stream, from sequence 1, keyed by and foreign-keyed to it.
+--
+-- **What this proves and what it does not.** The sidecar covers the historical
+-- bytes 1..H exactly as they stood when it was activated, and detects any
+-- change after that. It does NOT prove those rows were authentic before that
+-- moment: nobody hashed them when they were written, so a change made earlier
+-- is not excluded. Those are two different facts and no text in this system
+-- may present them as one.
+--
+-- The FK is \`ON DELETE RESTRICT\` rather than \`CASCADE\` on purpose. The two
+-- tables are one reconstruction cohort — they live and die together in the
+-- same physical file — and a cascade would let a delete on the stream silently
+-- take the evidence with it. The stream has no delete path at all, so the
+-- restriction is belt and braces over a trigger that already refuses.
+CREATE TABLE account_event_integrity (
+  account_sequence INTEGER NOT NULL,
+  previous_sha256  TEXT    NOT NULL,
+  event_sha256     TEXT    NOT NULL,
+  computed_at      TEXT    NOT NULL,
+  CONSTRAINT pk_account_event_integrity PRIMARY KEY (account_sequence),
+  CONSTRAINT fk_account_event_integrity__account_events
+    FOREIGN KEY (account_sequence) REFERENCES account_events (sequence)
+    ON DELETE RESTRICT,
+  CONSTRAINT ck_account_event_integrity__account_sequence CHECK (account_sequence >= 1),
+  CONSTRAINT ck_account_event_integrity__previous_sha256 CHECK (
+    length(previous_sha256) = 64 AND previous_sha256 NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT ck_account_event_integrity__event_sha256 CHECK (
+    length(event_sha256) = 64 AND event_sha256 NOT GLOB '*[^0-9a-f]*'
+  )
+) STRICT;
+
+CREATE UNIQUE INDEX ux_account_event_integrity__event_sha256
+  ON account_event_integrity (event_sha256);
+
+-- The sidecar is append-only like a stream, though it is not one of the four
+-- business streams. Evidence that could be updated in place is not evidence.
+-- Named by the §3.2 convention, which governs from migration 7 onward; the
+-- legacy \`<table>_deny_*\` names of migrations 1, 4 and 5 are frozen inside
+-- applied migrations and are not inherited by a table created after them.
+CREATE TRIGGER tr_account_event_integrity__deny_update
+BEFORE UPDATE ON account_event_integrity
+BEGIN
+  SELECT RAISE(ABORT, 'account_event_integrity is append-only: UPDATE is denied');
+END;
+
+CREATE TRIGGER tr_account_event_integrity__deny_delete
+BEFORE DELETE ON account_event_integrity
+BEGIN
+  SELECT RAISE(ABORT, 'account_event_integrity is append-only: DELETE is denied');
+END;
+
+-- The uniqueness migration 5 did not impose.
+--
+-- \`account_events_by_account\` is an ordinary index, so two rows could share an
+-- (account_id, version) as long as their idempotency keys differed. In practice
+-- the contract derives the key FROM those two fields, so the existing
+-- \`UNIQUE(idempotency_key)\` has been refusing the duplicate all along — but
+-- through a derivation at the door rather than through a constraint in the
+-- base, and a rule nobody can see in the schema is a rule a raw writer does not
+-- meet. The preflight that precedes this statement counts existing violations
+-- and names them rather than letting this CREATE fail with a count.
+CREATE UNIQUE INDEX ux_account_events__account_id__version
+  ON account_events (account_id, version);
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -1041,6 +1116,19 @@ export const INITIATIVE_STREAM = "initiative_events";
 /** The registry stream's table name, in the same vocabulary (P-09/log-C). */
 export const REGISTRY_STREAM = "registry_events";
 
+/** The account stream's table name, in the same vocabulary. */
+export const ACCOUNT_STREAM = "account_events";
+
+/**
+ * The migration that creates the account integrity sidecar (P-08/A2).
+ *
+ * Named rather than written as a literal at the two sites that need it, because
+ * those two sites are a preflight and a retroactive load that must run for this
+ * migration and no other, and a bare `10` at either would be a number nobody
+ * could search for.
+ */
+export const ACCOUNT_INTEGRITY_MIGRATION = 10;
+
 /**
  * The one projection this build folds from more than one stream.
  *
@@ -1076,12 +1164,17 @@ export interface ProjectionSource {
  * stream, or lost one, would show up as a disagreement rather than as a
  * silently regenerated set.
  *
- * `account_events` is deliberately absent (P-09 adjudication D3): that stream
- * has no hash chain of its own — migration 5 gives it neither
- * `previous_sha256` nor `event_sha256` — so there is nothing to verify a
- * `source_head_sha256` against, and a watermark nobody can check is worse than
- * no watermark at all. Its integrity is P-08's, and until it exists this build
- * publishes no certified watermark for that stream.
+ * `account_events` is deliberately absent, and the reason has moved (P-09
+ * adjudication D3, reconciled by P-08 U3). D3 excluded it because the stream
+ * had no chain to verify a `source_head_sha256` against; P-08 gave it one, in
+ * the `account_event_integrity` sidecar, so that reason is spent.
+ *
+ * What keeps it absent now is the other half of the pair: a watermark row is
+ * `(projection, stream)`, and **no projection of accounts exists**. Inventing
+ * one to fill a row would be a read model built to satisfy a table rather than
+ * to answer a question. The pair is seeded by the first packet that creates an
+ * account read model; until then nothing is blocked, because nothing consumes
+ * an account watermark — `listAccountActions` reads the stream directly.
  *
  * The last two rows are one projection, twice (P-09/log-C). That is what the
  * composite key was built for: `routing_assignment_read_model` folds
@@ -1211,6 +1304,18 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "ux_routing_assignment_read_model__scoped" },
   { type: "index", name: "ix_routing_assignment_read_model__resolution" },
   { type: "table", name: "routing_assignment_fallback" },
+  // P-08/A2. The account stream's hash chain, beside the stream because
+  // migration 5 is applied and cannot gain a column. Inventoried for the
+  // reason the append-only triggers are: dropping one leaves
+  // `schema_migrations` intact and no other check would notice. The unique
+  // index is here too — it is the constraint migration 5 did not impose, and
+  // its absence would be invisible while the door kept refusing duplicates
+  // through a derivation the base cannot see.
+  { type: "table", name: "account_event_integrity" },
+  { type: "index", name: "ux_account_event_integrity__event_sha256" },
+  { type: "trigger", name: "tr_account_event_integrity__deny_update" },
+  { type: "trigger", name: "tr_account_event_integrity__deny_delete" },
+  { type: "index", name: "ux_account_events__account_id__version" },
 ];
 
 export interface MigrationConformance {
@@ -1323,16 +1428,41 @@ export function checkMigrationConformance(
  * Apply pending migrations and record them. The caller supplies the
  * transaction, so a failure halfway through leaves no partial schema.
  */
+export interface MigrationHooks {
+  /**
+   * Runs immediately before one migration's SQL, inside the same transaction.
+   *
+   * For a check that must see the schema as it was: P-08's duplicate preflight
+   * counts violations of a uniqueness the migration is about to impose, and has
+   * to do so before the `CREATE UNIQUE INDEX` turns the count into an opaque
+   * constraint failure.
+   */
+  readonly beforeSql?: ((migration: Migration) => void) | undefined;
+  /**
+   * Runs immediately after one migration's SQL and before its row is recorded,
+   * inside the same transaction.
+   *
+   * For work the SQL cannot do itself. P-08's retroactive hash load is the
+   * case: SQLite has no SHA-256 here, so the migration creates the sidecar and
+   * the code fills it — in this transaction, so a half-activated ledger is not
+   * a state anything can observe.
+   */
+  readonly afterSql?: ((migration: Migration) => void) | undefined;
+}
+
 export function applyMigrations(
   db: Database.Database,
   pending: readonly Migration[],
   appliedAt: string,
+  hooks: MigrationHooks = {},
 ): void {
   const insert = db.prepare(
     "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES (?, ?, ?, ?)",
   );
   for (const migration of pending) {
+    hooks.beforeSql?.(migration);
     db.exec(migration.sql);
+    hooks.afterSql?.(migration);
     insert.run(migration.version, migration.name, migration.sha256, appliedAt);
   }
 }
