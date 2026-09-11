@@ -784,11 +784,19 @@ describe("the tool-call read agrees three ways (V2-B4b stage 3E)", () => {
 });
 
 /** A minimal stdio MCP server this suite owns, logging its own pid. */
-function writeToolServerScript(dir: string, pidLog: string, leak = false): string {
+function writeToolServerScript(
+  dir: string,
+  pidLog: string,
+  options: { readonly leak?: boolean; readonly errorResult?: boolean } = {},
+): string {
   const path = join(dir, "fake-mcp.mjs");
+  const leak = options.leak ?? false;
+  const errorResult = options.errorResult ?? false;
   const answer = leak
     ? "'sk-ant-api03-' + 'A'.repeat(32)"
-    : "'the answer'";
+    : errorResult
+      ? "'the tool failed'"
+      : "'the answer'";
   writeFileSync(
     path,
     [
@@ -822,7 +830,7 @@ function writeToolServerScript(dir: string, pidLog: string, leak = false): strin
       "  }",
       "  if (method === 'tools/call') {",
       "    send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: " + answer + " }],",
-      "      isError: false } });",
+      "      isError: " + JSON.stringify(errorResult) + " } });",
       "  }",
       "}",
     ].join("\n"),
@@ -840,7 +848,9 @@ interface DoorFixture {
 }
 
 /** The operator documents both doors read, written once and shared by both. */
-function doorFixture(options: { readonly leak?: boolean } = {}): DoorFixture {
+function doorFixture(
+  options: { readonly leak?: boolean; readonly errorResult?: boolean } = {},
+): DoorFixture {
   const dir = temporaryDirectory();
   const pidLog = join(dir, "pids.log");
   writeFileSync(pidLog, "", "utf8");
@@ -849,7 +859,7 @@ function doorFixture(options: { readonly leak?: boolean } = {}): DoorFixture {
   writeFileSync(bearerPath, TOOL_BEARER + "\n", "utf8");
   chmodSync(bearerPath, 0o600);
 
-  const script = writeToolServerScript(dir, pidLog, options.leak ?? false);
+  const script = writeToolServerScript(dir, pidLog, options);
   const toolServersPath = join(dir, "tool-servers.json");
   writeFileSync(
     toolServersPath,
@@ -1165,6 +1175,31 @@ describe("the doors refuse alike, and neither records the argument (V2-B4b stage
     expect(api["content"]).toEqual([]);
     expect(cli["content"]).toEqual([]);
     expect(rowCount(cliLedger)).toBe(1);
+  });
+
+  it("records a server-marked tool error alike at both doors, as a refusal with a row (P-11)", async () => {
+    // N-7: the acceptance §4.3 demands — driven through both real doors, not a
+    // fixture. The well-formed frame answered in time is the server's way of
+    // saying the tool failed, and both doors record that as the same REFUSED
+    // outcome: HTTP 200 and exit 0 are the two spellings of "it became an
+    // operation", and the row is durable at both.
+    const fixture = doorFixture({ errorResult: true });
+    const request = toolRequest();
+    const api = await apiDoor(seedForExecution(), fixture, request);
+    const cliLedger = seedForExecution();
+    const cli = await cliDoor(cliLedger, fixture, request, "marked-error.json");
+
+    expect(api["outcome"]).toBe("REFUSED");
+    expect(api["refusal"]).toBe("RESULT_IS_ERROR");
+    expect(cli).toEqual(api);
+    expect(cli["at"]).toBe(api["at"]);
+    expect(api["at"]).toBe("server.result");
+    expect(api["content"]).toEqual([]);
+    expect(cli["content"]).toEqual([]);
+    expect(rowCount(cliLedger)).toBe(1);
+    // N-9 at the doors: the error text reaches neither document nor ledger.
+    expect(JSON.stringify(cli)).not.toContain("the tool failed");
+    expect(JSON.stringify(api)).not.toContain("the tool failed");
   });
 
   it("refuses the same malformed tool documents at both doors", async () => {

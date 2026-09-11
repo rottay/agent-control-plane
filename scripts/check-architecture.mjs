@@ -8621,6 +8621,63 @@ const CORR1_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-11 — a tool error is never a success, whatever the transport said.
+ *
+ * Closes the defect the external audit's N07 named at the coordinates it
+ * cited: the client never read `isError`, and the port converted the result
+ * into `ok: true`, so a server reporting its own tool's failure was recorded
+ * as `COMPLETED`. The client — the single parse site, covering both
+ * transports — now refuses a marked-error result as `RESULT_IS_ERROR`, the
+ * tenth member of `TOOL_REFUSALS`; the receipt stays `REFUSED` with that
+ * reason, and there is no third outcome word (ADR 0069, option B of the DT
+ * adjudication: `FAILED` belongs to `effect_outcome_status`, which is P-07).
+ * The error content is discarded whole (N-9), declared as a limit in the
+ * README; `refuse()` records the real byte and block counts whenever a
+ * result was in hand, zero only where none existed (W3); the CLI exit code
+ * does not change — a registered refusal is a successful CLI operation,
+ * pinned as an explicit negative at both doors.
+ *
+ * No runtime, protocol, schema, receipt or door source moves: the refusal
+ * crosses the ledger and both doors by grammar, which the new door drills
+ * prove. `MCP_PROTOCOL_RECORD.IS_ERROR_RESULT` leaves `"UNHANDLED"`, and the
+ * README's false general claim ("each field has a drill behind it") is
+ * weakened to the truth and held there by the new law L-B4B-17, which pins
+ * record↔README concordance field by field.
+ *
+ * **Pins that move.** `TOOL_REFUSALS` 9 → 10 (order re-verified: the new
+ * word sorts between `PROTOCOL_VIOLATION` and `RESULT_UNBOUNDED`);
+ * `PATH_SCOPED_LAWS` gains one row for L-B4B-17; the ADR corpus 68 → 69. The
+ * write set gains **1 distinct path**: the ADR. The other thirteen are
+ * admitted by historical blocks — the tool edge's sources, suites and README
+ * by the V2-B4b blocks and their successors, the three door suites by the
+ * stage-3 blocks, and `docs/architecture/index.md` by every packet that ever
+ * landed a record.
+ *
+ * **Pins that do not.** `CONTROL_PLANE_EVENT_TYPES` (24), every contract
+ * version, `TOOLS_RECEIPT_SHAPE` (ten members, unchanged — the counts were
+ * already members), `TOOL_TRANSPORT_KINDS`, the wire schemas, the runtime
+ * recorder's coherence rules, `isCoherent`, `src/receipt/index.ts` and
+ * `src/operation/index.ts`. `docs/audit/` is untouched: re-scoring N07/SEG-7
+ * is the DT's act after the receipt.
+ */
+const P11_WRITE_SET = [
+  "packages/edges/tools/src/client/index.ts",
+  "packages/edges/tools/src/port/index.ts",
+  "packages/edges/tools/src/contract/index.ts",
+  "packages/edges/tools/README.md",
+  "packages/edges/tools/test/testing/index.ts",
+  "packages/edges/tools/test/client/index.test.ts",
+  "packages/edges/tools/test/port/index.test.ts",
+  "packages/edges/tools/test/contract/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "docs/architecture/0069-a-tool-error-is-never-a-success-whatever-the-transport-said.md",
+  "docs/architecture/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -8820,6 +8877,7 @@ const WRITE_SET = [
   ...P05A_WRITE_SET,
   ...P05B_WRITE_SET,
   ...CORR1_WRITE_SET,
+  ...P11_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -9790,6 +9848,17 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the protocol record and the tools README cannot disagree",
+    scope: "the tool edge's contract site and README",
+  },
+  // P-11 (L-B4B-17). One new path-shaped surface, so one new row: the register
+  // and the `requireScope` call sites both move 117 -> 118, and
+  // `assertPathScopedInventory` fails printing both numbers if only one side
+  // of this edit lands. L-B4B-16 kept the record and the README from
+  // contradicting each other over the claims they both named; this law closes
+  // the hole that left — a field neither side mentions, or a claim no field
+  // backs, by comparing the two field by field.
+  {
+    law: "the capability record and the README agree field by field",
     scope: "the tool edge's contract site and README",
   },
   // V2 concurrency C1. Three new path-shaped surfaces, so three new rows: the
@@ -21328,6 +21397,93 @@ if (tracked.status === 0) {
   }
   requireScope("the protocol record and the tools README cannot disagree", recordScanned);
   notes.push("the tool edge's protocol record and its README agree on what was cited, exercised and claimed");
+}
+
+// L-B4B-17 -- the capability record and the README agree field by field.
+//
+// The defect this closes: L-B4B-16 compares the record and the README only
+// over the claims both sides happen to name — the citation gate and the two
+// NONE fields — and forbids empty values. It cannot see a field neither side
+// mentions, and it cannot see the README claiming a drill the record's field
+// does not have. P-11 found both holes live: `IS_ERROR_RESULT` read
+// "UNHANDLED" beside a README that said "isError is not interpreted", and the
+// README's closing sentence — "each [field] has a field in the record and a
+// drill behind it" — was false for every one of the six unimplemented
+// facilities, not only this one.
+//
+// So the concordance is made per field, in both directions: every key the
+// record declares must have a row in the table below, and every row's marker
+// must actually appear in the README. A record key with no row, or a row
+// whose key the record no longer declares, fails the fence — the table is
+// the single place a new field earns its prose, and prose that drifts from
+// its marker goes red the same run.
+{
+  let fieldsScanned = 0;
+  const contractForFields = readIfPresent(TOOLS_CONTRACT_SITE);
+  const toolsReadmeFields = readIfPresent("packages/edges/tools/README.md");
+  if (contractForFields === null || toolsReadmeFields === null) {
+    fail("the tool edge's contract site or README is missing; the field-by-field record concordance cannot be checked");
+  } else {
+    fieldsScanned += 2;
+    const code = stripComments(contractForFields);
+    const start = code.indexOf("MCP_PROTOCOL_RECORD");
+    const record = start < 0 ? "" : code.slice(start, code.indexOf("} as const);", start));
+    if (record === "") {
+      fail(TOOLS_CONTRACT_SITE + " no longer declares MCP_PROTOCOL_RECORD");
+    } else {
+      // The field-by-field concordance table: record key <-> the marker its
+      // claim must carry in the README. Both directions are asserted: a
+      // record key absent from this table, or a table row whose key the
+      // record does not declare, is a drift the fence exists to catch.
+      const RECORD_README_FIELDS = [
+        ["REVISION", "records the revision the client speaks"],
+        ["TRANSPORT", "Streamable HTTP"],
+        ["SPEC_MANIFEST_DIGEST", "cited, not vendored"],
+        ["SPEC_CITATION", "retrieval date"],
+        ["LIVE_CONFORMANCE", "third-party"],
+        ["SOCKET_EXERCISED", "socket"],
+        ["VERSION_NEGOTIATION", "different revision"],
+        ["SESSION_HEADER", "mcp-session-id"],
+        ["SERVER_INITIATED_STREAM", "server-initiated stream"],
+        ["RESUMPTION", "resumption"],
+        ["BATCHING", "batching"],
+        ["ORIGIN_HEADER", "origin"],
+        ["REDIRECTS", "redirects"],
+        ["LIST_PAGINATION", "nextCursor"],
+        ["IS_ERROR_RESULT", "isError"],
+        ["CONTENT_BLOCKS", "content blocks"],
+      ];
+      const declaredKeys = new Set(
+        [...record.matchAll(/^\s{2}([A-Z][A-Z0-9_]*):/gm)].map((match) => match[1]),
+      );
+      const tableKeys = new Set(RECORD_README_FIELDS.map(([key]) => key));
+      for (const key of declaredKeys) {
+        if (!tableKeys.has(key)) {
+          fail(
+            "MCP_PROTOCOL_RECORD." + key + " has no row in L-B4B-17's concordance table;" +
+              " the record and the README must agree field by field, and a new key earns its" +
+              " README prose in this table rather than silently joining the record",
+          );
+        }
+      }
+      for (const [key, marker] of RECORD_README_FIELDS) {
+        if (!declaredKeys.has(key)) {
+          fail(
+            "L-B4B-17's concordance table names MCP_PROTOCOL_RECORD." + key + ", which the" +
+              " record no longer declares; the table and the record must agree field by field",
+          );
+        } else if (!toolsReadmeFields.includes(marker)) {
+          fail(
+            "packages/edges/tools/README.md does not carry the claim for MCP_PROTOCOL_RECORD." +
+              key + ' (missing marker "' + marker + '"); the record and the README must agree' +
+              " field by field, and a field nobody explains is the drift this law exists to catch",
+          );
+        }
+      }
+    }
+  }
+  requireScope("the capability record and the README agree field by field", fieldsScanned);
+  notes.push("the tool edge's capability record and its README agree field by field, both directions");
 }
 
 // The closed barrel, pinned by equality in both directions.

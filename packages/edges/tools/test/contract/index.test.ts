@@ -38,7 +38,30 @@ describe("the tool vocabulary is closed and honest", () => {
   it("keeps the refusals sorted, distinct and non-empty", () => {
     expect([...TOOL_REFUSALS]).toEqual([...TOOL_REFUSALS].slice().sort());
     expect(new Set(TOOL_REFUSALS).size).toBe(TOOL_REFUSALS.length);
-    expect(TOOL_REFUSALS.length).toBe(9);
+    expect(TOOL_REFUSALS.length).toBe(10);
+  });
+
+  it("pins the refusal vocabulary exactly, in order (P-11)", () => {
+    // P-11 widens the union by one member, and the map's warning is written
+    // down rather than left for someone to rediscover: a RESULT_* word sorts
+    // into the middle of the list, between PROTOCOL_VIOLATION and
+    // RESULT_UNBOUNDED — not to the tail, where an append-only edit would
+    // have put it and where the sortedness assertion would have caught it.
+    expect([...TOOL_REFUSALS]).toEqual([
+      "ARGUMENTS_UNBOUNDED",
+      "IDENTITY_FORBIDS_WRITE",
+      "PROTOCOL_VIOLATION",
+      "RESULT_IS_ERROR",
+      "RESULT_UNBOUNDED",
+      "RESULT_UNSAFE",
+      "SERVER_NOT_ADMITTED",
+      "SESSION_NOT_LIVE",
+      "TOOL_NOT_ALLOWED",
+      "TRANSPORT_REFUSED",
+    ]);
+    // No third outcome word: the receipt still has two, and a marked-error
+    // result refuses as REFUSED with this reason (ADR 0069).
+    expect([...TOOL_REFUSALS]).not.toContain("FAILED");
   });
 
   it("keeps the environment allowlist at three variables", () => {
@@ -178,5 +201,13 @@ describe("the loopback leg's vocabulary and its capability record (V2-B4b S4-1)"
     expect(MCP_PROTOCOL_RECORD.LIVE_CONFORMANCE).toBe("NONE");
     expect(MCP_PROTOCOL_RECORD.SOCKET_EXERCISED).toBe("NONE");
     expect(MCP_PROTOCOL_RECORD.REVISION).toBe(TOOL_MCP_PROTOCOL_VERSION);
+  });
+
+  it("names the marked-error result as a refusal, not as unhandled (P-11)", () => {
+    // The value the audit's N07 finding read — "UNHANDLED" — was the
+    // confession that isError was never read. It is read now, and the record
+    // names the refusal word the README and the drills stand behind.
+    expect(MCP_PROTOCOL_RECORD.IS_ERROR_RESULT).toContain("RESULT_IS_ERROR");
+    expect(MCP_PROTOCOL_RECORD.IS_ERROR_RESULT).not.toBe("UNHANDLED");
   });
 });

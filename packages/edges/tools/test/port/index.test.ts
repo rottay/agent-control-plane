@@ -33,6 +33,8 @@ const ALLOWLIST = [
   { name: "docs.leak", writes: false },
   { name: "docs.silent", writes: false },
   { name: "docs.malformed", writes: false },
+  { name: "docs.error", writes: false },
+  { name: "docs.rpcerror", writes: false },
 ];
 
 /**
@@ -85,6 +87,8 @@ beforeEach(() => {
       "docs.leak": { kind: "TEXT", blocks: [LEAKED] },
       "docs.silent": { kind: "SILENT" },
       "docs.malformed": { kind: "MALFORMED" },
+      "docs.error": { kind: "ERROR_RESULT", blocks: ["the tool failed"] },
+      "docs.rpcerror": { kind: "ERROR" },
     },
   });
   const admitted = admitToolServer({
@@ -280,6 +284,10 @@ describe("the refusals fire in order, and upstream of the wire where they can", 
     expect(JSON.stringify(outcome)).not.toContain(LEAKED);
     expect(JSON.stringify(outcome)).not.toContain("sk-ant-api03-");
     expect(JSON.stringify(outcome)).not.toContain("A".repeat(16));
+    // P-11 (W3): a result arrived and was declined — the receipt records its
+    // real counts. Zero would be a false number in a durable row.
+    expect(outcome.receipt.resultBytes).toBeGreaterThan(0);
+    expect(outcome.receipt.contentBlocks).toBe(1);
   });
 
   it("refuses a malformed frame and reaps the connection with it", async () => {
@@ -308,6 +316,60 @@ describe("the refusals fire in order, and upstream of the wire where they can", 
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect({ refusal: outcome.refusal, at: outcome.at }).toEqual({
+      refusal: "PROTOCOL_VIOLATION",
+      at: "server.response",
+    });
+  });
+});
+
+describe("a result the server marks as an error is a refusal, never a success (P-11)", () => {
+  it("refuses with RESULT_IS_ERROR, no content, and the counts that arrived", async () => {
+    // N-1/N-2: the frame is well-formed, the transport answers in time and the
+    // child exits zero — and the outcome is still not ok. A tool error is
+    // never a success, whatever the transport said.
+    const outcome = await call({ toolName: "docs.error" });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect({ refusal: outcome.refusal, at: outcome.at }).toEqual({
+      refusal: "RESULT_IS_ERROR",
+      at: "server.result",
+    });
+    // N-9: the error content is discarded whole. The refused arm carries no
+    // content member, and the error text appears nowhere in the outcome —
+    // a partially filtered result is one the caller cannot tell from a whole
+    // one, which is the same law RESULT_UNSAFE holds.
+    expect(Object.hasOwn(outcome, "content")).toBe(false);
+    expect(JSON.stringify(outcome)).not.toContain("the tool failed");
+    // N-3: the receipt is a durable-row-worthy fact — outcome, a legible
+    // reason, and the real counts of the result that arrived (W3). A zero
+    // here would be a false number in a durable row.
+    expect(outcome.receipt.outcome).toBe("REFUSED");
+    expect(outcome.receipt.refusal).toBe("RESULT_IS_ERROR");
+    expect(outcome.receipt.resultBytes).toBeGreaterThan(0);
+    expect(outcome.receipt.contentBlocks).toBe(1);
+    // P-2, asserted where the outcome is born rather than assumed: the arm,
+    // the receipt's outcome and the receipt's reason are one coherent fact.
+    expect(outcome.receipt.refusal).toBe(outcome.refusal);
+    // The server spoke the protocol, so — unlike a transport refusal — the
+    // connection survives the refusal and the child is reaped by closeAll.
+    expect(await port.closeAll()).toEqual(["task-1/1/acct-1/docs"]);
+  });
+
+  it("keeps a transport error and a marked-error result as two distinguishable facts (N-4)", async () => {
+    // 4.2-c made checkable: a JSON-RPC error is a fact about the transport; an
+    // isError result is a fact about the operation. A packet that flattened
+    // the two would close N07 and break the three-facts law in the same
+    // commit.
+    const marked = await call({ toolName: "docs.error" });
+    const transport = await call({ toolName: "docs.rpcerror" });
+    expect(marked.ok).toBe(false);
+    expect(transport.ok).toBe(false);
+    if (marked.ok || transport.ok) return;
+    expect({ refusal: marked.refusal, at: marked.at }).toEqual({
+      refusal: "RESULT_IS_ERROR",
+      at: "server.result",
+    });
+    expect({ refusal: transport.refusal, at: transport.at }).toEqual({
       refusal: "PROTOCOL_VIOLATION",
       at: "server.response",
     });
@@ -495,6 +557,31 @@ describe("both transports obey one set of rules (V2-B4b S4-1)", () => {
     });
   }
 
+  /** A peer whose every call answer is a well-formed result marked isError. */
+  function answerEveryCallWithMarkedError(): void {
+    let id = 0;
+    scripted = scriptFetch((body: string) => {
+      id += 1;
+      const parsed = JSON.parse(body) as { method?: string; id?: number };
+      if (parsed.method === "initialize") {
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: initializeBody(parsed.id ?? id),
+        };
+      }
+      if (parsed.method === "notifications/initialized") return { status: 202 };
+      return {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: jsonRpcBody(parsed.id ?? id, {
+          content: [{ type: "text", text: "the tool failed" }],
+          isError: true,
+        }),
+      };
+    });
+  }
+
   function loopbackPort(): ToolProtocolPort {
     return createToolProtocolPort({
       servers: [loopbackServer()],
@@ -639,6 +726,43 @@ describe("both transports obey one set of rules (V2-B4b S4-1)", () => {
       expect(Object.keys(outcome.receipt)).toHaveLength(10);
       // No child was started for this leg: there is no process to reap.
       expect(childPids()).toEqual([]);
+    } finally {
+      await loopback.closeAll();
+    }
+  });
+
+  it("refuses a server-marked error identically on both legs (P-11)", async () => {
+    // N-8: the parse site is one, so parity is a fact to pin, not a hope. The
+    // stdio fake and the scripted peer answer the same marked-error result,
+    // byte for byte in the result body.
+    answerEveryCallWithMarkedError();
+    const loopback = loopbackPort();
+    try {
+      const overHttp = await loopback.callTool({
+        sessionId: SESSION,
+        serverId: "docs",
+        toolName: "docs.error",
+        identity: IMPLEMENTER,
+        arguments: {},
+      });
+      const overStdio = await call({ toolName: "docs.error" });
+
+      expect(overHttp.ok).toBe(false);
+      expect(overStdio.ok).toBe(false);
+      if (overHttp.ok || overStdio.ok) return;
+      expect({ refusal: overHttp.refusal, at: overHttp.at }).toEqual({
+        refusal: overStdio.refusal,
+        at: overStdio.at,
+      });
+      expect(overHttp.refusal).toBe("RESULT_IS_ERROR");
+      // The only permitted difference, as everywhere in this table: the
+      // receipt's transport coordinate. Even the counts agree, because the
+      // result body is the same over both legs.
+      expect(overHttp.receipt.transport).toBe("HTTP_LOOPBACK");
+      expect(overStdio.receipt.transport).toBe("STDIO");
+      expect(overHttp.receipt.resultBytes).toBe(overStdio.receipt.resultBytes);
+      expect(overHttp.receipt.contentBlocks).toBe(1);
+      expect(overStdio.receipt.contentBlocks).toBe(1);
     } finally {
       await loopback.closeAll();
     }

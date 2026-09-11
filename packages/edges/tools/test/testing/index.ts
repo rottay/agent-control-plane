@@ -39,6 +39,12 @@ export type FakeToolAnswer =
   | { readonly kind: "IMAGE" }
   /** A JSON-RPC error object rather than a result. */
   | { readonly kind: "ERROR" }
+  /**
+   * A well-formed JSON-RPC **result** the server marks `isError: true` (P-11).
+   * The transport fact, not the transport error: the frame succeeds and the
+   * result itself reports the tool's failure. The twin of `ERROR`.
+   */
+  | { readonly kind: "ERROR_RESULT"; readonly blocks?: readonly string[] }
   /** A line that is not JSON at all. */
   | { readonly kind: "MALFORMED" }
   /** A well-formed response correlated to a request nobody sent. */
@@ -157,6 +163,11 @@ export function writeFakeToolServer(
     "      case 'MALFORMED': process.stdout.write('{ this is not json\\n'); return;",
     "      case 'UNKNOWN_ID': send({ jsonrpc: '2.0', id: 99999, result: { content: [] } }); return;",
     "      case 'ERROR': send({ jsonrpc: '2.0', id, error: { code: -32000, message: 'refused by the server' } }); return;",
+    "      case 'ERROR_RESULT': {",
+    "        const texts = answer.blocks === undefined ? ['the tool failed'] : answer.blocks;",
+    "        reply(id, { content: texts.map((text) => ({ type: 'text', text })), isError: true });",
+    "        return;",
+    "      }",
     "      case 'IMAGE': reply(id, { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] }); return;",
     "      case 'ENV': reply(id, { content: [{ type: 'text', text: Object.keys(process.env).sort().join(',') }] }); return;",
     "      case 'OVERSIZED_FRAME': process.stdout.write('x'.repeat(answer.bytes) + '\\n'); return;",

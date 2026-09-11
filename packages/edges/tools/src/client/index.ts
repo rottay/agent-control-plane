@@ -50,7 +50,17 @@ export interface ToolTransportConnection {
 
 export type ToolClientOutcome<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly refusal: ToolRefusal; readonly at: string };
+  | {
+      readonly ok: false;
+      readonly refusal: ToolRefusal;
+      readonly at: string;
+      /**
+       * The counts of a result that arrived and was then declined (P-11).
+       * Absent where no result was in hand — a transport refusal records
+       * zero, because zero is the truth there.
+       */
+      readonly result?: { readonly resultBytes: number; readonly contentBlocks: number };
+    };
 
 /** One bounded `tools/call` answer. */
 export interface ToolCallResult {
@@ -73,8 +83,12 @@ export interface ToolClient {
 const AT_RESPONSE = "server.response";
 const AT_RESULT = "server.result";
 
-function refused<T>(refusal: ToolRefusal, at: string): ToolClientOutcome<T> {
-  return { ok: false, refusal, at };
+function refused<T>(
+  refusal: ToolRefusal,
+  at: string,
+  result?: { readonly resultBytes: number; readonly contentBlocks: number },
+): ToolClientOutcome<T> {
+  return result === undefined ? { ok: false, refusal, at } : { ok: false, refusal, at, result };
 }
 
 interface Pending {
@@ -259,15 +273,42 @@ export function createToolClient(connection: ToolTransportConnection): ToolClien
       const resultBytes = typeof serialized === "string" ? toolFrameBytes(serialized) : 0;
       // Refused, not truncated. A silently shortened tool result is a wrong
       // answer wearing a right answer's shape, and no caller can tell.
-      if (resultBytes > TOOL_RESULT_BYTES_MAX) return refused("RESULT_UNBOUNDED", AT_RESULT);
+      // P-11 (W3): a refusal whose receipt recorded zero after a result was
+      // already in hand would be a false number in a durable row, so the
+      // counts travel with every decline that had a result. The block count
+      // is the array's own length, known without parsing a single block.
+      const rawBlocks: unknown = (result as Record<string, unknown>)["content"];
+      const received = {
+        resultBytes,
+        contentBlocks: Array.isArray(rawBlocks) ? rawBlocks.length : 0,
+      } as const;
+      if (resultBytes > TOOL_RESULT_BYTES_MAX) return refused("RESULT_UNBOUNDED", AT_RESULT, received);
 
-      const blocks = (result as Record<string, unknown>)["content"];
-      if (!Array.isArray(blocks)) return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
+      // P-11 (W1/N-5/N-6): a result the server marks `isError` is the server
+      // reporting that the tool failed, and a failed tool is never carried as
+      // a success — whatever the transport said. Absence and the literal
+      // `false` complete; any other value is a malformed flag and fails
+      // closed, because nothing here may coerce into success by default.
+      //
+      // W2/N-9: the content of an error result is the server's error message,
+      // and it is discarded whole. The refused arm carries no content, and a
+      // partially filtered result is one the caller cannot tell from a whole
+      // one — the same law RESULT_UNSAFE holds downstream. Carrying it to
+      // the caller is a later packet, declared in the README rather than
+      // left implicit.
+      const errorFlag: unknown = (result as Record<string, unknown>)["isError"];
+      if (errorFlag !== undefined && errorFlag !== false) {
+        if (errorFlag !== true) return refused("PROTOCOL_VIOLATION", AT_RESULT, received);
+        return refused("RESULT_IS_ERROR", AT_RESULT, received);
+      }
+
+      const blocks = rawBlocks;
+      if (!Array.isArray(blocks)) return refused("PROTOCOL_VIOLATION", AT_RESPONSE, received);
 
       const content: string[] = [];
       for (const block of blocks) {
         if (typeof block !== "object" || block === null || Array.isArray(block)) {
-          return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
+          return refused("PROTOCOL_VIOLATION", AT_RESPONSE, received);
         }
         const shape = block as Record<string, unknown>;
         // This client carries text and only text. An image, audio or embedded
@@ -277,11 +318,11 @@ export function createToolClient(connection: ToolTransportConnection): ToolClien
         // shortened. This is a limitation of this stage's client, stated as a
         // refusal instead of as a silence; a stage that carries non-text
         // content widens it here.
-        if (shape["type"] !== "text") return refused("PROTOCOL_VIOLATION", AT_RESULT);
+        if (shape["type"] !== "text") return refused("PROTOCOL_VIOLATION", AT_RESULT, received);
         const text = shape["text"];
-        if (typeof text !== "string") return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
+        if (typeof text !== "string") return refused("PROTOCOL_VIOLATION", AT_RESPONSE, received);
         if (toolFrameBytes(text) > TOOL_CONTENT_STRING_MAX) {
-          return refused("RESULT_UNBOUNDED", AT_RESULT);
+          return refused("RESULT_UNBOUNDED", AT_RESULT, received);
         }
         content.push(text);
       }

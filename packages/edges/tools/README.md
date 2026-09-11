@@ -77,11 +77,14 @@ loopback TLS endpoint needs a trust decision this package cannot make honestly.
 
 The admitted URL is stored exactly as the descriptor wrote it and used verbatim:
 one endpoint serves every method, so there is nothing to join and nothing to
-construct. The transport is the only file in this package permitted to name
-`fetch`, it uses the platform global rather than a socket library — `node:net`,
-`node:http`, `node:https` and `node:tls` stay banned in every file including
-that one — and it can carry no credential of any shape. The architecture fence
-asserts each of those by name.
+construct. A `mcp-session-id` the server issues is echoed on the requests that
+follow, as the revision's Streamable HTTP transport prescribes; one endpoint
+serving every method is also what keeps the session header the only piece of
+connection state this client holds. The transport is the only file in this
+package permitted to name `fetch`, it uses the platform global rather than a
+socket library — `node:net`, `node:http`, `node:https` and `node:tls` stay
+banned in every file including that one — and it can carry no credential of any
+shape. The architecture fence asserts each of those by name.
 
 ## What conformance is claimed
 
@@ -98,18 +101,41 @@ fence asserts the two cannot disagree. Read together:
 - **The revision was cited, not vendored.** `SPEC_MANIFEST_DIGEST` is `NONE`
   because no protocol bytes were placed on disk, so there is nothing to digest
   and the client's constants are asserted against no manifest.
-  `SPEC_CITATION` names the revision, the specification URL and the retrieval
-  date instead. This leg is therefore built against a **cited** revision rather
-  than against reviewed bytes, and that is the weaker of the two footings the
-  plan defines.
+  `SPEC_CITATION` names the revision, the specification URL and the
+  retrieval date (2026-09-04) instead — the three facts a reader needs to
+  re-derive the citation without the bytes. This leg is therefore built
+  against a **cited** revision rather than against reviewed bytes, and that
+  is the weaker of the two footings the plan defines.
 - **No socket was ever opened.** `SOCKET_EXERCISED` is `NONE`: the drills
   substitute `globalThis.fetch`. `LIVE_CONFORMANCE` is `NONE`: no third-party
   server is contacted anywhere in this repository.
 - **Every unimplemented facility is a refusal or an absence, not a gap.** The
   server-initiated stream is never opened, resumption is not implemented,
   batching is refused, no `origin` header is sent, redirects are refused rather
-  than followed, `nextCursor` is not followed and `isError` is not interpreted.
-  Each has a field in the record and a drill behind it.
+  than followed and `nextCursor` is not followed. Every field of the record has
+  the claim it stands behind stated here, and the fence asserts the two agree
+  **field by field** (L-B4B-17) — a record key nobody explains, or a claim no
+  key backs, fails the fence rather than drifting. A drill stands behind each
+  field where one is stated; the fields that do not have a drill yet are named
+  debt on this page rather than hidden behind a general sentence that would
+  claim one for all of them.
+- **A result the server marks `isError` is a refusal, not a success.** A server
+  may answer a perfectly well-formed frame, inside the timeout, with a result
+  whose `isError` is `true` — that is the server reporting that the tool
+  itself failed, and a failed tool is a refused call: the receipt reads
+  `outcome: "REFUSED"` with `refusal: "RESULT_IS_ERROR"`, and both doors
+  answer it as the recorded outcome they answer every refusal with. **The
+  error content is discarded whole.** The `content` of an `isError` result is
+  the server's error message, and the refused arm carries no content at all —
+  a partially filtered result is one the caller cannot tell from a whole one,
+  which is the same law `RESULT_UNSAFE` already holds. Reaching the caller is
+  a later packet, declared here instead of left implicit. The receipt records
+  the counts of the result that actually arrived; a zero there would be a
+  false number in a durable row.
+- **Only `text` content blocks are carried.** An image, audio or embedded
+  resource block is refused rather than dropped, because omitting what cannot
+  be represented would hand the caller a shortened answer it has no way to
+  recognize as shortened.
 
 `TOOL_MCP_PROTOCOL_VERSION` records the revision the client speaks and now also
 compares: `initialize` refuses a server that agrees a different revision, or

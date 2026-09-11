@@ -75,6 +75,7 @@ function writeFakeServer(
   dir: string,
   pidLog: string,
   delayMs = 0,
+  errorResult = false,
 ): { command: string; args: string[] } {
   const path = join(dir, "fake-mcp.mjs");
   writeFileSync(
@@ -82,6 +83,7 @@ function writeFakeServer(
     [
       "import { appendFileSync } from 'node:fs';",
       "const DELAY_MS = " + String(delayMs) + ";",
+      "const ERROR_RESULT = " + JSON.stringify(errorResult) + ";",
       "appendFileSync(" + JSON.stringify(pidLog) + ", String(process.pid) + '\\n');",
       "let buffer = '';",
       "process.stdin.on('data', (chunk) => {",
@@ -107,7 +109,8 @@ function writeFakeServer(
       "  }",
       "  if (message.method === 'tools/call') {",
       "    const answer = () => send({ jsonrpc: '2.0', id: message.id, result: {",
-      "      content: [{ type: 'text', text: 'the answer' }], isError: false } });",
+      "      content: [{ type: 'text', text: ERROR_RESULT ? 'the tool failed' : 'the answer' }],",
+      "      isError: ERROR_RESULT } });",
       "    if (DELAY_MS > 0) { setTimeout(answer, DELAY_MS); return; }",
       "    answer();",
       "    return;",
@@ -123,8 +126,8 @@ function writeFakeServer(
   return { command: process.execPath, args: [path] };
 }
 
-function toolDocument(dir: string, pidLog: string, delayMs = 0): string {
-  const fake = writeFakeServer(dir, pidLog, delayMs);
+function toolDocument(dir: string, pidLog: string, delayMs = 0, errorResult = false): string {
+  const fake = writeFakeServer(dir, pidLog, delayMs, errorResult);
   const path = join(dir, "tool-servers.json");
   writeFileSync(
     path,
@@ -181,7 +184,11 @@ interface Harness {
 }
 
 function harness(
-  options: { readonly withDocument?: boolean; readonly delayMs?: number } = {},
+  options: {
+    readonly withDocument?: boolean;
+    readonly delayMs?: number;
+    readonly errorResult?: boolean;
+  } = {},
 ): Harness {
   const dir = root();
   mkdirSync(join(dir, "ledger"), { recursive: true });
@@ -204,7 +211,14 @@ function harness(
       writeBearerPath: tokenFile(dir),
       ...(options.withDocument === false
         ? {}
-        : { toolServersPath: toolDocument(dir, pidLog, options.delayMs ?? 0) }),
+        : {
+            toolServersPath: toolDocument(
+              dir,
+              pidLog,
+              options.delayMs ?? 0,
+              options.errorResult ?? false,
+            ),
+          }),
     }),
     taskId,
     dir,
@@ -363,6 +377,39 @@ describe("the door executes one explicit tool call and records it", () => {
     const page = await h.app.inject({ method: "GET", url: url(h.taskId) });
     expect(ToolCallPageResponse.parse(page.json()).count).toBe(1);
     expect(ToolCallPageResponse.parse(page.json()).items[0]?.outcome).toBe("REFUSED");
+    await h.app.close();
+  });
+
+  it("records a server-marked tool error as a refusal: 200, a row, and no content (P-11)", async () => {
+    // N-7 (API half) + N-3: the server answered a well-formed frame inside the
+    // timeout and reported the tool's failure in the result itself. That is a
+    // recorded refusal, not an error status — the request became an operation,
+    // so the door answers 200 with the non-success outcome.
+    const h = harness({ errorResult: true });
+    const response = await h.app.inject({
+      method: "POST",
+      url: url(h.taskId),
+      headers: AUTH,
+      payload: body({ taskId: h.taskId }),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const payload = ToolCallExecuteResponse.parse(response.json());
+    expect(payload.outcome).toBe("REFUSED");
+    expect(payload.refusal).toBe("RESULT_IS_ERROR");
+    expect(payload.at).toBe("server.result");
+    expect(payload.content).toEqual([]);
+
+    const page = await h.app.inject({ method: "GET", url: url(h.taskId) });
+    const rows = ToolCallPageResponse.parse(page.json());
+    expect(rows.count).toBe(1);
+    expect(rows.items[0]?.outcome).toBe("REFUSED");
+    expect(rows.items[0]?.refusal).toBe("RESULT_IS_ERROR");
+    // W3 through the door: the durable row carries the real counts of the
+    // result that arrived — and none of its text.
+    expect(rows.items[0]?.resultBytes ?? 0).toBeGreaterThan(0);
+    expect(rows.items[0]?.contentBlocks).toBe(1);
+    expect(JSON.stringify(rows)).not.toContain("the tool failed");
     await h.app.close();
   });
 

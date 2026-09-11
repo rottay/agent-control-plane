@@ -62,14 +62,25 @@ export type ToolTransportUnresolved = typeof TOOL_TRANSPORT_UNRESOLVED;
  *
  * Producer per member, in order: the argument ceiling; an identity outside
  * `TOOL_WRITE_ROLES` against a writing tool; a malformed, oversized, unmatched
- * or absent JSON-RPC frame; the result ceiling; the privacy guard over a
- * result; a `serverId` outside the admitted set; the liveness join; the
- * per-server tool allowlist; the descriptor admission.
+ * or absent JSON-RPC frame; a result the server marked as an error; the result
+ * ceiling; the privacy guard over a result; a `serverId` outside the admitted
+ * set; the liveness join; the per-server tool allowlist; the descriptor
+ * admission.
+ *
+ * `RESULT_IS_ERROR` (P-11) is the refusal for a fact the other nine cannot
+ * name: the transport answered, the frame was well-formed, and the result
+ * itself says the tool failed. It is a refusal — not a third outcome word and
+ * not a success — for the reason §16.2 of the audited contracts gives: a
+ * marked-error result is classified there as a refusal with retry `NONE`.
+ * When P-07 brings the effect outcome vocabulary, the §16 translation layer
+ * maps `REFUSED`/`RESULT_IS_ERROR` to `FAILED`; this package does not mint
+ * that word ahead of its owner.
  */
 export const TOOL_REFUSALS = [
   "ARGUMENTS_UNBOUNDED",
   "IDENTITY_FORBIDS_WRITE",
   "PROTOCOL_VIOLATION",
+  "RESULT_IS_ERROR",
   "RESULT_UNBOUNDED",
   "RESULT_UNSAFE",
   "SERVER_NOT_ADMITTED",
@@ -247,7 +258,7 @@ export const MCP_PROTOCOL_RECORD = Object.freeze({
   ORIGIN_HEADER: "NOT_SENT",
   REDIRECTS: "manual; 3xx refused as TRANSPORT_REFUSED",
   LIST_PAGINATION: "UNFOLLOWED",
-  IS_ERROR_RESULT: "UNHANDLED",
+  IS_ERROR_RESULT: "refused as RESULT_IS_ERROR; error content discarded whole",
   CONTENT_BLOCKS: "text only; every other kind refused",
 } as const);
 

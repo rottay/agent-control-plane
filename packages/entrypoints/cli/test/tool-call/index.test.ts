@@ -84,13 +84,18 @@ async function invoke(argv: readonly string[]): Promise<Invocation> {
 }
 
 /** A minimal stdio MCP server that logs its own pid. */
-function writeFakeServer(dir: string, pidLog: string): { command: string; args: string[] } {
+function writeFakeServer(
+  dir: string,
+  pidLog: string,
+  errorResult = false,
+): { command: string; args: string[] } {
   const path = join(dir, "fake-mcp.mjs");
   writeFileSync(
     path,
     [
       "import { appendFileSync } from 'node:fs';",
       "appendFileSync(" + JSON.stringify(pidLog) + ", String(process.pid) + '\\n');",
+      "const ERROR_RESULT = " + JSON.stringify(errorResult) + ";",
       "let buffer = '';",
       "process.stdin.setEncoding('utf8');",
       "process.stdin.on('data', (chunk) => {",
@@ -119,7 +124,8 @@ function writeFakeServer(dir: string, pidLog: string): { command: string; args: 
       "  }",
       "  if (method === 'tools/call') {",
       "    send({ jsonrpc: '2.0', id, result: {",
-      "      content: [{ type: 'text', text: 'the answer' }], isError: false } });",
+      "      content: [{ type: 'text', text: ERROR_RESULT ? 'the tool failed' : 'the answer' }],",
+      "      isError: ERROR_RESULT } });",
       "  }",
       "}",
     ].join("\n"),
@@ -129,8 +135,13 @@ function writeFakeServer(dir: string, pidLog: string): { command: string; args: 
   return { command: realpathSync(process.execPath), args: [path] };
 }
 
-function toolServersFile(dir: string, pidLog: string, mode = 0o600): string {
-  const fake = writeFakeServer(dir, pidLog);
+function toolServersFile(
+  dir: string,
+  pidLog: string,
+  mode = 0o600,
+  errorResult = false,
+): string {
+  const fake = writeFakeServer(dir, pidLog, errorResult);
   const path = join(dir, "tool-servers.json");
   writeFileSync(
     path,
@@ -208,12 +219,18 @@ interface Fixture {
   readonly pidLog: string;
 }
 
-function fixture(): Fixture {
+function fixture(options: { readonly errorResult?: boolean } = {}): Fixture {
   const dir = root();
   const pidLog = join(dir, "pids.log");
   writeFileSync(pidLog, "", "utf8");
   const { path, taskId } = seedLedger(dir);
-  return { dir, databasePath: path, taskId, toolServers: toolServersFile(dir, pidLog), pidLog };
+  return {
+    dir,
+    databasePath: path,
+    taskId,
+    toolServers: toolServersFile(dir, pidLog, 0o600, options.errorResult ?? false),
+    pidLog,
+  };
 }
 
 function pids(pidLog: string): readonly number[] {
@@ -317,6 +334,38 @@ describe("the verb executes one tool call and records it", () => {
     expect(eventCount(f.databasePath)).toBe(before + 1);
     // Refused before the wire, so no server was ever started.
     expect(pids(f.pidLog)).toHaveLength(0);
+  });
+
+  it("treats a server-marked tool error as a recorded refusal, with the row and no content", async () => {
+    // N-7 (CLI half), pinned exactly as the adjudication ruled it: the outcome
+    // is registered — a REFUSED call leaves a durable row — so the verb
+    // succeeds and the exit code stays 0. The tool's failure is a fact about
+    // the tool, not about this CLI invocation; the exit code is the CLI's own
+    // outcome, and that one did not fail.
+    const f = fixture({ errorResult: true });
+    const before = eventCount(f.databasePath);
+    const result = await call(f, requestFile(f.dir, { taskId: f.taskId }));
+
+    expect(result.exitCode).toBe(EXIT_OK);
+    const document = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(document["outcome"]).toBe("REFUSED");
+    expect(document["refusal"]).toBe("RESULT_IS_ERROR");
+    expect(document["at"]).toBe("server.result");
+    expect(document["content"]).toEqual([]);
+    expect(eventCount(f.databasePath)).toBe(before + 1);
+
+    // N-3/W3 at the door: the durable row carries the legible reason and the
+    // real counts of the result that arrived — and none of its text.
+    const ledger = openLedger(f.databasePath, { readOnly: true });
+    const recorded = ledger
+      .listEvents({ taskId: f.taskId, type: "TOOL_CALL_RECORDED" })
+      .events[0];
+    ledger.close();
+    expect(recorded?.event.payload["outcome"]).toBe("REFUSED");
+    expect(recorded?.event.payload["refusal"]).toBe("RESULT_IS_ERROR");
+    expect(recorded?.event.payload["resultBytes"] ?? 0).toBeGreaterThan(0);
+    expect(recorded?.event.payload["contentBlocks"]).toBe(1);
+    expect(JSON.stringify(recorded?.event.payload ?? {})).not.toContain("the tool failed");
   });
 });
 

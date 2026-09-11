@@ -210,7 +210,16 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
       // a receipt asserting a fact about a server that does not exist.
       const transport = servers.get(request.serverId)?.kind ?? TOOL_TRANSPORT_UNRESOLVED;
 
-      const refuse = (refusal: ToolRefusal, at: string): ToolCallOutcome => ({
+      // P-11 (W3): the counts a declined result actually had. Every refusal
+      // that fires before a wire exists records zero, because zero is the
+      // truth there; a refusal that fires after a result arrived records what
+      // arrived, because a zero there would be a false number in a durable
+      // row. The nine pre-result refusals pass no counts and keep their zeros.
+      const refuse = (
+        refusal: ToolRefusal,
+        at: string,
+        result?: { readonly resultBytes: number; readonly contentBlocks: number },
+      ): ToolCallOutcome => ({
         ok: false,
         refusal,
         at,
@@ -222,8 +231,8 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
           identity: request.identity,
           refusal,
           argumentBytes,
-          resultBytes: 0,
-          contentBlocks: 0,
+          resultBytes: result?.resultBytes ?? 0,
+          contentBlocks: result?.contentBlocks ?? 0,
         }),
       });
 
@@ -289,14 +298,19 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
           await drop(connectionKey(request.sessionId, request.serverId));
         }
         if (carried !== null) return refuse(carried.refusal, carried.at);
-        return refuse(called.refusal, called.at);
+        // P-11: a declined result keeps its real counts — RESULT_IS_ERROR and
+        // the post-result refusals carry them, transport refusals carry none.
+        return refuse(called.refusal, called.at, called.result);
       }
 
       // 7/8. The result ceiling was applied by the client; the privacy guard is
       //      applied here, where the contracts guards live. No content is
       //      returned on a violation — not filtered content, none.
       if (toolResultIsUnsafe(called.value.value)) {
-        return refuse("RESULT_UNSAFE", "server.result");
+        return refuse("RESULT_UNSAFE", "server.result", {
+          resultBytes: called.value.resultBytes,
+          contentBlocks: called.value.content.length,
+        });
       }
 
       return {

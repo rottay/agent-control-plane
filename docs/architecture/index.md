@@ -84,6 +84,7 @@ new records from `_template.md`, which carries the required fields.
 | 0066 | [The revision digest covers the whole envelope, or it identifies nothing](0066-the-revision-digest-covers-the-whole-envelope.md) | accepted |
 | 0067 | [The revision coordinate rides the stream it already has](0067-the-revision-coordinate-rides-the-stream-it-already-has.md) | accepted, §6 amended by 0068 |
 | 0068 | [The fold keeps the highest attempt, and the sidecar reads what is stored](0068-the-fold-keeps-the-highest-attempt-and-the-sidecar-reads-what-is-stored.md) | accepted |
+| 0069 | [A tool error is never a success, whatever the transport said](0069-a-tool-error-is-never-a-success-whatever-the-transport-said.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

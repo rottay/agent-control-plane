@@ -9,6 +9,7 @@ import {
   TOOL_MCP_PROTOCOL_VERSION,
   TOOL_RESULT_BYTES_MAX,
 } from "../../src/contract/index.js";
+import { toolFrameBytes } from "../../src/jsonrpc/index.js";
 import {
   INITIALIZE_NO_VERSION,
   createScriptedToolConnection,
@@ -137,15 +138,20 @@ describe("an answer this client will not carry is refused, never trimmed", () =>
     const { connection, client } = connected();
     const call = client.callTool("docs.search", {});
     await answerHandshake(connection);
-    connection.emit(
-      resultFrame(requestIdOf(lastFrame(connection)), {
-        content: [{ type: "text", text: "x".repeat(TOOL_RESULT_BYTES_MAX + 10) }],
-      }),
-    );
+    const result = {
+      content: [{ type: "text", text: "x".repeat(TOOL_RESULT_BYTES_MAX + 10) }],
+    };
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), result));
+    // P-11 (W3): the counts of the result that arrived travel with the
+    // refusal — a zero here would be a false number in a durable row.
     await expect(call).resolves.toEqual({
       ok: false,
       refusal: "RESULT_UNBOUNDED",
       at: "server.result",
+      result: {
+        resultBytes: toolFrameBytes(JSON.stringify(result)),
+        contentBlocks: 1,
+      },
     });
   });
 
@@ -153,15 +159,18 @@ describe("an answer this client will not carry is refused, never trimmed", () =>
     const { connection, client } = connected();
     const call = client.callTool("docs.search", {});
     await answerHandshake(connection);
-    connection.emit(
-      resultFrame(requestIdOf(lastFrame(connection)), {
-        content: [{ type: "text", text: "y".repeat(TOOL_CONTENT_STRING_MAX + 1) }],
-      }),
-    );
+    const result = {
+      content: [{ type: "text", text: "y".repeat(TOOL_CONTENT_STRING_MAX + 1) }],
+    };
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), result));
     await expect(call).resolves.toEqual({
       ok: false,
       refusal: "RESULT_UNBOUNDED",
       at: "server.result",
+      result: {
+        resultBytes: toolFrameBytes(JSON.stringify(result)),
+        contentBlocks: 1,
+      },
     });
   });
 
@@ -171,16 +180,82 @@ describe("an answer this client will not carry is refused, never trimmed", () =>
     const { connection, client } = connected();
     const call = client.callTool("docs.search", {});
     await answerHandshake(connection);
-    connection.emit(
-      resultFrame(requestIdOf(lastFrame(connection)), {
-        content: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
-      }),
-    );
+    const result = {
+      content: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
+    };
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), result));
     await expect(call).resolves.toEqual({
       ok: false,
       refusal: "PROTOCOL_VIOLATION",
       at: "server.result",
+      result: {
+        resultBytes: toolFrameBytes(JSON.stringify(result)),
+        contentBlocks: 1,
+      },
     });
+  });
+});
+
+describe("a result the server marks as an error is refused, never a success (P-11)", () => {
+  it("refuses a well-formed result with isError: true, keeping the real counts", async () => {
+    // N-1/N-2: the frame is a success and the child exits zero — and the
+    // outcome is still not ok. A tool error is never a success, whatever the
+    // transport said.
+    const { connection, client } = connected();
+    const call = client.callTool("docs.search", {});
+    await answerHandshake(connection);
+    const result = {
+      content: [{ type: "text", text: "the tool exploded" }],
+      isError: true,
+    };
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), result));
+
+    await expect(call).resolves.toEqual({
+      ok: false,
+      refusal: "RESULT_IS_ERROR",
+      at: "server.result",
+      result: {
+        resultBytes: toolFrameBytes(JSON.stringify(result)),
+        contentBlocks: 1,
+      },
+    });
+  });
+
+  it.each([
+    ["a string", "true"],
+    ["a number", 1],
+    ["null", null],
+  ])("refuses isError as %s rather than coercing it to false (N-6)", async (_label, flag) => {
+    const { connection, client } = connected();
+    const call = client.callTool("docs.search", {});
+    await answerHandshake(connection);
+    const result = { content: [{ type: "text", text: "x" }], isError: flag };
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), result));
+    await expect(call).resolves.toEqual({
+      ok: false,
+      refusal: "PROTOCOL_VIOLATION",
+      at: "server.result",
+      result: {
+        resultBytes: toolFrameBytes(JSON.stringify(result)),
+        contentBlocks: 1,
+      },
+    });
+  });
+
+  it("completes when isError is explicitly false (P-1)", async () => {
+    const { connection, client } = connected();
+    const call = client.callTool("docs.search", {});
+    await answerHandshake(connection);
+    connection.emit(
+      resultFrame(requestIdOf(lastFrame(connection)), {
+        content: [{ type: "text", text: "fine" }],
+        isError: false,
+      }),
+    );
+    const outcome = await call;
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.value.content).toEqual(["fine"]);
   });
 });
 
