@@ -415,7 +415,7 @@ calculable y no se publica ningún índice agregado.
 | EJE-3 | 2 | `NOT_REASSESSED` | escritura con caller productivo; lectura sin consumidor |
 | EJE-4 `[C]` | 2 | `NOT_REASSESSED` | N04: la ventana está declarada y aseverada, y la exposición no se registra |
 | CTA-4 | 1 | `NOT_REASSESSED` | N05: el aterrizaje admite salud desconocida y confirma antes de abrir el destino |
-| SEG-7 | 1 | `NOT_REASSESSED` | N07: un error de herramienta se convierte en éxito |
+| SEG-7 | 1 | `NOT_REASSESSED` | ~~N07: un error de herramienta se convierte en éxito~~ **N07 CERRADO en P-11** (`c2ca1c0`, ADR 0069): el indicador `isError` se interpreta, el receipt queda `REFUSED`/`RESULT_IS_ERROR`, drills rojos→verdes en ambas puertas; re-puntuar en la reevaluación de la rúbrica |
 | SEG-1 `[C]` | 2 | `NOT_REASSESSED` | N08: payload abierto; un secreto sintético como nombre de clave y un prompt bajo una clave inocente no se detectan |
 | LED-2 `[C]` | 2 | `NOT_REASSESSED` | N13: el stream de cuentas está fuera de la cadena |
 | TST-5 | 1 | `NOT_REASSESSED` | N06: la sección real del gate pasa con anclas vacías y con un ancla dentro de un bloque de comentario |
