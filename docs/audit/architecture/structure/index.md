@@ -39,7 +39,7 @@ hacen:
 | --- | --- | --- |
 | `persistence/ledger/src/ledger/index.ts` | 2.741 | log, append por stream, integridad, proyecciones y consultas en un módulo |
 | `kernel/protocol/src/schemas/index.ts` | 2.301 | todos los schemas de todos los recursos |
-| `entrypoints/daemon/src/index.ts` | 1.981 | barrel público **y** composition root: `startDaemon` en :510, dos walks equivalentes en :857 y :1219 |
+| `entrypoints/daemon/src/index.ts` | ~~1.981~~ 66 | E1/E2 **aplicados en P-13** (`f832590`, `a9d5429`, ADR 0071): el barrel quedó con las tres funciones y los tipos; el composition root vive en `composition/` (1.181) con una sola construcción de walk en `composition/walk/` (184) |
 | `entrypoints/cli/src/cli/index.ts` | 1.947 | dispatch, formato, mapeo de errores y elección de ruta |
 | `edges/durability/src/drivers/restate-driver/index.ts` | 1.153 | correcto por tamaño; es un driver completo |
 | `entrypoints/gateway/src/routes/index.ts` | 1.175 | diecinueve recursos en un archivo |
@@ -143,8 +143,8 @@ mezcla movimiento con cambio semántico.
 
 | # | Origen | Destino | Qué cambia además de la ruta |
 | --- | --- | --- | --- |
-| E1 | `daemon/src/index.ts:122–1981` | `daemon/src/composition/` | el barrel queda con las tres funciones y los tipos; ningún símbolo se renombra |
-| E2 | `daemon/src/index.ts:857` y `:1219` | `daemon/src/composition/walk/index.ts` | una sola construcción de walk con dependencias explícitas; fixture de equivalencia entre walk único, agendado y de un ítem |
+| E1 | `daemon/src/index.ts:122–1981` | `daemon/src/composition/` | el barrel queda con las tres funciones y los tipos; ningún símbolo se renombra. **Aplicado en P-13/1 (`f832590`, ADR 0071)** |
+| E2 | `daemon/src/index.ts:857` y `:1219` | `daemon/src/composition/walk/index.ts` | una sola construcción de walk con dependencias explícitas; fixture de equivalencia entre walk único, agendado y de un ítem. **Aplicado en P-13/2 (`a9d5429`, ADR 0071)** |
 | E3 | `domains/runtime/src/actions` | `domains/accounts/{model/action,ports/actions,usecases}` + `persistence/ledger` (OCC) + composición en el entrypoint | deja de abrir el ledger desde un dominio |
 | E4 | `persistence/ledger/src/roadmap-version:98` (reglas) | `domains/planning/model/roadmap-version/policy` | el ledger conserva `append` con OCC y nada más |
 | E5 | `gateway/src/roadmap-write:134` (orquestación) | caso de uso en `domains/planning` | el recurso HTTP sólo invoca y traduce errores |
