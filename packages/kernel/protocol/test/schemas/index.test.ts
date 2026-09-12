@@ -2284,7 +2284,7 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     for (const channel of Object.values(STREAM_CHANNEL_BY_EVENT_TYPE)) {
       sizes[channel] = (sizes[channel] ?? 0) + 1;
     }
-    expect(sizes).toEqual({ lifecycle: 7, execution: 10, steps: 2, state: 7, progress: 2 });
+    expect(sizes).toEqual({ lifecycle: 7, execution: 12, steps: 2, state: 7, progress: 2 });
     const total = Object.values(sizes).reduce((sum, count) => sum + count, 0);
     expect(total).toBe(CONTROL_PLANE_EVENT_TYPES.length);
   });
@@ -2297,6 +2297,15 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     // `steps` is the durable walk's own beats and `progress` is usage
     // attribution; a receipt is neither.
     expect(STREAM_CHANNEL_BY_EVENT_TYPE.TOOL_CALL_RECORDED).toBe("execution");
+  });
+
+  it("puts the two occurrence types on execution, by name (P-18/protocolo D)", () => {
+    // Asserted separately for the reason above. A prompt sent and the answer it
+    // received are "what it took to run it". They carry byte counts and are
+    // still not `progress`: the count is part of what the occurrence is, not
+    // usage attributed to an account.
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.PROMPT_OCCURRENCE_RECORDED).toBe("execution");
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.RESPONSE_OCCURRENCE_RECORDED).toBe("execution");
   });
 
   it("puts the three effect types on execution, by name (P-18/protocolo C)", () => {

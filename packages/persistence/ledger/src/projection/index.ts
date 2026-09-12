@@ -21,6 +21,7 @@ import {
   DISPATCH_STATE_TRANSITIONS,
   EFFECT_OUTCOME_STATUSES,
   MODEL_RESOLUTION_STATUSES,
+  REDACTION_VERDICTS,
 } from "../types/index.js";
 import type {
   DispatchAttemptReadModel,
@@ -30,8 +31,10 @@ import type {
   ExecutionRouteSegmentReadModel,
   ExecutionRouteReadModel,
   InitiativeReadModel,
+  PromptOccurrenceReadModel,
   RegistryDocument,
   RegistryProjectionSnapshot,
+  ResponseOccurrenceReadModel,
   RoadmapVersionReadModel,
   RoutingAssignmentFallbackRow,
   RoutingAssignmentProjection,
@@ -174,6 +177,65 @@ export const LOCAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * closed set of one rather than a free `LocalKey` at this escalón.
  */
 export const SEMANTIC_SCOPE_KEYS = ["run"] as const;
+
+/**
+ * The two event types of P-18/protocolo D, and the payload keys their records
+ * travel under (execution §8; ADR 0077).
+ *
+ * The nested record is escalón C's shape, and the payload beside it holds the
+ * V2 coordinate and **nothing else**. Unlike C's intentions, these two payloads
+ * are closed: §8 `:433` keeps every byte of a prompt and of its answer out of
+ * the rows, and a payload that admitted keys its grammar does not declare
+ * would be the one place a transcript could still ride in under a name the
+ * contract's transcript guard has never heard of.
+ */
+export const PROMPT_OCCURRENCE_RECORDED: ControlPlaneEvent["type"] = "PROMPT_OCCURRENCE_RECORDED";
+export const RESPONSE_OCCURRENCE_RECORDED: ControlPlaneEvent["type"] =
+  "RESPONSE_OCCURRENCE_RECORDED";
+
+export const PROMPT_OCCURRENCE_KEY = "promptOccurrence";
+export const RESPONSE_OCCURRENCE_KEY = "responseOccurrence";
+
+/**
+ * Every key a prompt occurrence record may carry, and no other.
+ *
+ * `modelVersionId` and `contextSha256` may be absent or `null`; every other
+ * key is required. There is no `identity`: that column is the recording
+ * event's `emittedBy`, so a payload cannot name another worker as the sender.
+ */
+export const PROMPT_OCCURRENCE_RECORD_KEYS = [
+  "occurrenceId",
+  "dispatchAttemptId",
+  "effectId",
+  "routeSegmentId",
+  "ordinal",
+  "requestedModelId",
+  "provider",
+  "modelResolutionStatus",
+  "modelVersionId",
+  "accountId",
+  "promptSha256",
+  "promptBytes",
+  "contextSha256",
+] as const;
+
+/**
+ * Every key a response occurrence record may carry, and no other — all five
+ * required.
+ *
+ * **No `dispatchAttemptId`, no `routeSegmentId`, no `accountId`.** An answer is
+ * attributed through the prompt it answers and through nothing else, so an
+ * answer that arrives after a handoff lands on the origin's account and
+ * segment. A payload able to name either would be able to name the
+ * destination's (§8 `:418-419`).
+ */
+export const RESPONSE_OCCURRENCE_RECORD_KEYS = [
+  "occurrenceId",
+  "promptOccurrenceId",
+  "responseSha256",
+  "responseBytes",
+  "redactionVerdict",
+] as const;
 
 /** A payload value that is a non-empty string, or null. */
 function payloadText(payload: ControlPlaneEvent["payload"], key: string): string | null {
@@ -1270,6 +1332,562 @@ export function canonicalDispatchBirth(dispatch: DispatchAttemptReadModel): stri
   ].join(" ");
 }
 
+// ---------------------------------------------------------------------------
+// P-18/protocolo D — the prompt a delivery sent, and the answer it received.
+// ---------------------------------------------------------------------------
+
+/**
+ * How one occurrence event reads: a row, or the reason it is not one.
+ *
+ * One reader serves both callers, which is this file's founding rule applied
+ * to a refusal as well as to a row. The append door throws the refusal by name;
+ * the fold projects no row for it. Written twice, the door and a rebuild would
+ * come to disagree about which payloads are occurrences, and the disagreement
+ * would only surface as a rebuild quietly holding fewer rows than the live base.
+ */
+export type OccurrenceReading<T> =
+  | { readonly kind: "row"; readonly row: T }
+  | { readonly kind: "refused"; readonly path: string; readonly message: string };
+
+/** Why one occurrence cannot be linked to what it claims to belong to. */
+export interface OccurrenceRefusal {
+  readonly path: string;
+  readonly message: string;
+}
+
+/** The attempt coordinate a delivery's effect belongs to. */
+export interface OccurrenceOwner {
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+}
+
+/** A lowercase sha-256 hex digest, the shape every digest in this schema has. */
+const OCCURRENCE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
+ * A payload key or row identifier, safe to print in a refusal.
+ *
+ * The ledger's `safeRowIdentifier`, restated rather than imported because the
+ * dependency runs the other way: the ledger imports this module. A key a
+ * payload chose is operator-facing text and nothing guarantees its shape.
+ */
+function printable(value: string): string {
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : "<unprintable identifier>";
+}
+
+function refused<T>(path: string, message: string): OccurrenceReading<T> {
+  return { kind: "refused", path, message };
+}
+
+/**
+ * The one key of a closed payload that its grammar does not declare, if any.
+ *
+ * Returned in `Object.keys` order, so the refusal names the same key every time
+ * for the same payload.
+ */
+function undeclaredKey(record: Record<string, unknown>, declared: readonly string[]): string | null {
+  for (const key of Object.keys(record)) {
+    if (!declared.includes(key)) return key;
+  }
+  return null;
+}
+
+/** A nullable text field: absent and `null` are both absence; anything else must be text. */
+function optionalText(
+  record: Record<string, unknown>,
+  key: string,
+): { readonly ok: true; readonly value: string | null } | { readonly ok: false } {
+  const value = record[key];
+  if (value === undefined || value === null) return { ok: true, value: null };
+  return typeof value === "string" && value.length > 0 ? { ok: true, value } : { ok: false };
+}
+
+/**
+ * The payload's outer shape, shared by both occurrence types: the V2 coordinate
+ * and the one record key, and nothing beside them.
+ */
+function occurrenceEnvelope(
+  event: ControlPlaneEvent,
+  recordKey: string,
+  fields: readonly string[],
+):
+  | { readonly kind: "record"; readonly record: Record<string, unknown> }
+  | { readonly kind: "refused"; readonly path: string; readonly message: string } {
+  const stray = undeclaredKey(event.payload, [REVISION_NUMBER_KEY, ATTEMPT_NUMBER_KEY, recordKey]);
+  if (stray !== null) {
+    return {
+      kind: "refused",
+      path: "payload." + printable(stray),
+      message:
+        event.type +
+        " carries the V2 coordinate and one " +
+        recordKey +
+        " record and nothing beside them; " +
+        printable(stray) +
+        " is not part of that grammar, and an occurrence carries digests and counts, never content",
+    };
+  }
+  if (
+    payloadCount(event.payload, REVISION_NUMBER_KEY) === null ||
+    payloadCount(event.payload, ATTEMPT_NUMBER_KEY) === null
+  ) {
+    return {
+      kind: "refused",
+      path: "payload." + REVISION_NUMBER_KEY,
+      message: event.type + " happens inside one attempt and carries the full V2 coordinate",
+    };
+  }
+  const record = payloadRecord(event.payload, recordKey);
+  if (record === null) {
+    return {
+      kind: "refused",
+      path: "payload." + recordKey,
+      message: event.type + " carries its occurrence as a record under " + recordKey,
+    };
+  }
+  const strayField = undeclaredKey(record, fields);
+  if (strayField !== null) {
+    return {
+      kind: "refused",
+      path: "payload." + recordKey + "." + printable(strayField),
+      message:
+        printable(strayField) +
+        " is not a field of " +
+        recordKey +
+        "; the record admits exactly " +
+        fields.join(", "),
+    };
+  }
+  return { kind: "record", record };
+}
+
+/**
+ * Read one prompt occurrence off its event — execution §8.1.
+ *
+ * `null` for any other type. Everything a single event can be wrong about is
+ * decided here: the closed payload, every field's grammar, and the §4 pair. What
+ * needs the base — whether the delivery exists, whether the prompt's effect and
+ * segment are the delivery's, the ordinal — is `promptOccurrenceLinkRefusal`'s.
+ *
+ * `identity` is the event's `emittedBy` and `recordedAt` the event's own
+ * instant, never a clock.
+ */
+export function readPromptOccurrence(
+  event: ControlPlaneEvent,
+  sequence: number,
+): OccurrenceReading<PromptOccurrenceReadModel> | null {
+  if (event.type !== PROMPT_OCCURRENCE_RECORDED) return null;
+
+  const envelope = occurrenceEnvelope(event, PROMPT_OCCURRENCE_KEY, PROMPT_OCCURRENCE_RECORD_KEYS);
+  if (envelope.kind === "refused") return refused(envelope.path, envelope.message);
+  const record = envelope.record;
+  const at = (field: string): string => "payload." + PROMPT_OCCURRENCE_KEY + "." + field;
+
+  const missingId = (field: string): OccurrenceReading<PromptOccurrenceReadModel> =>
+    refused(at(field), "a prompt occurrence names its " + field + " as non-empty text");
+  const occurrenceId = recordText(record, "occurrenceId");
+  if (occurrenceId === null) return missingId("occurrenceId");
+  const dispatchAttemptId = recordText(record, "dispatchAttemptId");
+  if (dispatchAttemptId === null) return missingId("dispatchAttemptId");
+  const effectId = recordText(record, "effectId");
+  if (effectId === null) return missingId("effectId");
+  const routeSegmentId = recordText(record, "routeSegmentId");
+  if (routeSegmentId === null) return missingId("routeSegmentId");
+
+  const ordinal = recordCount(record, "ordinal", 0);
+  if (ordinal === null) {
+    return refused(at("ordinal"), "the ordinal is a non-negative safe integer");
+  }
+
+  const requestedModelId = recordText(record, "requestedModelId");
+  if (requestedModelId === null) {
+    return refused(
+      at("requestedModelId"),
+      "the requested model is preserved always, even when resolution fails (execution §4, §8)",
+    );
+  }
+  const provider = recordText(record, "provider");
+  if (provider === null) {
+    return refused(
+      at("provider"),
+      "the provider is preserved always, even when resolution fails (execution §4, §8)",
+    );
+  }
+
+  const modelResolutionStatus = recordWord(
+    record,
+    "modelResolutionStatus",
+    MODEL_RESOLUTION_STATUSES,
+  );
+  if (modelResolutionStatus === null) {
+    return refused(
+      at("modelResolutionStatus"),
+      "the model resolution status is one of " + MODEL_RESOLUTION_STATUSES.join(", "),
+    );
+  }
+  const modelVersion = optionalText(record, "modelVersionId");
+  if (!modelVersion.ok) {
+    return refused(at("modelVersionId"), "a model version is non-empty text, or absent");
+  }
+  // Refused here, by name, before `ck_prompt_occurrence_read_model__model_resolution_pair`
+  // could abort a statement nobody can attribute to an event.
+  if ((modelResolutionStatus === "RESOLVED") !== (modelVersion.value !== null)) {
+    return refused(
+      at("modelVersionId"),
+      "a model version is present if and only if the resolution status is RESOLVED, even " +
+        "after executing; this occurrence says " +
+        modelResolutionStatus +
+        (modelVersion.value === null ? " with no version" : " with a version"),
+    );
+  }
+
+  const accountId = recordText(record, "accountId");
+  if (accountId === null) {
+    return refused(at("accountId"), "a prompt occurrence names the account it was sent under");
+  }
+
+  const promptSha256 = recordText(record, "promptSha256");
+  if (promptSha256 === null || !OCCURRENCE_DIGEST_PATTERN.test(promptSha256)) {
+    return refused(
+      at("promptSha256"),
+      "the prompt digest is a lowercase sha-256 hex string; it is conserved rather than " +
+        "recomputed, because its preimage is the prompt and a prompt does not enter this ledger",
+    );
+  }
+  const promptBytes = recordCount(record, "promptBytes", 0);
+  if (promptBytes === null) {
+    return refused(at("promptBytes"), "the prompt byte count is a non-negative safe integer");
+  }
+  const context = optionalText(record, "contextSha256");
+  if (!context.ok || (context.value !== null && !OCCURRENCE_DIGEST_PATTERN.test(context.value))) {
+    return refused(
+      at("contextSha256"),
+      "the context digest is a lowercase sha-256 hex string, or absent where the prompt " +
+        "carries no separately addressed context",
+    );
+  }
+
+  return {
+    kind: "row",
+    row: {
+      occurrenceId,
+      routeSegmentId,
+      effectId,
+      dispatchAttemptId,
+      ordinal,
+      identity: event.emittedBy,
+      requestedModelId,
+      provider,
+      modelResolutionStatus,
+      modelVersionId: modelVersion.value,
+      accountId,
+      promptSha256,
+      promptBytes,
+      contextSha256: context.value,
+      recordedAt: event.recordedAt,
+      sequence,
+    },
+  };
+}
+
+/**
+ * Read one response occurrence off its event — execution §8.2.
+ *
+ * `null` for any other type. The closed record is what makes N-P18-17 a fact
+ * rather than a hope: an answer that names a delivery, a segment or an account
+ * is refused here, so nothing but the prompt it answers can attribute it.
+ */
+export function readResponseOccurrence(
+  event: ControlPlaneEvent,
+  sequence: number,
+): OccurrenceReading<ResponseOccurrenceReadModel> | null {
+  if (event.type !== RESPONSE_OCCURRENCE_RECORDED) return null;
+
+  const envelope = occurrenceEnvelope(
+    event,
+    RESPONSE_OCCURRENCE_KEY,
+    RESPONSE_OCCURRENCE_RECORD_KEYS,
+  );
+  if (envelope.kind === "refused") return refused(envelope.path, envelope.message);
+  const record = envelope.record;
+  const at = (field: string): string => "payload." + RESPONSE_OCCURRENCE_KEY + "." + field;
+
+  const occurrenceId = recordText(record, "occurrenceId");
+  if (occurrenceId === null) {
+    return refused(at("occurrenceId"), "a response occurrence names its own occurrenceId");
+  }
+  const promptOccurrenceId = recordText(record, "promptOccurrenceId");
+  if (promptOccurrenceId === null) {
+    return refused(
+      at("promptOccurrenceId"),
+      "a response occurrence names the prompt occurrence it answers",
+    );
+  }
+  // §8.2: the answer's primary key is its own, distinct from the prompt's.
+  if (occurrenceId === promptOccurrenceId) {
+    return refused(
+      at("occurrenceId"),
+      "a response occurrence has an id of its own, distinct from the prompt occurrence it " +
+        "answers, and this one reuses " +
+        printable(promptOccurrenceId),
+    );
+  }
+
+  const responseSha256 = recordText(record, "responseSha256");
+  if (responseSha256 === null || !OCCURRENCE_DIGEST_PATTERN.test(responseSha256)) {
+    return refused(
+      at("responseSha256"),
+      "the response digest is a lowercase sha-256 hex string; it is conserved rather than " +
+        "recomputed, because its preimage is the answer and an answer does not enter this ledger",
+    );
+  }
+  const responseBytes = recordCount(record, "responseBytes", 0);
+  if (responseBytes === null) {
+    return refused(at("responseBytes"), "the response byte count is a non-negative safe integer");
+  }
+  const redactionVerdict = recordWord(record, "redactionVerdict", REDACTION_VERDICTS);
+  if (redactionVerdict === null) {
+    return refused(
+      at("redactionVerdict"),
+      "the redaction verdict is one of " + REDACTION_VERDICTS.join(", "),
+    );
+  }
+
+  return {
+    kind: "row",
+    row: {
+      occurrenceId,
+      promptOccurrenceId,
+      responseSha256,
+      responseBytes,
+      redactionVerdict,
+      recordedAt: event.recordedAt,
+      sequence,
+    },
+  };
+}
+
+/** The prompt occurrence one event records, or `null` — for the fold. */
+export function nextPromptOccurrenceProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): PromptOccurrenceReadModel | null {
+  const reading = readPromptOccurrence(event, sequence);
+  return reading?.kind === "row" ? reading.row : null;
+}
+
+/** The response occurrence one event records, or `null` — for the fold. */
+export function nextResponseOccurrenceProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): ResponseOccurrenceReadModel | null {
+  const reading = readResponseOccurrence(event, sequence);
+  return reading?.kind === "row" ? reading.row : null;
+}
+
+/** "the attempt this event is recorded at", for a refusal, or its absence. */
+function eventCoordinateText(event: ControlPlaneEvent): string {
+  const revisionNumber = payloadCount(event.payload, REVISION_NUMBER_KEY);
+  const attemptNumber = payloadCount(event.payload, ATTEMPT_NUMBER_KEY);
+  return revisionNumber === null || attemptNumber === null
+    ? "no coordinate at all"
+    : "attempt " + taskAttemptKey(event.taskId, revisionNumber, attemptNumber);
+}
+
+/** Whether an event is recorded at exactly the attempt that owns an effect. */
+function recordedAtOwner(event: ControlPlaneEvent, owner: OccurrenceOwner): boolean {
+  return (
+    owner.taskId === event.taskId &&
+    owner.revisionNumber === payloadCount(event.payload, REVISION_NUMBER_KEY) &&
+    owner.attemptNumber === payloadCount(event.payload, ATTEMPT_NUMBER_KEY)
+  );
+}
+
+/**
+ * Why a prompt occurrence cannot hang off the delivery it names, or `null`.
+ *
+ * Shared by the append door, which reads `dispatch` and `owner` off the base,
+ * and by the fold, which reads them off the snapshot — so a rebuild refuses
+ * exactly what the door refuses, at the event that caused it.
+ *
+ * Three rules, in the order an operator would want them:
+ *
+ *  1. **The delivery exists** (§8 `:419-420`). Its intention is committed, or
+ *     earlier in the same `appendBatch`; a prompt that arrives before it is out
+ *     of causal order and is refused by name, never as an abort of
+ *     `fk_prompt_occurrence_read_model__dispatch_attempt_read_model`.
+ *  2. **The effect and the segment are the delivery's** (§8 `:416`,
+ *     N-P18-16). The segment in particular is the delivery's *effective* one,
+ *     which after a handoff is not the one the effect began on.
+ *  3. **The event is recorded at the attempt that owns the effect.** A delivery
+ *     is found by a global id, so without this a prompt could be recorded under
+ *     another task's coordinate — `#assertDispatchOutcome`'s anchor, one rung
+ *     down.
+ */
+export function promptOccurrenceLinkRefusal(
+  event: ControlPlaneEvent,
+  prompt: PromptOccurrenceReadModel,
+  dispatch: Pick<DispatchAttemptReadModel, "effectId" | "routeSegmentId"> | null,
+  owner: OccurrenceOwner | null,
+): OccurrenceRefusal | null {
+  const at = (field: string): string => "payload." + PROMPT_OCCURRENCE_KEY + "." + field;
+  if (dispatch === null) {
+    return {
+      path: at("dispatchAttemptId"),
+      message:
+        "a prompt occurrence is recorded after the intention of the delivery that sent it, or " +
+        "later in the same batch, and delivery " +
+        printable(prompt.dispatchAttemptId) +
+        " has been intended in neither",
+    };
+  }
+  if (dispatch.effectId !== prompt.effectId) {
+    return {
+      path: at("effectId"),
+      message:
+        "prompt occurrence " +
+        printable(prompt.occurrenceId) +
+        " names effect " +
+        printable(prompt.effectId) +
+        " and its delivery " +
+        printable(prompt.dispatchAttemptId) +
+        " serves effect " +
+        printable(dispatch.effectId),
+    };
+  }
+  if (dispatch.routeSegmentId !== prompt.routeSegmentId) {
+    return {
+      path: at("routeSegmentId"),
+      message:
+        "prompt occurrence " +
+        printable(prompt.occurrenceId) +
+        " names segment " +
+        printable(prompt.routeSegmentId) +
+        " and its delivery " +
+        printable(prompt.dispatchAttemptId) +
+        " runs on segment " +
+        printable(dispatch.routeSegmentId) +
+        "; the segment is the delivery's effective one, never inferred from the effect's origin",
+    };
+  }
+  if (owner === null || !recordedAtOwner(event, owner)) {
+    return {
+      path: at("dispatchAttemptId"),
+      message:
+        "delivery " +
+        printable(prompt.dispatchAttemptId) +
+        " serves effect " +
+        printable(dispatch.effectId) +
+        (owner === null
+          ? ", which no event accounts for,"
+          : " of attempt " + taskAttemptKey(owner.taskId, owner.revisionNumber, owner.attemptNumber)) +
+        " and this prompt occurrence is recorded at " +
+        eventCoordinateText(event),
+    };
+  }
+  return null;
+}
+
+/**
+ * Why a response occurrence cannot answer the prompt it names, or `null`.
+ *
+ * Shared by the door and the fold on `promptOccurrenceLinkRefusal`'s terms.
+ * `answeredBy` is the occurrence id of the answer that prompt already has, if
+ * any, **other than this one** — the caller decides "this one" by id, because
+ * an identical restatement of the same answer is a replay and not a second
+ * answer.
+ *
+ *  1. **The prompt exists** (§8 `:407`) — refused by name, never as an abort of
+ *     `fk_response_occurrence_read_model__prompt_occurrence_read_model`.
+ *  2. **The answer is recorded at the prompt's own attempt** (§7 `:343`): the
+ *     coordinate of an answer is the one the prompt was sent under, never the
+ *     one a later handoff moved the run to.
+ *  3. **One answer per prompt** (§8 `:431`) — refused by name, never as an abort
+ *     of `ux_response_occurrence_read_model__prompt`.
+ */
+export function responseOccurrenceLinkRefusal(
+  event: ControlPlaneEvent,
+  response: ResponseOccurrenceReadModel,
+  promptExists: boolean,
+  owner: OccurrenceOwner | null,
+  answeredBy: string | null,
+): OccurrenceRefusal | null {
+  const at = (field: string): string => "payload." + RESPONSE_OCCURRENCE_KEY + "." + field;
+  if (!promptExists) {
+    return {
+      path: at("promptOccurrenceId"),
+      message:
+        "a response answers a prompt occurrence that has been recorded, and " +
+        printable(response.promptOccurrenceId) +
+        " has not been",
+    };
+  }
+  if (owner === null || !recordedAtOwner(event, owner)) {
+    return {
+      path: at("promptOccurrenceId"),
+      message:
+        "prompt occurrence " +
+        printable(response.promptOccurrenceId) +
+        (owner === null
+          ? " hangs off no effect any event accounts for"
+          : " was sent under attempt " +
+            taskAttemptKey(owner.taskId, owner.revisionNumber, owner.attemptNumber)) +
+        ", and its answer is recorded under that coordinate rather than at " +
+        eventCoordinateText(event),
+    };
+  }
+  if (answeredBy !== null) {
+    return {
+      path: at("promptOccurrenceId"),
+      message:
+        "prompt occurrence " +
+        printable(response.promptOccurrenceId) +
+        " is already answered by " +
+        printable(answeredBy) +
+        ", and a prompt occurrence has one answer",
+    };
+  }
+  return null;
+}
+
+/**
+ * The comparable form of a prompt occurrence: everything it *is*.
+ *
+ * Neither birth attribute — `recordedAt`, `sequence` — for `canonicalSegment`'s
+ * reason, and spelled out field by field for the same one. `identity` is in:
+ * the same occurrence restated by another worker is not the same occurrence.
+ */
+export function canonicalPromptOccurrence(prompt: PromptOccurrenceReadModel): string {
+  return canonicalJsonStringify({
+    occurrenceId: prompt.occurrenceId,
+    routeSegmentId: prompt.routeSegmentId,
+    effectId: prompt.effectId,
+    dispatchAttemptId: prompt.dispatchAttemptId,
+    ordinal: prompt.ordinal,
+    identity: prompt.identity,
+    requestedModelId: prompt.requestedModelId,
+    provider: prompt.provider,
+    modelResolutionStatus: prompt.modelResolutionStatus,
+    modelVersionId: prompt.modelVersionId,
+    accountId: prompt.accountId,
+    promptSha256: prompt.promptSha256,
+    promptBytes: prompt.promptBytes,
+    contextSha256: prompt.contextSha256,
+  });
+}
+
+/** The comparable form of a response occurrence, on the same terms. */
+export function canonicalResponseOccurrence(response: ResponseOccurrenceReadModel): string {
+  return canonicalJsonStringify({
+    occurrenceId: response.occurrenceId,
+    promptOccurrenceId: response.promptOccurrenceId,
+    responseSha256: response.responseSha256,
+    responseBytes: response.responseBytes,
+    redactionVerdict: response.redactionVerdict,
+  });
+}
+
 /**
  * In-memory projection of an entire event stream.
  *
@@ -1310,6 +1928,18 @@ export interface ProjectionSnapshot {
   readonly effectClaims: Map<string, string>;
   readonly dispatchAttempts: Map<string, DispatchAttemptReadModel>;
   readonly dispatchAttemptClaims: Map<string, string>;
+  /**
+   * The P-18/protocolo D pair, insert-only, each keyed by its occurrence id.
+   *
+   * `responseOccurrenceClaims` is `ux_response_occurrence_read_model__prompt`
+   * in memory — a prompt occurrence id to the answer that holds it — so a
+   * rebuild refuses a second answer at the event that caused it. The prompt
+   * table has no unique index beside its key, and so no claims map: two
+   * occurrences of the same bytes are the point, not a collision.
+   */
+  readonly promptOccurrences: Map<string, PromptOccurrenceReadModel>;
+  readonly responseOccurrences: Map<string, ResponseOccurrenceReadModel>;
+  readonly responseOccurrenceClaims: Map<string, string>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -1327,6 +1957,9 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     effectClaims: new Map<string, string>(),
     dispatchAttempts: new Map<string, DispatchAttemptReadModel>(),
     dispatchAttemptClaims: new Map<string, string>(),
+    promptOccurrences: new Map<string, PromptOccurrenceReadModel>(),
+    responseOccurrences: new Map<string, ResponseOccurrenceReadModel>(),
+    responseOccurrenceClaims: new Map<string, string>(),
   };
 }
 
@@ -1660,6 +2293,71 @@ export function applyEventToSnapshot(
           outcomeRecordedAt: outcome.recordedAt,
         });
       }
+    }
+  }
+
+  // The P-18/protocolo D pair, after every fold above because each reads rows
+  // they write: a prompt names a delivery, and a batch may intend the delivery
+  // and record the prompt in one transaction (§8 `:419-420`). Insert-only, and
+  // no ordinal compare-and-set here — that is the door's, on escalón C's
+  // precedent for `operation_ordinal`, and every stored event passed it.
+  const prompt = nextPromptOccurrenceProjection(event, sequence);
+  if (prompt !== null) {
+    const delivery = snapshot.dispatchAttempts.get(prompt.dispatchAttemptId) ?? null;
+    const refusal = promptOccurrenceLinkRefusal(
+      event,
+      prompt,
+      delivery,
+      delivery === null ? null : (snapshot.effects.get(delivery.effectId) ?? null),
+    );
+    if (refusal !== null) throw new LedgerValidationError([refusal]);
+
+    const existing = snapshot.promptOccurrences.get(prompt.occurrenceId);
+    if (existing === undefined) {
+      snapshot.promptOccurrences.set(prompt.occurrenceId, prompt);
+    } else if (canonicalPromptOccurrence(existing) !== canonicalPromptOccurrence(prompt)) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + PROMPT_OCCURRENCE_KEY + ".occurrenceId",
+          message:
+            "prompt occurrence " +
+            printable(prompt.occurrenceId) +
+            " is already recorded with different content, and an occurrence is recorded once",
+        },
+      ]);
+    }
+  }
+
+  const response = nextResponseOccurrenceProjection(event, sequence);
+  if (response !== null) {
+    // The prompt's own `effectId` is its delivery's — the fold above refused
+    // any prompt where the two differ — so the attempt that owns the answer is
+    // read straight off the prompt's effect.
+    const answered = snapshot.promptOccurrences.get(response.promptOccurrenceId) ?? null;
+    const holder = snapshot.responseOccurrenceClaims.get(response.promptOccurrenceId);
+    const refusal = responseOccurrenceLinkRefusal(
+      event,
+      response,
+      answered !== null,
+      answered === null ? null : (snapshot.effects.get(answered.effectId) ?? null),
+      holder === undefined || holder === response.occurrenceId ? null : holder,
+    );
+    if (refusal !== null) throw new LedgerValidationError([refusal]);
+
+    const existing = snapshot.responseOccurrences.get(response.occurrenceId);
+    if (existing === undefined) {
+      snapshot.responseOccurrences.set(response.occurrenceId, response);
+      snapshot.responseOccurrenceClaims.set(response.promptOccurrenceId, response.occurrenceId);
+    } else if (canonicalResponseOccurrence(existing) !== canonicalResponseOccurrence(response)) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + RESPONSE_OCCURRENCE_KEY + ".occurrenceId",
+          message:
+            "response occurrence " +
+            printable(response.occurrenceId) +
+            " is already recorded with different content, and an occurrence is recorded once",
+        },
+      ]);
     }
   }
 }

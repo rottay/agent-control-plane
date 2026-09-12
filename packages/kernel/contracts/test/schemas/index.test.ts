@@ -2691,7 +2691,9 @@ describe("the effect's key grammar belongs to the contract (decision 42)", () =>
   });
 
   it("grows the vocabulary by exactly the three types P-18/protocolo C needs", () => {
-    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(28);
+    // 28 when C landed; D's two occurrences are asserted in their own block
+    // below, so this one names C's three and the length is D's.
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(30);
     expect(new Set(CONTROL_PLANE_EVENT_TYPES).size).toBe(CONTROL_PLANE_EVENT_TYPES.length);
     for (const type of ["EFFECT_INTENDED", "DISPATCH_INTENDED", "DISPATCH_OUTCOME_RECORDED"]) {
       expect(CONTROL_PLANE_EVENT_TYPES, type).toContain(type);
@@ -2709,6 +2711,60 @@ describe("the effect's key grammar belongs to the contract (decision 42)", () =>
         ).success,
         type,
       ).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo D — the prompt a delivery sent, and the answer it received
+// ---------------------------------------------------------------------------
+
+describe("two occurrence types, and no bump (P-18/protocolo D, ADR 0077)", () => {
+  const OCCURRENCE_TYPES = ["PROMPT_OCCURRENCE_RECORDED", "RESPONSE_OCCURRENCE_RECORDED"];
+
+  it("grows the vocabulary by exactly two same-state passthroughs", () => {
+    // Two and not one: the answer has its own key, its own instant and its own
+    // position, and may arrive late — after a handoff — so it cannot ride the
+    // event of the prompt it answers (execution §8 `:406-418`).
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(30);
+    expect(new Set(CONTROL_PLANE_EVENT_TYPES).size).toBe(CONTROL_PLANE_EVENT_TYPES.length);
+    expect(CONTROL_PLANE_EVENT_TYPES.slice(-2)).toEqual(OCCURRENCE_TYPES);
+    for (const type of OCCURRENCE_TYPES) {
+      expect(
+        ControlPlaneEvent.safeParse(
+          event({ type, fromState: "DISCOVERED", toState: "DISCOVERED" }),
+        ).success,
+        type,
+      ).toBe(true);
+    }
+  });
+
+  it("keeps the version in force where escalón C left it", () => {
+    // ADR 0076's criterion, applied: C bumped because its payloads carry digests
+    // the fold recomputes and a per-payload contract version. D's payloads carry
+    // digests nobody can recompute — their preimages are bytes that never enter
+    // — plus counts and vocabulary words, and no new identity formula. That is
+    // escalón B's class, and B did not bump either.
+    expect(CONTRACT_VERSION).toBe("2.3.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0"]);
+  });
+
+  it("still refuses a transcript smuggled into an occurrence payload", () => {
+    // The contract's transcript guard runs for every type and these are no
+    // exception; the ledger's closed payload grammar is a second line, not a
+    // replacement for this one.
+    for (const type of OCCURRENCE_TYPES) {
+      expect(
+        ControlPlaneEvent.safeParse(
+          event({
+            type,
+            fromState: "DISCOVERED",
+            toState: "DISCOVERED",
+            payload: { completion: "the model said this" },
+          }),
+        ).success,
+        type,
+      ).toBe(false);
     }
   });
 });

@@ -9334,6 +9334,102 @@ const P18E1_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-18/protocolo, escalón D — the prompt a delivery sent, and the answer it
+ * received (execution §8, migration 14).
+ *
+ * One rung below escalón C's delivery. A prompt occurrence is the fact that some
+ * bytes were sent on one `dispatch_attempt_id`, never the bytes, and an answer
+ * is the fact that one came back for one prompt occurrence.
+ *
+ * **What lands.** Five things.
+ *
+ *   1. Migration 14, `execution_occurrences`: `prompt_occurrence_read_model` and
+ *      `response_occurrence_read_model` exactly as §8 lists them — five schema
+ *      objects, two watermarks seeded from the head in migration 13's form, four
+ *      deferred foreign keys and **no trigger**. `dispatch_attempt_id` is a
+ *      foreign key and not unique; `prompt_sha256` is indexed and not unique, so
+ *      the same bytes sent twice are two occurrences and one digest (§8 negative
+ *      3). `ux_response_occurrence_read_model__prompt` is unique: one answer per
+ *      prompt. No shape CHECK on the digests, because §8 lists none.
+ *   2. Two event types — `PROMPT_OCCURRENCE_RECORDED`,
+ *      `RESPONSE_OCCURRENCE_RECORDED` — same-state passthroughs on `execution`.
+ *      Two and not one: the answer has its own key, instant and sequence, and
+ *      may arrive after a handoff, when the prompt's event is long recorded.
+ *   3. Closed payloads. The V2 coordinate and one record, and each record admits
+ *      exactly its declared keys; an answer that names a delivery, a segment or
+ *      an account is refused by name, so it is attributed through its prompt
+ *      and through nothing else. One reader decides a payload and one pair of
+ *      link functions decides a link, for the door and the fold alike: a prompt
+ *      whose delivery is not intended (committed or earlier in the batch), whose
+ *      effect or segment is not its delivery's, or which is recorded at another
+ *      attempt; an answer to no prompt, a second answer, or one recorded at
+ *      another coordinate than its prompt's — all refused by name, never as an
+ *      abort of a foreign key or of a unique index.
+ *   4. The ordinal, assigned by the ledger — one past the segment's highest —
+ *      and `identity` taken from `emittedBy`. The three digests are conserved and
+ *      never recomputed: their preimages are the bytes §8 `:433` keeps out.
+ *   5. Four read verbs on the ledger, the `cli` and `gateway` rewind fixtures
+ *      undoing two more tables and three more indexes, ADR 0077 and decision 49.
+ *
+ * **What does NOT land, declared.** No bump: D adds facts and no identity
+ * formula, which is ADR 0076's criterion for carrying one, so `CONTRACT_VERSION`
+ * stays `"2.3.0"`. No producer — §8 `:421` is escalón G's guarantee, and what
+ * is falsifiable today (no fold derives an occurrence) is drilled. No outbox, no
+ * coordination store, no saga, no B1–B3 population, no O-Δ1/O-Δ2.
+ * `REDACTION_VERDICTS` lives in `@acp/ledger` (decision 45's class), so nothing
+ * is exported from `@acp/contracts`. `account_id` is not cross-checked with the
+ * segment's nullable one, because §8 lists no such rule.
+ *
+ * **Pins that move.** `CONTROL_PLANE_EVENT_TYPES` 28 → **30** at its three
+ * `toHaveLength` sites (`contracts/test/schemas`, `runtime/test/failure`,
+ * `runtime/test/switch-landing`), and the channel map's `execution` partition
+ * 10 → **12**. `MIGRATIONS` 13 → 14. `DERIVED_TABLES` 13 → 15, with the answer
+ * and the prompt BEFORE C's cohort because the foreign keys point upward.
+ * `PROJECTION_NAMES` 8 → 10, `PROJECTION_SOURCES` 12 → 14,
+ * `status().projections` 11 → 13 and its watermark rows 12 → 14.
+ * `EXPECTED_SCHEMA_OBJECTS` gains five entries; the `tr_` inventory stays at
+ * eight. The ADR corpus 76 → 77 and the decision register gains row 49.
+ *
+ * **Pins that do not move.** `CONTRACT_VERSION`, `SUPPORTED_CONTRACT_VERSIONS`,
+ * `AdmittedContractVersion`, `API_CONTRACT_VERSION`, `ROADMAP_SHA256`.
+ * `CONTRACTS_SCHEMA_EXPORTS` (113): no export is added to the contract. The
+ * ledger README's `### Errors` bijection, because every refusal is a
+ * `LedgerValidationError` with a `path`.
+ *
+ * **Twenty-four paths, one of them new** — ADR 0077. Two are admitted and left
+ * unmodified: `contracts/src/schemas/index.ts` and `contracts/src/index.ts`,
+ * admitted against a schema export that the decision above made unnecessary.
+ * `contracts/src/schemas/primitives/index.ts` is not admitted at all, because
+ * it holds `CONTRACT_VERSION` and this escalón must not change it.
+ */
+const P18D_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/kernel/contracts/src/schemas/control-plane-event/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/index.md",
+  "docs/architecture/0077-a-prompt-occurrence-is-a-use-never-a-blob.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9541,6 +9637,7 @@ const WRITE_SET = [
   ...P18C_WRITE_SET,
   ...P18E2_WRITE_SET,
   ...P18E1_WRITE_SET,
+  ...P18D_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

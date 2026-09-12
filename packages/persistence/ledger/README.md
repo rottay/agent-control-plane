@@ -169,6 +169,8 @@ fourteenth class cannot arrive without appearing here.
 | `execution_route_segment_read_model` | derived | one row per stretch of one attempt's route, with explicit lineage back to the segment that handed off to it |
 | `effect_read_model` | derived | one row per logical operation of a run, found by its logical key rather than by a physical coordinate |
 | `dispatch_attempt_read_model` | derived | one row per concrete external delivery of one effect, in the five states of execution §7 |
+| `prompt_occurrence_read_model` | derived | one row per prompt a delivery sent: digests and counts, the effective segment and account, never the bytes |
+| `response_occurrence_read_model` | derived | the one answer to one prompt occurrence, attributed through that prompt and nothing else |
 | `initiative_read_model` | derived | current status, counts, first and last position |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
@@ -597,6 +599,62 @@ and lives in this package, on decision 45's reasoning rather than decision 42's.
 Nothing emits any of the three event types. The migration, the folds, the door
 and the lookup land without a production caller, exactly as escalón B's opening
 did; escalón G owes the producer.
+
+## The prompt a delivery sent, and the answer it received
+
+Migration 14 (execution §8; ADR 0077). Two tables hanging off migration 13's
+delivery, and two event types — `PROMPT_OCCURRENCE_RECORDED` and
+`RESPONSE_OCCURRENCE_RECORDED` — both same-state passthroughs on `execution`.
+The answer is its own type because it has its own key, its own instant and its
+own position, and because it may arrive **late**.
+
+### A use, never a blob
+
+A prompt occurrence is the fact that some bytes were sent, not the bytes. The
+same prompt sent twice is two rows under two occurrence ids with one
+`prompt_sha256` between them, which is why that column is indexed and never
+unique, and why `listPromptOccurrencesBySha256` returns a list.
+`dispatch_attempt_id` is not unique either: one delivery may send several
+prompts. No row holds a byte of a prompt or of an answer — only digests and
+counts — and the append door refuses any payload key the occurrence grammar
+does not declare, beside the contract's own transcript guard.
+
+The three digests are **conserved, never recomputed**. Their preimages are the
+bytes that never enter, so this ledger has no source to recompute them from; it
+checks their shape and says that is all it checks. What it does verify is
+everything it has a source for: the delivery exists, the prompt's effect and
+segment are that delivery's — the **effective** segment, never the one the
+effect began on — the event is recorded at the attempt that owns the effect, and
+the ordinal is one past the segment's highest. `identity` is the recording
+event's `emittedBy`.
+
+### Causal order, and one batch
+
+A prompt is recorded after its delivery's intention, or later in the same
+`appendBatch`. The door reads the delivery inside the transaction, so a batch
+that intends a delivery and records its prompt, in that order, lands whole; the
+reverse order is refused by name and the batch lands nowhere.
+
+### A late answer keeps its origin
+
+`response_occurrence_read_model` has no account and no segment column, and the
+door refuses an answer payload that names a delivery, a segment or an account.
+Its only link to where the work ran is `prompt_occurrence_id`, and its V2
+coordinate must be the prompt's own. So an answer that arrives after its
+delivery was abandoned and another account took over on a new segment is
+attributed to the prompt that was actually sent — the origin — and there is no
+path by which it could be attributed to the destination. One answer per prompt:
+a second is refused by name at the door, and a rebuild refuses a history that
+holds one.
+
+### What this escalón does not do
+
+No contract bump: D adds facts — conserved digests, counts, vocabulary words —
+and no identity formula, which is ADR 0076's criterion for staying on `"2.3.0"`.
+No occurrence is derived from an intention or a resolution, and a delivery that
+resolves with no prompt leaves both tables empty. Nothing emits either type:
+execution §8 `:421` — no occurrence for a call a transport does not make
+observable — is a guarantee the producer of escalón G owes.
 
 ## The account stream's hash chain
 

@@ -33,6 +33,13 @@ import {
   nextTaskAttemptProjection,
   nextTaskProjection,
   nextTaskRevisionProjection,
+  PROMPT_OCCURRENCE_RECORD_KEYS,
+  RESPONSE_OCCURRENCE_RECORD_KEYS,
+  canonicalPromptOccurrence,
+  nextPromptOccurrenceProjection,
+  nextResponseOccurrenceProjection,
+  readPromptOccurrence,
+  readResponseOccurrence,
   routingAssignmentId,
   taskAttemptKey,
 } from "../../src/projection/index.js";
@@ -1630,5 +1637,296 @@ describe("the three P-18/protocolo C folds are gated and total (execution §4, �
     );
     expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState).toBe("SETTLED");
     expect(snapshot.effects.get(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo D — the occurrence readers and folds (execution §8)
+// ---------------------------------------------------------------------------
+
+const OCCURRENCE_EFFECT = "a".repeat(64);
+
+/** A lawful prompt occurrence payload, with the V2 coordinate beside the record. */
+function promptPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    revisionNumber: 1,
+    attemptNumber: 1,
+    promptOccurrence: {
+      occurrenceId: "po-1",
+      dispatchAttemptId: "dsp-1",
+      effectId: OCCURRENCE_EFFECT,
+      routeSegmentId: "seg-1",
+      ordinal: 0,
+      requestedModelId: "claude-opus-5",
+      provider: "anthropic",
+      modelResolutionStatus: "RESOLVED",
+      modelVersionId: "claude-opus-5-20260101",
+      accountId: "acct-1",
+      promptSha256: "c".repeat(64),
+      promptBytes: 12,
+      ...overrides,
+    },
+  };
+}
+
+/** A lawful response occurrence payload. */
+function responsePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    revisionNumber: 1,
+    attemptNumber: 1,
+    responseOccurrence: {
+      occurrenceId: "ro-1",
+      promptOccurrenceId: "po-1",
+      responseSha256: "d".repeat(64),
+      responseBytes: 34,
+      redactionVerdict: "CLEAN",
+      ...overrides,
+    },
+  };
+}
+
+/** A snapshot holding one effect on `seg-1` and its delivery `dsp-1`. */
+function snapshotWithDelivery(): ReturnType<typeof createProjectionSnapshot> {
+  const snapshot = createProjectionSnapshot();
+  applyEventToSnapshot(
+    snapshot,
+    executionEvent("EFFECT_INTENDED", {
+      revisionNumber: 1,
+      attemptNumber: 1,
+      segment: segment(),
+      effect: {
+        effectId: OCCURRENCE_EFFECT,
+        operationOrdinal: 0,
+        effectKind: "model_execution",
+        semanticScopeKey: "run",
+        localOperationKey: "compose",
+        logicalOperationSha256: "b".repeat(64),
+        requestContractVersion: "1",
+        requestSha256: "c".repeat(64),
+        idempotencyKey: "d".repeat(64),
+      },
+    }),
+    1,
+  );
+  applyEventToSnapshot(
+    snapshot,
+    executionEvent("DISPATCH_INTENDED", {
+      revisionNumber: 1,
+      attemptNumber: 1,
+      segment: segment(),
+      dispatch: { dispatchAttemptId: "dsp-1", effectId: OCCURRENCE_EFFECT, attemptOrdinal: 1 },
+    }),
+    2,
+  );
+  return snapshot;
+}
+
+describe("the occurrence readers are gated, closed and total (execution §8)", () => {
+  it("reads nothing for any other type, and reads a row off each of its own", () => {
+    expect(readPromptOccurrence(executionEvent("TASK_ATTEMPT_OPENED", promptPayload()), 1)).toBeNull();
+    expect(
+      readResponseOccurrence(executionEvent("PROMPT_OCCURRENCE_RECORDED", responsePayload()), 1),
+    ).toBeNull();
+
+    const prompt = nextPromptOccurrenceProjection(
+      executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()),
+      9,
+    );
+    // `identity` is `emittedBy`; `recordedAt` is the event's; an absent context
+    // digest is null; the sequence is the fold's.
+    expect(prompt).toMatchObject({
+      occurrenceId: "po-1",
+      identity: EMITTED_BY,
+      recordedAt: "2026-09-12T09:00:01.000Z",
+      contextSha256: null,
+      sequence: 9,
+    });
+    expect(
+      nextResponseOccurrenceProjection(
+        executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()),
+        10,
+      ),
+    ).toMatchObject({ occurrenceId: "ro-1", promptOccurrenceId: "po-1", sequence: 10 });
+  });
+
+  it("declares a closed record for each type, and the answer's names no delivery, segment or account", () => {
+    expect([...RESPONSE_OCCURRENCE_RECORD_KEYS].sort()).toEqual([
+      "occurrenceId",
+      "promptOccurrenceId",
+      "redactionVerdict",
+      "responseBytes",
+      "responseSha256",
+    ]);
+    for (const key of ["dispatchAttemptId", "routeSegmentId", "accountId"]) {
+      expect(RESPONSE_OCCURRENCE_RECORD_KEYS as readonly string[], key).not.toContain(key);
+    }
+    expect(PROMPT_OCCURRENCE_RECORD_KEYS as readonly string[]).not.toContain("identity");
+  });
+
+  it("is total: every single-field corruption reads as a named refusal, never as a row or a throw", () => {
+    // The readers are the one authority on what an occurrence payload is, so a
+    // corruption anywhere must come back as `refused` with a path under the
+    // record — the door throws it, the fold projects nothing.
+    const ABSENT = Symbol("absent");
+    // None of these is lawful for any field, except absence for the one optional
+    // digest — a plain word is left out because it is a lawful id.
+    const corruptions: readonly unknown[] = [ABSENT, null, "", -1, 1.5, {}, [], true];
+    forAll(
+      "prompt occurrence corruption",
+      0x18d,
+      ITERATIONS,
+      (random) => ({
+        field: pick(random, PROMPT_OCCURRENCE_RECORD_KEYS),
+        value: pick(random, corruptions),
+      }),
+      ({ field, value }) => {
+        const lawful = promptPayload()["promptOccurrence"] as Record<string, unknown>;
+        const record = Object.fromEntries(
+          Object.entries({ ...lawful, [field]: value }).filter(([, entry]) => entry !== ABSENT),
+        );
+        const payload = { revisionNumber: 1, attemptNumber: 1, promptOccurrence: record };
+        const reading = readPromptOccurrence(executionEvent("PROMPT_OCCURRENCE_RECORDED", payload), 1);
+        expect(reading).not.toBeNull();
+        if (reading?.kind === "row") {
+          // Only the context digest may lawfully be absent or null here:
+          // `modelVersionId` is optional too, but this payload is `RESOLVED`.
+          expect(["contextSha256"]).toContain(field);
+          expect(value === ABSENT || value === null).toBe(true);
+        } else {
+          expect(reading?.path.startsWith("payload.promptOccurrence.")).toBe(true);
+        }
+      },
+    );
+  });
+
+  it("refuses a stray key beside the record and inside it, naming the key", () => {
+    const beside = readPromptOccurrence(
+      executionEvent("PROMPT_OCCURRENCE_RECORDED", { ...promptPayload(), transcriptRef: "x" }),
+      1,
+    );
+    expect(beside).toMatchObject({ kind: "refused", path: "payload.transcriptRef" });
+
+    const inside = readResponseOccurrence(
+      executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload({ accountId: "acct-2" })),
+      1,
+    );
+    expect(inside).toMatchObject({ kind: "refused", path: "payload.responseOccurrence.accountId" });
+
+    const noCoordinate = readResponseOccurrence(
+      executionEvent("RESPONSE_OCCURRENCE_RECORDED", {
+        responseOccurrence: (responsePayload()["responseOccurrence"] as Record<string, unknown>),
+      }),
+      1,
+    );
+    expect(noCoordinate).toMatchObject({ kind: "refused", path: "payload.revisionNumber" });
+  });
+
+  it("compares a prompt by what it is, not by when it arrived", () => {
+    const at = (sequence: number, recordedAt: string): string =>
+      canonicalPromptOccurrence(
+        nextPromptOccurrenceProjection(
+          executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload(), { recordedAt }),
+          sequence,
+        )!,
+      );
+    expect(at(1, "2026-09-12T09:00:01.000Z")).toBe(at(7, "2026-09-12T11:00:00.000Z"));
+    const otherSender = canonicalPromptOccurrence(
+      nextPromptOccurrenceProjection(
+        executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload(), {
+          emittedBy: "claude/opus/implementer/01",
+        }),
+        1,
+      )!,
+    );
+    expect(otherSender).not.toBe(at(1, "2026-09-12T09:00:01.000Z"));
+  });
+});
+
+describe("the occurrence folds refuse what the door refuses (execution §8)", () => {
+  it("N-P18-16: folds a prompt that matches its delivery, and refuses one that does not", () => {
+    const snapshot = snapshotWithDelivery();
+    for (const [field, value] of [
+      ["effectId", "f".repeat(64)],
+      ["routeSegmentId", "seg-2"],
+      ["dispatchAttemptId", "dsp-nowhere"],
+    ] as const) {
+      expect(() => {
+        applyEventToSnapshot(
+          snapshot,
+          executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload({ [field]: value })),
+          3,
+        );
+      }, field).toThrow(LedgerValidationError);
+    }
+    expect(snapshot.promptOccurrences.size).toBe(0);
+
+    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3);
+    expect(snapshot.promptOccurrences.get("po-1")?.routeSegmentId).toBe("seg-1");
+  });
+
+  it("N-D-2 and N-D-3: one answer per prompt, and none to a prompt nobody recorded", () => {
+    const snapshot = snapshotWithDelivery();
+    expect(() => {
+      applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 3);
+    }).toThrow(LedgerValidationError);
+
+    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3);
+    applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 4);
+    // The identical answer again is a replay and changes nothing.
+    applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 5);
+    expect(snapshot.responseOccurrences.size).toBe(1);
+
+    let issue: { readonly path: string; readonly message: string } | undefined;
+    try {
+      applyEventToSnapshot(
+        snapshot,
+        executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload({ occurrenceId: "ro-2" })),
+        6,
+      );
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("payload.responseOccurrence.promptOccurrenceId");
+    expect(issue?.message).toContain("already answered by ro-1");
+    expect(snapshot.responseOccurrences.size).toBe(1);
+  });
+
+  it("N-D-4: an answer recorded at another coordinate than its prompt's is refused", () => {
+    const snapshot = snapshotWithDelivery();
+    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3);
+    let issue: { readonly path: string; readonly message: string } | undefined;
+    try {
+      applyEventToSnapshot(
+        snapshot,
+        executionEvent("RESPONSE_OCCURRENCE_RECORDED", { ...responsePayload(), attemptNumber: 2 }),
+        4,
+      );
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("payload.responseOccurrence.promptOccurrenceId");
+    expect(issue?.message).toContain("attempt " + EFFECT_TASK + " 1 2");
+    expect(snapshot.responseOccurrences.size).toBe(0);
+  });
+
+  it("P-D-2: no fold derives an occurrence from an intention or a resolution", () => {
+    const snapshot = snapshotWithDelivery();
+    applyEventToSnapshot(
+      snapshot,
+      executionEvent("DISPATCH_OUTCOME_RECORDED", {
+        revisionNumber: 1,
+        attemptNumber: 1,
+        outcome: {
+          dispatchAttemptId: "dsp-1",
+          dispatchState: "SETTLED",
+          terminalAt: "2026-09-12T09:10:00.000Z",
+          effectOutcomeStatus: "SUCCEEDED",
+        },
+      }),
+      3,
+    );
+    expect(snapshot.promptOccurrences.size).toBe(0);
+    expect(snapshot.responseOccurrences.size).toBe(0);
+    expect(snapshot.responseOccurrenceClaims.size).toBe(0);
   });
 });

@@ -47,6 +47,7 @@ import {
 import {
   DERIVED_TABLES,
   EXECUTION_EFFECT_MIGRATION,
+  EXECUTION_OCCURRENCE_MIGRATION,
   MIGRATIONS,
   applyMigrations,
 } from "../../src/migrations/index.js";
@@ -309,12 +310,12 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    // Thirteen since P-18/protocolo C added the effect, its deliveries and the
-    // route segment both hang off, beside B's attempt record, P-05/B's revision
-    // coordinate, P-08's sidecar and the registry stream, typed causal triple
-    // and watermark table of P-09.
+    // Fourteen since P-18/protocolo D added the prompt and response
+    // occurrences, beside C's effect, deliveries and route segment, B's attempt
+    // record, P-05/B's revision coordinate, P-08's sidecar and the registry
+    // stream, typed causal triple and watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1298,6 +1299,27 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
 }
 
 /**
+ * Migration 14 undone: the prompt and response occurrences.
+ *
+ * The answer before the prompt it names, each table's indexes before the table,
+ * and the two watermark rows with them — `dropExecutionEffectIdentity`'s shape
+ * one rung further down.
+ */
+function dropExecutionOccurrences(raw: Database.Database): void {
+  raw.exec(
+    "DROP INDEX ux_response_occurrence_read_model__prompt; " +
+      "DROP TABLE response_occurrence_read_model; " +
+      "DROP INDEX ix_prompt_occurrence_read_model__sha256; " +
+      "DROP INDEX ix_prompt_occurrence_read_model__segment; " +
+      "DROP TABLE prompt_occurrence_read_model;",
+  );
+  const forget = raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?");
+  for (const name of ["response_occurrence_read_model", "prompt_occurrence_read_model"]) {
+    forget.run(name);
+  }
+}
+
+/**
  * Migration 13 undone: the effect, its deliveries and the segment they hang off.
  *
  * Children first, on `dropTaskAttemptIdentity`'s reasoning one rung further
@@ -1307,6 +1329,9 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
  * reopen would find rows for projections whose tables it is about to create.
  */
 function dropExecutionEffectIdentity(raw: Database.Database): void {
+  // Fourteen first: an occurrence names a delivery, an effect and a segment,
+  // so rewinding past 13 means rewinding past everything applied after it.
+  dropExecutionOccurrences(raw);
   raw.exec(
     "DROP INDEX ix_dispatch_attempt_read_model__state; " +
       "DROP INDEX ux_dispatch_attempt_read_model__effect_ordinal; " +
@@ -1813,19 +1838,20 @@ describe("projection watermark verification", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
-    // Eleven projections since P-18/protocolo C: the two task-stream folds, the
-    // route fold, the revision fold, the attempt fold, the segment, effect and
-    // delivery folds, the two initiative-stream folds, and the two-source
-    // routing fold. Twelve heads, because the last one has two — every one of
-    // them at zero on a ledger that has never been appended to.
-    expect(ledger.status().projections).toHaveLength(11);
+    // Thirteen projections since P-18/protocolo D: the two task-stream folds,
+    // the route fold, the revision fold, the attempt fold, the segment, effect
+    // and delivery folds, the prompt and response occurrence folds, the two
+    // initiative-stream folds, and the two-source routing fold. Fourteen heads,
+    // because the last one has two — every one of them at zero on a ledger that
+    // has never been appended to.
+    expect(ledger.status().projections).toHaveLength(13);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -2820,7 +2846,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3031,7 +3057,7 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.listEvents().events).toHaveLength(0);
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
-    expect([...appliedByName(ledger).values()]).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect([...appliedByName(ledger).values()]).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
     // The handle is still usable, so the rollback was clean rather than wedged.
@@ -3055,13 +3081,15 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(12);
+    expect(rows).toHaveLength(14);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "dispatch_attempt_read_model",
       "effect_read_model",
       "execution_route_read_model",
       "execution_route_segment_read_model",
+      "prompt_occurrence_read_model",
+      "response_occurrence_read_model",
       "task_attempt_read_model",
       "task_read_model",
       "task_revision_read_model",
@@ -3069,12 +3097,12 @@ describe("the watermark advances with every door that moves a head", () => {
     ]);
     // The revision projection moves with the stream exactly as its siblings do,
     // and it is level at five having folded no row at all: none of the seeded
-    // events carries a V2 coordinate. The three P-18/protocolo C projections are
-    // level at five having folded nothing either, for the same reason. A
-    // watermark tracks the cut a projection has SEEN, not the rows it chose to
-    // write.
-    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5, 5, 5, 5, 5, 5]);
-    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5, 5, 5, 5, 5, 5]);
+    // events carries a V2 coordinate. The three P-18/protocolo C projections and
+    // D's two are level at five having folded nothing either, for the same
+    // reason. A watermark tracks the cut a projection has SEEN, not the rows it
+    // chose to write.
+    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5, 5, 5, 5, 5, 5, 5, 5]);
+    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5, 5, 5, 5, 5, 5, 5, 5]);
     expect(new Set(taskRows.map((row) => row.projector_version))).toEqual(new Set([1]));
 
     // The sibling stream stayed where it was. A single shared number is exactly
@@ -3129,7 +3157,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(12);
+    expect(before).toHaveLength(14);
 
     tamper(path, (raw) => {
       raw
@@ -3244,7 +3272,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3293,7 +3321,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(12);
+    expect(rows).toHaveLength(14);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -4220,15 +4248,17 @@ describe("two heads under one projection name advance independently (negative 2)
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     const status = ledger.status();
-    // Eleven projections, not twelve entries: the vector lives INSIDE the
+    // Thirteen projections, not fourteen entries: the vector lives INSIDE the
     // projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(11);
+    expect(status.projections).toHaveLength(13);
     expect(status.projections.map((projection) => projection.name)).toEqual([
       "dispatch_attempt_read_model",
       "effect_read_model",
       "execution_route_read_model",
       "execution_route_segment_read_model",
       "initiative_read_model",
+      "prompt_occurrence_read_model",
+      "response_occurrence_read_model",
       "roadmap_version_read_model",
       "routing_assignment_read_model",
       "task_attempt_read_model",
@@ -4258,12 +4288,12 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Twelve rows in the table, twelve entries across eleven projections.
+    // Fourteen rows in the table, fourteen entries across thirteen projections.
     // Nothing in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(12);
+    expect(readWatermarks(path)).toHaveLength(14);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(12);
+    ).toHaveLength(14);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -4453,7 +4483,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       fallbacks: readFallbacks(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(12);
+    expect(live.watermarks).toHaveLength(14);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -5320,7 +5350,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -7120,7 +7150,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7141,6 +7171,57 @@ describe("a version this build does not read is refused, by name", () => {
       "2.3.0",
       "2.3.0",
     ]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    migrated.close();
+  });
+
+  it("P-P18-2, escalón D: a 2.2.0 history under a 2.3.0 one, rewound to 13, migrates to 14 and takes occurrences", () => {
+    // The field case one migration later. A ledger written partly by the build
+    // before the bump and partly by escalón C's build — stopped at 13 — is
+    // opened by this build, which applies 14 over both cohorts, and must then
+    // read, verify, rebuild and record a prompt and its answer on top. No bump
+    // is involved: D's events are stamped with the version C put in force.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const oldTask = randomUUID();
+    ledger.append(makeEvent({ taskId: oldTask, transitionId: "one" }));
+    ledger.close();
+    restampHistory(path, "2.2.0");
+
+    const middle = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(middle, taskId);
+    middle.close();
+
+    withRawDatabase(path, (raw) => {
+      dropExecutionOccurrences(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(
+        EXECUTION_OCCURRENCE_MIGRATION,
+      );
+    });
+
+    const migrated = open(path);
+    expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+    ]);
+    expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
+      "2.2.0",
+      "2.3.0",
+      "2.3.0",
+      "2.3.0",
+    ]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    expect(migrated.rebuildReadModel().replayedEvents).toBe(4);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+
+    migrated.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    migrated.append(
+      responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
+    );
+    expect(CONTRACT_VERSION).toBe("2.3.0");
+    expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
+    expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
+    expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
   });
@@ -7234,7 +7315,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -9707,5 +9788,999 @@ describe("migration 13 lands whole, and its rows rebuild deterministically", () 
       "SETTLED",
     ]);
     expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo D — the prompt a delivery sent, and the answer it received
+// ---------------------------------------------------------------------------
+
+/** The instant every occurrence fixture is recorded at, unless it says otherwise. */
+const OCCURRENCE_AT = "2026-09-12T10:00:00.000Z";
+
+/** Three digests, never a byte of what they digest — which is the point (§8 `:433`). */
+const PROMPT_DIGEST = "c".repeat(64);
+const RESPONSE_DIGEST = "d".repeat(64);
+const CONTEXT_DIGEST = "9".repeat(64);
+
+/** A worker that is not the coordinator, so `identity = emittedBy` is observable. */
+const SENDER = "claude/opus/implementer/01";
+
+interface OccurrenceShape {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly revisionNumber?: number;
+  readonly attemptNumber?: number;
+  readonly attempt?: number;
+  readonly emittedBy?: string;
+  readonly occurredAt?: string;
+  /** Fields of the nested record to replace or add. */
+  readonly overrides?: Record<string, unknown>;
+  /** Fields of the nested record to remove outright. */
+  readonly omit?: readonly string[];
+  /** Keys beside the coordinate and the record, which the door must refuse. */
+  readonly payloadExtras?: Record<string, unknown>;
+}
+
+interface PromptInput extends OccurrenceShape {
+  readonly effectId: string;
+  readonly occurrenceId?: string;
+  readonly dispatchAttemptId?: string;
+  readonly routeSegmentId?: string;
+  readonly ordinal?: number;
+  readonly accountId?: string;
+  readonly promptSha256?: string;
+}
+
+interface ResponseInput extends OccurrenceShape {
+  readonly promptOccurrenceId: string;
+  readonly occurrenceId?: string;
+}
+
+function occurrenceEvent(
+  input: OccurrenceShape,
+  type: ControlPlaneEventType,
+  recordKey: string,
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const omitted = new Set(input.omit ?? []);
+  const merged = Object.fromEntries(
+    Object.entries({ ...record, ...(input.overrides ?? {}) }).filter(([key]) => !omitted.has(key)),
+  );
+  return makeEvent({
+    taskId: input.taskId,
+    attempt: input.attempt ?? 1,
+    transitionId: input.transitionId,
+    type,
+    fromState: ATTEMPT_TASK_STATE,
+    toState: ATTEMPT_TASK_STATE,
+    occurredAt: input.occurredAt ?? OCCURRENCE_AT,
+    emittedBy: input.emittedBy ?? SENDER,
+    payload: {
+      revisionNumber: input.revisionNumber ?? 1,
+      attemptNumber: input.attemptNumber ?? 1,
+      [recordKey]: merged,
+      ...(input.payloadExtras ?? {}),
+    },
+  });
+}
+
+/** One `PROMPT_OCCURRENCE_RECORDED`, well formed unless the input says otherwise. */
+function promptOccurrence(input: PromptInput): Record<string, unknown> {
+  return occurrenceEvent(input, "PROMPT_OCCURRENCE_RECORDED", "promptOccurrence", {
+    occurrenceId: input.occurrenceId ?? "po-1",
+    dispatchAttemptId: input.dispatchAttemptId ?? "dsp-1",
+    effectId: input.effectId,
+    routeSegmentId: input.routeSegmentId ?? "seg-1",
+    ordinal: input.ordinal ?? 0,
+    requestedModelId: "claude-opus-5",
+    provider: "anthropic",
+    modelResolutionStatus: "RESOLVED",
+    modelVersionId: "claude-opus-5-20260101",
+    accountId: input.accountId ?? "acct-1",
+    promptSha256: input.promptSha256 ?? PROMPT_DIGEST,
+    promptBytes: 4096,
+    contextSha256: CONTEXT_DIGEST,
+  });
+}
+
+/** One `RESPONSE_OCCURRENCE_RECORDED`, well formed unless the input says otherwise. */
+function responseOccurrence(input: ResponseInput): Record<string, unknown> {
+  return occurrenceEvent(input, "RESPONSE_OCCURRENCE_RECORDED", "responseOccurrence", {
+    occurrenceId: input.occurrenceId ?? "ro-1",
+    promptOccurrenceId: input.promptOccurrenceId,
+    responseSha256: RESPONSE_DIGEST,
+    responseBytes: 2048,
+    redactionVerdict: "CLEAN",
+  });
+}
+
+/** A ledger with one open attempt, one effect on `seg-1`, and delivery `dsp-1` of it. */
+function seedDelivery(ledger: Ledger, taskId: string): string {
+  seedOpenAttempt(ledger, taskId);
+  ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+  const effectId = firstEffectId(taskId);
+  ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+  return effectId;
+}
+
+/** The first issue of the `LedgerValidationError` an action raises. */
+function refusalOf(action: () => unknown): { readonly path: string; readonly message: string } {
+  const error = caught(action);
+  expect(error).toBeInstanceOf(LedgerValidationError);
+  const issue = (error as LedgerValidationError).issues[0];
+  expect(issue).toBeDefined();
+  return issue as { readonly path: string; readonly message: string };
+}
+
+describe("a prompt occurrence is a use, never a blob (execution §8.1)", () => {
+  it("P-D-3: a prompt lands on its delivery, its answer on it, and both replay exactly", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+
+    const prompt = promptOccurrence({ taskId, transitionId: "prompt-1", effectId });
+    expect(ledger.append(prompt).inserted).toBe(true);
+    const answer = responseOccurrence({
+      taskId,
+      transitionId: "response-1",
+      promptOccurrenceId: "po-1",
+    });
+    expect(ledger.append(answer).inserted).toBe(true);
+
+    const row = ledger.getPromptOccurrence("po-1");
+    expect(row).toMatchObject({
+      occurrenceId: "po-1",
+      routeSegmentId: "seg-1",
+      effectId,
+      dispatchAttemptId: "dsp-1",
+      ordinal: 0,
+      requestedModelId: "claude-opus-5",
+      provider: "anthropic",
+      modelResolutionStatus: "RESOLVED",
+      modelVersionId: "claude-opus-5-20260101",
+      accountId: "acct-1",
+      promptSha256: PROMPT_DIGEST,
+      promptBytes: 4096,
+      contextSha256: CONTEXT_DIGEST,
+      recordedAt: OCCURRENCE_AT,
+    });
+    // `identity` is the recording event's `emittedBy`, never a payload key.
+    expect(row?.identity).toBe(SENDER);
+
+    expect(ledger.getResponseOccurrenceForPrompt("po-1")).toMatchObject({
+      occurrenceId: "ro-1",
+      promptOccurrenceId: "po-1",
+      responseSha256: RESPONSE_DIGEST,
+      responseBytes: 2048,
+      redactionVerdict: "CLEAN",
+    });
+
+    // The exact events again are replays: nothing inserted, no second ordinal.
+    expect(ledger.append(prompt).inserted).toBe(false);
+    expect(ledger.append(answer).inserted).toBe(false);
+    expect(ledger.listPromptOccurrences("seg-1")).toHaveLength(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P18-18: the same bytes sent twice are two occurrences and one digest", () => {
+    // Execution §8 `:377-379` and negative 3: `prompt_sha256` is not unique, and
+    // `dispatch_attempt_id` is not either — one delivery sends both.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    ledger.append(
+      promptOccurrence({ taskId, transitionId: "prompt-2", effectId, occurrenceId: "po-2", ordinal: 1 }),
+    );
+
+    const sent = ledger.listPromptOccurrencesBySha256(PROMPT_DIGEST);
+    expect(sent.map((row) => row.occurrenceId)).toEqual(["po-1", "po-2"]);
+    expect(sent.map((row) => row.ordinal)).toEqual([0, 1]);
+    expect(new Set(sent.map((row) => row.dispatchAttemptId))).toEqual(new Set(["dsp-1"]));
+    // One digest, two uses — and no row holds anything but the digest and a count.
+    expect(new Set(sent.map((row) => row.promptSha256)).size).toBe(1);
+    const columns = Object.keys(
+      readRows(path, "SELECT * FROM prompt_occurrence_read_model LIMIT 1")[0] ?? {},
+    );
+    expect(columns).toEqual([
+      "occurrence_id",
+      "route_segment_id",
+      "effect_id",
+      "dispatch_attempt_id",
+      "ordinal",
+      "identity",
+      "requested_model_id",
+      "provider",
+      "model_resolution_status",
+      "model_version_id",
+      "account_id",
+      "prompt_sha256",
+      "prompt_bytes",
+      "context_sha256",
+      "recorded_at",
+      "sequence",
+    ]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P18-16: a prompt whose effect or segment is not its delivery's is refused by name", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+
+    const wrongEffect = refusalOf(() =>
+      ledger.append(
+        promptOccurrence({ taskId, transitionId: "prompt-1", effectId: "e".repeat(64) }),
+      ),
+    );
+    expect(wrongEffect.path).toBe("payload.promptOccurrence.effectId");
+    expect(wrongEffect.message).toContain(effectId);
+
+    // After a handoff the delivery runs on `seg-2`, and the prompt it sends
+    // names `seg-2` — never `seg-1`, where the effect began.
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "abandon-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "ABANDONED",
+        terminalAt: EFFECT_AT,
+      }),
+    );
+    ledger.append(
+      dispatchIntention({
+        taskId,
+        transitionId: "dispatch-2",
+        effectId,
+        dispatchAttemptId: "dsp-2",
+        attemptOrdinal: 2,
+        segment: segmentRecord({
+          routeSegmentId: "seg-2",
+          segmentNumber: 2,
+          predecessorSegmentId: "seg-1",
+          accountId: "acct-2",
+        }),
+      }),
+    );
+    const inferred = refusalOf(() =>
+      ledger.append(
+        promptOccurrence({
+          taskId,
+          transitionId: "prompt-2",
+          effectId,
+          dispatchAttemptId: "dsp-2",
+          routeSegmentId: "seg-1",
+          accountId: "acct-2",
+        }),
+      ),
+    );
+    expect(inferred.path).toBe("payload.promptOccurrence.routeSegmentId");
+    expect(inferred.message).toContain("seg-2");
+    expect(inferred.message).toContain("never inferred from the effect's origin");
+
+    expect(ledger.listPromptOccurrences("seg-1")).toEqual([]);
+    expect(ledger.listPromptOccurrences("seg-2")).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P18-16, rebuild half: a stored prompt that disagrees with its delivery is refused", () => {
+    // The door cannot produce this history, so it is planted with a correct
+    // chain; the fold has to refuse it with the door's own words rather than
+    // write a row the base would then carry.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedDelivery(ledger, taskId);
+    ledger.close();
+
+    plantChainedEvent(
+      path,
+      promptOccurrence({ taskId, transitionId: "prompt-planted", effectId: "e".repeat(64) }),
+    );
+
+    const reopened = open(path);
+    const refused = caught(() => reopened.rebuildReadModel());
+    expect(refused).toBeInstanceOf(LedgerValidationError);
+    expect((refused as LedgerValidationError).issues[0]?.path).toBe(
+      "payload.promptOccurrence.effectId",
+    );
+    expect(reopened.listPromptOccurrences("seg-1")).toEqual([]);
+  });
+
+  it("N-D-1 and P-D-1: a prompt follows its delivery's intention, committed or earlier in the batch", () => {
+    // Execution §8 `:419-420`.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+
+    // N-D-1: no such delivery, anywhere. Refused by name, never as an abort of
+    // the foreign key.
+    const orphan = refusalOf(() =>
+      ledger.append(promptOccurrence({ taskId, transitionId: "prompt-0", effectId })),
+    );
+    expect(orphan.path).toBe("payload.promptOccurrence.dispatchAttemptId");
+    expect(orphan.message).toContain("dsp-1");
+    expect(orphan.message).not.toContain("FOREIGN KEY");
+
+    // N-D-1, batch form: the prompt BEFORE its delivery's intention in one
+    // batch is out of causal order, and the whole batch lands nowhere.
+    const head = ledger.status().headSequence;
+    const inverted = refusalOf(() =>
+      ledger.appendBatch([
+        promptOccurrence({ taskId, transitionId: "prompt-1", effectId }),
+        dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }),
+      ]),
+    );
+    expect(inverted.path).toBe("payload.promptOccurrence.dispatchAttemptId");
+    expect(ledger.status().headSequence).toBe(head);
+    expect(ledger.listDispatchAttempts(effectId)).toEqual([]);
+
+    // P-D-1: the same two, in causal order, in one batch — admitted, and both
+    // rows are there.
+    const landed = ledger.appendBatch([
+      dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }),
+      promptOccurrence({ taskId, transitionId: "prompt-1", effectId }),
+    ]);
+    expect(landed.insertedCount).toBe(2);
+    expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchAttemptId)).toEqual([
+      "dsp-1",
+    ]);
+    expect(ledger.getPromptOccurrence("po-1")?.dispatchAttemptId).toBe("dsp-1");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("assigns the ordinal within the segment, and a handoff restarts it", () => {
+    // §8 `:389`: "orden dentro del segmento". The producer proposes and the
+    // ledger verifies — one past the segment's highest, 0 where there is none.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+
+    const skipped = refusalOf(() =>
+      ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId, ordinal: 1 })),
+    );
+    expect(skipped.path).toBe("payload.promptOccurrence.ordinal");
+    expect(skipped.message).toContain("assigns the prompt ordinal 0");
+
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "abandon-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "ABANDONED",
+        terminalAt: EFFECT_AT,
+      }),
+    );
+    ledger.append(
+      dispatchIntention({
+        taskId,
+        transitionId: "dispatch-2",
+        effectId,
+        dispatchAttemptId: "dsp-2",
+        attemptOrdinal: 2,
+        segment: segmentRecord({
+          routeSegmentId: "seg-2",
+          segmentNumber: 2,
+          predecessorSegmentId: "seg-1",
+          accountId: "acct-2",
+        }),
+      }),
+    );
+    ledger.append(
+      promptOccurrence({
+        taskId,
+        transitionId: "prompt-2",
+        effectId,
+        occurrenceId: "po-2",
+        dispatchAttemptId: "dsp-2",
+        routeSegmentId: "seg-2",
+        accountId: "acct-2",
+      }),
+    );
+    expect(ledger.getPromptOccurrence("po-2")?.ordinal).toBe(0);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-D-5: the model pair and the preserved alias and provider are refused by name", () => {
+    // §8 `:391-394` and `:414`, refused at the door before the CHECK could
+    // abort a statement nobody can attribute.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const base = { taskId, transitionId: "prompt-1", effectId } as const;
+
+    const resolvedWithout = refusalOf(() =>
+      ledger.append(promptOccurrence({ ...base, omit: ["modelVersionId"] })),
+    );
+    expect(resolvedWithout.path).toBe("payload.promptOccurrence.modelVersionId");
+    expect(resolvedWithout.message).toContain("RESOLVED with no version");
+
+    for (const status of ["UNKNOWN", "NOT_OBSERVABLE"]) {
+      const unresolvedWith = refusalOf(() =>
+        ledger.append(promptOccurrence({ ...base, overrides: { modelResolutionStatus: status } })),
+      );
+      expect(unresolvedWith.path, status).toBe("payload.promptOccurrence.modelVersionId");
+      expect(unresolvedWith.message, status).toContain(status + " with a version");
+    }
+
+    for (const field of ["requestedModelId", "provider"]) {
+      expect(
+        refusalOf(() => ledger.append(promptOccurrence({ ...base, overrides: { [field]: "" } })))
+          .path,
+        field,
+      ).toBe("payload.promptOccurrence." + field);
+      expect(
+        refusalOf(() => ledger.append(promptOccurrence({ ...base, omit: [field] }))).message,
+        field,
+      ).toContain("preserved always");
+    }
+
+    expect(
+      refusalOf(() =>
+        ledger.append(promptOccurrence({ ...base, overrides: { modelResolutionStatus: "PROBABLY" } })),
+      ).path,
+    ).toBe("payload.promptOccurrence.modelResolutionStatus");
+
+    // The lawful unresolved form lands, with the version NULL even after executing.
+    ledger.append(
+      promptOccurrence({
+        ...base,
+        overrides: { modelResolutionStatus: "NOT_OBSERVABLE" },
+        omit: ["modelVersionId"],
+      }),
+    );
+    expect(ledger.getPromptOccurrence("po-1")?.modelVersionId).toBeNull();
+    expect(ledger.getPromptOccurrence("po-1")?.requestedModelId).toBe("claude-opus-5");
+  });
+
+  it("N-D-6: counts, verdicts and digest shapes are refused by name", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const prompt = { taskId, transitionId: "prompt-1", effectId } as const;
+
+    for (const [field, value] of [
+      ["promptBytes", -1],
+      ["promptBytes", 1.5],
+      ["promptBytes", "4096"],
+      ["promptSha256", "C".repeat(64)],
+      ["promptSha256", "c".repeat(63)],
+      ["contextSha256", "not a digest"],
+      ["ordinal", -1],
+    ] as const) {
+      expect(
+        refusalOf(() => ledger.append(promptOccurrence({ ...prompt, overrides: { [field]: value } })))
+          .path,
+        field + "=" + String(value),
+      ).toBe("payload.promptOccurrence." + field);
+    }
+
+    // A context digest is optional, and absence is lawful.
+    ledger.append(promptOccurrence({ ...prompt, omit: ["contextSha256"] }));
+    expect(ledger.getPromptOccurrence("po-1")?.contextSha256).toBeNull();
+
+    const answer = { taskId, transitionId: "response-1", promptOccurrenceId: "po-1" } as const;
+    for (const [field, value] of [
+      ["responseBytes", -1],
+      ["responseBytes", 0.5],
+      ["responseSha256", "d".repeat(65)],
+      ["redactionVerdict", "PARTIAL"],
+      ["redactionVerdict", "clean"],
+    ] as const) {
+      expect(
+        refusalOf(() =>
+          ledger.append(responseOccurrence({ ...answer, overrides: { [field]: value } })),
+        ).path,
+        field + "=" + String(value),
+      ).toBe("payload.responseOccurrence." + field);
+    }
+
+    // And an answer's id is its own, never the prompt's (§8.2).
+    expect(
+      refusalOf(() =>
+        ledger.append(responseOccurrence({ ...answer, overrides: { occurrenceId: "po-1" } })),
+      ).path,
+    ).toBe("payload.responseOccurrence.occurrenceId");
+
+    // The one lawful answer still lands, and a zero count is a count.
+    ledger.append(
+      responseOccurrence({ ...answer, overrides: { responseBytes: 0, redactionVerdict: "REDACTED" } }),
+    );
+    expect(ledger.getResponseOccurrenceForPrompt("po-1")?.redactionVerdict).toBe("REDACTED");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-D-7: an occurrence payload admits exactly its declared keys", () => {
+    // §8 `:433`. The contract's transcript guard already refuses the keys a
+    // conversation travels under; this is the ledger's own line, over names the
+    // guard has never heard of.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const base = { taskId, transitionId: "prompt-1", effectId } as const;
+
+    const nested = refusalOf(() =>
+      ledger.append(promptOccurrence({ ...base, overrides: { promptText: "summarize the repo" } })),
+    );
+    expect(nested.path).toBe("payload.promptOccurrence.promptText");
+    expect(nested.message).toContain("the record admits exactly");
+
+    // Nobody chooses the sender: `identity` is `emittedBy`, not a payload key.
+    expect(
+      refusalOf(() =>
+        ledger.append(promptOccurrence({ ...base, overrides: { identity: "kimi/k3/coordinator/01" } })),
+      ).path,
+    ).toBe("payload.promptOccurrence.identity");
+
+    const beside = refusalOf(() =>
+      ledger.append(promptOccurrence({ ...base, payloadExtras: { body: "summarize the repo" } })),
+    );
+    expect(beside.path).toBe("payload.body");
+    expect(beside.message).toContain("never content");
+
+    expect(ledger.listPromptOccurrences("seg-1")).toEqual([]);
+  });
+
+  it("holds §8's CHECKs against raw SQL, underneath the door", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    ledger.append(responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }));
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      for (const statement of [
+        "UPDATE prompt_occurrence_read_model SET prompt_bytes = -1",
+        "UPDATE prompt_occurrence_read_model SET ordinal = -1",
+        "UPDATE prompt_occurrence_read_model SET model_version_id = NULL",
+        "UPDATE prompt_occurrence_read_model SET model_resolution_status = 'UNKNOWN'",
+        "UPDATE prompt_occurrence_read_model SET model_resolution_status = 'PROBABLY'",
+        "UPDATE response_occurrence_read_model SET response_bytes = -1",
+        "UPDATE response_occurrence_read_model SET redaction_verdict = 'PARTIAL'",
+      ]) {
+        expect(() => raw.prepare(statement).run(), statement).toThrow(/CHECK constraint failed/);
+      }
+      // And the base's own last line against a second answer.
+      expect(() =>
+        raw
+          .prepare(
+            "INSERT INTO response_occurrence_read_model (occurrence_id, prompt_occurrence_id, " +
+              "response_sha256, response_bytes, redaction_verdict, recorded_at, sequence) " +
+              "VALUES ('ro-2', 'po-1', ?, 1, 'CLEAN', ?, 99)",
+          )
+          .run(RESPONSE_DIGEST, OCCURRENCE_AT),
+      ).toThrow(/UNIQUE constraint failed/);
+    });
+  });
+});
+
+describe("an answer keeps its origin (execution §8.2)", () => {
+  it("N-D-4 (i) and N-P18-17: a late answer after a handoff is attributed to the origin", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+
+    // The origin sends a prompt on `seg-1` under `acct-1`, and its delivery is
+    // abandoned with nothing heard back.
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "abandon-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "ABANDONED",
+        terminalAt: EFFECT_AT,
+      }),
+    );
+
+    // The run hands off: a new delivery on `seg-2`, under `acct-2`, which sends
+    // its own prompt.
+    ledger.append(
+      dispatchIntention({
+        taskId,
+        transitionId: "dispatch-2",
+        effectId,
+        dispatchAttemptId: "dsp-2",
+        attemptOrdinal: 2,
+        segment: segmentRecord({
+          routeSegmentId: "seg-2",
+          segmentNumber: 2,
+          predecessorSegmentId: "seg-1",
+          accountId: "acct-2",
+        }),
+      }),
+    );
+    ledger.append(
+      promptOccurrence({
+        taskId,
+        transitionId: "prompt-2",
+        effectId,
+        occurrenceId: "po-2",
+        dispatchAttemptId: "dsp-2",
+        routeSegmentId: "seg-2",
+        accountId: "acct-2",
+      }),
+    );
+
+    // Then the origin's answer arrives, late.
+    ledger.append(
+      responseOccurrence({ taskId, transitionId: "response-late", promptOccurrenceId: "po-1" }),
+    );
+
+    // It lands on the prompt that was actually sent, and the join through that
+    // prompt gives the ORIGIN's segment and account — there is no other way to
+    // reach either from an answer.
+    const late = ledger.getResponseOccurrenceForPrompt("po-1");
+    expect(late?.occurrenceId).toBe("ro-1");
+    const origin = ledger.getPromptOccurrence(late?.promptOccurrenceId ?? "");
+    expect(origin?.routeSegmentId).toBe("seg-1");
+    expect(origin?.accountId).toBe("acct-1");
+    expect(origin?.dispatchAttemptId).toBe("dsp-1");
+    expect(Object.keys(late ?? {}).sort()).toEqual([
+      "occurrenceId",
+      "promptOccurrenceId",
+      "recordedAt",
+      "redactionVerdict",
+      "responseBytes",
+      "responseSha256",
+      "sequence",
+    ]);
+    // The destination's prompt is still unanswered.
+    expect(ledger.getResponseOccurrenceForPrompt("po-2")).toBeNull();
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-D-4 (ii): an answer that names a delivery, a segment or an account is refused", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    const base = { taskId, transitionId: "response-1", promptOccurrenceId: "po-1" } as const;
+
+    for (const [field, value] of [
+      ["dispatchAttemptId", "dsp-2"],
+      ["routeSegmentId", "seg-2"],
+      ["accountId", "acct-2"],
+    ] as const) {
+      const nested = refusalOf(() =>
+        ledger.append(responseOccurrence({ ...base, overrides: { [field]: value } })),
+      );
+      expect(nested.path, field).toBe("payload.responseOccurrence." + field);
+      const beside = refusalOf(() =>
+        ledger.append(responseOccurrence({ ...base, payloadExtras: { [field]: value } })),
+      );
+      expect(beside.path, field).toBe("payload." + field);
+    }
+    expect(ledger.getResponseOccurrenceForPrompt("po-1")).toBeNull();
+  });
+
+  it("N-D-4 (ii): an answer is recorded under its prompt's coordinate, never another", () => {
+    // §7 `:343`: the coordinate is the prompt's own attempt. A second attempt of
+    // the same task, and an answer to attempt 1's prompt recorded there.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const revisionId = randomUUID();
+    ledger.append(
+      attemptOpening({ taskId, attempt: 1, transitionId: "open", revisionId, invocationId: "inv-1" }),
+    );
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    ledger.append(
+      attemptOpening({
+        taskId,
+        attempt: 2,
+        attemptNumber: 2,
+        transitionId: "open-2",
+        revisionId,
+        invocationId: "inv-2",
+        fromState: ATTEMPT_TASK_STATE,
+      }),
+    );
+
+    const moved = refusalOf(() =>
+      ledger.append(
+        responseOccurrence({
+          taskId,
+          transitionId: "response-1",
+          promptOccurrenceId: "po-1",
+          attempt: 2,
+          attemptNumber: 2,
+        }),
+      ),
+    );
+    expect(moved.path).toBe("payload.responseOccurrence.promptOccurrenceId");
+    expect(moved.message).toContain("attempt " + taskId + " 1 1");
+
+    // And the same holds one rung up: a prompt recorded at another attempt than
+    // the one its delivery's effect belongs to.
+    const misplaced = refusalOf(() =>
+      ledger.append(
+        promptOccurrence({
+          taskId,
+          transitionId: "prompt-2",
+          effectId,
+          occurrenceId: "po-2",
+          ordinal: 1,
+          attempt: 2,
+          attemptNumber: 2,
+        }),
+      ),
+    );
+    expect(misplaced.path).toBe("payload.promptOccurrence.dispatchAttemptId");
+
+    // Under the right coordinate it lands.
+    ledger.append(
+      responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
+    );
+    expect(ledger.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-D-2: a second answer to one prompt is refused by name, and so is the history", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    ledger.append(responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }));
+
+    const second = responseOccurrence({
+      taskId,
+      transitionId: "response-2",
+      promptOccurrenceId: "po-1",
+      occurrenceId: "ro-2",
+    });
+    const refused = refusalOf(() => ledger.append(second));
+    expect(refused.path).toBe("payload.responseOccurrence.promptOccurrenceId");
+    expect(refused.message).toContain("already answered by ro-1");
+    expect(refused.message).not.toContain("UNIQUE");
+
+    // The same id restated with different content is not a second answer and
+    // not a replay either: it is refused as a changed occurrence.
+    const changed = refusalOf(() =>
+      ledger.append(
+        responseOccurrence({
+          taskId,
+          transitionId: "response-1-changed",
+          promptOccurrenceId: "po-1",
+          overrides: { responseBytes: 7 },
+        }),
+      ),
+    );
+    expect(changed.path).toBe("payload.responseOccurrence.occurrenceId");
+    ledger.close();
+
+    // The rebuild half: planted with a correct chain, the history the door
+    // refused is refused by the fold at the event that caused it, rather than
+    // by `ux_response_occurrence_read_model__prompt` naming a row.
+    plantChainedEvent(path, second);
+    const reopened = open(path);
+    const rebuilt = caught(() => reopened.rebuildReadModel());
+    expect(rebuilt).toBeInstanceOf(LedgerValidationError);
+    expect((rebuilt as LedgerValidationError).issues[0]?.message).toContain(
+      "already answered by ro-1",
+    );
+    expect(readRows(path, "SELECT occurrence_id FROM response_occurrence_read_model")).toEqual([
+      { occurrence_id: "ro-1" },
+    ]);
+  });
+
+  it("N-D-3: an answer to a prompt nobody recorded is refused by name", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedDelivery(ledger, taskId);
+    const refused = refusalOf(() =>
+      ledger.append(
+        responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-nowhere" }),
+      ),
+    );
+    expect(refused.path).toBe("payload.responseOccurrence.promptOccurrenceId");
+    expect(refused.message).toContain("po-nowhere");
+    expect(refused.message).not.toContain("FOREIGN KEY");
+  });
+});
+
+describe("migration 14 lands whole, and its rows rebuild deterministically", () => {
+  it("applies nothing at all when it fails part way through", () => {
+    const path = temporaryDatabase();
+    open(path).close();
+
+    withRawDatabase(path, (raw) => {
+      dropExecutionOccurrences(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(
+        EXECUTION_OCCURRENCE_MIGRATION,
+      );
+
+      const fourteenth = MIGRATIONS.filter(
+        (migration) => migration.version === EXECUTION_OCCURRENCE_MIGRATION,
+      );
+      expect(fourteenth).toHaveLength(1);
+
+      const run = raw.transaction((): void => {
+        applyMigrations(raw, fourteenth, OCCURRENCE_AT, {
+          afterSql: () => {
+            throw new Error("induced failure after the SQL and before the row");
+          },
+        });
+      });
+      expect(() => {
+        run.immediate();
+      }).toThrow("induced failure");
+
+      expect(
+        raw
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE name IN ('prompt_occurrence_read_model', " +
+              "'response_occurrence_read_model', 'ix_prompt_occurrence_read_model__sha256', " +
+              "'ux_response_occurrence_read_model__prompt')",
+          )
+          .all(),
+      ).toEqual([]);
+      expect(
+        raw
+          .prepare("SELECT version FROM schema_migrations WHERE version = ?")
+          .all(EXECUTION_OCCURRENCE_MIGRATION),
+      ).toEqual([]);
+      expect(
+        raw
+          .prepare("SELECT projection_name FROM projection_watermark WHERE projection_name LIKE ?")
+          .all("%occurrence%"),
+      ).toEqual([]);
+    });
+
+    const reopened = open(path);
+    expect(reopened.status().migrations.map((migration) => migration.version)).toContain(14);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("seeds its two watermarks from the head it finds, never from a literal zero", () => {
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    const taskId = randomUUID();
+    seedDelivery(seeded, taskId);
+    const head = seeded.status().headSequence;
+    expect(head).toBeGreaterThan(0);
+    seeded.close();
+
+    withRawDatabase(path, (raw) => {
+      dropExecutionOccurrences(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(
+        EXECUTION_OCCURRENCE_MIGRATION,
+      );
+    });
+
+    const migrated = open(path);
+    const rows = readRows(
+      path,
+      "SELECT projection_name, applied_sequence FROM projection_watermark " +
+        "WHERE projection_name LIKE '%occurrence%' ORDER BY projection_name",
+    );
+    expect(rows).toEqual([
+      { projection_name: "prompt_occurrence_read_model", applied_sequence: head },
+      { projection_name: "response_occurrence_read_model", applied_sequence: head },
+    ]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("P-D-2: a delivery settled with no occurrence leaves both tables empty, and the rebuild agrees", () => {
+    // §8 `:421`, the part of it that is falsifiable today: no fold DERIVES an
+    // occurrence from an intention or a resolution. A delivery that resolves
+    // without a prompt is lawful, and it leaves nothing behind in §8's tables.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "SUCCEEDED",
+      }),
+    );
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+
+    const empty = (): readonly unknown[] => [
+      ...readRows(path, "SELECT * FROM prompt_occurrence_read_model"),
+      ...readRows(path, "SELECT * FROM response_occurrence_read_model"),
+    ];
+    expect(empty()).toEqual([]);
+    ledger.rebuildReadModel();
+    expect(empty()).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("rebuilding twice produces identical rows, conserving every digest as recorded", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    ledger.append(
+      promptOccurrence({ taskId, transitionId: "prompt-2", effectId, occurrenceId: "po-2", ordinal: 1 }),
+    );
+    ledger.append(responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }));
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "abandon-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "ABANDONED",
+        terminalAt: EFFECT_AT,
+      }),
+    );
+    ledger.append(
+      responseOccurrence({
+        taskId,
+        transitionId: "response-2",
+        promptOccurrenceId: "po-2",
+        occurrenceId: "ro-2",
+        overrides: { redactionVerdict: "REDACTED" },
+      }),
+    );
+
+    const snapshot = (): string =>
+      canonicalJsonStringify({
+        prompts: readRows(path, "SELECT * FROM prompt_occurrence_read_model ORDER BY occurrence_id"),
+        responses: readRows(
+          path,
+          "SELECT * FROM response_occurrence_read_model ORDER BY occurrence_id",
+        ),
+      });
+
+    const live = snapshot();
+    ledger.rebuildReadModel();
+    const once = snapshot();
+    ledger.rebuildReadModel();
+    const twice = snapshot();
+    expect(once).toBe(live);
+    expect(twice).toBe(once);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    expect(ledger.getPromptOccurrence("po-2")?.promptSha256).toBe(PROMPT_DIGEST);
+    expect(ledger.getResponseOccurrenceForPrompt("po-2")?.responseSha256).toBe(RESPONSE_DIGEST);
+  });
+
+  it("reports an occurrence row nobody wrote, and a digest swapped under one", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(promptOccurrence({ taskId, transitionId: "prompt-1", effectId }));
+    ledger.append(responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }));
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      raw
+        .prepare("UPDATE response_occurrence_read_model SET response_sha256 = ?")
+        .run("0".repeat(64));
+      raw
+        .prepare(
+          "INSERT INTO prompt_occurrence_read_model SELECT 'po-ghost', route_segment_id, " +
+            "effect_id, dispatch_attempt_id, 7, identity, requested_model_id, provider, " +
+            "model_resolution_status, model_version_id, account_id, prompt_sha256, prompt_bytes, " +
+            "context_sha256, recorded_at, sequence FROM prompt_occurrence_read_model",
+        )
+        .run();
+    });
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    const details = detailsOf(report.problems);
+    expect(details).toContain("response_occurrence_read_model row for ro-1 disagrees with a replay");
+    expect(details).toContain(
+      "prompt_occurrence_read_model holds the row for po-ghost which no event accounts for",
+    );
   });
 });

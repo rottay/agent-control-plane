@@ -253,6 +253,9 @@ export type {
   IntegrityProblemKind,
   IntegrityReport,
   ModelResolutionStatus,
+  PromptOccurrenceReadModel,
+  RedactionVerdict,
+  ResponseOccurrenceReadModel,
   LedgerEventRecord,
   LedgerIdentity,
   LedgerPragmaStatus,
@@ -299,6 +302,11 @@ export { DOCUMENT_KINDS } from "./types/index.js";
  * question the dictionary answers once. Why the effect-kind catalogue lives
  * here rather than in `@acp/contracts` is argued where it is declared — it is
  * decision 45's class, not decision 42's.
+ *
+ * `REDACTION_VERDICTS` joins them in P-18/protocolo D, for the same reason and
+ * in the same place: the answer's verdict is a word this package's door and
+ * migration impose, and exporting it from the contract would move a pin for a
+ * fact only this package reads (ADR 0077).
  */
 export {
   DISPATCH_STATES,
@@ -307,6 +315,7 @@ export {
   EXECUTION_EFFECT_KINDS,
   EXECUTION_REQUEST_CONTRACT_VERSIONS,
   MODEL_RESOLUTION_STATUSES,
+  REDACTION_VERDICTS,
 } from "./types/index.js";
 
 /**

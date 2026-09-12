@@ -1128,15 +1128,16 @@ describe("integrity", () => {
     // stream that already holds three rows. A ledger created empty and then
     // grown has a baseline of 0, and 0 is never ahead of anything.
     //
-    // Rewinding to before 10 means undoing 11, 12 and 13 as well, because the
+    // Rewinding to before 10 means undoing 11, 12, 13 and 14 as well, because the
     // reopen re-applies everything the row set no longer claims. `ALTER TABLE
     // ... ADD COLUMN` is not idempotent, so a re-applied 11 over a schema that
     // still carries the coordinate aborts on "duplicate column name". The order
     // is forced rather than stylistic, twice over: SQLite refuses `DROP COLUMN`
     // for a column a trigger references, so the coordinate trigger goes before
     // the columns; and `foreign_keys` is ON, so each child goes before the
-    // parent it names — migration 13's deliveries, then its effects, then its
-    // segments, then migration 12's attempt table, then the revision table.
+    // parent it names — migration 14's answers, then its prompts, then
+    // migration 13's deliveries, then its effects, then its segments, then
+    // migration 12's attempt table, then the revision table.
     const rewind = new DatabaseSync(path);
     rewind.exec("DELETE FROM ledger_meta WHERE key LIKE 'account_integrity_%'");
     rewind.exec(
@@ -1147,6 +1148,11 @@ describe("integrity", () => {
     );
     rewind.exec(
       "DROP TRIGGER tr_control_plane_events__validate_v2_coordinate;" +
+        "DROP INDEX ux_response_occurrence_read_model__prompt;" +
+        "DROP TABLE response_occurrence_read_model;" +
+        "DROP INDEX ix_prompt_occurrence_read_model__sha256;" +
+        "DROP INDEX ix_prompt_occurrence_read_model__segment;" +
+        "DROP TABLE prompt_occurrence_read_model;" +
         "DROP INDEX ix_dispatch_attempt_read_model__state;" +
         "DROP INDEX ux_dispatch_attempt_read_model__effect_ordinal;" +
         "DROP TABLE dispatch_attempt_read_model;" +
@@ -1174,7 +1180,8 @@ describe("integrity", () => {
         "DELETE FROM projection_watermark " +
         "WHERE projection_name IN ('task_revision_read_model', 'task_attempt_read_model', " +
         "'execution_route_segment_read_model', 'effect_read_model', " +
-        "'dispatch_attempt_read_model');",
+        "'dispatch_attempt_read_model', 'prompt_occurrence_read_model', " +
+        "'response_occurrence_read_model');",
     );
     rewind.exec("DELETE FROM schema_migrations WHERE version >= 10");
     rewind.close();

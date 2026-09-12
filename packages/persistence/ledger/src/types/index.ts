@@ -532,6 +532,97 @@ export interface EffectLookup {
   readonly reconciliationRequired: boolean;
 }
 
+/**
+ * What became of an answer's content before its digest was taken — execution
+ * §8.2's `redaction_verdict` (P-18/protocolo D).
+ *
+ * Two words, and the vocabulary existed nowhere in this tree before this
+ * escalón. It lives here beside `MODEL_RESOLUTION_STATUSES` and not in
+ * `@acp/contracts`, on `EXECUTION_EFFECT_KINDS`' argument (decision 45, ADR
+ * 0076): it is a word the ledger's door imposes on a column of its own read
+ * model, not the grammar of a key, and exporting it from the package every
+ * other package imports would move a pin for a fact only this package reads.
+ * The migration carries the CHECK as well, because §8 lists it and the set is
+ * closed by the dictionary rather than by a growing catalogue.
+ */
+export const REDACTION_VERDICTS = ["CLEAN", "REDACTED"] as const;
+export type RedactionVerdict = (typeof REDACTION_VERDICTS)[number];
+
+/**
+ * One prompt sent on one delivery — execution §8.1 (P-18/protocolo D).
+ *
+ * **A use, never a blob.** The legacy shape §8 `:377` names,
+ * `prompt_record_read_model`, was keyed by `prompt_sha256` and so mixed the
+ * identity of some bytes with the fact of sending them; that table never
+ * existed in this tree, and nothing is migrated from it. Here the same bytes
+ * sent twice are two rows under two `occurrenceId`s with one digest between
+ * them, which is why `promptSha256` is indexed and never unique.
+ *
+ * `dispatchAttemptId` names the delivery that produced the prompt and is **not**
+ * unique: one delivery may send several. `effectId` and `routeSegmentId` repeat
+ * that delivery's own, and the ledger refuses a row where they differ — the
+ * segment is the delivery's **effective** one, never inferred from where the
+ * effect began.
+ *
+ * `ordinal` orders prompts within that segment and is assigned by the ledger:
+ * one past the segment's highest, `0` where there is none. `identity` is the
+ * recording event's `emittedBy`, never a payload key.
+ *
+ * The model quartet is the prompt's own, carried by its event rather than
+ * copied from the segment, on §4's contract: the alias and the provider are
+ * preserved always, and `modelVersionId` is `null` if and only if the status is
+ * not `RESOLVED`. A prompt may resolve a version the segment could not.
+ *
+ * The two digests are **conserved, never recomputed**: their preimages are the
+ * bytes §8 `:433` keeps out of every row, so this ledger holds no source to
+ * recompute them from. It checks their shape and nothing more, and says so.
+ */
+export interface PromptOccurrenceReadModel {
+  readonly occurrenceId: string;
+  readonly routeSegmentId: string;
+  readonly effectId: string;
+  readonly dispatchAttemptId: string;
+  readonly ordinal: number;
+  /** The worker that sent it: the recording event's `emittedBy`. */
+  readonly identity: string;
+  readonly requestedModelId: string;
+  readonly provider: string;
+  readonly modelResolutionStatus: ModelResolutionStatus;
+  readonly modelVersionId: string | null;
+  readonly accountId: string;
+  readonly promptSha256: string;
+  readonly promptBytes: number;
+  readonly contextSha256: string | null;
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
+/**
+ * The one answer to one prompt occurrence — execution §8.2.
+ *
+ * **It carries no account and no segment, on purpose.** Its only link to where
+ * the work ran is `promptOccurrenceId`, so an answer that arrives late — after
+ * the delivery that asked was abandoned and another account took over on a new
+ * segment — is attributed to the prompt that was actually sent, and through it
+ * to the origin's account and segment. There is no column through which it
+ * could be attributed to the destination, and the door refuses a payload that
+ * tries to name one.
+ *
+ * `occurrenceId` is its own, distinct from the prompt's. One answer per prompt:
+ * `ux_response_occurrence_read_model__prompt` is unique, and a second answer is
+ * refused by name rather than by that index. `responseSha256` is conserved on
+ * `PromptOccurrenceReadModel`'s terms.
+ */
+export interface ResponseOccurrenceReadModel {
+  readonly occurrenceId: string;
+  readonly promptOccurrenceId: string;
+  readonly responseSha256: string;
+  readonly responseBytes: number;
+  readonly redactionVerdict: RedactionVerdict;
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
 export interface TaskQuery {
   readonly state?: TaskState | undefined;
   /** Exclusive taskId cursor. Tasks are ordered by taskId ascending. */

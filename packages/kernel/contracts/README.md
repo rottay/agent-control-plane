@@ -96,7 +96,11 @@ this table against the barrel.
   `AGENTS.md` made mechanical rather than remembered.
 - **Digests and references, never content.** A checkpoint names what it refers
   to and carries the digest that pins it. Content lives in the artifact store
-  the ledger owns; the record carries the digest only.
+  the ledger owns; the record carries the digest only. The same holds for the two
+  occurrence types of P-18/protocolo D, `PROMPT_OCCURRENCE_RECORDED` and
+  `RESPONSE_OCCURRENCE_RECORDED`: what a run sent and what it received travel
+  as digests and byte counts, and the transcript guard refuses the keys a
+  conversation would ride under (ADR 0077).
 
 ## Consumers
 

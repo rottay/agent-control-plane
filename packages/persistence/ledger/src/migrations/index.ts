@@ -1564,6 +1564,134 @@ FROM (
 );
 `,
   },
+  {
+    version: 14,
+    name: "execution_occurrences",
+    sql: `
+-- The prompt a delivery sent, and the answer it received (P-18/protocolo D).
+--
+-- Execution §8. Two tables, hanging off migration 13's delivery by a foreign
+-- key that is deliberately **not** unique: one delivery may send several
+-- prompts, and each is its own occurrence.
+--
+-- **A use, never a blob.** §8 \`:377\` says these replace
+-- \`prompt_record_read_model\`, whose primary key was \`prompt_sha256\` and so
+-- mixed the identity of some bytes with the fact of sending them. That table
+-- never existed in this tree: there is nothing to migrate and nothing to drop.
+-- Here the same bytes sent twice are two rows and one digest, which is why the
+-- digest is indexed and never unique (§8 negative 3).
+--
+-- **Never bytes** (§8 \`:433\`, invariant 1). Only digests and counts reach
+-- these rows. The digests carry no shape CHECK because §8 lists none; the
+-- ledger door checks their shape, and conserves them without recomputing,
+-- because their preimages are exactly the bytes that may not come in.
+--
+-- No trigger, for migration 13's reason: every rule below is a CHECK the base
+-- evaluates on the row in front of it. The equality between a prompt and its
+-- delivery (§8 \`:416\`) spans two tables and is the fold's and the door's.
+CREATE TABLE prompt_occurrence_read_model (
+  occurrence_id           TEXT    NOT NULL,
+  route_segment_id        TEXT    NOT NULL,
+  effect_id               TEXT    NOT NULL,
+  dispatch_attempt_id     TEXT    NOT NULL,
+  ordinal                 INTEGER NOT NULL,
+  identity                TEXT    NOT NULL,
+  requested_model_id      TEXT    NOT NULL,
+  provider                TEXT    NOT NULL,
+  model_resolution_status TEXT    NOT NULL,
+  model_version_id        TEXT,
+  account_id              TEXT    NOT NULL,
+  prompt_sha256           TEXT    NOT NULL,
+  prompt_bytes            INTEGER NOT NULL,
+  context_sha256          TEXT,
+  recorded_at             TEXT    NOT NULL,
+  sequence                INTEGER NOT NULL,
+  CONSTRAINT pk_prompt_occurrence_read_model PRIMARY KEY (occurrence_id),
+  -- The **effective** segment of the delivery that sent it, not the segment the
+  -- effect began on. \`DEFERRABLE INITIALLY DEFERRED\` for migration 13's reason:
+  -- §8 \`:419-420\` admits the delivery's intention and the prompt in one
+  -- \`appendBatch\`, and the check belongs at commit, not at statement order.
+  CONSTRAINT fk_prompt_occurrence_read_model__execution_route_segment_read_model
+    FOREIGN KEY (route_segment_id)
+    REFERENCES execution_route_segment_read_model (route_segment_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_prompt_occurrence_read_model__effect_read_model
+    FOREIGN KEY (effect_id) REFERENCES effect_read_model (effect_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  -- Not unique: one delivery may send several prompts.
+  CONSTRAINT fk_prompt_occurrence_read_model__dispatch_attempt_read_model
+    FOREIGN KEY (dispatch_attempt_id)
+    REFERENCES dispatch_attempt_read_model (dispatch_attempt_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_prompt_occurrence_read_model__ordinal
+    CHECK (ordinal >= 0),
+  CONSTRAINT ck_prompt_occurrence_read_model__model_resolution_status
+    CHECK (model_resolution_status IN ('RESOLVED', 'UNKNOWN', 'NOT_OBSERVABLE')),
+  -- §4's pair, verbatim, because §8 fixes the same contract of absent data:
+  -- a version nobody could resolve stays NULL even after executing.
+  CONSTRAINT ck_prompt_occurrence_read_model__model_resolution_pair
+    CHECK ((model_resolution_status = 'RESOLVED') = (model_version_id IS NOT NULL)),
+  CONSTRAINT ck_prompt_occurrence_read_model__prompt_bytes
+    CHECK (prompt_bytes >= 0)
+) STRICT;
+
+-- Order of prompts within a segment. Not unique by §8, which asks for the
+-- index and not for the claim; the ledger assigns the ordinal one past the
+-- segment's highest, so the order is still total.
+CREATE INDEX ix_prompt_occurrence_read_model__segment
+  ON prompt_occurrence_read_model (route_segment_id, ordinal);
+
+-- Not unique — on purpose. The same bytes sent twice are two occurrences.
+CREATE INDEX ix_prompt_occurrence_read_model__sha256
+  ON prompt_occurrence_read_model (prompt_sha256);
+
+-- The answer. Its only link to where the work ran is the prompt it answers, so
+-- a late answer after a handoff cannot be attributed to the destination: there
+-- is no account or segment column to attribute it through.
+CREATE TABLE response_occurrence_read_model (
+  occurrence_id        TEXT    NOT NULL,
+  prompt_occurrence_id TEXT    NOT NULL,
+  response_sha256      TEXT    NOT NULL,
+  response_bytes       INTEGER NOT NULL,
+  redaction_verdict    TEXT    NOT NULL,
+  recorded_at          TEXT    NOT NULL,
+  sequence             INTEGER NOT NULL,
+  CONSTRAINT pk_response_occurrence_read_model PRIMARY KEY (occurrence_id),
+  CONSTRAINT fk_response_occurrence_read_model__prompt_occurrence_read_model
+    FOREIGN KEY (prompt_occurrence_id)
+    REFERENCES prompt_occurrence_read_model (occurrence_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_response_occurrence_read_model__response_bytes
+    CHECK (response_bytes >= 0),
+  CONSTRAINT ck_response_occurrence_read_model__redaction_verdict
+    CHECK (redaction_verdict IN ('CLEAN', 'REDACTED'))
+) STRICT;
+
+-- One answer per prompt occurrence.
+CREATE UNIQUE INDEX ux_response_occurrence_read_model__prompt
+  ON response_occurrence_read_model (prompt_occurrence_id);
+
+-- Two watermarks, seeded from the head this stream already has, in migration
+-- 13's form and for its reason: no historical row carries an occurrence, so the
+-- fold over any existing history is legitimately empty and a literal zero would
+-- fail every ledger in the field's own integrity check after the upgrade.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  name,
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  '1970-01-01T00:00:00.000Z'
+FROM (
+  SELECT 'prompt_occurrence_read_model' AS name
+  UNION ALL SELECT 'response_occurrence_read_model'
+);
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -1585,6 +1713,12 @@ export const MIGRATIONS: readonly Migration[] = SOURCES.map((source) => ({
  */
 export const DERIVED_TABLES: readonly string[] = [
   "worker_task_read_model",
+  // The P-18/protocolo D pair, before C's cohort and children first for its
+  // reason: an answer names a prompt, and a prompt names a delivery, an effect
+  // and a segment. Deferred foreign keys again, so a wrong order would surface
+  // at commit rather than at the delete that caused it.
+  "response_occurrence_read_model",
+  "prompt_occurrence_read_model",
   // The P-18/protocolo C cohort, children first: a dispatch names an effect and
   // a segment, an effect names a segment, and a segment names an attempt. The
   // three foreign keys are `DEFERRABLE INITIALLY DEFERRED`, so a wrong order
@@ -1623,6 +1757,9 @@ export const PROJECTION_NAMES: readonly string[] = [
   "execution_route_segment_read_model",
   "effect_read_model",
   "dispatch_attempt_read_model",
+  // And P-18/protocolo D's pair, in the dictionary's order.
+  "prompt_occurrence_read_model",
+  "response_occurrence_read_model",
 ];
 
 /**
@@ -1707,6 +1844,20 @@ export const DISPATCH_ATTEMPT_PROJECTION = "dispatch_attempt_read_model";
  */
 export const EXECUTION_EFFECT_MIGRATION = 13;
 
+/** One prompt sent on one delivery, never keyed by its bytes (P-18/D). */
+export const PROMPT_OCCURRENCE_PROJECTION = "prompt_occurrence_read_model";
+
+/** The one answer to one prompt occurrence (P-18/D). */
+export const RESPONSE_OCCURRENCE_PROJECTION = "response_occurrence_read_model";
+
+/**
+ * The migration that adds the prompt and response occurrences.
+ *
+ * Named for `EXECUTION_EFFECT_MIGRATION`'s reason: a bare `14` at the suite's
+ * assertion would be a number nobody could search for.
+ */
+export const EXECUTION_OCCURRENCE_MIGRATION = 14;
+
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
@@ -1780,6 +1931,8 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: EXECUTION_ROUTE_SEGMENT_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: EFFECT_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: DISPATCH_ATTEMPT_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: PROMPT_OCCURRENCE_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: RESPONSE_OCCURRENCE_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -1939,6 +2092,15 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "table", name: "dispatch_attempt_read_model" },
   { type: "index", name: "ux_dispatch_attempt_read_model__effect_ordinal" },
   { type: "index", name: "ix_dispatch_attempt_read_model__state" },
+  // P-18/protocolo D. Five objects and no trigger. The digest index is
+  // inventoried by name although it is not unique: dropping it would not admit
+  // a bad row, but it is the index §8 names on purpose, and its absence would
+  // turn "which occurrences sent these bytes" into a table scan nobody sees.
+  { type: "table", name: "prompt_occurrence_read_model" },
+  { type: "index", name: "ix_prompt_occurrence_read_model__segment" },
+  { type: "index", name: "ix_prompt_occurrence_read_model__sha256" },
+  { type: "table", name: "response_occurrence_read_model" },
+  { type: "index", name: "ux_response_occurrence_read_model__prompt" },
 ];
 
 export interface MigrationConformance {

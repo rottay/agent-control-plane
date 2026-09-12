@@ -111,6 +111,22 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   "EFFECT_INTENDED",
   "DISPATCH_INTENDED",
   "DISPATCH_OUTCOME_RECORDED",
+  // The two of P-18/protocolo D (execution §8; ADR 0077). Same-state
+  // passthroughs on `execution`, for the reason the three above are: sending a
+  // prompt and receiving its answer are things a run *did*.
+  //
+  // **Two, and not one.** The answer has a primary key of its own, its own
+  // `recorded_at` and its own `sequence` (§8 `:406-412`), and §8 `:418` speaks
+  // of an answer that arrives **late** — after a handoff, on a delivery that has
+  // already been abandoned. A fact that happens at another instant cannot ride
+  // the event of the prompt it answers.
+  //
+  // Neither carries a byte of the prompt or of the answer: digests and counts
+  // only (§8 `:433`). The transcript guard below already refuses the keys a
+  // conversation would travel under; the ledger door additionally refuses any
+  // key its own payload grammar does not declare.
+  "PROMPT_OCCURRENCE_RECORDED",
+  "RESPONSE_OCCURRENCE_RECORDED",
 ] as const;
 
 export const ControlPlaneEventType = z.enum(CONTROL_PLANE_EVENT_TYPES);

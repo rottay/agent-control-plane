@@ -90,6 +90,16 @@ import {
   nextDispatchAttemptState,
   nextEffectProjection,
   nextExecutionRouteSegmentProjection,
+  PROMPT_OCCURRENCE_KEY,
+  RESPONSE_OCCURRENCE_KEY,
+  canonicalPromptOccurrence,
+  canonicalResponseOccurrence,
+  nextPromptOccurrenceProjection,
+  nextResponseOccurrenceProjection,
+  promptOccurrenceLinkRefusal,
+  readPromptOccurrence,
+  readResponseOccurrence,
+  responseOccurrenceLinkRefusal,
   createInitiativeProjectionSnapshot,
   createProjectionSnapshot,
   createRegistryProjectionSnapshot,
@@ -141,6 +151,9 @@ import {
   type IntegrityProblem,
   type IntegrityReport,
   type ModelResolutionStatus,
+  type PromptOccurrenceReadModel,
+  type RedactionVerdict,
+  type ResponseOccurrenceReadModel,
   type LedgerEventRecord,
   type LedgerIdentity,
   type LedgerStatus,
@@ -894,6 +907,37 @@ interface DispatchAttemptRow {
   readonly sequence: number;
 }
 
+/** One stored prompt occurrence row (P-18/D). Snake case, because it is a row. */
+interface PromptOccurrenceRow {
+  readonly occurrence_id: string;
+  readonly route_segment_id: string;
+  readonly effect_id: string;
+  readonly dispatch_attempt_id: string;
+  readonly ordinal: number;
+  readonly identity: string;
+  readonly requested_model_id: string;
+  readonly provider: string;
+  readonly model_resolution_status: string;
+  readonly model_version_id: string | null;
+  readonly account_id: string;
+  readonly prompt_sha256: string;
+  readonly prompt_bytes: number;
+  readonly context_sha256: string | null;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
+/** One stored response occurrence row (P-18/D). Snake case, because it is a row. */
+interface ResponseOccurrenceRow {
+  readonly occurrence_id: string;
+  readonly prompt_occurrence_id: string;
+  readonly response_sha256: string;
+  readonly response_bytes: number;
+  readonly redaction_verdict: string;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
 interface WorkerRow {
   readonly identity: string;
   readonly provider: string;
@@ -1101,6 +1145,45 @@ function dispatchAttemptRowToModel(row: DispatchAttemptRow): DispatchAttemptRead
     requestedAt: row.requested_at,
     acceptedAt: row.accepted_at,
     terminalAt: row.terminal_at,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
+}
+
+/**
+ * The two row-to-model conversions of P-18/protocolo D, on
+ * `executionRouteSegmentRowToModel`'s terms: the two vocabulary columns are
+ * narrowed by cast, because the base's CHECKs refused anything else at write
+ * time and a row this build did not write is `verifyIntegrity`'s business.
+ */
+function promptOccurrenceRowToModel(row: PromptOccurrenceRow): PromptOccurrenceReadModel {
+  return {
+    occurrenceId: row.occurrence_id,
+    routeSegmentId: row.route_segment_id,
+    effectId: row.effect_id,
+    dispatchAttemptId: row.dispatch_attempt_id,
+    ordinal: row.ordinal,
+    identity: row.identity,
+    requestedModelId: row.requested_model_id,
+    provider: row.provider,
+    modelResolutionStatus: row.model_resolution_status as ModelResolutionStatus,
+    modelVersionId: row.model_version_id,
+    accountId: row.account_id,
+    promptSha256: row.prompt_sha256,
+    promptBytes: row.prompt_bytes,
+    contextSha256: row.context_sha256,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
+}
+
+function responseOccurrenceRowToModel(row: ResponseOccurrenceRow): ResponseOccurrenceReadModel {
+  return {
+    occurrenceId: row.occurrence_id,
+    promptOccurrenceId: row.prompt_occurrence_id,
+    responseSha256: row.response_sha256,
+    responseBytes: row.response_bytes,
+    redactionVerdict: row.redaction_verdict as RedactionVerdict,
     recordedAt: row.recorded_at,
     sequence: row.sequence,
   };
@@ -2752,6 +2835,12 @@ export class Ledger {
     // attempt row that check either found or is about to cause.
     this.#assertExecutionEffectIdentity(event, coordinate);
 
+    // The prompt and the answer (P-18/D). After the effect's identity, because
+    // an occurrence hangs off a delivery that check either found or refused, and
+    // inside the same transaction, so a delivery intended earlier in this batch
+    // is a row that is really there (§8 `:419-420`).
+    this.#assertExecutionOccurrence(event);
+
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
         "event_id, idempotency_key, task_id, attempt, revision_number, attempt_number, " +
@@ -3838,6 +3927,168 @@ export class Ledger {
     }
   }
 
+  /**
+   * A prompt or an answer, checked under the write lock this transaction
+   * already holds (P-18/protocolo D, execution §8).
+   *
+   * **The refusals are the fold's, read against the base.** What one event can
+   * be wrong about — a closed payload, a field's grammar, the §4 pair — is
+   * `readPromptOccurrence`'s and `readResponseOccurrence`'s; what a link can be
+   * wrong about is `promptOccurrenceLinkRefusal`'s and
+   * `responseOccurrenceLinkRefusal`'s. This method supplies the rows those
+   * functions ask about, so the door and a rebuild refuse the same histories
+   * with the same words.
+   *
+   * **Nothing here is recomputed from bytes, because no bytes are here.** The
+   * prompt, context and response digests are conserved: their preimages are
+   * exactly what §8 `:433` keeps out. What the ledger does verify is everything
+   * it has a source for — the delivery, the effect and segment it serves, the
+   * attempt that owns it, and the ordinal.
+   */
+  #assertExecutionOccurrence(event: ControlPlaneEvent): void {
+    const prompt = readPromptOccurrence(event, 0);
+    if (prompt !== null) {
+      if (prompt.kind === "refused") {
+        throw new LedgerValidationError([{ path: prompt.path, message: prompt.message }]);
+      }
+      this.#assertPromptOccurrence(event, prompt.row);
+      return;
+    }
+
+    const response = readResponseOccurrence(event, 0);
+    if (response !== null) {
+      if (response.kind === "refused") {
+        throw new LedgerValidationError([{ path: response.path, message: response.message }]);
+      }
+      this.#assertResponseOccurrence(event, response.row);
+    }
+  }
+
+  /**
+   * A prompt: its delivery, the delivery's effect and segment, the owning
+   * attempt, and the ordinal compare-and-set within the segment.
+   */
+  #assertPromptOccurrence(event: ControlPlaneEvent, prompt: PromptOccurrenceReadModel): void {
+    const delivery = this.#stmt(
+      "SELECT effect_id, route_segment_id FROM dispatch_attempt_read_model " +
+        "WHERE dispatch_attempt_id = ?",
+    ).get(prompt.dispatchAttemptId) as
+      | { readonly effect_id: string; readonly route_segment_id: string }
+      | undefined;
+    const owner =
+      delivery === undefined ? undefined : this.#effectOwner(delivery.effect_id);
+
+    const refusal = promptOccurrenceLinkRefusal(
+      event,
+      prompt,
+      delivery === undefined
+        ? null
+        : { effectId: delivery.effect_id, routeSegmentId: delivery.route_segment_id },
+      owner ?? null,
+    );
+    if (refusal !== null) throw new LedgerValidationError([refusal]);
+
+    const held = this.#stmt(
+      "SELECT * FROM prompt_occurrence_read_model WHERE occurrence_id = ?",
+    ).get(prompt.occurrenceId) as PromptOccurrenceRow | undefined;
+    if (held !== undefined) {
+      if (canonicalPromptOccurrence(promptOccurrenceRowToModel(held)) !== canonicalPromptOccurrence(prompt)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + PROMPT_OCCURRENCE_KEY + ".occurrenceId",
+            message:
+              "prompt occurrence " +
+              safeRowIdentifier(prompt.occurrenceId) +
+              " is already recorded with different content, and an occurrence is recorded once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    // The ordinal, assigned rather than accepted: one past the segment's
+    // highest, and 0 where there is none, because `ck_…__ordinal` admits zero.
+    // Over the **segment**, as §8 `:389` says — "orden dentro del segmento" —
+    // and so a handoff does restart it, unlike an effect's operation ordinal.
+    // §8's index on `(route_segment_id, ordinal)` is not unique and that is not
+    // evidence against this rule: an ordinal nobody verifies orders nothing.
+    const highest = this.#stmt(
+      "SELECT MAX(ordinal) AS highest FROM prompt_occurrence_read_model WHERE route_segment_id = ?",
+    ).get(prompt.routeSegmentId) as { readonly highest: number | null };
+    const expected = highest.highest === null ? 0 : highest.highest + 1;
+    if (prompt.ordinal !== expected) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + PROMPT_OCCURRENCE_KEY + ".ordinal",
+          message:
+            "segment " +
+            safeRowIdentifier(prompt.routeSegmentId) +
+            " assigns the prompt ordinal " +
+            String(expected) +
+            ", which is one past its highest, and this event proposes " +
+            String(prompt.ordinal),
+        },
+      ]);
+    }
+  }
+
+  /** An answer: the prompt it answers, that prompt's attempt, and one answer each. */
+  #assertResponseOccurrence(
+    event: ControlPlaneEvent,
+    response: ResponseOccurrenceReadModel,
+  ): void {
+    const answered = this.#stmt(
+      "SELECT effect_id FROM prompt_occurrence_read_model WHERE occurrence_id = ?",
+    ).get(response.promptOccurrenceId) as { readonly effect_id: string } | undefined;
+    const holder = this.#stmt(
+      "SELECT occurrence_id FROM response_occurrence_read_model WHERE prompt_occurrence_id = ?",
+    ).get(response.promptOccurrenceId) as { readonly occurrence_id: string } | undefined;
+
+    const refusal = responseOccurrenceLinkRefusal(
+      event,
+      response,
+      answered !== undefined,
+      answered === undefined ? null : (this.#effectOwner(answered.effect_id) ?? null),
+      holder === undefined || holder.occurrence_id === response.occurrenceId
+        ? null
+        : holder.occurrence_id,
+    );
+    if (refusal !== null) throw new LedgerValidationError([refusal]);
+
+    const held = this.#stmt(
+      "SELECT * FROM response_occurrence_read_model WHERE occurrence_id = ?",
+    ).get(response.occurrenceId) as ResponseOccurrenceRow | undefined;
+    if (
+      held !== undefined &&
+      canonicalResponseOccurrence(responseOccurrenceRowToModel(held)) !==
+        canonicalResponseOccurrence(response)
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + RESPONSE_OCCURRENCE_KEY + ".occurrenceId",
+          message:
+            "response occurrence " +
+            safeRowIdentifier(response.occurrenceId) +
+            " is already recorded with different content, and an occurrence is recorded once",
+        },
+      ]);
+    }
+  }
+
+  /** The attempt coordinate that owns one effect, or `undefined`. */
+  #effectOwner(
+    effectId: string,
+  ): { readonly taskId: string; readonly revisionNumber: number; readonly attemptNumber: number } | undefined {
+    const row = this.#stmt(
+      "SELECT task_id, revision_number, attempt_number FROM effect_read_model WHERE effect_id = ?",
+    ).get(effectId) as
+      | { readonly task_id: string; readonly revision_number: number; readonly attempt_number: number }
+      | undefined;
+    return row === undefined
+      ? undefined
+      : { taskId: row.task_id, revisionNumber: row.revision_number, attemptNumber: row.attempt_number };
+  }
+
   /** Incremental projection. Same rules as replay, applied to one event. */
   #projectEvent(event: ControlPlaneEvent, sequence: number): void {
     const currentTask = this.#stmt(
@@ -3919,6 +4170,14 @@ export class Ledger {
 
     const outcome = dispatchOutcomeRecord(event, sequence);
     if (outcome !== null) this.#applyDispatchOutcome(outcome);
+
+    // The P-18/protocolo D pair, last, for `applyEventToSnapshot`'s order: an
+    // answer names a prompt and a prompt names a delivery.
+    const prompt = nextPromptOccurrenceProjection(event, sequence);
+    if (prompt !== null) this.#insertPromptOccurrence(prompt);
+
+    const response = nextResponseOccurrenceProjection(event, sequence);
+    if (response !== null) this.#insertResponseOccurrence(response);
   }
 
   #upsertExecutionRoute(route: ExecutionRouteReadModel): void {
@@ -4345,6 +4604,103 @@ export class Ledger {
       "UPDATE effect_read_model SET outcome_status = ?, outcome_recorded_at = ? " +
         "WHERE effect_id = ? AND outcome_status IS NULL",
     ).run(outcome.effectOutcomeStatus, outcome.recordedAt, row.effect_id);
+  }
+
+  /**
+   * Write one prompt occurrence row, or refuse (P-18/D).
+   *
+   * Insert-only, on `#insertRouteSegment`'s terms: an identical second arrival
+   * writes nothing and a different one is refused. The door has already
+   * refused with a message naming the link at fault; this comparison is what
+   * keeps the write safe on the rebuild path, where there is no door.
+   */
+  #insertPromptOccurrence(prompt: PromptOccurrenceReadModel): void {
+    const existing = this.#stmt(
+      "SELECT * FROM prompt_occurrence_read_model WHERE occurrence_id = ?",
+    ).get(prompt.occurrenceId) as PromptOccurrenceRow | undefined;
+
+    if (existing !== undefined) {
+      if (
+        canonicalPromptOccurrence(promptOccurrenceRowToModel(existing)) !==
+        canonicalPromptOccurrence(prompt)
+      ) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + PROMPT_OCCURRENCE_KEY + ".occurrenceId",
+            message:
+              "prompt occurrence " +
+              safeRowIdentifier(prompt.occurrenceId) +
+              " is already recorded with different content, and an occurrence is recorded once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    this.#stmt(
+      "INSERT INTO prompt_occurrence_read_model (" +
+        "occurrence_id, route_segment_id, effect_id, dispatch_attempt_id, ordinal, identity, " +
+        "requested_model_id, provider, model_resolution_status, model_version_id, account_id, " +
+        "prompt_sha256, prompt_bytes, context_sha256, recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      prompt.occurrenceId,
+      prompt.routeSegmentId,
+      prompt.effectId,
+      prompt.dispatchAttemptId,
+      prompt.ordinal,
+      prompt.identity,
+      prompt.requestedModelId,
+      prompt.provider,
+      prompt.modelResolutionStatus,
+      prompt.modelVersionId,
+      prompt.accountId,
+      prompt.promptSha256,
+      prompt.promptBytes,
+      prompt.contextSha256,
+      prompt.recordedAt,
+      prompt.sequence,
+    );
+  }
+
+  /** Write one response occurrence row, or refuse. Insert-only, on the same terms. */
+  #insertResponseOccurrence(response: ResponseOccurrenceReadModel): void {
+    const existing = this.#stmt(
+      "SELECT * FROM response_occurrence_read_model WHERE occurrence_id = ?",
+    ).get(response.occurrenceId) as ResponseOccurrenceRow | undefined;
+
+    if (existing !== undefined) {
+      if (
+        canonicalResponseOccurrence(responseOccurrenceRowToModel(existing)) !==
+        canonicalResponseOccurrence(response)
+      ) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + RESPONSE_OCCURRENCE_KEY + ".occurrenceId",
+            message:
+              "response occurrence " +
+              safeRowIdentifier(response.occurrenceId) +
+              " is already recorded with different content, and an occurrence is recorded once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    this.#stmt(
+      "INSERT INTO response_occurrence_read_model (" +
+        "occurrence_id, prompt_occurrence_id, response_sha256, response_bytes, " +
+        "redaction_verdict, recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      response.occurrenceId,
+      response.promptOccurrenceId,
+      response.responseSha256,
+      response.responseBytes,
+      response.redactionVerdict,
+      response.recordedAt,
+      response.sequence,
+    );
   }
 
   #upsertWorker(worker: WorkerReadModel): void {
@@ -5605,6 +5961,16 @@ export class Ledger {
       for (const effect of snapshot.effects.values()) this.#insertEffect(effect);
       for (const dispatch of snapshot.dispatchAttempts.values()) {
         this.#insertDispatchAttempt(dispatch);
+      }
+      // The P-18/protocolo D pair, after the deliveries they hang off and the
+      // prompts before their answers. Cleared above children-first; every insert
+      // lands on an empty key, and a second answer the snapshot already refused
+      // never reaches this loop.
+      for (const prompt of snapshot.promptOccurrences.values()) {
+        this.#insertPromptOccurrence(prompt);
+      }
+      for (const response of snapshot.responseOccurrences.values()) {
+        this.#insertResponseOccurrence(response);
       }
 
       for (const initiative of initiativeSnapshot.initiatives.values()) {
@@ -6943,6 +7309,31 @@ export class Ledger {
         ).map((row) => [row.dispatch_attempt_id, dispatchAttemptRowToModel(row)]),
       ),
     );
+    // And P-18/protocolo D's pair, by the same helper and for its reason: an
+    // answer quietly re-pointed at another prompt, or a digest swapped under a
+    // row, leaves every count unchanged.
+    this.#compareRowSet(
+      problems,
+      "prompt_occurrence_read_model",
+      snapshot.promptOccurrences,
+      new Map(
+        (
+          this.#stmt("SELECT * FROM prompt_occurrence_read_model").all() as PromptOccurrenceRow[]
+        ).map((row) => [row.occurrence_id, promptOccurrenceRowToModel(row)]),
+      ),
+    );
+    this.#compareRowSet(
+      problems,
+      "response_occurrence_read_model",
+      snapshot.responseOccurrences,
+      new Map(
+        (
+          this.#stmt(
+            "SELECT * FROM response_occurrence_read_model",
+          ).all() as ResponseOccurrenceRow[]
+        ).map((row) => [row.occurrence_id, responseOccurrenceRowToModel(row)]),
+      ),
+    );
 
     return problems;
   }
@@ -7228,6 +7619,58 @@ export class Ledger {
           "WHERE dispatch_state = 'INFLIGHT' AND requested_at < ? ORDER BY requested_at",
       ).all(deadline) as DispatchAttemptRow[]
     ).map(dispatchAttemptRowToModel);
+  }
+
+  /**
+   * Every prompt occurrence of one segment, in the order the ledger assigned
+   * (P-18/D). Read through `ix_prompt_occurrence_read_model__segment`.
+   */
+  listPromptOccurrences(routeSegmentId: string): readonly PromptOccurrenceReadModel[] {
+    this.#assertOpen("listPromptOccurrences");
+    return (
+      this.#stmt(
+        "SELECT * FROM prompt_occurrence_read_model WHERE route_segment_id = ? ORDER BY ordinal",
+      ).all(routeSegmentId) as PromptOccurrenceRow[]
+    ).map(promptOccurrenceRowToModel);
+  }
+
+  /**
+   * Every occurrence that sent the bytes one digest names, in recording order.
+   *
+   * The question `ix_prompt_occurrence_read_model__sha256` exists to answer, and
+   * the reason it is not unique: the same bytes sent twice are two occurrences
+   * and one blob, so the answer is a list and never a row.
+   */
+  listPromptOccurrencesBySha256(promptSha256: string): readonly PromptOccurrenceReadModel[] {
+    this.#assertOpen("listPromptOccurrencesBySha256");
+    return (
+      this.#stmt(
+        "SELECT * FROM prompt_occurrence_read_model WHERE prompt_sha256 = ? ORDER BY sequence",
+      ).all(promptSha256) as PromptOccurrenceRow[]
+    ).map(promptOccurrenceRowToModel);
+  }
+
+  getPromptOccurrence(occurrenceId: string): PromptOccurrenceReadModel | null {
+    this.#assertOpen("getPromptOccurrence");
+    const row = this.#stmt(
+      "SELECT * FROM prompt_occurrence_read_model WHERE occurrence_id = ?",
+    ).get(occurrenceId) as PromptOccurrenceRow | undefined;
+    return row === undefined ? null : promptOccurrenceRowToModel(row);
+  }
+
+  /**
+   * The one answer to a prompt occurrence, or `null` while it has none.
+   *
+   * Keyed by the **prompt**, because that is the only thing an answer is
+   * attributed through: its account and segment are the prompt's, however late
+   * it arrived.
+   */
+  getResponseOccurrenceForPrompt(promptOccurrenceId: string): ResponseOccurrenceReadModel | null {
+    this.#assertOpen("getResponseOccurrenceForPrompt");
+    const row = this.#stmt(
+      "SELECT * FROM response_occurrence_read_model WHERE prompt_occurrence_id = ?",
+    ).get(promptOccurrenceId) as ResponseOccurrenceRow | undefined;
+    return row === undefined ? null : responseOccurrenceRowToModel(row);
   }
 
   getEffect(effectId: string): EffectReadModel | null {

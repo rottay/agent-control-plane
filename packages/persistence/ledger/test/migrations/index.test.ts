@@ -8,6 +8,10 @@ import {
   MIGRATIONS,
   PROJECTION_NAMES,
   PROJECTION_SOURCES,
+  DISPATCH_ATTEMPT_PROJECTION,
+  EXECUTION_OCCURRENCE_MIGRATION,
+  PROMPT_OCCURRENCE_PROJECTION,
+  RESPONSE_OCCURRENCE_PROJECTION,
   TASK_ATTEMPT_MIGRATION,
   TASK_ATTEMPT_PROJECTION,
   TASK_REVISION_MIGRATION,
@@ -154,7 +158,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -170,11 +174,12 @@ describe("migration 7 appends the watermark table without touching the applied s
       "task_revision_identity",
       "task_attempt_identity",
       "execution_effect_identity",
+      "execution_occurrences",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11, 12 and 13 seed rows into it, which is what a migration
+    // Migrations 9, 11, 12, 13 and 14 seed rows into it, which is what a migration
     // that adds a projection does; none of them creates, alters or drops the
     // table.
     const creating = MIGRATIONS.filter((migration) =>
@@ -184,7 +189,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -258,6 +263,8 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "execution_route_segment_read_model@control_plane_events",
       "effect_read_model@control_plane_events",
       "dispatch_attempt_read_model@control_plane_events",
+      "prompt_occurrence_read_model@control_plane_events",
+      "response_occurrence_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
       "routing_assignment_read_model@registry_events",
@@ -468,7 +475,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
     ]);
   });
 
@@ -686,7 +693,7 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(12);
+    expect(PROJECTION_SOURCES).toHaveLength(14);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -957,6 +964,134 @@ describe("migration 12 adds the attempt's own record without touching the applie
       { type: "table", name: "task_attempt_read_model" },
       { type: "index", name: "ux_task_attempt_read_model__task_id_legacy_attempt_number" },
       { type: "index", name: "ux_task_attempt_read_model__invocation_id" },
+    ]);
+  });
+});
+
+describe("migration 14 adds the occurrences without touching the applied thirteen", () => {
+  const FOURTEENTH = MIGRATIONS[13];
+
+  /** The migration's statements with its commentary removed, as for 11 and 12. */
+  const statements = (FOURTEENTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed, and rewrites none of it", () => {
+    expect(FOURTEENTH?.version).toBe(14);
+    expect(FOURTEENTH?.name).toBe("execution_occurrences");
+    expect(EXECUTION_OCCURRENCE_MIGRATION).toBe(14);
+    expect(MIGRATIONS[EXECUTION_OCCURRENCE_MIGRATION - 1]?.name).toBe("execution_occurrences");
+    expect(MIGRATIONS).toHaveLength(14);
+    expect(statements).not.toContain("DROP TABLE");
+    expect(statements).not.toContain("ALTER TABLE");
+    // No trigger: every rule of §8 that one row can carry is a CHECK, and the
+    // equality between a prompt and its delivery is the fold's and the door's.
+    expect(statements).not.toContain("CREATE TRIGGER");
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(8);
+  });
+
+  it("names both tables' constraints by the §3.2 convention, and §8's pair verbatim", () => {
+    const sql = FOURTEENTH?.sql ?? "";
+    expect(sql).toContain("CREATE TABLE prompt_occurrence_read_model");
+    expect(sql).toContain("CREATE TABLE response_occurrence_read_model");
+    expect(sql.match(/\) STRICT;/g)).toHaveLength(2);
+    for (const rule of [
+      "pk_prompt_occurrence_read_model PRIMARY KEY (occurrence_id)",
+      "fk_prompt_occurrence_read_model__execution_route_segment_read_model",
+      "fk_prompt_occurrence_read_model__effect_read_model",
+      "fk_prompt_occurrence_read_model__dispatch_attempt_read_model",
+      "ck_prompt_occurrence_read_model__ordinal\n    CHECK (ordinal >= 0)",
+      "ck_prompt_occurrence_read_model__model_resolution_pair\n" +
+        "    CHECK ((model_resolution_status = 'RESOLVED') = (model_version_id IS NOT NULL))",
+      "ck_prompt_occurrence_read_model__prompt_bytes\n    CHECK (prompt_bytes >= 0)",
+      "pk_response_occurrence_read_model PRIMARY KEY (occurrence_id)",
+      "fk_response_occurrence_read_model__prompt_occurrence_read_model",
+      "ck_response_occurrence_read_model__response_bytes\n    CHECK (response_bytes >= 0)",
+      "ck_response_occurrence_read_model__redaction_verdict\n" +
+        "    CHECK (redaction_verdict IN ('CLEAN', 'REDACTED'))",
+    ]) {
+      expect(sql, rule).toContain("CONSTRAINT " + rule);
+    }
+    // The four foreign keys are deferred, because §8 `:419-420` admits the
+    // delivery's intention and its prompt in one `appendBatch`.
+    expect(statements.match(/ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED/g)).toHaveLength(4);
+  });
+
+  it("N-P18-18: the digest is indexed and never unique, and the answer is one per prompt", () => {
+    // The same bytes sent twice are two occurrences and one blob (§8 `:377-379`,
+    // `:394`, `:429`). A unique index here would make the second send
+    // unrecordable, which is the legacy defect this table replaces.
+    expect(statements).toContain(
+      "CREATE INDEX ix_prompt_occurrence_read_model__sha256\n" +
+        "  ON prompt_occurrence_read_model (prompt_sha256)",
+    );
+    expect(statements).not.toContain("UNIQUE INDEX ix_prompt_occurrence_read_model__sha256");
+    expect(statements).not.toMatch(/UNIQUE[^;]*prompt_sha256/);
+    // Nor is the delivery unique: one delivery may send several prompts (§8 `:387`).
+    expect(statements).not.toMatch(/UNIQUE[^;]*dispatch_attempt_id/);
+    expect(statements).toContain(
+      "CREATE INDEX ix_prompt_occurrence_read_model__segment\n" +
+        "  ON prompt_occurrence_read_model (route_segment_id, ordinal)",
+    );
+    // And one answer per prompt occurrence (§8 `:431`), unique on purpose.
+    expect(statements).toContain(
+      "CREATE UNIQUE INDEX ux_response_occurrence_read_model__prompt\n" +
+        "  ON response_occurrence_read_model (prompt_occurrence_id)",
+    );
+  });
+
+  it("holds digests and counts, never bytes, and adds no CHECK §8 does not list", () => {
+    // §8 `:433`. No column could hold a prompt or an answer: every TEXT column
+    // is an id, a vocabulary word, an instant or a digest.
+    for (const column of ["prompt_text", "prompt_body", "response_text", "response_body", " BLOB"]) {
+      expect(statements, column).not.toContain(column);
+    }
+    // The digests carry no shape CHECK — §8 lists none, and the door checks the
+    // shape as payload grammar instead (ADR 0077).
+    expect(statements).not.toContain("_sha256_shape");
+    expect(statements).not.toContain("GLOB");
+  });
+
+  it("seeds its two watermarks from the head, never from a literal zero", () => {
+    expect(statements).toContain("INSERT INTO projection_watermark");
+    expect(statements).toContain("SELECT 'prompt_occurrence_read_model' AS name");
+    expect(statements).toContain("UNION ALL SELECT 'response_occurrence_read_model'");
+    for (const key of ["head_sequence", "event_count", "head_event_sha256"]) {
+      expect(statements, key).toContain("WHERE key = '" + key + "'");
+    }
+  });
+
+  it("declares both projections in all four places that have to agree", () => {
+    for (const name of [PROMPT_OCCURRENCE_PROJECTION, RESPONSE_OCCURRENCE_PROJECTION]) {
+      expect(DERIVED_TABLES, name).toContain(name);
+      expect(PROJECTION_NAMES, name).toContain(name);
+      expect(
+        PROJECTION_SOURCES.filter((source) => source.projectionName === name),
+      ).toEqual([{ projectionName: name, sourceStream: "control_plane_events" }]);
+      expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "table", name });
+    }
+    expect(PROJECTION_NAMES).toHaveLength(10);
+  });
+
+  it("clears the answers before the prompts, and the prompts before the deliveries", () => {
+    const responseAt = DERIVED_TABLES.indexOf(RESPONSE_OCCURRENCE_PROJECTION);
+    const promptAt = DERIVED_TABLES.indexOf(PROMPT_OCCURRENCE_PROJECTION);
+    expect(responseAt).toBeGreaterThanOrEqual(0);
+    expect(responseAt).toBeLessThan(promptAt);
+    expect(promptAt).toBeLessThan(DERIVED_TABLES.indexOf(DISPATCH_ATTEMPT_PROJECTION));
+    expect(promptAt).toBeLessThan(DERIVED_TABLES.indexOf("effect_read_model"));
+    expect(promptAt).toBeLessThan(DERIVED_TABLES.indexOf("execution_route_segment_read_model"));
+  });
+
+  it("inventories the two tables and three indexes, and nothing else", () => {
+    const added = EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("occurrence"));
+    expect(added).toEqual([
+      { type: "table", name: "prompt_occurrence_read_model" },
+      { type: "index", name: "ix_prompt_occurrence_read_model__segment" },
+      { type: "index", name: "ix_prompt_occurrence_read_model__sha256" },
+      { type: "table", name: "response_occurrence_read_model" },
+      { type: "index", name: "ux_response_occurrence_read_model__prompt" },
     ]);
   });
 });

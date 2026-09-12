@@ -357,13 +357,13 @@ describe("N4/N5: the failure payload is a digest and a closed reason", () => {
 
 describe("N8: this packet introduced no state and no event type", () => {
   it("leaves the contract's two closed lists exactly where they were", () => {
-    // 28 since P-18/protocolo C, which added the effect and dispatch
-    // intentions and the dispatch resolution, on top of B's
-    // `TASK_ATTEMPT_OPENED`. The number moving is not this packet's doing and
-    // not a loosening of N8: what N8 claims is that *this* packet introduced
-    // nothing, and the two names it leans on are still the ones it always
-    // leaned on.
-    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(28);
+    // 30 since P-18/protocolo D, which added the prompt and response
+    // occurrences on top of C's effect and dispatch intentions, C's dispatch
+    // resolution and B's `TASK_ATTEMPT_OPENED`. The number moving is not this
+    // packet's doing and not a loosening of N8: what N8 claims is that *this*
+    // packet introduced nothing, and the two names it leans on are still the
+    // ones it always leaned on.
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(30);
     expect(EXCEPTIONAL_STATES).toHaveLength(8);
     // The two names this packet leans on were already there.
     expect(CONTROL_PLANE_EVENT_TYPES).toContain("TASK_FAILED");

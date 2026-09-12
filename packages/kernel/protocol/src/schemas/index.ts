@@ -1542,6 +1542,12 @@ export const STREAM_CHANNEL_BY_EVENT_TYPE: Readonly<
   EFFECT_INTENDED: "execution",
   DISPATCH_INTENDED: "execution",
   DISPATCH_OUTCOME_RECORDED: "execution",
+  // The two occurrences of P-18/protocolo D, for the same reason. A prompt sent
+  // on a delivery and the answer it received are "what it took to run it". They
+  // are not `progress` either, although they carry byte counts: a count here is
+  // part of what the occurrence *is*, not usage attributed to an account.
+  PROMPT_OCCURRENCE_RECORDED: "execution",
+  RESPONSE_OCCURRENCE_RECORDED: "execution",
   // steps — the durable walk's own beats.
   ATOMIC_STEP_COMPLETED: "steps",
   CHECKPOINT_WRITTEN: "steps",
