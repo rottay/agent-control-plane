@@ -12,7 +12,7 @@ import { z } from "zod";
 import { attachGuards } from "../credential-guards/index.js";
 import {
   AbsolutePath,
-  ContractVersion,
+  AdmittedContractVersion,
   GitCommitSha,
   RepoRelativePath,
   Timestamp,
@@ -23,7 +23,16 @@ import { WorkerIdentityString } from "../worker-identity/index.js";
 
 export const CommitAuthorizationReceipt = z
   .strictObject({
-    contractVersion: ContractVersion,
+    /**
+     * The version in force, and only it (P-18/protocolo C, ADR 0076).
+     *
+     * The third of ADR 0072's three admission shapes, on the reasoning
+     * `TaskEnvelope.contractVersion` states in full: a receipt authorizes a
+     * commit now, so it is held to `AdmittedContractVersion` — "only the
+     * version in force is emitted" — rather than to the two-member set a reader
+     * of stored history admits.
+     */
+    contractVersion: AdmittedContractVersion,
     receiptId: Uuid,
     taskId: Uuid,
     attempt: z.number().int().positive().max(10_000),

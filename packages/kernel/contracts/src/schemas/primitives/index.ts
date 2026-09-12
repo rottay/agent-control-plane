@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.2.0" as const;
+export const CONTRACT_VERSION = "2.3.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -45,8 +45,16 @@ export const CONTRACT_VERSION = "2.2.0" as const;
  * Declared as a non-empty tuple so `z.enum` below types it, and asserted
  * against `CONTRACT_VERSION` by test N-A-1 — a ledger that cannot read what it
  * itself writes is the one failure this pair must never be allowed to reach.
+ *
+ * **The set holds two members from P-18/protocolo C (ADR 0076).** That escalón
+ * is the one that moved `CONTRACT_VERSION`, because its three event types
+ * record durable meaning no earlier reader can reconstruct — digests the fold
+ * verifies and a per-payload request contract version. `"2.2.0"` stays here for
+ * ever: every event any earlier build recorded carries it, and a set that
+ * dropped it would make a routine upgrade a data loss event. That is the whole
+ * reason this constant exists, and the bump is the first time it does anything.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0"] as const;
+export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0"] as const;
 
 /**
  * The UTF-8 byte length of a string, browser-safe.
@@ -71,6 +79,37 @@ export function utf8ByteLength(value: string): number {
  * mechanism safe to land before it is needed.
  */
 export const ContractVersion = z.enum(SUPPORTED_CONTRACT_VERSIONS);
+
+/**
+ * The **issuer's** admission test: equality with the version in force.
+ *
+ * The obligation ADR 0072 wrote down and P-18/protocolo C pays (ADR 0076). A
+ * set that is right for reading history is wrong for admitting new work: once
+ * `SUPPORTED_CONTRACT_VERSIONS` holds two members, `ContractVersion` alone
+ * would let a producer choose which version to stamp, and a producer that could
+ * choose between two versions is a producer whose output nobody can predict —
+ * the sentence `CONTRACT_VERSION` opens with. So the rule is **only the version
+ * in force is emitted**, and this is what states it.
+ *
+ * **Where it goes, and where it deliberately does not.** It goes on the three
+ * shapes ADR 0072 named — `TaskEnvelope`, `WorkerSlot`,
+ * `CommitAuthorizationReceipt` — and at the ledger's append door for a new
+ * insertion. Those four are instruments of *new work*: an envelope is issued
+ * now, a slot is registered now, a receipt authorizes a commit now, an append
+ * records something that just happened. None of them is a cohort of stored
+ * history anyone re-parses.
+ *
+ * It does **not** go on `ControlPlaneEvent`, and that is the whole distinction.
+ * That schema is what the ledger re-parses over every stored row in
+ * `#rowToRecord`, `#validateRowShape` and `#replay`; pinning the current
+ * version there would be the exact symmetry ADR 0072 removed, one version later.
+ * The read set governs reading, this governs issuing, and the ledger separates
+ * the two by *when* rather than by *what*: a brand new insertion is held to this
+ * literal, and an exact replay of a row already recorded is exempt, because
+ * refusing a producer's honest retry after an upgrade would turn an idempotent
+ * append into a failure.
+ */
+export const AdmittedContractVersion = z.literal(CONTRACT_VERSION);
 
 export const Sha256Hex = z
   .string()

@@ -166,6 +166,9 @@ fourteenth class cannot arrive without appearing here.
 | `execution_route_read_model` | derived | the route each `(task, attempt)` was admitted on: provider, model, account, transport and the capability-policy version that chose them |
 | `task_revision_read_model` | derived | one row per `(task, revision)`: the revision's stable handle, its envelope digest and what it restored |
 | `task_attempt_read_model` | derived | one row per `(task, revision, attempt)`: the flat assignment that goes in the legacy `attempt` column, and the invocation the attempt is in bijection with |
+| `execution_route_segment_read_model` | derived | one row per stretch of one attempt's route, with explicit lineage back to the segment that handed off to it |
+| `effect_read_model` | derived | one row per logical operation of a run, found by its logical key rather than by a physical coordinate |
+| `dispatch_attempt_read_model` | derived | one row per concrete external delivery of one effect, in the five states of execution §7 |
 | `initiative_read_model` | derived | current status, counts, first and last position |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
@@ -286,14 +289,25 @@ literal without a supported-versions mechanism would make every event already
 recorded under the previous one unreadable. ADR 0067 carries the reasoning.
 
 **The mechanism arrived without the bump** (P-18/protocolo A, ADR 0072).
-`@acp/contracts` now separates `SUPPORTED_CONTRACT_VERSIONS`, the set a reader
-admits, from `CONTRACT_VERSION`, the one value a producer stamps — and
-`CONTRACT_VERSION` is still `"2.2.0"`, so no fixture pinned to that literal
-moved. What changed here is that the three read paths (`#rowToRecord`,
-`#validateRowShape`, `#replay`) now say *which* version they found and *which*
-set they read when that is why a stored row was refused. They already refused;
-"does not satisfy the contract" was equally true of a tampered field and of a
-ledger written by a newer build, and only one of those is recoverable.
+`@acp/contracts` separates `SUPPORTED_CONTRACT_VERSIONS`, the set a reader
+admits, from `CONTRACT_VERSION`, the one value a producer stamps. What changed
+there is that the three read paths (`#rowToRecord`, `#validateRowShape`,
+`#replay`) now say *which* version they found and *which* set they read when
+that is why a stored row was refused. They already refused; "does not satisfy
+the contract" was equally true of a tampered field and of a ledger written by a
+newer build, and only one of those is recoverable.
+
+**And the bump arrived in P-18/protocolo C** (ADR 0076). `CONTRACT_VERSION` is
+`"2.3.0"`; the set is `["2.2.0", "2.3.0"]` and `"2.2.0"` stays in it for ever,
+so a ledger full of history under the previous build opens, reads, passes
+`verifyIntegrity()` and rebuilds. The other half of the pair is the issuer's
+rule — **only the version in force is emitted** — which this package enforces at
+the append door of `control_plane_events`, on a genuinely **new** insertion.
+The replay is exempt and that is the design: an event already recorded, appended
+again byte for byte, returns its existing record before the check is reached,
+because a producer retrying an append written before an upgrade is doing the one
+thing an idempotency key exists to make safe. `ControlPlaneEvent` itself keeps
+the reader's set, since it is the schema every stored row is re-parsed with.
 
 ### The V2 key, and the door that admits it
 
@@ -511,6 +525,78 @@ snapshot additionally carries the table's two unique indexes in memory, so a
 **rebuild** refuses the histories the base would refuse — two invocations for one
 coordinate, or one flat assignment across two — at the event that caused them
 rather than several layers away.
+
+## The effect, its deliveries, and the segment they hang off
+
+Migration 13, the rungs below the attempt (execution §4, §6, §6.1 and §7;
+ADR 0076). Three tables land together because §6 and §7 both carry a foreign key
+onto the segment and the effect's own identity takes `segment_number` from it —
+§1.8 forbids cutting an invariant to get a smaller delivery.
+
+### The logical key, and why a lookup exists
+
+An effect is recognised by **what it is** before any physical coordinate is
+assigned to it: the run's invocation, a semantic scope and the step's own key.
+That triple is what `logical_operation_sha256` digests and what
+`ux_effect_read_model__logical_operation_sha256` makes unique, and it is what
+makes losing an acknowledgement survivable. A run that lost one, handed off to
+another account and repeated the same step calls `lookUpEffect` and gets the
+**original** `effect_id` and `idempotency_key` back — never a new pair —
+together with whether the situation demands reconciliation.
+
+The write side is the refusal that makes the read side necessary. An
+`EFFECT_INTENDED` whose logical key is already taken is refused by name, and a
+difference in any of execution §6.1's four compared fields — kind, request
+contract version, envelope or request digest — is a **CONFLICT**. A producer
+never resolves a conflict by changing the key.
+
+### The identity formula, stated once
+
+`effect_id` and `idempotency_key` are sha-256 over versioned preimages declared
+in `@acp/contracts` and computed here, exactly as `envelope_sha256` is. Neither
+carries the clock and neither carries anything resolved at dispatch time: both
+are fixed once, with the **initial** segment, and conserved through every replay
+and every handoff. A later authorized delivery after a handoff records its own
+effective segment in `dispatch_attempt_read_model`, and the effect keeps its
+origin — which is what keeps one operation from acquiring two idempotency keys.
+
+The producer proposes and the ledger verifies, on escalón B's terms. Three of
+the four digests are recomputed here from sources this ledger recorded — the
+`invocation_id` on the attempt row, the `envelope_sha256` on the revision row —
+and refused by name when they disagree. `request_sha256` is the exception and it
+is declared: its preimage carries the business request, and a business request
+does not enter a ledger event, so it is recorded and conserved rather than
+checked.
+
+### Five states, and no sixth
+
+`dispatch_state` is `INTENDED`, `CLAIMED`, `INFLIGHT`, `SETTLED` or `ABANDONED`.
+`RECONCILING` is `outbox_message`'s word, not a sixth state here: an overdue
+`INFLIGHT` **stays** `INFLIGHT` and is found by `listOverdueDispatchAttempts`,
+whose deadline arrives by argument because this package reads no clock. Finding
+one creates nothing — no verb here moves it, mints another delivery for its
+effect, or intends a second effect from it.
+
+`outcome_status` is `NULL` until something actually ends, and `NULL` is not
+`OUTCOME_UNKNOWN`: an intention never dispatched is absence of data, while
+`OUTCOME_UNKNOWN` is a recorded uncertain exposure. It is not a failure, and it
+**blocks** another delivery of that effect outright — a destination reporting
+itself clean is a statement about the destination, not about whether the earlier
+delivery landed.
+
+### What this escalón does not write
+
+`provider_idempotency_key`, `external_handle` and `accepted_at` exist with their
+nullity documented and no producer fills them with an external fact: populating
+them needs a composed adapter, which is P-15. `accepted_at` carries no CHECK on
+purpose — one making `INFLIGHT` imply a non-null value would make `INFLIGHT`
+unreachable while that adapter is missing, and an unreachable state cannot be
+tested. `effect_kind` carries no CHECK either: the catalogue is one member today
+and lives in this package, on decision 45's reasoning rather than decision 42's.
+
+Nothing emits any of the three event types. The migration, the folds, the door
+and the lookup land without a production caller, exactly as escalón B's opening
+did; escalón G owes the producer.
 
 ## The account stream's hash chain
 

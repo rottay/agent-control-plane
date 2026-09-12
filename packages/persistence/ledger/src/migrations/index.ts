@@ -1307,6 +1307,263 @@ SELECT
   '1970-01-01T00:00:00.000Z';
 `,
   },
+  {
+    version: 13,
+    name: "execution_effect_identity",
+    sql: `
+-- The effect, its deliveries, and the segment both hang off (P-18/protocolo C).
+--
+-- Three tables in one migration, and they are not three packets pretending to
+-- be one. Execution §6 \`:242\` and §7 \`:343\` both carry a foreign key onto
+-- \`execution_route_segment_read_model\`, and the formula for \`effect_id\`
+-- takes \`segment_number\` from it. §1.8 forbids cutting an invariant to get a
+-- smaller delivery, so the segment lands with the two tables that cannot be
+-- expressed without it (correction C-1, adjudicated).
+--
+-- **The identity ladder, finished for this packet.** \`task_id\` →
+-- \`(task_id, revision_number)\` (migration 11) → \`(task_id, revision_number,
+-- attempt_number)\` (migration 12) → \`route_segment_id\` → \`effect_id\` →
+-- \`dispatch_attempt_id\`. Each rung below is the parent of a foreign key, and
+-- \`DERIVED_TABLES\` clears them children-first for the reason it already
+-- clears the attempt before the revision.
+--
+-- **What this migration does not create.** No occurrence tables: execution §8
+-- is escalón D and hangs off \`dispatch_attempt_id\`, which is why the foreign
+-- key it will need exists here and nothing else does. No trigger: every pairing
+-- rule below is a CHECK the base can evaluate on its own row, unlike migration
+-- 11's coordinate rule, which had to compare a column against a JSON body.
+CREATE TABLE execution_route_segment_read_model (
+  route_segment_id          TEXT    NOT NULL,
+  task_id                   TEXT    NOT NULL,
+  revision_number           INTEGER NOT NULL,
+  attempt_number            INTEGER NOT NULL,
+  segment_number            INTEGER NOT NULL,
+  predecessor_segment_id    TEXT,
+  handoff_reason            TEXT,
+  provider                  TEXT    NOT NULL,
+  model                     TEXT    NOT NULL,
+  model_resolution_status   TEXT    NOT NULL,
+  model_version_id          TEXT,
+  account_id                TEXT,
+  transport_kind            TEXT    NOT NULL,
+  capability_policy_version TEXT    NOT NULL,
+  routing_assignment_id     TEXT,
+  reservation_id            TEXT,
+  escalated_from_attempt    INTEGER,
+  escalation_reason         TEXT,
+  resolved_at               TEXT,
+  recorded_at               TEXT    NOT NULL,
+  sequence                  INTEGER NOT NULL,
+  CONSTRAINT pk_execution_route_segment_read_model PRIMARY KEY (route_segment_id),
+  -- The segment belongs to one try at one revision, and cannot be adopted by
+  -- another. \`DEFERRABLE INITIALLY DEFERRED\` because §7 asks for it wherever
+  -- an \`appendBatch\` materializes the sources together: a batch may open an
+  -- attempt and its first segment in one transaction, and an immediate check
+  -- would depend on statement order inside it rather than on the batch being
+  -- consistent when it commits.
+  CONSTRAINT fk_execution_route_segment_read_model__task_attempt_read_model
+    FOREIGN KEY (task_id, revision_number, attempt_number)
+    REFERENCES task_attempt_read_model (task_id, revision_number, attempt_number)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_execution_route_segment_read_model__segment_number
+    CHECK (segment_number >= 1),
+  -- A handoff is a predecessor AND a reason, or it is neither. Half of one is
+  -- a segment that says it came from somewhere and will not say why, or a
+  -- reason attached to no origin.
+  CONSTRAINT ck_execution_route_segment_read_model__handoff_pair
+    CHECK ((predecessor_segment_id IS NULL) = (handoff_reason IS NULL)),
+  CONSTRAINT ck_execution_route_segment_read_model__model_resolution_status
+    CHECK (model_resolution_status IN ('RESOLVED', 'UNKNOWN', 'NOT_OBSERVABLE')),
+  -- §4: \`model_version_id\` stays NULL in the two unresolved cases **even
+  -- after executing**. The equality is what makes "we could not resolve it" a
+  -- recorded fact rather than an empty column somebody may later fill in.
+  CONSTRAINT ck_execution_route_segment_read_model__model_resolution_pair
+    CHECK ((model_resolution_status = 'RESOLVED') = (model_version_id IS NOT NULL)),
+  CONSTRAINT ck_execution_route_segment_read_model__escalation_pair
+    CHECK ((escalated_from_attempt IS NULL) = (escalation_reason IS NULL))
+) STRICT;
+
+-- The segment's own coordinate, and the reason a handoff cannot overwrite one:
+-- segment 2 of an attempt is a row beside segment 1, never on top of it.
+CREATE UNIQUE INDEX ux_execution_route_segment_read_model__attempt_segment
+  ON execution_route_segment_read_model
+    (task_id, revision_number, attempt_number, segment_number);
+
+CREATE INDEX ix_execution_route_segment_read_model__account
+  ON execution_route_segment_read_model (account_id, task_id);
+
+-- The logical effect (execution §6). One row per logical operation of a run,
+-- **not** one row per delivery: retransmitting is a new \`dispatch_attempt\`
+-- and never a new effect.
+--
+-- \`route_segment_id\` here is the **initial** segment and is immutable. A
+-- later authorized dispatch after a handoff records its own segment in §7's
+-- table; §6.1 \`:329\` says so in as many words, and it is what keeps
+-- \`idempotency_key\` — whose preimage carries \`segment_number\` — stable
+-- across a handoff.
+--
+-- **\`outcome_status\` is NULL by default and that is a different fact from
+-- \`OUTCOME_UNKNOWN\`.** An intention never dispatched is absence of data;
+-- \`OUTCOME_UNKNOWN\` is a recorded uncertain exposure, written only when one
+-- actually happened, and it is not a failure and does not license a blind
+-- retry (execution §6 \`:252\`, invariant 9).
+CREATE TABLE effect_read_model (
+  effect_id                TEXT    NOT NULL,
+  task_id                  TEXT    NOT NULL,
+  revision_number          INTEGER NOT NULL,
+  attempt_number           INTEGER NOT NULL,
+  route_segment_id         TEXT    NOT NULL,
+  operation_ordinal        INTEGER NOT NULL,
+  effect_kind              TEXT    NOT NULL,
+  semantic_scope_key       TEXT    NOT NULL,
+  local_operation_key      TEXT    NOT NULL,
+  logical_operation_sha256 TEXT    NOT NULL,
+  request_contract_version TEXT    NOT NULL,
+  request_sha256           TEXT    NOT NULL,
+  idempotency_key          TEXT    NOT NULL,
+  intended_at              TEXT    NOT NULL,
+  outcome_status           TEXT,
+  outcome_recorded_at      TEXT,
+  sequence                 INTEGER NOT NULL,
+  CONSTRAINT pk_effect_read_model PRIMARY KEY (effect_id),
+  CONSTRAINT fk_effect_read_model__execution_route_segment_read_model
+    FOREIGN KEY (route_segment_id)
+    REFERENCES execution_route_segment_read_model (route_segment_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_effect_read_model__operation_ordinal
+    CHECK (operation_ordinal >= 0),
+  -- The four digests carry the §3.4 shape check every other digest column in
+  -- this schema carries. \`effect_kind\` deliberately carries no CHECK: the
+  -- catalogue of business operations grows with the adapters that serve them,
+  -- and decision 45 already settled that binding an immutable migration to a
+  -- catalogue that is not immutable makes every growth of it a migration of
+  -- this database. \`@acp/ledger\` holds the closed set and the door imposes it.
+  CONSTRAINT ck_effect_read_model__effect_id_shape
+    CHECK (length(effect_id) = 64 AND effect_id NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_effect_read_model__logical_operation_sha256_shape
+    CHECK (length(logical_operation_sha256) = 64
+      AND logical_operation_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_effect_read_model__request_sha256_shape
+    CHECK (length(request_sha256) = 64 AND request_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_effect_read_model__idempotency_key_shape
+    CHECK (length(idempotency_key) = 64 AND idempotency_key NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_effect_read_model__outcome_status
+    CHECK (outcome_status IS NULL
+      OR outcome_status IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'OUTCOME_UNKNOWN')),
+  CONSTRAINT ck_effect_read_model__outcome_pair
+    CHECK ((outcome_status IS NULL) = (outcome_recorded_at IS NULL))
+) STRICT;
+
+-- What a destination is asked not to do twice.
+CREATE UNIQUE INDEX ux_effect_read_model__idempotency_key
+  ON effect_read_model (idempotency_key);
+
+-- The logical index of §6.1, and the reason the lookup can run BEFORE an
+-- ordinal is assigned: the same scope and step of the same run is the same
+-- effect, whatever coordinate a retry would otherwise have minted for it. A
+-- competitor that loses this unique re-reads and reuses; it never changes the
+-- key to turn a conflict into a new operation.
+CREATE UNIQUE INDEX ux_effect_read_model__logical_operation_sha256
+  ON effect_read_model (logical_operation_sha256);
+
+CREATE INDEX ix_effect_read_model__segment
+  ON effect_read_model (route_segment_id, operation_ordinal);
+
+-- One concrete external delivery of one logical effect (execution §7).
+--
+-- **The intention is recorded BEFORE sending** (datos §11 \`:566\`), which is
+-- the whole point of the \`INTENDED\` state: recording that a delivery is about
+-- to happen is an append, and an append is not a dispatch. Nothing in this
+-- build sends anything.
+--
+-- \`provider_idempotency_key\`, \`external_handle\` and \`accepted_at\` are the
+-- three columns whose *population* needs a composed adapter (map §3.3, B1–B3,
+-- P-15). They exist here with their nullity documented, and no producer in this
+-- build fills them with an external fact.
+--
+-- **\`accepted_at\` carries no CHECK, on purpose.** §7 fixes the pair for
+-- \`terminal_at\` and says only prose about \`accepted_at\`: it is populated
+-- on entering \`INFLIGHT\` *with external confirmation*, or directly at
+-- \`SETTLED\` where a provider does not distinguish acceptance from result, and
+-- an \`ABANDONED\` before any real dispatch leaves it NULL. A CHECK making
+-- \`INFLIGHT\` imply a non-null \`accepted_at\` would make \`INFLIGHT\`
+-- unreachable while B2 is blocked, and an unreachable state cannot be tested.
+CREATE TABLE dispatch_attempt_read_model (
+  dispatch_attempt_id      TEXT    NOT NULL,
+  effect_id                TEXT    NOT NULL,
+  route_segment_id         TEXT    NOT NULL,
+  attempt_ordinal          INTEGER NOT NULL,
+  provider_idempotency_key TEXT,
+  external_handle          TEXT,
+  dispatch_state           TEXT    NOT NULL,
+  requested_at             TEXT    NOT NULL,
+  accepted_at              TEXT,
+  terminal_at              TEXT,
+  recorded_at              TEXT    NOT NULL,
+  sequence                 INTEGER NOT NULL,
+  CONSTRAINT pk_dispatch_attempt_read_model PRIMARY KEY (dispatch_attempt_id),
+  CONSTRAINT fk_dispatch_attempt_read_model__effect_read_model
+    FOREIGN KEY (effect_id) REFERENCES effect_read_model (effect_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  -- The **effective** segment of this delivery, which may differ from the
+  -- effect's initial one and never from its attempt. §7 \`:356\` is explicit
+  -- that the fold must not demand equality with \`effect.route_segment_id\`,
+  -- because that column conserves the origin.
+  CONSTRAINT fk_dispatch_attempt_read_model__execution_route_segment_read_model
+    FOREIGN KEY (route_segment_id)
+    REFERENCES execution_route_segment_read_model (route_segment_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_dispatch_attempt_read_model__attempt_ordinal
+    CHECK (attempt_ordinal >= 1),
+  -- Five states, and the set is closed at five. \`RECONCILING\` is
+  -- \`outbox_message\`'s word (coordination §2), not a sixth state here: §7
+  -- \`:360\` says an overdue \`INFLIGHT\` enables reconciliation — a verb, not
+  -- a state — so such a row stays \`INFLIGHT\` and is found by the index below.
+  CONSTRAINT ck_dispatch_attempt_read_model__dispatch_state
+    CHECK (dispatch_state IN ('INTENDED', 'CLAIMED', 'INFLIGHT', 'SETTLED', 'ABANDONED')),
+  CONSTRAINT ck_dispatch_attempt_read_model__terminal_pair
+    CHECK ((dispatch_state IN ('SETTLED', 'ABANDONED')) = (terminal_at IS NOT NULL))
+) STRICT;
+
+-- Order of delivery within one effect. Unique, because "the second attempt at
+-- this effect" has to name exactly one row.
+CREATE UNIQUE INDEX ux_dispatch_attempt_read_model__effect_ordinal
+  ON dispatch_attempt_read_model (effect_id, attempt_ordinal);
+
+-- The probe for overdue \`INFLIGHT\` rows. The deadline is an argument, never a
+-- clock read in this package, and finding a row here produces a report — no
+-- verb of this ledger creates another dispatch or another effect from it.
+CREATE INDEX ix_dispatch_attempt_read_model__state
+  ON dispatch_attempt_read_model (dispatch_state, terminal_at);
+
+-- Three watermarks, seeded from the head this stream already has.
+--
+-- Migration 11's case and migration 12's, for their reason: these projections
+-- arrive over \`control_plane_events\`, which may already hold a long history,
+-- and the fold over all of it is legitimately empty because no historical row
+-- carries an effect or a dispatch. A literal zero would make every ledger in
+-- the field fail its own integrity check immediately after a routine upgrade.
+--
+-- On a fresh ledger the three subqueries read 0, 0 and the genesis digest, so
+-- this is identical to a literal zero seed there.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  name,
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  '1970-01-01T00:00:00.000Z'
+FROM (
+  SELECT 'execution_route_segment_read_model' AS name
+  UNION ALL SELECT 'effect_read_model'
+  UNION ALL SELECT 'dispatch_attempt_read_model'
+);
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -1328,6 +1585,14 @@ export const MIGRATIONS: readonly Migration[] = SOURCES.map((source) => ({
  */
 export const DERIVED_TABLES: readonly string[] = [
   "worker_task_read_model",
+  // The P-18/protocolo C cohort, children first: a dispatch names an effect and
+  // a segment, an effect names a segment, and a segment names an attempt. The
+  // three foreign keys are `DEFERRABLE INITIALLY DEFERRED`, so a wrong order
+  // here would not abort a statement — it would surface as a violation at
+  // commit, several statements from the delete that caused it.
+  "dispatch_attempt_read_model",
+  "effect_read_model",
+  "execution_route_segment_read_model",
   "task_attempt_read_model",
   "task_revision_read_model",
   "task_read_model",
@@ -1352,6 +1617,12 @@ export const PROJECTION_NAMES: readonly string[] = [
   // list is a roster, not an order — unlike its position in `DERIVED_TABLES`,
   // which a foreign key decides.
   "task_attempt_read_model",
+  // The same three times over, for P-18/protocolo C's cohort. Order is free
+  // here for the reason above, so these read in the order the dictionary
+  // introduces them rather than in the order a rebuild clears them.
+  "execution_route_segment_read_model",
+  "effect_read_model",
+  "dispatch_attempt_read_model",
 ];
 
 /**
@@ -1417,6 +1688,24 @@ export const TASK_ATTEMPT_PROJECTION = "task_attempt_read_model";
  * would be a number nobody could search for.
  */
 export const TASK_ATTEMPT_MIGRATION = 12;
+
+/** The segment of a route, one per handoff within an attempt (P-18/C). */
+export const EXECUTION_ROUTE_SEGMENT_PROJECTION = "execution_route_segment_read_model";
+
+/** The logical effect of a run, looked up by its logical key (P-18/C). */
+export const EFFECT_PROJECTION = "effect_read_model";
+
+/** One concrete external delivery of one logical effect (P-18/C). */
+export const DISPATCH_ATTEMPT_PROJECTION = "dispatch_attempt_read_model";
+
+/**
+ * The migration that adds the effect, its deliveries and the segment.
+ *
+ * Named for the reason `TASK_ATTEMPT_MIGRATION` is: the suite holds the number
+ * against where the SQL actually sits, and a bare `13` at that assertion would
+ * be a number nobody could search for.
+ */
+export const EXECUTION_EFFECT_MIGRATION = 13;
 
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
@@ -1488,6 +1777,9 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: "execution_route_read_model", sourceStream: TASK_STREAM },
   { projectionName: TASK_REVISION_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: TASK_ATTEMPT_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: EXECUTION_ROUTE_SEGMENT_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: EFFECT_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: DISPATCH_ATTEMPT_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -1630,6 +1922,23 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "table", name: "task_attempt_read_model" },
   { type: "index", name: "ux_task_attempt_read_model__task_id_legacy_attempt_number" },
   { type: "index", name: "ux_task_attempt_read_model__invocation_id" },
+  // P-18/protocolo C. Ten objects and no trigger: every pairing rule of
+  // migration 13 is a CHECK the base evaluates on the row in front of it, which
+  // migration 11's coordinate rule could not be because it had to compare a
+  // column against a JSON body. Each index is inventoried by name for the
+  // reason the attempt's two are: dropping one leaves `schema_migrations`
+  // intact while the read model quietly admits two effects for one logical
+  // operation, or two deliveries at one ordinal.
+  { type: "table", name: "execution_route_segment_read_model" },
+  { type: "index", name: "ux_execution_route_segment_read_model__attempt_segment" },
+  { type: "index", name: "ix_execution_route_segment_read_model__account" },
+  { type: "table", name: "effect_read_model" },
+  { type: "index", name: "ux_effect_read_model__idempotency_key" },
+  { type: "index", name: "ux_effect_read_model__logical_operation_sha256" },
+  { type: "index", name: "ix_effect_read_model__segment" },
+  { type: "table", name: "dispatch_attempt_read_model" },
+  { type: "index", name: "ux_dispatch_attempt_read_model__effect_ordinal" },
+  { type: "index", name: "ix_dispatch_attempt_read_model__state" },
 ];
 
 export interface MigrationConformance {

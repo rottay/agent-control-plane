@@ -1533,6 +1533,15 @@ export const STREAM_CHANNEL_BY_EVENT_TYPE: Readonly<
   // a same-state passthrough. And it is not `steps`, which is the durable
   // walk's own beats — an attempt is the thing the beats happen inside.
   TASK_ATTEMPT_OPENED: "execution",
+  // The three of P-18/protocolo C are the same class of fact, and they sit with
+  // the attempt opening for its reason. Intending an effect, intending a
+  // delivery and recording how a delivery went are all "what it took to run
+  // it": none of them moves a lifecycle state, none of them is a beat of the
+  // durable walk (`steps`) — an effect is something a beat asks for — and none
+  // of them is usage attribution (`progress`).
+  EFFECT_INTENDED: "execution",
+  DISPATCH_INTENDED: "execution",
+  DISPATCH_OUTCOME_RECORDED: "execution",
   // steps — the durable walk's own beats.
   ATOMIC_STEP_COMPLETED: "steps",
   CHECKPOINT_WRITTEN: "steps",

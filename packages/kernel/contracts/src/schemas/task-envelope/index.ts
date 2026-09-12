@@ -11,7 +11,7 @@
 import { z } from "zod";
 import { attachGuards } from "../credential-guards/index.js";
 import {
-  ContractVersion,
+  AdmittedContractVersion,
   RepoRelativePath,
   Timestamp,
   Uuid,
@@ -81,7 +81,23 @@ export type CommitPolicy = z.infer<typeof CommitPolicy>;
 
 export const TaskEnvelope = z
   .strictObject({
-    contractVersion: ContractVersion,
+    /**
+     * The version in force, and only it (P-18/protocolo C, ADR 0076).
+     *
+     * One of the three shapes ADR 0072 named when it wrote the obligation the
+     * escalón that bumps `CONTRACT_VERSION` inherits: a set that is right for
+     * reading history is wrong for admitting new work. An envelope is issued
+     * now — it is not a cohort of stored rows anybody re-parses — so the rule
+     * here is `AdmittedContractVersion`, "only the version in force is
+     * emitted", rather than the reader's two-member set.
+     *
+     * The cost is stated rather than hidden: a fixture holding an envelope at
+     * `"2.2.0"` no longer parses, and `envelope_sha256` therefore differs for
+     * the same work issued before and after the bump (consequence V3, ADR
+     * 0076). That is correct — the envelope preimage covers every field of this
+     * schema, and the version is one of them.
+     */
+    contractVersion: AdmittedContractVersion,
     taskId: Uuid,
     /**
      * The initiative this packet belongs to. Required, and the only place the

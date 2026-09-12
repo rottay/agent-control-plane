@@ -265,6 +265,273 @@ export interface TaskAttemptReadModel {
   readonly sequence: number;
 }
 
+/**
+ * How resolved a model alias turned out to be — execution §4 and §8, one
+ * vocabulary shared by both (P-18/protocolo C).
+ *
+ * `UNKNOWN` and `NOT_OBSERVABLE` are different failures and the distinction is
+ * load-bearing: the first means the version could not be resolved *despite
+ * trying*, the second that the transport exposes no resolvable version at all.
+ * In neither case is `modelVersionId` ever invented to fill the column.
+ */
+export const MODEL_RESOLUTION_STATUSES = ["RESOLVED", "UNKNOWN", "NOT_OBSERVABLE"] as const;
+export type ModelResolutionStatus = (typeof MODEL_RESOLUTION_STATUSES)[number];
+
+/**
+ * How a logical effect turned out — execution §6's `effect_outcome_status`.
+ *
+ * The same four `task_attempt_read_model.outcome` admits, and the fourth is the
+ * one that carries the packet's whole point. `OUTCOME_UNKNOWN` is **not** a
+ * failure: it is a recorded uncertain exposure, it does not license a blind
+ * retry, and it is never the default of creation — an intention never
+ * dispatched carries `null`, which is absence of data (execution §6 `:252`).
+ */
+export const EFFECT_OUTCOME_STATUSES = [
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+  "OUTCOME_UNKNOWN",
+] as const;
+export type EffectOutcomeStatus = (typeof EFFECT_OUTCOME_STATUSES)[number];
+
+/**
+ * The five states of one delivery — execution §7 `:347`, and there are five.
+ *
+ * `RECONCILING` is deliberately absent. It is `outbox_message`'s state word
+ * (coordination §2, landed by escalón E2), and §7 `:360` says an overdue
+ * `INFLIGHT` enables **reconciliation** — a verb. A sixth state here would
+ * contradict the CHECK the dictionary fixes, and would also hide the property
+ * that matters: such a row stays `INFLIGHT` and is *found* by an index, which
+ * is a report, not a transition.
+ */
+export const DISPATCH_STATES = [
+  "INTENDED",
+  "CLAIMED",
+  "INFLIGHT",
+  "SETTLED",
+  "ABANDONED",
+] as const;
+export type DispatchState = (typeof DISPATCH_STATES)[number];
+
+/**
+ * The states a delivery may move to, from each state it can be in.
+ *
+ * Forward only, and the two terminals move nowhere. Declared as a map rather
+ * than as a predicate so a refusal can print the admissible set, and held in
+ * one place so the incremental door and a rebuild cannot come to disagree about
+ * which histories are lawful.
+ */
+export const DISPATCH_STATE_TRANSITIONS: Readonly<Record<DispatchState, readonly DispatchState[]>> =
+  Object.freeze({
+    INTENDED: ["CLAIMED", "INFLIGHT", "SETTLED", "ABANDONED"],
+    CLAIMED: ["INFLIGHT", "SETTLED", "ABANDONED"],
+    INFLIGHT: ["SETTLED", "ABANDONED"],
+    SETTLED: [],
+    ABANDONED: [],
+  });
+
+/**
+ * The kinds of business operation an effect may be — the minimal catalogue.
+ *
+ * One member, and it grows by escalón, exactly as `V2_IDEMPOTENCY_STREAMS`
+ * admitted one stream in escalón A. Execution §6.1 requires `neutralRequest` to
+ * be validated "por el schema exacto de effect_kind/request_contract_version",
+ * and P-18/protocolo composes no adapter, so what this escalón can honestly
+ * impose is the closed set and the pairing — not a payload schema for a
+ * request nobody produces yet.
+ *
+ * **It lives here and not in `@acp/contracts`, and the choice is argued rather
+ * than assumed** (ADR 0076). Decision 42 puts the *grammar of a key* in the
+ * contract, and that is why the two preimage prefixes are there. A catalogue of
+ * business operations is the other thing — the class decision 45 already ruled
+ * on for `last_failure_code`: it grows with the adapters that serve it, so
+ * binding it to an immutable migration, or to the package every other package
+ * imports, would make each growth of the catalogue a migration of this
+ * database. The door imposes it; the schema does not.
+ */
+export const EXECUTION_EFFECT_KINDS = ["model_execution"] as const;
+export type ExecutionEffectKind = (typeof EXECUTION_EFFECT_KINDS)[number];
+
+/**
+ * The request contract version each effect kind admits, today.
+ *
+ * Execution §6 `:248`: "Versión exacta del schema de neutralRequest para
+ * effect_kind; no se usa una versión implícita o desconocida". One pair, so the
+ * pairing is checkable rather than merely declared — an effect naming a kind
+ * with a version that kind does not define is refused at the door.
+ */
+export const EXECUTION_REQUEST_CONTRACT_VERSIONS: Readonly<
+  Record<ExecutionEffectKind, readonly string[]>
+> = Object.freeze({ model_execution: ["1"] });
+
+/**
+ * One segment of one attempt's route — execution §4 (P-18/protocolo C).
+ *
+ * Replaces `ExecutionRouteReadModel` going forward, which is keyed by the flat
+ * `(taskId, attempt)` and is frozen for the legacy rows that carry it. Every
+ * handoff opens a **new** segment with explicit lineage back to the one that
+ * handed off, which is exactly what the old shape could not express: it had one
+ * row per attempt, so a second account or a second model inside one attempt
+ * overwrote the first.
+ *
+ * `predecessorSegmentId` and `handoffReason` are `null` together on the first
+ * segment of an attempt and non-null together on every later one.
+ * `modelVersionId` is `null` if and only if `modelResolutionStatus` is not
+ * `RESOLVED`, **even after executing** — a version nobody could resolve is a
+ * recorded fact, not an empty column somebody may fill in later.
+ *
+ * Four columns have no producer in this build and the nullity is declared
+ * rather than accidental: `routingAssignmentId` and `reservationId` belong to
+ * planning and accounts, and `escalatedFromAttempt`/`escalationReason` to the
+ * escalation flow. None of them is invented from a digest or a neighbour.
+ */
+export interface ExecutionRouteSegmentReadModel {
+  readonly routeSegmentId: string;
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly segmentNumber: number;
+  readonly predecessorSegmentId: string | null;
+  readonly handoffReason: string | null;
+  readonly provider: string;
+  /** The routing alias asked for, preserved even when resolution fails. */
+  readonly model: string;
+  readonly modelResolutionStatus: ModelResolutionStatus;
+  readonly modelVersionId: string | null;
+  readonly accountId: string | null;
+  readonly transportKind: string;
+  readonly capabilityPolicyVersion: string;
+  readonly routingAssignmentId: string | null;
+  readonly reservationId: string | null;
+  readonly escalatedFromAttempt: number | null;
+  readonly escalationReason: string | null;
+  readonly resolvedAt: string | null;
+  /** The recording event's own instant. Never a clock read in this package. */
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
+/**
+ * One logical effect of one run — execution §6 (P-18/protocolo C).
+ *
+ * **The row the whole escalón exists for.** A logical operation is recognised
+ * by *what it is* — the run's invocation, a semantic scope and the step's own
+ * key — before any physical coordinate is assigned to it. That is what
+ * `logicalOperationSha256` indexes and what makes losing an acknowledgement
+ * survivable: the retry after a handoff finds the effect that already exists
+ * instead of minting a second one and sending twice.
+ *
+ * `effectId` and `idempotencyKey` are derived once, with the **initial**
+ * segment, and conserved through every replay and every handoff. `routeSegmentId`
+ * here is that initial segment and is immutable; a later delivery records its
+ * own in `DispatchAttemptReadModel`.
+ *
+ * `requestSha256` is a consistency digest, not a second identity: it answers
+ * "is this the same request under the same logical key", which is the CONFLICT
+ * of §6.1 `:303-304`. Unlike the other three digests on this row it is
+ * **recorded, not recomputed** — its preimage carries `neutralRequest`, and a
+ * business payload does not enter a ledger event.
+ *
+ * `outcomeStatus` and `outcomeRecordedAt` are `null` together until a real
+ * outcome is recorded. The pair is never half written, and `null` is not
+ * `OUTCOME_UNKNOWN`.
+ */
+export interface EffectReadModel {
+  readonly effectId: string;
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  /** The **initial** segment, fixed once and immutable (§6 `:242`). */
+  readonly routeSegmentId: string;
+  readonly operationOrdinal: number;
+  readonly effectKind: string;
+  readonly semanticScopeKey: string;
+  readonly localOperationKey: string;
+  readonly logicalOperationSha256: string;
+  readonly requestContractVersion: string;
+  readonly requestSha256: string;
+  readonly idempotencyKey: string;
+  readonly intendedAt: string;
+  readonly outcomeStatus: EffectOutcomeStatus | null;
+  readonly outcomeRecordedAt: string | null;
+  readonly sequence: number;
+}
+
+/**
+ * One concrete external delivery of one logical effect — execution §7.
+ *
+ * Retransmitting does not create another effect; it creates another row here.
+ * `attemptOrdinal` orders the deliveries of one `effectId` and is unique within
+ * it.
+ *
+ * `routeSegmentId` is the **effective** segment of this delivery, fixed by its
+ * intention before anything is sent. It may differ from the effect's initial
+ * segment — that is what a handoff is — and never from the attempt the two
+ * share.
+ *
+ * `providerIdempotencyKey`, `externalHandle` and `acceptedAt` are the three
+ * fields whose population needs a composed adapter (P-15). They exist, their
+ * nullity is documented, and no producer in this build fills them with an
+ * external fact. `acceptedAt` in particular is not implied by `CLAIMED`:
+ * claiming is local, acceptance is the provider's.
+ *
+ * `terminalAt` is non-null if and only if the state is `SETTLED` or
+ * `ABANDONED`. An `ABANDONED` may happen before any real dispatch, in which
+ * case `acceptedAt` stays `null`.
+ */
+export interface DispatchAttemptReadModel {
+  readonly dispatchAttemptId: string;
+  readonly effectId: string;
+  /** The **effective** segment of this delivery (§7 `:343`). */
+  readonly routeSegmentId: string;
+  readonly attemptOrdinal: number;
+  readonly providerIdempotencyKey: string | null;
+  readonly externalHandle: string | null;
+  readonly dispatchState: DispatchState;
+  readonly requestedAt: string;
+  readonly acceptedAt: string | null;
+  readonly terminalAt: string | null;
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
+/**
+ * What a producer asks the logical lookup of execution §6.1, point 1.
+ *
+ * The coordinate names the attempt whose `invocationId` the logical digest is
+ * computed over, so the caller never states that identity itself — it is read
+ * off the ledger, which is what makes the lookup a question about this run
+ * rather than about what a caller claimed the run was.
+ *
+ * The last three fields are not part of the key. They are what §6.1 `:303-304`
+ * compares once a row is found, so that "the same work again" and "different
+ * work under one key" come back as different answers.
+ */
+export interface EffectLookupQuery {
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly semanticScopeKey: string;
+  readonly localOperationKey: string;
+  readonly effectKind: string;
+  readonly requestContractVersion: string;
+  readonly requestSha256: string;
+}
+
+/**
+ * What the lookup answers when the logical key is already taken.
+ *
+ * The effect itself — with the `effectId` and `idempotencyKey` it was born
+ * with, never a new pair — and whether it may be acted on as it stands.
+ * `reconciliationRequired` is `true` for an `OUTCOME_UNKNOWN` and for an
+ * intention with a delivery still outstanding; both are cases where something
+ * may have reached a destination and nobody knows.
+ */
+export interface EffectLookup {
+  readonly effect: EffectReadModel;
+  readonly reconciliationRequired: boolean;
+}
+
 export interface TaskQuery {
   readonly state?: TaskState | undefined;
   /** Exclusive taskId cursor. Tasks are ordered by taskId ascending. */

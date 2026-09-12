@@ -35,7 +35,19 @@ import {
 // Fixtures. No fixture carries a secret-shaped value.
 // ---------------------------------------------------------------------------
 
-const CONTRACT = "2.2.0";
+/**
+ * The version in force, and the vectors below move with it (P-18/protocolo C).
+ *
+ * `TaskEnvelope.contractVersion` is `AdmittedContractVersion` from ADR 0076 —
+ * only the version in force is emitted — so this fixture cannot stay at
+ * `"2.2.0"` the way the two other kinds of pinned literal in this repository
+ * can. The version is a field of the envelope, the preimage covers every field
+ * of the envelope, and so the three digests below are genuinely different
+ * digests of genuinely different envelopes. That is consequence V3, declared in
+ * the ADR: it is not the encoding moving under the same value, which is the one
+ * thing this suite exists to catch.
+ */
+const CONTRACT = "2.3.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -374,10 +386,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "f5f8240b7ada7d255ed72dc34fc0472287a0c5d25d4063cd7664cb7d891efda2"],
+      [envelope(), "b452e232e98e097a4d7127b7e6f6705ffc821420d985f60b4da986e74cdad7bb"],
       [
         withObjective("Delete the production ledger."),
-        "57904fd602697fdcc4cff3d3f3d1dc24666b2806f9d74e8b7ec7ea3e94a75c62",
+        "dbd9a30b5820a97dd3fa7f589bfc6388327505b62e452199e174e1f8e0ac8e28",
       ],
       [
         envelope({
@@ -387,7 +399,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "aa66aca3b3c28b59f9dd2311f2fd99699c3146fccf123170735863a5dc24cb42",
+        "d523b43531e8f5e0504337cc2765465b0f4f150b146a4a02588a4cec78d7c964",
       ],
     ];
 

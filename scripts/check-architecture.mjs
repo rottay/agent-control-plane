@@ -9028,6 +9028,159 @@ const P18B_WRITE_SET = [
 ];
 
 /**
+ * P-18/protocolo, escalón C — the effect, its deliveries, and migration 13.
+ *
+ * The rungs below the attempt. `task_id` is stable for life; `(task_id,
+ * revision_number)` is a unit of work; `(task_id, revision_number,
+ * attempt_number)` is one try at it (escalón B); and this escalón adds
+ * `route_segment_id` → `effect_id` → `dispatch_attempt_id`, which is where the
+ * identity ladder of execution §6 ends for this packet.
+ *
+ * **What lands.** Six things.
+ *
+ *   1. Migration 13, and **three** tables rather than two.
+ *      `execution_route_segment_read_model` (execution §4) is not scope creep:
+ *      §6 `:242` and §7 `:343` both carry a foreign key onto it, and the
+ *      formula for `effect_id` takes `segment_number` from it. §1.8 forbids
+ *      cutting an invariant to get a smaller delivery, so it lands with the two
+ *      tables that cannot be expressed without it (correction C-1, adjudicated).
+ *      Ten schema objects, three watermarks seeded from `ledger_meta` in
+ *      migration 11's form, and **no trigger**: every pairing rule here is a
+ *      CHECK the base evaluates on the row in front of it, which migration 11's
+ *      coordinate rule could not be.
+ *   2. The identity formula, written down. Execution §6 `:238` says `effect_id`
+ *      "conserva la fórmula existente" and **there is no existing formula** —
+ *      the nearest things in the tree are a deterministic uuid over a name and a
+ *      sha-256 over slash-joined coordinates, both V1 shapes that know nothing
+ *      of a revision or a segment. So ADR 0076 writes one: two versioned
+ *      preimage prefixes in `@acp/contracts`, following
+ *      `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1` down to the LF belonging to the
+ *      prefix, computed in `@acp/ledger` because that is where the one
+ *      canonicalizer and the one sha-256 live. §6.1's own two digests are
+ *      implemented verbatim, tag and all, and carry no prefix constant.
+ *   3. Three event types — `EFFECT_INTENDED`, `DISPATCH_INTENDED`,
+ *      `DISPATCH_OUTCOME_RECORDED` — all same-state passthroughs on
+ *      `execution`. The third is the one it would have been easy to omit, and
+ *      omitting it would have made `dispatch_state` unable to leave `INTENDED`
+ *      and `OUTCOME_UNKNOWN` a column no producer can reach. The **segment**
+ *      gets no type: it rides both intention events as a nested record, which
+ *      is migration 12's pattern one rung down.
+ *   4. The lookup, as two halves. `lookUpEffect` is the read verb of §6.1 point
+ *      1 and returns the original ids plus whether reconciliation is demanded;
+ *      the append door **refuses** a second intention under a taken logical
+ *      key. A door that deduplicated silently would let a producer append
+ *      blindly and never learn it must reconcile.
+ *   5. The bump. `CONTRACT_VERSION` 2.2.0 → **2.3.0**, the debt ADR 0072
+ *      recorded and deferred to "the escalón whose payload changes the durable
+ *      meaning of an event". The criterion that makes C the carrier and not B —
+ *      which also added a type with durable facts and did not bump — is that C's
+ *      payloads carry digests the fold verifies and a per-payload contract
+ *      version of their own. `SUPPORTED_CONTRACT_VERSIONS` becomes
+ *      `["2.2.0", "2.3.0"]` and `"2.2.0"` stays for ever;
+ *      `AdmittedContractVersion` pins the version in force at the three shapes
+ *      ADR 0072 named and at the append door for a **new** insertion, with the
+ *      exact replay exempt.
+ *   6. The rewind fixtures. `cli` and `gateway` each undo three more tables and
+ *      six more indexes, children first.
+ *
+ * **What does NOT land, declared.** No occurrences (§8 is escalón D), no
+ * producer (`@acp/runtime` is G), no reconciliation by handle (P-15 owns the
+ * adapter). `provider_idempotency_key`, `external_handle` and `accepted_at`
+ * exist with documented nullity and no external fact in them; `accepted_at`
+ * carries no CHECK, because one would make `INFLIGHT` unreachable while that
+ * adapter is missing. `effect_kind` carries no CHECK and its catalogue lives in
+ * `@acp/ledger` rather than in `@acp/contracts` — decision 45's class, not
+ * decision 42's, and the tension is stated in ADR 0076 rather than hidden.
+ * `RECONCILING` is `outbox_message`'s word: the five states of §7 stay five and
+ * an overdue `INFLIGHT` is *found*, never moved. The append door's version pin
+ * covers `control_plane_events` only, and that is a chosen scope rather than a
+ * limit of this write-set: the other three doors live in `ledger/index.ts`,
+ * which this escalón writes, and each is left to the escalón that owns its
+ * stream's producer.
+ *
+ * **Pins that move.** `CONTRACT_VERSION` **2.2.0 → 2.3.0** and
+ * `SUPPORTED_CONTRACT_VERSIONS` to two members — the pin escalón A built the
+ * mechanism for and B declined. `CONTROL_PLANE_EVENT_TYPES` 25 → **28**, with
+ * the channel map's `execution` partition 7 → 10 and the two `toHaveLength(25)`
+ * assertions in `@acp/runtime`'s suite. `CONTRACTS_SCHEMA_EXPORTS` 110 → **113**
+ * (`AdmittedContractVersion` and the two preimage prefixes; the brief's C-2
+ * arithmetic named only the first). `MIGRATIONS` 12 → 13. `DERIVED_TABLES`
+ * 10 → 13, with the three new tables BEFORE `task_attempt_read_model` because
+ * the foreign keys point upward. `PROJECTION_NAMES` 5 → 8, `PROJECTION_SOURCES`
+ * 9 → 12, `status().projections` 8 → 11 and its watermark rows 9 → 12.
+ * `EXPECTED_SCHEMA_OBJECTS` gains ten entries and the `tr_` inventory stays at
+ * **eight**. The three pinned envelope vectors in
+ * `ledger/test/envelope-identity` move, and they move because the envelopes
+ * genuinely differ — `TaskEnvelope.contractVersion` is a field of the preimage
+ * (consequence V3). `contracts/test:551` and `ledger/test:6935`, which asserted
+ * that `"2.3.0"` was refused and that the set was exactly the current version,
+ * both flip. The ADR corpus 75 → 76 and the decision register gains row 48.
+ *
+ * **Pins that do not move.** `API_CONTRACT_VERSION`. `ROADMAP_SHA256`, and
+ * `docs/ROADMAP.md` with it. `assertNoV2KeyCollisions`. The ledger README's
+ * `### Errors` bijection, because no new `*Error` class exists: every refusal
+ * here is a `LedgerValidationError` with a `path`, including CONFLICT.
+ * `docs/certification/metrics-baseline.md:72`, which holds the literal
+ * `"2.2.0"` as a dated reproduction record and is correct as it stands.
+ *
+ * **A declared deviation.** `packages/kernel/protocol/src/version/index.ts`
+ * narrates, in prose, when `CONTRACT_VERSION` moves — and this is the first time
+ * it does. The file holds no assertion and no literal that this bump falsifies
+ * (`LEDGER_CONTRACT_VERSION` follows the constant), so it is left alone rather
+ * than widening this write-set for a docblock the next escalón would touch
+ * again. `packages/domains/accounts/src/registry/index.ts` is admitted below
+ * against the possibility that `typeof CONTRACT_VERSION` stopped compiling
+ * beside a two-member enum; `tsc --build` says it did not, so the path is
+ * admitted and unmodified.
+ *
+ * **Thirty-seven paths, one of them new** — ADR 0076. Every other entry revisits
+ * a path an earlier packet already owns, and seven of them are admitted and
+ * left unmodified: the six fixture sites that hold the literal `"2.2.0"` under
+ * the *reader's* set, which correctly do not move, and
+ * `accounts/src/registry/index.ts`, admitted against a typecheck failure that
+ * did not happen.
+ */
+const P18C_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/kernel/contracts/src/schemas/control-plane-event/index.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/kernel/contracts/src/schemas/worker-slot/index.ts",
+  "packages/kernel/contracts/src/schemas/commit-authorization/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/domains/runtime/test/lifecycle-operation/index.test.ts",
+  "packages/domains/accounts/src/registry/index.ts",
+  "packages/domains/accounts/test/operator-state/index.test.ts",
+  "packages/entrypoints/cli/test/lifecycle/index.test.ts",
+  "packages/entrypoints/gateway/test/lifecycle/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/edges/telemetry/test/testing/index.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/index.md",
+  "docs/architecture/0076-an-effect-is-looked-up-by-its-logical-key.md",
+  "docs/audit/decisions/index.md",
+];
+
+/**
  * P-18/protocolo, escalón E2 — the outbox is a store with a version.
  *
  * **A fourth database in this package, and the first with a compare-and-set.**
@@ -9385,6 +9538,7 @@ const WRITE_SET = [
   ...P13_WRITE_SET,
   ...P18A_WRITE_SET,
   ...P18B_WRITE_SET,
+  ...P18C_WRITE_SET,
   ...P18E2_WRITE_SET,
   ...P18E1_WRITE_SET,
   ...README_ASSET_WRITE_SET,
@@ -18169,6 +18323,19 @@ if (accountsIndex === null) {
   // the closed stream vocabulary the preimage names, the coordinate shape, and
   // the one function that joins them.
   "SUPPORTED_CONTRACT_VERSIONS",
+  // P-18/protocolo C. Three names, and every one of them is the grammar of a
+  // version line or of a key — which is why they land in this package rather
+  // than in the ledger that consumes them. `AdmittedContractVersion` is the
+  // issuer's half of the pair `SUPPORTED_CONTRACT_VERSIONS` opened: the set is
+  // what a reader admits, this literal is what may be emitted, and the escalón
+  // that moved `CONTRACT_VERSION` is the one that owed it (ADR 0072, paid by
+  // ADR 0076). The two prefixes are the versioned preimages of `effect_id` and
+  // of the effect's idempotency key, on `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1`'s
+  // standing precedent: the rule is the contract's and the computation is the
+  // ledger's, because this package may reach no `node:` builtin at all.
+  "AdmittedContractVersion",
+  "EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1",
+  "EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1",
   "V2_IDEMPOTENCY_NAMESPACE",
   "V2_IDEMPOTENCY_STREAMS",
   "V2IdempotencyCoordinates",

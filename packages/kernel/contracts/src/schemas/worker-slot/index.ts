@@ -12,7 +12,7 @@ import { z } from "zod";
 import { attachGuards } from "../credential-guards/index.js";
 import {
   AbsolutePath,
-  ContractVersion,
+  AdmittedContractVersion,
   Timestamp,
   Uuid,
 } from "../primitives/index.js";
@@ -37,7 +37,16 @@ export type Lease = z.infer<typeof Lease>;
 
 export const WorkerSlot = z
   .strictObject({
-    contractVersion: ContractVersion,
+    /**
+     * The version in force, and only it (P-18/protocolo C, ADR 0076).
+     *
+     * The second of ADR 0072's three admission shapes, on the reasoning
+     * `TaskEnvelope.contractVersion` states in full: a slot is registered now,
+     * so it is held to `AdmittedContractVersion` — "only the version in force
+     * is emitted" — rather than to the two-member set a reader of stored
+     * history admits.
+     */
+    contractVersion: AdmittedContractVersion,
     slotId: Uuid,
     identity: WorkerIdentityString,
     provider: z.string().min(1).max(40),

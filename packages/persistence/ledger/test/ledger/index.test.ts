@@ -34,13 +34,22 @@ import {
   LEDGER_MIGRATIONS,
   canonicalJsonStringify,
   chainDigest,
+  effectIdV1,
+  effectIdempotencyKeyV1,
+  logicalOperationSha256,
   openLedger,
+  requestSha256,
   type CausationRef,
   type IntegrityReport,
   type Ledger,
   type StreamIntegrityCoverage,
 } from "../../src/index.js";
-import { DERIVED_TABLES } from "../../src/migrations/index.js";
+import {
+  DERIVED_TABLES,
+  EXECUTION_EFFECT_MIGRATION,
+  MIGRATIONS,
+  applyMigrations,
+} from "../../src/migrations/index.js";
 
 // ---------------------------------------------------------------------------
 // Temporary databases
@@ -300,11 +309,12 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    // Twelve since P-18/protocolo B added the attempt's own record, beside
-    // P-05/B's revision coordinate, P-08's sidecar and the registry stream,
-    // typed causal triple and watermark table of P-09.
+    // Thirteen since P-18/protocolo C added the effect, its deliveries and the
+    // route segment both hang off, beside B's attempt record, P-05/B's revision
+    // coordinate, P-08's sidecar and the registry stream, typed causal triple
+    // and watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1287,9 +1297,43 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
     .run("task_attempt_read_model");
 }
 
+/**
+ * Migration 13 undone: the effect, its deliveries and the segment they hang off.
+ *
+ * Children first, on `dropTaskAttemptIdentity`'s reasoning one rung further
+ * down: a delivery names an effect and a segment, an effect names a segment,
+ * and a segment names an attempt, so the set is undone in the reverse of the
+ * order it was applied. The three watermark rows go with the tables, or the
+ * reopen would find rows for projections whose tables it is about to create.
+ */
+function dropExecutionEffectIdentity(raw: Database.Database): void {
+  raw.exec(
+    "DROP INDEX ix_dispatch_attempt_read_model__state; " +
+      "DROP INDEX ux_dispatch_attempt_read_model__effect_ordinal; " +
+      "DROP TABLE dispatch_attempt_read_model; " +
+      "DROP INDEX ix_effect_read_model__segment; " +
+      "DROP INDEX ux_effect_read_model__logical_operation_sha256; " +
+      "DROP INDEX ux_effect_read_model__idempotency_key; " +
+      "DROP TABLE effect_read_model; " +
+      "DROP INDEX ix_execution_route_segment_read_model__account; " +
+      "DROP INDEX ux_execution_route_segment_read_model__attempt_segment; " +
+      "DROP TABLE execution_route_segment_read_model;",
+  );
+  const forget = raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?");
+  for (const name of [
+    "dispatch_attempt_read_model",
+    "effect_read_model",
+    "execution_route_segment_read_model",
+  ]) {
+    forget.run(name);
+  }
+}
+
 function dropTaskRevisionIdentity(raw: Database.Database): void {
-  // Twelve first, for the reason above: rewinding past 11 means rewinding past
-  // everything applied after it, and the child of the foreign key goes first.
+  // Thirteen and then twelve, for the reason above: rewinding past 11 means
+  // rewinding past everything applied after it, and the child of each foreign
+  // key goes first.
+  dropExecutionEffectIdentity(raw);
   dropTaskAttemptIdentity(raw);
   raw.exec(
     "DROP TRIGGER tr_control_plane_events__validate_v2_coordinate; " +
@@ -1769,19 +1813,19 @@ describe("projection watermark verification", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
-    // Eight projections since P-18/protocolo B: the two task-stream folds, the
-    // route fold, the revision fold, the attempt fold, the two
-    // initiative-stream folds, and the two-source routing fold. Nine heads,
-    // because the last one has two — every one of them at zero on a ledger that
-    // has never been appended to.
-    expect(ledger.status().projections).toHaveLength(8);
+    // Eleven projections since P-18/protocolo C: the two task-stream folds, the
+    // route fold, the revision fold, the attempt fold, the segment, effect and
+    // delivery folds, the two initiative-stream folds, and the two-source
+    // routing fold. Twelve heads, because the last one has two — every one of
+    // them at zero on a ledger that has never been appended to.
+    expect(ledger.status().projections).toHaveLength(11);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -2776,7 +2820,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -2987,7 +3031,7 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.listEvents().events).toHaveLength(0);
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
-    expect([...appliedByName(ledger).values()]).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect([...appliedByName(ledger).values()]).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
     // The handle is still usable, so the rollback was clean rather than wedged.
@@ -3011,21 +3055,26 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(9);
+    expect(rows).toHaveLength(12);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
+      "dispatch_attempt_read_model",
+      "effect_read_model",
       "execution_route_read_model",
+      "execution_route_segment_read_model",
       "task_attempt_read_model",
       "task_read_model",
       "task_revision_read_model",
       "worker_read_model",
     ]);
-    // The revision projection moves with the stream exactly as its three
-    // siblings do, and it is level at five having folded no row at all: none of
-    // the seeded events carries a V2 coordinate. A watermark tracks the cut a
-    // projection has SEEN, not the rows it chose to write.
-    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5, 5, 5]);
-    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5, 5, 5]);
+    // The revision projection moves with the stream exactly as its siblings do,
+    // and it is level at five having folded no row at all: none of the seeded
+    // events carries a V2 coordinate. The three P-18/protocolo C projections are
+    // level at five having folded nothing either, for the same reason. A
+    // watermark tracks the cut a projection has SEEN, not the rows it chose to
+    // write.
+    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5, 5, 5, 5, 5, 5]);
+    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5, 5, 5, 5, 5, 5]);
     expect(new Set(taskRows.map((row) => row.projector_version))).toEqual(new Set([1]));
 
     // The sibling stream stayed where it was. A single shared number is exactly
@@ -3080,7 +3129,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(9);
+    expect(before).toHaveLength(12);
 
     tamper(path, (raw) => {
       raw
@@ -3195,7 +3244,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3244,7 +3293,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(9);
+    expect(rows).toHaveLength(12);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -4171,11 +4220,14 @@ describe("two heads under one projection name advance independently (negative 2)
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     const status = ledger.status();
-    // Eight projections, not nine entries: the vector lives INSIDE the
+    // Eleven projections, not twelve entries: the vector lives INSIDE the
     // projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(8);
+    expect(status.projections).toHaveLength(11);
     expect(status.projections.map((projection) => projection.name)).toEqual([
+      "dispatch_attempt_read_model",
+      "effect_read_model",
       "execution_route_read_model",
+      "execution_route_segment_read_model",
       "initiative_read_model",
       "roadmap_version_read_model",
       "routing_assignment_read_model",
@@ -4206,12 +4258,12 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Nine rows in the table, nine entries across eight projections. Nothing
-    // in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(9);
+    // Twelve rows in the table, twelve entries across eleven projections.
+    // Nothing in the table is omitted from the DTO any more.
+    expect(readWatermarks(path)).toHaveLength(12);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(9);
+    ).toHaveLength(12);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -4401,7 +4453,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       fallbacks: readFallbacks(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(9);
+    expect(live.watermarks).toHaveLength(12);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -5268,7 +5320,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -6837,6 +6889,75 @@ describe("a version this build does not read is refused, by name", () => {
     });
   }
 
+  /**
+   * Rewrite a whole history under another contract version, chain and all.
+   *
+   * `restampVersion` above is a tamper probe: it rewrites one row so a reader
+   * has something unreadable to refuse, and it deliberately leaves the chain
+   * and the head disagreeing, because that is not what those tests are looking
+   * at. P-P18-2 needs the opposite — a ledger that is **sound** and was written
+   * under the previous version — so this recomputes every digest from genesis
+   * and moves `ledger_meta` with it.
+   *
+   * The two append-only triggers are captured from `sqlite_master` and put back
+   * verbatim rather than restated from the migration: a helper that rewrote
+   * their bodies would be a second authority on what they are, and
+   * `EXPECTED_SCHEMA_OBJECTS` would not notice the difference.
+   */
+  function restampHistory(path: string, version: string): void {
+    const raw = new Database(path);
+    try {
+      const triggers = raw
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?)",
+        )
+        .all("control_plane_events_deny_update", "control_plane_events_deny_delete") as {
+        readonly sql: string;
+      }[];
+      expect(triggers).toHaveLength(2);
+      raw.exec(
+        "DROP TRIGGER control_plane_events_deny_update; " +
+          "DROP TRIGGER control_plane_events_deny_delete;",
+      );
+
+      const rows = raw
+        .prepare("SELECT sequence, event_json FROM control_plane_events ORDER BY sequence")
+        .all() as { readonly sequence: number; readonly event_json: string }[];
+      const rewrite = raw.prepare(
+        "UPDATE control_plane_events SET event_json = ?, contract_version = ?, " +
+          "previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?",
+      );
+
+      let previous = GENESIS_SHA256;
+      for (const row of rows) {
+        const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+        decoded["contractVersion"] = version;
+        const rewritten = canonicalJsonStringify(decoded);
+        const digest = chainDigest(previous, rewritten);
+        rewrite.run(rewritten, version, previous, digest, row.sequence);
+        previous = digest;
+      }
+
+      raw
+        .prepare("UPDATE ledger_meta SET value = ? WHERE key = 'head_event_sha256'")
+        .run(previous);
+      // Every projection of this stream was built from that head, so the
+      // watermarks move with it. Without this the ledger would be sound and
+      // every projection would report itself built from a digest the chain no
+      // longer has — which is exactly the corruption the watermark exists to
+      // catch, and not the thing under test.
+      raw
+        .prepare(
+          "UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = ?",
+        )
+        .run(previous, "control_plane_events");
+
+      for (const trigger of triggers) raw.exec(trigger.sql);
+    } finally {
+      raw.close();
+    }
+  }
+
   it("N-P18-19: all three read paths refuse a V2 row a V1 reader cannot interpret", () => {
     // streams §1.1: "Un lector que sólo entiende la forma V1 no interpreta una
     // fila V2 como si fuera V1: la versión de contrato no soportada produce un
@@ -6921,36 +7042,172 @@ describe("a version this build does not read is refused, by name", () => {
     expect(detail).not.toContain("supported versions");
   });
 
-  it("P-P18-2 is deferred with the bump, and the set says why", () => {
-    // The reverse of N-P18-19 — a row stored under a supported-but-not-current
-    // version reads and rebuilds without error — cannot be drilled while the
-    // set holds one member, because "supported but not current" is an empty
-    // category. What IS assertable today is the invariant that makes the drill
-    // possible later, and that a future reader can check this claim rather than
-    // take it: the set is exactly the current version.
-    //
-    // ADR 0072 carries the obligation: the escalón that moves
-    // `CONTRACT_VERSION` must widen this set FIRST, pin the current version
-    // separately at every admission door, and land P-P18-2 as a required test.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual([CONTRACT_VERSION]);
+  it("P-P18-2: a row under a supported-but-not-current version reads and rebuilds", () => {
+    // The obligation ADR 0072 wrote down and P-18/protocolo C pays. Until the
+    // bump, "supported but not current" was an empty category and this could
+    // only assert the invariant that made the drill possible later. The set now
+    // holds two members and the category is real.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.3.0");
 
-    // And every member of the set really is readable end to end today — stored,
-    // listed, verified and rebuilt — which is the property P-P18-2 will
-    // generalize over a wider set rather than establish from nothing. With one
-    // member this is the ordinary path, and asserting it over the set rather
-    // than over the literal is what makes it grow with the set.
+    // The history is fabricated with `restampVersion` rather than taken from a
+    // fixture, and the correction matters: there is no recorded `"2.2.0"`
+    // history anywhere in this repository's fixtures — every seeded ledger is
+    // built at test time with whatever `CONTRACT_VERSION` is in force, so a
+    // drill that seeded and read back would have proved nothing about the
+    // previous version at all. Restamping rewrites the body, the column and the
+    // chain digest, which is exactly what a ledger written by the previous
+    // build looks like.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "one" }));
+    ledger.append(
+      makeEvent({ taskId, transitionId: "two", fromState: "DISCOVERED", toState: "DISCOVERED" }),
+    );
+    ledger.close();
+
+    restampHistory(path, "2.2.0");
+
+    const reopened = open(path);
+    const stored = reopened.listEvents().events;
+    expect(stored.map((record) => record.event.contractVersion)).toEqual(["2.2.0", "2.2.0"]);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    expect(reopened.rebuildReadModel().replayedEvents).toBe(2);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    reopened.close();
+
+    // And every member of the set is readable end to end when it is what a row
+    // carries. Asserted over the set rather than over a literal, so it grows
+    // with the set rather than needing to be remembered.
     for (const version of SUPPORTED_CONTRACT_VERSIONS) {
-      const path = temporaryDatabase();
-      const ledger = open(path);
-      const taskId = randomUUID();
-      ledger.append(makeEvent({ taskId, transitionId: "one" }));
-      ledger.close();
+      const each = temporaryDatabase();
+      const writer = open(each);
+      writer.append(makeEvent({ taskId: randomUUID(), transitionId: "one" }));
+      writer.close();
+      restampHistory(each, version);
 
-      const reopened = open(path);
-      expect(reopened.listEvents().events[0]?.event.contractVersion, version).toBe(version);
-      expect(reopened.verifyIntegrity().ok, version).toBe(true);
-      expect(reopened.rebuildReadModel().replayedEvents, version).toBe(1);
+      const reader = open(each);
+      expect(reader.listEvents().events[0]?.event.contractVersion, version).toBe(version);
+      expect(reader.verifyIntegrity().ok, version).toBe(true);
+      expect(reader.rebuildReadModel().replayedEvents, version).toBe(1);
+      reader.close();
     }
+  });
+
+  it("P-P18-2, N12 variant: a 2.2.0 history rewound to 12 migrates to 13 on open, reads, verifies and rebuilds", () => {
+    // P-P18-2 above reads a previous-version history over a ledger that is
+    // already at migration 13. The field case is the other order: a ledger the
+    // previous build wrote, stopped at 12, opened by this build — which applies
+    // 13 over a history that is 2.2.0 end to end, and must then read, verify,
+    // rebuild and take new 2.3.0 work on top.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "one" }));
+    ledger.append(
+      makeEvent({ taskId, transitionId: "two", fromState: "DISCOVERED", toState: "DISCOVERED" }),
+    );
+    ledger.close();
+
+    restampHistory(path, "2.2.0");
+    withRawDatabase(path, (raw) => {
+      dropExecutionEffectIdentity(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(
+        EXECUTION_EFFECT_MIGRATION,
+      );
+    });
+
+    const migrated = open(path);
+    expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+    ]);
+    expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
+      "2.2.0",
+      "2.2.0",
+    ]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    expect(migrated.rebuildReadModel().replayedEvents).toBe(2);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+
+    // And new work under the version in force lands on top of the migrated
+    // history: an attempt of another task, and an effect inside it.
+    const fresh = randomUUID();
+    migrated.append(attemptOpening({ taskId: fresh, attempt: 1, transitionId: "open", invocationId: "inv-1" }));
+    migrated.append(effectIntention({ taskId: fresh, transitionId: "effect-1", invocationId: "inv-1" }));
+    expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
+      "2.2.0",
+      "2.2.0",
+      "2.3.0",
+      "2.3.0",
+    ]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    migrated.close();
+  });
+
+  it("N-C-1: an exact replay of a pre-bump row is admitted, and new work is not", () => {
+    // The two faces of "only the version in force is emitted" (ADR 0076, C-2).
+    //
+    // The exemption is not a softening. A producer that appended under the
+    // previous build and retries the same append after an upgrade is doing the
+    // one thing an idempotency key exists to make safe, and refusing it would
+    // turn a routine upgrade into a wall of failures on work that already
+    // landed. The refusal is for **new** work: an insertion this ledger has
+    // never seen, stamped with a version this build reads and no longer emits.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const first = makeEvent({ taskId, transitionId: "one" });
+    ledger.append(first);
+    ledger.close();
+
+    restampHistory(path, "2.2.0");
+
+    const reopened = open(path);
+
+    // The replay: the same event, under the version the stored row carries.
+    // Nothing is inserted and nothing is refused.
+    const replay = reopened.append({ ...first, contractVersion: "2.2.0" });
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(1);
+
+    // The new insertion: a different transition, same stale version. Refused by
+    // name, and the refusal carries both numbers, because "unsupported" and
+    // "no longer current" are different problems with different fixes.
+    expect(() =>
+      reopened.append({
+        ...makeEvent({
+          taskId,
+          transitionId: "two",
+          fromState: "DISCOVERED",
+          toState: "DISCOVERED",
+        }),
+        contractVersion: "2.2.0",
+      }),
+    ).toThrow(LedgerValidationError);
+
+    let issue: { readonly path: string; readonly message: string } | undefined;
+    try {
+      reopened.append({
+        ...makeEvent({
+          taskId,
+          transitionId: "three",
+          fromState: "DISCOVERED",
+          toState: "DISCOVERED",
+        }),
+        contractVersion: "2.2.0",
+      });
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("contractVersion");
+    expect(issue?.message).toContain("2.3.0");
+    expect(issue?.message).toContain("2.2.0");
+
+    // The stream is untouched by either refusal, and the handle is still usable.
+    expect(reopened.status().headSequence).toBe(1);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    reopened.close();
   });
 });
 
@@ -6977,7 +7234,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -7961,5 +8218,1494 @@ describe("every attempt opens with its own identity, assigned once", () => {
     expect(missing.problems.map((problem) => problem.detail)).toContain(
       "task_attempt_read_model is missing the attempt for " + taskId + " 1 1",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo C — the effect, its deliveries, and the segment they hang off
+//
+// Execution §4, §6, §6.1 and §7. The negatives are the map's N-P18-1..6 and the
+// preaudit's N-C-1..N-C-10; the positives are P-P18-6, P-P18-7 and P-P18-8.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read rows straight out of a closed database, for the drills that assert what
+ * the base holds rather than what a reader reports.
+ *
+ * Generic over the query because these three tables are asserted both as whole
+ * rows — for the rebuild determinism drill — and column by column, and a helper
+ * per shape would be three helpers making one argument.
+ */
+function readRows(path: string, sql: string): readonly Record<string, unknown>[] {
+  const raw = new Database(path);
+  try {
+    return raw.prepare(sql).all() as Record<string, unknown>[];
+  } finally {
+    raw.close();
+  }
+}
+
+/** The one instant every fixture below is recorded at, unless it says otherwise. */
+const EFFECT_AT = "2026-09-12T09:00:00.000Z";
+
+/** The semantic scope P-18 admits, and the step key most drills use. */
+const SCOPE = "run";
+const STEP = "compose-answer";
+
+/** The business request every fixture carries. Never prompt bytes, by contract. */
+const NEUTRAL_REQUEST = { operation: "compose", inputs: ["a", "b"] };
+
+interface SegmentInput {
+  readonly routeSegmentId?: string;
+  readonly segmentNumber?: number;
+  readonly predecessorSegmentId?: string;
+  readonly handoffReason?: string;
+  readonly accountId?: string;
+  readonly provider?: string;
+  readonly overrides?: Record<string, unknown>;
+}
+
+/** One well-formed segment record, in the nested shape the payload carries. */
+function segmentRecord(input: SegmentInput = {}): Record<string, unknown> {
+  const segmentNumber = input.segmentNumber ?? 1;
+  return {
+    routeSegmentId: input.routeSegmentId ?? "seg-" + String(segmentNumber),
+    segmentNumber,
+    ...(input.predecessorSegmentId === undefined
+      ? {}
+      : {
+          predecessorSegmentId: input.predecessorSegmentId,
+          handoffReason: input.handoffReason ?? "QUOTA_EXHAUSTED",
+        }),
+    provider: input.provider ?? "anthropic",
+    model: "claude-opus-5",
+    modelResolutionStatus: "RESOLVED",
+    modelVersionId: "claude-opus-5-20260101",
+    accountId: input.accountId ?? "acct-1",
+    transportKind: "cli",
+    capabilityPolicyVersion: "policy-1",
+    ...(input.overrides ?? {}),
+  };
+}
+
+interface EffectInput {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly invocationId: string;
+  readonly segment?: Record<string, unknown>;
+  readonly revisionNumber?: number;
+  readonly attemptNumber?: number;
+  readonly attempt?: number;
+  readonly operationOrdinal?: number;
+  readonly effectKind?: string;
+  readonly requestContractVersion?: string;
+  readonly semanticScopeKey?: string;
+  readonly localOperationKey?: string;
+  readonly neutralRequest?: unknown;
+  readonly envelopeSha256?: string;
+  readonly occurredAt?: string;
+  readonly overrides?: Record<string, unknown>;
+}
+
+/**
+ * One `EFFECT_INTENDED` event, with every digest computed the way the door
+ * recomputes it.
+ *
+ * The helper computes rather than hard-codes, so a drill that wants a digest to
+ * be wrong says which one through `overrides` and every other drill is immune
+ * to the arithmetic. That is the same allocation `attemptOpening` makes for
+ * `legacyAttemptNumber`.
+ */
+function effectIntention(input: EffectInput): Record<string, unknown> {
+  const revisionNumber = input.revisionNumber ?? 1;
+  const attemptNumber = input.attemptNumber ?? 1;
+  const segment = input.segment ?? segmentRecord();
+  const segmentNumber = segment["segmentNumber"] as number;
+  const operationOrdinal = input.operationOrdinal ?? 0;
+  const effectKind = input.effectKind ?? "model_execution";
+  const requestContractVersion = input.requestContractVersion ?? "1";
+  const envelopeSha256 = input.envelopeSha256 ?? REVISION_ENVELOPE;
+  const coordinate = {
+    taskId: input.taskId,
+    revisionNumber,
+    attemptNumber,
+    segmentNumber,
+    operationOrdinal,
+  };
+  return makeEvent({
+    taskId: input.taskId,
+    attempt: input.attempt ?? 1,
+    transitionId: input.transitionId,
+    type: "EFFECT_INTENDED",
+    fromState: ATTEMPT_TASK_STATE,
+    toState: ATTEMPT_TASK_STATE,
+    occurredAt: input.occurredAt ?? EFFECT_AT,
+    payload: {
+      revisionNumber,
+      attemptNumber,
+      segment,
+      effect: {
+        effectId: effectIdV1(coordinate),
+        operationOrdinal,
+        effectKind,
+        semanticScopeKey: input.semanticScopeKey ?? SCOPE,
+        localOperationKey: input.localOperationKey ?? STEP,
+        logicalOperationSha256: logicalOperationSha256({
+          invocationId: input.invocationId,
+          semanticScopeKey: input.semanticScopeKey ?? SCOPE,
+          localOperationKey: input.localOperationKey ?? STEP,
+        }),
+        requestContractVersion,
+        requestSha256: requestSha256({
+          effectKind,
+          requestContractVersion,
+          envelopeSha256,
+          neutralRequest: input.neutralRequest ?? NEUTRAL_REQUEST,
+        }),
+        idempotencyKey: effectIdempotencyKeyV1({ ...coordinate, effectKind, envelopeSha256 }),
+        ...(input.overrides ?? {}),
+      },
+    },
+  });
+}
+
+interface DispatchInput {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly effectId: string;
+  readonly dispatchAttemptId?: string;
+  readonly attemptOrdinal?: number;
+  readonly segment?: Record<string, unknown>;
+  readonly revisionNumber?: number;
+  readonly attemptNumber?: number;
+  readonly attempt?: number;
+  readonly occurredAt?: string;
+}
+
+/** One `DISPATCH_INTENDED` event: the delivery, and the segment it runs on. */
+function dispatchIntention(input: DispatchInput): Record<string, unknown> {
+  const attemptOrdinal = input.attemptOrdinal ?? 1;
+  return makeEvent({
+    taskId: input.taskId,
+    attempt: input.attempt ?? 1,
+    transitionId: input.transitionId,
+    type: "DISPATCH_INTENDED",
+    fromState: ATTEMPT_TASK_STATE,
+    toState: ATTEMPT_TASK_STATE,
+    occurredAt: input.occurredAt ?? EFFECT_AT,
+    payload: {
+      revisionNumber: input.revisionNumber ?? 1,
+      attemptNumber: input.attemptNumber ?? 1,
+      segment: input.segment ?? segmentRecord(),
+      dispatch: {
+        dispatchAttemptId: input.dispatchAttemptId ?? "dsp-" + String(attemptOrdinal),
+        effectId: input.effectId,
+        attemptOrdinal,
+      },
+    },
+  });
+}
+
+interface OutcomeInput {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly dispatchAttemptId: string;
+  readonly dispatchState: string;
+  readonly terminalAt?: string;
+  readonly acceptedAt?: string;
+  readonly externalHandle?: string;
+  readonly effectOutcomeStatus?: string;
+  readonly revisionNumber?: number;
+  readonly attemptNumber?: number;
+  readonly attempt?: number;
+  readonly occurredAt?: string;
+}
+
+/** One `DISPATCH_OUTCOME_RECORDED` event. */
+function dispatchOutcome(input: OutcomeInput): Record<string, unknown> {
+  return makeEvent({
+    taskId: input.taskId,
+    attempt: input.attempt ?? 1,
+    transitionId: input.transitionId,
+    type: "DISPATCH_OUTCOME_RECORDED",
+    fromState: ATTEMPT_TASK_STATE,
+    toState: ATTEMPT_TASK_STATE,
+    occurredAt: input.occurredAt ?? EFFECT_AT,
+    payload: {
+      revisionNumber: input.revisionNumber ?? 1,
+      attemptNumber: input.attemptNumber ?? 1,
+      outcome: {
+        dispatchAttemptId: input.dispatchAttemptId,
+        dispatchState: input.dispatchState,
+        ...(input.terminalAt === undefined ? {} : { terminalAt: input.terminalAt }),
+        ...(input.acceptedAt === undefined ? {} : { acceptedAt: input.acceptedAt }),
+        ...(input.externalHandle === undefined ? {} : { externalHandle: input.externalHandle }),
+        ...(input.effectOutcomeStatus === undefined
+          ? {}
+          : { effectOutcomeStatus: input.effectOutcomeStatus }),
+      },
+    },
+  });
+}
+
+/** A ledger with one task, one revision and one open attempt. */
+function seedOpenAttempt(
+  ledger: Ledger,
+  taskId: string,
+  invocationId = "inv-1",
+): void {
+  ledger.append(
+    attemptOpening({ taskId, attempt: 1, transitionId: "open", invocationId }),
+  );
+}
+
+/** The effect id of the first operation of the first segment of attempt 1. */
+function firstEffectId(taskId: string, segmentNumber = 1, operationOrdinal = 0): string {
+  return effectIdV1({
+    taskId,
+    revisionNumber: 1,
+    attemptNumber: 1,
+    segmentNumber,
+    operationOrdinal,
+  });
+}
+
+describe("the logical effect is looked up by its logical key (execution §6.1)", () => {
+  it("P-P18-6: an intention lands once, with the ordinal the ledger assigned", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+
+    const intention = effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" });
+    const first = ledger.append(intention);
+    expect(first.inserted).toBe(true);
+
+    // The exact same event again is a replay: nothing inserted, no second
+    // ordinal, no second effect.
+    const replay = ledger.append(intention);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(first.record.sequence);
+
+    const effect = ledger.getEffect(firstEffectId(taskId));
+    expect(effect).not.toBeNull();
+    expect(effect?.operationOrdinal).toBe(0);
+    expect(effect?.routeSegmentId).toBe("seg-1");
+    // Born without an outcome — absence of data, which is N-P18-6's whole point.
+    expect(effect?.outcomeStatus).toBeNull();
+    expect(effect?.outcomeRecordedAt).toBeNull();
+    // And the segment the same event announced, so the foreign key was
+    // satisfied by construction rather than by assuming a parent.
+    expect(ledger.listRouteSegments(taskId, 1, 1).map((row) => row.routeSegmentId)).toEqual([
+      "seg-1",
+    ]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P18-6: an intention never dispatched is null, not OUTCOME_UNKNOWN", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+
+    const effect = ledger.getEffect(firstEffectId(taskId));
+    expect(effect?.outcomeStatus).toBeNull();
+
+    // The lookup agrees, and says nothing needs reconciling: nothing ever left.
+    const found = ledger.lookUpEffect({
+      taskId,
+      revisionNumber: 1,
+      attemptNumber: 1,
+      semanticScopeKey: SCOPE,
+      localOperationKey: STEP,
+      effectKind: "model_execution",
+      requestContractVersion: "1",
+      requestSha256: requestSha256({
+        effectKind: "model_execution",
+        requestContractVersion: "1",
+        envelopeSha256: REVISION_ENVELOPE,
+        neutralRequest: NEUTRAL_REQUEST,
+      }),
+    });
+    expect(found?.effect.effectId).toBe(firstEffectId(taskId));
+    expect(found?.reconciliationRequired).toBe(false);
+    expect(ledger.listDispatchAttempts(firstEffectId(taskId))).toEqual([]);
+  });
+
+  it("N-P18-1: losing an acknowledgement, handing off, and repeating the step", () => {
+    // The packet's minimal negative, end to end (execution §6.1 `:326-329`).
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+
+    // 1. The effect is intended on segment 1 and dispatched.
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+
+    // 2. It reaches the provider and the acknowledgement is lost: the delivery
+    //    is INFLIGHT, and reconciliation exhausts without an answer, so the
+    //    exposure is recorded as uncertain.
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "inflight-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "INFLIGHT",
+        acceptedAt: EFFECT_AT,
+      }),
+    );
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "abandon-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "ABANDONED",
+        terminalAt: "2026-09-12T09:05:00.000Z",
+        effectOutcomeStatus: "OUTCOME_UNKNOWN",
+      }),
+    );
+
+    // 3. The run hands off to another account. A handoff is a new segment, and
+    //    the run repeats the same scope and the same step key.
+    const lookup = ledger.lookUpEffect({
+      taskId,
+      revisionNumber: 1,
+      attemptNumber: 1,
+      semanticScopeKey: SCOPE,
+      localOperationKey: STEP,
+      effectKind: "model_execution",
+      requestContractVersion: "1",
+      requestSha256: requestSha256({
+        effectKind: "model_execution",
+        requestContractVersion: "1",
+        envelopeSha256: REVISION_ENVELOPE,
+        neutralRequest: NEUTRAL_REQUEST,
+      }),
+    });
+
+    // The original effect id comes back — never a new one — and the situation
+    // demands reconciliation rather than another send.
+    expect(lookup?.effect.effectId).toBe(effectId);
+    expect(lookup?.effect.idempotencyKey).toBe(
+      effectIdempotencyKeyV1({
+        taskId,
+        revisionNumber: 1,
+        attemptNumber: 1,
+        segmentNumber: 1,
+        operationOrdinal: 0,
+        effectKind: "model_execution",
+        envelopeSha256: REVISION_ENVELOPE,
+      }),
+    );
+    expect(lookup?.reconciliationRequired).toBe(true);
+
+    // 4. No new intention. A producer that tried anyway is refused by name, and
+    //    the refusal tells it the effect it already has. It is the same work
+    //    again, so it is NOT a CONFLICT: the handoff moved the segment and the
+    //    ordinal CAS moved the ordinal, and neither is a difference §6.1 compares.
+    //    What the producer is told is to reuse and reconcile, never that the key
+    //    must not change.
+    const second = segmentRecord({
+      routeSegmentId: "seg-2",
+      segmentNumber: 2,
+      predecessorSegmentId: "seg-1",
+      accountId: "acct-2",
+    });
+    let repeated: unknown;
+    try {
+      ledger.append(
+        effectIntention({
+          taskId,
+          transitionId: "effect-2",
+          invocationId: "inv-1",
+          segment: second,
+          operationOrdinal: 1,
+        }),
+      );
+    } catch (error) {
+      repeated = error;
+    }
+    expect(repeated).toBeInstanceOf(LedgerValidationError);
+    const refusal = (repeated as LedgerValidationError).issues[0];
+    expect(refusal?.path).toBe("payload.effect.logicalOperationSha256");
+    expect(refusal?.message).not.toContain("CONFLICT");
+    expect(refusal?.message).toContain(effectId);
+    expect(refusal?.message).toContain("reconciliation");
+
+    //    Different work under the same scope and step key is the other branch,
+    //    and the door still names it CONFLICT.
+    let conflicting: unknown;
+    try {
+      ledger.append(
+        effectIntention({
+          taskId,
+          transitionId: "effect-2-other",
+          invocationId: "inv-1",
+          segment: second,
+          operationOrdinal: 1,
+          neutralRequest: { operation: "compose", inputs: ["a", "c"] },
+        }),
+      );
+    } catch (error) {
+      conflicting = error;
+    }
+    expect(conflicting).toBeInstanceOf(LedgerValidationError);
+    expect((conflicting as LedgerValidationError).issues[0]?.message).toContain("CONFLICT");
+
+    // 5. And no new send: the uncertain outcome blocks another delivery of the
+    //    same effect outright.
+    expect(() =>
+      ledger.append(
+        dispatchIntention({
+          taskId,
+          transitionId: "dispatch-2",
+          effectId,
+          dispatchAttemptId: "dsp-2",
+          attemptOrdinal: 2,
+          segment: second,
+        }),
+      ),
+    ).toThrow(LedgerValidationError);
+
+    // The stream holds exactly the four events that really happened, one
+    // effect, one delivery, one segment.
+    expect(ledger.listEvents().events).toHaveLength(5);
+    expect(ledger.listDispatchAttempts(effectId)).toHaveLength(1);
+    expect(ledger.listRouteSegments(taskId, 1, 1)).toHaveLength(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P18-5: OUTCOME_UNKNOWN blocks the resend even where the destination is clean", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "OUTCOME_UNKNOWN",
+      }),
+    );
+
+    // There is no argument, no flag and no preflight a caller can pass that
+    // lifts this: the ledger does not ask the destination anything, and a
+    // destination reporting itself clean is a statement about the destination.
+    let issue: { readonly path: string; readonly message: string } | undefined;
+    try {
+      ledger.append(
+        dispatchIntention({
+          taskId,
+          transitionId: "dispatch-2",
+          effectId,
+          dispatchAttemptId: "dsp-2",
+          attemptOrdinal: 2,
+          segment: segmentRecord({
+            routeSegmentId: "seg-2",
+            segmentNumber: 2,
+            predecessorSegmentId: "seg-1",
+            accountId: "acct-2",
+          }),
+        }),
+      );
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("payload.dispatch.effectId");
+    expect(issue?.message).toContain("OUTCOME_UNKNOWN");
+    expect(issue?.message).toContain("reconcile");
+    expect(ledger.listDispatchAttempts(effectId)).toHaveLength(1);
+
+    // A terminal outcome is the opposite case: it is reused, not reconciled.
+    // On its own database, because a `route_segment_id` is a global primary key
+    // and the fixture ids would collide with the run above.
+    const other = randomUUID();
+    const second = open(temporaryDatabase());
+    seedOpenAttempt(second, other, "inv-2");
+    second.append(effectIntention({ taskId: other, transitionId: "effect-1", invocationId: "inv-2" }));
+    second.append(
+      dispatchIntention({ taskId: other, transitionId: "dispatch-1", effectId: firstEffectId(other) }),
+    );
+    second.append(
+      dispatchOutcome({
+        taskId: other,
+        transitionId: "settle-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "SUCCEEDED",
+      }),
+    );
+    expect(
+      second.lookUpEffect({
+        taskId: other,
+        revisionNumber: 1,
+        attemptNumber: 1,
+        semanticScopeKey: SCOPE,
+        localOperationKey: STEP,
+        effectKind: "model_execution",
+        requestContractVersion: "1",
+        requestSha256: requestSha256({
+          effectKind: "model_execution",
+          requestContractVersion: "1",
+          envelopeSha256: REVISION_ENVELOPE,
+          neutralRequest: NEUTRAL_REQUEST,
+        }),
+      })?.reconciliationRequired,
+    ).toBe(false);
+  });
+
+  it("N-P18-2 and N-C-8: each of the four compared fields raises CONFLICT", () => {
+    // §6.1 `:303-304` compares four things once a logical key is found, and the
+    // map's N-P18-2 names only the last. All four are drilled, because a
+    // comparison that covered three of them would let a different kind of
+    // operation, or a different request contract, pass as the same work.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+
+    const base = {
+      taskId,
+      revisionNumber: 1,
+      attemptNumber: 1,
+      semanticScopeKey: SCOPE,
+      localOperationKey: STEP,
+      effectKind: "model_execution",
+      requestContractVersion: "1",
+      requestSha256: requestSha256({
+        effectKind: "model_execution",
+        requestContractVersion: "1",
+        envelopeSha256: REVISION_ENVELOPE,
+        neutralRequest: NEUTRAL_REQUEST,
+      }),
+    } as const;
+
+    // The same work again: no conflict, the original effect comes back.
+    expect(ledger.lookUpEffect(base)?.effect.effectId).toBe(firstEffectId(taskId));
+
+    // A different request under the same logical key.
+    expect(() =>
+      ledger.lookUpEffect({
+        ...base,
+        requestSha256: requestSha256({
+          effectKind: "model_execution",
+          requestContractVersion: "1",
+          envelopeSha256: REVISION_ENVELOPE,
+          neutralRequest: { operation: "compose", inputs: ["a", "c"] },
+        }),
+      }),
+    ).toThrow(LedgerValidationError);
+
+    // A different kind, and a different request contract version. Both are
+    // outside the admitted catalogue at the door, so the lookup is where they
+    // are comparable at all — which is exactly why the comparison is here.
+    expect(() => ledger.lookUpEffect({ ...base, effectKind: "other_kind" })).toThrow(
+      LedgerValidationError,
+    );
+    expect(() => ledger.lookUpEffect({ ...base, requestContractVersion: "2" })).toThrow(
+      LedgerValidationError,
+    );
+
+    let issue: { readonly message: string } | undefined;
+    try {
+      ledger.lookUpEffect({ ...base, effectKind: "other_kind" });
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.message).toContain("CONFLICT");
+
+    // The fourth field is the envelope, and it reaches the comparison through
+    // the request digest, whose preimage carries it. The query holds no
+    // idempotency key at all. A request stated against another envelope is a
+    // different digest, and so a CONFLICT under the same logical key.
+    expect(() =>
+      ledger.lookUpEffect({
+        ...base,
+        requestSha256: requestSha256({
+          effectKind: "model_execution",
+          requestContractVersion: "1",
+          envelopeSha256: "f".repeat(64),
+          neutralRequest: NEUTRAL_REQUEST,
+        }),
+      }),
+    ).toThrow(/CONFLICT/);
+  });
+
+  it("N-P18-3: the competitor that loses the unique re-reads, and never changes the key", () => {
+    // Two writers reach the same logical operation. The second one's append is
+    // refused — not silently deduplicated — and what it is supposed to do next
+    // is exactly point 1: look the effect up and use it.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+
+    // The loser proposes a different coordinate for the same logical key: a
+    // later ordinal, which is the one thing a producer that wanted to "make it
+    // a new operation" would reach for.
+    let issue: { readonly path: string; readonly message: string } | undefined;
+    try {
+      ledger.append(
+        effectIntention({
+          taskId,
+          transitionId: "effect-1-again",
+          invocationId: "inv-1",
+          operationOrdinal: 1,
+        }),
+      );
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("payload.effect.logicalOperationSha256");
+    expect(issue?.message).toContain(firstEffectId(taskId));
+
+    // One effect, one ordinal. The loser's proposal left nothing behind.
+    const stored = open(ledger.path);
+    expect(
+      readRows(stored.path, "SELECT operation_ordinal FROM effect_read_model"),
+    ).toHaveLength(1);
+  });
+
+  it("N-C-7: a LocalKey outside the grammar is refused, and comparison is ordinal", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+
+    for (const bad of ["", ".leading-dot", "has space", "has/slash", "a".repeat(129)]) {
+      expect(() =>
+        ledger.append(
+          effectIntention({
+            taskId,
+            transitionId: "effect-bad",
+            invocationId: "inv-1",
+            localOperationKey: bad,
+          }),
+        ),
+        bad,
+      ).toThrow(LedgerValidationError);
+    }
+
+    // A key at exactly the bound is admitted, and `"A"` and `"a"` are two
+    // different steps — ordinal comparison, never a case fold.
+    const upper = logicalOperationSha256({
+      invocationId: "inv-1",
+      semanticScopeKey: SCOPE,
+      localOperationKey: "Step",
+    });
+    const lower = logicalOperationSha256({
+      invocationId: "inv-1",
+      semanticScopeKey: SCOPE,
+      localOperationKey: "step",
+    });
+    expect(upper).not.toBe(lower);
+
+    ledger.append(
+      effectIntention({
+        taskId,
+        transitionId: "effect-ok",
+        invocationId: "inv-1",
+        localOperationKey: "a" + "b".repeat(127),
+      }),
+    );
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-C-5: the request digest excludes everything resolved at dispatch time", () => {
+    // §6.1 `:293-296`. The same request under two segments, two accounts and
+    // two providers is the SAME request — which is what makes N-P18-1 an
+    // equality rather than a conflict. Nothing about where the work was sent
+    // enters the preimage.
+    const one = requestSha256({
+      effectKind: "model_execution",
+      requestContractVersion: "1",
+      envelopeSha256: REVISION_ENVELOPE,
+      neutralRequest: NEUTRAL_REQUEST,
+    });
+    const two = requestSha256({
+      effectKind: "model_execution",
+      requestContractVersion: "1",
+      envelopeSha256: REVISION_ENVELOPE,
+      neutralRequest: NEUTRAL_REQUEST,
+    });
+    expect(one).toBe(two);
+
+    // And what IS in the preimage moves it: the kind, the request contract
+    // version, the envelope and the request itself.
+    for (const variant of [
+      { effectKind: "other" },
+      { requestContractVersion: "2" },
+      { envelopeSha256: "f".repeat(64) },
+      { neutralRequest: { operation: "compose", inputs: ["a", "c"] } },
+    ]) {
+      expect(
+        requestSha256({
+          effectKind: "model_execution",
+          requestContractVersion: "1",
+          envelopeSha256: REVISION_ENVELOPE,
+          neutralRequest: NEUTRAL_REQUEST,
+          ...variant,
+        }),
+        JSON.stringify(variant),
+      ).not.toBe(one);
+    }
+
+    // The same holds one level up: two segments with different accounts produce
+    // the same effect id, because the id carries the segment NUMBER and the
+    // account is not in the preimage at all.
+    expect(firstEffectId("11111111-2222-4333-8444-555555555555", 1, 0)).not.toBe(
+      firstEffectId("11111111-2222-4333-8444-555555555555", 2, 0),
+    );
+  });
+
+  it("refuses a digest the producer got wrong, naming which one", () => {
+    // "Producer proposes, ledger verifies" (the same division escalón B made
+    // for the flat attempt). Three digests are recomputed from the sources and
+    // a fourth is conserved, and the refusals say which.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+
+    const cases: readonly (readonly [string, Record<string, unknown>])[] = [
+      ["payload.effect.logicalOperationSha256", { logicalOperationSha256: "0".repeat(64) }],
+      ["payload.effect.effectId", { effectId: "1".repeat(64) }],
+      ["payload.effect.idempotencyKey", { idempotencyKey: "2".repeat(64) }],
+      ["payload.effect.requestSha256", { requestSha256: "not a digest" }],
+      ["payload.effect.effectKind", { effectKind: "smuggled_kind" }],
+      ["payload.effect.requestContractVersion", { requestContractVersion: "99" }],
+      ["payload.effect.semanticScopeKey", { semanticScopeKey: "subscope" }],
+      ["payload.effect.operationOrdinal", { operationOrdinal: 7 }],
+    ];
+
+    for (const [path, overrides] of cases) {
+      let issue: { readonly path: string } | undefined;
+      try {
+        ledger.append(
+          effectIntention({
+            taskId,
+            transitionId: "effect-" + path,
+            invocationId: "inv-1",
+            overrides,
+          }),
+        );
+      } catch (error) {
+        issue = (error as LedgerValidationError).issues[0];
+      }
+      expect(issue?.path, path).toBe(path);
+    }
+
+    // Nothing landed, and the handle is still usable.
+    expect(readRows(ledger.path, "SELECT effect_id FROM effect_read_model")).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses an effect whose attempt has not been opened", () => {
+    // An effect runs inside an attempt, and unlike migration 12's opening it
+    // does NOT announce its own: the attempt is a rung above and is opened by
+    // its own event, so an effect that finds none is out of order rather than
+    // incomplete.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover" }));
+
+    let issue: { readonly path: string; readonly message: string } | undefined;
+    try {
+      ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("payload.attemptNumber");
+    expect(issue?.message).toContain("has not been opened");
+  });
+});
+
+describe("one delivery of one effect, in five states and no more (execution §7)", () => {
+  it("P-P18-7: a handoff keeps the effect and records the effective segment apart", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+
+    // The first delivery, on the segment the effect was born on.
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "abandon-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "ABANDONED",
+        terminalAt: EFFECT_AT,
+      }),
+    );
+
+    // The handoff: a new segment, a genuinely new and authorized delivery of
+    // the SAME effect. No outcome was ever recorded, so nothing blocks it.
+    const second = segmentRecord({
+      routeSegmentId: "seg-2",
+      segmentNumber: 2,
+      predecessorSegmentId: "seg-1",
+      accountId: "acct-2",
+    });
+    ledger.append(
+      dispatchIntention({
+        taskId,
+        transitionId: "dispatch-2",
+        effectId,
+        dispatchAttemptId: "dsp-2",
+        attemptOrdinal: 2,
+        segment: second,
+      }),
+    );
+
+    // One effect, still on its initial segment; two deliveries, on two
+    // segments. §7 `:356`: the fold does not demand equality with the effect's
+    // own segment, because that column conserves the origin.
+    const effect = ledger.getEffect(effectId);
+    expect(effect?.routeSegmentId).toBe("seg-1");
+    expect(effect?.idempotencyKey).toBe(
+      effectIdempotencyKeyV1({
+        taskId,
+        revisionNumber: 1,
+        attemptNumber: 1,
+        segmentNumber: 1,
+        operationOrdinal: 0,
+        effectKind: "model_execution",
+        envelopeSha256: REVISION_ENVELOPE,
+      }),
+    );
+    expect(
+      ledger.listDispatchAttempts(effectId).map((row) => [row.attemptOrdinal, row.routeSegmentId]),
+    ).toEqual([
+      [1, "seg-1"],
+      [2, "seg-2"],
+    ]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("walks the five states forward, and refuses every move that is not one", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+
+    expect(ledger.listDispatchAttempts(effectId)[0]?.dispatchState).toBe("INTENDED");
+
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "claim-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "CLAIMED",
+      }),
+    );
+    // Claiming is local. It does NOT imply the provider accepted anything.
+    expect(ledger.listDispatchAttempts(effectId)[0]?.acceptedAt).toBeNull();
+
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "inflight-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "INFLIGHT",
+        acceptedAt: EFFECT_AT,
+        externalHandle: "handle-1",
+      }),
+    );
+    expect(ledger.listDispatchAttempts(effectId)[0]?.acceptedAt).toBe(EFFECT_AT);
+
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: "2026-09-12T09:10:00.000Z",
+        effectOutcomeStatus: "SUCCEEDED",
+      }),
+    );
+
+    const settled = ledger.listDispatchAttempts(effectId)[0];
+    expect(settled?.dispatchState).toBe("SETTLED");
+    expect(settled?.terminalAt).toBe("2026-09-12T09:10:00.000Z");
+    // The handle survives the move that did not mention it: forgetting it would
+    // be losing the only thing a reconciliation can be done by.
+    expect(settled?.externalHandle).toBe("handle-1");
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+    expect(ledger.getEffect(effectId)?.outcomeRecordedAt).toBe(EFFECT_AT);
+
+    // A terminal delivery moves nowhere.
+    let issue: { readonly path: string; readonly message: string } | undefined;
+    try {
+      ledger.append(
+        dispatchOutcome({
+          taskId,
+          transitionId: "reopen-1",
+          dispatchAttemptId: "dsp-1",
+          dispatchState: "INFLIGHT",
+        }),
+      );
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("payload.outcome.dispatchState");
+    expect(issue?.message).toContain("may move only to nothing");
+
+    // And an outcome is recorded once rather than amended.
+    expect(() =>
+      ledger.append(
+        dispatchOutcome({
+          taskId,
+          transitionId: "amend-1",
+          dispatchAttemptId: "dsp-1",
+          dispatchState: "SETTLED",
+          terminalAt: "2026-09-12T09:10:00.000Z",
+          effectOutcomeStatus: "FAILED",
+        }),
+      ),
+    ).toThrow(LedgerValidationError);
+
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-C-10: an overdue INFLIGHT is found, and nothing is created from it", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "inflight-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "INFLIGHT",
+        acceptedAt: EFFECT_AT,
+        externalHandle: "handle-1",
+      }),
+    );
+
+    const before = ledger.status().headSequence;
+
+    // The deadline arrives by argument: this package reads no clock, so
+    // "overdue" is the caller's policy and never this ledger's opinion.
+    expect(ledger.listOverdueDispatchAttempts("2026-09-12T08:00:00.000Z")).toEqual([]);
+    const overdue = ledger.listOverdueDispatchAttempts("2026-09-12T10:00:00.000Z");
+    expect(overdue.map((row) => row.dispatchAttemptId)).toEqual(["dsp-1"]);
+
+    // Finding it created nothing. The row is still INFLIGHT — there is no
+    // RECONCILING to move it to — no second delivery exists, no second effect
+    // exists, and the stream has not moved.
+    expect(overdue[0]?.dispatchState).toBe("INFLIGHT");
+    expect(ledger.listDispatchAttempts(effectId)).toHaveLength(1);
+    expect(readRows(ledger.path, "SELECT effect_id FROM effect_read_model")).toHaveLength(1);
+    expect(ledger.status().headSequence).toBe(before);
+
+    // And the deadline has to be an instant, not a shape.
+    expect(() => ledger.listOverdueDispatchAttempts("yesterday")).toThrow(LedgerQueryError);
+  });
+
+  it("N-C-11: a resolution recorded at another attempt's coordinate is refused by name", () => {
+    // A delivery is found by `dispatch_attempt_id`, a global key, and every
+    // resolution carries the full V2 coordinate. Until the two were compared a
+    // resolution of task B could settle task A's delivery, and because the fold
+    // had the same gap the rebuild reproduced it and `verifyIntegrity` stayed
+    // green. The coordinate that owns a delivery is its effect's.
+    const ledger = open(temporaryDatabase());
+    const owner = randomUUID();
+    const foreign = randomUUID();
+    seedOpenAttempt(ledger, owner, "inv-a");
+    ledger.append(effectIntention({ taskId: owner, transitionId: "effect-1", invocationId: "inv-a" }));
+    const effectId = firstEffectId(owner);
+    ledger.append(dispatchIntention({ taskId: owner, transitionId: "dispatch-1", effectId }));
+    seedOpenAttempt(ledger, foreign, "inv-b");
+    const before = ledger.status().headSequence;
+
+    const settle = (
+      taskId: string,
+      transitionId: string,
+      coordinate: { readonly revisionNumber?: number; readonly attemptNumber?: number } = {},
+    ): Record<string, unknown> =>
+      dispatchOutcome({
+        taskId,
+        transitionId,
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: "2026-09-12T09:10:00.000Z",
+        effectOutcomeStatus: "SUCCEEDED",
+        ...coordinate,
+      });
+
+    const cases: readonly (readonly [string, Record<string, unknown>, string])[] = [
+      ["another task", settle(foreign, "settle-foreign"), foreign + " 1 1"],
+      ["another attempt", settle(owner, "settle-attempt-2", { attemptNumber: 2 }), owner + " 1 2"],
+    ];
+    for (const [label, event, recordedAt] of cases) {
+      let issue: { readonly path: string; readonly message: string } | undefined;
+      try {
+        ledger.append(event);
+      } catch (error) {
+        issue = (error as LedgerValidationError).issues[0];
+      }
+      expect(issue?.path, label).toBe("payload.outcome.dispatchAttemptId");
+      expect(issue?.message, label).toContain("dsp-1");
+      expect(issue?.message, label).toContain(effectId);
+      expect(issue?.message, label).toContain("of attempt " + owner + " 1 1");
+      expect(issue?.message, label).toContain("recorded at attempt " + recordedAt);
+    }
+
+    // Nothing landed and nothing moved, on either path.
+    expect(ledger.status().headSequence).toBe(before);
+    expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchState)).toEqual([
+      "INTENDED",
+    ]);
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBeNull();
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // The owner's own coordinate still resolves it, and the rebuild agrees.
+    ledger.append(settle(owner, "settle-own"));
+    expect(ledger.listDispatchAttempts(effectId)[0]?.dispatchState).toBe("SETTLED");
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+    expect(ledger.rebuildReadModel().replayedEvents).toBe(before + 1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-C-3: RECONCILING is not a dispatch state, and the base says so", () => {
+    // The five states are closed at five. `RECONCILING` belongs to
+    // `outbox_message` (coordination §2), and a sixth state here would
+    // contradict the dictionary's own CHECK.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    ledger.append(
+      dispatchIntention({ taskId, transitionId: "dispatch-1", effectId: firstEffectId(taskId) }),
+    );
+    const path = ledger.path;
+    ledger.close();
+
+    // Through the door, by name.
+    const reopened = open(path);
+    expect(() =>
+      reopened.append(
+        dispatchOutcome({
+          taskId,
+          transitionId: "reconcile-1",
+          dispatchAttemptId: "dsp-1",
+          dispatchState: "RECONCILING",
+        }),
+      ),
+    ).toThrow(LedgerValidationError);
+    reopened.close();
+
+    // And underneath it, by the CHECK, so a writer that bypassed the door
+    // entirely still cannot record one.
+    withRawDatabase(path, (raw) => {
+      expect(() =>
+        raw
+          .prepare("UPDATE dispatch_attempt_read_model SET dispatch_state = ?")
+          .run("RECONCILING"),
+      ).toThrow(/CHECK constraint failed/);
+    });
+  });
+
+  it("N-C-4: the nullity pairs hold against raw SQL", () => {
+    // F-B5's shape, for this cohort's three pairs. The door and the fold both
+    // refuse a half fact; these assert that the base refuses it too, which is
+    // what makes the claim true of a writer that never came through the door.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    ledger.append(
+      dispatchIntention({ taskId, transitionId: "dispatch-1", effectId: firstEffectId(taskId) }),
+    );
+    const path = ledger.path;
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      // An effect outcome without its instant, and an instant without an
+      // outcome.
+      expect(() =>
+        raw.prepare("UPDATE effect_read_model SET outcome_status = ?").run("SUCCEEDED"),
+      ).toThrow(/CHECK constraint failed/);
+      expect(() =>
+        raw.prepare("UPDATE effect_read_model SET outcome_recorded_at = ?").run(EFFECT_AT),
+      ).toThrow(/CHECK constraint failed/);
+      // An outcome outside the four-word vocabulary.
+      expect(() =>
+        raw
+          .prepare(
+            "UPDATE effect_read_model SET outcome_status = ?, outcome_recorded_at = ?",
+          )
+          .run("MAYBE", EFFECT_AT),
+      ).toThrow(/CHECK constraint failed/);
+
+      // A terminal state without its instant, and a terminal instant on a
+      // non-terminal state.
+      expect(() =>
+        raw
+          .prepare("UPDATE dispatch_attempt_read_model SET dispatch_state = ?")
+          .run("SETTLED"),
+      ).toThrow(/CHECK constraint failed/);
+      expect(() =>
+        raw.prepare("UPDATE dispatch_attempt_read_model SET terminal_at = ?").run(EFFECT_AT),
+      ).toThrow(/CHECK constraint failed/);
+
+      // And the case §7 `:350` explicitly allows: ABANDONED before any real
+      // dispatch, with `accepted_at` still NULL. No CHECK forbids it, which is
+      // the declared decision rather than an oversight.
+      raw
+        .prepare("UPDATE dispatch_attempt_read_model SET dispatch_state = ?, terminal_at = ?")
+        .run("ABANDONED", EFFECT_AT);
+      expect(
+        (
+          raw
+            .prepare("SELECT accepted_at FROM dispatch_attempt_read_model")
+            .get() as { readonly accepted_at: string | null }
+        ).accepted_at,
+      ).toBeNull();
+    });
+  });
+});
+
+describe("the route segment, its lineage and its coordinate (execution §4)", () => {
+  it("N-C-9: several handoffs in one attempt leave the whole lineage", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+
+    for (const [ordinal, account] of [
+      [2, "acct-2"],
+      [3, "acct-3"],
+    ] as const) {
+      ledger.append(
+        dispatchIntention({
+          taskId,
+          transitionId: "dispatch-" + String(ordinal),
+          effectId,
+          dispatchAttemptId: "dsp-" + String(ordinal),
+          attemptOrdinal: ordinal,
+          segment: segmentRecord({
+            routeSegmentId: "seg-" + String(ordinal),
+            segmentNumber: ordinal,
+            predecessorSegmentId: "seg-" + String(ordinal - 1),
+            accountId: account,
+          }),
+        }),
+      );
+    }
+
+    // Three segments, each naming the one before it. Nothing was overwritten:
+    // the old shape kept one route row per attempt and a second account inside
+    // one attempt destroyed the first.
+    const lineage = ledger.listRouteSegments(taskId, 1, 1);
+    expect(lineage.map((row) => row.segmentNumber)).toEqual([1, 2, 3]);
+    expect(lineage.map((row) => row.predecessorSegmentId)).toEqual([null, "seg-1", "seg-2"]);
+    expect(lineage.map((row) => row.accountId)).toEqual(["acct-1", "acct-2", "acct-3"]);
+    expect(lineage[0]?.handoffReason).toBeNull();
+    expect(lineage[1]?.handoffReason).toBe("QUOTA_EXHAUSTED");
+
+    // The coordinate is unique: segment 2 of this attempt is one row.
+    expect(() =>
+      ledger.append(
+        dispatchIntention({
+          taskId,
+          transitionId: "dispatch-4",
+          effectId,
+          dispatchAttemptId: "dsp-4",
+          attemptOrdinal: 4,
+          segment: segmentRecord({
+            routeSegmentId: "seg-other",
+            segmentNumber: 2,
+            predecessorSegmentId: "seg-1",
+          }),
+        }),
+      ),
+    ).toThrow(LedgerValidationError);
+
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-C-9: the two pairing CHECKs of §4 hold against raw SQL", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const path = ledger.path;
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      // A predecessor with no reason, and a reason with no predecessor.
+      expect(() =>
+        raw
+          .prepare("UPDATE execution_route_segment_read_model SET predecessor_segment_id = ?")
+          .run("seg-0"),
+      ).toThrow(/CHECK constraint failed/);
+      expect(() =>
+        raw
+          .prepare("UPDATE execution_route_segment_read_model SET handoff_reason = ?")
+          .run("QUOTA_EXHAUSTED"),
+      ).toThrow(/CHECK constraint failed/);
+
+      // `RESOLVED` without a version, and a version without `RESOLVED`.
+      expect(() =>
+        raw
+          .prepare("UPDATE execution_route_segment_read_model SET model_version_id = NULL")
+          .run(),
+      ).toThrow(/CHECK constraint failed/);
+      expect(() =>
+        raw
+          .prepare("UPDATE execution_route_segment_read_model SET model_resolution_status = ?")
+          .run("UNKNOWN"),
+      ).toThrow(/CHECK constraint failed/);
+      // And the vocabulary is closed at three.
+      expect(() =>
+        raw
+          .prepare("UPDATE execution_route_segment_read_model SET model_resolution_status = ?")
+          .run("PROBABLY"),
+      ).toThrow(/CHECK constraint failed/);
+    });
+  });
+
+  it("refuses a handoff whose predecessor is not a segment of this attempt", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+
+    let issue: { readonly path: string; readonly message: string } | undefined;
+    try {
+      ledger.append(
+        dispatchIntention({
+          taskId,
+          transitionId: "dispatch-1",
+          effectId,
+          segment: segmentRecord({
+            routeSegmentId: "seg-2",
+            segmentNumber: 2,
+            predecessorSegmentId: "seg-nowhere",
+          }),
+        }),
+      );
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("payload.segment.predecessorSegmentId");
+    expect(issue?.message).toContain("same attempt");
+
+    // And only the first segment of an attempt may have no predecessor.
+    expect(() =>
+      ledger.append(
+        dispatchIntention({
+          taskId,
+          transitionId: "dispatch-2",
+          effectId,
+          segment: segmentRecord({ routeSegmentId: "seg-3", segmentNumber: 3 }),
+        }),
+      ),
+    ).toThrow(LedgerValidationError);
+  });
+});
+
+describe("migration 13 lands whole, and its rows rebuild deterministically", () => {
+  it("applies nothing at all when it fails part way through", () => {
+    // P-08/A2's precedent. A migration is one unit: a half-applied 13 would
+    // leave a schema no `schema_migrations` row describes, and every later open
+    // would try to re-apply it over tables that already exist.
+    const path = temporaryDatabase();
+    open(path).close();
+
+    withRawDatabase(path, (raw) => {
+      dropExecutionEffectIdentity(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(
+        EXECUTION_EFFECT_MIGRATION,
+      );
+
+      const thirteenth = MIGRATIONS.filter(
+        (migration) => migration.version === EXECUTION_EFFECT_MIGRATION,
+      );
+      expect(thirteenth).toHaveLength(1);
+
+      const run = raw.transaction((): void => {
+        applyMigrations(raw, thirteenth, EFFECT_AT, {
+          afterSql: () => {
+            throw new Error("induced failure after the SQL and before the row");
+          },
+        });
+      });
+      expect(() => {
+        run.immediate();
+      }).toThrow("induced failure");
+
+      // Nothing survived: not a table, not an index, not a watermark row, not
+      // the `schema_migrations` row.
+      const objects = raw
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE name IN " +
+            "('execution_route_segment_read_model', 'effect_read_model', " +
+            "'dispatch_attempt_read_model', 'ux_effect_read_model__idempotency_key')",
+        )
+        .all();
+      expect(objects).toEqual([]);
+      expect(
+        raw
+          .prepare("SELECT version FROM schema_migrations WHERE version = ?")
+          .all(EXECUTION_EFFECT_MIGRATION),
+      ).toEqual([]);
+      expect(
+        raw
+          .prepare(
+            "SELECT projection_name FROM projection_watermark WHERE projection_name = ?",
+          )
+          .all("effect_read_model"),
+      ).toEqual([]);
+    });
+
+    // And the reopen applies it cleanly, which is the other half of "whole".
+    const reopened = open(path);
+    expect(reopened.status().migrations.map((migration) => migration.version)).toContain(13);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("seeds its three watermarks from the head it finds, never from a literal zero", () => {
+    // Migration 11's case and 12's: the projections arrive over a stream that
+    // already holds history, and the fold over all of it is legitimately empty.
+    // A zero seed would fail every ledger in the field's own integrity check
+    // right after a routine upgrade.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    const taskId = randomUUID();
+    seedTask(seeded, taskId, "kimi/k3/coordinator/01");
+    const head = seeded.status().headSequence;
+    expect(head).toBeGreaterThan(0);
+    seeded.close();
+
+    withRawDatabase(path, (raw) => {
+      dropExecutionEffectIdentity(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(
+        EXECUTION_EFFECT_MIGRATION,
+      );
+    });
+
+    const migrated = open(path);
+    const rows = readRows(
+      path,
+      "SELECT projection_name, applied_sequence FROM projection_watermark " +
+        "WHERE projection_name IN ('execution_route_segment_read_model', 'effect_read_model', " +
+        "'dispatch_attempt_read_model') ORDER BY projection_name",
+    ) as { readonly projection_name: string; readonly applied_sequence: number }[];
+    expect(rows.map((row) => row.projection_name)).toEqual([
+      "dispatch_attempt_read_model",
+      "effect_read_model",
+      "execution_route_segment_read_model",
+    ]);
+    expect(rows.map((row) => row.applied_sequence)).toEqual([head, head, head]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("P-P18-8 and N-C-6: rebuilding twice produces identical rows, with no recomputation", () => {
+    // Datos §16 negative 12, over the three new tables. And §6.1 `:319-320`'s
+    // prohibition, which is the sharper half: after a handoff the rebuild must
+    // copy the `route_segment_id`, `effect_id` and `idempotency_key` that were
+    // RECORDED, not recompute them with the segment that is current now.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "abandon-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "ABANDONED",
+        terminalAt: EFFECT_AT,
+      }),
+    );
+    ledger.append(
+      dispatchIntention({
+        taskId,
+        transitionId: "dispatch-2",
+        effectId,
+        dispatchAttemptId: "dsp-2",
+        attemptOrdinal: 2,
+        segment: segmentRecord({
+          routeSegmentId: "seg-2",
+          segmentNumber: 2,
+          predecessorSegmentId: "seg-1",
+          accountId: "acct-2",
+        }),
+      }),
+    );
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle-2",
+        dispatchAttemptId: "dsp-2",
+        dispatchState: "SETTLED",
+        terminalAt: "2026-09-12T09:20:00.000Z",
+        effectOutcomeStatus: "SUCCEEDED",
+      }),
+    );
+
+    const snapshot = (): string =>
+      canonicalJsonStringify({
+        segments: readRows(path, "SELECT * FROM execution_route_segment_read_model ORDER BY segment_number"),
+        effects: readRows(path, "SELECT * FROM effect_read_model ORDER BY operation_ordinal"),
+        deliveries: readRows(
+          path,
+          "SELECT * FROM dispatch_attempt_read_model ORDER BY attempt_ordinal",
+        ),
+      });
+
+    const live = snapshot();
+    ledger.rebuildReadModel();
+    const once = snapshot();
+    ledger.rebuildReadModel();
+    const twice = snapshot();
+
+    expect(once).toBe(live);
+    expect(twice).toBe(once);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // The effect still names its INITIAL segment and its ORIGINAL key, after
+    // two rebuilds and a handoff. Recomputing with the current segment would
+    // have moved both — which is the one thing a rebuild may never do.
+    const effect = ledger.getEffect(effectId);
+    expect(effect?.routeSegmentId).toBe("seg-1");
+    expect(effect?.idempotencyKey).toBe(
+      effectIdempotencyKeyV1({
+        taskId,
+        revisionNumber: 1,
+        attemptNumber: 1,
+        segmentNumber: 1,
+        operationOrdinal: 0,
+        effectKind: "model_execution",
+        envelopeSha256: REVISION_ENVELOPE,
+      }),
+    );
+    // The resolved state survives the rebuild too: the fold applies every
+    // resolution, and the rebuild writes the row the fold arrived at.
+    expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchState)).toEqual([
+      "ABANDONED",
+      "SETTLED",
+    ]);
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
   });
 });

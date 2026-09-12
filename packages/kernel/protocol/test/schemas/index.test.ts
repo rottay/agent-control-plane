@@ -2284,7 +2284,7 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     for (const channel of Object.values(STREAM_CHANNEL_BY_EVENT_TYPE)) {
       sizes[channel] = (sizes[channel] ?? 0) + 1;
     }
-    expect(sizes).toEqual({ lifecycle: 7, execution: 7, steps: 2, state: 7, progress: 2 });
+    expect(sizes).toEqual({ lifecycle: 7, execution: 10, steps: 2, state: 7, progress: 2 });
     const total = Object.values(sizes).reduce((sum, count) => sum + count, 0);
     expect(total).toBe(CONTROL_PLANE_EVENT_TYPES.length);
   });
@@ -2297,6 +2297,18 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     // `steps` is the durable walk's own beats and `progress` is usage
     // attribution; a receipt is neither.
     expect(STREAM_CHANNEL_BY_EVENT_TYPE.TOOL_CALL_RECORDED).toBe("execution");
+  });
+
+  it("puts the three effect types on execution, by name (P-18/protocolo C)", () => {
+    // Asserted separately from totality for the reason above: a type on the
+    // wrong channel satisfies every other law here. `execution` is "what it
+    // took to run it", and intending an effect, intending a delivery and
+    // reporting how a delivery went are all that. None of them is a beat of the
+    // durable walk — an effect is what a beat asks for — and none of them is
+    // usage attribution.
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.EFFECT_INTENDED).toBe("execution");
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.DISPATCH_INTENDED).toBe("execution");
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.DISPATCH_OUTCOME_RECORDED).toBe("execution");
   });
 
   it("puts the attempt opening on execution, by name (P-18/protocolo B)", () => {

@@ -91,6 +91,7 @@ new records from `_template.md`, which carries the required fields.
 | 0073 | [Every attempt opens with its own identity, assigned once](0073-every-attempt-opens-with-its-own-identity.md) | accepted |
 | 0074 | [The outbox is a store with a version, before it is a queue](0074-the-outbox-is-a-store-with-a-version.md) | accepted |
 | 0075 | [Every coordination store names its own incarnation](0075-every-coordination-store-names-its-own-incarnation.md) | accepted |
+| 0076 | [An effect is looked up by its logical key, and the contract grows a version to say so](0076-an-effect-is-looked-up-by-its-logical-key.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

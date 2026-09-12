@@ -154,7 +154,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -169,11 +169,12 @@ describe("migration 7 appends the watermark table without touching the applied s
       "account_event_integrity",
       "task_revision_identity",
       "task_attempt_identity",
+      "execution_effect_identity",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11 and 12 seed rows into it, which is what a migration
+    // Migrations 9, 11, 12 and 13 seed rows into it, which is what a migration
     // that adds a projection does; none of them creates, alters or drops the
     // table.
     const creating = MIGRATIONS.filter((migration) =>
@@ -183,7 +184,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -254,6 +255,9 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "execution_route_read_model@control_plane_events",
       "task_revision_read_model@control_plane_events",
       "task_attempt_read_model@control_plane_events",
+      "execution_route_segment_read_model@control_plane_events",
+      "effect_read_model@control_plane_events",
+      "dispatch_attempt_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
       "routing_assignment_read_model@registry_events",
@@ -464,7 +468,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
     ]);
   });
 
@@ -682,7 +686,7 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(9);
+    expect(PROJECTION_SOURCES).toHaveLength(12);
   });
 
   it("still does not claim the account stream (D3)", () => {

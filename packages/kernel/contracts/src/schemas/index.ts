@@ -26,6 +26,7 @@
 export {
   CONTRACT_VERSION,
   SUPPORTED_CONTRACT_VERSIONS,
+  AdmittedContractVersion,
   utf8ByteLength,
 } from "./primitives/index.js";
 export {
@@ -93,6 +94,8 @@ export {
   buildIdempotencyKey,
   V2_IDEMPOTENCY_NAMESPACE,
   V2_IDEMPOTENCY_STREAMS,
+  EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
+  EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
   V2IdempotencyCoordinates,
   buildV2IdempotencyKey,
   ControlPlaneEvent,

@@ -13,8 +13,11 @@ import {
   AccountRecord,
   CHECKPOINT_MAX_BYTES,
   CLI_SUBSCRIPTION_PROVIDERS,
+  AdmittedContractVersion,
   CONTRACT_VERSION,
   CONTROL_PLANE_EVENT_TYPES,
+  EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
+  EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
   SUPPORTED_CONTRACT_VERSIONS,
   V2_IDEMPOTENCY_NAMESPACE,
   Checkpoint,
@@ -547,8 +550,15 @@ describe("the V2 idempotency key", () => {
     }
     // A syntactically valid version that is simply not a member. The existing
     // drill above uses `undefined`, which any required field would reject; this
-    // one can only be refused by the membership test.
-    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.3.0" })).success).toBe(false);
+    // one can only be refused by the membership test. `"2.3.0"` used to stand
+    // here and now stands above, because P-18/protocolo C is the escalón that
+    // moved `CONTRACT_VERSION` on to it — a member of the set is admitted for
+    // **reading** whether or not it is the version in force, which is the whole
+    // point of separating the set from the literal (ADR 0072, ADR 0076). What
+    // refuses a supported-but-not-current version is the issuer's rule, and it
+    // lives on `AdmittedContractVersion` and at the ledger's append door rather
+    // than on this schema.
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.4.0" })).success).toBe(false);
     expect(ControlPlaneEvent.safeParse(event({ contractVersion: "1.0.0" })).success).toBe(false);
   });
 
@@ -2601,5 +2611,104 @@ describe("SwitchAuthorization", () => {
         events: [{ type: "QUOTA_WARNING", payload: { accountId: { nested: true } } }],
       }).success,
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo C — the version in force, and the effect's key grammar
+// ---------------------------------------------------------------------------
+
+describe("only the version in force is emitted (ADR 0072's debt, ADR 0076)", () => {
+  it("separates what a reader admits from what an issuer stamps", () => {
+    // The pair ADR 0072 built and this escalón is the first to exercise. The
+    // set is what makes a bump survivable; the literal is what keeps a producer
+    // from choosing between two versions, which is a producer whose output
+    // nobody can predict.
+    expect(CONTRACT_VERSION).toBe("2.3.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0"]);
+    expect(SUPPORTED_CONTRACT_VERSIONS).toContain(CONTRACT_VERSION);
+
+    expect(AdmittedContractVersion.safeParse(CONTRACT_VERSION).success).toBe(true);
+    // Supported for reading, and refused for issuing. That difference is the
+    // whole mechanism, and before the bump it was an empty category.
+    expect(AdmittedContractVersion.safeParse("2.2.0").success).toBe(false);
+    expect(AdmittedContractVersion.safeParse("2.4.0").success).toBe(false);
+  });
+
+  it("holds the three admission shapes to the version in force, and not the event", () => {
+    // The three shapes ADR 0072 named, and they are named there because they
+    // are instruments of NEW work — an envelope is issued now, a slot is
+    // registered now, a receipt authorizes a commit now. None is a cohort of
+    // stored history anybody re-parses.
+    expect(TaskEnvelope.safeParse(envelope()).success).toBe(true);
+    expect(WorkerSlot.safeParse(slot()).success).toBe(true);
+    expect(CommitAuthorizationReceipt.safeParse(receipt()).success).toBe(true);
+
+    expect(TaskEnvelope.safeParse(envelope({ contractVersion: "2.2.0" })).success).toBe(false);
+    expect(WorkerSlot.safeParse(slot({ contractVersion: "2.2.0" })).success).toBe(false);
+    expect(
+      CommitAuthorizationReceipt.safeParse(receipt({ contractVersion: "2.2.0" })).success,
+    ).toBe(false);
+
+    // `ControlPlaneEvent` deliberately keeps the reader's set, and this is the
+    // assertion that makes the asymmetry deliberate rather than an omission:
+    // that schema is what the ledger re-parses over every stored row, and
+    // pinning the literal there would be exactly the symmetry ADR 0072 removed,
+    // one version later. The issuing rule for events lives at the append door,
+    // which separates the two by *when* instead.
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.2.0" })).success).toBe(true);
+  });
+});
+
+describe("the effect's key grammar belongs to the contract (decision 42)", () => {
+  it("declares both preimage prefixes in the envelope's shape, with one LF each", () => {
+    // `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1` is the standing precedent and
+    // these follow it exactly: the LF is the last byte of the prefix, there is
+    // no separator after it, and `v1` is frozen — a change to the encoding is a
+    // NEW prefix with a new name, because a digest whose preimage can be
+    // redefined identifies nothing.
+    for (const prefix of [
+      EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
+      EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
+    ]) {
+      expect(prefix).toMatch(/^acp\/[a-z-]+\/v1\n$/);
+      const bytes = [...new TextEncoder().encode(prefix)];
+      expect(bytes[bytes.length - 1]).toBe(0x0a);
+      expect(bytes.filter((byte) => byte === 0x0a)).toHaveLength(1);
+    }
+
+    // Two prefixes, never one: `effect_id` names which logical step this is,
+    // and the idempotency key is what a destination is asked not to do twice.
+    // A shared prefix would make the two digests collide whenever their field
+    // lists happened to agree.
+    expect(EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1).not.toBe(
+      EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
+    );
+    expect(EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1).toBe("acp/execution-effect/v1\n");
+    expect(EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1).toBe(
+      "acp/execution-effect-idempotency/v1\n",
+    );
+  });
+
+  it("grows the vocabulary by exactly the three types P-18/protocolo C needs", () => {
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(28);
+    expect(new Set(CONTROL_PLANE_EVENT_TYPES).size).toBe(CONTROL_PLANE_EVENT_TYPES.length);
+    for (const type of ["EFFECT_INTENDED", "DISPATCH_INTENDED", "DISPATCH_OUTCOME_RECORDED"]) {
+      expect(CONTROL_PLANE_EVENT_TYPES, type).toContain(type);
+    }
+
+    // All three are same-state passthroughs, exactly as `TASK_ATTEMPT_OPENED`
+    // is: intending an effect, intending a delivery and reporting how a
+    // delivery went are things a run DID, not moves through a lifecycle. The
+    // contract only forbids a same-state `TASK_STATE_CHANGED`, so the
+    // assertion is that these three are admitted with `fromState === toState`.
+    for (const type of ["EFFECT_INTENDED", "DISPATCH_INTENDED", "DISPATCH_OUTCOME_RECORDED"]) {
+      expect(
+        ControlPlaneEvent.safeParse(
+          event({ type, fromState: "DISCOVERED", toState: "DISCOVERED" }),
+        ).success,
+        type,
+      ).toBe(true);
+    }
   });
 });

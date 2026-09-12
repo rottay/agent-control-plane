@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 
 import {
   AccountActionEvent,
+  CONTRACT_VERSION,
   ControlPlaneEvent,
   IdempotencyCoordinates,
   InitiativeEvent,
@@ -62,12 +63,33 @@ import {
   applyEventToSnapshot,
   applyInitiativeEventToSnapshot,
   applyRegistryEventToSnapshot,
+  DISPATCH_INTENDED,
+  DISPATCH_KEY,
+  DISPATCH_OUTCOME_RECORDED,
+  EFFECT_INTENDED,
+  EFFECT_KEY,
   INVOCATION_ID_KEY,
   LEGACY_ATTEMPT_NUMBER_KEY,
+  LOCAL_KEY_PATTERN,
+  OUTCOME_KEY,
   REVISION_ID_KEY,
+  SEGMENT_KEY,
+  SEMANTIC_SCOPE_KEYS,
   TASK_ATTEMPT_OPENED,
   canonicalAttempt,
+  canonicalDispatchBirth,
+  canonicalEffect,
   canonicalRevision,
+  canonicalSegment,
+  dispatchOutcomeRecord,
+  dispatchTransitionAdmitted,
+  effectIdV1,
+  effectIdempotencyKeyV1,
+  logicalOperationSha256,
+  nextDispatchAttemptProjection,
+  nextDispatchAttemptState,
+  nextEffectProjection,
+  nextExecutionRouteSegmentProjection,
   createInitiativeProjectionSnapshot,
   createProjectionSnapshot,
   createRegistryProjectionSnapshot,
@@ -90,16 +112,27 @@ import {
   type WorkerTaskProjection,
 } from "../projection/index.js";
 import {
+  DISPATCH_STATE_TRANSITIONS,
   DOCUMENT_KINDS,
+  EXECUTION_EFFECT_KINDS,
+  EXECUTION_REQUEST_CONTRACT_VERSIONS,
   type AppendBatchResult,
   type AppendResult,
   type AppliedMigration,
   type CausationRef,
   type CausationStream,
+  type DispatchAttemptReadModel,
+  type DispatchState,
   type DocumentKind,
+  type EffectLookup,
+  type EffectLookupQuery,
+  type EffectOutcomeStatus,
+  type EffectReadModel,
   type EventPage,
   type EventQuery,
+  type ExecutionEffectKind,
   type ExecutionRouteReadModel,
+  type ExecutionRouteSegmentReadModel,
   type InitiativeAppendResult,
   type InitiativeEventPage,
   type InitiativeEventQuery,
@@ -107,6 +140,7 @@ import {
   type InitiativeReadModel,
   type IntegrityProblem,
   type IntegrityReport,
+  type ModelResolutionStatus,
   type LedgerEventRecord,
   type LedgerIdentity,
   type LedgerStatus,
@@ -798,6 +832,68 @@ interface TaskAttemptRow {
   readonly sequence: number;
 }
 
+/** One stored segment row (P-18/C). Snake case, because it is a row. */
+interface ExecutionRouteSegmentRow {
+  readonly route_segment_id: string;
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly attempt_number: number;
+  readonly segment_number: number;
+  readonly predecessor_segment_id: string | null;
+  readonly handoff_reason: string | null;
+  readonly provider: string;
+  readonly model: string;
+  readonly model_resolution_status: string;
+  readonly model_version_id: string | null;
+  readonly account_id: string | null;
+  readonly transport_kind: string;
+  readonly capability_policy_version: string;
+  readonly routing_assignment_id: string | null;
+  readonly reservation_id: string | null;
+  readonly escalated_from_attempt: number | null;
+  readonly escalation_reason: string | null;
+  readonly resolved_at: string | null;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
+/** One stored effect row (P-18/C). Snake case, because it is a row. */
+interface EffectRow {
+  readonly effect_id: string;
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly attempt_number: number;
+  readonly route_segment_id: string;
+  readonly operation_ordinal: number;
+  readonly effect_kind: string;
+  readonly semantic_scope_key: string;
+  readonly local_operation_key: string;
+  readonly logical_operation_sha256: string;
+  readonly request_contract_version: string;
+  readonly request_sha256: string;
+  readonly idempotency_key: string;
+  readonly intended_at: string;
+  readonly outcome_status: string | null;
+  readonly outcome_recorded_at: string | null;
+  readonly sequence: number;
+}
+
+/** One stored delivery row (P-18/C). Snake case, because it is a row. */
+interface DispatchAttemptRow {
+  readonly dispatch_attempt_id: string;
+  readonly effect_id: string;
+  readonly route_segment_id: string;
+  readonly attempt_ordinal: number;
+  readonly provider_idempotency_key: string | null;
+  readonly external_handle: string | null;
+  readonly dispatch_state: string;
+  readonly requested_at: string;
+  readonly accepted_at: string | null;
+  readonly terminal_at: string | null;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
 interface WorkerRow {
   readonly identity: string;
   readonly provider: string;
@@ -929,6 +1025,83 @@ function taskAttemptRowToModel(row: TaskAttemptRow): TaskAttemptReadModel {
     startedAt: row.started_at,
     endedAt: row.ended_at,
     outcome: row.outcome,
+    sequence: row.sequence,
+  };
+}
+
+/**
+ * The three row-to-model conversions of P-18/protocolo C.
+ *
+ * Each narrows a `TEXT` column back to the closed vocabulary its CHECK admits.
+ * The cast is safe because the base refuses anything else — and it is written
+ * as a cast rather than as a re-validation for the reason
+ * `taskAttemptRowToModel` does not re-validate either: a row this build wrote
+ * satisfied the constraint at write time, and a row it did not write is
+ * `verifyIntegrity`'s business rather than a converter's.
+ */
+function executionRouteSegmentRowToModel(
+  row: ExecutionRouteSegmentRow,
+): ExecutionRouteSegmentReadModel {
+  return {
+    routeSegmentId: row.route_segment_id,
+    taskId: row.task_id,
+    revisionNumber: row.revision_number,
+    attemptNumber: row.attempt_number,
+    segmentNumber: row.segment_number,
+    predecessorSegmentId: row.predecessor_segment_id,
+    handoffReason: row.handoff_reason,
+    provider: row.provider,
+    model: row.model,
+    modelResolutionStatus: row.model_resolution_status as ModelResolutionStatus,
+    modelVersionId: row.model_version_id,
+    accountId: row.account_id,
+    transportKind: row.transport_kind,
+    capabilityPolicyVersion: row.capability_policy_version,
+    routingAssignmentId: row.routing_assignment_id,
+    reservationId: row.reservation_id,
+    escalatedFromAttempt: row.escalated_from_attempt,
+    escalationReason: row.escalation_reason,
+    resolvedAt: row.resolved_at,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
+}
+
+function effectRowToModel(row: EffectRow): EffectReadModel {
+  return {
+    effectId: row.effect_id,
+    taskId: row.task_id,
+    revisionNumber: row.revision_number,
+    attemptNumber: row.attempt_number,
+    routeSegmentId: row.route_segment_id,
+    operationOrdinal: row.operation_ordinal,
+    effectKind: row.effect_kind,
+    semanticScopeKey: row.semantic_scope_key,
+    localOperationKey: row.local_operation_key,
+    logicalOperationSha256: row.logical_operation_sha256,
+    requestContractVersion: row.request_contract_version,
+    requestSha256: row.request_sha256,
+    idempotencyKey: row.idempotency_key,
+    intendedAt: row.intended_at,
+    outcomeStatus: row.outcome_status as EffectOutcomeStatus | null,
+    outcomeRecordedAt: row.outcome_recorded_at,
+    sequence: row.sequence,
+  };
+}
+
+function dispatchAttemptRowToModel(row: DispatchAttemptRow): DispatchAttemptReadModel {
+  return {
+    dispatchAttemptId: row.dispatch_attempt_id,
+    effectId: row.effect_id,
+    routeSegmentId: row.route_segment_id,
+    attemptOrdinal: row.attempt_ordinal,
+    providerIdempotencyKey: row.provider_idempotency_key,
+    externalHandle: row.external_handle,
+    dispatchState: row.dispatch_state as DispatchState,
+    requestedAt: row.requested_at,
+    acceptedAt: row.accepted_at,
+    terminalAt: row.terminal_at,
+    recordedAt: row.recorded_at,
     sequence: row.sequence,
   };
 }
@@ -1525,6 +1698,21 @@ function ensureLedgerIdentity(db: Database.Database): void {
  */
 function safeIdentifier(name: string): string {
   return /^[A-Za-z0-9_]{1,64}$/.test(name) ? name : "<unprintable name>";
+}
+
+/**
+ * A row identifier or vocabulary word of P-18/protocolo C, safe to print.
+ *
+ * `safeIdentifier` is narrower on purpose — it guards a value that is about to
+ * be interpolated into SQL as a table name, so it admits no punctuation at all.
+ * A segment id, an effect id, a delivery id, an effect kind and a request
+ * contract version are none of those things: they never reach a query, they do
+ * reach a message an operator reads, and they legitimately contain `-`, `.`
+ * and `:` the way an invocation id does. Reusing the SQL guard here printed
+ * every one of them as `<unprintable name>`.
+ */
+function safeRowIdentifier(value: string): string {
+  return /^[A-Za-z0-9_.:-]{1,128}$/.test(value) ? value : "<unprintable identifier>";
 }
 
 /**
@@ -2497,6 +2685,32 @@ export class Ledger {
       );
     }
 
+    // Only the version in force is admitted for a genuinely NEW insertion, and
+    // the exemption above this line is the whole design (ADR 0072's debt, paid
+    // by ADR 0076). An exact replay of a row already recorded has returned
+    // already, so a producer that retries an append written before the bump
+    // still succeeds; what is refused here is *new* work stamped with a version
+    // that is supported for reading and is no longer the one in force.
+    //
+    // The refusal names both numbers, because "unsupported version" and "not
+    // the current version" are different problems with different fixes and an
+    // operator holding a stale build needs to be told which one it has.
+    if (event.contractVersion !== CONTRACT_VERSION) {
+      throw new LedgerValidationError([
+        {
+          path: "contractVersion",
+          message:
+            "a new event is recorded under the contract version in force, which is " +
+            CONTRACT_VERSION +
+            "; this event carries " +
+            event.contractVersion +
+            ", which this build reads (the supported set is " +
+            supportedVersionList() +
+            ") but no longer emits",
+        },
+      ]);
+    }
+
     const task = this.#stmt(
       "SELECT current_state FROM task_read_model WHERE task_id = ?",
     ).get(event.taskId) as { readonly current_state: string } | undefined;
@@ -2532,6 +2746,11 @@ export class Ledger {
     // refusals it raises are about the event and must name the coordinate
     // rather than arrive from an index as an abort.
     this.#assertAttemptIdentity(event, coordinate);
+
+    // The effect, its delivery and the segment both hang off (P-18/C). After
+    // the attempt's identity, because everything it checks is anchored on the
+    // attempt row that check either found or is about to cause.
+    this.#assertExecutionEffectIdentity(event, coordinate);
 
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
@@ -2909,6 +3128,716 @@ export class Ledger {
     }
   }
 
+  /**
+   * The effect's identity, and its delivery's, compared and set under the write
+   * lock this transaction already holds (P-18/protocolo C).
+   *
+   * The sister of `#assertAttemptIdentity`, one rung further down the ladder and
+   * making the same division of duties: **the producer proposes and the ledger
+   * verifies**. An event arrives signed, so "assign" could not mean writing into
+   * the body without recanonicalizing it; what the ledger can do is compute the
+   * answer itself and refuse by name when the two disagree. Every digest on
+   * these rows whose preimage this ledger can see is recomputed here from the
+   * *sources* — `invocation_id` off the attempt row, `envelope_sha256` off the
+   * revision row — rather than believed.
+   *
+   * `request_sha256` is the one exception and it is declared rather than
+   * quiet: its preimage carries `neutralRequest`, and execution §6.1 `:296`
+   * forbids a business payload in a ledger event, so the digest is recorded and
+   * conserved. A check that only appeared to be one would be worse.
+   *
+   * This is also where the **logical lookup** of §6.1 is enforced from the
+   * write side. Reading it is `lookUpEffect`'s job; what happens here is the
+   * refusal that makes reading it necessary: an intention whose logical key
+   * already belongs to an effect is not a second intention, and a producer that
+   * met one is supposed to reuse the effect rather than mint another.
+   */
+  #assertExecutionEffectIdentity(
+    event: ControlPlaneEvent,
+    coordinate: {
+      readonly revisionNumber: number | null;
+      readonly attemptNumber: number | null;
+    },
+  ): void {
+    if (
+      event.type !== EFFECT_INTENDED &&
+      event.type !== DISPATCH_INTENDED &&
+      event.type !== DISPATCH_OUTCOME_RECORDED
+    ) {
+      return;
+    }
+
+    // All three describe work inside one try at one revision, so all three need
+    // the coordinate that names it. A V1 form here would be an effect nothing
+    // could attach to an attempt.
+    if (coordinate.revisionNumber === null || coordinate.attemptNumber === null) {
+      throw new LedgerValidationError([
+        {
+          path: "payload.revisionNumber",
+          message:
+            event.type +
+            " describes work inside one attempt and carries the full V2 coordinate; " +
+            "this payload carries none",
+        },
+      ]);
+    }
+    const { revisionNumber, attemptNumber } = coordinate;
+
+    if (event.type === DISPATCH_OUTCOME_RECORDED) {
+      this.#assertDispatchOutcome(event, revisionNumber, attemptNumber);
+      return;
+    }
+
+    // Both intention types announce a segment, and a malformed one has to be
+    // refused by name here: the fold projects no row for it, and the row that
+    // named it would then reach `fk_…__execution_route_segment_read_model` as
+    // an abort nobody can attribute to an event (F-2's standard).
+    const segment = nextExecutionRouteSegmentProjection(event, 0);
+    if (segment === null) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + SEGMENT_KEY,
+          message:
+            event.type +
+            " announces the route segment it runs on, with its number, provider, alias, " +
+            "resolution status, transport and policy version, and both pairing rules of " +
+            "execution §4 satisfied; this payload does not constitute one",
+        },
+      ]);
+    }
+
+    // The segment belongs to the attempt the event's own coordinate names. A
+    // segment is not a place a payload may move work to.
+    if (segment.revisionNumber !== revisionNumber || segment.attemptNumber !== attemptNumber) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + SEGMENT_KEY + ".routeSegmentId",
+          message:
+            "segment " +
+            safeRowIdentifier(segment.routeSegmentId) +
+            " names attempt " +
+            taskAttemptKey(segment.taskId, segment.revisionNumber, segment.attemptNumber) +
+            " and this event is recorded at " +
+            taskAttemptKey(event.taskId, revisionNumber, attemptNumber),
+        },
+      ]);
+    }
+
+    // The attempt, which is the source of `invocation_id` and the parent of the
+    // segment's foreign key. Unlike migration 12's opening, an effect does NOT
+    // announce its own attempt: the attempt is a rung above and is opened by its
+    // own event, so an effect that finds none is out of order rather than
+    // incomplete.
+    const attempt = this.#stmt(
+      "SELECT * FROM task_attempt_read_model " +
+        "WHERE task_id = ? AND revision_number = ? AND attempt_number = ?",
+    ).get(event.taskId, revisionNumber, attemptNumber) as TaskAttemptRow | undefined;
+    if (attempt === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload.attemptNumber",
+          message:
+            "an effect runs inside an attempt, and attempt " +
+            taskAttemptKey(event.taskId, revisionNumber, attemptNumber) +
+            " has not been opened",
+        },
+      ]);
+    }
+
+    // The segment's own consistency, where the base cannot see it: a segment
+    // whose predecessor is not a segment of this same attempt would be lineage
+    // pointing out of the attempt it claims to continue.
+    const existingSegment = this.#stmt(
+      "SELECT * FROM execution_route_segment_read_model WHERE route_segment_id = ?",
+    ).get(segment.routeSegmentId) as ExecutionRouteSegmentRow | undefined;
+    if (existingSegment === undefined) {
+      this.#assertSegmentLineage(segment, revisionNumber, attemptNumber);
+    } else if (
+      canonicalSegment(executionRouteSegmentRowToModel(existingSegment)) !==
+      canonicalSegment(segment)
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + SEGMENT_KEY + ".routeSegmentId",
+          message:
+            "segment " +
+            safeRowIdentifier(segment.routeSegmentId) +
+            " is already recorded with different content, and a segment is opened once",
+        },
+      ]);
+    }
+
+    if (event.type === EFFECT_INTENDED) {
+      this.#assertEffectIntention(event, segment, attempt);
+      return;
+    }
+    this.#assertDispatchIntention(event, segment, revisionNumber, attemptNumber);
+  }
+
+  /**
+   * A new segment's lineage and its position within the attempt.
+   *
+   * The first segment of an attempt has no predecessor; every later one names
+   * the segment that handed off to it, and that segment must belong to this same
+   * attempt. The pairing with `handoff_reason` is already held by the fold and
+   * by the CHECK, so what is added here is the part neither can see: whether
+   * the row being pointed at exists and is a sibling.
+   */
+  #assertSegmentLineage(
+    segment: ExecutionRouteSegmentReadModel,
+    revisionNumber: number,
+    attemptNumber: number,
+  ): void {
+    const taken = this.#stmt(
+      "SELECT route_segment_id FROM execution_route_segment_read_model " +
+        "WHERE task_id = ? AND revision_number = ? AND attempt_number = ? AND segment_number = ?",
+    ).get(segment.taskId, revisionNumber, attemptNumber, segment.segmentNumber) as
+      | { readonly route_segment_id: string }
+      | undefined;
+    if (taken !== undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + SEGMENT_KEY + ".segmentNumber",
+          message:
+            "segment " +
+            String(segment.segmentNumber) +
+            " of attempt " +
+            taskAttemptKey(segment.taskId, revisionNumber, attemptNumber) +
+            " is already " +
+            safeRowIdentifier(taken.route_segment_id),
+        },
+      ]);
+    }
+
+    if (segment.predecessorSegmentId === null) {
+      if (segment.segmentNumber !== 1) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + SEGMENT_KEY + ".predecessorSegmentId",
+            message:
+              "only the first segment of an attempt has no predecessor, and this one is " +
+              String(segment.segmentNumber),
+          },
+        ]);
+      }
+      return;
+    }
+
+    const predecessor = this.#stmt(
+      "SELECT * FROM execution_route_segment_read_model WHERE route_segment_id = ?",
+    ).get(segment.predecessorSegmentId) as ExecutionRouteSegmentRow | undefined;
+    if (
+      predecessor === undefined ||
+      predecessor.task_id !== segment.taskId ||
+      predecessor.revision_number !== revisionNumber ||
+      predecessor.attempt_number !== attemptNumber
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + SEGMENT_KEY + ".predecessorSegmentId",
+          message:
+            "a handoff continues a segment of the same attempt, and " +
+            safeRowIdentifier(segment.predecessorSegmentId) +
+            " is not one of attempt " +
+            taskAttemptKey(segment.taskId, revisionNumber, attemptNumber),
+        },
+      ]);
+    }
+  }
+
+  /**
+   * An effect's intention: the vocabulary, the three recomputed digests, the
+   * ordinal compare-and-set, and the logical lookup of §6.1.
+   */
+  #assertEffectIntention(
+    event: ControlPlaneEvent,
+    segment: ExecutionRouteSegmentReadModel,
+    attempt: TaskAttemptRow,
+  ): void {
+    const effect = nextEffectProjection(event, 0);
+    if (effect === null) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY,
+          message:
+            "an effect intention carries its id, ordinal, kind, scope, step key and the " +
+            "three digests of execution §6; this payload does not constitute one",
+        },
+      ]);
+    }
+
+    // The two LocalKeys, by the grammar of §6.1 `:275`. Ordinal comparison and
+    // no glob: `"A"` and `"a"` are two different steps, on purpose.
+    for (const [path, value] of [
+      ["semanticScopeKey", effect.semanticScopeKey],
+      ["localOperationKey", effect.localOperationKey],
+    ] as const) {
+      if (!LOCAL_KEY_PATTERN.test(value)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + EFFECT_KEY + "." + path,
+            message:
+              "a LocalKey is an alphanumeric first character then up to 127 of " +
+              "[A-Za-z0-9._-], compared ordinally; this one is not",
+          },
+        ]);
+      }
+    }
+    if (!(SEMANTIC_SCOPE_KEYS as readonly string[]).includes(effect.semanticScopeKey)) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".semanticScopeKey",
+          message:
+            "P-18 admits the semantic scopes " +
+            SEMANTIC_SCOPE_KEYS.join(", ") +
+            " and this effect names " +
+            safeRowIdentifier(effect.semanticScopeKey),
+        },
+      ]);
+    }
+
+    // The kind and the exact request contract version for it. Execution §6
+    // `:248`: never an implicit or unknown version.
+    if (!(EXECUTION_EFFECT_KINDS as readonly string[]).includes(effect.effectKind)) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".effectKind",
+          message:
+            "this build serves the effect kinds " +
+            EXECUTION_EFFECT_KINDS.join(", ") +
+            " and this effect names " +
+            safeRowIdentifier(effect.effectKind),
+        },
+      ]);
+    }
+    const kind = effect.effectKind as ExecutionEffectKind;
+    if (!EXECUTION_REQUEST_CONTRACT_VERSIONS[kind].includes(effect.requestContractVersion)) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".requestContractVersion",
+          message:
+            "effect kind " +
+            kind +
+            " defines the request contract versions " +
+            EXECUTION_REQUEST_CONTRACT_VERSIONS[kind].join(", ") +
+            " and this effect names " +
+            safeRowIdentifier(effect.requestContractVersion),
+        },
+      ]);
+    }
+    if (!SHA256_PATTERN.test(effect.requestSha256)) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".requestSha256",
+          message:
+            "the request digest is a lowercase sha-256 hex string; it is recorded rather " +
+            "than recomputed, because its preimage carries the business request and a " +
+            "business request does not enter a ledger event",
+        },
+      ]);
+    }
+
+    // The revision, which is the source of `envelope_sha256`. The attempt's own
+    // foreign key guarantees it exists, so a missing row here would be a
+    // corrupted base rather than an out-of-order event.
+    const revision = this.#stmt(
+      "SELECT envelope_sha256 FROM task_revision_read_model " +
+        "WHERE task_id = ? AND revision_number = ?",
+    ).get(effect.taskId, effect.revisionNumber) as
+      | { readonly envelope_sha256: string }
+      | undefined;
+    if (revision === undefined) {
+      throw new LedgerIntegrityError([
+        "task_attempt_read_model holds attempt " +
+          taskAttemptKey(effect.taskId, effect.revisionNumber, effect.attemptNumber) +
+          " whose revision row is missing",
+      ]);
+    }
+
+    // The logical digest, recomputed from the run this ledger recorded.
+    const expectedLogical = logicalOperationSha256({
+      invocationId: attempt.invocation_id,
+      semanticScopeKey: effect.semanticScopeKey,
+      localOperationKey: effect.localOperationKey,
+    });
+    if (effect.logicalOperationSha256 !== expectedLogical) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".logicalOperationSha256",
+          message:
+            "the logical operation digest is computed over this attempt's invocation, the " +
+            "scope and the step key; this ledger computes " +
+            expectedLogical +
+            " and the event states " +
+            safeRowIdentifier(effect.logicalOperationSha256),
+        },
+      ]);
+    }
+
+    // The ordinal, assigned rather than accepted: one past this attempt's
+    // highest, and 0 where there is none, because `ck_…__operation_ordinal`
+    // admits zero. `MAX` over the attempt and not over the segment — an effect
+    // is a step of the run, and a handoff does not restart the count.
+    const highest = this.#stmt(
+      "SELECT MAX(operation_ordinal) AS highest FROM effect_read_model " +
+        "WHERE task_id = ? AND revision_number = ? AND attempt_number = ?",
+    ).get(effect.taskId, effect.revisionNumber, effect.attemptNumber) as {
+      readonly highest: number | null;
+    };
+    const expectedOrdinal = highest.highest === null ? 0 : highest.highest + 1;
+    if (effect.operationOrdinal !== expectedOrdinal) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".operationOrdinal",
+          message:
+            "attempt " +
+            taskAttemptKey(effect.taskId, effect.revisionNumber, effect.attemptNumber) +
+            " assigns the operation ordinal " +
+            String(expectedOrdinal) +
+            ", which is one past its highest, and this event proposes " +
+            String(effect.operationOrdinal),
+        },
+      ]);
+    }
+
+    // The two derived keys, recomputed from the coordinate and the sources.
+    const identity = {
+      taskId: effect.taskId,
+      revisionNumber: effect.revisionNumber,
+      attemptNumber: effect.attemptNumber,
+      segmentNumber: segment.segmentNumber,
+      operationOrdinal: effect.operationOrdinal,
+    };
+    const expectedId = effectIdV1(identity);
+    if (effect.effectId !== expectedId) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".effectId",
+          message:
+            "the effect id is the digest of its coordinate under the versioned prefix; " +
+            "this ledger computes " +
+            expectedId +
+            " and the event states " +
+            safeRowIdentifier(effect.effectId),
+        },
+      ]);
+    }
+    const expectedKey = effectIdempotencyKeyV1({
+      ...identity,
+      effectKind: effect.effectKind,
+      envelopeSha256: revision.envelope_sha256,
+    });
+    if (effect.idempotencyKey !== expectedKey) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".idempotencyKey",
+          message:
+            "the effect idempotency key is the digest of its kind, its coordinate and the " +
+            "revision's envelope; this ledger computes " +
+            expectedKey +
+            " and the event states " +
+            safeRowIdentifier(effect.idempotencyKey),
+        },
+      ]);
+    }
+
+    // §6.1 point 1, from the write side. A logical key that already belongs to
+    // an effect is not a second intention: the producer is supposed to have
+    // looked it up and reused what it found. Two refusals rather than one,
+    // because "the same work again" and "different work under one key" are
+    // different mistakes — the first is a missing lookup, the second is a
+    // CONFLICT and the producer must never resolve it by changing the key.
+    //
+    // The idempotency key is NOT compared. It carries the segment number and
+    // the operation ordinal, and the ordinal CAS above makes every second
+    // intention propose a new ordinal, so the key differs on every retry and
+    // comparing it would report the honest repetition as a CONFLICT. The
+    // envelope is not compared on its own either: it is in the preimage of
+    // `request_sha256`, and a logical key found here was computed over this
+    // attempt's invocation, which `ux_task_attempt_read_model__invocation_id`
+    // binds to one attempt and so to one revision — a comparison against
+    // `task_revision_read_model.envelope_sha256` could never come out unequal.
+    const held = this.#stmt(
+      "SELECT * FROM effect_read_model WHERE logical_operation_sha256 = ?",
+    ).get(effect.logicalOperationSha256) as EffectRow | undefined;
+    if (held !== undefined) {
+      const stored = effectRowToModel(held);
+      const differs =
+        stored.effectKind !== effect.effectKind ||
+        stored.requestContractVersion !== effect.requestContractVersion ||
+        stored.requestSha256 !== effect.requestSha256;
+      throw new LedgerValidationError([
+        {
+          path: "payload." + EFFECT_KEY + ".logicalOperationSha256",
+          message: differs
+            ? "CONFLICT: logical operation " +
+              effect.logicalOperationSha256 +
+              " is already effect " +
+              stored.effectId +
+              " with a different kind, request contract version or request digest (whose " +
+              "preimage carries the envelope); one logical key names one operation and a " +
+              "producer never changes the key to make a conflict into new work"
+            : "logical operation " +
+              effect.logicalOperationSha256 +
+              " is already effect " +
+              stored.effectId +
+              "; repeating the scope and step key returns that effect rather than " +
+              "intending another, and an uncertain outcome demands reconciliation",
+        },
+      ]);
+    }
+  }
+
+  /**
+   * A delivery's intention: the effect it serves, the segment it runs on, and
+   * the ordinal compare-and-set within the effect.
+   */
+  #assertDispatchIntention(
+    event: ControlPlaneEvent,
+    segment: ExecutionRouteSegmentReadModel,
+    revisionNumber: number,
+    attemptNumber: number,
+  ): void {
+    const dispatch = nextDispatchAttemptProjection(event, 0);
+    if (dispatch === null) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + DISPATCH_KEY,
+          message:
+            "a dispatch intention carries its id, the effect it delivers and its ordinal " +
+            "within that effect; this payload does not constitute one",
+        },
+      ]);
+    }
+
+    const held = this.#stmt(
+      "SELECT * FROM dispatch_attempt_read_model WHERE dispatch_attempt_id = ?",
+    ).get(dispatch.dispatchAttemptId) as DispatchAttemptRow | undefined;
+    if (held !== undefined) {
+      if (
+        canonicalDispatchBirth(dispatchAttemptRowToModel(held)) !==
+        canonicalDispatchBirth(dispatch)
+      ) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + DISPATCH_KEY + ".dispatchAttemptId",
+            message:
+              "delivery " +
+              safeRowIdentifier(dispatch.dispatchAttemptId) +
+              " is already recorded with different content, and a delivery is intended once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    const effectRow = this.#stmt("SELECT * FROM effect_read_model WHERE effect_id = ?").get(
+      dispatch.effectId,
+    ) as EffectRow | undefined;
+    if (effectRow === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + DISPATCH_KEY + ".effectId",
+          message:
+            "a delivery serves an effect, and effect " +
+            safeRowIdentifier(dispatch.effectId) +
+            " has not been intended",
+        },
+      ]);
+    }
+
+    // **The rule this whole packet exists for** (execution §6.1 `:315-317`).
+    // An uncertain exposure blocks resending, and nothing a caller can pass in
+    // lifts it — a green preflight at the destination is a statement about the
+    // destination, not about whether the earlier delivery landed. Reconciliation
+    // is the way out; another dispatch is not.
+    if (effectRow.outcome_status === "OUTCOME_UNKNOWN") {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + DISPATCH_KEY + ".effectId",
+          message:
+            "effect " +
+            effectRow.effect_id +
+            " ended OUTCOME_UNKNOWN, and an uncertain exposure blocks resending even where " +
+            "the destination reports itself clean; reconcile by handle or postcondition " +
+            "rather than dispatching again",
+        },
+      ]);
+    }
+
+    // The segment is this delivery's **effective** one and may differ from the
+    // effect's initial segment — that is what a handoff is. What it may not do
+    // is belong to another attempt, which §7 `:355` states and the check above
+    // has already established for the event's own coordinate.
+    if (
+      effectRow.task_id !== event.taskId ||
+      effectRow.revision_number !== revisionNumber ||
+      effectRow.attempt_number !== attemptNumber
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + DISPATCH_KEY + ".effectId",
+          message:
+            "effect " +
+            effectRow.effect_id +
+            " belongs to attempt " +
+            taskAttemptKey(
+              effectRow.task_id,
+              effectRow.revision_number,
+              effectRow.attempt_number,
+            ) +
+            " and this delivery runs on segment " +
+            safeRowIdentifier(segment.routeSegmentId) +
+            " of attempt " +
+            taskAttemptKey(event.taskId, revisionNumber, attemptNumber),
+        },
+      ]);
+    }
+
+    const highest = this.#stmt(
+      "SELECT MAX(attempt_ordinal) AS highest FROM dispatch_attempt_read_model WHERE effect_id = ?",
+    ).get(dispatch.effectId) as { readonly highest: number | null };
+    const expectedOrdinal = (highest.highest ?? 0) + 1;
+    if (dispatch.attemptOrdinal !== expectedOrdinal) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + DISPATCH_KEY + ".attemptOrdinal",
+          message:
+            "effect " +
+            effectRow.effect_id +
+            " assigns the delivery ordinal " +
+            String(expectedOrdinal) +
+            ", which is one past its highest, and this event proposes " +
+            String(dispatch.attemptOrdinal),
+        },
+      ]);
+    }
+  }
+
+  /**
+   * A delivery's resolution: the row it reports on, the move it makes, and the
+   * effect outcome it may carry.
+   *
+   * The transitions are `DISPATCH_STATE_TRANSITIONS`' and the five states are
+   * closed at five. An overdue `INFLIGHT` is not moved by anything here:
+   * `listOverdueDispatchAttempts` finds it and a human or a later packet
+   * reconciles it, which is what "habilita reconciliación, no reintento" means.
+   *
+   * A delivery is found by `dispatch_attempt_id`, which is a global key, so the
+   * row alone does not tie the resolution to anything the event says. The
+   * effect the delivery serves does: it carries the attempt that owns it, and
+   * a resolution recorded at any other coordinate is refused before a single
+   * column moves. `applyEventToSnapshot` holds the same anchor, so a rebuild
+   * cannot reproduce what this door refuses.
+   */
+  #assertDispatchOutcome(
+    event: ControlPlaneEvent,
+    revisionNumber: number,
+    attemptNumber: number,
+  ): void {
+    const outcome = dispatchOutcomeRecord(event, 0);
+    if (outcome === null) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY,
+          message:
+            "a dispatch resolution carries the delivery it reports on, one of the five " +
+            "states of execution §7, and a terminal instant if and only if that state is " +
+            "SETTLED or ABANDONED; this payload does not constitute one",
+        },
+      ]);
+    }
+
+    const row = this.#stmt(
+      "SELECT * FROM dispatch_attempt_read_model WHERE dispatch_attempt_id = ?",
+    ).get(outcome.dispatchAttemptId) as DispatchAttemptRow | undefined;
+    if (row === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY + ".dispatchAttemptId",
+          message:
+            "a resolution reports on a delivery that exists, and " +
+            safeRowIdentifier(outcome.dispatchAttemptId) +
+            " has not been intended",
+        },
+      ]);
+    }
+
+    const effectRow = this.#stmt("SELECT * FROM effect_read_model WHERE effect_id = ?").get(
+      row.effect_id,
+    ) as EffectRow | undefined;
+    if (effectRow === undefined) {
+      throw new LedgerIntegrityError([
+        "dispatch_attempt_read_model holds delivery " +
+          row.dispatch_attempt_id +
+          " whose effect row is missing",
+      ]);
+    }
+
+    // The resolution belongs to the attempt that owns the delivery's effect. A
+    // delivery is not a place another task, revision or attempt may report to.
+    if (
+      effectRow.task_id !== event.taskId ||
+      effectRow.revision_number !== revisionNumber ||
+      effectRow.attempt_number !== attemptNumber
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY + ".dispatchAttemptId",
+          message:
+            "delivery " +
+            row.dispatch_attempt_id +
+            " serves effect " +
+            effectRow.effect_id +
+            " of attempt " +
+            taskAttemptKey(
+              effectRow.task_id,
+              effectRow.revision_number,
+              effectRow.attempt_number,
+            ) +
+            " and this resolution is recorded at attempt " +
+            taskAttemptKey(event.taskId, revisionNumber, attemptNumber),
+        },
+      ]);
+    }
+
+    const current = row.dispatch_state as DispatchState;
+    if (current !== outcome.dispatchState && !dispatchTransitionAdmitted(current, outcome.dispatchState)) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY + ".dispatchState",
+          message:
+            "delivery " +
+            row.dispatch_attempt_id +
+            " is " +
+            current +
+            " and may move only to " +
+            (DISPATCH_STATE_TRANSITIONS[current].join(", ") || "nothing"),
+        },
+      ]);
+    }
+
+    if (outcome.effectOutcomeStatus === null) return;
+
+    if (
+      effectRow.outcome_status !== null &&
+      effectRow.outcome_status !== outcome.effectOutcomeStatus
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY + ".effectOutcomeStatus",
+          message:
+            "effect " +
+            effectRow.effect_id +
+            " already ended " +
+            effectRow.outcome_status +
+            ", and an outcome is recorded once rather than amended; this event says " +
+            outcome.effectOutcomeStatus,
+        },
+      ]);
+    }
+  }
+
   /** Incremental projection. Same rules as replay, applied to one event. */
   #projectEvent(event: ControlPlaneEvent, sequence: number): void {
     const currentTask = this.#stmt(
@@ -2974,6 +3903,22 @@ export class Ledger {
     // reason.
     const attempt = nextTaskAttemptProjection(event, sequence);
     if (attempt !== null) this.#insertTaskAttempt(attempt);
+
+    // The P-18/protocolo C cohort, parent-first for the attempt's reason: three
+    // foreign keys point each of them at the one above, and
+    // `applyEventToSnapshot` folds them in this order so a rebuild and this
+    // path cannot come to disagree about which events produce which rows.
+    const segment = nextExecutionRouteSegmentProjection(event, sequence);
+    if (segment !== null) this.#insertRouteSegment(segment);
+
+    const effect = nextEffectProjection(event, sequence);
+    if (effect !== null) this.#insertEffect(effect);
+
+    const dispatch = nextDispatchAttemptProjection(event, sequence);
+    if (dispatch !== null) this.#insertDispatchAttempt(dispatch);
+
+    const outcome = dispatchOutcomeRecord(event, sequence);
+    if (outcome !== null) this.#applyDispatchOutcome(outcome);
   }
 
   #upsertExecutionRoute(route: ExecutionRouteReadModel): void {
@@ -3165,6 +4110,241 @@ export class Ledger {
       attempt.outcome,
       attempt.sequence,
     );
+  }
+
+  /**
+   * Write one segment row, or refuse (P-18/C).
+   *
+   * Insert-only, and never `ON CONFLICT DO UPDATE`, on `#insertTaskAttempt`'s
+   * reasoning: a segment records the route one stretch of one attempt actually
+   * ran on, and a coordinate that could be overwritten would make "segment 2"
+   * the name of whichever event arrived last. An identical second arrival is an
+   * idempotent replay and writes nothing; a different one is refused.
+   *
+   * The door above has already refused a conflicting segment with a message
+   * that names the lineage at fault; this comparison is what makes the write
+   * safe on the **rebuild** path, where there is no door.
+   */
+  #insertRouteSegment(segment: ExecutionRouteSegmentReadModel): void {
+    const existing = this.#stmt(
+      "SELECT * FROM execution_route_segment_read_model WHERE route_segment_id = ?",
+    ).get(segment.routeSegmentId) as ExecutionRouteSegmentRow | undefined;
+
+    if (existing !== undefined) {
+      if (
+        canonicalSegment(executionRouteSegmentRowToModel(existing)) !== canonicalSegment(segment)
+      ) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + SEGMENT_KEY + ".routeSegmentId",
+            message:
+              "route segment " +
+              safeRowIdentifier(segment.routeSegmentId) +
+              " is already recorded with different content, and a segment is opened once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    this.#stmt(
+      "INSERT INTO execution_route_segment_read_model (" +
+        "route_segment_id, task_id, revision_number, attempt_number, segment_number, " +
+        "predecessor_segment_id, handoff_reason, provider, model, model_resolution_status, " +
+        "model_version_id, account_id, transport_kind, capability_policy_version, " +
+        "routing_assignment_id, reservation_id, escalated_from_attempt, escalation_reason, " +
+        "resolved_at, recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      segment.routeSegmentId,
+      segment.taskId,
+      segment.revisionNumber,
+      segment.attemptNumber,
+      segment.segmentNumber,
+      segment.predecessorSegmentId,
+      segment.handoffReason,
+      segment.provider,
+      segment.model,
+      segment.modelResolutionStatus,
+      segment.modelVersionId,
+      segment.accountId,
+      segment.transportKind,
+      segment.capabilityPolicyVersion,
+      segment.routingAssignmentId,
+      segment.reservationId,
+      segment.escalatedFromAttempt,
+      segment.escalationReason,
+      segment.resolvedAt,
+      segment.recordedAt,
+      segment.sequence,
+    );
+  }
+
+  /** Write one effect row, or refuse. Insert-only, on `#insertRouteSegment`'s terms. */
+  #insertEffect(effect: EffectReadModel): void {
+    const existing = this.#stmt("SELECT * FROM effect_read_model WHERE effect_id = ?").get(
+      effect.effectId,
+    ) as EffectRow | undefined;
+
+    if (existing !== undefined) {
+      if (canonicalEffect(effectRowToModel(existing)) !== canonicalEffect(effect)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + EFFECT_KEY + ".effectId",
+            message:
+              "effect " +
+              safeRowIdentifier(effect.effectId) +
+              " is already recorded with different content, and an effect is intended once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    this.#stmt(
+      "INSERT INTO effect_read_model (" +
+        "effect_id, task_id, revision_number, attempt_number, route_segment_id, " +
+        "operation_ordinal, effect_kind, semantic_scope_key, local_operation_key, " +
+        "logical_operation_sha256, request_contract_version, request_sha256, " +
+        "idempotency_key, intended_at, outcome_status, outcome_recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      effect.effectId,
+      effect.taskId,
+      effect.revisionNumber,
+      effect.attemptNumber,
+      effect.routeSegmentId,
+      effect.operationOrdinal,
+      effect.effectKind,
+      effect.semanticScopeKey,
+      effect.localOperationKey,
+      effect.logicalOperationSha256,
+      effect.requestContractVersion,
+      effect.requestSha256,
+      effect.idempotencyKey,
+      effect.intendedAt,
+      effect.outcomeStatus,
+      effect.outcomeRecordedAt,
+      effect.sequence,
+    );
+  }
+
+  /** Write one delivery row, or refuse. Insert-only; resolutions are separate. */
+  #insertDispatchAttempt(dispatch: DispatchAttemptReadModel): void {
+    const existing = this.#stmt(
+      "SELECT * FROM dispatch_attempt_read_model WHERE dispatch_attempt_id = ?",
+    ).get(dispatch.dispatchAttemptId) as DispatchAttemptRow | undefined;
+
+    if (existing !== undefined) {
+      // Only the birth fields are compared: a delivery that has since been
+      // resolved is the SAME delivery, and comparing its state would make a
+      // replay of the intention a conflict with the resolution that followed.
+      if (
+        canonicalDispatchBirth(dispatchAttemptRowToModel(existing)) !==
+        canonicalDispatchBirth(dispatch)
+      ) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + DISPATCH_KEY + ".dispatchAttemptId",
+            message:
+              "delivery " +
+              safeRowIdentifier(dispatch.dispatchAttemptId) +
+              " is already recorded with different content, and a delivery is intended once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    this.#stmt(
+      "INSERT INTO dispatch_attempt_read_model (" +
+        "dispatch_attempt_id, effect_id, route_segment_id, attempt_ordinal, " +
+        "provider_idempotency_key, external_handle, dispatch_state, requested_at, " +
+        "accepted_at, terminal_at, recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      dispatch.dispatchAttemptId,
+      dispatch.effectId,
+      dispatch.routeSegmentId,
+      dispatch.attemptOrdinal,
+      dispatch.providerIdempotencyKey,
+      dispatch.externalHandle,
+      dispatch.dispatchState,
+      dispatch.requestedAt,
+      dispatch.acceptedAt,
+      dispatch.terminalAt,
+      dispatch.recordedAt,
+      dispatch.sequence,
+    );
+  }
+
+  /**
+   * Apply one resolution to the delivery it reports on, and to its effect.
+   *
+   * The one fold in this class that updates a row it did not insert, because
+   * execution §7 describes a delivery that is born and then resolved. The
+   * refusals live in `#assertDispatchOutcome`; what is left here is the write,
+   * plus the two comparisons that make it safe on the **rebuild** path where
+   * there is no door.
+   */
+  #applyDispatchOutcome(outcome: ReturnType<typeof dispatchOutcomeRecord>): void {
+    if (outcome === null) return;
+
+    const row = this.#stmt(
+      "SELECT * FROM dispatch_attempt_read_model WHERE dispatch_attempt_id = ?",
+    ).get(outcome.dispatchAttemptId) as DispatchAttemptRow | undefined;
+    if (row === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY + ".dispatchAttemptId",
+          message:
+            "no delivery " +
+            safeRowIdentifier(outcome.dispatchAttemptId) +
+            " has been intended, and a resolution reports on a delivery that exists",
+        },
+      ]);
+    }
+
+    const current = dispatchAttemptRowToModel(row);
+    if (current.dispatchState !== outcome.dispatchState) {
+      if (!dispatchTransitionAdmitted(current.dispatchState, outcome.dispatchState)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + OUTCOME_KEY + ".dispatchState",
+            message:
+              "delivery " +
+              row.dispatch_attempt_id +
+              " is " +
+              current.dispatchState +
+              " and may move only to " +
+              (DISPATCH_STATE_TRANSITIONS[current.dispatchState].join(", ") || "nothing"),
+          },
+        ]);
+      }
+      const next = nextDispatchAttemptState(current, outcome);
+      this.#stmt(
+        "UPDATE dispatch_attempt_read_model SET " +
+          "dispatch_state = ?, terminal_at = ?, accepted_at = ?, external_handle = ?, " +
+          "provider_idempotency_key = ? WHERE dispatch_attempt_id = ?",
+      ).run(
+        next.dispatchState,
+        next.terminalAt,
+        next.acceptedAt,
+        next.externalHandle,
+        next.providerIdempotencyKey,
+        next.dispatchAttemptId,
+      );
+    }
+
+    if (outcome.effectOutcomeStatus === null) return;
+
+    // `WHERE outcome_status IS NULL` is the write's own guard, not decoration:
+    // an outcome is recorded once, and a second arrival saying the same thing
+    // is a replay that must leave the first instant alone.
+    this.#stmt(
+      "UPDATE effect_read_model SET outcome_status = ?, outcome_recorded_at = ? " +
+        "WHERE effect_id = ? AND outcome_status IS NULL",
+    ).run(outcome.effectOutcomeStatus, outcome.recordedAt, row.effect_id);
   }
 
   #upsertWorker(worker: WorkerReadModel): void {
@@ -4413,6 +5593,19 @@ export class Ledger {
       // already refused never reaches this loop at all, which is the half of
       // N-P18-8 that makes two rebuilds identical rather than merely equal.
       for (const attempt of snapshot.taskAttempts.values()) this.#insertTaskAttempt(attempt);
+      // The P-18/protocolo C cohort, parent-first. `DERIVED_TABLES` cleared all
+      // three above — children first, because the foreign keys point upward —
+      // so every insert here lands on an empty coordinate and no conflict
+      // branch can fire. The deliveries are written with the state the fold
+      // left them in rather than being reinserted `INTENDED` and replayed
+      // forward: the snapshot already applied every resolution, and a second
+      // pass through `#applyDispatchOutcome` would be a second authority on
+      // what the fold decided.
+      for (const segment of snapshot.routeSegments.values()) this.#insertRouteSegment(segment);
+      for (const effect of snapshot.effects.values()) this.#insertEffect(effect);
+      for (const dispatch of snapshot.dispatchAttempts.values()) {
+        this.#insertDispatchAttempt(dispatch);
+      }
 
       for (const initiative of initiativeSnapshot.initiatives.values()) {
         this.#upsertInitiative(initiative);
@@ -5711,7 +6904,91 @@ export class Ledger {
       }
     }
 
+    // The P-18/protocolo C cohort, compared as exact sets in both directions
+    // like every projection above. The three are compared by the same helper
+    // rather than by three copies of the same twenty lines, because the
+    // argument is identical for all of them and a substituted row — an effect
+    // whose outcome quietly became `SUCCEEDED`, a delivery that acquired a
+    // handle no event recorded — leaves every count unchanged.
+    this.#compareRowSet(
+      problems,
+      "execution_route_segment_read_model",
+      snapshot.routeSegments,
+      new Map(
+        (
+          this.#stmt(
+            "SELECT * FROM execution_route_segment_read_model",
+          ).all() as ExecutionRouteSegmentRow[]
+        ).map((row) => [row.route_segment_id, executionRouteSegmentRowToModel(row)]),
+      ),
+    );
+    this.#compareRowSet(
+      problems,
+      "effect_read_model",
+      snapshot.effects,
+      new Map(
+        (this.#stmt("SELECT * FROM effect_read_model").all() as EffectRow[]).map((row) => [
+          row.effect_id,
+          effectRowToModel(row),
+        ]),
+      ),
+    );
+    this.#compareRowSet(
+      problems,
+      "dispatch_attempt_read_model",
+      snapshot.dispatchAttempts,
+      new Map(
+        (
+          this.#stmt("SELECT * FROM dispatch_attempt_read_model").all() as DispatchAttemptRow[]
+        ).map((row) => [row.dispatch_attempt_id, dispatchAttemptRowToModel(row)]),
+      ),
+    );
+
     return problems;
+  }
+
+  /**
+   * One projection's stored rows against a replay's, as exact sets both ways.
+   *
+   * The shape every comparison above writes out by hand, factored out at the
+   * point three more of them would have been three more copies. Missing,
+   * disagreeing and unaccounted-for are three distinct reports because they are
+   * three distinct failures: a fold that stopped, a fold that drifted, and a
+   * row something outside the fold wrote.
+   */
+  #compareRowSet<T>(
+    problems: IntegrityProblem[],
+    table: string,
+    expected: ReadonlyMap<string, T>,
+    stored: ReadonlyMap<string, T>,
+  ): void {
+    for (const [key, value] of expected) {
+      const row = stored.get(key);
+      if (row === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: table + " is missing the row for " + key,
+          sequence: null,
+        });
+        continue;
+      }
+      if (canonicalJsonStringify(row) !== canonicalJsonStringify(value)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: table + " row for " + key + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const key of stored.keys()) {
+      if (!expected.has(key)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: table + " holds the row for " + key + " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -5810,6 +7087,157 @@ export class Ledger {
    * V2-B1c, or its `RUN_STARTED` payload did not satisfy the contract and the
    * projection refused it while the event itself still stands.
    */
+  /**
+   * The logical lookup of execution §6.1, point 1 — the read side.
+   *
+   * **This is the verb the packet's minimal negative is about.** A run that
+   * lost an acknowledgement and then handed off asks this before doing anything
+   * else, with the same semantic scope and the same step key it used the first
+   * time. If an effect already exists for that logical key it gets that effect's
+   * own `effectId` and `idempotencyKey` back — never a new pair — together with
+   * whether the situation demands reconciliation before anything else happens.
+   *
+   * The comparison is §6.1 `:303-304`'s and it covers all four fields, not just
+   * the request digest: a different kind, a different request contract version,
+   * a different envelope or a different request under one logical key is a
+   * **CONFLICT**, and it is raised rather than returned because there is no
+   * answer a caller could act on. A producer never resolves it by changing the
+   * key. The query carries no idempotency key and no envelope of its own: the
+   * envelope reaches the comparison through `requestSha256`, whose preimage
+   * carries it.
+   *
+   * `reconciliationRequired` answers "may this be acted on as it stands":
+   *
+   *  - a terminal outcome — `SUCCEEDED`, `FAILED`, `CANCELLED` — is reused, so
+   *    `false`;
+   *  - `OUTCOME_UNKNOWN` is an uncertain exposure and demands reconciliation,
+   *    whatever any destination reports about itself;
+   *  - no outcome yet, with a delivery still outstanding, is the same
+   *    uncertainty in its live form: something may be in flight;
+   *  - no outcome and no delivery at all is an intention that never left, and
+   *    nothing needs reconciling.
+   *
+   * Read-only, and it takes no lock: it answers a question about what is
+   * recorded. The refusals that keep the answer true live at the append door.
+   */
+  lookUpEffect(query: EffectLookupQuery): EffectLookup | null {
+    this.#assertOpen("lookUpEffect");
+
+    const attempt = this.#stmt(
+      "SELECT invocation_id FROM task_attempt_read_model " +
+        "WHERE task_id = ? AND revision_number = ? AND attempt_number = ?",
+    ).get(query.taskId, query.revisionNumber, query.attemptNumber) as
+      | { readonly invocation_id: string }
+      | undefined;
+    if (attempt === undefined) return null;
+
+    const digest = logicalOperationSha256({
+      invocationId: attempt.invocation_id,
+      semanticScopeKey: query.semanticScopeKey,
+      localOperationKey: query.localOperationKey,
+    });
+
+    const row = this.#stmt(
+      "SELECT * FROM effect_read_model WHERE logical_operation_sha256 = ?",
+    ).get(digest) as EffectRow | undefined;
+    if (row === undefined) return null;
+
+    const effect = effectRowToModel(row);
+    if (
+      effect.effectKind !== query.effectKind ||
+      effect.requestContractVersion !== query.requestContractVersion ||
+      effect.requestSha256 !== query.requestSha256
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "requestSha256",
+          message:
+            "CONFLICT: logical operation " +
+            digest +
+            " is already effect " +
+            effect.effectId +
+            " with a different kind, request contract version or request digest; one " +
+            "logical key names one operation",
+        },
+      ]);
+    }
+
+    const outstanding = this.#stmt(
+      "SELECT COUNT(*) AS n FROM dispatch_attempt_read_model " +
+        "WHERE effect_id = ? AND dispatch_state NOT IN ('SETTLED', 'ABANDONED')",
+    ).get(effect.effectId) as { readonly n: number };
+
+    return {
+      effect,
+      reconciliationRequired:
+        effect.outcomeStatus === "OUTCOME_UNKNOWN" ||
+        (effect.outcomeStatus === null && outstanding.n > 0),
+    };
+  }
+
+  /** Every delivery of one effect, in the order they were intended. */
+  listDispatchAttempts(effectId: string): readonly DispatchAttemptReadModel[] {
+    this.#assertOpen("listDispatchAttempts");
+    return (
+      this.#stmt(
+        "SELECT * FROM dispatch_attempt_read_model WHERE effect_id = ? ORDER BY attempt_ordinal",
+      ).all(effectId) as DispatchAttemptRow[]
+    ).map(dispatchAttemptRowToModel);
+  }
+
+  /** Every segment of one attempt, in order — the lineage a handoff leaves. */
+  listRouteSegments(
+    taskId: string,
+    revisionNumber: number,
+    attemptNumber: number,
+  ): readonly ExecutionRouteSegmentReadModel[] {
+    this.#assertOpen("listRouteSegments");
+    return (
+      this.#stmt(
+        "SELECT * FROM execution_route_segment_read_model " +
+          "WHERE task_id = ? AND revision_number = ? AND attempt_number = ? ORDER BY segment_number",
+      ).all(taskId, revisionNumber, attemptNumber) as ExecutionRouteSegmentRow[]
+    ).map(executionRouteSegmentRowToModel);
+  }
+
+  /**
+   * Deliveries that have been `INFLIGHT` since before a deadline.
+   *
+   * **The deadline is an argument, and this package reads no clock.** That is
+   * `listOverdue`'s precedent in the outbox store and it is the only honest
+   * shape: a ledger that decided for itself what "overdue" means would be
+   * deciding a policy, and the policy belongs to whoever is reconciling.
+   *
+   * And **finding a row here creates nothing**. Execution §7 `:360`: an overdue
+   * `INFLIGHT` enables reconciliation, not a retry. No verb of this ledger
+   * moves such a row, mints another delivery for its effect, or intends a
+   * second effect from it — reconciliation is by `external_handle` or by
+   * postcondition, never by dispatching again into an uncertain one.
+   */
+  listOverdueDispatchAttempts(deadline: string): readonly DispatchAttemptReadModel[] {
+    this.#assertOpen("listOverdueDispatchAttempts");
+    if (!isInstant(deadline)) {
+      throw new LedgerQueryError(
+        "listOverdueDispatchAttempts needs a deadline as an ISO-8601 instant in UTC with " +
+          "milliseconds, and this package reads no clock of its own",
+      );
+    }
+    return (
+      this.#stmt(
+        "SELECT * FROM dispatch_attempt_read_model " +
+          "WHERE dispatch_state = 'INFLIGHT' AND requested_at < ? ORDER BY requested_at",
+      ).all(deadline) as DispatchAttemptRow[]
+    ).map(dispatchAttemptRowToModel);
+  }
+
+  getEffect(effectId: string): EffectReadModel | null {
+    this.#assertOpen("getEffect");
+    const row = this.#stmt("SELECT * FROM effect_read_model WHERE effect_id = ?").get(effectId) as
+      | EffectRow
+      | undefined;
+    return row === undefined ? null : effectRowToModel(row);
+  }
+
   getExecutionRoute(taskId: string, attempt: number): ExecutionRouteReadModel | null {
     this.#assertOpen("getExecutionRoute");
     if (!Number.isInteger(attempt) || attempt < 1) {

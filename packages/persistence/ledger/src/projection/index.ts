@@ -9,8 +9,25 @@ import {
   type WorkerRole,
 } from "@acp/contracts";
 
+import {
+  EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
+  EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
+} from "@acp/contracts";
+
+import { canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import { LedgerValidationError } from "../errors/index.js";
+import {
+  DISPATCH_STATES,
+  DISPATCH_STATE_TRANSITIONS,
+  EFFECT_OUTCOME_STATUSES,
+  MODEL_RESOLUTION_STATUSES,
+} from "../types/index.js";
 import type {
+  DispatchAttemptReadModel,
+  DispatchState,
+  EffectOutcomeStatus,
+  EffectReadModel,
+  ExecutionRouteSegmentReadModel,
   ExecutionRouteReadModel,
   InitiativeReadModel,
   RegistryDocument,
@@ -110,6 +127,53 @@ export const LEGACY_ATTEMPT_NUMBER_KEY = "legacyAttemptNumber";
  * `ControlPlaneEventType`, so a typo would not compile.
  */
 export const TASK_ATTEMPT_OPENED: ControlPlaneEvent["type"] = "TASK_ATTEMPT_OPENED";
+
+/**
+ * The three event types of P-18/protocolo C, and the three payload keys their
+ * records travel under.
+ *
+ * The nested-object shape is `RECORDED_ROUTE_KEY`'s rather than the revision's
+ * flat key set, and the choice is deliberate: a segment carries nineteen
+ * fields, and nineteen top-level payload keys on an event that also has to
+ * carry the V2 coordinate would be a namespace nobody could keep apart. The two
+ * coordinate keys stay top level because they have to — `v2CoordinateInPayload`
+ * in the contract and migration 11's trigger both read them there.
+ *
+ * A segment record rides **both** intention types, which is migration 12's
+ * pattern one rung down: `TASK_ATTEMPT_OPENED` carries the revision record so
+ * the attempt's foreign key is satisfied by construction rather than by
+ * assuming the parent is already there. Here an effect's intention announces
+ * the initial segment and a dispatch's intention announces the effective one —
+ * which, after a handoff, is a segment that has never been seen before.
+ */
+export const EFFECT_INTENDED: ControlPlaneEvent["type"] = "EFFECT_INTENDED";
+export const DISPATCH_INTENDED: ControlPlaneEvent["type"] = "DISPATCH_INTENDED";
+export const DISPATCH_OUTCOME_RECORDED: ControlPlaneEvent["type"] = "DISPATCH_OUTCOME_RECORDED";
+
+export const SEGMENT_KEY = "segment";
+export const EFFECT_KEY = "effect";
+export const DISPATCH_KEY = "dispatch";
+export const OUTCOME_KEY = "outcome";
+
+/**
+ * The grammar of a `LocalKey` — execution §6.1 `:275`, exactly.
+ *
+ * ASCII, an alphanumeric first character, then up to 127 more of a set that
+ * admits `.`, `_` and `-` and nothing else. Comparison is **ordinal**: `"A"` and
+ * `"a"` are two different steps. It is not a path and it is not a glob, and no
+ * reader of it ever splits on a separator.
+ */
+export const LOCAL_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * The semantic scope P-18 admits, and the only one.
+ *
+ * Execution §6.1 `:277`: "P-18 usa semantic_scope_key=`run`". Composition may
+ * declare subscopes later, but it may never rename the same work nor make the
+ * identity depend on a profile, an account or a segment — which is why this is a
+ * closed set of one rather than a free `LocalKey` at this escalón.
+ */
+export const SEMANTIC_SCOPE_KEYS = ["run"] as const;
 
 /** A payload value that is a non-empty string, or null. */
 function payloadText(payload: ControlPlaneEvent["payload"], key: string): string | null {
@@ -587,6 +651,625 @@ function attemptClaims(attempt: TaskAttemptReadModel): readonly string[] {
   ];
 }
 
+// ---------------------------------------------------------------------------
+// P-18/protocolo C — the segment, the effect and its deliveries.
+// ---------------------------------------------------------------------------
+
+/** The nested record an event carries under one of the four keys, or null. */
+function payloadRecord(
+  payload: ControlPlaneEvent["payload"],
+  key: string,
+): Record<string, unknown> | null {
+  const value = payload[key];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+/** A non-empty string field of a nested record, or null. */
+function recordText(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** A safe integer field of a nested record at or above a floor, or null. */
+function recordCount(record: Record<string, unknown>, key: string, floor: number): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= floor ? value : null;
+}
+
+/** A member of a closed vocabulary, or null. Ordinal comparison, never a cast. */
+function recordWord<T extends string>(
+  record: Record<string, unknown>,
+  key: string,
+  vocabulary: readonly T[],
+): T | null {
+  const value = record[key];
+  if (typeof value !== "string") return null;
+  return (vocabulary as readonly string[]).includes(value) ? (value as T) : null;
+}
+
+/**
+ * The preimage of `effect_id`, version 1 — execution §6 `:238`, ADR 0076.
+ *
+ * The quintuple in its dictionary order, under a version prefix that carries
+ * its own trailing LF. `envelopeIdentityPreimageV1` is the shape being
+ * followed, and the split between the two packages is the same one: the rule is
+ * `@acp/contracts`' because a key's grammar is the contract's, and the
+ * computation is here because this package already owns exactly one
+ * canonicalizer and exactly one sha-256.
+ *
+ * Nothing resolved at dispatch time enters it, and neither does a clock. A
+ * replay and a handoff reproduce these bytes exactly, which is the property the
+ * whole lookup depends on.
+ */
+export function effectIdPreimageV1(coordinate: {
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly segmentNumber: number;
+  readonly operationOrdinal: number;
+}): string {
+  return (
+    EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1 +
+    canonicalJsonStringify([
+      coordinate.taskId,
+      coordinate.revisionNumber,
+      coordinate.attemptNumber,
+      coordinate.segmentNumber,
+      coordinate.operationOrdinal,
+    ])
+  );
+}
+
+/** The digest of the preimage above. Two steps, so a vector can pin each. */
+export function effectIdV1(coordinate: Parameters<typeof effectIdPreimageV1>[0]): string {
+  return sha256Hex(effectIdPreimageV1(coordinate));
+}
+
+/**
+ * The preimage of the effect's idempotency key, version 1 — §6 `:250`.
+ *
+ * The kind of operation, the same quintuple, and the envelope digest of the
+ * revision the work was asked for under. The envelope digest is **not** taken
+ * from the event: it is read off `task_revision_read_model`, so the key is
+ * bound to the revision this ledger recorded rather than to a claim the
+ * producer made about it.
+ */
+export function effectIdempotencyPreimageV1(input: {
+  readonly effectKind: string;
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly segmentNumber: number;
+  readonly operationOrdinal: number;
+  readonly envelopeSha256: string;
+}): string {
+  return (
+    EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1 +
+    canonicalJsonStringify([
+      input.effectKind,
+      input.taskId,
+      input.revisionNumber,
+      input.attemptNumber,
+      input.segmentNumber,
+      input.operationOrdinal,
+      input.envelopeSha256,
+    ])
+  );
+}
+
+/** The digest of the preimage above. */
+export function effectIdempotencyKeyV1(
+  input: Parameters<typeof effectIdempotencyPreimageV1>[0],
+): string {
+  return sha256Hex(effectIdempotencyPreimageV1(input));
+}
+
+/**
+ * The logical operation digest — execution §6.1 `:284-286`, verbatim.
+ *
+ * Unlike the two above, this preimage is **given by the specification** in its
+ * exact form: a canonical JSON array whose first two members are a literal tag
+ * and a literal `1`. It carries no prefix constant because the tag inside the
+ * array is already the versioned discriminator the dictionary chose, and
+ * inventing a second one would be a second encoding of a formula that is
+ * already written down.
+ *
+ * `invocationId` is read off `task_attempt_read_model`, never off the event:
+ * that is what makes this a digest "of the run" rather than of what a producer
+ * said the run was.
+ */
+export function logicalOperationSha256(input: {
+  readonly invocationId: string;
+  readonly semanticScopeKey: string;
+  readonly localOperationKey: string;
+}): string {
+  return sha256Hex(
+    canonicalJsonStringify([
+      "execution-logical-operation",
+      1,
+      input.invocationId,
+      input.semanticScopeKey,
+      input.localOperationKey,
+    ]),
+  );
+}
+
+/**
+ * The request consistency digest — execution §6.1 `:287-290`, verbatim.
+ *
+ * `neutralRequest` is the business payload of the operation, and it does not
+ * enter a ledger event: §6.1 `:296` forbids prompt bytes in the event outright.
+ * So this digest is **recorded** by the producer and conserved by the fold,
+ * unlike the three above, which are recomputed and refused on disagreement. The
+ * asymmetry is declared rather than hidden (ADR 0076): a digest whose preimage
+ * the ledger cannot see is a digest the ledger cannot verify, and saying so is
+ * better than a check that only appears to be one.
+ *
+ * Exported so a producer — and the suite — computes it the one way, and so the
+ * neutrality rule of §6.1 `:293-296` is testable: the same request under two
+ * segments or two accounts produces the same digest, because nothing resolved
+ * at dispatch time is a member.
+ */
+export function requestSha256(input: {
+  readonly effectKind: string;
+  readonly requestContractVersion: string;
+  readonly envelopeSha256: string;
+  readonly neutralRequest: unknown;
+}): string {
+  return sha256Hex(
+    canonicalJsonStringify([
+      "execution-logical-request",
+      1,
+      input.effectKind,
+      input.requestContractVersion,
+      input.envelopeSha256,
+      input.neutralRequest,
+    ]),
+  );
+}
+
+/**
+ * The route segment one event announces, if its payload carries one (§4).
+ *
+ * Gated on the **two intention types**, and then on a well-formed record under
+ * `segment`. The type gate is `nextTaskAttemptProjection`'s rather than the
+ * revision's, and for its argument: a segment states facts only the arrival
+ * that opens it is entitled to state — which provider, which alias, how far the
+ * model version could be resolved — so a fold keyed off presence alone would
+ * let any later event carrying the key restate, and so contradict, them. It
+ * also keeps a stray event from announcing a segment whose foreign key nothing
+ * in this build satisfies.
+ *
+ * Within that gate the shape rule is the revision's: an absent, malformed or
+ * incomplete record projects no row while the event still stands, because
+ * replay has to remain total. The append door is what refuses it by name,
+ * before it can ever be stored.
+ *
+ * The coordinate's task is the EVENT's `taskId` and the revision and attempt
+ * are the V2 coordinate's own top-level keys, so a payload cannot announce a
+ * segment of another task's attempt. `recordedAt` is the event's, never a clock.
+ *
+ * The two pairing rules of §4 are enforced here as well as by the base, because
+ * a rebuild has no door in front of it: a predecessor without a reason, or a
+ * `RESOLVED` without a version, produces no row rather than a row the base
+ * would then abort on with a constraint nobody can attribute to an event.
+ */
+export function nextExecutionRouteSegmentProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): ExecutionRouteSegmentReadModel | null {
+  if (event.type !== EFFECT_INTENDED && event.type !== DISPATCH_INTENDED) return null;
+
+  const record = payloadRecord(event.payload, SEGMENT_KEY);
+  if (record === null) return null;
+
+  const routeSegmentId = recordText(record, "routeSegmentId");
+  const revisionNumber = payloadCount(event.payload, REVISION_NUMBER_KEY);
+  const attemptNumber = payloadCount(event.payload, ATTEMPT_NUMBER_KEY);
+  const segmentNumber = recordCount(record, "segmentNumber", 1);
+  const provider = recordText(record, "provider");
+  const model = recordText(record, "model");
+  const modelResolutionStatus = recordWord(
+    record,
+    "modelResolutionStatus",
+    MODEL_RESOLUTION_STATUSES,
+  );
+  const transportKind = recordText(record, "transportKind");
+  const capabilityPolicyVersion = recordText(record, "capabilityPolicyVersion");
+
+  if (
+    routeSegmentId === null ||
+    revisionNumber === null ||
+    attemptNumber === null ||
+    segmentNumber === null ||
+    provider === null ||
+    model === null ||
+    modelResolutionStatus === null ||
+    transportKind === null ||
+    capabilityPolicyVersion === null
+  ) {
+    return null;
+  }
+
+  const predecessorSegmentId = recordText(record, "predecessorSegmentId");
+  const handoffReason = recordText(record, "handoffReason");
+  if ((predecessorSegmentId === null) !== (handoffReason === null)) return null;
+
+  const modelVersionId = recordText(record, "modelVersionId");
+  if ((modelResolutionStatus === "RESOLVED") !== (modelVersionId !== null)) return null;
+
+  const escalatedFromAttempt = recordCount(record, "escalatedFromAttempt", 1);
+  const escalationReason = recordText(record, "escalationReason");
+  if ((escalatedFromAttempt === null) !== (escalationReason === null)) return null;
+
+  return {
+    routeSegmentId,
+    taskId: event.taskId,
+    revisionNumber,
+    attemptNumber,
+    segmentNumber,
+    predecessorSegmentId,
+    handoffReason,
+    provider,
+    model,
+    modelResolutionStatus,
+    modelVersionId,
+    accountId: recordText(record, "accountId"),
+    transportKind,
+    capabilityPolicyVersion,
+    routingAssignmentId: recordText(record, "routingAssignmentId"),
+    reservationId: recordText(record, "reservationId"),
+    escalatedFromAttempt,
+    escalationReason,
+    resolvedAt: recordText(record, "resolvedAt"),
+    recordedAt: event.recordedAt,
+    sequence,
+  };
+}
+
+/**
+ * The effect one event intends, if it is an intention that carries one (§6).
+ *
+ * Keys off the **type**, for `nextTaskAttemptProjection`'s reason: the digests
+ * and the ordinal are facts only the arrival that opens the effect may state,
+ * and a fold keyed off the presence of keys would let a later event of the same
+ * coordinate restate — and therefore contradict — an identity that is supposed
+ * to be assigned once.
+ *
+ * `intendedAt` is the event's `occurredAt`: the instant the `BEGIN IMMEDIATE`
+ * that recorded the intention happened, which §6 `:251` asks for and which is
+ * deliberately **not** a member of any preimage on this row.
+ *
+ * `outcomeStatus` and `outcomeRecordedAt` are born `null` — absence of data,
+ * never `OUTCOME_UNKNOWN` (N-P18-6). Only `DISPATCH_OUTCOME_RECORDED` writes
+ * them, and only when an outcome actually happened.
+ */
+export function nextEffectProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): EffectReadModel | null {
+  if (event.type !== EFFECT_INTENDED) return null;
+
+  const record = payloadRecord(event.payload, EFFECT_KEY);
+  if (record === null) return null;
+
+  const revisionNumber = payloadCount(event.payload, REVISION_NUMBER_KEY);
+  const attemptNumber = payloadCount(event.payload, ATTEMPT_NUMBER_KEY);
+  const segment = nextExecutionRouteSegmentProjection(event, sequence);
+
+  const effectId = recordText(record, "effectId");
+  const operationOrdinal = recordCount(record, "operationOrdinal", 0);
+  const effectKind = recordText(record, "effectKind");
+  const semanticScopeKey = recordText(record, "semanticScopeKey");
+  const localOperationKey = recordText(record, "localOperationKey");
+  const logicalSha = recordText(record, "logicalOperationSha256");
+  const requestContractVersion = recordText(record, "requestContractVersion");
+  const requestDigest = recordText(record, "requestSha256");
+  const idempotencyKey = recordText(record, "idempotencyKey");
+
+  if (
+    revisionNumber === null ||
+    attemptNumber === null ||
+    segment === null ||
+    effectId === null ||
+    operationOrdinal === null ||
+    effectKind === null ||
+    semanticScopeKey === null ||
+    localOperationKey === null ||
+    logicalSha === null ||
+    requestContractVersion === null ||
+    requestDigest === null ||
+    idempotencyKey === null
+  ) {
+    return null;
+  }
+
+  return {
+    effectId,
+    taskId: event.taskId,
+    revisionNumber,
+    attemptNumber,
+    // The **initial** segment, and the one the effect keeps for ever. The same
+    // event announced it, which is what satisfies
+    // `fk_effect_read_model__execution_route_segment_read_model` by
+    // construction rather than by assuming the parent is already there.
+    routeSegmentId: segment.routeSegmentId,
+    operationOrdinal,
+    effectKind,
+    semanticScopeKey,
+    localOperationKey,
+    logicalOperationSha256: logicalSha,
+    requestContractVersion,
+    requestSha256: requestDigest,
+    idempotencyKey,
+    intendedAt: event.occurredAt,
+    outcomeStatus: null,
+    outcomeRecordedAt: null,
+    sequence,
+  };
+}
+
+/**
+ * The delivery one event intends, if it is an intention that carries one (§7).
+ *
+ * Born `INTENDED`, with `terminalAt` null and the three externally sourced
+ * fields null: recording that a delivery is about to happen is an append, and
+ * an append is not a dispatch (datos §11 `:566`).
+ *
+ * `routeSegmentId` is read off the segment record this same event carries — the
+ * **effective** segment of this delivery, which after a handoff is a segment
+ * nothing has seen before. It is deliberately not copied from the effect: §7
+ * `:356` says the fold must not demand equality with the effect's initial
+ * segment, and copying it would make a handoff invisible in the row that is
+ * supposed to record one.
+ */
+export function nextDispatchAttemptProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): DispatchAttemptReadModel | null {
+  if (event.type !== DISPATCH_INTENDED) return null;
+
+  const record = payloadRecord(event.payload, DISPATCH_KEY);
+  if (record === null) return null;
+
+  const segment = nextExecutionRouteSegmentProjection(event, sequence);
+  const dispatchAttemptId = recordText(record, "dispatchAttemptId");
+  const effectId = recordText(record, "effectId");
+  const attemptOrdinal = recordCount(record, "attemptOrdinal", 1);
+
+  if (
+    segment === null ||
+    dispatchAttemptId === null ||
+    effectId === null ||
+    attemptOrdinal === null
+  ) {
+    return null;
+  }
+
+  return {
+    dispatchAttemptId,
+    effectId,
+    routeSegmentId: segment.routeSegmentId,
+    attemptOrdinal,
+    providerIdempotencyKey: null,
+    externalHandle: null,
+    dispatchState: "INTENDED",
+    requestedAt: event.occurredAt,
+    acceptedAt: null,
+    terminalAt: null,
+    recordedAt: event.recordedAt,
+    sequence,
+  };
+}
+
+/**
+ * What a resolution event says happened to one delivery, and to its effect.
+ *
+ * The third type is the one that is easy to leave out of a three-type cut, and
+ * without it `dispatch_state` could never leave `INTENDED` and
+ * `effect_read_model.outcome_status` could never be written at all. "Outcome"
+ * here spans every move after the intention, because every one of them is a
+ * report about how that delivery went: claimed locally, accepted externally,
+ * settled, abandoned.
+ *
+ * `effectOutcomeStatus` is optional because not every move is also the effect's
+ * ending — `INTENDED → CLAIMED` says nothing about the operation's result. When
+ * it is present, the effect's pair is written from it and from this event's own
+ * instant.
+ */
+export interface DispatchOutcomeRecord {
+  readonly dispatchAttemptId: string;
+  readonly dispatchState: DispatchState;
+  readonly terminalAt: string | null;
+  readonly acceptedAt: string | null;
+  readonly externalHandle: string | null;
+  readonly providerIdempotencyKey: string | null;
+  readonly effectOutcomeStatus: EffectOutcomeStatus | null;
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
+/** The resolution one event records, if it is one that carries a record. */
+export function dispatchOutcomeRecord(
+  event: ControlPlaneEvent,
+  sequence: number,
+): DispatchOutcomeRecord | null {
+  if (event.type !== DISPATCH_OUTCOME_RECORDED) return null;
+
+  const record = payloadRecord(event.payload, OUTCOME_KEY);
+  if (record === null) return null;
+
+  const dispatchAttemptId = recordText(record, "dispatchAttemptId");
+  const dispatchState = recordWord(record, "dispatchState", DISPATCH_STATES);
+  if (dispatchAttemptId === null || dispatchState === null) return null;
+
+  // The terminal pair, held here as well as by the base: a rebuild has no door
+  // in front of it, and a row the base would abort on has to be refused at the
+  // event that caused it rather than as a constraint naming one row.
+  const terminalAt = recordText(record, "terminalAt");
+  const terminal = dispatchState === "SETTLED" || dispatchState === "ABANDONED";
+  if (terminal !== (terminalAt !== null)) return null;
+
+  return {
+    dispatchAttemptId,
+    dispatchState,
+    terminalAt,
+    acceptedAt: recordText(record, "acceptedAt"),
+    externalHandle: recordText(record, "externalHandle"),
+    providerIdempotencyKey: recordText(record, "providerIdempotencyKey"),
+    effectOutcomeStatus: recordWord(record, "effectOutcomeStatus", EFFECT_OUTCOME_STATUSES),
+    recordedAt: event.occurredAt,
+    sequence,
+  };
+}
+
+/**
+ * One delivery after a resolution has been applied to it.
+ *
+ * A reduce rather than an insert, which makes it the first fold in this file
+ * that is neither an upsert of a whole row nor insert-only. The three
+ * externally sourced fields are **sticky**: a handle once recorded is not
+ * unrecorded by a later move that does not mention it, because forgetting an
+ * external handle is losing the only thing reconciliation can be done by.
+ */
+export function nextDispatchAttemptState(
+  current: DispatchAttemptReadModel,
+  outcome: DispatchOutcomeRecord,
+): DispatchAttemptReadModel {
+  return {
+    ...current,
+    dispatchState: outcome.dispatchState,
+    terminalAt: outcome.terminalAt,
+    acceptedAt: outcome.acceptedAt ?? current.acceptedAt,
+    externalHandle: outcome.externalHandle ?? current.externalHandle,
+    providerIdempotencyKey: outcome.providerIdempotencyKey ?? current.providerIdempotencyKey,
+  };
+}
+
+/**
+ * Whether a delivery may move from one state to another (§7's five states).
+ *
+ * Forward only, and the two terminals move nowhere. A repetition of the state a
+ * row already holds is **not** admitted here: it is handled a rung up as a
+ * replay, so that this predicate answers exactly one question.
+ */
+export function dispatchTransitionAdmitted(from: DispatchState, to: DispatchState): boolean {
+  return DISPATCH_STATE_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * The two uniqueness claims a segment row makes, beside its primary key.
+ *
+ * One, in fact — `ux_execution_route_segment_read_model__attempt_segment` — but
+ * the shape is `attemptClaims`' because the argument is: the snapshot holds the
+ * base's unique indexes in memory so a **rebuild** refuses the histories the
+ * base would refuse, at the event that caused them.
+ */
+function segmentClaims(segment: ExecutionRouteSegmentReadModel): readonly string[] {
+  return [
+    "segment " +
+      segment.taskId +
+      " " +
+      String(segment.revisionNumber) +
+      " " +
+      String(segment.attemptNumber) +
+      " " +
+      String(segment.segmentNumber),
+  ];
+}
+
+/** The effect table's two unique indexes, in memory. */
+function effectClaims(effect: EffectReadModel): readonly string[] {
+  return [
+    "logical operation " + effect.logicalOperationSha256,
+    "idempotency key " + effect.idempotencyKey,
+  ];
+}
+
+/** The delivery table's one unique index, in memory. */
+function dispatchClaims(dispatch: DispatchAttemptReadModel): readonly string[] {
+  return ["delivery " + dispatch.effectId + " " + String(dispatch.attemptOrdinal)];
+}
+
+/**
+ * The comparable form of an effect row: what the effect *is*.
+ *
+ * Everything except the two birth attributes — `sequence` and `intendedAt` —
+ * and except the outcome pair, which no arrival of `EFFECT_INTENDED` may vary
+ * because every one of them writes `null`. `canonicalRevision`'s argument
+ * generalizes: an exact replay landing at a later position with its own instant
+ * is the SAME effect, and refusing it for the position alone would turn an
+ * idempotent retry into a conflict.
+ */
+export function canonicalEffect(effect: EffectReadModel): string {
+  return [
+    effect.taskId,
+    String(effect.revisionNumber),
+    String(effect.attemptNumber),
+    effect.routeSegmentId,
+    String(effect.operationOrdinal),
+    effect.effectKind,
+    effect.semanticScopeKey,
+    effect.localOperationKey,
+    effect.logicalOperationSha256,
+    effect.requestContractVersion,
+    effect.requestSha256,
+    effect.idempotencyKey,
+  ].join(" ");
+}
+
+/**
+ * The comparable form of a segment row, on `canonicalEffect`'s terms.
+ *
+ * Everything the segment *is*, and neither of the two birth attributes:
+ * `recordedAt` and `sequence` record the arrival that announced the segment
+ * rather than the segment, so an exact replay landing at a later position is
+ * the SAME segment. Spelled out field by field rather than produced by deleting
+ * two keys, because a field added to the row later should have to be classified
+ * here rather than swept into the comparison by default.
+ */
+export function canonicalSegment(segment: ExecutionRouteSegmentReadModel): string {
+  return canonicalJsonStringify({
+    routeSegmentId: segment.routeSegmentId,
+    taskId: segment.taskId,
+    revisionNumber: segment.revisionNumber,
+    attemptNumber: segment.attemptNumber,
+    segmentNumber: segment.segmentNumber,
+    predecessorSegmentId: segment.predecessorSegmentId,
+    handoffReason: segment.handoffReason,
+    provider: segment.provider,
+    model: segment.model,
+    modelResolutionStatus: segment.modelResolutionStatus,
+    modelVersionId: segment.modelVersionId,
+    accountId: segment.accountId,
+    transportKind: segment.transportKind,
+    capabilityPolicyVersion: segment.capabilityPolicyVersion,
+    routingAssignmentId: segment.routingAssignmentId,
+    reservationId: segment.reservationId,
+    escalatedFromAttempt: segment.escalatedFromAttempt,
+    escalationReason: segment.escalationReason,
+    resolvedAt: segment.resolvedAt,
+  });
+}
+
+/**
+ * The comparable form of a delivery's **birth**, on `canonicalEffect`'s terms.
+ *
+ * Only the fields an intention states. The state, the instants and the three
+ * externally sourced fields are outside, because a resolution event is supposed
+ * to move them: comparing them here would make every second arrival at one
+ * delivery a conflict, which is the opposite of what this table is for.
+ */
+export function canonicalDispatchBirth(dispatch: DispatchAttemptReadModel): string {
+  return [
+    dispatch.effectId,
+    dispatch.routeSegmentId,
+    String(dispatch.attemptOrdinal),
+    dispatch.requestedAt,
+  ].join(" ");
+}
+
 /**
  * In-memory projection of an entire event stream.
  *
@@ -609,6 +1292,24 @@ export interface ProjectionSnapshot {
    * the base's indexes refuse, at the event that caused them.
    */
   readonly taskAttemptClaims: Map<string, string>;
+  /**
+   * The P-18/protocolo C cohort, each keyed by its own primary key, and each
+   * with its table's unique indexes held beside it for `taskAttemptClaims`'
+   * reason.
+   *
+   * `effects` and `dispatchAttempts` are the two maps in this snapshot whose
+   * values are **replaced** as the fold advances rather than only inserted: a
+   * resolution event moves a delivery's state and may write an effect's
+   * outcome. Everything else here is insert-only, and the difference is a fact
+   * about the dictionary rather than a looseness — execution §6 and §7 each
+   * describe a row that is born and then resolved once.
+   */
+  readonly routeSegments: Map<string, ExecutionRouteSegmentReadModel>;
+  readonly routeSegmentClaims: Map<string, string>;
+  readonly effects: Map<string, EffectReadModel>;
+  readonly effectClaims: Map<string, string>;
+  readonly dispatchAttempts: Map<string, DispatchAttemptReadModel>;
+  readonly dispatchAttemptClaims: Map<string, string>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -620,6 +1321,12 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     taskRevisions: new Map<string, TaskRevisionReadModel>(),
     taskAttempts: new Map<string, TaskAttemptReadModel>(),
     taskAttemptClaims: new Map<string, string>(),
+    routeSegments: new Map<string, ExecutionRouteSegmentReadModel>(),
+    routeSegmentClaims: new Map<string, string>(),
+    effects: new Map<string, EffectReadModel>(),
+    effectClaims: new Map<string, string>(),
+    dispatchAttempts: new Map<string, DispatchAttemptReadModel>(),
+    dispatchAttemptClaims: new Map<string, string>(),
   };
 }
 
@@ -751,6 +1458,239 @@ export function applyEventToSnapshot(
       snapshot.taskAttempts.set(key, attempt);
     }
   }
+
+  // The P-18/protocolo C cohort, folded parent-first for the reason the attempt
+  // follows the revision: a foreign key points each of them at the one above,
+  // and a rebuild writes them in this order too.
+  //
+  // A segment is announced by both intention types, so it is folded outside the
+  // type check that guards the other two — an effect's intention announces the
+  // initial segment and a dispatch's announces the effective one, which after a
+  // handoff is a segment nothing has seen before.
+  const segment = nextExecutionRouteSegmentProjection(event, sequence);
+  if (segment !== null) {
+    const existing = snapshot.routeSegments.get(segment.routeSegmentId);
+    if (existing !== undefined) {
+      if (canonicalSegment(existing) !== canonicalSegment(segment)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + SEGMENT_KEY + ".routeSegmentId",
+            message:
+              "route segment " +
+              segment.routeSegmentId +
+              " is already recorded with different content, and a segment is opened once",
+          },
+        ]);
+      }
+    } else {
+      claimOrRefuse(
+        snapshot.routeSegmentClaims,
+        segmentClaims(segment),
+        segment.routeSegmentId,
+        "payload." + SEGMENT_KEY + ".segmentNumber",
+      );
+      snapshot.routeSegments.set(segment.routeSegmentId, segment);
+    }
+  }
+
+  const effect = nextEffectProjection(event, sequence);
+  if (effect !== null) {
+    const existing = snapshot.effects.get(effect.effectId);
+    if (existing !== undefined) {
+      if (canonicalEffect(existing) !== canonicalEffect(effect)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + EFFECT_KEY + ".effectId",
+            message:
+              "effect " +
+              effect.effectId +
+              " is already recorded with different content, and an effect is intended once",
+          },
+        ]);
+      }
+    } else {
+      claimOrRefuse(
+        snapshot.effectClaims,
+        effectClaims(effect),
+        effect.effectId,
+        "payload." + EFFECT_KEY + ".logicalOperationSha256",
+      );
+      snapshot.effects.set(effect.effectId, effect);
+    }
+  }
+
+  const dispatch = nextDispatchAttemptProjection(event, sequence);
+  if (dispatch !== null) {
+    const existing = snapshot.dispatchAttempts.get(dispatch.dispatchAttemptId);
+    if (existing !== undefined) {
+      if (canonicalDispatchBirth(existing) !== canonicalDispatchBirth(dispatch)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + DISPATCH_KEY + ".dispatchAttemptId",
+            message:
+              "delivery " +
+              dispatch.dispatchAttemptId +
+              " is already recorded with different content, and a delivery is intended once",
+          },
+        ]);
+      }
+    } else {
+      claimOrRefuse(
+        snapshot.dispatchAttemptClaims,
+        dispatchClaims(dispatch),
+        dispatch.dispatchAttemptId,
+        "payload." + DISPATCH_KEY + ".attemptOrdinal",
+      );
+      snapshot.dispatchAttempts.set(dispatch.dispatchAttemptId, dispatch);
+    }
+  }
+
+  // The resolution, last, because it reads rows the three folds above may have
+  // written in this same event. Unlike them it is a reduce: it replaces a
+  // delivery's row and may write an effect's outcome pair.
+  const outcome = dispatchOutcomeRecord(event, sequence);
+  if (outcome !== null) {
+    const current = snapshot.dispatchAttempts.get(outcome.dispatchAttemptId);
+    if (current === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY + ".dispatchAttemptId",
+          message:
+            "no delivery " +
+            outcome.dispatchAttemptId +
+            " has been intended, and a resolution reports on a delivery that exists",
+        },
+      ]);
+    }
+
+    // The anchor `#assertDispatchOutcome` holds at the door, held here too: a
+    // delivery is found by a global id, so the coordinate the event names has
+    // to be the one that owns the delivery's effect. Without it a rebuild would
+    // reproduce a resolution the door refuses, and `verifyIntegrity` could
+    // never tell the two apart.
+    const owner = snapshot.effects.get(current.effectId);
+    if (owner === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY + ".dispatchAttemptId",
+          message:
+            "delivery " +
+            outcome.dispatchAttemptId +
+            " names effect " +
+            current.effectId +
+            ", which no event accounts for",
+        },
+      ]);
+    }
+    const revisionNumber = payloadCount(event.payload, REVISION_NUMBER_KEY);
+    const attemptNumber = payloadCount(event.payload, ATTEMPT_NUMBER_KEY);
+    if (
+      owner.taskId !== event.taskId ||
+      owner.revisionNumber !== revisionNumber ||
+      owner.attemptNumber !== attemptNumber
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + OUTCOME_KEY + ".dispatchAttemptId",
+          message:
+            "delivery " +
+            outcome.dispatchAttemptId +
+            " serves effect " +
+            owner.effectId +
+            " of attempt " +
+            taskAttemptKey(owner.taskId, owner.revisionNumber, owner.attemptNumber) +
+            " and this resolution is recorded at " +
+            (revisionNumber === null || attemptNumber === null
+              ? "no coordinate at all"
+              : "attempt " + taskAttemptKey(event.taskId, revisionNumber, attemptNumber)),
+        },
+      ]);
+    }
+
+    // A repetition of the state the row already holds is a replay and writes
+    // nothing; anything else must be a lawful forward move. Together those two
+    // branches are what make a retried append safe without admitting a
+    // delivery that goes backwards out of a terminal state.
+    if (current.dispatchState !== outcome.dispatchState) {
+      if (!dispatchTransitionAdmitted(current.dispatchState, outcome.dispatchState)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + OUTCOME_KEY + ".dispatchState",
+            message:
+              "delivery " +
+              outcome.dispatchAttemptId +
+              " is " +
+              current.dispatchState +
+              " and may move only to " +
+              (DISPATCH_STATE_TRANSITIONS[current.dispatchState].join(", ") || "nothing"),
+          },
+        ]);
+      }
+      snapshot.dispatchAttempts.set(
+        outcome.dispatchAttemptId,
+        nextDispatchAttemptState(current, outcome),
+      );
+    }
+
+    if (outcome.effectOutcomeStatus !== null) {
+      if (
+        owner.outcomeStatus !== null &&
+        owner.outcomeStatus !== outcome.effectOutcomeStatus
+      ) {
+        // §6 `:252`: an outcome is recorded, not amended. A terminal one is
+        // reused and an uncertain one demands reconciliation — neither is
+        // overwritten by a second answer to the same question.
+        throw new LedgerValidationError([
+          {
+            path: "payload." + OUTCOME_KEY + ".effectOutcomeStatus",
+            message:
+              "effect " +
+              current.effectId +
+              " already ended " +
+              owner.outcomeStatus +
+              ", and an outcome is recorded once; this event says " +
+              outcome.effectOutcomeStatus,
+          },
+        ]);
+      }
+      if (owner.outcomeStatus === null) {
+        snapshot.effects.set(current.effectId, {
+          ...owner,
+          outcomeStatus: outcome.effectOutcomeStatus,
+          outcomeRecordedAt: outcome.recordedAt,
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Take a set of uniqueness claims for one row, or refuse naming the holder.
+ *
+ * Factored out of the three folds above rather than written three times: they
+ * make the same argument `attemptClaims` makes, and a refusal that could not
+ * say which claim collided would send an operator to a constraint name instead
+ * of to an event.
+ */
+function claimOrRefuse(
+  claims: Map<string, string>,
+  proposed: readonly string[],
+  owner: string,
+  path: string,
+): void {
+  for (const claim of proposed) {
+    const holder = claims.get(claim);
+    if (holder !== undefined) {
+      throw new LedgerValidationError([
+        {
+          path,
+          message:
+            owner + " claims " + claim + ", which " + holder + " already holds",
+        },
+      ]);
+    }
+  }
+  for (const claim of proposed) claims.set(claim, owner);
 }
 
 /**

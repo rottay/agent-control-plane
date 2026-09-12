@@ -232,10 +232,18 @@ export type {
   CausationRef,
   CausationStream,
   CoverageKind,
+  DispatchAttemptReadModel,
+  DispatchState,
   DocumentKind,
+  EffectLookup,
+  EffectLookupQuery,
+  EffectOutcomeStatus,
+  EffectReadModel,
   EventPage,
   EventQuery,
+  ExecutionEffectKind,
   ExecutionRouteReadModel,
+  ExecutionRouteSegmentReadModel,
   InitiativeAppendResult,
   InitiativeEventPage,
   InitiativeEventQuery,
@@ -244,6 +252,7 @@ export type {
   IntegrityProblem,
   IntegrityProblemKind,
   IntegrityReport,
+  ModelResolutionStatus,
   LedgerEventRecord,
   LedgerIdentity,
   LedgerPragmaStatus,
@@ -280,6 +289,42 @@ export type {
  * package imports it today.
  */
 export { DOCUMENT_KINDS } from "./types/index.js";
+
+/**
+ * The execution vocabularies of P-18/protocolo C.
+ *
+ * Four closed sets and one transition map, exported for the reason
+ * `DOCUMENT_KINDS` is: the producer is a later escalón and the suite is now,
+ * and a consumer that restated any of them would be a second authority on a
+ * question the dictionary answers once. Why the effect-kind catalogue lives
+ * here rather than in `@acp/contracts` is argued where it is declared — it is
+ * decision 45's class, not decision 42's.
+ */
+export {
+  DISPATCH_STATES,
+  DISPATCH_STATE_TRANSITIONS,
+  EFFECT_OUTCOME_STATUSES,
+  EXECUTION_EFFECT_KINDS,
+  EXECUTION_REQUEST_CONTRACT_VERSIONS,
+  MODEL_RESOLUTION_STATUSES,
+} from "./types/index.js";
+
+/**
+ * The identity functions of execution §6 and §6.1 (P-18/protocolo C).
+ *
+ * The two derived keys and the two digests of the dictionary, exported so the
+ * producer escalón and the suite compute them the one way — the split
+ * `envelopeSha256` already established, with the grammar in `@acp/contracts`
+ * and the one canonicalizer and the one sha-256 here.
+ */
+export {
+  effectIdPreimageV1,
+  effectIdV1,
+  effectIdempotencyKeyV1,
+  effectIdempotencyPreimageV1,
+  logicalOperationSha256,
+  requestSha256,
+} from "./projection/index.js";
 
 export type {
   AccountActionAppendResult,

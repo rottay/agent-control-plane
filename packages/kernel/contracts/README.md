@@ -66,10 +66,22 @@ this table against the barrel.
   current. The two are separate because a `z.literal` answers both questions
   with one value and is therefore symmetric: moving it would make every record
   already written under the previous value unreadable, which is not what a
-  version bump should mean. Today the set holds exactly one member and the
-  distinction is inert by construction. ADR 0072 records what the escalón that
-  actually moves `CONTRACT_VERSION` owes — chiefly that admission must pin the
-  current version separately from the reader's set.
+  version bump should mean. **The set holds two members from P-18/protocolo C**,
+  which is the escalón that moved `CONTRACT_VERSION` to `"2.3.0"`; `"2.2.0"`
+  stays in it for ever, because every event any earlier build recorded carries
+  it. ADR 0072 recorded what that escalón owed, and ADR 0076 pays it.
+- **Only the version in force is emitted.** The other half of the pair above,
+  and the debt ADR 0072 named. `AdmittedContractVersion` is `z.literal` of
+  `CONTRACT_VERSION`, and it governs the three shapes that are instruments of
+  **new work** — `TaskEnvelope`, `WorkerSlot`, `CommitAuthorizationReceipt` —
+  plus the ledger's append door for a genuinely new insertion. A set that is
+  right for reading history would be wrong there: it would let a producer choose
+  which of two versions to stamp, and a producer that can choose is a producer
+  whose output nobody can predict. `ControlPlaneEvent` deliberately keeps
+  `ContractVersion`, because that schema is what the ledger re-parses over every
+  stored row; the ledger separates issuing from reading by *when* instead, so an
+  exact replay of an already recorded event is exempt while a new insertion is
+  not.
 - **One key per fact.** An event's `idempotencyKey` has exactly two lawful
   forms, and which one applies is not the producer's choice: a payload carrying
   a complete V2 coordinate (`revisionNumber` and `attemptNumber`) must use

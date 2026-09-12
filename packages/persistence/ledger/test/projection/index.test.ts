@@ -1,5 +1,9 @@
+import { createHash } from "node:crypto";
+
 import {
   CONTRACT_VERSION,
+  EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
+  EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
   INITIATIVE_EVENT_TYPES,
   buildIdempotencyKey,
   buildV2IdempotencyKey,
@@ -12,6 +16,17 @@ import {
   canonicalAttempt,
   canonicalRevision,
   createProjectionSnapshot,
+  dispatchOutcomeRecord,
+  dispatchTransitionAdmitted,
+  effectIdPreimageV1,
+  effectIdV1,
+  effectIdempotencyKeyV1,
+  effectIdempotencyPreimageV1,
+  logicalOperationSha256,
+  nextDispatchAttemptProjection,
+  nextEffectProjection,
+  nextExecutionRouteSegmentProjection,
+  requestSha256,
   nextExecutionRouteProjection,
   nextRoutingAssignmentFromInitiative,
   nextRoutingAssignmentProjection,
@@ -22,6 +37,7 @@ import {
   taskAttemptKey,
 } from "../../src/projection/index.js";
 import { LedgerValidationError } from "../../src/errors/index.js";
+import { DISPATCH_STATES } from "../../src/types/index.js";
 import type { RegistryDocument, TaskReadModel } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 
@@ -1029,5 +1045,590 @@ describe("the attempt fold reads an opening, or reads nothing", () => {
     expect([...snapshot.taskAttempts.values()].map((row) => row.legacyAttemptNumber)).toEqual([
       4, 5,
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo C — the four identity functions, and the three new folds
+//
+// The digests are asserted as ENCODINGS, not merely as self-consistent
+// functions, for `envelope-identity`'s reason: an identity computed one way
+// today and another way tomorrow identifies nothing, and a careless encoder
+// round-trips perfectly while being wrong about the prefix and the field order.
+// ---------------------------------------------------------------------------
+
+const EFFECT_TASK = "8c8c8c8c-8c8c-4c8c-8c8c-8c8c8c8c8c01";
+const EFFECT_ENVELOPE = "e".repeat(64);
+
+/** One event of a given type, with a payload, in the V2 form these folds need. */
+function executionEvent(
+  type: ControlPlaneEvent["type"],
+  payload: Record<string, unknown>,
+  overrides: Partial<ControlPlaneEvent> = {},
+): ControlPlaneEvent {
+  const transitionId = "step-effect";
+  const revisionNumber = payload["revisionNumber"];
+  const attemptNumber = payload["attemptNumber"];
+  const v2 = typeof revisionNumber === "number" && typeof attemptNumber === "number";
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: "00000001-0000-4000-8000-000000000000",
+    taskId: EFFECT_TASK,
+    attempt: 1,
+    transitionId,
+    idempotencyKey: v2
+      ? buildV2IdempotencyKey({
+          stream: "control_plane_events",
+          taskId: EFFECT_TASK,
+          revisionNumber,
+          attemptNumber,
+          transitionId,
+        })
+      : buildIdempotencyKey({ taskId: EFFECT_TASK, attempt: 1, transitionId }),
+    type,
+    fromState: "DISCOVERED",
+    toState: "DISCOVERED",
+    emittedBy: EMITTED_BY,
+    occurredAt: "2026-09-12T09:00:00.000Z",
+    recordedAt: "2026-09-12T09:00:01.000Z",
+    correlationId: null,
+    causationId: null,
+    payload,
+    ...overrides,
+  } as ControlPlaneEvent;
+}
+
+/** A complete, lawful segment record. */
+function segment(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    routeSegmentId: "seg-1",
+    segmentNumber: 1,
+    provider: "anthropic",
+    model: "claude-opus-5",
+    modelResolutionStatus: "RESOLVED",
+    modelVersionId: "claude-opus-5-20260101",
+    accountId: "acct-1",
+    transportKind: "cli",
+    capabilityPolicyVersion: "policy-1",
+    ...overrides,
+  };
+}
+
+describe("the effect's identity is one encoding, frozen (execution §6, ADR 0076)", () => {
+  const coordinate = {
+    taskId: EFFECT_TASK,
+    revisionNumber: 2,
+    attemptNumber: 3,
+    segmentNumber: 4,
+    operationOrdinal: 5,
+  } as const;
+
+  it("carries its version prefix, with the LF inside it and no separator after", () => {
+    // `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1`'s rule, applied to both prefixes.
+    // One LF, and it belongs to the prefix: a formula that added a second would
+    // be a different byte string and every vector below would move.
+    for (const prefix of [
+      EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
+      EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
+    ]) {
+      expect(prefix).toMatch(/^acp\/[a-z-]+\/v1\n$/);
+      const bytes = Buffer.from(prefix, "utf8");
+      expect(bytes[bytes.length - 1]).toBe(0x0a);
+      expect(bytes.filter((byte) => byte === 0x0a)).toHaveLength(1);
+    }
+    expect(EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1).toBe("acp/execution-effect/v1\n");
+    expect(EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1).toBe(
+      "acp/execution-effect-idempotency/v1\n",
+    );
+
+    const preimage = effectIdPreimageV1(coordinate);
+    expect(preimage.startsWith(EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1)).toBe(true);
+    // The first byte after the LF is `[`, the start of the canonical array —
+    // which is what "no separator between the two" means in bytes.
+    expect(preimage.charAt(EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1.length)).toBe("[");
+  });
+
+  it("puts exactly the quintuple in the preimage, in the dictionary's order", () => {
+    expect(effectIdPreimageV1(coordinate)).toBe(
+      EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1 +
+        JSON.stringify([EFFECT_TASK, 2, 3, 4, 5]),
+    );
+    expect(effectIdempotencyPreimageV1({ ...coordinate, effectKind: "k", envelopeSha256: EFFECT_ENVELOPE })).toBe(
+      EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1 +
+        JSON.stringify(["k", EFFECT_TASK, 2, 3, 4, 5, EFFECT_ENVELOPE]),
+    );
+
+    // Every member moves the digest. Written as a loop over the coordinate's
+    // own keys rather than as five assertions, so a member added later is
+    // covered the day it is added.
+    const baseline = effectIdV1(coordinate);
+    for (const key of ["revisionNumber", "attemptNumber", "segmentNumber", "operationOrdinal"] as const) {
+      expect(effectIdV1({ ...coordinate, [key]: coordinate[key] + 1 }), key).not.toBe(baseline);
+    }
+    expect(effectIdV1({ ...coordinate, taskId: EFFECT_TASK.replace("01", "02") })).not.toBe(baseline);
+
+    // And the clock is NOT a member, which is what makes a replay reproduce
+    // the bytes (datos §6.3).
+    expect(effectIdV1(coordinate)).toBe(baseline);
+  });
+
+  it("is sha-256 of the preimage and of nothing else", () => {
+    expect(effectIdV1(coordinate)).toBe(
+      createHash("sha256").update(effectIdPreimageV1(coordinate), "utf8").digest("hex"),
+    );
+    const key = { ...coordinate, effectKind: "model_execution", envelopeSha256: EFFECT_ENVELOPE };
+    expect(effectIdempotencyKeyV1(key)).toBe(
+      createHash("sha256").update(effectIdempotencyPreimageV1(key), "utf8").digest("hex"),
+    );
+  });
+
+  it("computes §6.1's two digests exactly as the dictionary writes them", () => {
+    // These two are not prefixed: their preimages are given verbatim by
+    // execution §6.1 `:284-290`, with the versioned tag inside the array. A
+    // second discriminator would be a second encoding of a written formula.
+    expect(
+      logicalOperationSha256({
+        invocationId: "inv-1",
+        semanticScopeKey: "run",
+        localOperationKey: "compose",
+      }),
+    ).toBe(
+      createHash("sha256")
+        .update(
+          JSON.stringify(["execution-logical-operation", 1, "inv-1", "run", "compose"]),
+          "utf8",
+        )
+        .digest("hex"),
+    );
+
+    expect(
+      requestSha256({
+        effectKind: "model_execution",
+        requestContractVersion: "1",
+        envelopeSha256: EFFECT_ENVELOPE,
+        neutralRequest: { b: 2, a: 1 },
+      }),
+    ).toBe(
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            "execution-logical-request",
+            1,
+            "model_execution",
+            "1",
+            EFFECT_ENVELOPE,
+            { a: 1, b: 2 },
+          ]),
+          "utf8",
+        )
+        .digest("hex"),
+    );
+
+    // The request is canonicalized, so two spellings of one request are one
+    // digest — which is what makes "the same work again" decidable at all.
+    expect(
+      requestSha256({
+        effectKind: "model_execution",
+        requestContractVersion: "1",
+        envelopeSha256: EFFECT_ENVELOPE,
+        neutralRequest: { a: 1, b: 2 },
+      }),
+    ).toBe(
+      requestSha256({
+        effectKind: "model_execution",
+        requestContractVersion: "1",
+        envelopeSha256: EFFECT_ENVELOPE,
+        neutralRequest: { b: 2, a: 1 },
+      }),
+    );
+  });
+
+  it("pinned vectors: two keys, written out", () => {
+    // Literals, not derivations. The only test here that fails when the
+    // encoding changes while staying internally consistent.
+    expect(effectIdV1(coordinate)).toBe(
+      "34dc237e768abad1ac6a6500af9b4152c1d6d924a84cbcf8cafcb89c2c560419",
+    );
+    expect(
+      effectIdempotencyKeyV1({
+        ...coordinate,
+        effectKind: "model_execution",
+        envelopeSha256: EFFECT_ENVELOPE,
+      }),
+    ).toBe("780301cc3c50533fdd54c892fde90b01632660c3a51a728b348ded6ecb436d6f");
+  });
+});
+
+describe("the three P-18/protocolo C folds are gated and total (execution §4, §6, §7)", () => {
+  it("projects a segment only from the two intention types", () => {
+    const payload = { revisionNumber: 1, attemptNumber: 1, segment: segment() };
+    expect(nextExecutionRouteSegmentProjection(executionEvent("EFFECT_INTENDED", payload), 1))
+      .not.toBeNull();
+    expect(nextExecutionRouteSegmentProjection(executionEvent("DISPATCH_INTENDED", payload), 1))
+      .not.toBeNull();
+
+    // A stray event carrying the key announces nothing. The type gate is the
+    // attempt opening's, and it is what keeps an unrelated arrival from
+    // claiming a route the run never took.
+    for (const type of ["TASK_DISCOVERED", "TOOL_CALL_RECORDED", "DISPATCH_OUTCOME_RECORDED"] as const) {
+      expect(
+        nextExecutionRouteSegmentProjection(executionEvent(type, payload), 1),
+        type,
+      ).toBeNull();
+    }
+  });
+
+  it("projects no segment from an incomplete or self-contradicting record", () => {
+    const wrap = (record: Record<string, unknown> | undefined): ControlPlaneEvent =>
+      executionEvent("EFFECT_INTENDED", {
+        revisionNumber: 1,
+        attemptNumber: 1,
+        ...(record === undefined ? {} : { segment: record }),
+      });
+
+    // Absent, and not an object.
+    expect(nextExecutionRouteSegmentProjection(wrap(undefined), 1)).toBeNull();
+    expect(
+      nextExecutionRouteSegmentProjection(
+        executionEvent("EFFECT_INTENDED", { revisionNumber: 1, attemptNumber: 1, segment: [] }),
+        1,
+      ),
+    ).toBeNull();
+
+    // Missing one required field at a time.
+    for (const key of [
+      "routeSegmentId",
+      "segmentNumber",
+      "provider",
+      "model",
+      "modelResolutionStatus",
+      "transportKind",
+      "capabilityPolicyVersion",
+    ]) {
+      const record = Object.fromEntries(
+        Object.entries(segment()).filter(([name]) => name !== key),
+      );
+      expect(nextExecutionRouteSegmentProjection(wrap(record), 1), key).toBeNull();
+    }
+
+    // And each pairing rule of §4, in both directions.
+    expect(
+      nextExecutionRouteSegmentProjection(wrap(segment({ predecessorSegmentId: "seg-0" })), 1),
+    ).toBeNull();
+    expect(
+      nextExecutionRouteSegmentProjection(wrap(segment({ handoffReason: "QUOTA" })), 1),
+    ).toBeNull();
+    expect(
+      nextExecutionRouteSegmentProjection(
+        wrap(segment({ modelResolutionStatus: "UNKNOWN" })),
+        1,
+      ),
+    ).toBeNull();
+    expect(
+      nextExecutionRouteSegmentProjection(
+        wrap(segment({ modelResolutionStatus: "NOT_OBSERVABLE", modelVersionId: undefined })),
+        1,
+      ),
+    ).not.toBeNull();
+    expect(
+      nextExecutionRouteSegmentProjection(wrap(segment({ escalationReason: "TIMEOUT" })), 1),
+    ).toBeNull();
+
+    // A vocabulary word outside the closed set is not a status.
+    expect(
+      nextExecutionRouteSegmentProjection(
+        wrap(segment({ modelResolutionStatus: "PROBABLY" })),
+        1,
+      ),
+    ).toBeNull();
+  });
+
+  it("takes the coordinate from the event and the instants from the event", () => {
+    const row = nextExecutionRouteSegmentProjection(
+      executionEvent("EFFECT_INTENDED", {
+        revisionNumber: 2,
+        attemptNumber: 3,
+        segment: segment({ segmentNumber: 2, predecessorSegmentId: "seg-1", handoffReason: "Q" }),
+      }),
+      11,
+    );
+    // A payload cannot announce another task's segment: the task is the
+    // EVENT's, exactly as the revision record's is.
+    expect(row?.taskId).toBe(EFFECT_TASK);
+    expect(row?.revisionNumber).toBe(2);
+    expect(row?.attemptNumber).toBe(3);
+    expect(row?.recordedAt).toBe("2026-09-12T09:00:01.000Z");
+    expect(row?.sequence).toBe(11);
+    // The four columns with no producer in this build are `null`, declared
+    // rather than accidental.
+    expect(row?.routingAssignmentId).toBeNull();
+    expect(row?.reservationId).toBeNull();
+    expect(row?.escalatedFromAttempt).toBeNull();
+    expect(row?.escalationReason).toBeNull();
+  });
+
+  it("projects an effect only from its own type, and a delivery only from its own", () => {
+    const effectPayload = {
+      revisionNumber: 1,
+      attemptNumber: 1,
+      segment: segment(),
+      effect: {
+        effectId: "a".repeat(64),
+        operationOrdinal: 0,
+        effectKind: "model_execution",
+        semanticScopeKey: "run",
+        localOperationKey: "compose",
+        logicalOperationSha256: "b".repeat(64),
+        requestContractVersion: "1",
+        requestSha256: "c".repeat(64),
+        idempotencyKey: "d".repeat(64),
+      },
+    };
+    const effect = nextEffectProjection(executionEvent("EFFECT_INTENDED", effectPayload), 4);
+    expect(effect?.effectId).toBe("a".repeat(64));
+    // Born on the segment this same event announced, and born without an
+    // outcome: absence of data, never `OUTCOME_UNKNOWN` (N-P18-6).
+    expect(effect?.routeSegmentId).toBe("seg-1");
+    expect(effect?.outcomeStatus).toBeNull();
+    expect(effect?.outcomeRecordedAt).toBeNull();
+    // `intendedAt` is the instant of the transaction that recorded the
+    // intention (§6 `:251`) — the event's `occurredAt`, never a clock read.
+    expect(effect?.intendedAt).toBe("2026-09-12T09:00:00.000Z");
+    expect(nextEffectProjection(executionEvent("DISPATCH_INTENDED", effectPayload), 4)).toBeNull();
+
+    // An effect whose event carries no well-formed segment projects no row:
+    // there would be nothing for its foreign key to name.
+    const orphan = { ...effectPayload, segment: segment({ provider: undefined }) };
+    expect(nextEffectProjection(executionEvent("EFFECT_INTENDED", orphan), 4)).toBeNull();
+
+    const dispatchPayload = {
+      revisionNumber: 1,
+      attemptNumber: 1,
+      segment: segment(),
+      dispatch: { dispatchAttemptId: "dsp-1", effectId: "a".repeat(64), attemptOrdinal: 1 },
+    };
+    const dispatch = nextDispatchAttemptProjection(
+      executionEvent("DISPATCH_INTENDED", dispatchPayload),
+      6,
+    );
+    // Born INTENDED, with the three externally sourced fields null: recording
+    // that a delivery is about to happen is an append, not a dispatch.
+    expect(dispatch?.dispatchState).toBe("INTENDED");
+    expect(dispatch?.acceptedAt).toBeNull();
+    expect(dispatch?.externalHandle).toBeNull();
+    expect(dispatch?.providerIdempotencyKey).toBeNull();
+    expect(dispatch?.terminalAt).toBeNull();
+    expect(
+      nextDispatchAttemptProjection(executionEvent("EFFECT_INTENDED", dispatchPayload), 6),
+    ).toBeNull();
+  });
+
+  it("reads a resolution only when the terminal pair agrees", () => {
+    const wrap = (record: Record<string, unknown>): ControlPlaneEvent =>
+      executionEvent("DISPATCH_OUTCOME_RECORDED", {
+        revisionNumber: 1,
+        attemptNumber: 1,
+        outcome: record,
+      });
+
+    expect(
+      dispatchOutcomeRecord(wrap({ dispatchAttemptId: "dsp-1", dispatchState: "CLAIMED" }), 1)
+        ?.dispatchState,
+    ).toBe("CLAIMED");
+
+    // A terminal state needs its instant, and a non-terminal state may not
+    // carry one. Both halves, because half a fact is the failure the pair
+    // exists to prevent.
+    expect(
+      dispatchOutcomeRecord(wrap({ dispatchAttemptId: "dsp-1", dispatchState: "SETTLED" }), 1),
+    ).toBeNull();
+    expect(
+      dispatchOutcomeRecord(
+        wrap({ dispatchAttemptId: "dsp-1", dispatchState: "CLAIMED", terminalAt: "2026-09-12T09:00:00.000Z" }),
+        1,
+      ),
+    ).toBeNull();
+
+    // `RECONCILING` is not one of the five, so it is not a state at all here.
+    expect(
+      dispatchOutcomeRecord(wrap({ dispatchAttemptId: "dsp-1", dispatchState: "RECONCILING" }), 1),
+    ).toBeNull();
+  });
+
+  it("admits every forward move of §7 and no other", () => {
+    // The five states, as a matrix. Written as the full cross product rather
+    // than as a handful of cases, so a transition added by mistake fails here.
+    const forward: Record<string, readonly string[]> = {
+      INTENDED: ["CLAIMED", "INFLIGHT", "SETTLED", "ABANDONED"],
+      CLAIMED: ["INFLIGHT", "SETTLED", "ABANDONED"],
+      INFLIGHT: ["SETTLED", "ABANDONED"],
+      SETTLED: [],
+      ABANDONED: [],
+    };
+    for (const from of DISPATCH_STATES) {
+      for (const to of DISPATCH_STATES) {
+        expect(dispatchTransitionAdmitted(from, to), from + " -> " + to).toBe(
+          (forward[from] ?? []).includes(to),
+        );
+      }
+    }
+    // Including the diagonal: a repetition is not a move, and is handled a rung
+    // up as a replay so this predicate answers exactly one question.
+    for (const state of DISPATCH_STATES) {
+      expect(dispatchTransitionAdmitted(state, state), state).toBe(false);
+    }
+  });
+
+  it("folds the cohort into the snapshot, refusing what the base would refuse", () => {
+    const snapshot = createProjectionSnapshot();
+    const effectPayload = {
+      revisionNumber: 1,
+      attemptNumber: 1,
+      segment: segment(),
+      effect: {
+        effectId: "a".repeat(64),
+        operationOrdinal: 0,
+        effectKind: "model_execution",
+        semanticScopeKey: "run",
+        localOperationKey: "compose",
+        logicalOperationSha256: "b".repeat(64),
+        requestContractVersion: "1",
+        requestSha256: "c".repeat(64),
+        idempotencyKey: "d".repeat(64),
+      },
+    };
+    applyEventToSnapshot(snapshot, executionEvent("EFFECT_INTENDED", effectPayload), 1);
+    expect(snapshot.routeSegments.size).toBe(1);
+    expect(snapshot.effects.size).toBe(1);
+
+    // A second effect claiming the same logical key is refused at the event
+    // that caused it, rather than reaching
+    // `ux_effect_read_model__logical_operation_sha256` as an abort naming one
+    // row and no event.
+    const twin = {
+      ...effectPayload,
+      segment: segment({ routeSegmentId: "seg-2", segmentNumber: 2, predecessorSegmentId: "seg-1", handoffReason: "Q" }),
+      effect: { ...effectPayload.effect, effectId: "e".repeat(64), operationOrdinal: 1 },
+    };
+    expect(() => {
+      applyEventToSnapshot(snapshot, executionEvent("EFFECT_INTENDED", twin), 2);
+    }).toThrow(LedgerValidationError);
+
+    // A resolution for a delivery nobody intended is refused too, which is what
+    // keeps a rebuild from writing a state onto a row that is not there.
+    expect(() => {
+      applyEventToSnapshot(
+        snapshot,
+        executionEvent("DISPATCH_OUTCOME_RECORDED", {
+          revisionNumber: 1,
+          attemptNumber: 1,
+          outcome: { dispatchAttemptId: "nowhere", dispatchState: "CLAIMED" },
+        }),
+        3,
+      );
+    }).toThrow(LedgerValidationError);
+  });
+
+  it("N-C-11: the fold refuses a resolution recorded at another attempt's coordinate, by name", () => {
+    // The mirror of the append door's anchor. A delivery is found by a global
+    // id, so without this a rebuild would fold a resolution of task B onto task
+    // A's delivery exactly as the door once admitted it, and `verifyIntegrity`
+    // would find the two paths in perfect agreement about the wrong history.
+    const snapshot = createProjectionSnapshot();
+    const effectId = "a".repeat(64);
+    applyEventToSnapshot(
+      snapshot,
+      executionEvent("EFFECT_INTENDED", {
+        revisionNumber: 1,
+        attemptNumber: 1,
+        segment: segment(),
+        effect: {
+          effectId,
+          operationOrdinal: 0,
+          effectKind: "model_execution",
+          semanticScopeKey: "run",
+          localOperationKey: "compose",
+          logicalOperationSha256: "b".repeat(64),
+          requestContractVersion: "1",
+          requestSha256: "c".repeat(64),
+          idempotencyKey: "d".repeat(64),
+        },
+      }),
+      1,
+    );
+    applyEventToSnapshot(
+      snapshot,
+      executionEvent("DISPATCH_INTENDED", {
+        revisionNumber: 1,
+        attemptNumber: 1,
+        segment: segment(),
+        dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1 },
+      }),
+      2,
+    );
+
+    const settle = (payload: Record<string, unknown>): Record<string, unknown> => ({
+      ...payload,
+      outcome: {
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: "2026-09-12T09:10:00.000Z",
+        effectOutcomeStatus: "SUCCEEDED",
+      },
+    });
+    const foreignTask = "8c8c8c8c-8c8c-4c8c-8c8c-8c8c8c8c8c02";
+    const cases: readonly (readonly [string, ControlPlaneEvent, string])[] = [
+      [
+        "another task",
+        executionEvent(
+          "DISPATCH_OUTCOME_RECORDED",
+          settle({ revisionNumber: 1, attemptNumber: 1 }),
+          { taskId: foreignTask },
+        ),
+        "attempt " + foreignTask + " 1 1",
+      ],
+      [
+        "another revision",
+        executionEvent("DISPATCH_OUTCOME_RECORDED", settle({ revisionNumber: 2, attemptNumber: 1 })),
+        "attempt " + EFFECT_TASK + " 2 1",
+      ],
+      [
+        "another attempt",
+        executionEvent("DISPATCH_OUTCOME_RECORDED", settle({ revisionNumber: 1, attemptNumber: 2 })),
+        "attempt " + EFFECT_TASK + " 1 2",
+      ],
+      [
+        "no coordinate",
+        executionEvent("DISPATCH_OUTCOME_RECORDED", settle({})),
+        "no coordinate at all",
+      ],
+    ];
+
+    for (const [label, event, recordedAt] of cases) {
+      let issue: { readonly path: string; readonly message: string } | undefined;
+      try {
+        applyEventToSnapshot(snapshot, event, 3);
+      } catch (error) {
+        issue = (error as LedgerValidationError).issues[0];
+      }
+      expect(issue?.path, label).toBe("payload.outcome.dispatchAttemptId");
+      expect(issue?.message, label).toContain("dsp-1");
+      expect(issue?.message, label).toContain(effectId);
+      expect(issue?.message, label).toContain(EFFECT_TASK + " 1 1");
+      expect(issue?.message, label).toContain(recordedAt);
+    }
+
+    // Nothing moved: the delivery is still intended and the effect has no outcome.
+    expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState).toBe("INTENDED");
+    expect(snapshot.effects.get(effectId)?.outcomeStatus).toBeNull();
+
+    // And the owner's own coordinate still resolves it.
+    applyEventToSnapshot(
+      snapshot,
+      executionEvent("DISPATCH_OUTCOME_RECORDED", settle({ revisionNumber: 1, attemptNumber: 1 })),
+      3,
+    );
+    expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState).toBe("SETTLED");
+    expect(snapshot.effects.get(effectId)?.outcomeStatus).toBe("SUCCEEDED");
   });
 });

@@ -87,6 +87,30 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   // the payload requires the V2 key), the credential and transcript guards, and
   // the payload byte budget.
   "TASK_ATTEMPT_OPENED",
+  // The three of P-18/protocolo C (execution §6, §6.1 and §7; ADR 0076). All
+  // three are same-state passthroughs on the `execution` channel, exactly as
+  // `TASK_ATTEMPT_OPENED` is: intending an effect, intending a delivery and
+  // recording how a delivery went are things a run *did*, not moves through a
+  // lifecycle.
+  //
+  // **Three, and the third is the one that is easy to leave out.** Without an
+  // event that records a dispatch's resolution, `dispatch_state` could never
+  // leave `INTENDED` and `effect_read_model.outcome_status` could never be
+  // written at all — which would make `OUTCOME_UNKNOWN` a column no producer
+  // can reach, and execution §6 `:252`'s whole rule unenforceable. The five
+  // states of §7 stay closed at five: `RECONCILING` is `outbox_message`'s word
+  // (coordination §2), not a sixth state here, and an overdue `INFLIGHT`
+  // remains `INFLIGHT` and is *found* by an index rather than moved by a clock.
+  //
+  // The payload grammar is the **producer's** law and the ledger door's, not
+  // this contract's — `payload` is `z.record(…, z.unknown())` for every type.
+  // What this contract enforces for them is what it enforces for every event:
+  // the key rule above, the credential and transcript guards, and the byte
+  // budget. What the ledger enforces is the rest, and it recomputes every
+  // digest whose preimage the event itself carries rather than believing it.
+  "EFFECT_INTENDED",
+  "DISPATCH_INTENDED",
+  "DISPATCH_OUTCOME_RECORDED",
 ] as const;
 
 export const ControlPlaneEventType = z.enum(CONTROL_PLANE_EVENT_TYPES);
@@ -147,6 +171,85 @@ export const V2_IDEMPOTENCY_NAMESPACE = "v2/";
  * another adds it here rather than passing a bare string through.
  */
 export const V2_IDEMPOTENCY_STREAMS = ["control_plane_events"] as const;
+
+/**
+ * The version prefix of the effect identity preimage (P-18/protocolo C).
+ *
+ * ## The formula, stated once
+ *
+ *     preimage  = EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1 + canonicalJson([
+ *                   taskId, revisionNumber, attemptNumber, segmentNumber,
+ *                   operationOrdinal,
+ *                 ])
+ *     effect_id = SHA256(preimage)
+ *
+ * Execution §6 `:238` says `effect_id` "conserva la fórmula existente" over that
+ * quintuple. **There is no existing formula.** The nearest things in the tree
+ * are `operationId` — a deterministic uuid over a name — and `operationDigest`,
+ * a sha-256 hex over slash-joined coordinates, and both are V1 shapes that know
+ * nothing of a revision or a segment. Two writers reading that sentence would
+ * have produced two identities, so this escalón writes one down rather than
+ * inheriting a sentence (ADR 0076, correction C-4).
+ *
+ * The five members are exactly execution §6's quintuple, in its order. The
+ * clock is **not** in it, and neither is anything resolved at dispatch time:
+ * datos §6.3 puts `intended_at` outside on purpose, because replay and handoff
+ * have to reproduce the same bytes, and an identity that moved with the wall
+ * clock would make every retry a new effect.
+ *
+ * ## Why the prefix, and why here
+ *
+ * `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1` is the precedent for both halves. The
+ * prefix carries its own trailing LF and there is **no separator** between it
+ * and the JSON: one LF, and it belongs to the prefix. And the rule lives in this
+ * package while the function lives in `@acp/ledger`, because this package may
+ * import `zod` and nothing else — a `node:crypto` here would make the contract
+ * surface unloadable in a browser page, and a second canonicalizer would be a
+ * second authority on a question `canonicalJsonStringify` already answers.
+ *
+ * A key's grammar is the contract's (decision 42, reiterated by decision 44),
+ * which is why this sits beside `V2_IDEMPOTENCY_NAMESPACE` rather than in the
+ * ledger that computes it.
+ *
+ * `v1` is frozen. A change to the encoding is a **new** prefix with a new name;
+ * this constant is never edited and no history is ever rehashed, because a
+ * digest whose preimage can be redefined identifies nothing.
+ */
+export const EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1 = "acp/execution-effect/v1\n";
+
+/**
+ * The version prefix of the effect idempotency-key preimage (P-18/protocolo C).
+ *
+ * ## The formula, stated once
+ *
+ *     preimage = EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1 + canonicalJson([
+ *                  effectKind, taskId, revisionNumber, attemptNumber,
+ *                  segmentNumber, operationOrdinal, envelopeSha256,
+ *                ])
+ *     key      = SHA256(preimage)
+ *
+ * Execution §6 `:250` gives the members and this fixes their encoding: the kind
+ * of business operation, the same quintuple `effect_id` uses, and the envelope
+ * digest of the revision the work was asked for under. **Two different keys over
+ * overlapping material, on purpose.** `effect_id` names *which* logical step
+ * this is inside a run; the idempotency key is what a destination is asked not
+ * to do twice, so it additionally binds the kind of operation and the exact
+ * revision of the work — a re-issued envelope is a different request even at the
+ * same coordinate.
+ *
+ * The initial segment is fixed once, when the effect is created. Replay and
+ * handoff conserve the original bytes: execution §6.1 `:329` is explicit that a
+ * later authorized dispatch "conserva el efecto inicial y registra el segmento
+ * efectivo aparte", which is what `dispatch_attempt_read_model.route_segment_id`
+ * is for. Recomputing this key with the current segment would hand a destination
+ * a second key for one operation, which is the single failure the column exists
+ * to prevent.
+ *
+ * Prefix discipline, placement and the frozen `v1` are
+ * `EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1`'s, for its reasons.
+ */
+export const EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1 =
+  "acp/execution-effect-idempotency/v1\n";
 
 /**
  * The V2 idempotency coordinates: the full revision-aware coordinate of an
