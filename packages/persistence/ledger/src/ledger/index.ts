@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import {
   AccountActionEvent,
   ControlPlaneEvent,
+  IdempotencyCoordinates,
   InitiativeEvent,
   SUPPORTED_CONTRACT_VERSIONS,
   V2_IDEMPOTENCY_NAMESPACE,
@@ -61,13 +62,20 @@ import {
   applyEventToSnapshot,
   applyInitiativeEventToSnapshot,
   applyRegistryEventToSnapshot,
+  INVOCATION_ID_KEY,
+  LEGACY_ATTEMPT_NUMBER_KEY,
+  REVISION_ID_KEY,
+  TASK_ATTEMPT_OPENED,
+  canonicalAttempt,
   canonicalRevision,
   createInitiativeProjectionSnapshot,
   createProjectionSnapshot,
   createRegistryProjectionSnapshot,
   executionRouteKey,
   nextExecutionRouteProjection,
+  nextTaskAttemptProjection,
   nextTaskRevisionProjection,
+  taskAttemptKey,
   taskRevisionKey,
   nextInitiativeProjection,
   nextRoadmapVersionProjection,
@@ -118,6 +126,7 @@ import {
   type RoutingAssignmentReadModel,
   type TaskPage,
   type TaskQuery,
+  type TaskAttemptReadModel,
   type TaskReadModel,
   type TaskRevisionReadModel,
   type WorkerPage,
@@ -776,6 +785,19 @@ interface TaskRevisionRow {
   readonly sequence: number;
 }
 
+/** One stored attempt row. Snake case, because it is a row. */
+interface TaskAttemptRow {
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly attempt_number: number;
+  readonly legacy_attempt_number: number;
+  readonly invocation_id: string;
+  readonly started_at: string;
+  readonly ended_at: string | null;
+  readonly outcome: string | null;
+  readonly sequence: number;
+}
+
 interface WorkerRow {
   readonly identity: string;
   readonly provider: string;
@@ -893,6 +915,20 @@ function taskRevisionRowToModel(row: TaskRevisionRow): TaskRevisionReadModel {
     createdAt: row.created_at,
     createdBy: row.created_by,
     contractVersion: row.contract_version,
+    sequence: row.sequence,
+  };
+}
+
+function taskAttemptRowToModel(row: TaskAttemptRow): TaskAttemptReadModel {
+  return {
+    taskId: row.task_id,
+    revisionNumber: row.revision_number,
+    attemptNumber: row.attempt_number,
+    legacyAttemptNumber: row.legacy_attempt_number,
+    invocationId: row.invocation_id,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    outcome: row.outcome,
     sequence: row.sequence,
   };
 }
@@ -1251,6 +1287,28 @@ function v2CoordinateColumns(event: ControlPlaneEvent): {
   return { revisionNumber: reading.revisionNumber, attemptNumber: reading.attemptNumber };
 }
 
+/**
+ * The largest flat `attempt` any event may carry, read from the contract.
+ *
+ * Not restated as `10_000` here. The bound is the contract's — `attempt` is
+ * `z.number().int().positive().max(10_000)` on `IdempotencyCoordinates` and on
+ * `ControlPlaneEvent` alike — and a second literal in this file would be a
+ * second source of truth that could drift from the door that actually refuses.
+ * There is no named constant to import and this escalón adds none (a new export
+ * of `@acp/contracts` moves pins that belong to no part of this work), so the
+ * value is read off the schema that carries it.
+ *
+ * The compare-and-set has to know it. Adjudication Q4 settles that exhausting
+ * the cap is a **typed refusal naming the cap** rather than an opaque overflow:
+ * a task that accumulates ten thousand attempts across all its revisions is
+ * resolved with a new task, not with a broken counter. The check therefore runs
+ * on the value the ledger COMPUTES, before that value is compared with what the
+ * event proposes — otherwise the contract's own parse would refuse
+ * `attempt = 10001` first and the ledger's knowledge of the cap would never be
+ * exercised at all.
+ */
+const MAX_FLAT_ATTEMPT: number = IdempotencyCoordinates.shape.attempt.maxValue ?? 10_000;
+
 function assertNoV2KeyCollisions(db: Database.Database): void {
   const claimed = db
     .prepare(
@@ -1467,6 +1525,18 @@ function ensureLedgerIdentity(db: Database.Database): void {
  */
 function safeIdentifier(name: string): string {
   return /^[A-Za-z0-9_]{1,64}$/.test(name) ? name : "<unprintable name>";
+}
+
+/**
+ * An invocation id, safe to print in a refusal.
+ *
+ * The same guard `safeAccountId` and `safeIdentifier` apply, for their reason:
+ * the value is caller data reaching a message an operator reads. An invocation
+ * id is a bounded identifier in the shape every other durable handle in this
+ * file has; anything outside that set is not printed.
+ */
+function safeInvocationId(value: string): string {
+  return /^[A-Za-z0-9_.:-]{1,120}$/.test(value) ? value : "<unprintable invocation id>";
 }
 
 /**
@@ -2457,6 +2527,12 @@ export class Ledger {
     // this build writes.
     const coordinate = v2CoordinateColumns(event);
 
+    // The attempt's identity, compared and set under the write lock this
+    // transaction already holds (P-18/B). Before the `INSERT`, because the
+    // refusals it raises are about the event and must name the coordinate
+    // rather than arrive from an index as an abort.
+    this.#assertAttemptIdentity(event, coordinate);
+
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
         "event_id, idempotency_key, task_id, attempt, revision_number, attempt_number, " +
@@ -2567,6 +2643,272 @@ export class Ledger {
     }
   }
 
+  /**
+   * The attempt's identity, compared and set inside the write lock (P-18/B).
+   *
+   * Execution §3 `:122` states this as one paragraph, and it is the whole of
+   * what this method does: "in `BEGIN IMMEDIATE`, the expected head of the task
+   * is compared and the full coordinate is looked up. If it already exists, its
+   * assignment and invocation_id are reused **and a different invocationId for
+   * the same coordinate is refused**; if not, the event fixes invocationId and
+   * `1 + MAX(attempt)` of that task's events is assigned, legacy ones included
+   * (with no events: 1)."
+   *
+   * **The producer proposes and this door verifies.** That is the one reading
+   * the shape of an append admits, and it is adjudicated rather than invented.
+   * An event arrives *signed*: `canonicalJson` and therefore `event_sha256`
+   * cover `attempt`, and both are computed before the transaction opens. So
+   * "assign" cannot mean "write a number into the event" — the ledger would
+   * have to recanonicalize and rehash a body the caller had already hashed, or
+   * grow a second append path that builds and signs events of its own. Instead
+   * the producer reads the projection, proposes `attempt` and
+   * `legacyAttemptNumber`, and this method computes what the answer must have
+   * been and refuses, by name, if the proposal differs. No new door, no
+   * recanonicalization, and nothing mutated after signing. ADR 0073 records it.
+   *
+   * **Tolerant without a row, strict with one.** For every V2 event that is not
+   * an opening, the coordinate is checked against the assignment *only if the
+   * attempt has been opened*. A V2 event over a coordinate with no attempt row
+   * is lawful: migration 11 declared the "migrated but not populated" window,
+   * every V2 fixture written before this escalón is exactly that shape, and
+   * demanding that an opening precede everything would retroactively refuse
+   * histories the log already holds.
+   */
+  #assertAttemptIdentity(
+    event: ControlPlaneEvent,
+    coordinate: {
+      readonly revisionNumber: number | null;
+      readonly attemptNumber: number | null;
+    },
+  ): void {
+    if (coordinate.revisionNumber === null || coordinate.attemptNumber === null) {
+      // A V1 event. The flat `attempt` is the whole coordinate it has, and no
+      // attempt row can describe it.
+      return;
+    }
+
+    const { revisionNumber, attemptNumber } = coordinate;
+    const where = taskAttemptKey(event.taskId, revisionNumber, attemptNumber);
+
+    const existing = this.#stmt(
+      "SELECT * FROM task_attempt_read_model " +
+        "WHERE task_id = ? AND revision_number = ? AND attempt_number = ?",
+    ).get(event.taskId, revisionNumber, attemptNumber) as TaskAttemptRow | undefined;
+
+    if (event.type !== TASK_ATTEMPT_OPENED) {
+      if (existing === undefined) return;
+      if (event.attempt !== existing.legacy_attempt_number) {
+        // Execution §3 `:123`: "every event of the same coordinate must repeat
+        // it". A V2 event whose flat `attempt` disagrees with the assignment
+        // would be indexed under a coordinate the attempt table says belongs to
+        // a different try, and every query written before migration 11 reads
+        // that column.
+        throw new LedgerValidationError([
+          {
+            path: "attempt",
+            message:
+              "attempt " +
+              where +
+              " was assigned the flat attempt " +
+              String(existing.legacy_attempt_number) +
+              ", and every event of that coordinate repeats it; this event carries " +
+              String(event.attempt),
+          },
+        ]);
+      }
+      return;
+    }
+
+    // The two facts only an opening may state. Read here rather than through
+    // the fold, because the fold answers "is there a row" and this has to say
+    // which key is at fault.
+    const proposed = event.payload[LEGACY_ATTEMPT_NUMBER_KEY];
+    const invocationId = event.payload[INVOCATION_ID_KEY];
+
+    if (
+      typeof proposed !== "number" ||
+      !Number.isSafeInteger(proposed) ||
+      proposed < 1
+    ) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + LEGACY_ATTEMPT_NUMBER_KEY,
+          message:
+            "an attempt opening states the flat assignment its coordinate was given, as a " +
+            "safe integer of at least one, and this payload holds a " +
+            typeof proposed,
+        },
+      ]);
+    }
+    if (typeof invocationId !== "string" || invocationId.length === 0) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + INVOCATION_ID_KEY,
+          message:
+            "an attempt opening records the invocation it names, as a non-empty string, " +
+            "and this payload holds a " + typeof invocationId,
+        },
+      ]);
+    }
+
+    // The third pairing rule, and the sister of the two the stream trigger
+    // holds for `revisionNumber`/`attemptNumber`. It lives here rather than in
+    // a fourth trigger, which is adjudicated (ADR 0073): the flat assignment is
+    // compared against a projection and against `MAX(attempt)` of the task, and
+    // a `BEFORE INSERT` trigger that read the projection would be duplicating
+    // the compare-and-set below in SQL, in a place where it could not name the
+    // expected value. The cost is stated rather than hidden: a writer that
+    // bypasses this door entirely can still record a row whose payload and
+    // column disagree about the flat number.
+    if (proposed !== event.attempt) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + LEGACY_ATTEMPT_NUMBER_KEY,
+          message:
+            "an attempt opening's flat assignment is the value that goes in the legacy " +
+            "attempt column: this payload states " +
+            String(proposed) +
+            " and the event carries " +
+            String(event.attempt),
+        },
+      ]);
+    }
+
+    // The foreign key, guarded by name before SQLite guards it by abort. The
+    // opening carries its own revision record, so the ordinary case satisfies
+    // `fk_task_attempt_read_model__task_revision_read_model` by construction —
+    // the revision row is folded from this same event inside this same
+    // transaction. What is refused here is the opening that neither finds a
+    // revision nor announces one, which would otherwise surface as a
+    // `SqliteError` nobody can catch by class (F-2's standard, ADR 0072).
+    if (nextTaskRevisionProjection(event, 0) === null) {
+      const revision = this.#stmt(
+        "SELECT task_id FROM task_revision_read_model WHERE task_id = ? AND revision_number = ?",
+      ).get(event.taskId, revisionNumber) as { readonly task_id: string } | undefined;
+      if (revision === undefined) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + REVISION_ID_KEY,
+            message:
+              "an attempt opens on a revision, and revision " +
+              String(revisionNumber) +
+              " of task " +
+              event.taskId +
+              " neither exists nor is announced by this event's own payload",
+          },
+        ]);
+      }
+    }
+
+    if (existing !== undefined) {
+      // The coordinate is already open. Its assignment and its invocation are
+      // reused, which means an opening that agrees with them is a replay and
+      // one that disagrees is two answers to the same question.
+      if (invocationId !== existing.invocation_id) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + INVOCATION_ID_KEY,
+            message:
+              "attempt " +
+              where +
+              " is already open under invocation " +
+              safeInvocationId(existing.invocation_id) +
+              ", and one attempt names one invocation; this event names " +
+              safeInvocationId(invocationId),
+          },
+        ]);
+      }
+      if (event.attempt !== existing.legacy_attempt_number) {
+        throw new LedgerValidationError([
+          {
+            path: "attempt",
+            message:
+              "attempt " +
+              where +
+              " was assigned the flat attempt " +
+              String(existing.legacy_attempt_number) +
+              " once and keeps it; this event proposes " +
+              String(event.attempt),
+          },
+        ]);
+      }
+      return;
+    }
+
+    // A coordinate nobody has opened. The assignment is computed, not accepted:
+    // `1 + MAX(attempt)` over every event of this task, legacy rows included,
+    // because the flat counter is monotone per task and a legacy event holds
+    // one. A task with no events at all is assigned 1.
+    const head = this.#stmt(
+      "SELECT MAX(attempt) AS highest FROM control_plane_events WHERE task_id = ?",
+    ).get(event.taskId) as { readonly highest: number | null };
+    const expected = (head.highest ?? 0) + 1;
+
+    // The cap, checked on the COMPUTED value and before the comparison below.
+    // Reversing the two would make the contract's own parse refuse the event
+    // first and leave the claim "the compare-and-set knows the cap" untested
+    // (Q4, and the preaudit's correction).
+    if (expected > MAX_FLAT_ATTEMPT) {
+      throw new LedgerValidationError([
+        {
+          path: "attempt",
+          message:
+            "task " +
+            event.taskId +
+            " has exhausted the flat attempt space: the next assignment would be " +
+            String(expected) +
+            " and the contract's bound is " +
+            String(MAX_FLAT_ATTEMPT) +
+            "; a task this far gone is resolved with a new task, not with a wrapped counter",
+        },
+      ]);
+    }
+
+    if (event.attempt !== expected) {
+      throw new LedgerValidationError([
+        {
+          path: "attempt",
+          message:
+            "attempt " +
+            where +
+            " is assigned the flat attempt " +
+            String(expected) +
+            ", which is one past this task's highest, and this event proposes " +
+            String(event.attempt),
+        },
+      ]);
+    }
+
+    // The other half of the bijection. The primary key stops one coordinate
+    // holding two invocations; this stops one invocation holding two
+    // coordinates. Guarded here so the refusal names both attempts rather than
+    // arriving from `ux_task_attempt_read_model__invocation_id` as an abort.
+    const claimed = this.#stmt(
+      "SELECT task_id, revision_number, attempt_number FROM task_attempt_read_model " +
+        "WHERE invocation_id = ?",
+    ).get(invocationId) as
+      | {
+          readonly task_id: string;
+          readonly revision_number: number;
+          readonly attempt_number: number;
+        }
+      | undefined;
+    if (claimed !== undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + INVOCATION_ID_KEY,
+          message:
+            "invocation " +
+            safeInvocationId(invocationId) +
+            " already names attempt " +
+            taskAttemptKey(claimed.task_id, claimed.revision_number, claimed.attempt_number) +
+            ", and one invocation names one attempt; this event would give it " +
+            where,
+        },
+      ]);
+    }
+  }
+
   /** Incremental projection. Same rules as replay, applied to one event. */
   #projectEvent(event: ControlPlaneEvent, sequence: number): void {
     const currentTask = this.#stmt(
@@ -2624,6 +2966,14 @@ export class Ledger {
     // events produce a row.
     const revision = nextTaskRevisionProjection(event, sequence);
     if (revision !== null) this.#insertTaskRevision(revision);
+
+    // The attempt record, when this event opens one. After the revision, and
+    // that order is the foreign key's: `foreign_keys` is ON, the opening
+    // announces both, and the parent row has to be there before the child names
+    // it. `applyEventToSnapshot` folds them in the same order for the same
+    // reason.
+    const attempt = nextTaskAttemptProjection(event, sequence);
+    if (attempt !== null) this.#insertTaskAttempt(attempt);
   }
 
   #upsertExecutionRoute(route: ExecutionRouteReadModel): void {
@@ -2754,6 +3104,66 @@ export class Ledger {
       revision.createdBy,
       revision.contractVersion,
       revision.sequence,
+    );
+  }
+
+  /**
+   * Write one attempt row, or refuse (P-18/B).
+   *
+   * **Insert-only, and never `ON CONFLICT DO UPDATE`** (execution §3). An
+   * attempt is opened once; its assignment and its invocation are fixed at that
+   * moment and a coordinate that could be overwritten would make "attempt 2 of
+   * revision 1" a name for whichever event arrived last.
+   *
+   * The same coordinate with the same identity twice is an idempotent replay and
+   * writes nothing — a retry of an append has to stay safe. The same coordinate
+   * with a different identity is refused. `applyEventToSnapshot` takes the same
+   * two branches through the same exported comparison, so a rebuild refuses
+   * exactly the histories the incremental path refused, which is the property
+   * `verifyIntegrity` depends on.
+   *
+   * The door above has already refused a conflicting identity with a message
+   * that names the expected assignment; this comparison is what makes the write
+   * safe on the **rebuild** path, where there is no door.
+   */
+  #insertTaskAttempt(attempt: TaskAttemptReadModel): void {
+    const existing = this.#stmt(
+      "SELECT * FROM task_attempt_read_model " +
+        "WHERE task_id = ? AND revision_number = ? AND attempt_number = ?",
+    ).get(attempt.taskId, attempt.revisionNumber, attempt.attemptNumber) as
+      | TaskAttemptRow
+      | undefined;
+
+    if (existing !== undefined) {
+      if (canonicalAttempt(taskAttemptRowToModel(existing)) !== canonicalAttempt(attempt)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + INVOCATION_ID_KEY,
+            message:
+              "attempt " +
+              taskAttemptKey(attempt.taskId, attempt.revisionNumber, attempt.attemptNumber) +
+              " is already recorded with a different identity, and an attempt is opened once",
+          },
+        ]);
+      }
+      return;
+    }
+
+    this.#stmt(
+      "INSERT INTO task_attempt_read_model (" +
+        "task_id, revision_number, attempt_number, legacy_attempt_number, invocation_id, " +
+        "started_at, ended_at, outcome, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      attempt.taskId,
+      attempt.revisionNumber,
+      attempt.attemptNumber,
+      attempt.legacyAttemptNumber,
+      attempt.invocationId,
+      attempt.startedAt,
+      attempt.endedAt,
+      attempt.outcome,
+      attempt.sequence,
     );
   }
 
@@ -3996,6 +4406,13 @@ export class Ledger {
       // conflict branch of `#insertTaskRevision` cannot fire, and a history the
       // snapshot already refused never reaches this loop at all.
       for (const revision of snapshot.taskRevisions.values()) this.#insertTaskRevision(revision);
+      // The attempt rows, after the revisions they reference. `DERIVED_TABLES`
+      // cleared both above — the attempt table first, because it is the child —
+      // so every insert here lands on an empty coordinate and the conflict
+      // branch of `#insertTaskAttempt` cannot fire. A history the snapshot
+      // already refused never reaches this loop at all, which is the half of
+      // N-P18-8 that makes two rebuilds identical rather than merely equal.
+      for (const attempt of snapshot.taskAttempts.values()) this.#insertTaskAttempt(attempt);
 
       for (const initiative of initiativeSnapshot.initiatives.values()) {
         this.#upsertInitiative(initiative);
@@ -5242,6 +5659,51 @@ export class Ledger {
           kind: "PROJECTION",
           detail:
             "task_revision_read_model holds the revision for " +
+            key +
+            " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
+
+    // The attempt rows, on the same terms as the revisions above. Both
+    // directions matter here for the reason they do there, and one more: the
+    // fold writes `ended_at` and `outcome` as `NULL` on every row, so a row
+    // that has acquired either is a row something outside this build wrote —
+    // which the field comparison reports rather than ignores.
+    const storedAttempts = new Map(
+      (this.#stmt("SELECT * FROM task_attempt_read_model").all() as TaskAttemptRow[]).map(
+        (row) => [
+          taskAttemptKey(row.task_id, row.revision_number, row.attempt_number),
+          taskAttemptRowToModel(row),
+        ],
+      ),
+    );
+
+    for (const [key, expected] of snapshot.taskAttempts) {
+      const stored = storedAttempts.get(key);
+      if (stored === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "task_attempt_read_model is missing the attempt for " + key,
+          sequence: null,
+        });
+        continue;
+      }
+      if (canonicalJsonStringify(stored) !== canonicalJsonStringify(expected)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: "task_attempt_read_model row for " + key + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const key of storedAttempts.keys()) {
+      if (!snapshot.taskAttempts.has(key)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail:
+            "task_attempt_read_model holds the attempt for " +
             key +
             " which no event accounts for",
           sequence: null,

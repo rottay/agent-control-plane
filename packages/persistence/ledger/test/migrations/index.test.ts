@@ -8,6 +8,8 @@ import {
   MIGRATIONS,
   PROJECTION_NAMES,
   PROJECTION_SOURCES,
+  TASK_ATTEMPT_MIGRATION,
+  TASK_ATTEMPT_PROJECTION,
   TASK_REVISION_MIGRATION,
   TASK_REVISION_PROJECTION,
   TASK_STREAM,
@@ -152,7 +154,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -166,12 +168,14 @@ describe("migration 7 appends the watermark table without touching the applied s
       "registry_stream",
       "account_event_integrity",
       "task_revision_identity",
+      "task_attempt_identity",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9 and 11 seed rows into it, which is what a migration that
-    // adds a projection does; neither creates, alters or drops the table.
+    // Migrations 9, 11 and 12 seed rows into it, which is what a migration
+    // that adds a projection does; none of them creates, alters or drops the
+    // table.
     const creating = MIGRATIONS.filter((migration) =>
       migration.sql.includes("CREATE TABLE projection_watermark"),
     );
@@ -179,7 +183,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -249,6 +253,7 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "worker_read_model@control_plane_events",
       "execution_route_read_model@control_plane_events",
       "task_revision_read_model@control_plane_events",
+      "task_attempt_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
       "routing_assignment_read_model@registry_events",
@@ -459,7 +464,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
     ]);
   });
 
@@ -677,7 +682,7 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(8);
+    expect(PROJECTION_SOURCES).toHaveLength(9);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -819,5 +824,135 @@ describe("migration 11 adds the revision coordinate without touching the applied
     // And the named migration number matches where the SQL actually sits.
     expect(TASK_REVISION_MIGRATION).toBe(11);
     expect(MIGRATIONS[TASK_REVISION_MIGRATION - 1]?.name).toBe("task_revision_identity");
+  });
+});
+
+describe("migration 12 adds the attempt's own record without touching the applied eleven", () => {
+  const TWELFTH = MIGRATIONS[11];
+
+  /** The migration's statements with its commentary removed — migration 11's helper, verbatim in intent. */
+  const statements = (TWELFTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed, and rewrites none of it", () => {
+    expect(TWELFTH?.version).toBe(12);
+    expect(TWELFTH?.name).toBe("task_attempt_identity");
+
+    // The eleven before it are byte-identical to what a ledger in the field
+    // already applied. A migration set is checksummed on every open, so a
+    // single edited character above would refuse every existing database.
+    for (const migration of MIGRATIONS.slice(0, 11)) {
+      expect(migration.sha256, migration.name).toMatch(/^[0-9a-f]{64}$/);
+    }
+    expect(statements).not.toContain("DROP TABLE");
+    expect(statements).not.toContain("DROP TRIGGER");
+    expect(statements).not.toContain("ALTER TABLE");
+  });
+
+  it("names the attempt table's constraints by the §3.2 convention", () => {
+    const sql = TWELFTH?.sql ?? "";
+    expect(sql).toContain("CREATE TABLE task_attempt_read_model");
+    expect(sql).toContain(") STRICT;");
+    for (const rule of [
+      "pk_task_attempt_read_model\n    PRIMARY KEY (task_id, revision_number, attempt_number)",
+      "fk_task_attempt_read_model__task_revision_read_model",
+      "ck_task_attempt_read_model__attempt_number\n    CHECK (attempt_number >= 1)",
+      "ck_task_attempt_read_model__legacy_attempt_number\n    CHECK (legacy_attempt_number >= 1)",
+      "ck_task_attempt_read_model__outcome_pair\n    CHECK ((ended_at IS NULL) = (outcome IS NULL))",
+    ]) {
+      expect(sql, rule).toContain("CONSTRAINT " + rule);
+    }
+    // The outcome vocabulary is `effect_outcome_status`, all four words of it.
+    for (const word of ["SUCCEEDED", "FAILED", "CANCELLED", "OUTCOME_UNKNOWN"]) {
+      expect(sql, word).toContain("'" + word + "'");
+    }
+  });
+
+  it("makes both halves of the bijection unique, and neither one merely indexed", () => {
+    const sql = TWELFTH?.sql ?? "";
+    // `(task_id, legacy_attempt_number)` is what makes the flat number usable
+    // as `control_plane_events.attempt`: two coordinates sharing it would make
+    // the legacy column ambiguous for every query written before migration 11.
+    expect(sql).toContain(
+      "CREATE UNIQUE INDEX ux_task_attempt_read_model__task_id_legacy_attempt_number\n" +
+        "  ON task_attempt_read_model (task_id, legacy_attempt_number)",
+    );
+    // And the invocation is unique GLOBALLY, not per task: with the primary key
+    // that is the bijection execution §3 asks for. A per-task uniqueness would
+    // let one invocation name attempts of two different tasks.
+    expect(sql).toContain(
+      "CREATE UNIQUE INDEX ux_task_attempt_read_model__invocation_id\n" +
+        "  ON task_attempt_read_model (invocation_id)",
+    );
+    expect(statements).not.toContain("CREATE INDEX ux_task_attempt_read_model");
+    expect(statements).not.toContain("(invocation_id, task_id)");
+  });
+
+  it("adds no trigger, which is a decision and not an omission", () => {
+    // ADR 0073, §2.5-D of the preaudit. The pairing rule between
+    // `payload.legacyAttemptNumber` and the `attempt` column is held by the
+    // append door as a typed refusal naming the expected value — something a
+    // `BEFORE INSERT` trigger could not do, because the expected value comes
+    // from `MAX(attempt)` and the projection. So `tr_` stays at eight.
+    expect(statements).not.toContain("CREATE TRIGGER");
+    const triggers = EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"));
+    expect(triggers).toHaveLength(8);
+  });
+
+  it("seeds its watermark from the head, never from a literal zero", () => {
+    const sql = TWELFTH?.sql ?? "";
+    // Migration 11's form, which is migration 9's second case: the projection
+    // arrives over a stream that may already hold a long history, and the fold
+    // over all of it is legitimately empty.
+    expect(sql).toContain("INSERT INTO projection_watermark");
+    expect(sql).toContain("'task_attempt_read_model',\n  'control_plane_events',");
+    for (const key of ["head_sequence", "event_count", "head_event_sha256"]) {
+      expect(sql, key).toContain("WHERE key = '" + key + "'");
+    }
+    // A literal zero seed is what verifyIntegrity reports as corruption on
+    // every ledger in the field immediately after a routine upgrade.
+    expect(statements).not.toContain("'control_plane_events',\n  1,\n  0,\n  0,");
+  });
+
+  it("declares the projection in all four places that have to agree", () => {
+    expect(TASK_ATTEMPT_PROJECTION).toBe("task_attempt_read_model");
+    expect(DERIVED_TABLES).toContain(TASK_ATTEMPT_PROJECTION);
+    expect(PROJECTION_NAMES).toContain(TASK_ATTEMPT_PROJECTION);
+    expect(
+      PROJECTION_SOURCES.filter((source) => source.projectionName === TASK_ATTEMPT_PROJECTION),
+    ).toEqual([{ projectionName: TASK_ATTEMPT_PROJECTION, sourceStream: "control_plane_events" }]);
+    expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({
+      type: "table",
+      name: TASK_ATTEMPT_PROJECTION,
+    });
+
+    // And the named migration number matches where the SQL actually sits.
+    expect(TASK_ATTEMPT_MIGRATION).toBe(12);
+    expect(MIGRATIONS[TASK_ATTEMPT_MIGRATION - 1]?.name).toBe("task_attempt_identity");
+  });
+
+  it("clears the attempt table before the revisions it references", () => {
+    // `foreign_keys` is ON, so the order in `DERIVED_TABLES` is load-bearing
+    // exactly as it is for `routing_assignment_fallback`: deleting the revision
+    // rows first would abort on the attempt rows still pointing at them.
+    const attemptAt = DERIVED_TABLES.indexOf(TASK_ATTEMPT_PROJECTION);
+    const revisionAt = DERIVED_TABLES.indexOf(TASK_REVISION_PROJECTION);
+    expect(attemptAt).toBeGreaterThanOrEqual(0);
+    expect(attemptAt).toBeLessThan(revisionAt);
+    // And still before `task_read_model`, which the revision already was.
+    expect(attemptAt).toBeLessThan(DERIVED_TABLES.indexOf("task_read_model"));
+  });
+
+  it("inventories the table and both indexes, and nothing else", () => {
+    const added = EXPECTED_SCHEMA_OBJECTS.filter((object) =>
+      object.name.includes("task_attempt_read_model"),
+    );
+    expect(added).toEqual([
+      { type: "table", name: "task_attempt_read_model" },
+      { type: "index", name: "ux_task_attempt_read_model__task_id_legacy_attempt_number" },
+      { type: "index", name: "ux_task_attempt_read_model__invocation_id" },
+    ]);
   });
 });

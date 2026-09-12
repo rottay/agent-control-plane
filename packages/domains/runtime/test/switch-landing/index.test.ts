@@ -840,7 +840,11 @@ describe("F5 N1-N14: the landing refuses rather than guessing", () => {
   });
 
   it("N10: no second registry — every frozen vocabulary is where it was", () => {
-    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(24);
+    // 25 since P-18/protocolo B, which added `TASK_ATTEMPT_OPENED`. N10 says
+    // this packet keeps no registry of its own, not that the contract's
+    // vocabulary is frozen against every later packet; the member this stratum
+    // actually depends on is named below.
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(25);
     expect(CONTROL_PLANE_EVENT_TYPES).toContain("ACCOUNT_SWITCH_COMPLETED");
     expect(LIFECYCLE_STATES).toHaveLength(10);
     expect(EXCEPTIONAL_STATES).toHaveLength(8);

@@ -1641,6 +1641,110 @@ describe("the task stream's tool-call receipts", () => {
   });
 });
 
+describe("the task stream's attempt openings (P-18/protocolo B)", () => {
+  const OPENING_TASK = "8c8c8c8c-8c8c-4c8c-8c8c-8c8c8c8c8c01";
+
+  /** The seven keys an opening carries: revision record, coordinate, identity. */
+  const OPENING_PAYLOAD = {
+    revisionId: "9d9d9d9d-9d9d-4d9d-8d9d-9d9d9d9d9d02",
+    revisionNumber: 2,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    invocationId: "inv-0001",
+    legacyAttemptNumber: 4,
+  } as const;
+
+  function opening(overrides: Record<string, unknown> = {}): unknown {
+    return event({
+      taskId: OPENING_TASK,
+      attempt: 4,
+      transitionId: "attempt.open",
+      type: "TASK_ATTEMPT_OPENED",
+      fromState: "RUNNING",
+      toState: "RUNNING",
+      payload: OPENING_PAYLOAD,
+      // The key follows the payload, and an opening's payload always carries a
+      // complete V2 coordinate, so this form is the only one that parses. Every
+      // override below keeps the coordinate, so the key is composed from the
+      // default set rather than from whatever the override supplied — a fixture
+      // that recomputed it would agree with a producer that re-keyed to escape
+      // a conflict, which is the one thing the door forbids.
+      idempotencyKey: buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: OPENING_TASK,
+        revisionNumber: OPENING_PAYLOAD.revisionNumber,
+        attemptNumber: OPENING_PAYLOAD.attemptNumber,
+        transitionId: "attempt.open",
+      }),
+      ...overrides,
+    });
+  }
+
+  it("declares the opening type", () => {
+    const types: readonly string[] = CONTROL_PLANE_EVENT_TYPES;
+    expect(types).toContain("TASK_ATTEMPT_OPENED");
+  });
+
+  it("accepts the seven-key payload as a same-state passthrough", () => {
+    // Same-state, like `TOKEN_USAGE_RECORDED` and `TOOL_CALL_RECORDED`:
+    // opening an attempt records an identity, it does not move a lifecycle
+    // state. Only `TASK_STATE_CHANGED` is refused for not changing state.
+    expect(ControlPlaneEvent.safeParse(opening()).success).toBe(true);
+  });
+
+  it("requires the V2 key, because its payload always carries the coordinate", () => {
+    // The consequence of the strict door, on the one type that can never be in
+    // V1 form: an opening states `revisionNumber` and `attemptNumber` by
+    // definition, so the V1 key is not an option a producer has.
+    const parsed = ControlPlaneEvent.safeParse(
+      opening({
+        idempotencyKey: buildIdempotencyKey({
+          taskId: OPENING_TASK,
+          attempt: 4,
+          transitionId: "attempt.open",
+        }),
+      }),
+    );
+    expect(parsed.success).toBe(false);
+  });
+
+  it("does not itself close the payload: the seven keys are the producer's law", () => {
+    // The same claim the tool-call receipt makes, and false in the same
+    // tempting way. `payload` is `z.record(…, z.unknown())` for every type, so
+    // an eighth ordinary key parses here. What refuses it is `@acp/runtime`'s
+    // builder — which is escalón G and does not exist yet — and, for the two
+    // facts that matter, the ledger's own compare-and-set.
+    const parsed = ControlPlaneEvent.safeParse(
+      opening({ payload: { ...OPENING_PAYLOAD, workerRunId: "wr-1" } }),
+    );
+    expect(parsed.success).toBe(true);
+
+    // Which is exactly why this contract cannot be read as enforcing the
+    // pairing either: an opening whose `legacyAttemptNumber` disagrees with its
+    // own `attempt` column parses here and is refused by the ledger door.
+    expect(
+      ControlPlaneEvent.safeParse(
+        opening({ payload: { ...OPENING_PAYLOAD, legacyAttemptNumber: 9 } }),
+      ).success,
+    ).toBe(true);
+  });
+
+  it("keeps the credential and transcript guards live for this type", () => {
+    // Both directions, so the acceptance above is not a check that always
+    // passes: what the contract enforces for an opening is what it enforces for
+    // every event.
+    for (const leak of [{ apiKey: "sk-live-abcdef" }, { transcript: ["turn one"] }]) {
+      const parsed = ControlPlaneEvent.safeParse(
+        opening({ payload: { ...OPENING_PAYLOAD, ...leak } }),
+      );
+      expect({ leak: Object.keys(leak)[0], ok: parsed.success }).toEqual({
+        leak: Object.keys(leak)[0],
+        ok: false,
+      });
+    }
+  });
+});
+
 describe("the envelope revision preimage prefix (P-05/A)", () => {
   // The constant is this package's half of the preimage: §6.2 makes
   // `kernel/contracts` the master contract for it, while the function that

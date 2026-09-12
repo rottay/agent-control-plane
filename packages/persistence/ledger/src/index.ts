@@ -205,6 +205,7 @@ export type {
   RoutingAssignmentFallbackRow,
   RoutingAssignmentReadModel,
   StreamIntegrityCoverage,
+  TaskAttemptReadModel,
   TaskPage,
   TaskQuery,
   TaskReadModel,

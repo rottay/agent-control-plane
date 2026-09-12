@@ -2284,7 +2284,7 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     for (const channel of Object.values(STREAM_CHANNEL_BY_EVENT_TYPE)) {
       sizes[channel] = (sizes[channel] ?? 0) + 1;
     }
-    expect(sizes).toEqual({ lifecycle: 7, execution: 6, steps: 2, state: 7, progress: 2 });
+    expect(sizes).toEqual({ lifecycle: 7, execution: 7, steps: 2, state: 7, progress: 2 });
     const total = Object.values(sizes).reduce((sum, count) => sum + count, 0);
     expect(total).toBe(CONTROL_PLANE_EVENT_TYPES.length);
   });
@@ -2297,6 +2297,18 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     // `steps` is the durable walk's own beats and `progress` is usage
     // attribution; a receipt is neither.
     expect(STREAM_CHANNEL_BY_EVENT_TYPE.TOOL_CALL_RECORDED).toBe("execution");
+  });
+
+  it("puts the attempt opening on execution, by name (P-18/protocolo B)", () => {
+    // Asserted separately for the reason above: totality covers the member by
+    // construction, and a type on the wrong channel satisfies every other law
+    // in this describe. `execution` is "what it took to run it" — the attempt's
+    // opening says a run exists and what its durable identity is. It is
+    // deliberately not `lifecycle`, where `RUN_STARTED` sits because it
+    // genuinely changes state while this one is a same-state passthrough; and
+    // not `steps`, which is the durable walk's own beats — an attempt is the
+    // thing those beats happen inside.
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.TASK_ATTEMPT_OPENED).toBe("execution");
   });
 });
 

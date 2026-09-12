@@ -19,6 +19,7 @@ import type {
   RoutingAssignmentFallbackRow,
   RoutingAssignmentProjection,
   RoutingAssignmentReadModel,
+  TaskAttemptReadModel,
   TaskReadModel,
   TaskRevisionReadModel,
   WorkerReadModel,
@@ -55,8 +56,17 @@ const RECORDED_ROUTE_KEY = "route";
  *
  * `restoredFromRevisionId` is optional and is the one key that may legitimately
  * be absent: most revisions restore nothing.
+ *
+ * The first of the five is **exported** and the other four are not, which is a
+ * fact about one refusal rather than about the set. P-18/protocolo B's attempt
+ * opening carries the revision record as well as its own coordinate, and the
+ * append door refuses an opening that neither finds a revision nor announces
+ * one — a refusal whose `path` has to be this key. One declaration reached by an
+ * import, rather than a second literal in `../ledger`: the drift
+ * `RECORDED_ROUTE_KEY` needs a fence law to prevent, an export prevents
+ * outright.
  */
-const REVISION_ID_KEY = "revisionId";
+export const REVISION_ID_KEY = "revisionId";
 const REVISION_NUMBER_KEY = "revisionNumber";
 const ATTEMPT_NUMBER_KEY = "attemptNumber";
 const ENVELOPE_SHA256_KEY = "envelopeSha256";
@@ -72,6 +82,34 @@ const RESTORED_FROM_REVISION_ID_KEY = "restoredFromRevisionId";
  * event outright and the refusal names the key.
  */
 const ARTIFACT_REFERENCE_KEY = "envelopeArtifactReferenceId";
+
+/**
+ * The two payload keys only an attempt's opening may state (P-18/protocolo B).
+ *
+ * The other five keys of that payload are the revision record's, declared
+ * above and read by the same fold, because the opening announces its revision
+ * as well as its attempt — which is what satisfies the attempt table's foreign
+ * key by construction rather than by assuming the revision row is already
+ * there.
+ *
+ * These two are different in kind from every key above them. A revision record
+ * is born from the **presence** of a key set on an event of any type, because
+ * no type announces a revision. An attempt has a type of its own, and it has to:
+ * `invocationId` and `legacyAttemptNumber` are facts that only the arrival which
+ * opens the attempt is entitled to state, and a fold keyed off presence would
+ * let any later event of the coordinate restate — and so contradict — them.
+ */
+export const INVOCATION_ID_KEY = "invocationId";
+export const LEGACY_ATTEMPT_NUMBER_KEY = "legacyAttemptNumber";
+
+/**
+ * The one event type that opens an attempt.
+ *
+ * Declared here as the fold's own reading of the contract vocabulary, the way
+ * `nextExecutionRouteProjection` names `RUN_STARTED` inline. It is a member of
+ * `ControlPlaneEventType`, so a typo would not compile.
+ */
+export const TASK_ATTEMPT_OPENED: ControlPlaneEvent["type"] = "TASK_ATTEMPT_OPENED";
 
 /** A payload value that is a non-empty string, or null. */
 function payloadText(payload: ControlPlaneEvent["payload"], key: string): string | null {
@@ -422,6 +460,134 @@ export function revisionAttemptNumber(event: ControlPlaneEvent): number | null {
 }
 
 /**
+ * The attempt one event opens, if it is an opening that carries one (P-18/B).
+ *
+ * Modelled on `nextTaskRevisionProjection`, with one deliberate difference: it
+ * keys off the **type** rather than off the presence of a key set. The revision
+ * fold cannot key off a type because no type announces a revision (ADR 0067,
+ * and the adjudication that migration 11 adds none). This one has a type of its
+ * own, and using it is the honest reading — `invocationId` and
+ * `legacyAttemptNumber` are facts only the opening arrival may state, so a fold
+ * that accepted them from any event carrying the keys would let a later event
+ * of the same coordinate restate, and therefore contradict, the identity the
+ * compare-and-set assigned.
+ *
+ * The same allocation of duties as every fold in this file. **At the producer
+ * and at the append door**, an opening whose payload is incomplete must never be
+ * appended — the door refuses it by name, with the coordinate and the key at
+ * fault. **Here**, an incomplete payload projects no row while the event still
+ * stands, because the event tables have no delete path and replay has to remain
+ * total. Refusing at replay would let a projection disown an event the log
+ * accepted.
+ *
+ * Every field comes from the EVENT or from the payload's own facts, and never
+ * from a clock: the coordinate's task is the event's `taskId`, so a payload
+ * cannot open another task's attempt, and `startedAt` is the event's
+ * `occurredAt`. `endedAt` and `outcome` are `null` because this escalón writes
+ * no closer at all (ADR 0073).
+ */
+export function nextTaskAttemptProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): TaskAttemptReadModel | null {
+  if (event.type !== TASK_ATTEMPT_OPENED) return null;
+
+  const payload = event.payload;
+  const revisionNumber = payloadCount(payload, REVISION_NUMBER_KEY);
+  const attemptNumber = payloadCount(payload, ATTEMPT_NUMBER_KEY);
+  const legacyAttemptNumber = payloadCount(payload, LEGACY_ATTEMPT_NUMBER_KEY);
+  const invocationId = payloadText(payload, INVOCATION_ID_KEY);
+
+  if (
+    revisionNumber === null ||
+    attemptNumber === null ||
+    legacyAttemptNumber === null ||
+    invocationId === null
+  ) {
+    return null;
+  }
+
+  return {
+    taskId: event.taskId,
+    revisionNumber,
+    attemptNumber,
+    legacyAttemptNumber,
+    invocationId,
+    startedAt: event.occurredAt,
+    endedAt: null,
+    outcome: null,
+    sequence,
+  };
+}
+
+/**
+ * The key of one attempt row, for the in-memory snapshot.
+ *
+ * A task id is a uuid and the two numbers are positive integers, so none of the
+ * three can contain the separator — the same argument `taskRevisionKey` makes.
+ */
+export function taskAttemptKey(
+  taskId: string,
+  revisionNumber: number,
+  attemptNumber: number,
+): string {
+  return taskId + " " + String(revisionNumber) + " " + String(attemptNumber);
+}
+
+/**
+ * The comparable form of an attempt row: what the attempt *is*.
+ *
+ * Two fields, by the argument `canonicalRevision` makes about three. The
+ * coordinate is the key both callers look the row up by, so it cannot differ
+ * across a comparison. `sequence` and `startedAt` are birth attributes — they
+ * record the arrival that announced the attempt, and an exact replay landing at
+ * a later position with its own instant is the SAME attempt. What is left is the
+ * identity the compare-and-set assigned: `legacyAttemptNumber` and
+ * `invocationId`. Those two are the refusal that matters — a second arrival at
+ * one coordinate naming a different invocation is two answers to "which run was
+ * this", which is execution §3's `:122` in one sentence.
+ *
+ * `endedAt` and `outcome` are deliberately **outside** the comparison, and that
+ * is a statement about this escalón rather than about the model: no fold here
+ * produces either, so including them would pin a shape no arrival can vary. The
+ * escalón that adds the closer decides whether a second ending is a replay or a
+ * conflict, and it is the one that should decide it.
+ *
+ * Exported for `canonicalRevision`'s reason: the incremental door and the
+ * snapshot must decide "same attempt" identically, or a rebuild would refuse a
+ * history the door accepted and `verifyIntegrity` would compare the stored
+ * projection against a different rule.
+ */
+export function canonicalAttempt(attempt: TaskAttemptReadModel): string {
+  return [String(attempt.legacyAttemptNumber), attempt.invocationId].join("\u0000");
+}
+
+/**
+ * The two uniqueness claims an attempt row makes, beside its coordinate.
+ *
+ * One per unique index on the table — `ux_task_attempt_read_model__invocation_id`
+ * and `ux_task_attempt_read_model__task_id_legacy_attempt_number`. The snapshot
+ * holds them so a **rebuild** refuses the histories the base would refuse: a
+ * replay that inserted two coordinates sharing an invocation, or sharing a flat
+ * assignment within one task, would otherwise reach SQLite and come back as a
+ * constraint failure naming one row and no coordinate — several layers from the
+ * event that caused it.
+ *
+ * Namespaced rather than kept in two maps, so the snapshot carries one index
+ * and the refusal can say which claim collided. The separator is a space rather
+ * than the NUL `watermarkKey` uses, because these strings reach a message an
+ * operator reads: an invocation id, a task id and an integer contain no space,
+ * so the argument `taskAttemptKey` makes about collisions holds either way, and
+ * only one of the two prints.
+ */
+function attemptClaims(attempt: TaskAttemptReadModel): readonly string[] {
+  return [
+    "invocation " + attempt.invocationId,
+    "legacy " + attempt.taskId + " " + String(attempt.legacyAttemptNumber),
+  ];
+}
+
+/**
  * In-memory projection of an entire event stream.
  *
  * Used by rebuildReadModel to replay, and by verifyIntegrity to compute what
@@ -433,6 +599,16 @@ export interface ProjectionSnapshot {
   readonly workerTasks: Map<string, WorkerTaskProjection>;
   readonly executionRoutes: Map<string, ExecutionRouteReadModel>;
   readonly taskRevisions: Map<string, TaskRevisionReadModel>;
+  readonly taskAttempts: Map<string, TaskAttemptReadModel>;
+  /**
+   * The attempt table's two unique indexes, in memory.
+   *
+   * A claim to the coordinate key that already holds it, so a collision names
+   * the earlier attempt rather than just failing. Not a projection and never
+   * written anywhere: it exists so that a rebuild refuses the same histories
+   * the base's indexes refuse, at the event that caused them.
+   */
+  readonly taskAttemptClaims: Map<string, string>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -442,6 +618,8 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     workerTasks: new Map<string, WorkerTaskProjection>(),
     executionRoutes: new Map<string, ExecutionRouteReadModel>(),
     taskRevisions: new Map<string, TaskRevisionReadModel>(),
+    taskAttempts: new Map<string, TaskAttemptReadModel>(),
+    taskAttemptClaims: new Map<string, string>(),
   };
 }
 
@@ -518,6 +696,59 @@ export function applyEventToSnapshot(
       }
     } else {
       snapshot.taskRevisions.set(key, revision);
+    }
+  }
+
+  // The attempt record, when the event is an opening that carries one. Folded
+  // AFTER the revision for the reason the rebuild writes it after: the row is
+  // the child of `fk_task_attempt_read_model__task_revision_read_model`, and
+  // the opening announces both, so its own revision has to be in the snapshot
+  // before the attempt that names it.
+  //
+  // Insert-only here as it is in the table, and by the same three branches the
+  // revision takes — replay, refusal, insert — plus one the revision does not
+  // need: the two uniqueness claims. Those are what make N-P18-8's determinism
+  // real rather than asserted. A rebuild that quietly reassigned an invocation
+  // or a flat number would be the one failure this table exists to prevent, and
+  // a rebuild that reached SQLite's indexes instead of refusing here would name
+  // a row rather than the event.
+  const attempt = nextTaskAttemptProjection(event, sequence);
+  if (attempt !== null) {
+    const key = taskAttemptKey(attempt.taskId, attempt.revisionNumber, attempt.attemptNumber);
+    const existing = snapshot.taskAttempts.get(key);
+    if (existing !== undefined) {
+      if (canonicalAttempt(existing) !== canonicalAttempt(attempt)) {
+        throw new LedgerValidationError([
+          {
+            path: "payload." + INVOCATION_ID_KEY,
+            message:
+              "attempt " +
+              key +
+              " is already recorded with a different identity, and an attempt is opened once",
+          },
+        ]);
+      }
+    } else {
+      for (const claim of attemptClaims(attempt)) {
+        const holder = snapshot.taskAttemptClaims.get(claim);
+        if (holder !== undefined) {
+          throw new LedgerValidationError([
+            {
+              path: "payload." + INVOCATION_ID_KEY,
+              message:
+                "attempt " +
+                key +
+                " claims " +
+                claim +
+                ", which attempt " +
+                holder +
+                " already holds; the attempt and its invocation are a bijection",
+            },
+          ]);
+        }
+      }
+      for (const claim of attemptClaims(attempt)) snapshot.taskAttemptClaims.set(claim, key);
+      snapshot.taskAttempts.set(key, attempt);
     }
   }
 }

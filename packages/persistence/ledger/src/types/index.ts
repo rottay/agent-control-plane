@@ -222,6 +222,49 @@ export interface TaskRevisionReadModel {
   readonly sequence: number;
 }
 
+/**
+ * One attempt at one revision — execution §3, the third rung of the identity
+ * ladder (P-18/protocolo B).
+ *
+ * The coordinate is `(taskId, revisionNumber, attemptNumber)` and
+ * `attemptNumber` restarts at 1 in each new revision, which is exactly why the
+ * coordinate carries the revision: a restore cannot collide with the attempt it
+ * restored from.
+ *
+ * **Two numbers, and only one of them counts anything.** `attemptNumber` is the
+ * coordinate's third component. `legacyAttemptNumber` is the flat integer
+ * migration 1's `attempt` column has always demanded — monotone *per task*,
+ * assigned once by a compare-and-set inside the append transaction, never
+ * derived from a clock, and equal to `control_plane_events.attempt` on every
+ * event of this coordinate. It is not a per-revision counter and not a second
+ * authority about which attempt this is.
+ *
+ * `invocationId` is the durable neutral identity of the V1 run, unique
+ * **globally**: with the primary key it is the bijection execution §3 asks for,
+ * one invocation per attempt and one attempt per invocation. It is not a worker
+ * run id and not an engine's private handle, and replay and handoff carry it
+ * rather than minting a second one.
+ *
+ * **The row is insert-only, and it is born open.** `endedAt` and `outcome` are
+ * `null` on every row this build writes: escalón B records the opening and has
+ * no closer, because mapping a terminal task state onto `effect_outcome_status`
+ * is a decision nobody has taken. ADR 0073 records the debt and names the
+ * escalón that owes it. A reader treats `null` here as "still running or not
+ * recorded yet", never as "ended with no outcome" — which
+ * `ck_task_attempt_read_model__outcome_pair` makes unrepresentable anyway.
+ */
+export interface TaskAttemptReadModel {
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly legacyAttemptNumber: number;
+  readonly invocationId: string;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+  readonly outcome: string | null;
+  readonly sequence: number;
+}
+
 export interface TaskQuery {
   readonly state?: TaskState | undefined;
   /** Exclusive taskId cursor. Tasks are ordered by taskId ascending. */

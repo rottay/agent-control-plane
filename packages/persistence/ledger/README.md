@@ -164,6 +164,8 @@ fourteenth class cannot arrive without appearing here.
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
 | `worker_task_read_model` | derived | emitter to task associations |
 | `execution_route_read_model` | derived | the route each `(task, attempt)` was admitted on: provider, model, account, transport and the capability-policy version that chose them |
+| `task_revision_read_model` | derived | one row per `(task, revision)`: the revision's stable handle, its envelope digest and what it restored |
+| `task_attempt_read_model` | derived | one row per `(task, revision, attempt)`: the flat assignment that goes in the legacy `attempt` column, and the invocation the attempt is in bijection with |
 | `initiative_read_model` | derived | current status, counts, first and last position |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
@@ -388,6 +390,127 @@ will use, and refuses — naming the rows and repairing nothing — if one does.
 has to be asked now: the column is `UNIQUE`, so a collision discovered later is
 a constraint failure naming one row and no coordinate, on a ledger already in
 production.
+
+## The attempt, and the number it was assigned once
+
+Migration 12 gives the task stream the third rung of the identity ladder
+(execution §3, P-18/protocolo B). `task_id` is stable for life;
+`(task_id, revision_number)` is a unit of work; `(task_id, revision_number,
+attempt_number)` is one try at it. `attempt_number` restarts at 1 in each new
+revision and cannot collide with a restore, because the coordinate carries the
+revision.
+
+**Two numbers, and only one of them counts anything.** `attempt_number` is the
+coordinate's third component. `legacy_attempt_number` is the flat integer
+migration 1's `attempt` column has always demanded: monotone **per task**,
+assigned once, stable for this coordinate for ever, and equal to
+`control_plane_events.attempt` on every event of the coordinate. It is not a
+per-revision counter and not a second authority about which attempt this is.
+`UNIQUE (task_id, legacy_attempt_number)` is what makes it usable as the legacy
+column — two coordinates sharing it would make that column ambiguous for every
+query written before migration 11.
+
+`invocation_id` is unique **globally**, and with the primary key that is the
+bijection: one invocation names one attempt and one attempt names one
+invocation. It is not a worker run id and not an engine's private handle; a
+replay or a handoff carries the value rather than minting a second one.
+
+### `TASK_ATTEMPT_OPENED`, and why this rung has a type
+
+Migration 11 deliberately added no event type: the revision coordinate rides
+payload keys, so the revision fold keys off the **presence** of a complete key
+set. The attempt is the opposite case, and the asymmetry is the point.
+`invocationId` and `legacyAttemptNumber` are facts that only the arrival opening
+the attempt is entitled to state, so a fold keyed off presence would let any
+later event of the coordinate restate — and therefore contradict — the identity
+that was assigned. `CONTROL_PLANE_EVENT_TYPES` moves 24 → 25, which is the pin
+P-05/B avoided and P-18 cannot.
+
+The type is a **same-state passthrough** (`fromState === toState`), like
+`TOKEN_USAGE_RECORDED` and `TOOL_CALL_RECORDED`: opening an attempt records an
+identity, it does not move a lifecycle state. Its payload is the coordinate plus
+the revision record plus the two identity facts — `{revisionId, revisionNumber,
+attemptNumber, envelopeSha256, restoredFromRevisionId?, invocationId,
+legacyAttemptNumber}`. Carrying the revision keys is not redundancy: it is what
+satisfies `fk_task_attempt_read_model__task_revision_read_model` by
+construction, because the revision row is folded from the same event in the same
+transaction rather than assumed to be already there.
+
+**Nothing in this build emits one.** The producer is escalón G, in
+`@acp/runtime`. This escalón lands the contract, the channel, the migration, the
+fold and the door; ADR 0073 records the debt rather than discharging it.
+
+### The compare-and-set, and who proposes what
+
+The producer **proposes** `attempt` and `legacyAttemptNumber`; the ledger, inside
+the `BEGIN IMMEDIATE` an append already holds, computes what the answer must have
+been and refuses by name if the proposal differs.
+
+That division is forced by the shape of an append rather than chosen for taste.
+An event arrives *signed*: `canonicalJson` and therefore `event_sha256` cover
+`attempt`, and both are computed before the transaction opens. So execution §3's
+"se asigna" cannot mean "the ledger writes a number into the event" without
+either recanonicalizing a body the caller already hashed or growing a second
+append path that builds and signs events of its own. ADR 0073 records the
+reading.
+
+What the door computes:
+
+- **The coordinate is already open** → its assignment and its invocation are
+  reused. An opening that agrees is a replay; one naming a different invocation,
+  or a different flat assignment, is refused.
+- **The coordinate is new** → `1 + MAX(attempt)` over every event of the task,
+  **legacy rows included**, and `1` for a task with no events at all.
+
+Three refusals sit around it, all `LedgerValidationError` with a `path` — never a
+`SqliteError` from an index (F-2's standard, ADR 0072):
+
+- `payload.legacyAttemptNumber` must equal the event's `attempt` column. This is
+  the third pairing rule, the sister of the two the stream trigger holds for
+  `revisionNumber`/`attemptNumber`, and it lives at the door rather than in a
+  fourth trigger (ADR 0073). The cost is stated rather than hidden: a writer that
+  bypasses this door can still record a row whose payload and column disagree.
+- An opening must find a revision or announce one, so the foreign key is guarded
+  by name before SQLite guards it by abort.
+- One invocation may not name two coordinates, guarded so the refusal names both
+  attempts instead of arriving from
+  `ux_task_attempt_read_model__invocation_id`.
+
+**The cap is the contract's, and the door consults it.** `attempt` is bounded at
+10 000 by `IdempotencyCoordinates`, and this file reads the bound off that schema
+rather than restating the literal. The check runs on the value the ledger
+**computes**, *before* the comparison with what the event proposed: reversed, the
+contract's own parse would refuse `attempt = 10001` first and the claim that the
+compare-and-set knows the cap would never be exercised. Exhausting the space is a
+typed refusal naming the cap (adjudication Q4) — a task ten thousand attempts
+deep is resolved with a new task, not with a wrapped counter.
+
+**Tolerant without a row, strict with one.** A V2 event that is *not* an opening
+is checked against the assignment only if the attempt has been opened. A V2 event
+over a coordinate with no attempt row is lawful: migration 11 declared the
+"migrated but not populated" window, and demanding that an opening precede
+everything would retroactively refuse histories the log already holds.
+
+### What this escalón does not write
+
+`ended_at` and `outcome` are `NULL` on every row this build produces, and the
+nullity is declared rather than accidental. Mapping a terminal task state onto
+`effect_outcome_status` is a decision nobody has taken, so escalón B records the
+opening and no closer; ADR 0073 names the escalón that owes it.
+`ck_task_attempt_read_model__outcome_pair` — `(ended_at IS NULL) = (outcome IS
+NULL)` — is what stops a later writer recording half of an ending, and it is
+exercised at the schema rather than through a fold that cannot reach it.
+
+The row is **insert-only**, on `task_revision_read_model`'s terms. "Same
+attempt" is two fields — `legacy_attempt_number` and `invocation_id` — by the
+argument `canonicalRevision` makes about three: the coordinate is the key both
+callers look the row up by, and `sequence` and `started_at` record the *arrival*
+that announced the attempt rather than the attempt. One exported function,
+`canonicalAttempt`, is what the append door and the snapshot compare with. The
+snapshot additionally carries the table's two unique indexes in memory, so a
+**rebuild** refuses the histories the base would refuse — two invocations for one
+coordinate, or one flat assignment across two — at the event that caused them
+rather than several layers away.
 
 ## The account stream's hash chain
 

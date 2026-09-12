@@ -1207,6 +1207,106 @@ SELECT
   '1970-01-01T00:00:00.000Z';
 `,
   },
+  {
+    version: 12,
+    name: "task_attempt_identity",
+    sql: `
+-- The attempt, as its own record (execution §3, P-18/protocolo B).
+--
+-- The third rung of the identity ladder. \`task_id\` is stable for life;
+-- \`(task_id, revision_number)\` is a unit of work; \`(task_id,
+-- revision_number, attempt_number)\` is one try at it. \`attempt_number\`
+-- restarts at 1 in each new revision and cannot collide with a restore,
+-- because the coordinate carries the revision.
+--
+-- **Two numbers, and only one of them is a counter.** \`attempt_number\` is
+-- the coordinate's third component. \`legacy_attempt_number\` is the flat
+-- integer migration 1's \`attempt\` column has always demanded: a value
+-- monotone **per task**, assigned once, stable for this coordinate for ever,
+-- and equal to \`control_plane_events.attempt\` on every event of the
+-- coordinate. It is not a per-revision counter and not a second authority —
+-- streams §1.1 settles that, and the compare-and-set in \`@acp/ledger\` is
+-- what holds it.
+--
+-- **The foreign key is on the revision, and the order below is load-bearing.**
+-- \`foreign_keys\` is ON, so this table is created after
+-- \`task_revision_read_model\` and must be cleared BEFORE it on a rebuild:
+-- \`DERIVED_TABLES\` puts it first for the reason it puts
+-- \`routing_assignment_fallback\` before the assignments it references.
+--
+-- **\`ended_at\` and \`outcome\` have no producer in this migration**, and the
+-- nullity is declared rather than accidental (ADR 0073). This escalón writes
+-- the opening and nothing else; the closer belongs to the escalón that owns a
+-- mapping from a terminal task state to \`effect_outcome_status\`, which nobody
+-- has adjudicated. Every row this build writes is born \`NULL/NULL\`, and
+-- \`ck_task_attempt_read_model__outcome_pair\` is what keeps a later writer
+-- from recording half of an ending.
+CREATE TABLE task_attempt_read_model (
+  task_id               TEXT    NOT NULL,
+  revision_number       INTEGER NOT NULL,
+  attempt_number        INTEGER NOT NULL,
+  legacy_attempt_number INTEGER NOT NULL,
+  invocation_id         TEXT    NOT NULL,
+  started_at            TEXT    NOT NULL,
+  ended_at              TEXT,
+  outcome               TEXT,
+  sequence              INTEGER NOT NULL,
+  CONSTRAINT pk_task_attempt_read_model
+    PRIMARY KEY (task_id, revision_number, attempt_number),
+  CONSTRAINT fk_task_attempt_read_model__task_revision_read_model
+    FOREIGN KEY (task_id, revision_number)
+    REFERENCES task_revision_read_model (task_id, revision_number),
+  CONSTRAINT ck_task_attempt_read_model__attempt_number
+    CHECK (attempt_number >= 1),
+  CONSTRAINT ck_task_attempt_read_model__legacy_attempt_number
+    CHECK (legacy_attempt_number >= 1),
+  CONSTRAINT ck_task_attempt_read_model__outcome
+    CHECK (outcome IS NULL
+      OR outcome IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'OUTCOME_UNKNOWN')),
+  -- \`NULL\` if and only if: an attempt that ended without an outcome, or an
+  -- outcome with no ending, are each half a fact.
+  CONSTRAINT ck_task_attempt_read_model__outcome_pair
+    CHECK ((ended_at IS NULL) = (outcome IS NULL))
+) STRICT;
+
+-- The flat assignment is unique within the task, which is what makes it usable
+-- as \`control_plane_events.attempt\`: two coordinates sharing it would make
+-- the legacy column ambiguous for every query written before migration 11.
+CREATE UNIQUE INDEX ux_task_attempt_read_model__task_id_legacy_attempt_number
+  ON task_attempt_read_model (task_id, legacy_attempt_number);
+
+-- Unique GLOBALLY, not per task: together with the primary key this is the
+-- bijection execution §3 asks for — one invocation names one attempt and one
+-- attempt names one invocation. A replay or a handoff carries the same value
+-- rather than minting a second one.
+CREATE UNIQUE INDEX ux_task_attempt_read_model__invocation_id
+  ON task_attempt_read_model (invocation_id);
+
+-- The watermark, seeded from the head this stream already has.
+--
+-- Migration 11's case exactly, and for its reason: the projection arrives over
+-- \`control_plane_events\`, which may already hold a long history, and the
+-- fold over all of it is legitimately empty because no historical row carries
+-- an attempt opening. So the projection IS level with the stream the moment the
+-- table exists. A literal zero would make every ledger in the field fail its
+-- own integrity check immediately after a routine upgrade, with nothing
+-- whatsoever wrong with it.
+--
+-- On a fresh ledger the three subqueries read 0, 0 and the genesis digest, so
+-- this is identical to a literal zero seed there.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  'task_attempt_read_model',
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  '1970-01-01T00:00:00.000Z';
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -1223,9 +1323,12 @@ export const MIGRATIONS: readonly Migration[] = SOURCES.map((source) => ({
  * The order is load-bearing where a foreign key exists: `foreign_keys` is ON,
  * so `routing_assignment_fallback` is cleared before the assignment rows it
  * references, exactly as `worker_task_read_model` precedes `worker_read_model`.
+ * `task_attempt_read_model` precedes `task_revision_read_model` for the same
+ * reason: `fk_task_attempt_read_model__task_revision_read_model` points at it.
  */
 export const DERIVED_TABLES: readonly string[] = [
   "worker_task_read_model",
+  "task_attempt_read_model",
   "task_revision_read_model",
   "task_read_model",
   "worker_read_model",
@@ -1245,6 +1348,10 @@ export const PROJECTION_NAMES: readonly string[] = [
   // list is evaluated before that declaration and the three names above it are
   // literals too. The pair is asserted equal by the suite.
   "task_revision_read_model",
+  // The same, for `TASK_ATTEMPT_PROJECTION`. Its position here is free — this
+  // list is a roster, not an order — unlike its position in `DERIVED_TABLES`,
+  // which a foreign key decides.
+  "task_attempt_read_model",
 ];
 
 /**
@@ -1291,6 +1398,25 @@ export const TASK_REVISION_PROJECTION = "task_revision_read_model";
  * a number nobody could search for.
  */
 export const TASK_REVISION_MIGRATION = 11;
+
+/**
+ * The projection that holds one row per attempt of one revision (P-18/B).
+ *
+ * Named rather than spelled out at its use sites, for `TASK_REVISION_PROJECTION`'s
+ * reason: a string repeated at the derived-table list, the projection names, the
+ * source pairs and the fold is four chances to typo one of them into a row
+ * nothing reads.
+ */
+export const TASK_ATTEMPT_PROJECTION = "task_attempt_read_model";
+
+/**
+ * The migration that adds the attempt's own record.
+ *
+ * Named for the reason `TASK_REVISION_MIGRATION` is: the suite has to hold the
+ * number against where the SQL actually sits, and a bare `12` at that assertion
+ * would be a number nobody could search for.
+ */
+export const TASK_ATTEMPT_MIGRATION = 12;
 
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
@@ -1361,6 +1487,7 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: "worker_read_model", sourceStream: TASK_STREAM },
   { projectionName: "execution_route_read_model", sourceStream: TASK_STREAM },
   { projectionName: TASK_REVISION_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: TASK_ATTEMPT_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -1494,6 +1621,15 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "table", name: "task_revision_read_model" },
   { type: "index", name: "ux_task_revision_read_model__revision_id" },
   { type: "index", name: "ix_task_revision_read_model__envelope_sha256" },
+  // P-18/protocolo B. Three objects and no trigger: the pairing rule between
+  // `payload.legacyAttemptNumber` and the `attempt` column is held by the
+  // append door as a typed refusal, not by a fourth `tr_` (ADR 0073). Both
+  // indexes are inventoried by name, because they are the bijection — dropping
+  // either leaves `schema_migrations` intact while the read model quietly
+  // admits two invocations for one attempt.
+  { type: "table", name: "task_attempt_read_model" },
+  { type: "index", name: "ux_task_attempt_read_model__task_id_legacy_attempt_number" },
+  { type: "index", name: "ux_task_attempt_read_model__invocation_id" },
 ];
 
 export interface MigrationConformance {

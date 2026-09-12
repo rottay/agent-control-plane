@@ -1128,12 +1128,14 @@ describe("integrity", () => {
     // stream that already holds three rows. A ledger created empty and then
     // grown has a baseline of 0, and 0 is never ahead of anything.
     //
-    // Rewinding to before 10 means undoing 11 as well, because the reopen
-    // re-applies everything the row set no longer claims. `ALTER TABLE ... ADD
-    // COLUMN` is not idempotent, so a re-applied 11 over a schema that still
-    // carries the coordinate aborts on "duplicate column name". The order is
-    // forced rather than stylistic: SQLite refuses `DROP COLUMN` for a column a
-    // trigger references, so the coordinate trigger goes before the columns.
+    // Rewinding to before 10 means undoing 11 and 12 as well, because the
+    // reopen re-applies everything the row set no longer claims. `ALTER TABLE
+    // ... ADD COLUMN` is not idempotent, so a re-applied 11 over a schema that
+    // still carries the coordinate aborts on "duplicate column name". The order
+    // is forced rather than stylistic, twice over: SQLite refuses `DROP COLUMN`
+    // for a column a trigger references, so the coordinate trigger goes before
+    // the columns; and `foreign_keys` is ON, so migration 12's attempt table
+    // and its two unique indexes go before the revision table they reference.
     const rewind = new DatabaseSync(path);
     rewind.exec("DELETE FROM ledger_meta WHERE key LIKE 'account_integrity_%'");
     rewind.exec(
@@ -1144,6 +1146,9 @@ describe("integrity", () => {
     );
     rewind.exec(
       "DROP TRIGGER tr_control_plane_events__validate_v2_coordinate;" +
+        "DROP INDEX ux_task_attempt_read_model__invocation_id;" +
+        "DROP INDEX ux_task_attempt_read_model__task_id_legacy_attempt_number;" +
+        "DROP TABLE task_attempt_read_model;" +
         "DROP INDEX ix_task_revision_read_model__envelope_sha256;" +
         "DROP INDEX ux_task_revision_read_model__revision_id;" +
         "DROP TABLE task_revision_read_model;" +
@@ -1156,7 +1161,7 @@ describe("integrity", () => {
         "ALTER TABLE task_read_model DROP COLUMN step_id;" +
         "ALTER TABLE task_read_model DROP COLUMN commit_policy;" +
         "DELETE FROM projection_watermark " +
-        "WHERE projection_name = 'task_revision_read_model';",
+        "WHERE projection_name IN ('task_revision_read_model', 'task_attempt_read_model');",
     );
     rewind.exec("DELETE FROM schema_migrations WHERE version >= 10");
     rewind.close();

@@ -1442,9 +1442,9 @@ export type EventsQuery = z.infer<typeof EventsQuery>;
 /**
  * The reduced vocabulary a stream reader subscribes in.
  *
- * Five channels over twenty-four event types. The reduction is the point: a
+ * Five channels over twenty-five event types. The reduction is the point: a
  * reader that wants "did anything happen to the lifecycle" should not have to
- * enumerate seven type names and be wrong the day a twenty-fifth is added.
+ * enumerate seven type names and be wrong the day a twenty-sixth is added.
  * The map below is what makes the reduction checkable rather than editorial.
  */
 export const STREAM_CHANNELS = [
@@ -1476,9 +1476,13 @@ export type StreamChannel = z.infer<typeof StreamChannel>;
  * is behaviourally empty now**.
  *
  * The accurate claim is about individual event types rather than channels.
- * These six still have no producer outside a library or a test:
+ * These seven still have no producer outside a library or a test:
  * `COMMIT_AUTHORIZED`, `ACCOUNT_SWITCH_STARTED`, `ACCOUNT_SWITCH_COMPLETED`,
- * `AUTH_REQUIRED_RAISED`, `QUOTA_WARNING` and `TOKEN_RESERVATION_RECORDED`.
+ * `AUTH_REQUIRED_RAISED`, `QUOTA_WARNING`, `TOKEN_RESERVATION_RECORDED` and
+ * `TASK_ATTEMPT_OPENED` — the last of which joined the list in P-18/protocolo
+ * B, which gives it a contract, a channel, a migration, a fold and a door
+ * deliberately without a production caller. `@acp/runtime` is escalón G, and
+ * that debt is recorded in ADR 0073 rather than discharged here.
  * `LEASE_ACQUIRED` and `LEASE_REVOKED` left this list in V2 concurrency C2:
  * the daemon's arbiter is their first production producer, writing one of each
  * per grant and per reclaim. `WRITE_SET_VIOLATION_DETECTED` left it in C4: the
@@ -1522,6 +1526,13 @@ export const STREAM_CHANNEL_BY_EVENT_TYPE: Readonly<
   // account rather than with the walk's own beats (`steps`) or with usage
   // attribution (`progress`).
   TOOL_CALL_RECORDED: "execution",
+  // The attempt's opening is the same class of fact: it says a run exists and
+  // what its durable identity is, which is "what it took to run it" rather
+  // than a move through the lifecycle. It is deliberately NOT `lifecycle`:
+  // `RUN_STARTED` is there because it genuinely changes state, and this one is
+  // a same-state passthrough. And it is not `steps`, which is the durable
+  // walk's own beats — an attempt is the thing the beats happen inside.
+  TASK_ATTEMPT_OPENED: "execution",
   // steps — the durable walk's own beats.
   ATOMIC_STEP_COMPLETED: "steps",
   CHECKPOINT_WRITTEN: "steps",

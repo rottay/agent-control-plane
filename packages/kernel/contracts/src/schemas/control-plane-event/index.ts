@@ -62,6 +62,31 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   // contract does enforce for it is what it enforces for every event — the
   // credential and transcript guards, and the payload byte budget.
   "TOOL_CALL_RECORDED",
+  // The attempt's own opening (P-18/protocolo B). A task fact and a same-state
+  // passthrough, exactly as the two usage types and the tool-call receipt above
+  // are: opening an attempt records an identity, it does not move a lifecycle
+  // state. It is the first member of this vocabulary that exists because a
+  // *projection* needs a birth event — `task_attempt_read_model`'s row cannot
+  // be folded from the presence of payload keys the way the revision record is,
+  // because the attempt carries facts (`invocationId`, `legacyAttemptNumber`)
+  // that only the arrival which opens it may state.
+  //
+  // The payload is the full coordinate plus the revision record plus the two
+  // identity facts: `{revisionId, revisionNumber, attemptNumber,
+  // envelopeSha256, restoredFromRevisionId?, invocationId,
+  // legacyAttemptNumber}`. Carrying the revision keys is not redundancy — it is
+  // what satisfies `fk_task_attempt_read_model__task_revision_read_model` by
+  // construction, because the revision row is folded from this same event in
+  // this same transaction rather than assumed to be already there.
+  //
+  // That shape is the **producer's** law and the ledger door's, not this
+  // contract's: `payload` here is `z.record(…, z.unknown())` for every type, so
+  // what keeps a stray key out is `@acp/runtime`'s builder — which is escalón G
+  // and does not exist yet. What this contract does enforce for it is what it
+  // enforces for every event: the key rule above (a complete V2 coordinate in
+  // the payload requires the V2 key), the credential and transcript guards, and
+  // the payload byte budget.
+  "TASK_ATTEMPT_OPENED",
 ] as const;
 
 export const ControlPlaneEventType = z.enum(CONTROL_PLANE_EVENT_TYPES);

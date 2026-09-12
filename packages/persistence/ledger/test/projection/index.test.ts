@@ -8,13 +8,18 @@ import type { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  applyEventToSnapshot,
+  canonicalAttempt,
   canonicalRevision,
+  createProjectionSnapshot,
   nextExecutionRouteProjection,
   nextRoutingAssignmentFromInitiative,
   nextRoutingAssignmentProjection,
+  nextTaskAttemptProjection,
   nextTaskProjection,
   nextTaskRevisionProjection,
   routingAssignmentId,
+  taskAttemptKey,
 } from "../../src/projection/index.js";
 import { LedgerValidationError } from "../../src/errors/index.js";
 import type { RegistryDocument, TaskReadModel } from "../../src/types/index.js";
@@ -771,5 +776,258 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
     expect(
       canonicalRevision({ ...born!, restoredFromRevisionId: OTHER_REVISION }),
     ).not.toBe(canonicalRevision({ ...born!, restoredFromRevisionId: null }));
+  });
+});
+
+describe("the attempt fold reads an opening, or reads nothing", () => {
+  const ATTEMPT_TASK = "3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c01";
+  const REVISION = "4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d01";
+  const ENVELOPE = "e".repeat(64);
+
+  /** The seven keys an opening carries: revision record, coordinate, identity. */
+  const OPENING = {
+    revisionId: REVISION,
+    revisionNumber: 2,
+    attemptNumber: 1,
+    envelopeSha256: ENVELOPE,
+    invocationId: "inv-0001",
+    legacyAttemptNumber: 4,
+  };
+
+  function attemptEvent(
+    payload: Record<string, unknown>,
+    overrides: {
+      readonly type?: ControlPlaneEvent["type"];
+      readonly occurredAt?: string;
+      readonly attempt?: number;
+      readonly transitionId?: string;
+      readonly taskId?: string;
+    } = {},
+  ): ControlPlaneEvent {
+    // Cast rather than parsed, exactly as the revision fixtures above are —
+    // which is why the key is still composed correctly: a fixture the contract
+    // would have refused asserts the fold's behaviour on an event no producer
+    // could emit.
+    const taskId = overrides.taskId ?? ATTEMPT_TASK;
+    const transitionId = overrides.transitionId ?? "attempt.open";
+    const attempt = overrides.attempt ?? 4;
+    const revisionNumber = payload["revisionNumber"];
+    const attemptNumber = payload["attemptNumber"];
+    const occurredAt = overrides.occurredAt ?? "2026-09-12T09:00:00.000Z";
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e01",
+      taskId,
+      attempt,
+      transitionId,
+      idempotencyKey:
+        typeof revisionNumber === "number" && typeof attemptNumber === "number"
+          ? buildV2IdempotencyKey({
+              stream: "control_plane_events",
+              taskId,
+              revisionNumber,
+              attemptNumber,
+              transitionId,
+            })
+          : buildIdempotencyKey({ taskId, attempt, transitionId }),
+      type: overrides.type ?? "TASK_ATTEMPT_OPENED",
+      fromState: "RUNNING",
+      toState: "RUNNING",
+      emittedBy: EMITTED_BY,
+      occurredAt,
+      recordedAt: occurredAt,
+      correlationId: null,
+      causationId: null,
+      payload,
+    } as unknown as ControlPlaneEvent;
+  }
+
+  it("keys off the type, not off the presence of the key set", () => {
+    // The deliberate asymmetry with the revision fold above, and the reason it
+    // exists: `invocationId` and `legacyAttemptNumber` are facts only the
+    // opening arrival may state, so a fold keyed off presence would let a later
+    // event of the same coordinate restate — and therefore contradict — the
+    // identity the compare-and-set assigned.
+    expect(nextTaskAttemptProjection(attemptEvent(OPENING), 7)).not.toBeNull();
+    for (const type of ["TASK_DISCOVERED", "RUN_STARTED", "TOKEN_USAGE_RECORDED"] as const) {
+      expect(nextTaskAttemptProjection(attemptEvent(OPENING, { type }), 7), type).toBeNull();
+    }
+
+    // And the revision fold still reads the SAME payload as a revision record,
+    // because the opening announces both. That is what satisfies the attempt
+    // table's foreign key by construction.
+    expect(nextTaskRevisionProjection(attemptEvent(OPENING), 7)).not.toBeNull();
+  });
+
+  it("requires the whole identity set, and a partial set is no attempt at all", () => {
+    // Each of the four keys the row cannot be built without, removed in turn. A
+    // fold that accepted three of four would mint a row with a field it
+    // invented, and there is nothing to invent an invocation from.
+    for (const missing of [
+      "revisionNumber",
+      "attemptNumber",
+      "invocationId",
+      "legacyAttemptNumber",
+    ]) {
+      const partial = Object.fromEntries(
+        Object.entries(OPENING).filter(([key]) => key !== missing),
+      );
+      expect(nextTaskAttemptProjection(attemptEvent(partial), 7), missing).toBeNull();
+    }
+
+    // A key of the wrong shape is the same as a key absent.
+    for (const bad of [0, -1, 1.5, "4", null, Number.MAX_SAFE_INTEGER + 2]) {
+      expect(
+        nextTaskAttemptProjection(
+          attemptEvent({ ...OPENING, legacyAttemptNumber: bad }),
+          7,
+        ),
+        JSON.stringify(bad),
+      ).toBeNull();
+    }
+    for (const bad of ["", 1, null]) {
+      expect(
+        nextTaskAttemptProjection(attemptEvent({ ...OPENING, invocationId: bad }), 7),
+        JSON.stringify(bad),
+      ).toBeNull();
+    }
+  });
+
+  it("takes every field from the event, and is born open", () => {
+    const row = nextTaskAttemptProjection(attemptEvent(OPENING), 42);
+    expect(row).toEqual({
+      // The task is the EVENT's, so a payload cannot open another task's
+      // attempt — the same structural binding the revision and route rows have.
+      taskId: ATTEMPT_TASK,
+      revisionNumber: 2,
+      attemptNumber: 1,
+      legacyAttemptNumber: 4,
+      invocationId: "inv-0001",
+      // `occurredAt`, never a clock: the fold is a pure function of the stream,
+      // which is what makes two rebuilds of one ledger identical.
+      startedAt: "2026-09-12T09:00:00.000Z",
+      // No closer in this escalón (ADR 0073). Every row is born NULL/NULL, and
+      // `ck_task_attempt_read_model__outcome_pair` is what keeps a later writer
+      // from recording half of an ending.
+      endedAt: null,
+      outcome: null,
+      sequence: 42,
+    });
+
+    // A payload naming another task is ignored on that point: `taskId` is not
+    // a key of the attempt record at all.
+    const foreign = nextTaskAttemptProjection(
+      attemptEvent({ ...OPENING, taskId: "6f6f6f6f-6f6f-4f6f-8f6f-6f6f6f6f6f01" }),
+      42,
+    );
+    expect(foreign?.taskId).toBe(ATTEMPT_TASK);
+
+    // And an `endedAt` in the payload is not a key either: this fold has no
+    // closer to read one with, so a payload claiming one changes nothing.
+    const claiming = nextTaskAttemptProjection(
+      attemptEvent({ ...OPENING, endedAt: "2026-09-12T10:00:00.000Z", outcome: "SUCCEEDED" }),
+      42,
+    );
+    expect([claiming?.endedAt, claiming?.outcome]).toEqual([null, null]);
+  });
+
+  it("compares what the attempt IS, not the arrival that recorded it", () => {
+    // `canonicalRevision`'s argument, applied to two fields instead of three.
+    // The coordinate is the key both callers look the row up by; `sequence` and
+    // `startedAt` record the arrival, and an exact replay landing later with
+    // its own instant is the SAME attempt.
+    const born = nextTaskAttemptProjection(attemptEvent(OPENING), 10);
+    const replayed = nextTaskAttemptProjection(
+      attemptEvent(OPENING, { occurredAt: "2026-09-12T17:45:00.000Z" }),
+      44,
+    );
+    expect(born?.startedAt).not.toBe(replayed?.startedAt);
+    expect(canonicalAttempt(born!)).toBe(canonicalAttempt(replayed!));
+
+    // And the two that ARE the identity each still separate it. These are the
+    // refusals the comparison preserves: two answers to "which run was this".
+    expect(canonicalAttempt({ ...born!, invocationId: "inv-other" })).not.toBe(
+      canonicalAttempt(born!),
+    );
+    expect(canonicalAttempt({ ...born!, legacyAttemptNumber: 9 })).not.toBe(
+      canonicalAttempt(born!),
+    );
+  });
+
+  it("refuses, in the snapshot, the two histories the append door refuses", () => {
+    // The snapshot fold IS the rebuild's fold — `rebuildReadModel` reaches it
+    // through `#replay` — so this is where a rebuild's refusals are decided.
+    // Drilled here at the definition as well as through a real rebuild in the
+    // ledger's own suite, because a second definition of "same attempt" is what
+    // would let a rebuild disagree with the door about which ledgers are
+    // writable.
+    const key = taskAttemptKey(ATTEMPT_TASK, 2, 1);
+
+    // Two invocations at one coordinate.
+    const first = createProjectionSnapshot();
+    applyEventToSnapshot(first, attemptEvent(OPENING), 1);
+    expect(first.taskAttempts.get(key)?.invocationId).toBe("inv-0001");
+    expect(() => {
+      applyEventToSnapshot(
+        first,
+        attemptEvent({ ...OPENING, invocationId: "inv-0002" }, { transitionId: "again" }),
+        2,
+      );
+    }).toThrow(/already recorded with a different identity/);
+
+    // One flat assignment across two coordinates. `UNIQUE (task_id,
+    // legacy_attempt_number)` would abort on it in the base; the snapshot
+    // refuses it first and names the coordinate that already holds the claim.
+    const second = createProjectionSnapshot();
+    applyEventToSnapshot(second, attemptEvent(OPENING), 1);
+    expect(() => {
+      applyEventToSnapshot(
+        second,
+        attemptEvent(
+          { ...OPENING, attemptNumber: 2, invocationId: "inv-0002" },
+          { transitionId: "a2" },
+        ),
+        2,
+      );
+    }).toThrow(new RegExp("claims legacy " + ATTEMPT_TASK + " 4, which attempt " + key));
+
+    // One invocation across two coordinates, which is the other half of the
+    // bijection and the other unique index.
+    const third = createProjectionSnapshot();
+    applyEventToSnapshot(third, attemptEvent(OPENING), 1);
+    expect(() => {
+      applyEventToSnapshot(
+        third,
+        attemptEvent(
+          { ...OPENING, attemptNumber: 2, legacyAttemptNumber: 5 },
+          { transitionId: "a2" },
+        ),
+        2,
+      );
+    }).toThrow(/claims invocation inv-0001/);
+  });
+
+  it("folds an exact replay of one opening to nothing, and a second coordinate to a row", () => {
+    // The branch the refusals above are measured against: without it, every
+    // assertion there would be satisfied by a fold that refused everything.
+    const snapshot = createProjectionSnapshot();
+    applyEventToSnapshot(snapshot, attemptEvent(OPENING), 1);
+    applyEventToSnapshot(snapshot, attemptEvent(OPENING, { transitionId: "replay" }), 2);
+    expect(snapshot.taskAttempts.size).toBe(1);
+    // The FIRST arrival's row is kept, birth attributes and all.
+    expect(snapshot.taskAttempts.get(taskAttemptKey(ATTEMPT_TASK, 2, 1))?.sequence).toBe(1);
+
+    applyEventToSnapshot(
+      snapshot,
+      attemptEvent(
+        { ...OPENING, attemptNumber: 2, invocationId: "inv-0002", legacyAttemptNumber: 5 },
+        { transitionId: "a2", attempt: 5 },
+      ),
+      3,
+    );
+    expect(snapshot.taskAttempts.size).toBe(2);
+    expect([...snapshot.taskAttempts.values()].map((row) => row.legacyAttemptNumber)).toEqual([
+      4, 5,
+    ]);
   });
 });

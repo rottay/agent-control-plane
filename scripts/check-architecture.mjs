@@ -8921,6 +8921,112 @@ const P18A_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-18/protocolo, escalón B — the attempt's identity, and migration 12.
+ *
+ * The third rung of the identity ladder. `task_id` is stable for life;
+ * `(task_id, revision_number)` is a unit of work (migration 11, P-05/B);
+ * `(task_id, revision_number, attempt_number)` is one try at it, and this
+ * escalón gives it a table, a birth event, a fold and a compare-and-set.
+ *
+ * **What lands.** Five things.
+ *
+ *   1. `task_attempt_read_model` (migration 12, execution §3). Triple primary
+ *      key, a foreign key on the revision, `UNIQUE (task_id,
+ *      legacy_attempt_number)` and `UNIQUE (invocation_id)` — the two halves of
+ *      the bijection — and `ck_…__outcome_pair`. The watermark is seeded from
+ *      `ledger_meta` rather than from a literal zero, which is migration 11's
+ *      form and migration 9's second case: a projection arriving over a stream
+ *      that already holds history is level with it the moment the table exists,
+ *      and a zero seed would fail every ledger in the field's own integrity
+ *      check right after a routine upgrade.
+ *   2. `TASK_ATTEMPT_OPENED`, a same-state passthrough on the `execution`
+ *      channel. Migration 11 needed no event type because the revision
+ *      coordinate rides payload keys; the attempt does need one, and the
+ *      asymmetry is the point — `invocationId` and `legacyAttemptNumber` are
+ *      facts only the opening arrival may state, so a fold keyed off the
+ *      presence of keys would let a later event of the coordinate contradict
+ *      the identity the CAS assigned.
+ *   3. The compare-and-set. The producer **proposes** `attempt` and
+ *      `legacyAttemptNumber`; the ledger computes the answer inside the
+ *      `BEGIN IMMEDIATE` it already holds and refuses by name if they differ.
+ *      That division is forced rather than chosen: an event arrives signed, so
+ *      "assign" could not mean writing into the body without recanonicalizing
+ *      it or growing a second append path. Existing row → its assignment and
+ *      invocation are reused; no row → `1 + MAX(attempt)` over the task's
+ *      events, legacy included, `1` with none. The 10 000 cap is read off
+ *      `IdempotencyCoordinates.shape.attempt.maxValue` and checked on the
+ *      COMPUTED value before the comparison, so exhausting the space is a typed
+ *      refusal naming the cap rather than the contract's parse refusing first.
+ *   4. The fold and the snapshot. `nextTaskAttemptProjection` is moulded on
+ *      `nextTaskRevisionProjection`, `canonicalAttempt` on `canonicalRevision`,
+ *      and the snapshot additionally carries the table's two unique indexes in
+ *      memory so a rebuild refuses the histories the base would — at the event
+ *      that caused them rather than as an abort naming one row.
+ *   5. The rewind fixtures. `cli` and `gateway` both undo the migration tail
+ *      object by object before reopening, and a migration 12 without its half
+ *      of those blocks leaves them asserting a schema version that is no longer
+ *      the previous one.
+ *
+ * **What does NOT land, declared.** No closer: `ended_at` and `outcome` are
+ * `NULL` on every row this build writes, because mapping a terminal task state
+ * onto `effect_outcome_status` is a decision nobody has taken. No trigger for
+ * the `legacyAttemptNumber` pairing — it is a typed refusal at the door, which a
+ * `BEFORE INSERT` trigger could not be, because the expected value comes from
+ * `MAX(attempt)` and the projection. No producer: `@acp/runtime` is escalón G.
+ * ADR 0073 records all three, with the cost of the second stated rather than
+ * hidden.
+ *
+ * **Pins that move.** `CONTROL_PLANE_EVENT_TYPES` 24 → 25 — the pin P-05/B
+ * avoided (V7) and P-18 cannot — and with it the channel map's sizes
+ * (`execution` 6 → 7) and the two `toHaveLength(24)` assertions in
+ * `@acp/runtime`'s suite. `MIGRATIONS` 11 → 12. `DERIVED_TABLES` 9 → 10, with
+ * the attempt table BEFORE the revision table because the foreign key points at
+ * it. `PROJECTION_NAMES` 4 → 5, `PROJECTION_SOURCES` 8 → 9,
+ * `status().projections` 7 → 8 and its watermark rows 8 → 9.
+ * `EXPECTED_SCHEMA_OBJECTS` gains three entries — the table and its two unique
+ * indexes — and the `tr_` inventory stays at **eight**. The ADR corpus 72 → 73.
+ *
+ * **Pins that do not move.** `CONTRACT_VERSION` and `API_CONTRACT_VERSION`
+ * (Q3(a): the bump belongs to the escalón whose payload changes a durable
+ * meaning). `CONTRACTS_SCHEMA_EXPORTS`, because this escalón adds **no** export
+ * to `@acp/contracts` — the cap is read off a schema rather than exported as a
+ * constant. The ledger README's `### Errors` bijection, because no new `*Error`
+ * class exists: every refusal here is a `LedgerValidationError` with a `path`.
+ * `ROADMAP_SHA256`, and `assertNoV2KeyCollisions`.
+ *
+ * **A declared deviation.** Three prose sites in `@acp/observation` say "24
+ * event types" in a comment and a README sentence. None is an assertion and none
+ * is under `README_SURFACE_CLAIMS`, so none is corrected here: touching them
+ * would widen this write-set by three paths for a number in a comment that the
+ * next escalón moves again. The drift is declared rather than repaired.
+ *
+ * **Twenty paths, one of them new** — ADR 0073. Every other entry revisits a
+ * path an earlier packet already owns.
+ */
+const P18B_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/kernel/contracts/src/schemas/control-plane-event/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/index.md",
+  "docs/architecture/0073-every-attempt-opens-with-its-own-identity.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9124,6 +9230,7 @@ const WRITE_SET = [
   ...P11_WRITE_SET,
   ...P13_WRITE_SET,
   ...P18A_WRITE_SET,
+  ...P18B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
