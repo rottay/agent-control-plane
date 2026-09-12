@@ -788,8 +788,10 @@ also carries everything such a receipt needs, written at claim time, so any
 recoverer rebuilds identical bytes from the claim rather than from itself.
 
 It reads no clock: every instant is the caller's argument, so expiry is decided
-where the policy is. It deletes nothing, probes no process, and composes exactly
-one path — `toolClaimStorePath`, derived from the ledger's own.
+where the policy is. It deletes nothing, probes no process, mints no identity,
+and composes exactly one path — `toolClaimStorePath`, derived from the ledger's
+own. Since P-18/E1 it also carries its own incarnation; see **The incarnation
+every coordination store carries** below.
 
 **Nothing calls it yet.** This is substrate, landed alone and adopted later, the
 way the worktree arbiter was.
@@ -860,6 +862,54 @@ computes it, and this store imposes uniqueness and nothing else.
 way the worktree arbiter and the claim store were. The saga, the command
 identity and the events that rebuild a row from history are not here; ADR 0074
 records what this escalón closes and what it leaves owed.
+
+## The incarnation every coordination store carries
+
+Three of the four databases in this package coordinate rather than record: the
+worktree arbiter, the claim store and the outbox. Each of them hands out a
+number that a caller carries away and brings back — a `fence`, a `claim_id`, a
+`row_version` — and every one of those numbers **repeats** when the file is lost
+and rebuilt. A fence restarts at 1. A version is born at 0. A claim replayed
+into a new file carries the id it always had.
+
+So the number is never the token. Each of these files carries one row of
+`coordination_store_meta`: the kind of store it is, out of a closed dictionary of
+five, an incarnation, and the instant that incarnation began. The token is the
+**pair** — `(store_incarnation_id, fence)` for a lease, the incarnation plus
+`claim_id` for a claim, the incarnation plus command, version and state for an
+outbox message — and a token whose number matches a rebuilt record is refused
+anyway.
+
+Three properties hold across all three stores, and a fence law keeps each one:
+
+- **The kind is the identity, not the filename.** A file whose metadata declares
+  another store's kind is refused at `open`, before a handle exists. The `CHECK`
+  carries all five kinds rather than the one each file uses, because a constraint
+  narrowed to one value would make that refusal impossible to construct — and a
+  guard nobody can drill is not a guard.
+- **Nothing mints an identity.** The incarnation and its instant arrive as
+  arguments, always. A UUID generated inside one of these modules would read an
+  environment they may not read, and would make a restore drill impossible to
+  aim.
+- **The incarnation is read inside the lock, and before the number.** A handle
+  that read it at `open` would carry the answer from before a restore into the
+  first decision taken after one.
+
+**The adoption window, stated.** The outbox requires an incarnation: it was built
+after the rule and has no callers. The lease store and the claim store take it
+as an **optional** argument, because they were shipped first and their callers —
+the daemon, the CLI, the gateway — open them with no options at all. A file with
+no metadata registers none and refuses nothing: grants stamp `NULL` and no token
+is compared. Until a packet makes those callers supply an incarnation, what the
+pair proves is proven in this package's suite and not in the field. ADR 0075
+records the window; refusing at runtime for missing metadata is forbidden there
+by name, because it would close the window by stopping the daemon.
+
+In the two retrofitted stores the metadata is migration **2**, behind the table
+it governs, and the new columns are nullable on every row written before them:
+migration 1 shipped, its checksum is compared on every open, and editing it would
+make every file in the field refuse to open. The suite pins version 1's digest
+as a literal so that an edit fails a test instead.
 
 ## The artifact store
 

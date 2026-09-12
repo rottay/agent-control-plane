@@ -122,6 +122,11 @@ export { envelopeIdentityPreimageV1, envelopeSha256 } from "./envelope-identity/
  * cannot: *may I write here, now?* Exported from this package because
  * `better-sqlite3` is fenced to it by equality, not because arbitration is a
  * ledger concern -- the store holds no history and is rebuildable.
+ *
+ * P-18/protocolo escalón E1 gave it the `coordination_store_meta` of §8.1 and a
+ * `store_incarnation_id` on its rows, so the lease token is the pair
+ * `(store_incarnation_id, fence)` rather than a number that repeats after a
+ * restore. Both halves of the pair travel in `LeaseExpectedToken`.
  */
 export { openLeaseStore } from "./lease-store/index.js";
 
@@ -134,17 +139,25 @@ export { openLeaseStore } from "./lease-store/index.js";
  * **inert**: nothing calls it yet, exactly as C1's store landed before C2 took
  * it. `toolClaimStorePath` is the single producer of its path, so two doors
  * cannot end up arbitrating over two different files.
+ *
+ * P-18/protocolo escalón E1 gave it the `coordination_store_meta` of §8.1 and a
+ * `store_incarnation_id` on its rows. The claim token is the pair
+ * `(store_incarnation_id, claim_id)` and carries **no fence**: a claim has no
+ * counter, so a token shaped like the lease's would name a term this store
+ * cannot answer for.
  */
 export { TOOL_CLAIM_STATES, openToolClaimStore, toolClaimStorePath } from "./tool-claim-store/index.js";
 
 export type {
   OpenToolClaimStoreOptions,
   ToolClaimDecision,
+  ToolClaimExpectedToken,
   ToolClaimGrant,
   ToolClaimOutcome,
   ToolClaimRow,
   ToolClaimState,
   ToolClaimStore,
+  ToolClaimStoreIncarnation,
 } from "./tool-claim-store/index.js";
 
 /**
@@ -189,7 +202,9 @@ export type {
 
 export type {
   LeaseDecision,
+  LeaseExpectedToken,
   LeaseGrant,
+  LeaseStoreIncarnation,
   LeaseStoreOutcome,
   LeaseRow,
   LeaseStore,

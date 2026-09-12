@@ -7,7 +7,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { LedgerClosedError, LedgerMigrationError, LedgerOpenError, LedgerQueryError } from "../../src/errors/index.js";
+import {
+  LedgerClosedError,
+  LedgerIntegrityError,
+  LedgerMigrationError,
+  LedgerOpenError,
+  LedgerQueryError,
+} from "../../src/errors/index.js";
 import {
   TOOL_CLAIM_STATES,
   openToolClaimStore,
@@ -57,8 +63,8 @@ function temporaryDirectory(): string {
   return created;
 }
 
-function open(path: string): ToolClaimStore {
-  const store = openToolClaimStore(path);
+function open(path: string, options: Parameters<typeof openToolClaimStore>[1] = {}): ToolClaimStore {
+  const store = openToolClaimStore(path, options);
   stores.push(store);
   return store;
 }
@@ -66,6 +72,90 @@ function open(path: string): ToolClaimStore {
 function temporaryStore(): { store: ToolClaimStore; path: string } {
   const path = join(temporaryDirectory(), "tool-claims.sqlite");
   return { store: open(path), path };
+}
+
+// ---------------------------------------------------------------------------
+// The incarnation fixtures (P-18/protocolo E1)
+// ---------------------------------------------------------------------------
+
+const I1 = "11111111-aaaa-4aaa-8aaa-111111111111";
+const I2 = "22222222-bbbb-4bbb-8bbb-222222222222";
+const CREATED_AT = "2026-09-12T00:00:00.000Z";
+
+/**
+ * The checksum of migration 1, pinned as a literal.
+ *
+ * This is the whole of "migration 2 changed nothing that shipped": a shipped
+ * migration is compared against this source on every open, so an edit to
+ * `tool_claim`'s DDL moves this digest and every store in the field refuses to
+ * reopen. Pinned rather than recomputed, because a test that recomputed it would
+ * agree with any edit at all — and because the legacy fixture below has to write
+ * the digest a previous build recorded.
+ */
+const MIGRATION_ONE_SHA256 = "ccf0061592ed755fbc5817f1fb2998ec817867f3c85530de9d0ef2067a0b9cc0";
+
+/** Migration 1 verbatim, as a build that predates the metadata left it. */
+const MIGRATION_ONE_SQL = `
+CREATE TABLE tool_claim (
+  coordinate_key TEXT    NOT NULL PRIMARY KEY,
+  state          TEXT    NOT NULL,
+  claim_id       TEXT,
+  holder         TEXT,
+  claimed_at     TEXT,
+  expires_at     TEXT,
+  in_flight_at   TEXT,
+  settled_at     TEXT,
+  task_id        TEXT    NOT NULL,
+  attempt        INTEGER NOT NULL,
+  transition_id  TEXT    NOT NULL,
+  submitted_at   TEXT    NOT NULL,
+  account_id     TEXT    NOT NULL,
+  server_id      TEXT    NOT NULL,
+  tool_name      TEXT    NOT NULL,
+  argument_bytes INTEGER NOT NULL
+) STRICT;
+
+CREATE UNIQUE INDEX tool_claim_claim_id
+  ON tool_claim (claim_id)
+  WHERE claim_id IS NOT NULL;
+`;
+
+function storePath(): string {
+  return join(temporaryDirectory(), "tool-claims.sqlite");
+}
+
+/**
+ * A claim file as the previous build wrote it: migration 1 only, with a row.
+ *
+ * Built by hand rather than by checking out an old build, because what has to be
+ * reproduced is the *file*, and the file is fully described by its schema and
+ * its migration bookkeeping. If this fixture drifted from what the previous
+ * build produced, the open would fail on the checksum rather than pass for the
+ * wrong reason.
+ */
+function legacyClaimFile(state: string): string {
+  const path = storePath();
+  const handle = new Database(path);
+  handle.exec(
+    "CREATE TABLE IF NOT EXISTS tool_claim_schema_migrations (" +
+      " version INTEGER NOT NULL PRIMARY KEY, name TEXT NOT NULL, sha256 TEXT NOT NULL) STRICT;",
+  );
+  handle.exec(MIGRATION_ONE_SQL);
+  handle
+    .prepare("INSERT INTO tool_claim_schema_migrations (version, name, sha256) VALUES (1, 'tool_claim', ?)")
+    .run(MIGRATION_ONE_SHA256);
+  handle
+    .prepare(
+      "INSERT INTO tool_claim (coordinate_key, state, claim_id, holder, claimed_at, expires_at," +
+        " in_flight_at, settled_at, task_id, attempt, transition_id, submitted_at, account_id," +
+        " server_id, tool_name, argument_bytes)" +
+        " VALUES (?, ?, 'legacy-claim', 'opus@legacy', ?, ?, ?, NULL," +
+        " '11111111-2222-4333-8444-555555555555', 1, 'tool.call.0', ?, 'acct-legacy', 'docs'," +
+        " 'docs.search', 42)",
+    )
+    .run(KEY, state, T0, T1, state === "IN_FLIGHT" ? T0 : null, T0);
+  handle.close();
+  return path;
 }
 
 function grantOf(overrides: Partial<ToolClaimGrant> = {}): ToolClaimGrant {
@@ -381,6 +471,365 @@ describe("S10 — the store reads no clock", () => {
     const supplied = new Set([T0, T1, T2]);
     for (const instant of [row?.claimedAt, row?.expiresAt, row?.inFlightAt, row?.settledAt]) {
       expect({ instant, supplied: supplied.has(instant ?? "") }).toEqual({ instant, supplied: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo E1 — the metadata, the incarnation and the token
+// ---------------------------------------------------------------------------
+
+describe("the file carries its own incarnation", () => {
+  it("registers the incarnation it is given, as migration two", () => {
+    const path = storePath();
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+    expect(store.incarnation()).toEqual({
+      storeKind: "TOOL_CLAIM",
+      incarnationId: I1,
+      createdAt: CREATED_AT,
+    });
+    store.close();
+
+    const handle = new Database(path);
+    const migrations = handle
+      .prepare("SELECT version, name FROM tool_claim_schema_migrations ORDER BY version ASC")
+      .all() as { version: number; name: string }[];
+    const recorded = handle
+      .prepare("SELECT sha256 FROM tool_claim_schema_migrations WHERE version = 1")
+      .get() as { sha256: string };
+    handle.close();
+    // Migration 1 is shipped and immutable, so the metadata can only arrive
+    // behind the table it governs — and its digest is untouched by that.
+    expect(migrations).toEqual([
+      { version: 1, name: "tool_claim" },
+      { version: 2, name: "coordination_store_meta" },
+    ]);
+    expect(recorded.sha256).toBe(MIGRATION_ONE_SHA256);
+  });
+
+  it("does not rotate an incarnation a reopen disagrees with", () => {
+    const path = storePath();
+    open(path, { incarnationId: I1, createdAt: CREATED_AT }).close();
+    const second = open(path, { incarnationId: I2, createdAt: "2026-09-13T00:00:00.000Z" });
+    // Rotating an incarnation is coordination 8.2's restore, which has a
+    // quiescence proof in front of it. It is not a side effect of reopening.
+    expect(second.incarnation()).toEqual({
+      storeKind: "TOOL_CLAIM",
+      incarnationId: I1,
+      createdAt: CREATED_AT,
+    });
+  });
+
+  it("holds exactly one metadata row, uniquely, with no default", () => {
+    const path = storePath();
+    open(path, { incarnationId: I1, createdAt: CREATED_AT }).close();
+    const handle = new Database(path);
+    // Singleton by CHECK rather than by convention.
+    expect(() =>
+      handle
+        .prepare(
+          "INSERT INTO coordination_store_meta (singleton_id, store_kind, store_incarnation_id, created_at)" +
+            " VALUES (2, 'TOOL_CLAIM', ?, ?)",
+        )
+        .run(I2, CREATED_AT),
+    ).toThrow();
+    // And no implicit default: a row that named no incarnation would be a file
+    // that issued tokens nobody could later place.
+    expect(() =>
+      handle
+        .prepare("INSERT INTO coordination_store_meta (singleton_id, store_kind, created_at) VALUES (3, 'OUTBOX', ?)")
+        .run(CREATED_AT),
+    ).toThrow();
+    handle.close();
+  });
+
+  it("refuses an incarnation supplied without its instant, and the reverse", () => {
+    const path = storePath();
+    expect(caught(() => openToolClaimStore(path, { incarnationId: I1 }))).toBeInstanceOf(LedgerQueryError);
+    expect(caught(() => openToolClaimStore(path, { createdAt: CREATED_AT }))).toBeInstanceOf(LedgerQueryError);
+    expect(
+      caught(() => openToolClaimStore(path, { incarnationId: I1, createdAt: "" })),
+    ).toBeInstanceOf(LedgerQueryError);
+  });
+
+  it("refuses a coordination file whose store kind is not TOOL_CLAIM", () => {
+    const path = storePath();
+    open(path, { incarnationId: I1, createdAt: CREATED_AT }).close();
+    const handle = new Database(path);
+    handle.exec("UPDATE coordination_store_meta SET store_kind = 'WORKTREE_LEASE' WHERE singleton_id = 1");
+    handle.close();
+    // Reachable because the CHECK carries all five kinds of section 8.1's
+    // dictionary rather than only this one. The identity of a coordination file
+    // is the kind it declares, not the name it happens to have.
+    expect(caught(() => openToolClaimStore(path))).toBeInstanceOf(LedgerOpenError);
+  });
+
+  it("reads the metadata now, and refuses a file that turned into another store", () => {
+    const path = storePath();
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+
+    const handle = new Database(path);
+    handle.prepare("UPDATE coordination_store_meta SET store_incarnation_id = ? WHERE singleton_id = 1").run(I2);
+    handle.close();
+    // Never cached: a handle that answered from memory would answer about the
+    // file as it was before a restore.
+    expect(store.incarnation()?.incarnationId).toBe(I2);
+
+    const again = new Database(path);
+    again.exec("UPDATE coordination_store_meta SET store_kind = 'OUTBOX' WHERE singleton_id = 1");
+    again.close();
+    // An absent metadata row is lawful here; a row that now belongs to somebody
+    // else is not, and the open-time guard cannot catch what happened after it.
+    expect(caught(() => store.incarnation())).toBeInstanceOf(LedgerIntegrityError);
+  });
+
+  it("refuses a sibling store of this package before writing anything to it", () => {
+    for (const sibling of ["lease_schema_migrations", "outbox_schema_migrations"]) {
+      const path = storePath();
+      const handle = new Database(path);
+      handle.exec("CREATE TABLE " + sibling + " (version INTEGER PRIMARY KEY) STRICT;");
+      handle.close();
+
+      expect(caught(() => openToolClaimStore(path))).toBeInstanceOf(LedgerOpenError);
+
+      const after = new Database(path);
+      const tables = (
+        after.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as {
+          name: string;
+        }[]
+      ).map((row) => row.name);
+      after.close();
+      // Refused before writing anything: a wrong file is a mistake, and
+      // colonizing a neighbour with a foreign table would make it permanent.
+      expect(tables).toEqual([sibling]);
+    }
+  });
+});
+
+describe("every claim is stamped with the incarnation that took it", () => {
+  it("stamps the take and the reclaim, and conserves it across the forward transitions", () => {
+    const path = storePath();
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+
+    const taken = store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+    expect(taken.verb === "TAKE" ? taken.row.storeIncarnationId : null).toBe(I1);
+
+    const marked = store.transact(KEY, () => ({ verb: "MARK_IN_FLIGHT", at: T1 }));
+    // Advancing a claim is not taking one: the stamp names the incarnation that
+    // granted it and would say something false about any other.
+    expect(marked.verb === "MARK_IN_FLIGHT" ? marked.row.storeIncarnationId : null).toBe(I1);
+    const settled = store.transact(KEY, () => ({ verb: "SETTLE", at: T2 }));
+    expect(settled.verb === "SETTLE" ? settled.row.storeIncarnationId : null).toBe(I1);
+  });
+
+  it("stamps the reclaim of an expired coordinate too", () => {
+    const path = storePath();
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+    store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+    const reclaimed = store.transact(KEY, () => ({
+      verb: "TAKE",
+      row: grantOf({ claimId: "22222222-2222-4222-8222-222222222222", claimedAt: T2 }),
+    }));
+    expect(reclaimed.verb === "TAKE" ? reclaimed.row.storeIncarnationId : null).toBe(I1);
+  });
+
+  it("stamps null while the file carries no incarnation, and refuses nothing", () => {
+    const { store } = temporaryStore();
+    // The adoption window: both doors open this file without one today.
+    expect(store.incarnation()).toBeNull();
+    const taken = store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+    expect(taken.verb).toBe("TAKE");
+    expect(taken.verb === "TAKE" ? taken.row.storeIncarnationId : "unset").toBeNull();
+  });
+});
+
+describe("a file written before the metadata existed still works, and gains it", () => {
+  it("migrates in place, leaving the claim intact and the new column null", () => {
+    const path = legacyClaimFile("CLAIMED");
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+    // Section 8.1 :384: additive and null on rows that predate the change.
+    expect(store.read(KEY)).toMatchObject({
+      state: "CLAIMED",
+      claimId: "legacy-claim",
+      taskId: "11111111-2222-4333-8444-555555555555",
+      storeIncarnationId: null,
+    });
+
+    const handle = new Database(path);
+    const recorded = handle
+      .prepare("SELECT sha256 FROM tool_claim_schema_migrations WHERE version = 1")
+      .get() as { sha256: string };
+    handle.close();
+    expect(recorded.sha256).toBe(MIGRATION_ONE_SHA256);
+  });
+
+  it("advances a legacy claim without inventing an incarnation for it", () => {
+    const path = legacyClaimFile("CLAIMED");
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+
+    const marked = store.transact(KEY, () => ({ verb: "MARK_IN_FLIGHT", at: T1 }));
+    expect(marked.verb === "MARK_IN_FLIGHT" ? marked.row : null).toMatchObject({
+      state: "IN_FLIGHT",
+      storeIncarnationId: null,
+    });
+    const settled = store.transact(KEY, () => ({ verb: "SETTLE", at: T2 }));
+    expect(settled.verb === "SETTLE" ? settled.row : null).toMatchObject({
+      state: "SETTLED",
+      storeIncarnationId: null,
+    });
+  });
+
+  it("stamps the live incarnation when a legacy coordinate is reclaimed", () => {
+    const path = legacyClaimFile("CLAIMED");
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+    const reclaimed = store.transact(KEY, () => ({
+      verb: "TAKE",
+      row: grantOf({ claimId: "33333333-3333-4333-8333-333333333333", claimedAt: T2 }),
+    }));
+    // The coordinate is being claimed again, so it belongs to this incarnation
+    // whatever it belonged to before.
+    expect(reclaimed.verb === "TAKE" ? reclaimed.row.storeIncarnationId : null).toBe(I1);
+  });
+});
+
+describe("N-P18-11 -- the claim id alone is never the token", () => {
+  it("refuses a token whose claim id is right and whose incarnation is not", () => {
+    const path = storePath();
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+    store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+
+    const handle = new Database(path);
+    // The file is restored under a new incarnation. The claim is replayed into
+    // it unchanged -- same coordinate, same claim id -- which is exactly the
+    // shape a rebuild produces.
+    handle.prepare("UPDATE coordination_store_meta SET store_incarnation_id = ? WHERE singleton_id = 1").run(I2);
+    handle.close();
+
+    let ran = false;
+    const refused = store.transact(
+      KEY,
+      () => {
+        ran = true;
+        return { verb: "MARK_IN_FLIGHT", at: T1 };
+      },
+      { incarnationId: I1, claimId: grantOf().claimId },
+    );
+    expect(refused.verb).toBe("REFUSE");
+    // A stale token is a precondition that failed, not a policy that declined:
+    // the caller's decision is never consulted, so it cannot write.
+    expect(ran).toBe(false);
+    expect(store.read(KEY)?.state).toBe("CLAIMED");
+
+    // And the same call applies with the live incarnation and nothing else
+    // changed, which proves the refusal was about the incarnation.
+    const applied = store.transact(KEY, () => ({ verb: "MARK_IN_FLIGHT", at: T1 }), {
+      incarnationId: I2,
+      claimId: grantOf().claimId,
+    });
+    expect(applied.verb).toBe("MARK_IN_FLIGHT");
+  });
+
+  it("refuses a token whose incarnation is right and whose claim is not", () => {
+    const path = storePath();
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+    store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+    store.transact(KEY, () => ({
+      verb: "TAKE",
+      row: grantOf({ claimId: "44444444-4444-4444-8444-444444444444", claimedAt: T2 }),
+    }));
+
+    // The holder from before the reclaim. Both halves of the pair are checked,
+    // not only the one that is not in the row.
+    const refused = store.transact(KEY, () => ({ verb: "SETTLE", at: T2 }), {
+      incarnationId: I1,
+      claimId: grantOf().claimId,
+    });
+    expect(refused.verb).toBe("REFUSE");
+    expect(store.read(KEY)?.state).toBe("CLAIMED");
+  });
+
+  it("checks the incarnation inside the transaction, not at open", () => {
+    const path = storePath();
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+    store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+
+    // The handle is already open when the metadata is rewritten from another
+    // connection. A store that read the incarnation once at open would pass the
+    // negative above by accident and fail in the field.
+    const handle = new Database(path);
+    handle.prepare("UPDATE coordination_store_meta SET store_incarnation_id = ? WHERE singleton_id = 1").run(I2);
+    handle.close();
+
+    expect(
+      store.transact(KEY, () => ({ verb: "SETTLE", at: T2 }), {
+        incarnationId: I1,
+        claimId: grantOf().claimId,
+      }).verb,
+    ).toBe("REFUSE");
+  });
+
+  it("refuses every token on a file that carries no incarnation", () => {
+    const { store } = temporaryStore();
+    store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+    // Fail closed. Nobody in the adoption window passes a token, and a store
+    // that accepted one it cannot place would be answering a question it has no
+    // instrument for.
+    expect(
+      store.transact(KEY, () => ({ verb: "SETTLE", at: T2 }), {
+        incarnationId: I1,
+        claimId: grantOf().claimId,
+      }).verb,
+    ).toBe("REFUSE");
+  });
+
+  it("refuses a malformed token by name rather than comparing it", () => {
+    const { store } = temporaryStore();
+    for (const token of [
+      { incarnationId: "", claimId: grantOf().claimId },
+      { incarnationId: I1, claimId: "" },
+    ]) {
+      expect(
+        caught(() => store.transact(KEY, () => ({ verb: "REFUSE", reason: "x" }), token)),
+      ).toBeInstanceOf(LedgerQueryError);
+    }
+  });
+
+  it("behaves exactly as before when no token is supplied", () => {
+    const path = storePath();
+    const store = open(path, { incarnationId: I1, createdAt: CREATED_AT });
+    store.transact(KEY, () => ({ verb: "TAKE", row: grantOf() }));
+
+    const handle = new Database(path);
+    handle.prepare("UPDATE coordination_store_meta SET store_incarnation_id = ? WHERE singleton_id = 1").run(I2);
+    handle.close();
+
+    // The gate is opt-in. Both doors pass no token and are not changed by this
+    // escalón, so a restore they never heard about must not start refusing
+    // their calls.
+    expect(store.transact(KEY, () => ({ verb: "MARK_IN_FLIGHT", at: T1 })).verb).toBe("MARK_IN_FLIGHT");
+  });
+
+  it("refuses the incarnation before it looks at the claim id", () => {
+    const code = codeOfModule();
+    // The shape half of section 4.3's "the number alone is never the token".
+    // A comparison that reached the claim id first would be a store that could
+    // answer about an id it cannot place, and no behavioural test distinguishes
+    // the two orders.
+    const incarnation = code.indexOf(".incarnationId !== token.incarnationId");
+    const claim = code.indexOf("!== token.claimId");
+    expect(incarnation).toBeGreaterThan(-1);
+    expect(claim).toBeGreaterThan(-1);
+    expect(incarnation).toBeLessThan(claim);
+  });
+
+  it("mints no identity of its own", () => {
+    const code = codeOfModule();
+    // Section 8.1 gives the incarnation no implicit default, twice. A UUID
+    // minted here would read an environment this module may not read -- and
+    // would make the restore drills above impossible to aim, because a test
+    // could no longer choose which incarnation a claim was taken under.
+    for (const forbidden of ["randomUUID", "randomBytes", "Math.random"]) {
+      expect({ forbidden, present: code.includes(forbidden) }).toEqual({ forbidden, present: false });
     }
   });
 });

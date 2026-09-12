@@ -9106,6 +9106,81 @@ const P18E2_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-18/protocolo, escalón E1 — every coordination store names its own
+ * incarnation.
+ *
+ * **The retrofit E2 declared it was leaving.** E2 built the outbox from nothing,
+ * so it could put `coordination_store_meta` first and make the incarnation a
+ * required argument. The lease store and the claim store were shipped before
+ * §8.1 existed and have adopters in the daemon, the CLI and the gateway — so the
+ * metadata arrives here as migration **2** in each store's own list, behind the
+ * table it governs, and §8.1's "persistida antes de emitir tokens" becomes a
+ * window rather than a fact. ADR 0075 declares that window and names its close.
+ *
+ * **What lands.** In both stores: `coordination_store_meta` with the five-kind
+ * enum of §8.1, the singleton CHECK, the UNIQUE incarnation and no default on
+ * either column; a `store_incarnation_id` on the live table, nullable on every
+ * row written before it existed; an open-time refusal of a file whose declared
+ * kind belongs to another store; and an optional `expectedToken` on `transact`
+ * compared **inside** the write lock, which realises the lease and claim halves
+ * of N-P18-11. The lease store also gains `operation_id` and
+ * `revocation_acknowledged_at` — declared for escalón F and written by no verb
+ * of the module, which its suite asserts over the four mutating statements
+ * rather than over the file.
+ *
+ * The lease store also adopts X1a's **rule-shaped** wrong-file guard alongside
+ * its list. The list alone let a lease store open on a sibling's file, create
+ * `lease_schema_migrations` there with a bare `db.exec`, fail later in migration
+ * 2, and leave the sibling carrying a foreign table its own guard then refuses
+ * forever. Refusing before writing anything is what keeps a wrong path a
+ * mistake rather than a casualty.
+ *
+ * **The signature is optional, and that is the decision.** `incarnationId` and
+ * `createdAt` are supplied or absent; absent, nothing is registered and nothing
+ * is refused. Required — E2's shape — would break `tsc --build` in
+ * `daemon/src/composition/index.ts`, `cli/src/tool-call/index.ts`,
+ * `gateway/src/tool-calls/index.ts` and thirteen suites this write-set does not
+ * admit, turning a retrofit into an adoption packet. The third variant —
+ * optional, but refusing at runtime when the metadata is missing — passes the
+ * typechecker and stops the daemon, and is forbidden by name in the ADR.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 124 → **127**, for the three laws
+ * below; `assertPathScopedInventory` fails printing both numbers if only one
+ * side of that edit lands. The ADR corpus 74 → 75. `docs/audit/decisions`
+ * 45 → **47**: the deferred retrofit (Q-E2) and `store_kind` as the authority of
+ * identity (Q-E7).
+ *
+ * **Pins that do not move.** The ledger's `MIGRATIONS` (12): these are separate
+ * databases with their own lists, and this escalón does not open the ledger's.
+ * `L-X1-4` still counts four stores under four names. The ledger README's
+ * `### Errors` bijection, because no error class is added — the token refusal is
+ * a **value**, which is this package's standing rule and the reason the
+ * thirteen-class claim does not move. `TEST_ONLY_DOMAINS`, `CONTRACT_VERSION`,
+ * `CONTROL_PLANE_EVENT_TYPES`, `ROADMAP_SHA256`.
+ *
+ * **What does NOT land, declared.** No BEFORE INSERT/UPDATE validators and no
+ * fence rule by verb: §3 `:90-107` is a packet of its own, with the four cases
+ * of the fence and the CAS by expected token, and ADR 0074 already said so. No
+ * adopter is touched — the daemon, the CLI and the gateway pass no token and
+ * open with no incarnation, exactly as they did. No `account_reservation` and no
+ * `artifact_blob_lease`: they exist in no escalón of this packet.
+ *
+ * **Ten paths, one of them new** — ADR 0075.
+ */
+const P18E1_WRITE_SET = [
+  "packages/persistence/ledger/src/lease-store/index.ts",
+  "packages/persistence/ledger/src/tool-claim-store/index.ts",
+  "packages/persistence/ledger/test/lease-store/index.test.ts",
+  "packages/persistence/ledger/test/tool-claim-store/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/index.md",
+  "docs/architecture/0075-every-coordination-store-names-its-own-incarnation.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9311,6 +9386,7 @@ const WRITE_SET = [
   ...P18A_WRITE_SET,
   ...P18B_WRITE_SET,
   ...P18E2_WRITE_SET,
+  ...P18E1_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -10593,6 +10669,27 @@ const PATH_SCOPED_LAWS = [
     scope: "packages/persistence/ledger/src/outbox-store/index.ts",
   },
   { law: "no outbox verb moves a row by the clock", scope: "packages/persistence/ledger/src/outbox-store/index.ts" },
+  // P-18/protocolo E1 (L-P18E1-1..3). Three new path-shaped surfaces, so three
+  // new rows: the register and the `requireScope` call sites both move 124 ->
+  // 127, and `assertPathScopedInventory` fails printing both numbers if only
+  // one side of this edit lands.
+  //
+  // All three are scoped to the same set — the three coordination stores this
+  // package holds — rather than to one file each. That is the point of them: a
+  // law over one module says nothing about the next store somebody adds, and
+  // §8.1 is written about "cada archivo de coordinación".
+  {
+    law: "every coordination store carries its own incarnation metadata",
+    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store}/index.ts",
+  },
+  {
+    law: "no coordination store mints an identity",
+    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store}/index.ts",
+  },
+  {
+    law: "a coordination token names its incarnation, and the number comes second",
+    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store}/index.ts",
+  },
 ];
 
 /**
@@ -24004,6 +24101,183 @@ function claimTransactRegions(code) {
   }
   requireScope("no outbox verb moves a row by the clock", clockScanned);
   notes.push("the outbox lists what is overdue and transitions nothing by the clock");
+}
+
+// --- 21j. the incarnation every coordination store carries (P-18/E1) --------
+//
+// Coordination §8.1 gives every coordination file its own
+// `coordination_store_meta`, and the three laws below are what make that a
+// property of the tree rather than of one module. E2 built the outbox with it;
+// E1 retrofitted the two stores that already had adopters. A law written over
+// one file would say nothing about the next one somebody adds.
+
+const COORDINATION_STORES = [
+  { site: LEASE_STORE_SITE, kind: "WORKTREE_LEASE", number: "token.fence" },
+  { site: TOOL_CLAIM_SITE, kind: "TOOL_CLAIM", number: "token.claimId" },
+  { site: OUTBOX_SITE, kind: "OUTBOX", number: "token.expectedVersion" },
+];
+
+/** The closed dictionary of §8.1 `:378`, in the order the specification gives. */
+const STORE_KINDS = ["WORKTREE_LEASE", "TOOL_CLAIM", "ACCOUNT_RESERVATION", "OUTBOX", "ARTIFACT_BLOB_LEASE"];
+
+// L-P18E1-1 -- every coordination store carries its own incarnation metadata,
+// and registers itself under its own kind.
+//
+// Two halves, and the second is the one a reviewer would not think to check.
+// The first: the table exists in every coordination file, with the whole
+// five-kind dictionary rather than the one kind that file uses -- a CHECK
+// narrowed to a single value would make the foreign-kind refusal unreachable,
+// and a guard nobody can drill is not a guard.
+//
+// The second: the `INSERT` that registers this file names **this** store's kind
+// and no other's. Copying the metadata block between stores is exactly how the
+// claim store would come to declare itself `WORKTREE_LEASE` — one literal, in a
+// string, in a file whose suite would still pass every behavioural drill it has,
+// because a store that mislabels itself is internally consistent.
+{
+  let metaScanned = 0;
+  for (const store of COORDINATION_STORES) {
+    const source = readIfPresent(store.site);
+    if (source === null) {
+      fail(store.site + " is missing; the coordination metadata law would stand over nothing");
+      continue;
+    }
+    metaScanned += 1;
+    const code = stripComments(source);
+    if (!code.includes("coordination_store_meta")) {
+      fail(
+        store.site +
+          " carries no coordination_store_meta; section 8.1 gives every coordination file its own" +
+          " metadata, and a file with none issues tokens nobody can later place",
+      );
+      continue;
+    }
+    for (const kind of STORE_KINDS) {
+      if (!code.includes("'" + kind + "'")) {
+        fail(
+          store.site +
+            " omits " +
+            kind +
+            " from its store-kind dictionary; a CHECK narrowed to the kinds this file uses makes the" +
+            " foreign-kind refusal unreachable, and therefore undrillable",
+        );
+      }
+    }
+    const at = code.indexOf("INSERT INTO coordination_store_meta");
+    if (at === -1) {
+      fail(store.site + " never registers its own metadata row; the table would stand empty forever");
+      continue;
+    }
+    const run = code.indexOf(".run(", at);
+    const statement = code.slice(at, run === -1 ? at + 500 : run);
+    if (!statement.includes("'" + store.kind + "'")) {
+      fail(store.site + " does not register itself as " + store.kind + "; the kind it writes is its identity");
+    }
+    for (const kind of STORE_KINDS) {
+      if (kind !== store.kind && statement.includes("'" + kind + "'")) {
+        fail(
+          store.site +
+            " registers itself as " +
+            kind +
+            "; a metadata block copied between stores labels one file with another's identity, and the" +
+            " file stays internally consistent while it does",
+        );
+      }
+    }
+  }
+  requireScope("every coordination store carries its own incarnation metadata", metaScanned);
+  notes.push("the three coordination stores each carry the section 8.1 metadata and register their own kind");
+}
+
+// L-P18E1-2 -- no coordination store mints an identity.
+//
+// `L-P18E2-2` says this over the outbox. §8.1 says "sin default implícito" of
+// the incarnation and of its instant, and the reason is not tidiness: a store
+// that minted its own would read an environment these modules may not read, and
+// would make every restore drill impossible to aim, because a test could no
+// longer choose which incarnation a row was written under.
+{
+  let mintScanned = 0;
+  for (const store of COORDINATION_STORES) {
+    const source = readIfPresent(store.site);
+    if (source === null) {
+      fail(store.site + " is missing; the identity-minting law would stand over nothing");
+      continue;
+    }
+    mintScanned += 1;
+    const code = stripComments(source);
+    for (const forbidden of ["randomUUID", "randomBytes", "Math.random"]) {
+      if (code.includes(forbidden)) {
+        fail(
+          store.site +
+            " mints an identity with " +
+            forbidden +
+            "; every incarnation is supplied by the caller, and section 8.1 gives it no implicit default",
+        );
+      }
+    }
+  }
+  requireScope("no coordination store mints an identity", mintScanned);
+  notes.push("no coordination store mints an incarnation, a claim or any other identity of its own");
+}
+
+// L-P18E1-3 -- a coordination token names its incarnation, and the number comes
+// second.
+//
+// Datos §11 `:579` and coordination §8.1 `:393-394`: "no se acepta un token
+// viejo porque coincida su número con uno recreado". Every one of these stores
+// holds a number that repeats after a restore -- a fence that restarts at 1, a
+// version born at 0, a claim replayed verbatim -- so the number is never the
+// token and the incarnation is never optional.
+//
+// Pinned by **order**, because no behavioural test can keep it. A comparison
+// that reached the number first would refuse and admit exactly the same calls
+// as one that reached the incarnation first; the difference is only visible in
+// what the store is willing to answer about, and that is a property of the
+// source.
+{
+  let tokenScanned = 0;
+  for (const store of COORDINATION_STORES) {
+    const source = readIfPresent(store.site);
+    if (source === null) {
+      fail(store.site + " is missing; the token law would stand over nothing");
+      continue;
+    }
+    tokenScanned += 1;
+    const code = stripComments(source);
+    const incarnation = code.indexOf("token.incarnationId");
+    if (incarnation === -1) {
+      fail(
+        store.site +
+          " has a token that names no incarnation; a fence, a version and a claim id all repeat after a" +
+          " restore, and the incarnation is the only term that does not",
+      );
+      continue;
+    }
+    const number = code.indexOf(store.number);
+    if (number === -1) {
+      fail(store.site + " no longer reads " + store.number + "; the token law would stand over half a pair");
+      continue;
+    }
+    if (incarnation > number) {
+      fail(
+        store.site +
+          " reads " +
+          store.number +
+          " before it reads the incarnation; the number is meaningless until the file it was issued" +
+          " against is the file being asked",
+      );
+    }
+    if (!code.includes(".incarnationId !== token.incarnationId")) {
+      fail(
+        store.site +
+          " no longer compares the token's incarnation against the live one; a token carried but never" +
+          " checked is decoration",
+      );
+    }
+  }
+  requireScope("a coordination token names its incarnation, and the number comes second", tokenScanned);
+  notes.push("every coordination token carries an incarnation, and every store checks it before the number");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
