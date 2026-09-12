@@ -87,6 +87,116 @@ export function buildIdempotencyKey(coordinates: IdempotencyCoordinates): string
   );
 }
 
+/**
+ * The namespace every V2 idempotency key begins with (streams §1.1).
+ *
+ * Migration 11 reserved this namespace in `@acp/ledger` and refused to open the
+ * door if a historical key already sat inside it, leaving composition "to the
+ * producer". The constant travelled with the reservation because that is where
+ * the reservation ran — but a namespace is **grammar of the key**, and the key
+ * is this contract's. So it moves here, and the ledger imports it (decision 42,
+ * revising P-05/B's placement; Q2(b)). The direction is the only one the
+ * dependency graph allows: `@acp/ledger` already imports `@acp/contracts`, and
+ * this package may reach no `node:` builtin, so the constant could not have
+ * gone the other way without a cycle.
+ *
+ * `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1` is the standing precedent for the
+ * shape: a preimage's version prefix declared here and computed in the ledger.
+ *
+ * The trailing separator is part of the constant, so the literal `"v2/"` lives
+ * in exactly one `src` file of the monorepo and a caller composing a key cannot
+ * get the join wrong by restating it (test N-A-3).
+ */
+export const V2_IDEMPOTENCY_NAMESPACE = "v2/";
+
+/**
+ * The streams a V2 key may name.
+ *
+ * streams §1.1's preimage puts a `stream` segment between the namespace and the
+ * task id, which only means something if the vocabulary is closed: an open
+ * string would let one producer write `control_plane_events` and another
+ * `control-plane-events` for the same fact, and the uniqueness the key exists
+ * to give would be gone. This escalón admits exactly one member — the stream
+ * the ledger already names in `causation_stream` and in
+ * `ck_projection_watermark__source_stream` — and a later escalón that needs
+ * another adds it here rather than passing a bare string through.
+ */
+export const V2_IDEMPOTENCY_STREAMS = ["control_plane_events"] as const;
+
+/**
+ * The V2 idempotency coordinates: the full revision-aware coordinate of an
+ * append (streams §1.1 `:134-140`).
+ *
+ * The V1 coordinate `(taskId, attempt, transitionId)` cannot distinguish a
+ * retry of revision 2 from a retry of revision 1, because `attempt` is flat.
+ * This one carries the revision, so `attemptNumber` may restart at 1 in each
+ * new revision without colliding with anything.
+ */
+export const V2IdempotencyCoordinates = z.strictObject({
+  stream: z.enum(V2_IDEMPOTENCY_STREAMS),
+  taskId: Uuid,
+  revisionNumber: z.number().int().positive().max(10_000),
+  attemptNumber: z.number().int().positive().max(10_000),
+  transitionId: z.string().min(1).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
+});
+export type V2IdempotencyCoordinates = z.infer<typeof V2IdempotencyCoordinates>;
+
+/**
+ * Compose the V2 idempotency key, the one way it is ever composed.
+ *
+ * The preimage is streams §1.1's, in its order and with its separator:
+ * `"v2" · stream · task_id · revision_number · attempt_number · transition_id`.
+ * Every segment is a uuid, a closed vocabulary word, a decimal integer or an
+ * identifier whose grammar excludes `/`, so the join is unambiguous and the key
+ * can be read back apart. Nothing in the tree parses it — the ledger uniques on
+ * it and compares it whole — but a key that could be composed two ways would
+ * still be two keys for one fact.
+ *
+ * At the maximum `transitionId` the result is 193 characters, inside the
+ * schema's 300 bound and inside the ledger's printable-key guard.
+ */
+export function buildV2IdempotencyKey(coordinates: V2IdempotencyCoordinates): string {
+  return (
+    V2_IDEMPOTENCY_NAMESPACE +
+    coordinates.stream +
+    "/" +
+    coordinates.taskId +
+    "/" +
+    String(coordinates.revisionNumber) +
+    "/" +
+    String(coordinates.attemptNumber) +
+    "/" +
+    coordinates.transitionId
+  );
+}
+
+/**
+ * The V2 coordinate an event's payload carries, or `null` for a V1 event.
+ *
+ * Complete or absent, and nothing between: both keys must be present as safe
+ * integers of at least one. A half pair — or a `null`, or a string `"2"` —
+ * reads as **no coordinate** here, which makes the V1 key the one this schema
+ * requires; the ledger's own door then refuses the malformed payload by name
+ * before it can reach a column, and the stream trigger holds the same line
+ * underneath. Three refusals rather than one, because the failure this shape
+ * must never produce is a V2 event quietly recorded as legacy.
+ *
+ * This reads the payload it is given rather than trusting a caller's claim,
+ * for the same reason the key is recomputed rather than accepted.
+ */
+function v2CoordinateInPayload(
+  payload: Record<string, unknown>,
+): { readonly revisionNumber: number; readonly attemptNumber: number } | null {
+  const read = (key: string): number | null => {
+    const value = payload[key];
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 ? value : null;
+  };
+  const revisionNumber = read("revisionNumber");
+  const attemptNumber = read("attemptNumber");
+  if (revisionNumber === null || attemptNumber === null) return null;
+  return { revisionNumber, attemptNumber };
+}
+
 export const ControlPlaneEvent = z
   .strictObject({
     contractVersion: ContractVersion,
@@ -95,7 +205,14 @@ export const ControlPlaneEvent = z
     taskId: Uuid,
     attempt: z.number().int().positive().max(10_000),
     transitionId: z.string().min(1).max(120).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
-    /** Must equal taskId/attempt/transitionId. The ledger uniques on this. */
+    /**
+     * The key the ledger uniques on, and exactly one of two forms.
+     *
+     * Which form is not the producer's choice: it is decided by what the
+     * payload carries. An event whose payload holds a complete V2 coordinate
+     * must key with `buildV2IdempotencyKey`; one that does not must key with
+     * `buildIdempotencyKey`. Nothing else passes — see the refinement below.
+     */
     idempotencyKey: z.string().min(1).max(300),
 
     type: ControlPlaneEventType,
@@ -136,15 +253,44 @@ export const ControlPlaneEvent = z
   .superRefine((value, ctx) => {
     attachGuards(value, ctx, { transcript: true });
 
-    const expected = buildIdempotencyKey({
-      taskId: value.taskId,
-      attempt: value.attempt,
-      transitionId: value.transitionId,
-    });
+    // The door, and it is strict in both directions (C-1, adjudicated).
+    //
+    // Until P-18/protocolo A this refinement demanded the V1 form
+    // unconditionally, which made the `v2/` namespace migration 11 reserved
+    // physically unreachable: no producer could emit a V2 key, because the
+    // contract refused it before the ledger ever saw it. Opening the door by
+    // merely *permitting* the V2 form would have been the wrong repair. Two
+    // admissible keys for one fact is two keys for one fact — the same
+    // coordinate and transition could enter twice, once under each form, and
+    // streams §1.1's "no … otro namespace de idempotencia para los mismos
+    // hechos" would have become advice rather than a rule.
+    //
+    // So the payload decides and the producer obeys: a complete V2 coordinate
+    // requires the V2 key, and its absence requires the V1 key. A producer
+    // that hits a conflict cannot switch namespaces to make it go away,
+    // because the namespace is not a thing it chooses (negative N-P18-20).
+    const coordinate = v2CoordinateInPayload(value.payload);
+    const expected =
+      coordinate === null
+        ? buildIdempotencyKey({
+            taskId: value.taskId,
+            attempt: value.attempt,
+            transitionId: value.transitionId,
+          })
+        : buildV2IdempotencyKey({
+            stream: "control_plane_events",
+            taskId: value.taskId,
+            revisionNumber: coordinate.revisionNumber,
+            attemptNumber: coordinate.attemptNumber,
+            transitionId: value.transitionId,
+          });
     if (value.idempotencyKey !== expected) {
       ctx.addIssue({
         code: "custom",
-        message: "idempotencyKey must be exactly taskId/attempt/transitionId",
+        message:
+          coordinate === null
+            ? "idempotencyKey must be exactly taskId/attempt/transitionId"
+            : "idempotencyKey must be the V2 key of the coordinate this payload carries",
         path: ["idempotencyKey"],
       });
     }

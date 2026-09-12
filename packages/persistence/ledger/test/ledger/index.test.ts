@@ -10,8 +10,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   CONTRACT_VERSION,
+  SUPPORTED_CONTRACT_VERSIONS,
+  V2_IDEMPOTENCY_NAMESPACE,
   buildIdempotencyKey,
   buildInitiativeIdempotencyKey,
+  buildV2IdempotencyKey,
   type ControlPlaneEventType,
   type TaskState,
 } from "@acp/contracts";
@@ -100,13 +103,37 @@ function makeEvent(input: EventInput = {}): Record<string, unknown> {
   const attempt = input.attempt ?? 1;
   const transitionId = input.transitionId ?? "step-1";
   const occurredAt = input.occurredAt ?? "2026-08-27T12:00:00.000Z";
+  const payload = input.payload ?? {};
+  // The key follows the payload, because the contract's door is strict in both
+  // directions (P-18/protocolo A): a payload carrying a complete V2 coordinate
+  // must key V2, and one that does not must key V1. This helper is where every
+  // caller's key is composed, so the rule is obeyed once rather than at each of
+  // the revision drills below — and a caller that wants to violate it on
+  // purpose overrides `idempotencyKey` through `event()` at the call site.
+  const revisionNumber = payload["revisionNumber"];
+  const attemptNumber = payload["attemptNumber"];
+  const v2 =
+    typeof revisionNumber === "number" &&
+    Number.isSafeInteger(revisionNumber) &&
+    revisionNumber >= 1 &&
+    typeof attemptNumber === "number" &&
+    Number.isSafeInteger(attemptNumber) &&
+    attemptNumber >= 1;
   return {
     contractVersion: CONTRACT_VERSION,
     eventId: input.eventId ?? randomUUID(),
     taskId,
     attempt,
     transitionId,
-    idempotencyKey: buildIdempotencyKey({ taskId, attempt, transitionId }),
+    idempotencyKey: v2
+      ? buildV2IdempotencyKey({
+          stream: "control_plane_events",
+          taskId,
+          revisionNumber,
+          attemptNumber,
+          transitionId,
+        })
+      : buildIdempotencyKey({ taskId, attempt, transitionId }),
     type: input.type ?? "TASK_DISCOVERED",
     fromState: input.fromState ?? null,
     toState: input.toState ?? "DISCOVERED",
@@ -115,7 +142,7 @@ function makeEvent(input: EventInput = {}): Record<string, unknown> {
     recordedAt: input.recordedAt ?? occurredAt,
     correlationId: null,
     causationId: null,
-    payload: input.payload ?? {},
+    payload,
   };
 }
 
@@ -6375,6 +6402,30 @@ describe("the revision record is written once, or refused", () => {
     );
     expect(readRevisions(path)).toHaveLength(1);
 
+    // The same revision reached by a LATER attempt, with its own `occurredAt`
+    // (F-1, ADR 0072). Execution §3 calls this "un reintento de la misma
+    // revisión, no una revisión nueva", so it is a replay of the record and not
+    // a conflict — and until this escalón it WAS a conflict, because the
+    // comparison included the first arrival's birth attributes. The only way to
+    // record attempt 2 was to restate attempt 1's timestamp, which is to say to
+    // lie about when it happened.
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r1-a2",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        occurredAt: "2026-08-27T13:30:00.000Z",
+        payload: { ...payload, attemptNumber: 2 },
+      }),
+    );
+    expect(readRevisions(path)).toHaveLength(1);
+    // And the row still records the FIRST arrival: a replay reads the record,
+    // it does not restamp it.
+    expect(readRevisions(path)[0]?.created_at).toBe("2026-08-27T12:00:00.000Z");
+    // The attempt, which is a different question, did move.
+    expect(ledger.getTask(taskId)?.latestAttemptNumber).toBe(2);
+
     // DIFFERENT content at the same coordinate is refused. The row is a record
     // of what was asked; rewriting it would destroy the thing it preserves.
     const conflict = caught(() =>
@@ -6394,15 +6445,74 @@ describe("the revision record is written once, or refused", () => {
     // The refusal rolled the whole append back: no event, no row, no drift.
     expect(readRevisions(path)).toHaveLength(1);
     expect(readRevisions(path)[0]?.envelope_sha256).toBe(REVISION_ENVELOPE);
-    expect(ledger.listEvents().events).toHaveLength(2);
+    expect(ledger.listEvents().events).toHaveLength(3);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
     // And a REPLAY refuses the same history, so the incremental path and a
-    // rebuild agree about which ledgers are writable.
+    // rebuild agree about which ledgers are writable. The rebuild also has to
+    // reproduce the birth attributes of the FIRST arrival rather than the last
+    // one it saw, or `verifyIntegrity` would be comparing the stored row
+    // against a differently-born one.
     ledger.close();
     const reopened = open(path);
-    expect(reopened.rebuildReadModel().replayedEvents).toBe(2);
+    expect(reopened.rebuildReadModel().replayedEvents).toBe(3);
     expect(readRevisions(path)).toHaveLength(1);
+    expect(readRevisions(path)[0]?.created_at).toBe("2026-08-27T12:00:00.000Z");
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-A-2b: a different restore source at one coordinate is a conflict too", () => {
+    // The third intrinsic field, and the one nothing exercised before F-1
+    // narrowed the comparison to exactly three. `restoredFromRevisionId` is
+    // what says WHY two revisions share an envelope digest, so two answers to
+    // it at one coordinate are two accounts of what was asked — refused for
+    // the same reason a different digest is.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const revisionId = randomUUID();
+    const restored = randomUUID();
+
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "r1",
+        payload: revisionPayload({ revisionId, restoredFromRevisionId: restored }),
+      }),
+    );
+
+    const conflict = caught(() =>
+      ledger.append(
+        makeEvent({
+          taskId,
+          transitionId: "r1-other-source",
+          fromState: "DISCOVERED",
+          toState: "DISCOVERED",
+          payload: revisionPayload({ revisionId, restoredFromRevisionId: randomUUID() }),
+        }),
+      ),
+    );
+    expect(conflict).toBeInstanceOf(LedgerValidationError);
+    expect((conflict as Error).message).toContain("already recorded with different content");
+
+    // Dropping the key entirely is also a different answer, not a silent
+    // agreement with whatever was there.
+    const dropped = caught(() =>
+      ledger.append(
+        makeEvent({
+          taskId,
+          transitionId: "r1-no-source",
+          fromState: "DISCOVERED",
+          toState: "DISCOVERED",
+          payload: revisionPayload({ revisionId }),
+        }),
+      ),
+    );
+    expect(dropped).toBeInstanceOf(LedgerValidationError);
+
+    expect(readRevisions(path)).toHaveLength(1);
+    expect(readRevisions(path)[0]?.restored_from_revision_id).toBe(restored);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 
   it("N8: two revisions may share an envelope digest, which is what restore means", () => {
@@ -6519,6 +6629,299 @@ describe("the revision record is written once, or refused", () => {
         "sequence",
         "task_id",
       ]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The V2 key reaches the ledger, and a version it cannot read does not
+//
+// P-18/protocolo, escalón A. Migration 11 reserved the `v2/` namespace and
+// proved no historical key occupied it; the contract then refused every key
+// that tried to use it, so the namespace was reserved and unreachable at the
+// same time. These drills are the other end: a lawful V2 key goes through the
+// real door, is stored, and reads back identical — and the two refusals that
+// keep it the ONLY way a V2 fact can be named.
+// ---------------------------------------------------------------------------
+
+describe("the V2 idempotency key travels through the real door", () => {
+  it("P-P18-1: a V2 key is stored and read back identical, under its imported namespace", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const event = makeEvent({
+      taskId,
+      transitionId: "revise",
+      payload: revisionPayload({ revisionNumber: 4, attemptNumber: 2 }),
+    });
+
+    const appended = ledger.append(event);
+    expect(appended.inserted).toBe(true);
+
+    const expected = buildV2IdempotencyKey({
+      stream: "control_plane_events",
+      taskId,
+      revisionNumber: 4,
+      attemptNumber: 2,
+      transitionId: "revise",
+    });
+    expect(appended.record.idempotencyKey).toBe(expected);
+
+    // Read back through the contract, from the stored bytes rather than from
+    // the value the caller handed in.
+    const stored = ledger.listEvents().events[0];
+    expect(stored?.idempotencyKey).toBe(expected);
+    expect(stored?.event.idempotencyKey).toBe(expected);
+
+    // The namespace is the one the contract declares, not one restated here,
+    // and it is the same prefix `assertNoV2KeyCollisions` reserved.
+    expect(expected.startsWith(V2_IDEMPOTENCY_NAMESPACE)).toBe(true);
+
+    // The columns carry the coordinate the body claims, and the legacy
+    // `attempt` column is still populated beside it.
+    expect(readCoordinates(path).map((row) => [row.revision_number, row.attempt_number])).toEqual([
+      [4, 2],
+    ]);
+
+    // An exact replay of the same append is idempotent on the V2 key exactly as
+    // it is on a V1 one: the key is doing its job in the new namespace.
+    const replay = ledger.append(event);
+    expect(replay.inserted).toBe(false);
+    expect(ledger.listEvents().events).toHaveLength(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    ledger.close();
+    const reopened = open(path);
+    expect(reopened.rebuildReadModel().replayedEvents).toBe(1);
+    expect(reopened.listEvents().events[0]?.idempotencyKey).toBe(expected);
+  });
+
+  it("N-P18-20: a conflicted producer cannot change namespace to invent a new fact", () => {
+    // streams §1.1: "no … otro namespace de idempotencia para los mismos
+    // hechos". The mechanism is the contract's strict door, asserted here
+    // through the ledger because that is where a producer would be tempted: a
+    // V2 append conflicts, and the escape hatch of re-keying the SAME payload
+    // under V1 has to be closed before the ledger is ever consulted.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const payload = revisionPayload({ revisionNumber: 2, attemptNumber: 1 });
+
+    ledger.append(makeEvent({ taskId, transitionId: "revise", payload }));
+
+    const reKeyed = {
+      ...makeEvent({
+        taskId,
+        transitionId: "revise",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        payload,
+      }),
+      eventId: randomUUID(),
+      idempotencyKey: buildIdempotencyKey({ taskId, attempt: 1, transitionId: "revise" }),
+    };
+
+    const refusal = caught(() => ledger.append(reKeyed));
+    expect(refusal).toBeInstanceOf(LedgerValidationError);
+    expect(String(refusal)).toContain("idempotencyKey");
+
+    // Nothing was written, and the one fact still has exactly one name.
+    expect(ledger.listEvents().events).toHaveLength(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("F-2: a malformed V2 coordinate is a typed refusal, not a raw SQLite abort", () => {
+    // The trigger already refused all of these — as a `SqliteError` reading
+    // "event_json carries a V2 coordinate the columns do not", which names the
+    // symptom, comes from another layer and cannot be caught by class. The
+    // guard in front of the INSERT makes each one a `LedgerValidationError`
+    // that names the key at fault. The trigger stays where it is underneath.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedTask(ledger, taskId, "kimi/k3/coordinator/01");
+    const state = ledger.getTask(taskId)?.currentState ?? "DISCOVERED";
+    const headBefore = ledger.status().headSequence;
+
+    const malformed: [string, Record<string, unknown>, string][] = [
+      ["revisionNumber alone", { revisionNumber: 2 }, "payload.attemptNumber"],
+      ["attemptNumber alone", { attemptNumber: 2 }, "payload.revisionNumber"],
+      ["a string count", { revisionNumber: "2", attemptNumber: 1 }, "payload.revisionNumber"],
+      ["a float count", { revisionNumber: 2, attemptNumber: 1.5 }, "payload.attemptNumber"],
+      ["an unsafe integer", { revisionNumber: 2 ** 53, attemptNumber: 1 }, "payload.revisionNumber"],
+      ["zero", { revisionNumber: 2, attemptNumber: 0 }, "payload.attemptNumber"],
+      ["a negative count", { revisionNumber: -1, attemptNumber: 1 }, "payload.revisionNumber"],
+      // The one the reader must NOT treat as absence: `json_extract` reads a
+      // JSON null as nothing, so a payload saying `revisionNumber: null` would
+      // otherwise become a legacy row whose own body claimed otherwise.
+      ["an explicit null", { revisionNumber: null, attemptNumber: 1 }, "payload.revisionNumber"],
+    ];
+
+    for (const [name, payload, path_] of malformed) {
+      const refusal = caught(() =>
+        ledger.append(
+          makeEvent({
+            taskId,
+            transitionId: "bad-" + name.replace(/[^A-Za-z0-9]/g, "-"),
+            fromState: state,
+            toState: state,
+            payload,
+          }),
+        ),
+      );
+      expect(refusal, name).toBeInstanceOf(LedgerValidationError);
+      expect(String(refusal), name).toContain(path_);
+      expect(String(refusal), name).not.toContain("SqliteError");
+    }
+
+    // Every refusal rolled back whole: no row, no head movement, and the handle
+    // is still usable — which is what a typed refusal buys over an abort.
+    expect(ledger.status().headSequence).toBe(headBefore);
+    expect(readCoordinates(path).every((row) => row.revision_number === null)).toBe(true);
+    expect(ledger.append(makeEvent({ taskId, transitionId: "after", fromState: state, toState: state })).inserted).toBe(true);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+describe("a version this build does not read is refused, by name", () => {
+  /**
+   * Stamp a stored row with a foreign contract version, chain intact.
+   *
+   * The chain is recomputed so that the ONLY thing wrong with the row is its
+   * version. A test that also broke the digest would pass for the wrong
+   * reason — the refusals below would fire on the chain and never reach the
+   * membership test they exist to drill.
+   */
+  function restampVersion(path: string, sequence: number, version: string): void {
+    tamper(path, (raw) => {
+      const row = raw
+        .prepare("SELECT event_json, previous_sha256 FROM control_plane_events WHERE sequence = ?")
+        .get(sequence) as { readonly event_json: string; readonly previous_sha256: string };
+      const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+      decoded["contractVersion"] = version;
+      const rewritten = canonicalJsonStringify(decoded);
+      raw
+        .prepare(
+          "UPDATE control_plane_events SET event_json = ?, contract_version = ?, " +
+            "event_sha256 = ? WHERE sequence = ?",
+        )
+        .run(rewritten, version, chainDigest(row.previous_sha256, rewritten), sequence);
+    });
+  }
+
+  it("N-P18-19: all three read paths refuse a V2 row a V1 reader cannot interpret", () => {
+    // streams §1.1: "Un lector que sólo entiende la forma V1 no interpreta una
+    // fila V2 como si fuera V1: la versión de contrato no soportada produce un
+    // rechazo o una degradación explícita." The rejection existed; what did not
+    // was the word "explicit". "does not satisfy the contract" is equally true
+    // of a tampered field, a missing key and an unreadable version, and an
+    // operator holding a ledger written by a newer build needs to be told which
+    // of those it is — the one recoverable case in that set looked exactly like
+    // corruption.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "one" }));
+    ledger.append(
+      makeEvent({
+        taskId,
+        transitionId: "two",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+      }),
+    );
+    ledger.close();
+
+    restampVersion(path, 2, "2.9.0");
+    const reopened = open(path);
+
+    // 1. Reading events. The whole page fails closed rather than returning a
+    //    row this build cannot vouch for.
+    const listed = caught(() => reopened.listEvents());
+    expect(listed).toBeInstanceOf(LedgerIntegrityError);
+    expect(String(listed)).toContain("2.9.0");
+    expect(String(listed)).toContain(SUPPORTED_CONTRACT_VERSIONS.join(", "));
+
+    // 2. Verifying. The problem is reported with its own kind, and the detail
+    //    names the version found and the set this build reads.
+    const report = reopened.verifyIntegrity();
+    expect(report.ok).toBe(false);
+    const contractProblems = report.problems.filter(
+      (problem) => problem.kind === "EVENT_CONTRACT",
+    );
+    expect(contractProblems).toHaveLength(1);
+    expect(contractProblems[0]?.detail).toContain("2.9.0");
+    expect(contractProblems[0]?.detail).toContain(CONTRACT_VERSION);
+    expect(contractProblems[0]?.sequence).toBe(2);
+
+    // 3. Rebuilding. It REFUSES; it does not quietly skip the row and leave a
+    //    read model that is missing an event without saying so.
+    const rebuilt = caught(() => reopened.rebuildReadModel());
+    expect(rebuilt).toBeInstanceOf(LedgerIntegrityError);
+    expect(String(rebuilt)).toContain("2.9.0");
+  });
+
+  it("keeps the general message for every other way a row can fail the contract", () => {
+    // The version branch must not swallow the rest. A row whose version is
+    // perfectly supported and whose body is wrong still reports what it always
+    // reported, or the new message would be a worse diagnostic dressed as a
+    // better one.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "one" }));
+    ledger.close();
+
+    tamper(path, (raw) => {
+      const row = raw
+        .prepare("SELECT event_json, previous_sha256 FROM control_plane_events WHERE sequence = ?")
+        .get(1) as { readonly event_json: string; readonly previous_sha256: string };
+      const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+      decoded["emittedBy"] = "not a worker identity";
+      const rewritten = canonicalJsonStringify(decoded);
+      raw
+        .prepare(
+          "UPDATE control_plane_events SET event_json = ?, event_sha256 = ? WHERE sequence = ?",
+        )
+        .run(rewritten, chainDigest(row.previous_sha256, rewritten), 1);
+    });
+
+    const report = open(path).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    const detail = report.problems.find((problem) => problem.kind === "EVENT_CONTRACT")?.detail;
+    expect(detail).toContain("no longer satisfies the ControlPlaneEvent contract");
+    expect(detail).not.toContain("supported versions");
+  });
+
+  it("P-P18-2 is deferred with the bump, and the set says why", () => {
+    // The reverse of N-P18-19 — a row stored under a supported-but-not-current
+    // version reads and rebuilds without error — cannot be drilled while the
+    // set holds one member, because "supported but not current" is an empty
+    // category. What IS assertable today is the invariant that makes the drill
+    // possible later, and that a future reader can check this claim rather than
+    // take it: the set is exactly the current version.
+    //
+    // ADR 0072 carries the obligation: the escalón that moves
+    // `CONTRACT_VERSION` must widen this set FIRST, pin the current version
+    // separately at every admission door, and land P-P18-2 as a required test.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual([CONTRACT_VERSION]);
+
+    // And every member of the set really is readable end to end today — stored,
+    // listed, verified and rebuilt — which is the property P-P18-2 will
+    // generalize over a wider set rather than establish from nothing. With one
+    // member this is the ordinary path, and asserting it over the set rather
+    // than over the literal is what makes it grow with the set.
+    for (const version of SUPPORTED_CONTRACT_VERSIONS) {
+      const path = temporaryDatabase();
+      const ledger = open(path);
+      const taskId = randomUUID();
+      ledger.append(makeEvent({ taskId, transitionId: "one" }));
+      ledger.close();
+
+      const reopened = open(path);
+      expect(reopened.listEvents().events[0]?.event.contractVersion, version).toBe(version);
+      expect(reopened.verifyIntegrity().ok, version).toBe(true);
+      expect(reopened.rebuildReadModel().replayedEvents, version).toBe(1);
     }
   });
 });

@@ -8843,6 +8843,84 @@ const P13_WRITE_SET = [
   "docs/architecture/index.md",
 ];
 
+/**
+ * P-18/protocolo, escalón A — the door.
+ *
+ * P-18's registry row reads as blocked on P-15, P-36/local and P-17/efecto, but
+ * §1.8 of the same document (`:136-155`) already cut the packet in two, and the
+ * half that opens here — `P-18/protocolo` — depends on P-09/log and P-05, both
+ * closed. What stays behind the line is the certification of the eight crash
+ * frontiers and the operational-commit authorization, not this work.
+ *
+ * **Why A is first.** Migration 11 reserved the `v2/` idempotency namespace and
+ * proved no historical key occupied it, leaving composition of the full key
+ * "to the producer". No producer could ever have arrived: `ControlPlaneEvent`'s
+ * refinement demanded the V1 key of every event unconditionally, so the
+ * namespace was reserved and unreachable at the same time. Every later escalón
+ * — the attempt identity table, the effect and dispatch models, the occurrence
+ * rows — writes through that door. It is opened here, with no migration and no
+ * DDL.
+ *
+ * **What lands.** Four things, all of them contract or fold.
+ *
+ *   1. The V2 key composes at the contract (Q2(b), decision 42).
+ *      `V2_IDEMPOTENCY_NAMESPACE` moves from a private const in
+ *      `@acp/ledger` into `@acp/contracts` and the ledger imports it — the only
+ *      direction the graph allows, and the same move
+ *      `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1` made in P-05/A. The literal
+ *      `"v2/"` now lives in exactly one `src` file, asserted by test N-A-3.
+ *   2. The refinement's rule becomes strict in both directions (C-1). A payload
+ *      carrying a complete V2 coordinate must key V2; one that does not must
+ *      key V1. A permissive door would have admitted one fact twice, once under
+ *      each form, and streams §1.1's "no … otro namespace de idempotencia para
+ *      los mismos hechos" would have had nothing enforcing it (N-P18-20).
+ *   3. Supported versions separate from the written one (Q3(a)).
+ *      `SUPPORTED_CONTRACT_VERSIONS` is what a reader admits; `CONTRACT_VERSION`
+ *      stays `"2.2.0"` and is what a producer stamps, so **none of the thirteen
+ *      fixtures pinned to the literal moves**. The three ledger read paths now
+ *      name the version found and the set they read (N-P18-19). ADR 0072
+ *      records the obligation the escalón that actually bumps inherits.
+ *   4. The two P-05/B inheritances. F-1: the revision comparison keeps only
+ *      `revisionId`, `envelopeSha256` and `restoredFromRevisionId`, so a second
+ *      attempt of one revision may carry its own `occurredAt` instead of having
+ *      to restate the first arrival's; the door and the snapshot share one
+ *      exported function rather than two implementations (C-7). F-2: a
+ *      malformed V2 payload is refused before the INSERT as a typed
+ *      `LedgerValidationError`, with the stream trigger left in place as the
+ *      backstop it was designed to be.
+ *
+ * **Pins that move.** `CONTRACTS_SCHEMA_EXPORTS` 105 → 110, named above. The
+ * ADR corpus 71 → 72. The decisions register gains row 42. `CONTRACT_VERSION`,
+ * `API_CONTRACT_VERSION`, `CONTROL_PLANE_EVENT_TYPES` (24),
+ * `assertNoV2KeyCollisions` and `ROADMAP_SHA256` do **not** move: no new event
+ * type belongs to this escalón (Q5), and `docs/ROADMAP.md` enters no escalón of
+ * this packet.
+ *
+ * **Sixteen paths, one of them new** — ADR 0072. Every other entry revisits a
+ * path an earlier packet already owns. `packages/persistence/ledger/src/index.ts`
+ * is admitted as headroom for a barrel export this escalón turned out not to
+ * need: `canonicalRevision` is shared between two modules of one package and
+ * has no business on the package's public surface.
+ */
+const P18A_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/control-plane-event/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/index.md",
+  "docs/architecture/0072-the-v2-key-composes-at-the-contract.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9045,6 +9123,7 @@ const WRITE_SET = [
   ...P12_WRITE_SET,
   ...P11_WRITE_SET,
   ...P13_WRITE_SET,
+  ...P18A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -17775,6 +17854,18 @@ if (accountsIndex === null) {
   "CLI_SUBSCRIPTION_PROVIDERS",
   "CONTRACT_VERSION",
   "CONTROL_PLANE_EVENT_TYPES",
+  // P-18/protocolo A. Five names, and every one of them is grammar of a key or
+  // of a version line, which is why they land in this package rather than in
+  // the ledger that consumes them. `SUPPORTED_CONTRACT_VERSIONS` separates what
+  // a reader admits from what a producer writes; the other four make the `v2/`
+  // namespace migration 11 reserved actually composable — the namespace itself,
+  // the closed stream vocabulary the preimage names, the coordinate shape, and
+  // the one function that joins them.
+  "SUPPORTED_CONTRACT_VERSIONS",
+  "V2_IDEMPOTENCY_NAMESPACE",
+  "V2_IDEMPOTENCY_STREAMS",
+  "V2IdempotencyCoordinates",
+  "buildV2IdempotencyKey",
   "Checkpoint",
   "CommitAuthorizationReceipt",
   "CommitPolicy",

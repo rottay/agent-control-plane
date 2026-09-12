@@ -523,22 +523,43 @@ export function applyEventToSnapshot(
 }
 
 /**
- * The comparable form of a revision row, ignoring where it was recorded.
+ * The comparable form of a revision row: what the revision *is*, and nothing
+ * about the arrival that happened to record it (F-1, ADR 0072).
  *
- * `sequence` is excluded on purpose: an exact replay of the same revision
- * arriving at a later sequence is the SAME revision, and refusing it for the
- * position alone would make an idempotent retry look like a conflict.
+ * Three fields — `revisionId`, `envelopeSha256`, `restoredFromRevisionId` —
+ * because those three are the revision. Everything else on the row is either
+ * its coordinate, which is the key both callers look the row up by and so
+ * cannot differ across a comparison, or a birth attribute: `sequence`,
+ * `createdAt`, `createdBy` and `contractVersion` each record the arrival that
+ * first announced the revision, not the revision.
+ *
+ * `sequence` was already excluded, for the reason that generalizes to the other
+ * three: an exact replay landing at a later position is the SAME revision, and
+ * refusing it for the position alone would turn an idempotent retry into a
+ * conflict. The others were not excluded, and that cost two things. A second
+ * attempt of one revision — which by execution §3 is "un reintento de la misma
+ * revisión, no una revisión nueva" — could not carry its own `occurredAt`, so
+ * the only way to advance `latest_attempt_number` was to restate the first
+ * arrival's timestamp, which is to say to lie about when the attempt happened.
+ * And `contractVersion` made the comparison version-sensitive: once
+ * `SUPPORTED_CONTRACT_VERSIONS` grows and a producer stamps a newer member, a
+ * second attempt of a revision opened under the older one would have conflicted
+ * against its own row while agreeing about every fact recorded in it.
+ *
+ * The refusal this preserves is the one that matters: a second arrival at one
+ * coordinate naming a *different* envelope, revision id or restore source is
+ * still refused, because those are two answers to "what was asked".
+ *
+ * Exported because the incremental door and the snapshot must decide this
+ * identically. Two implementations of "same content" are two definitions of it,
+ * and a rebuild that refused a history the door had accepted would leave
+ * `verifyIntegrity` comparing a stored projection against a different rule.
  */
-function canonicalRevision(revision: TaskRevisionReadModel): string {
+export function canonicalRevision(revision: TaskRevisionReadModel): string {
   return [
-    revision.taskId,
-    String(revision.revisionNumber),
     revision.revisionId,
     revision.envelopeSha256,
     revision.restoredFromRevisionId ?? "",
-    revision.createdAt,
-    revision.createdBy,
-    revision.contractVersion,
   ].join("\u0000");
 }
 

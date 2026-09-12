@@ -15,6 +15,8 @@ import {
   CLI_SUBSCRIPTION_PROVIDERS,
   CONTRACT_VERSION,
   CONTROL_PLANE_EVENT_TYPES,
+  SUPPORTED_CONTRACT_VERSIONS,
+  V2_IDEMPOTENCY_NAMESPACE,
   Checkpoint,
   CommitAuthorizationReceipt,
   ControlPlaneEvent,
@@ -57,6 +59,7 @@ import {
   WorkerIdentityString,
   WorkerSlot,
   buildIdempotencyKey,
+  buildV2IdempotencyKey,
   buildInitiativeIdempotencyKey,
   findCredentialViolations,
   findTranscriptViolations,
@@ -480,6 +483,210 @@ describe("idempotency coordinates", () => {
       event({ fromState: "RUNNING", toState: "RUNNING" }),
     );
     expect(parsed.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The V2 idempotency key, and the door that admits it
+//
+// Migration 11 reserved the `v2/` namespace and proved no historical key sat
+// inside it. Nothing could reach it: this schema's refinement demanded the V1
+// form of every event unconditionally, so the namespace was reserved and
+// unreachable at once. P-18/protocolo A composes the key here and makes the
+// refinement read the payload to decide which form is required.
+//
+// The rule is strict in BOTH directions, and that is the whole point. A
+// permissive door — V1 always allowed, V2 also allowed when the payload has a
+// coordinate — would let one fact enter twice, once under each form, and
+// streams §1.1's "no … otro namespace de idempotencia para los mismos hechos"
+// would stop being enforceable by anything.
+// ---------------------------------------------------------------------------
+
+const V2_TASK = "7c7c7c7c-7c7c-4c7c-8c7c-7c7c7c7c7c01";
+
+/** A V1 event carrying a complete V2 coordinate in its payload, keyed V2. */
+function v2Event(overrides: Record<string, unknown> = {}): unknown {
+  const payload = (overrides["payload"] as Record<string, unknown> | undefined) ?? {
+    revisionId: "9d9d9d9d-9d9d-4d9d-8d9d-9d9d9d9d9d01",
+    revisionNumber: 2,
+    attemptNumber: 3,
+    envelopeSha256: "e".repeat(64),
+  };
+  return event({
+    taskId: V2_TASK,
+    transitionId: "revise",
+    type: "TOKEN_USAGE_RECORDED",
+    fromState: "RUNNING",
+    toState: "RUNNING",
+    payload,
+    idempotencyKey: buildV2IdempotencyKey({
+      stream: "control_plane_events",
+      taskId: V2_TASK,
+      revisionNumber: 2,
+      attemptNumber: 3,
+      transitionId: "revise",
+    }),
+    ...overrides,
+  });
+}
+
+describe("the V2 idempotency key", () => {
+  it("N-A-1: the reader's set contains what the producer writes, once", () => {
+    // The invariant that keeps a version bump from being a data loss event. A
+    // set that did not contain `CONTRACT_VERSION` would describe a ledger that
+    // cannot read its own writes — the failure mode the mechanism exists to
+    // make impossible, asserted rather than assumed.
+    expect(SUPPORTED_CONTRACT_VERSIONS).toContain(CONTRACT_VERSION);
+    expect(SUPPORTED_CONTRACT_VERSIONS.length).toBeGreaterThan(0);
+    expect(new Set(SUPPORTED_CONTRACT_VERSIONS).size).toBe(SUPPORTED_CONTRACT_VERSIONS.length);
+  });
+
+  it("admits every supported version and refuses one outside the set", () => {
+    for (const version of SUPPORTED_CONTRACT_VERSIONS) {
+      expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success).toBe(true);
+    }
+    // A syntactically valid version that is simply not a member. The existing
+    // drill above uses `undefined`, which any required field would reject; this
+    // one can only be refused by the membership test.
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.3.0" })).success).toBe(false);
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "1.0.0" })).success).toBe(false);
+  });
+
+  it("composes the key from the preimage streams §1.1 names, in its order", () => {
+    const key = buildV2IdempotencyKey({
+      stream: "control_plane_events",
+      taskId: V2_TASK,
+      revisionNumber: 2,
+      attemptNumber: 3,
+      transitionId: "revise",
+    });
+    expect(key).toBe("v2/control_plane_events/" + V2_TASK + "/2/3/revise");
+
+    // The namespace is imported, never restated — P-P18-1's second half.
+    expect(key.startsWith(V2_IDEMPOTENCY_NAMESPACE)).toBe(true);
+    expect(V2_IDEMPOTENCY_NAMESPACE).toBe("v2/");
+
+    // The coordinate is what distinguishes it from V1: the same task and
+    // transition at a different revision is a different key, which is the
+    // whole reason the revision entered the preimage.
+    const otherRevision = buildV2IdempotencyKey({
+      stream: "control_plane_events",
+      taskId: V2_TASK,
+      revisionNumber: 3,
+      attemptNumber: 3,
+      transitionId: "revise",
+    });
+    expect(otherRevision).not.toBe(key);
+
+    // And it stays inside the field's bound at the longest transition the
+    // grammar allows, so a lawful key can never be refused for its length.
+    const longest = buildV2IdempotencyKey({
+      stream: "control_plane_events",
+      taskId: V2_TASK,
+      revisionNumber: 10_000,
+      attemptNumber: 10_000,
+      transitionId: "t".repeat(120),
+    });
+    expect(longest.length).toBeLessThanOrEqual(300);
+  });
+
+  it("P-P18-1: a well formed V2 key passes the door the V1 form used to close", () => {
+    const parsed = ControlPlaneEvent.safeParse(v2Event());
+    expect(parsed.success).toBe(true);
+    expect((parsed.data as { idempotencyKey: string } | undefined)?.idempotencyKey).toBe(
+      "v2/control_plane_events/" + V2_TASK + "/2/3/revise",
+    );
+  });
+
+  it("N-A-2: a key that disagrees with its coordinate is refused, in every direction", () => {
+    const refusal = (input: unknown): string[] => {
+      const parsed = ControlPlaneEvent.safeParse(input);
+      expect(parsed.success).toBe(false);
+      return parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join("."));
+    };
+
+    // A V2 key naming a coordinate the payload does not carry.
+    expect(
+      refusal(
+        v2Event({
+          idempotencyKey: buildV2IdempotencyKey({
+            stream: "control_plane_events",
+            taskId: V2_TASK,
+            revisionNumber: 9,
+            attemptNumber: 3,
+            transitionId: "revise",
+          }),
+        }),
+      ),
+    ).toContain("idempotencyKey");
+
+    // A V2 key with no coordinate in the payload at all: there is nothing for
+    // the key to be the key OF, so the V1 form is the only lawful one.
+    expect(refusal(v2Event({ payload: { note: "no coordinate here" } }))).toContain(
+      "idempotencyKey",
+    );
+
+    // And the direction that matters most for N-P18-20: a payload that DOES
+    // carry the coordinate may not key V1. Without this half a producer that
+    // hit a V2 conflict could drop back to the V1 namespace and call the same
+    // fact a new one.
+    expect(
+      refusal(
+        v2Event({
+          idempotencyKey: buildIdempotencyKey({
+            taskId: V2_TASK,
+            attempt: 1,
+            transitionId: "revise",
+          }),
+        }),
+      ),
+    ).toContain("idempotencyKey");
+  });
+
+  it("treats an incomplete or ill typed coordinate as no coordinate, and keys V1", () => {
+    // The contract's half of F-2. A half pair, a string, a float and an
+    // explicit null are not coordinates here, so the V1 key is what this schema
+    // requires — and `@acp/ledger`'s append door then refuses the malformed
+    // payload by name before it can reach a column. Two layers, one answer:
+    // a malformed coordinate never becomes a quietly legacy row.
+    for (const payload of [
+      { revisionNumber: 2 },
+      { attemptNumber: 3 },
+      { revisionNumber: "2", attemptNumber: 3 },
+      { revisionNumber: 2, attemptNumber: 3.5 },
+      { revisionNumber: 2, attemptNumber: null },
+      { revisionNumber: 0, attemptNumber: 3 },
+    ]) {
+      const v1Keyed = event({
+        taskId: V2_TASK,
+        transitionId: "revise",
+        type: "TOKEN_USAGE_RECORDED",
+        fromState: "RUNNING",
+        toState: "RUNNING",
+        payload,
+      });
+      expect(ControlPlaneEvent.safeParse(v1Keyed).success, JSON.stringify(payload)).toBe(true);
+    }
+  });
+
+  it("N-A-3: the v2 namespace literal lives in exactly one source file", () => {
+    // The reason the constant moved here at all (decision 42). A literal
+    // restated in a second place is a second authority over the key's grammar,
+    // and the two would disagree the first time either moved. Asserted over
+    // the tree rather than over this package, because the file it used to live
+    // in is in another one.
+    // `--untracked` so a file added but not yet staged cannot hide a second
+    // declaration from this assertion.
+    const found = spawnSync(
+      "git",
+      ["grep", "-l", "--untracked", "--fixed-strings", '"v2/"', "--", "packages"],
+      { cwd: REPO_ROOT, encoding: "utf8" },
+    );
+    const files = found.stdout
+      .split("\n")
+      .filter((line) => line.includes("/src/"))
+      .sort();
+    expect(files).toEqual(["packages/kernel/contracts/src/schemas/control-plane-event/index.ts"]);
   });
 });
 

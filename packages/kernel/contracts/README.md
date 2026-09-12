@@ -59,9 +59,24 @@ this table against the barrel.
 - **Strict objects.** Object schemas are built with `strictObject`, so an
   unknown key is a validation failure rather than a silently carried field. A
   producer that grows a field fails at the boundary instead of leaking it.
-- **One version line, asserted.** `CONTRACT_VERSION` is a literal, and
-  `ContractVersion` is `z.literal` of it — a record written under a different
-  contract version cannot be parsed as if it were current.
+- **One version written, a set admitted.** `CONTRACT_VERSION` is the single
+  literal a **producer** stamps. `SUPPORTED_CONTRACT_VERSIONS` is the set a
+  **reader** admits, and `ContractVersion` is `z.enum` of it, so a record
+  written under a version outside the set cannot be parsed as if it were
+  current. The two are separate because a `z.literal` answers both questions
+  with one value and is therefore symmetric: moving it would make every record
+  already written under the previous value unreadable, which is not what a
+  version bump should mean. Today the set holds exactly one member and the
+  distinction is inert by construction. ADR 0072 records what the escalón that
+  actually moves `CONTRACT_VERSION` owes — chiefly that admission must pin the
+  current version separately from the reader's set.
+- **One key per fact.** An event's `idempotencyKey` has exactly two lawful
+  forms, and which one applies is not the producer's choice: a payload carrying
+  a complete V2 coordinate (`revisionNumber` and `attemptNumber`) must use
+  `buildV2IdempotencyKey`, and a payload without one must use
+  `buildIdempotencyKey`. Two admissible forms for one fact would let the same
+  fact enter twice under different names, so a producer that meets a conflict
+  cannot change namespace to make it a new operation.
 - **No credential may enter a record.** `credential-guards` refines the
   record-shaped schemas with a scanner that walks to a bounded depth and
   refuses denied key names and credential-shaped stems. An opaque reference

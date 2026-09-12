@@ -281,8 +281,38 @@ is not a revision, and it projects no row.
 `CONTRACT_VERSION` does **not** move with this migration. The cohort is told
 apart by `revision_number IS NOT NULL`, not by a version literal — moving the
 literal without a supported-versions mechanism would make every event already
-recorded under the previous one unreadable. The first V2 producer moves it,
-together with that mechanism. ADR 0067 carries the reasoning.
+recorded under the previous one unreadable. ADR 0067 carries the reasoning.
+
+**The mechanism arrived without the bump** (P-18/protocolo A, ADR 0072).
+`@acp/contracts` now separates `SUPPORTED_CONTRACT_VERSIONS`, the set a reader
+admits, from `CONTRACT_VERSION`, the one value a producer stamps — and
+`CONTRACT_VERSION` is still `"2.2.0"`, so no fixture pinned to that literal
+moved. What changed here is that the three read paths (`#rowToRecord`,
+`#validateRowShape`, `#replay`) now say *which* version they found and *which*
+set they read when that is why a stored row was refused. They already refused;
+"does not satisfy the contract" was equally true of a tampered field and of a
+ledger written by a newer build, and only one of those is recoverable.
+
+### The V2 key, and the door that admits it
+
+Migration 11 reserved the `v2/` namespace. Composing the key belongs to the
+producer, and until P-18/protocolo A no producer could exist: `ControlPlaneEvent`
+demanded the V1 key of every event, so the namespace was reserved and
+unreachable at once. `V2_IDEMPOTENCY_NAMESPACE` now lives in `@acp/contracts`
+beside `buildV2IdempotencyKey`, and **this package imports it** (decision 42) —
+a namespace is grammar of the key, and the key is the contract's.
+
+The rule at the contract's door is strict in both directions: a payload carrying
+a complete V2 coordinate must key V2, a payload without one must key V1, and
+nothing else parses. That is what makes "no other idempotency namespace for the
+same facts" enforceable rather than advisory — a producer whose V2 append
+conflicts cannot re-key the same payload under V1 and call it a new operation.
+
+This package's append door adds the second of three guards: a payload whose V2
+coordinate is malformed — one key without the other, a value that is not a safe
+integer of at least one, or an explicit `null` — is refused before the `INSERT`
+as a `LedgerValidationError` naming the key at fault. The trigger below stays
+exactly where it is, as the backstop against a writer that bypasses the door.
 
 ### `task_revision_read_model`
 
@@ -295,6 +325,20 @@ content it is `LedgerValidationError`, never an update. A revision is a record
 of what was asked, and rewriting it would destroy the thing it preserves. The
 replay path takes the same two branches, so a rebuild refuses exactly the
 histories the incremental path refused.
+
+**"Same content" is three fields** — `revision_id`, `envelope_sha256` and
+`restored_from_revision_id` (ADR 0072, amending 0067 §4). `sequence`,
+`created_at`, `created_by` and `contract_version` record the *arrival* that
+first announced the revision, not the revision, and they are excluded for the
+reason `sequence` always was: an exact replay landing later is the same
+revision. Concretely this is what lets a second **attempt** of one revision
+carry its own `occurred_at` — execution §3 calls that "un reintento de la misma
+revisión, no una revisión nueva" — where before, advancing
+`latest_attempt_number` required restating the first arrival's timestamp. The
+replay keeps the first arrival's birth attributes; a rebuild reproduces them.
+One exported function, `canonicalRevision`, is what both the append door and the
+snapshot compare with, because two implementations of "same content" would be
+two definitions of it.
 
 **There is deliberately no `UNIQUE(task_id, envelope_sha256)`.** Restoring an
 earlier envelope is a *new* revision with the *same* digest, and that uniqueness

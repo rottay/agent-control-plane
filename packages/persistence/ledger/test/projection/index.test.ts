@@ -1,8 +1,14 @@
-import { CONTRACT_VERSION, INITIATIVE_EVENT_TYPES, buildIdempotencyKey } from "@acp/contracts";
+import {
+  CONTRACT_VERSION,
+  INITIATIVE_EVENT_TYPES,
+  buildIdempotencyKey,
+  buildV2IdempotencyKey,
+} from "@acp/contracts";
 import type { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  canonicalRevision,
   nextExecutionRouteProjection,
   nextRoutingAssignmentFromInitiative,
   nextRoutingAssignmentProjection,
@@ -457,26 +463,46 @@ describe("the routing assignment fold", () => {
 describe("the revision fold reads a coordinate, or reads nothing", () => {
   const REVISION_TASK = "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c01";
   const REVISION_ID = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d01";
+  const OTHER_REVISION = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d02";
   const ENVELOPE = "e".repeat(64);
 
-  function revisionEvent(payload: Record<string, unknown>): ControlPlaneEvent {
+  function revisionEvent(
+    payload: Record<string, unknown>,
+    overrides: { readonly occurredAt?: string } = {},
+  ): ControlPlaneEvent {
+    // These fold inputs are cast rather than parsed, so the contract's door
+    // never sees them — which is exactly why the key is composed correctly
+    // here. A fixture the contract would have refused is a fixture that asserts
+    // the fold's behaviour on an event no producer could ever emit.
+    const revisionNumber = payload["revisionNumber"];
+    const attemptNumber = payload["attemptNumber"];
+    const occurredAt = overrides.occurredAt ?? "2026-09-11T09:00:00.000Z";
     return {
       contractVersion: CONTRACT_VERSION,
       eventId: "2e2e2e2e-2e2e-4e2e-8e2e-2e2e2e2e2e01",
       taskId: REVISION_TASK,
       attempt: 3,
       transitionId: "revise",
-      idempotencyKey: buildIdempotencyKey({
-        taskId: REVISION_TASK,
-        attempt: 3,
-        transitionId: "revise",
-      }),
+      idempotencyKey:
+        typeof revisionNumber === "number" && typeof attemptNumber === "number"
+          ? buildV2IdempotencyKey({
+              stream: "control_plane_events",
+              taskId: REVISION_TASK,
+              revisionNumber,
+              attemptNumber,
+              transitionId: "revise",
+            })
+          : buildIdempotencyKey({
+              taskId: REVISION_TASK,
+              attempt: 3,
+              transitionId: "revise",
+            }),
       type: "TASK_CLASSIFIED",
       fromState: "DISCOVERED",
       toState: "DT_CLASSIFIED",
       emittedBy: EMITTED_BY,
-      occurredAt: "2026-09-11T09:00:00.000Z",
-      recordedAt: "2026-09-11T09:00:00.000Z",
+      occurredAt,
+      recordedAt: occurredAt,
       correlationId: null,
       causationId: null,
       payload,
@@ -691,5 +717,59 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
       stale.envelopeSha256,
       stale.latestAttemptNumber,
     ]).toEqual([3, "f".repeat(64), 1]);
+  });
+
+  it("F-1: compares what the revision IS, not the arrival that recorded it", () => {
+    // ADR 0072. `canonicalRevision` is the single definition of "same content"
+    // that the append door and the snapshot both consult — the door imports
+    // this exact function — so what it compares decides which histories BOTH
+    // paths accept. Drilled here, at the definition, rather than only through
+    // the two callers.
+    const at = (sequence: number, occurredAt: string): ReturnType<
+      typeof nextTaskRevisionProjection
+    > => nextTaskRevisionProjection(revisionEvent(COMPLETE, { occurredAt }), sequence);
+
+    const born = at(10, "2026-09-11T09:00:00.000Z");
+    const retried = at(44, "2026-09-11T17:45:00.000Z");
+    expect(born).not.toBeNull();
+    expect(retried).not.toBeNull();
+
+    // The two rows differ in sequence AND in createdAt, and are the same
+    // revision. Before F-1 this pair conflicted, so the only way to record a
+    // second attempt of one revision was to restate the first arrival's
+    // timestamp — to lie about when the attempt happened.
+    expect(born?.createdAt).not.toBe(retried?.createdAt);
+    expect(canonicalRevision(born!)).toBe(canonicalRevision(retried!));
+
+    // A hand-built row differing only in the other two birth attributes agrees
+    // too: `createdBy` and `contractVersion` record who announced it and under
+    // which contract, not what was asked. `contractVersion` is the one that
+    // would have bitten once `SUPPORTED_CONTRACT_VERSIONS` grows, because a
+    // retry stamped with a newer member would have conflicted against its own
+    // row while agreeing about every fact in it.
+    expect(
+      canonicalRevision({
+        ...born!,
+        createdBy: "kimi/k3/coordinator/01",
+        contractVersion: "2.9.0",
+      }),
+    ).toBe(canonicalRevision(born!));
+
+    // And the three that ARE the revision each still separate it. These are
+    // the refusals F-1 preserves: two answers to "what was asked".
+    expect(canonicalRevision({ ...born!, revisionId: OTHER_REVISION })).not.toBe(
+      canonicalRevision(born!),
+    );
+    expect(canonicalRevision({ ...born!, envelopeSha256: "f".repeat(64) })).not.toBe(
+      canonicalRevision(born!),
+    );
+    expect(canonicalRevision({ ...born!, restoredFromRevisionId: OTHER_REVISION })).not.toBe(
+      canonicalRevision(born!),
+    );
+    // Including dropping the restore source, which is a different answer and
+    // not a silent agreement with whatever was already there.
+    expect(
+      canonicalRevision({ ...born!, restoredFromRevisionId: OTHER_REVISION }),
+    ).not.toBe(canonicalRevision({ ...born!, restoredFromRevisionId: null }));
   });
 });

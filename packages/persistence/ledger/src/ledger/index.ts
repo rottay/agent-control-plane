@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import Database from "better-sqlite3";
 
-import { AccountActionEvent, ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
+import {
+  AccountActionEvent,
+  ControlPlaneEvent,
+  InitiativeEvent,
+  SUPPORTED_CONTRACT_VERSIONS,
+  V2_IDEMPOTENCY_NAMESPACE,
+} from "@acp/contracts";
 
 import {
   ACCOUNT_INTEGRITY_GENESIS_SHA256,
@@ -55,6 +61,7 @@ import {
   applyEventToSnapshot,
   applyInitiativeEventToSnapshot,
   applyRegistryEventToSnapshot,
+  canonicalRevision,
   createInitiativeProjectionSnapshot,
   createProjectionSnapshot,
   createRegistryProjectionSnapshot,
@@ -1126,21 +1133,6 @@ function safeAccountId(accountId: string): string {
 }
 
 /**
- * The namespace every V2 idempotency key begins with (streams §1.1).
- *
- * The full preimage is `"v2" · stream · task_id · revision_number ·
- * attempt_number · transition_id`, and composing it belongs to the producer
- * (P-18). What migration 11 owns is narrower and is the part that cannot be
- * deferred: **reserving the namespace**, and refusing to open the door if a
- * historical key already sits inside it.
- *
- * The separator is declared here and nowhere else. When the producer arrives it
- * imports this constant rather than restating it, for the reason every shared
- * literal in this package is imported rather than restated.
- */
-const V2_IDEMPOTENCY_NAMESPACE = "v2/";
-
-/**
  * Refuse the migration if a historical key already occupies the V2 namespace.
  *
  * Streams §1.1 requires the migration that enables the V2 key to "comprobar que
@@ -1159,31 +1151,104 @@ const V2_IDEMPOTENCY_NAMESPACE = "v2/";
  * choosing between them is an owner's decision recorded in the decisions
  * register, not a migration's.
  */
+/** The two payload keys a V2 coordinate is made of, in the order they are read. */
+const V2_COORDINATE_KEYS = ["revisionNumber", "attemptNumber"] as const;
+
 /**
- * The V2 coordinate an event carries in its payload, or the legacy pair of nulls.
+ * What an event's payload says about its V2 coordinate: absent, malformed, or
+ * present.
  *
- * Both or neither, decided here once rather than at the two call sites, because
- * the trigger refuses a half pair and a caller that got it wrong would see a
- * SQLite abort instead of a typed answer. `revisionNumber` without
- * `attemptNumber` — or either as something that is not a positive integer —
- * reads as **no coordinate at all**, and the trigger's reverse direction then
- * refuses the row for carrying keys the columns do not: a malformed coordinate
- * is never quietly downgraded to a legacy row.
+ * Three answers rather than two (F-2). The previous reader had only two — a
+ * pair of numbers or a pair of nulls — and collapsed "this payload carries no
+ * coordinate" together with "this payload carries a coordinate it got wrong".
+ * The collapse was deliberate and it worked, because the stream trigger's
+ * reverse direction caught the difference and refused the row; but it caught it
+ * as a `SqliteError` reading "event_json carries a V2 coordinate the columns do
+ * not", which names the symptom, arrives from another layer, and cannot be
+ * caught by class. `#assertCausationResolves` states the standard this file
+ * already holds itself to: "this layer exists so the refusal is a typed
+ * LedgerValidationError rather than a raw SQLite error nobody can catch by
+ * class." The trigger stays exactly where it is, as the backstop it was
+ * designed to be.
+ *
+ * "Absent" is decided by the keys being **missing**, not by their values. An
+ * explicit `null` is therefore malformed rather than absent: `json_extract`
+ * reads a JSON null as nothing, so a payload that said `revisionNumber: null`
+ * would otherwise become a legacy row whose own body claimed a coordinate it
+ * did not have — the exact silent downgrade this whole pair of guards exists to
+ * prevent.
  */
-function v2CoordinateOf(event: ControlPlaneEvent): {
+type V2CoordinateReading =
+  | { readonly kind: "absent" }
+  | { readonly kind: "malformed"; readonly path: string; readonly message: string }
+  | {
+      readonly kind: "present";
+      readonly revisionNumber: number;
+      readonly attemptNumber: number;
+    };
+
+function readV2Coordinate(event: ControlPlaneEvent): V2CoordinateReading {
+  if (!V2_COORDINATE_KEYS.some((key) => key in event.payload)) {
+    return { kind: "absent" };
+  }
+
+  for (const key of V2_COORDINATE_KEYS) {
+    if (!(key in event.payload)) {
+      return {
+        kind: "malformed",
+        path: "payload." + key,
+        message:
+          "a V2 coordinate is both keys or neither, and this payload carries the other one " +
+          "without " +
+          key,
+      };
+    }
+    const value = event.payload[key];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+      return {
+        kind: "malformed",
+        path: "payload." + key,
+        // The type name is a closed vocabulary of seven words, so it can be
+        // printed; the value itself is caller data and is not.
+        message:
+          key +
+          " must be a safe integer of at least one to be a coordinate, and this payload holds a " +
+          typeof value,
+      };
+    }
+  }
+
+  // Both keys passed the loop above, so both hold a safe integer of at least
+  // one. Read again rather than collected in the loop, so the two names stay
+  // attached to their values instead of to positions in an array.
+  return {
+    kind: "present",
+    revisionNumber: event.payload["revisionNumber"] as number,
+    attemptNumber: event.payload["attemptNumber"] as number,
+  };
+}
+
+/**
+ * The coordinate columns for one event, or a typed refusal.
+ *
+ * The columns are a projection of the body and never a second source: the
+ * trigger compares them against `event_json` in both directions, so a row whose
+ * columns and body disagree cannot be written at all. This is where the body is
+ * read once, before the `INSERT`, so that the two call sites cannot drift and a
+ * malformed payload is refused by name rather than by abort.
+ */
+function v2CoordinateColumns(event: ControlPlaneEvent): {
   readonly revisionNumber: number | null;
   readonly attemptNumber: number | null;
 } {
-  const read = (key: string): number | null => {
-    const value = event.payload[key];
-    return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 ? value : null;
-  };
-  const revisionNumber = read("revisionNumber");
-  const attemptNumber = read("attemptNumber");
-  if (revisionNumber === null || attemptNumber === null) {
+  const reading = readV2Coordinate(event);
+  if (reading.kind === "malformed") {
+    throw new LedgerValidationError([{ path: reading.path, message: reading.message }]);
+  }
+  if (reading.kind === "absent") {
     return { revisionNumber: null, attemptNumber: null };
   }
-  return { revisionNumber, attemptNumber };
+  return { revisionNumber: reading.revisionNumber, attemptNumber: reading.attemptNumber };
 }
 
 function assertNoV2KeyCollisions(db: Database.Database): void {
@@ -1227,6 +1292,37 @@ function assertNoV2KeyCollisions(db: Database.Database): void {
  */
 function safeIdempotencyKey(value: string): string {
   return /^[A-Za-z0-9_.:/-]{1,200}$/.test(value) ? value : "<unprintable key>";
+}
+
+/**
+ * Why a stored row failed the contract, when the reason is its version.
+ *
+ * streams §1.1 requires that a reader which does not understand a row's form
+ * refuse it *explicitly* — "la versión de contrato no soportada produce un
+ * rechazo o una degradación explícita". All three read paths already refused;
+ * what they said was "does not satisfy the contract", which is true of a
+ * tampered field, a missing key and an unreadable version alike. An operator
+ * holding a ledger written by a newer build needs to be told that it is the
+ * version, which version, and which versions this build reads — otherwise the
+ * one recoverable failure in the set looks exactly like corruption.
+ *
+ * `null` when the version is not the problem, so the general message stands
+ * for every other way a row can fail.
+ */
+function unsupportedContractVersion(decoded: unknown): string | null {
+  if (typeof decoded !== "object" || decoded === null) return null;
+  const version = (decoded as { readonly contractVersion?: unknown }).contractVersion;
+  if (typeof version !== "string") return null;
+  const supported: readonly string[] = SUPPORTED_CONTRACT_VERSIONS;
+  if (supported.includes(version)) return null;
+  // The same printable guard the account id and the key get: this is a value
+  // read back out of the file, reaching a message an operator reads.
+  return /^[A-Za-z0-9_.+-]{1,40}$/.test(version) ? version : "<unprintable version>";
+}
+
+/** The supported set, phrased for a refusal. */
+function supportedVersionList(): string {
+  return SUPPORTED_CONTRACT_VERSIONS.join(", ");
 }
 
 function assertNoDuplicateAccountVersions(db: Database.Database): void {
@@ -1977,10 +2073,19 @@ export class Ledger {
     if (problems.length > 0) {
       throw new LedgerIntegrityError(problems.map((problem) => problem.detail));
     }
-    const parsed = ControlPlaneEvent.safeParse(JSON.parse(row.event_json));
+    const decoded: unknown = JSON.parse(row.event_json);
+    const parsed = ControlPlaneEvent.safeParse(decoded);
     if (!parsed.success) {
+      const version = unsupportedContractVersion(decoded);
       throw new LedgerIntegrityError([
-        "stored event at sequence " + String(row.sequence) + " does not satisfy the contract",
+        version === null
+          ? "stored event at sequence " + String(row.sequence) + " does not satisfy the contract"
+          : "stored event at sequence " +
+            String(row.sequence) +
+            " is stamped contract version " +
+            version +
+            ", which this build does not read; the supported versions are " +
+            supportedVersionList(),
       ]);
     }
     return {
@@ -2045,12 +2150,20 @@ export class Ledger {
 
     const parsed = ControlPlaneEvent.safeParse(decoded);
     if (!parsed.success) {
+      const version = unsupportedContractVersion(decoded);
       problems.push({
         kind: "EVENT_CONTRACT",
         detail:
-          "sequence " +
-          String(row.sequence) +
-          " holds an event that no longer satisfies the ControlPlaneEvent contract",
+          version === null
+            ? "sequence " +
+              String(row.sequence) +
+              " holds an event that no longer satisfies the ControlPlaneEvent contract"
+            : "sequence " +
+              String(row.sequence) +
+              " holds an event stamped contract version " +
+              version +
+              ", which this build does not read; the supported versions are " +
+              supportedVersionList(),
         sequence: row.sequence,
       });
       return problems;
@@ -2339,12 +2452,10 @@ export class Ledger {
     const expectedSequence = head.sequence + 1;
 
     // The V2 coordinate, taken from the payload the event already carries
-    // (P-05/B). The columns are a projection of the body, never a second
-    // source: the trigger compares them against `event_json` in both
-    // directions, so a row whose columns and body disagree cannot be written at
-    // all. `null` for an event in V1 form, which is the lawful shape of every
-    // row this build writes until the V2 producer exists.
-    const coordinate = v2CoordinateOf(event);
+    // (P-05/B), and refused here by name if the payload got it wrong (F-2).
+    // `null` for an event in V1 form, which is still the shape of most rows
+    // this build writes.
+    const coordinate = v2CoordinateColumns(event);
 
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
@@ -2606,13 +2717,13 @@ export class Ledger {
 
     if (existing !== undefined) {
       const stored = taskRevisionRowToModel(existing);
-      // `sequence` is excluded from the comparison for the reason the snapshot
-      // excludes it: an exact replay landing at a later position is the same
-      // revision, and refusing it for the position alone would turn an
-      // idempotent retry into a conflict.
-      const comparable = (value: TaskRevisionReadModel): string =>
-        canonicalJsonStringify({ ...value, sequence: 0 });
-      if (comparable(stored) !== comparable(revision)) {
+      // The snapshot's own comparison, imported rather than restated (F-1,
+      // C-7). This door and `applyEventToSnapshot` decide "same revision"
+      // with one function, so the incremental path and a rebuild refuse
+      // exactly the same histories — which is the property `verifyIntegrity`
+      // depends on. What it compares, and why it excludes the birth
+      // attributes, is argued where it is defined.
+      if (canonicalRevision(stored) !== canonicalRevision(revision)) {
         throw new LedgerValidationError([
           {
             path: "payload.revisionNumber",
