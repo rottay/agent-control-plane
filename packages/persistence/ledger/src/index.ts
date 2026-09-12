@@ -147,6 +147,46 @@ export type {
   ToolClaimStore,
 } from "./tool-claim-store/index.js";
 
+/**
+ * P-18/protocolo escalón E2: the outbox message store.
+ *
+ * A fourth database beside the ledger, the lease store and the claim store,
+ * answering a fourth question: *what should I send, now?* Exported from this
+ * package for the reason the other two are — `better-sqlite3` is fenced here by
+ * equality — and **inert**: nothing writes a row and nothing dispatches one,
+ * exactly as C1's lease store landed before C2 took it and X1a's claim store
+ * before X1b. `outboxStorePath` is the single producer of its path.
+ *
+ * It is the first store in this package to carry a compare-and-set over a
+ * persisted `row_version`, because it is the first whose decision is carried
+ * across an external dispatch instead of taken inside the write lock.
+ */
+export {
+  MAX_OUTBOX_ROW_VERSION,
+  OUTBOX_COMMAND_KINDS,
+  OUTBOX_STATES,
+  OUTBOX_STREAMS,
+  OUTBOX_TERMINAL_STATES,
+  OUTBOX_TRANSITIONS,
+  openOutboxStore,
+  outboxStorePath,
+} from "./outbox-store/index.js";
+
+export type {
+  OpenOutboxStoreOptions,
+  OutboxCasOutcome,
+  OutboxCasToken,
+  OutboxCommandKind,
+  OutboxEventAnchor,
+  OutboxIncarnation,
+  OutboxMessageSeed,
+  OutboxMutation,
+  OutboxRow,
+  OutboxState,
+  OutboxStore,
+  OutboxStream,
+} from "./outbox-store/index.js";
+
 export type {
   LeaseDecision,
   LeaseGrant,

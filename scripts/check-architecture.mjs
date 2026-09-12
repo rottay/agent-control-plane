@@ -9027,6 +9027,85 @@ const P18B_WRITE_SET = [
   "docs/architecture/0073-every-attempt-opens-with-its-own-identity.md",
 ];
 
+/**
+ * P-18/protocolo, escalón E2 — the outbox is a store with a version.
+ *
+ * **A fourth database in this package, and the first with a compare-and-set.**
+ * The lease store and the claim store arbitrate with `BEGIN IMMEDIATE` and a
+ * `decide` callback that runs inside the lock, so the decision sees the state it
+ * is deciding against and no version is needed. An outbox row is read by one
+ * process, carried across an **external dispatch**, and written back afterwards
+ * — and no lock may be held across a network call. The window between the read
+ * and the write is what `row_version` closes, exactly as coordination §6.1
+ * specifies. `row_version` existed nowhere in this tree before this escalón.
+ *
+ * **What lands.** `outbox.sqlite`, with its own migration list under its own
+ * bookkeeping name, `STRICT` throughout, no clock, no environment, no `DELETE`,
+ * one producer of its path, and the claim store's rule-shaped wrong-file guard
+ * rather than the lease store's list. Migration 1 is `coordination_store_meta`
+ * (§8.1) — singleton, the five-kind enum, an incarnation and an instant that
+ * both arrive by argument with no implicit default — and migration 2 is
+ * `outbox_message` with its four indexes, its CHECKs and three `BEFORE UPDATE`
+ * triggers: identity and destination immutable, the version moving by exactly
+ * one under a ceiling, and the transitions of §2 and no others.
+ *
+ * **`CONFLICT` is a value, not an exception.** Zero rows changed is a refusal
+ * the caller must act on — re-read and decide again — so it is returned. That
+ * is C1's standing precedent, and it is why the ledger README's thirteen-class
+ * claim does not move for a packet that adds a whole database. A replay that
+ * would write nothing answers `UNCHANGED` and writes nothing, because §6.1 says
+ * an effective change increments the version and a replay conserves the row;
+ * `changes > 1` is not a refusal at all but a missing unique index, and throws.
+ *
+ * **What does NOT land, declared.** No producer and no consumer: the store is
+ * inert, exactly as C1's landed before C2 and X1a's before X1b. No
+ * `command_id` derivation — §6 makes the key deterministic over the saga
+ * coordinate, and the caller computes it in F while this store imposes
+ * uniqueness and nothing more. No CHECK on `last_failure_code`: the vocabulary
+ * is contracts §16's and F imposes it at the write, rather than binding this
+ * file's schema to another package's catalogue. No `sweep`, and no verb of any
+ * kind that moves a row by the clock — §2 closes with "el vencimiento no agrega
+ * otra transición", so `listOverdue` reads and returns and mutates nothing. No
+ * retrofit of the lease or claim stores, which is E1's. No `account_reservation`
+ * and no `artifact_blob_lease`, which exist in no escalón of this packet, so
+ * §8.1's "cada archivo" is satisfied over the files that exist and declared
+ * partial over those that do not. ADR 0074 records all of it.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 119 → **124**, for the five laws
+ * below; `assertPathScopedInventory` fails printing both numbers if only one
+ * side of that edit lands. `L-X1-4` gains its fourth store **and its two prose
+ * strings are rewritten** — they say "three" and name three stores, and a
+ * fourth row alone would leave the fence passing green while saying something
+ * false. `TEST_ONLY_DOMAINS.ledger` gains a fourth entry for the race worker:
+ * the escalón's central property is that two processes holding the same version
+ * cannot both apply, and a single process proves the predicate rather than the
+ * exclusion. The ADR corpus 73 → 74.
+ *
+ * **Pins that do not move.** `MIGRATIONS` (12), `EXPECTED_SCHEMA_OBJECTS`,
+ * `DERIVED_TABLES`, `PROJECTION_NAMES`, `PROJECTION_SOURCES` and
+ * `status().projections`: this is a separate file with its own migration list,
+ * `outbox_message` is not a projection, and §8.1 says the metadata "no es un
+ * quinto stream" — which `@acp/protocol`'s suite already asserts by
+ * counterexample. `CONTRACT_VERSION`, `API_CONTRACT_VERSION` and
+ * `CONTROL_PLANE_EVENT_TYPES` (25): the three outbox event types are F's. The
+ * ledger README's `### Errors` bijection, because no error class is added.
+ * `ROADMAP_SHA256`.
+ *
+ * **Nine paths, four of them new** — the store, its suite, the race worker and
+ * ADR 0074.
+ */
+const P18E2_WRITE_SET = [
+  "packages/persistence/ledger/src/outbox-store/index.ts",
+  "packages/persistence/ledger/test/outbox-store/index.test.ts",
+  "packages/persistence/ledger/test/outbox-race-worker/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/index.md",
+  "docs/architecture/0074-the-outbox-is-a-store-with-a-version.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9231,6 +9310,7 @@ const WRITE_SET = [
   ...P13_WRITE_SET,
   ...P18A_WRITE_SET,
   ...P18B_WRITE_SET,
+  ...P18E2_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -10494,6 +10574,25 @@ const PATH_SCOPED_LAWS = [
     law: "the payload-key projection has exactly one owner",
     scope: "packages/*/*/src/** (every tracked source file)",
   },
+  // P-18/protocolo E2 (L-P18E2-1..5). Five new path-shaped surfaces, so five
+  // new rows: the register and the `requireScope` call sites both move 119 ->
+  // 124, and `assertPathScopedInventory` fails printing both numbers if only
+  // one side of this edit lands.
+  //
+  // The third row is repository-wide for the reason `L-X1-3` is: a filename
+  // composed in two places is two databases, and two outboxes over one ledger
+  // are each a complete and plausible queue.
+  { law: "every outbox mutation is immediate", scope: "packages/persistence/ledger/src/outbox-store/index.ts" },
+  {
+    law: "the outbox deletes nothing, reads no clock and mints no identity",
+    scope: "packages/persistence/ledger/src/outbox-store/index.ts",
+  },
+  { law: "the outbox path has exactly one producer", scope: "packages/*/*/src/**" },
+  {
+    law: "the outbox compare-and-set carries all three terms",
+    scope: "packages/persistence/ledger/src/outbox-store/index.ts",
+  },
+  { law: "no outbox verb moves a row by the clock", scope: "packages/persistence/ledger/src/outbox-store/index.ts" },
 ];
 
 /**
@@ -17237,6 +17336,10 @@ const TEST_ONLY_DOMAINS = {
   ledger: [
     { domain: "concurrent-writer-worker", why: "a spawned-fixture entry point, run as a child process" },
     { domain: "lease-race-worker", why: "a spawned-fixture entry point that races for the worktree lease" },
+    {
+      domain: "outbox-race-worker",
+      why: "a spawned-fixture entry point that reads an outbox token, waits for the parent's marker, and then compare-and-sets against it: the property is that two processes holding the same version cannot both apply, which one process can only pretend to test",
+    },
   ],
   providers: [
     { domain: "testing", why: "the fake-provider harness the provider suites share" },
@@ -23209,6 +23312,9 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
 // --- 21f. the tool-coordinate claim store (V2 X1a) --------------------------
 
 const TOOL_CLAIM_SITE = "packages/persistence/ledger/src/tool-claim-store/index.ts";
+// Declared here rather than beside its own laws in 21h, because `L-X1-4` below
+// counts the stores of this package and the outbox is now the fourth.
+const OUTBOX_SITE = "packages/persistence/ledger/src/outbox-store/index.ts";
 
 // L-X1-1 -- every claim mutation is immediate.
 //
@@ -23345,16 +23451,21 @@ const TOOL_CLAIM_SITE = "packages/persistence/ledger/src/tool-claim-store/index.
 
 // L-X1-4 -- each store in this package migrates under its own name.
 //
-// The ledger, the worktree arbiter and the claim store are three databases in
-// one package. A shared migration-table name is how a file opened by the wrong
-// module looks migrated when it is not -- so the three names are distinct, and
-// that is checked rather than remembered.
+// The ledger, the worktree arbiter, the claim store and the outbox are four
+// databases in one package. A shared migration-table name is how a file opened
+// by the wrong module looks migrated when it is not -- so the four names are
+// distinct, and that is checked rather than remembered.
+//
+// P-18/E2 added the fourth. The two sentences below moved with it: they counted
+// the stores and named them, so a row added without touching them would have
+// left this law passing green while stating a number that is no longer true.
 {
   let migrationScanned = 0;
   const names = new Map([
     ["packages/persistence/ledger/src/migrations/index.ts", "schema_migrations"],
     ["packages/persistence/ledger/src/lease-store/index.ts", "lease_schema_migrations"],
     [TOOL_CLAIM_SITE, "tool_claim_schema_migrations"],
+    [OUTBOX_SITE, "outbox_schema_migrations"],
   ]);
   const seen = new Set();
   for (const [site, table] of names) {
@@ -23373,10 +23484,12 @@ const TOOL_CLAIM_SITE = "packages/persistence/ledger/src/tool-claim-store/index.
     seen.add(table);
   }
   if (seen.size !== names.size) {
-    fail("the three stores in this package do not carry three distinct migration table names");
+    fail("the four stores in this package do not carry four distinct migration table names");
   }
   requireScope("each store in this package migrates under its own name", migrationScanned);
-  notes.push("the ledger, the lease store and the claim store each migrate under their own table name");
+  notes.push(
+    "the ledger, the lease store, the claim store and the outbox each migrate under their own table name",
+  );
 }
 
 // --- 21g. adoption of the tool-coordinate claim (V2 X1b) --------------------
@@ -23653,6 +23766,244 @@ function claimTransactRegions(code) {
   }
   requireScope("the claim row is bounded, and carries no argument or content", rowScanned);
   notes.push("the tool claim carries 12 pinned members, a byte count among them and no payload");
+}
+
+// --- 21h. the outbox message store (P-18/protocolo E2) ----------------------
+//
+// The first store in this package whose decision is carried across an external
+// dispatch instead of taken inside the write lock. Three of the five laws are
+// the shape the other two stores already keep, restated over a third file
+// because a law that stands over one module says nothing about the next. The
+// other two are this store's own, and both are pinned by equality rather than
+// by description: a compare-and-set whose predicate quietly loses a term still
+// passes every drill that races on a fresh row, and a store that grew a verb
+// moving rows by the clock would contradict the one sentence coordination §2
+// closes with while every transition test stayed green.
+
+// L-P18E2-1 -- every outbox mutation is immediate.
+//
+// `UNIQUE (command_id)` prevents two rows; `BEGIN IMMEDIATE` prevents two
+// decisions about one. The compare-and-set reads the incarnation, reads the
+// row, compares and writes, and those four steps are one unit or they are not a
+// compare-and-set at all. The region walk is string-aware because the SQL
+// literals carry unbalanced parentheses of their own.
+{
+  let outboxScanned = 0;
+  const source = readIfPresent(OUTBOX_SITE);
+  if (source === null) {
+    fail(OUTBOX_SITE + " is missing; the outbox laws would stand over nothing");
+  } else {
+    outboxScanned += 1;
+    const code = stripComments(source);
+    const regions = [];
+    for (let at = code.indexOf("db.transaction("); at !== -1; at = code.indexOf("db.transaction(", at + 1)) {
+      let depth = 0;
+      let quote = null;
+      let cursor = at + "db.transaction".length;
+      for (; cursor < code.length; cursor += 1) {
+        const character = code[cursor];
+        if (quote !== null) {
+          if (character === "\\") cursor += 1;
+          else if (character === quote) quote = null;
+          continue;
+        }
+        if (character === '"' || character === "'" || character === "`") {
+          quote = character;
+          continue;
+        }
+        if (character === "(") depth += 1;
+        else if (character === ")") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      regions.push([at, cursor]);
+    }
+    if (regions.length === 0) {
+      fail(OUTBOX_SITE + " opens no transaction; the incarnation, the row, the comparison and the write must be one unit");
+    }
+    if (!code.includes(".immediate(")) {
+      fail(
+        OUTBOX_SITE +
+          " never takes the write lock at BEGIN; a deferred transaction discovers the conflict at" +
+          " first write, which is after two dispatchers have already both decided they may send",
+      );
+    }
+    for (const match of code.matchAll(/\b(INSERT|UPDATE)\s+(?:INTO\s+)?[a-z_]+/g)) {
+      const at = match.index ?? 0;
+      if (!regions.some(([start, end]) => at > start && at < end)) {
+        fail(
+          OUTBOX_SITE +
+            " mutates outside a transaction (" +
+            match[0] +
+            "); the incarnation checked outside the lock is the incarnation as it was, not as it is",
+        );
+      }
+    }
+  }
+  requireScope("every outbox mutation is immediate", outboxScanned);
+  notes.push("every outbox mutation sits inside an immediate transaction");
+}
+
+// L-P18E2-2 -- the outbox deletes nothing, reads no clock and mints no identity.
+//
+// The first two are `L-X1-2`'s reasons over a third file. The third is this
+// store's: §8.1 says the incarnation arrives with "sin default implícito", and
+// a store that minted its own would read the environment this module may not
+// read -- and would make the ABA drill impossible to aim, because a test could
+// no longer choose which incarnation a row was rebuilt under.
+{
+  let purityScanned = 0;
+  const source = readIfPresent(OUTBOX_SITE);
+  if (source === null) {
+    fail(OUTBOX_SITE + " is missing; the outbox purity law would stand over nothing");
+  } else {
+    purityScanned += 1;
+    const code = stripComments(source);
+    if (/\bDELETE\b/.test(code)) {
+      fail(
+        OUTBOX_SITE +
+          " contains a DELETE; a row removed is a row whose version restarts at zero, which is the" +
+          " one thing the incarnation exists to make detectable",
+      );
+    }
+    for (const forbidden of ["Date.now(", "new Date(", "process.env", "process.hrtime", "process.pid"]) {
+      if (code.includes(forbidden)) {
+        fail(OUTBOX_SITE + " reads " + forbidden + "; every instant and every process is the caller's argument");
+      }
+    }
+    for (const forbidden of ["randomUUID", "randomBytes", "Math.random"]) {
+      if (code.includes(forbidden)) {
+        fail(
+          OUTBOX_SITE +
+            " mints an identity with " +
+            forbidden +
+            "; the incarnation, the message id and the command id are all supplied, and section 8.1" +
+            " gives the incarnation no implicit default",
+        );
+      }
+    }
+  }
+  requireScope("the outbox deletes nothing, reads no clock and mints no identity", purityScanned);
+  notes.push("the outbox store deletes nothing, reads no clock and mints no identity");
+}
+
+// L-P18E2-3 -- the outbox path has exactly one producer.
+//
+// `L-X1-3`'s reason, and it bites harder here. Two claim stores over one ledger
+// is no mutual exclusion; two outboxes over one ledger is worse, because each
+// is a complete and plausible queue and a dispatcher reading either would find
+// nothing wrong with what it found.
+{
+  let pathScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const namers = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!relativePath.endsWith(".ts")) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      pathScanned += 1;
+      if (stripComments(content).includes("outbox.sqlite")) namers.push(relativePath);
+    }
+    if (namers.join(", ") !== OUTBOX_SITE) {
+      fail(
+        "the outbox filename is composed by [" +
+          namers.join(", ") +
+          "]; exactly one module may produce it, and it is " +
+          OUTBOX_SITE,
+      );
+    }
+  }
+  requireScope("the outbox path has exactly one producer", pathScanned);
+  notes.push("one module composes the outbox path, and no other source file names it");
+}
+
+// L-P18E2-4 -- the compare-and-set carries all three terms, and sets the
+// version by increment.
+//
+// Pinned by equality, because this is the law no behavioural test can keep. A
+// predicate that lost its `state` term would still pass every drill in the
+// suite -- the version alone separates the cases those drills construct -- and
+// would admit exactly the reconciler §6.1 forbids: one that advances a row from
+// a state it never observed. The same for the increment: `row_version = ?`
+// would let a caller name its own next version, and the whole point is that it
+// cannot.
+{
+  let predicateScanned = 0;
+  const source = readIfPresent(OUTBOX_SITE);
+  if (source === null) {
+    fail(OUTBOX_SITE + " is missing; the compare-and-set law would stand over nothing");
+  } else {
+    predicateScanned += 1;
+    const code = stripComments(source);
+    const updates = [...code.matchAll(/\bUPDATE outbox_message\b/g)].length;
+    if (updates !== 1) {
+      fail(
+        OUTBOX_SITE +
+          " carries " +
+          String(updates) +
+          " statements that update outbox_message; there is one compare-and-set and it is the only" +
+          " way a row changes",
+      );
+    }
+    if (!code.includes("WHERE command_id = ? AND row_version = ? AND state = ?")) {
+      fail(
+        OUTBOX_SITE +
+          " no longer predicates its update on the command, the expected version and the expected" +
+          " state together; a predicate short of those three admits a reconciler that advances a row" +
+          " from a state it never saw",
+      );
+    }
+    if (!code.includes("row_version = row_version + 1")) {
+      fail(
+        OUTBOX_SITE +
+          " no longer sets the version by increment; a version a caller can name is a version a" +
+          " caller can repeat",
+      );
+    }
+  }
+  requireScope("the outbox compare-and-set carries all three terms", predicateScanned);
+  notes.push("the outbox update predicates on command, version and state, and increments the version itself");
+}
+
+// L-P18E2-5 -- no outbox verb moves a row by the clock.
+//
+// Coordination §2 closes with "el vencimiento no agrega otra transición". An
+// expired `INFLIGHT` obliges a caller to reconcile; it authorises this store to
+// do nothing. `sweep` is lawful in the lease store because releasing a lease
+// concedes nothing, and the same shape here would be a transition the
+// vocabulary does not admit -- arriving as a helper nobody reviewed as a
+// transition, which is why the absence is a law rather than a note.
+{
+  let clockScanned = 0;
+  const source = readIfPresent(OUTBOX_SITE);
+  if (source === null) {
+    fail(OUTBOX_SITE + " is missing; the expiry law would stand over nothing");
+  } else {
+    clockScanned += 1;
+    const code = stripComments(source);
+    if (/\bsweep\b/i.test(code)) {
+      fail(OUTBOX_SITE + " names a sweep; expiry obliges a caller to reconcile and moves no row here");
+    }
+    for (const match of code.matchAll(/\b(deadline_at|next_eligible_at)\s*<=?\s/g)) {
+      const at = match.index ?? 0;
+      const select = code.lastIndexOf("SELECT", at);
+      const mutate = Math.max(code.lastIndexOf("UPDATE", at), code.lastIndexOf("INSERT", at));
+      if (select < mutate) {
+        fail(
+          OUTBOX_SITE +
+            " compares " +
+            match[1] +
+            " inside a statement that writes; an instant may select rows for a caller to act on and" +
+            " may not decide that one of them has moved",
+        );
+      }
+    }
+  }
+  requireScope("no outbox verb moves a row by the clock", clockScanned);
+  notes.push("the outbox lists what is overdue and transitions nothing by the clock");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------

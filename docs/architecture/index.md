@@ -89,6 +89,7 @@ new records from `_template.md`, which carries the required fields.
 | 0071 | [The daemon composition root leaves the barrel](0071-the-daemon-composition-root-leaves-the-barrel.md) | accepted |
 | 0072 | [The V2 key composes at the contract, and the door reads every supported version](0072-the-v2-key-composes-at-the-contract.md) | accepted |
 | 0073 | [Every attempt opens with its own identity, assigned once](0073-every-attempt-opens-with-its-own-identity.md) | accepted |
+| 0074 | [The outbox is a store with a version, before it is a queue](0074-the-outbox-is-a-store-with-a-version.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

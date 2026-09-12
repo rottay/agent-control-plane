@@ -804,6 +804,63 @@ into a receipt, that coordinate becomes re-runnable — narrow, because the firs
 recoverer promotes the poison into the ledger, but open. ADR 0025 records why
 closing it would mean one database for two questions.
 
+## The outbox message store
+
+A fourth database, answering a fourth question. The ledger answers *what
+happened*; the worktree arbiter answers *may I write here, now*; the claim store
+answers *may I run this tool call, now*; this one answers *what should I send,
+now*.
+
+It is a **cache of delivery and nothing else**. The durable fact that a command
+was intended is an event in the ledger, and losing this entire file costs
+liveness rather than evidence — so an absent outbox answers absence as absence
+and never synthesises a `PENDING` for work nobody owes.
+
+`openOutboxStore` gives one row per command, with `UNIQUE (command_id)` and a
+compare-and-set over a persisted `row_version`. That is the one thing the other
+two arbiters do not have, and the reason is structural rather than stylistic.
+They take the write lock at `BEGIN` and run the caller's decision inside it, so
+the decision sees the state it is deciding against. An outbox row is read by one
+process, carried across an **external dispatch**, and written back afterwards —
+and no lock may be held across a network call. The window between the read and
+the write is what the version closes.
+
+A read returns four things: the file's incarnation, the command, the version and
+the state. A mutation hands the same four back. Three of them are the `UPDATE`'s
+predicate; the fourth is not a column of the row at all.
+
+**Why the fourth matters.** Every row is born at version zero, so restoring this
+file from a backup produces rows whose versions repeat numbers that were already
+issued — and a token held from before the restore matches a rebuilt row in every
+term. The incarnation is the only thing that separates them. It lives once per
+file in `coordination_store_meta`, it arrives as an argument rather than being
+minted here, and it is read **inside** the transaction on every mutation: a
+handle that read it at `open` would carry a stale answer into the first decision
+taken after a restore, which is exactly the decision that matters.
+
+**Zero rows changed is a value, not an exception.** It means re-read and decide
+again — never a success and never an implicit resend — so `cas` returns
+`CONFLICT` with the row as it actually stands. A mutation that would write
+nothing returns `UNCHANGED` and writes nothing, including the `updated_at`
+stamp: an effective change increments the version, and were the instant counted
+as substance, no retry could ever be a replay. More than one row changed is not
+a refusal but a missing unique index, and throws.
+
+**Nothing moves by the clock.** An expired message obliges a caller to
+reconcile; it does not authorise this store to transition anything. There is no
+`sweep` — `listOverdue` reads and returns, and that is the whole of this store's
+relationship with an instant.
+
+It reads no clock, mints no identity, deletes nothing, and composes exactly one
+path — `outboxStorePath`, derived from the ledger's own. It does **not** derive
+`command_id`: the key is deterministic over the saga coordinate, the producer
+computes it, and this store imposes uniqueness and nothing else.
+
+**Nothing calls it yet.** This is substrate, landed alone and adopted later, the
+way the worktree arbiter and the claim store were. The saga, the command
+identity and the events that rebuild a row from history are not here; ADR 0074
+records what this escalón closes and what it leaves owed.
+
 ## The artifact store
 
 The Checkpoint law says a record carries **digests and references**, never
