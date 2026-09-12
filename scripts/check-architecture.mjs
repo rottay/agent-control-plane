@@ -8750,12 +8750,28 @@ const P11_WRITE_SET = [
  *   the same step, so no law ever reads an empty site.
  * - **Escalón 2 (one walk construction).** The two inline `createExecutionEffects`
  *   copies collapse into a single builder with explicit dependencies in
- *   `src/composition/walk/index.ts`, with `composition/ports/` and
- *   `composition/usecases/` completing the §2 :109 partition, and a
- *   hand-written equivalence fixture over the single/scheduled/one-item
- *   scenarios. Pines 3, 5 and 6 re-scope from `composition/index.ts` to
- *   `composition/walk/index.ts`, and the multi-walk registry row retires with
- *   the region it named.
+ *   `src/composition/walk/index.ts` (`buildWalkEffects`, and
+ *   `runComposedSqliteWalk`, the one `runSqliteMode({` literal both walk forms
+ *   call), with `composition/ports/` and `composition/usecases/` completing
+ *   the §2 :109 partition, and a hand-written equivalence fixture over the
+ *   single/scheduled/one-item scenarios in `test/composition/walk/`. Pines 3,
+ *   5 and 6 re-scope from `composition/index.ts` to
+ *   `composition/walk/index.ts`; the no-clean law and the L-F2B-1 anti-vacuity
+ *   half re-scope to `composition/ports/index.ts` with the closures they
+ *   read; `HARNESS_OWNER` becomes a two-file read (the root keeps the harness
+ *   build and reap, the ports module keeps the port construction); `L-C-4c`'s
+ *   daemon half re-scopes to the walk module; and `L-C-2a`'s ordering check
+ *   re-anchors on `runComposedSqliteWalk(`.
+ *   The multi-walk region itself — the beats registry, the targeted reap and
+ *   the scheduler ports — turned out to be scheduler machinery rather than
+ *   walk construction, so it stays in the composition root and its registry
+ *   row stays with it: what disappeared is the duplicated walk construction
+ *   inside `ports.run`, not the region. No registry row retires and no count
+ *   moves; nine scopes are rewritten in place. The two walk context shapes
+ *   land in `src/composition/types/index.ts`, a pure type leaf both the root
+ *   and the walk module read (V11 below), and the wrapper itself — not only
+ *   `buildWalkEffects` — is drilled end to end over a drill ledger in
+ *   `test/composition/walk/index.test.ts`.
  *
  * No folder is renamed in this packet — `process/`, `supervision/`, `modes/`,
  * `observability/` and `shared/` are P-37 seams, and `src/constants/` stays
@@ -8775,7 +8791,7 @@ const P11_WRITE_SET = [
  * `PATH_SCOPED_LAWS` scopes follow, register and `requireScope` counts
  * unchanged. The ADR corpus moves 70 → 71.
  *
- * **The write set gains 9 distinct paths** — the four composition sources,
+ * **The write set gains 10 distinct paths** — the five composition sources,
  *   the four mirrored suites, and ADR 0071. The other entries revisit paths
  *   earlier packets own: the barrel and its mirror suite, the paths,
  *   launchd-lifecycle and drills suites (which now import from the
@@ -8790,7 +8806,18 @@ const P11_WRITE_SET = [
  * pins the daemon's lawful `.find((entry` reads. Both move with the
  * composition root in escalón 1 — the drills write `src/composition/index.ts`
  * and N13 reads it — so the block carries them from the start: 18 → 20
- * entries, still 9 distinct new paths.
+ * entries, then 9 distinct new paths.
+ *
+ * **V11 correction (DT adjudication, escalón 2).**
+ * `src/composition/types/index.ts` joins the block: the two walk context
+ * shapes — `WalkEffectsInput` and `ComposedSqliteWalkInput` — leave the walk
+ * module for a leaf of their own, and the composition root and the walk
+ * module both read them from there. It is a **pure type leaf**, so it carries
+ * no mirrored suite: the topology law bounds where a test may live and does
+ * not require one for a file with no conduct, and
+ * `packages/persistence/ledger/src/types/index.ts` is the standing precedent
+ * for exactly that shape. The block therefore moves 20 → 21 entries and 9 →
+ * 10 distinct new paths.
  */
 const P13_WRITE_SET = [
   "packages/entrypoints/daemon/src/index.ts",
@@ -8803,6 +8830,7 @@ const P13_WRITE_SET = [
   "packages/entrypoints/daemon/src/composition/walk/index.ts",
   "packages/entrypoints/daemon/src/composition/ports/index.ts",
   "packages/entrypoints/daemon/src/composition/usecases/index.ts",
+  "packages/entrypoints/daemon/src/composition/types/index.ts",
   "packages/entrypoints/daemon/test/composition/index.test.ts",
   "packages/entrypoints/daemon/test/composition/walk/index.test.ts",
   "packages/entrypoints/daemon/test/composition/ports/index.test.ts",
@@ -9825,7 +9853,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the production walk records what it spends",
-    scope: "packages/entrypoints/daemon/src/composition/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/walk/index.ts",
   },
   {
     law: "the usage sink runs before the marker",
@@ -9902,7 +9930,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the production daemon owns a harness",
-    scope: "packages/entrypoints/daemon/src/composition/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/index.ts and packages/entrypoints/daemon/src/composition/ports/index.ts",
   },
   {
     law: "no leg forgets the reattach refusal",
@@ -10064,7 +10092,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the gate runs before the marker, at every seam",
-    scope: "runtime/src/execution-effects and daemon/src/composition/index.ts",
+    scope: "runtime/src/execution-effects and daemon/src/composition/walk/index.ts",
   },
   // V2 X1a. Four new path-shaped surfaces, so four new rows: the register and
   // the `requireScope` call sites both move 78 -> 82.
@@ -10179,7 +10207,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the production walk records the pressure it observes, at every seam",
-    scope: "packages/entrypoints/daemon/src/composition/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/walk/index.ts",
   },
   {
     law: "the observation and decision vocabularies agree on quota, both ways",
@@ -10223,7 +10251,7 @@ const PATH_SCOPED_LAWS = [
   },
   {
     law: "the switch port carries the real lease, at every seam",
-    scope: "packages/entrypoints/daemon/src/composition/index.ts",
+    scope: "packages/entrypoints/daemon/src/composition/walk/index.ts",
   },
   // V2-B1f/F4c. One new path-shaped surface, so one new row: the register and
   // the `requireScope` call sites both move 109 -> 110. It keeps the account
@@ -15378,7 +15406,7 @@ if (tracked.status === 0) {
   // behaviourally-empty defect the whole B7 wave exists to fix: the one
   // production construction site must pass a sink, and it must reach the
   // recorder.
-  const SPEND_HOME = "packages/entrypoints/daemon/src/composition/index.ts";
+  const SPEND_HOME = "packages/entrypoints/daemon/src/composition/walk/index.ts";
   {
     const source = stripComments(readIfPresent(SPEND_HOME) ?? "");
     requireScope("the production walk records what it spends", source.length === 0 ? 0 : 1);
@@ -15642,33 +15670,42 @@ if (tracked.status === 0) {
   // to fix. The production root must build one, hand it to the port, AND push
   // a release resource — the third is the one that makes an abandoned child
   // get reaped rather than merely named.
-  const HARNESS_OWNER = "packages/entrypoints/daemon/src/composition/index.ts";
+  // P-13/2: the composition root still builds the harness, registers it on the
+  // unwind stack and reaps it; the execution-port construction moved with the
+  // composed ports into `src/composition/ports/index.ts`. The law reads both
+  // halves, and either half missing is the defect it exists to catch.
+  const HARNESS_ROOT = "packages/entrypoints/daemon/src/composition/index.ts";
+  const HARNESS_PORTS = "packages/entrypoints/daemon/src/composition/ports/index.ts";
   {
-    const source = stripComments(readIfPresent(HARNESS_OWNER) ?? "");
-    requireScope("the production daemon owns a harness", source.length === 0 ? 0 : 1);
-    const buildAt = source.indexOf("createAgentHarness(");
-    const portAt = source.indexOf("createExecutionPort(");
+    const rootSource = stripComments(readIfPresent(HARNESS_ROOT) ?? "");
+    const portsSource = stripComments(readIfPresent(HARNESS_PORTS) ?? "");
+    requireScope(
+      "the production daemon owns a harness",
+      rootSource.length === 0 || portsSource.length === 0 ? 0 : 1,
+    );
+    const buildAt = rootSource.indexOf("createAgentHarness(");
+    const portAt = portsSource.indexOf("createExecutionPort(");
     if (buildAt === -1) {
       fail(
-        HARNESS_OWNER +
+        HARNESS_ROOT +
           " does not build an agent harness; the daemon would spawn provider children it cannot reap",
       );
     } else if (portAt === -1) {
-      fail(HARNESS_OWNER + " no longer builds the execution port this law is scoped to");
-    } else if (!/createExecutionPort\(\{[^}]*harness[^}]*\}\)/.test(source)) {
+      fail(HARNESS_PORTS + " no longer builds the execution port this law is scoped to");
+    } else if (!/createExecutionPort\(\{[^}]*harness[^}]*\}\)/.test(portsSource)) {
       fail(
-        HARNESS_OWNER +
+        HARNESS_PORTS +
           " builds the execution port without passing its harness; the port would own the children" +
           " privately and the daemon's unwind would reap nothing",
       );
-    } else if (!source.includes('name: "agent-harness"')) {
+    } else if (!rootSource.includes('name: "agent-harness"')) {
       fail(
-        HARNESS_OWNER +
+        HARNESS_ROOT +
           " pushes no agent-harness resource onto the unwind stack; a child left running by an" +
           " abandoned stream would outlive the daemon",
       );
-    } else if (!source.includes("closeAll()")) {
-      fail(HARNESS_OWNER + " registers an agent-harness resource whose release does not reap anything");
+    } else if (!rootSource.includes("closeAll()")) {
+      fail(HARNESS_ROOT + " registers an agent-harness resource whose release does not reap anything");
     } else {
       notes.push("the production daemon builds a harness, passes it, and reaps it at unwind");
     }
@@ -20240,7 +20277,7 @@ if (tracked.status === 0) {
     // declared further down this file: these laws run during module evaluation,
     // so a reference to a later `const` would be a temporal dead zone rather
     // than a shared name.
-    const compositionSite = "packages/entrypoints/daemon/src/composition/index.ts";
+    const compositionSite = "packages/entrypoints/daemon/src/composition/ports/index.ts";
     const composition = readIfPresent(compositionSite);
     if (composition === null) {
       fail(
@@ -20380,12 +20417,15 @@ if (tracked.status === 0) {
   // --- L-V2B1F4-3: the production walk records the pressure it observes.
   //
   // Written in `L-C-4c`'s shape and deliberately NOT `L-B7T-2`'s: `L-B7T-2`
-  // uses `indexOf` and therefore checks only the FIRST construction site, and
-  // this daemon builds two. Every literal must carry a sink, and the file must
-  // reach the recorder -- which is what stops the optionality on
-  // `ExecutionEffectsInput` becoming a production path that observes a refusal
-  // and records nothing.
-  const PRESSURE_COMPOSITION_HOME = "packages/entrypoints/daemon/src/composition/index.ts";
+  // uses `indexOf` and therefore checks only the FIRST construction site. This
+  // daemon built two until P-13/2 collapsed both inline copies into the one
+  // builder in `composition/walk/index.ts`; the law still checks EVERY
+  // `createExecutionEffects({` literal it can read, so a second site returning
+  // would be checked without a fence edit. Every literal must carry a sink,
+  // and the file must reach the recorder -- which is what stops the
+  // optionality on `ExecutionEffectsInput` becoming a production path that
+  // observes a refusal and records nothing.
+  const PRESSURE_COMPOSITION_HOME = "packages/entrypoints/daemon/src/composition/walk/index.ts";
   {
     const source = stripComments(readIfPresent(PRESSURE_COMPOSITION_HOME) ?? "");
     requireScope(
@@ -20894,7 +20934,7 @@ if (tracked.status === 0) {
   // The second half is the boundary itself: the daemon reaches the executor
   // through the composed port and by no other path, so it never plays a plan
   // of its own.
-  const SWITCH_COMPOSITION_HOME = "packages/entrypoints/daemon/src/composition/index.ts";
+  const SWITCH_COMPOSITION_HOME = "packages/entrypoints/daemon/src/composition/walk/index.ts";
   {
     const source = stripComments(readIfPresent(SWITCH_COMPOSITION_HOME) ?? "");
     requireScope("the switch port carries the real lease, at every seam", source.length === 0 ? 0 : 1);
@@ -22442,6 +22482,12 @@ if (tracked.status === 0) {
 // in for it.
 
 const DAEMON_COMPOSITION_SITE = "packages/entrypoints/daemon/src/composition/index.ts";
+// P-13 escalón 2: the walk construction and the composed ports partitioned
+// into modules of their own. The laws that read the walk seam literals
+// re-scope to the walk module; the no-clean law re-scopes to the ports module
+// with the conformance closure it slices.
+const DAEMON_WALK_SITE = "packages/entrypoints/daemon/src/composition/walk/index.ts";
+const DAEMON_PORTS_SITE = "packages/entrypoints/daemon/src/composition/ports/index.ts";
 
 // L-C-2a -- the production daemon holds a fenced lease before it walks.
 //
@@ -22469,9 +22515,12 @@ const DAEMON_COMPOSITION_SITE = "packages/entrypoints/daemon/src/composition/ind
       if (!code.includes(needle)) fail(DAEMON_COMPOSITION_SITE + ": " + why);
     }
     // Acquired before the walk, not after it. Both mode entry points must come
-    // later in the file than the acquisition that authorizes them.
+    // later in the file than the acquisition that authorizes them. The SQLite
+    // seam reads `runComposedSqliteWalk(` since P-13/2 — the walk composition
+    // itself is the one builder in `composition/walk/` — and that call is the
+    // seam this ordering protects.
     const acquired = code.indexOf(".acquire()");
-    for (const mode of ["runSqliteMode(", "startRestateMode("]) {
+    for (const mode of ["runComposedSqliteWalk(", "startRestateMode("]) {
       const at = code.indexOf(mode);
       if (at >= 0 && at < acquired) {
         fail(
@@ -22855,16 +22904,19 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
 // is where a well-meaning "just reset it" would land.
 {
   let cleanScanned = 0;
-  const composition = readIfPresent(DAEMON_COMPOSITION_SITE);
+  // P-13/2: the conformance closure moved with the composed ports; the slice
+  // between `conformanceGateFor` and `executionPortFor` reads the ports module
+  // now, and that relative order is itself load bearing.
+  const composition = readIfPresent(DAEMON_PORTS_SITE);
   if (composition === null) {
-    fail(DAEMON_COMPOSITION_SITE + " is missing; the no-clean law would stand over nothing");
+    fail(DAEMON_PORTS_SITE + " is missing; the no-clean law would stand over nothing");
   } else {
     cleanScanned += 1;
     const code = stripComments(composition);
     const from = code.indexOf("function conformanceGateFor");
     const to = code.indexOf("function executionPortFor");
     if (from < 0 || to < 0 || to < from) {
-      fail(DAEMON_COMPOSITION_SITE + " no longer carries a conformance closure the no-clean law can read");
+      fail(DAEMON_PORTS_SITE + " no longer carries a conformance closure the no-clean law can read");
     } else {
       const closure = code.slice(from, to);
       for (const forbidden of [
@@ -22873,7 +22925,7 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
       ]) {
         if (closure.includes(forbidden)) {
           fail(
-            DAEMON_COMPOSITION_SITE +
+            DAEMON_PORTS_SITE +
               "'s conformance closure names " +
               forbidden +
               "; a violation is recorded and stopped, never cleaned, restored, checked out or staged",
@@ -22882,10 +22934,10 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
       }
       // It must actually do the two things it exists for.
       if (!closure.includes("checkWriteSetConformance")) {
-        fail(DAEMON_COMPOSITION_SITE + "'s conformance closure no longer checks conformance");
+        fail(DAEMON_PORTS_SITE + "'s conformance closure no longer checks conformance");
       }
       if (!closure.includes("observeWorktree")) {
-        fail(DAEMON_COMPOSITION_SITE + "'s conformance closure no longer observes the worktree");
+        fail(DAEMON_PORTS_SITE + "'s conformance closure no longer observes the worktree");
       }
     }
   }
@@ -22925,15 +22977,18 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
       );
     }
   }
-  const composition = readIfPresent(DAEMON_COMPOSITION_SITE);
+  // P-13/2: the daemon half reads the walk module, where the single
+  // `createExecutionEffects` construction lives; every literal it can read
+  // must pass a gate.
+  const composition = readIfPresent(DAEMON_WALK_SITE);
   if (composition === null) {
-    fail(DAEMON_COMPOSITION_SITE + " is missing; the both-seams law cannot be checked");
+    fail(DAEMON_WALK_SITE + " is missing; the both-seams law cannot be checked");
   } else {
     gateScanned += 1;
     const code = stripComments(composition);
     const seams = [...code.matchAll(/createExecutionEffects\(\{/g)].map((match) => match.index ?? -1);
     if (seams.length === 0) {
-      fail(DAEMON_COMPOSITION_SITE + " builds no execution effects; the walk would perform nothing");
+      fail(DAEMON_WALK_SITE + " builds no execution effects; the walk would perform nothing");
     }
     for (const at of seams) {
       // The literal each call site passes, bounded by the next one.
@@ -22941,7 +22996,7 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
       const literal = code.slice(at, next === undefined ? code.length : next);
       if (!literal.includes("checkConformance:")) {
         fail(
-          DAEMON_COMPOSITION_SITE +
+          DAEMON_WALK_SITE +
             " builds execution effects without a conformance gate; under DT Option B no production" +
             " path may bypass declared write-set conformance, and both seams carry an authoritative" +
             " envelope precisely so neither has to",

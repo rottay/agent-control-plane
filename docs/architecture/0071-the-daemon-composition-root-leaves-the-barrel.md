@@ -50,12 +50,31 @@ site at any commit.
 **Escalón 2 — one walk construction.** The two inline constructions collapse
 into a single builder in `packages/entrypoints/daemon/src/composition/walk/index.ts`,
 with its dependencies named as parameters, and the composition partitions
-into `walk/`, `ports/` and `usecases/` per §2 :109. A fixture of equivalence
-over the single, scheduled and one-item scenarios — with hand-written
-expectations, never a comparison against the previous implementation —
-proves the collapse is behaviourally exact. The spend, pressure and switch
-laws re-scope to the new leaf, and the multi-walk registry row retires with
-the region it named.
+into `walk/`, `ports/` and `usecases/` per §2 :109. `runComposedSqliteWalk`
+lands beside the builder as the one `runSqliteMode({` literal both walk forms
+call. A fixture of equivalence over the single, scheduled and one-item
+scenarios — with hand-written expectations, never a comparison against the
+previous implementation — proves the collapse is behaviourally exact, and the
+same three cases run through the wrapper itself over a drill ledger, a granted
+lease and a real worktree, so the checkpoint port and the lease-bound switch
+port are covered rather than assumed (DT adjudication V11.1). The spend,
+pressure and switch laws re-scope to the new leaf.
+
+Two corrections the implementation forced, recorded rather than smoothed over:
+
+- **The multi-walk registry row does not retire.** The region it names — the
+  beats registry, the targeted reap and the scheduler ports — turned out to be
+  scheduler machinery rather than walk construction, so it stays in the
+  composition root and its row stays with it. What disappeared is the
+  duplicated walk construction inside `ports.run`, not the region.
+- **The two walk context shapes get a leaf of their own.**
+  `src/composition/types/index.ts` holds `WalkEffectsInput` and
+  `ComposedSqliteWalkInput`: they are the contract between the root and the
+  walk module, and both sides now read them from one place (DT adjudication
+  V11.2). It is a pure type leaf, so it carries no mirrored suite — the
+  topology law bounds where a test may live and does not require one for a
+  file with no conduct, and `packages/persistence/ledger/src/types/index.ts`
+  is the standing precedent.
 
 ## Why keeping the root in the barrel was not chosen
 

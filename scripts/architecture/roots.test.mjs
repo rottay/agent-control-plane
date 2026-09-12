@@ -899,7 +899,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const root = syntheticTree();
     write(
       root,
-      "packages/entrypoints/daemon/src/composition/index.ts",
+      "packages/entrypoints/daemon/src/composition/walk/index.ts",
       [
         "export const adapterFor = (entry) => CLI_ADAPTERS[entry.provider];",
         "export const singular = () => createExecutionEffects({",
@@ -933,7 +933,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const lawful = syntheticTree();
     write(
       lawful,
-      "packages/entrypoints/daemon/src/composition/index.ts",
+      "packages/entrypoints/daemon/src/composition/walk/index.ts",
       [
         "export const adapterFor = (entry) => CLI_ADAPTERS[entry.provider];",
         "export const singular = () => createExecutionEffects({",
@@ -958,7 +958,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const empty = syntheticTree();
     write(
       empty,
-      "packages/entrypoints/daemon/src/composition/index.ts",
+      "packages/entrypoints/daemon/src/composition/walk/index.ts",
       [
         "export const adapterFor = (entry) => CLI_ADAPTERS[entry.provider];",
         "export const singular = () => createExecutionEffects({",
@@ -1539,7 +1539,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const root = syntheticTree();
     write(
       root,
-      "packages/entrypoints/daemon/src/composition/index.ts",
+      "packages/entrypoints/daemon/src/composition/walk/index.ts",
       [
         "export const walk = async () => {",
         "  const result = await runSqliteMode({",
@@ -1563,7 +1563,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const lawful = syntheticTree();
     write(
       lawful,
-      "packages/entrypoints/daemon/src/composition/index.ts",
+      "packages/entrypoints/daemon/src/composition/walk/index.ts",
       [
         "export const walk = async () => {",
         "  const result = await runSqliteMode({",
@@ -1587,7 +1587,7 @@ describe("the fence fires its laws against a synthetic tree (L7)", () => {
     const direct = syntheticTree();
     write(
       direct,
-      "packages/entrypoints/daemon/src/composition/index.ts",
+      "packages/entrypoints/daemon/src/composition/walk/index.ts",
       [
         "export const walk = async () => {",
         "  const result = await runSqliteMode({",
