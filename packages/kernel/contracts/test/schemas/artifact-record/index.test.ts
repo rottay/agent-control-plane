@@ -165,6 +165,21 @@ describe("the six shapes are strict and carry the base's pairing rules", () => {
     expect(recorded({ retentionClass: "PERMANENT", expiresAt: null })).toBe(true);
   });
 
+  it("carries an intended reference in an intention, strictly and with the reference's own rules (escalón C, decision 64)", () => {
+    // With the block: the whole reference record, parsed.
+    expect(ArtifactRegistryEvent.safeParse(intention({ intendedReference: reference() })).success).toBe(true);
+    // Without it: an intention recorded before the block existed still parses.
+    expect(ArtifactRegistryEvent.safeParse(intention()).success).toBe(true);
+    // An unknown key inside the block is refused, as it is inside a success's reference.
+    expect(ArtifactRegistryEvent.safeParse(intention({ intendedReference: { ...reference(), acl: ["a"] } })).success).toBe(false);
+    // The two refinements are inherited: an owner on every scope but SYSTEM, and
+    // an expiry on every retention but PERMANENT.
+    expect(ArtifactRegistryEvent.safeParse(intention({ intendedReference: reference({ scopeKind: "TASK", scopeId: null }) })).success).toBe(false);
+    expect(ArtifactRegistryEvent.safeParse(intention({ intendedReference: reference({ retentionClass: "STANDARD", expiresAt: null }) })).success).toBe(false);
+    // A partial block is not a reference.
+    expect(ArtifactRegistryEvent.safeParse(intention({ intendedReference: { artifactReferenceId: "ref-1" } })).success).toBe(false);
+  });
+
   it("admits only the versions a reader reads", () => {
     for (const version of SUPPORTED_CONTRACT_VERSIONS) {
       expect(ArtifactRegistryEvent.safeParse({ ...intention(), contractVersion: version }).success, version).toBe(true);
@@ -182,6 +197,7 @@ describe("laws 4 and 5 run over the whole artifact event", () => {
       intention({ keyReference: sentinel, encryptionStatus: "ENCRYPTED_AT_REST" }),
       event("REFERENCE_RECORDED", { contentSha256: CONTENT, blobGeneration: 1, reference: reference({ scopeId: "Bearer abcdefghijklmnopqrstuvwxyz012345" }) }),
       { ...intention(), recordedBy: sentinel },
+      intention({ intendedReference: reference({ accessPolicyId: sentinel }) }),
     ];
     for (const candidate of refused) {
       const parsed = ArtifactRegistryEvent.safeParse(candidate);
@@ -199,5 +215,10 @@ describe("the contract computes no identity", () => {
     for (const candidate of SIX) {
       expect(ArtifactRegistryEvent.parse(candidate)).toEqual(candidate);
     }
+    // The intended reference is carried as given, and its absence stays absent:
+    // no default is written into a historical body.
+    const withBlock = intention({ intendedReference: reference() });
+    expect(ArtifactRegistryEvent.parse(withBlock)).toEqual(withBlock);
+    expect(Object.keys((ArtifactRegistryEvent.parse(intention()) as { payload: object }).payload)).not.toContain("intendedReference");
   });
 });

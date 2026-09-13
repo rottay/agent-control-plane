@@ -98,6 +98,7 @@ new records from `_template.md`, which carries the required fields.
 | 0080 | [The producer speaks the V2 coordinate, and the protocol half is delivered](0080-the-producer-speaks-the-v2-coordinate.md) | accepted |
 | 0081 | [An artifact is a subject of the registry before its first byte moves](0081-an-artifact-is-a-subject-of-the-registry.md) | accepted |
 | 0082 | [A blob lease excludes the second publisher, and no clock releases it](0082-a-blob-lease-excludes-the-second-publisher.md) | accepted |
+| 0083 | [A publication names its bytes only after they survive the fsync](0083-a-publication-names-its-bytes-only-after-they-survive-the-fsync.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

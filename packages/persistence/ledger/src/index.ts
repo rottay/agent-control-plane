@@ -208,8 +208,8 @@ export type {
  * answering the question artifacts §8 asks first: *may I operate on these bytes,
  * now?* One holding per digest, `PUBLISH` or `RECLAIM`, under the token
  * `(store_incarnation_id, generation)` plus the holder's identity. Exported for
- * the reason the others are — `better-sqlite3` is fenced here by equality — and
- * **inert**: the publisher and the reconciler are escalón C's.
+ * the reason the others are — `better-sqlite3` is fenced here by equality. Its
+ * one caller is the private artifact plane below (escalón C).
  * `artifactBlobLeaseStorePath` is the single producer of its path. It reads no
  * ledger, and no verb frees a blob by the clock.
  */
@@ -236,6 +236,41 @@ export type {
   ArtifactBlobLeaseToken,
   OpenArtifactBlobLeaseStoreOptions,
 } from "./artifact-lease-store/index.js";
+
+/**
+ * P-36/local escalón C: the private artifact plane.
+ *
+ * The publisher, the reader and the reconciler of artifacts §8 and §10, over
+ * the ledger's artifact door and the blob lease store. A publication takes the
+ * lease, records its intention with the reference it will record, writes and
+ * verifies and synchronizes the bytes, and only then records the reference; a
+ * read goes by reference and scope, never by digest; a crash between any two
+ * steps is reconciled from the lease row and the live publication pin, after a
+ * caller's quiescence attestation. The bytes live under `private-artifacts/`,
+ * whose one producer is `artifactPlaneRootFor`, apart from the legacy digest
+ * store above. No producer in the field calls it yet.
+ */
+export {
+  ARTIFACT_PLANE_CONTENT_MAX_BYTES,
+  ARTIFACT_PLANE_REFUSALS,
+  artifactPlaneRootFor,
+  openArtifactPlane,
+} from "./artifact-plane/index.js";
+
+export type {
+  ArtifactEventIdentity,
+  ArtifactPlane,
+  ArtifactPlaneHolding,
+  ArtifactPlaneOutcome,
+  ArtifactPlaneRefusal,
+  ArtifactPlaneTestFaults,
+  ArtifactPublicationRequest,
+  ArtifactReadOutcome,
+  ArtifactReadRequest,
+  ArtifactReconciliationRequest,
+  ArtifactReferenceIntent,
+  OpenArtifactPlaneOptions,
+} from "./artifact-plane/index.js";
 
 export type {
   LeaseDecision,

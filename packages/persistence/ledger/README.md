@@ -46,6 +46,9 @@ ledger.close();
 | `appendInitiativeEvent(event, causation?)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
 | `appendRegistryEvent(document, causation?)` | The same pipeline on the registry stream: one version of one configuration document, on its own chain. A unit door; there is no registry batch. |
 | `appendArtifactEvent(event, causation?)` | The registry stream's second door: one artifact event, `subject_kind = 'ARTIFACT'`, parsed by `@acp/contracts`' `ArtifactRegistryEvent` and folded into the four artifact read models in the same transaction. Facts of the bytes, never the bytes, and no file is touched. |
+| `getArtifactBlob(digest, generation)` / `getUnreclaimedArtifactBlob(digest)` / `getHighestArtifactBlobGeneration(digest)` / `listArtifactBlobsInState(state)` | The artifact fold's own view of the blob read model, read-only and outside a transaction: what a publisher proposes a generation from. |
+| `getArtifactReference(id)` / `getArtifactPin(id)` / `listLiveArtifactPins(kind)` | A reference, a pin, and every live pin of one holder kind in the order taken: what a reader authorizes by and a reconciler works from. |
+| `listArtifactEvents(subjectId)` | The events of one artifact subject in ordinal order, each re-parsed: the next ordinal, and an intention's exact recorded body. |
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
@@ -773,7 +776,8 @@ by the contract's guards — the refusal names the path, never the value.
 No filesystem: nothing opens, writes, synchronizes or renames a file, and no
 read path resolves an artifact. No lease store — escalón B landed it as its own
 file; see **The artifact blob lease store** below — and no publisher and no
-reconciler, which are escalón C's. No producer: nothing outside the suite appends an artifact
+reconciler: escalón C landed both, beside the ledger rather than in it; see **The
+private artifact plane** below. No producer: nothing outside the suite appends an artifact
 event. No contract bump: the escalón defines no preimage and no derived key.
 `artifact-store` above is untouched and stays the legacy digest store it was.
 
@@ -1244,7 +1248,93 @@ A holding written under an incarnation that has since rotated is frozen, not
 freed, and a file with lease rows but no metadata is refused at `open`: the
 procedure that re-issues holdings is coordination §8.2's.
 
-**Nothing calls it yet.** The publisher and the reconciler are escalón C's.
+**Its one caller is the private artifact plane** of escalón C, below; nothing in the field calls either yet.
+
+## The private artifact plane
+
+P-36/local escalón C (artifacts §8-§10; ADR 0083, decisions 64-66). The module
+that moves the bytes a digest names, over the ledger's artifact door and the blob
+lease store, under a subroot of its own: `private-artifacts/`, a sibling of the
+legacy `artifacts/` below, produced only by `artifactPlaneRootFor`. The legacy
+store and its readers resolve a bare digest there and cannot reach a private
+object here.
+
+`openArtifactPlane({ ledger, leaseStore, ledgerPath })` creates the subroot
+`0700` if it is absent, refuses a link or a non-directory, resolves it **once**
+and records its device and inode; every entry point checks that the directory at
+that path is still the one resolved.
+
+### A publication, in §8's order
+
+| Step | What happens |
+| --- | --- |
+| 1 | `acquire` a `PUBLISH` holding, operation id = command id. A holding of another command answers `LEASE_HELD`, and nothing else moves. |
+| 2 | `appendArtifactEvent(PUBLICATION_INTENDED)`: the generation and ordinal proposed from the ledger under the holding, and the reference to be recorded carried as `intendedReference`. |
+| 3 | Staging `<digest>.staging` in the shard, opened with `O_EXCL` and `O_NOFOLLOW`, then `fchmod 0600`; written; re-opened and **verified**; `fsync`; `rename` onto `<2hex>/<digest>`; `fsync` of the shard. |
+| 4 | `appendArtifactEvent(PUBLICATION_SUCCEEDED)` with the intention's own reference: the reference and the pin's release in one append. |
+| 5 | `release`. A refused release is reported in the outcome and the publication stands. |
+
+**The reference is named only after the bytes survived the directory's
+synchronization.** Bytes already at the digest's path are verified and never
+rewritten; bytes there that do not verify, or a link, are neither overwritten nor
+removed, and the publication is abandoned. The one unlink in the module is of its
+own staging path. Before every filesystem mutation and before the success the
+plane reads the token again and stops with `LEASE_SUPERSEDED` if its holding no
+longer stands — defence in depth; quiescence before a take-over is the guarantee.
+
+Refused before the lease is asked for: a declared digest or size the bytes
+disagree with (the plane computes both), content over
+`ARTIFACT_PLANE_CONTENT_MAX_BYTES`, `ENCRYPTED_AT_REST` by name, a `SECRET_BEARING`
+reference, a policy other than `SCOPE_EQUALITY_V1`, and a credential sentinel in any
+metadata field — the contract's guards run over the intention and the success
+the request would record.
+
+**Every identity is the caller's**: event ids, idempotency keys and instants, the
+command, pin and reference ids, the holder, its pid and any quiescence
+attestation. The plane reads no clock, no process and no environment.
+
+### Reading
+
+`read({ artifactReferenceId, scopeKind, scopeId })` authorizes by reference and
+scope, never by digest: `SCOPE_EQUALITY_V1` is equality of kind and id, a `SYSTEM`
+reader reads only a `SYSTEM` scope, and a foreign scope gets the same
+`REFERENCE_NOT_READABLE` as an absent reference. Expiry is not read — expiring
+revokes nothing. Then `CONTENT_DELETED`, `BLOB_NOT_PUBLISHED`,
+`ENCRYPTED_AT_REST_NOT_DELIVERED`, and the bytes opened with `O_NOFOLLOW` and
+verified: `CONTENT_ABSENT`, `SYMLINK_REFUSED` or `CONTENT_DOES_NOT_VERIFY`, never
+an empty answer and never unverified bytes.
+
+### Reconciling a crash
+
+`reconcile({ contentSha256, holding, quiescence?, terminal, recordedBy })` checks
+the digest's form first, then decides from the lease row and the live publication
+pins of that digest:
+
+| What stands | What it does |
+| --- | --- |
+| a `PUBLISH` holding, no attestation or one about another pid | nothing: `QUIESCENCE_UNPROVEN` / `QUIESCENCE_OF_ANOTHER_PROCESS` |
+| a holding whose command has no live pin (crash 1→2, or 4→5) | `revoke`; no file, no event |
+| a holding whose command has a live pin (crash 2→3, 3→4) | `takeOver`, then steps 3-5 without bytes: a destination that verifies completes the intention's reference field for field; absent or unverifiable bytes are abandoned, keeping the grace instant |
+| no holding, a live pin | `acquire`, and the same |
+| either of the two above, and the ledger refuses the success the bytes earned | `PUBLICATION_ABANDONED` under the same terminal identity, `REFERENCE_REFUSED_BY_DOOR`; the bytes stay and the lease is released |
+| a `RECLAIM` holding / nothing | `HELD_FOR_RECLAIM` / `NOTHING_TO_RECONCILE` |
+
+An intention without `intendedReference` — another producer's — is abandoned even
+over valid bytes, which stay. **No refusal leaves a digest held**: `publish`
+refuses a reference id the ledger already records before the lease (unless it is
+this command's own recorded success, which replays), a success the door still
+refuses is the abandonment in the table, and any other failure of a terminal
+append releases the holding and is thrown with the pin live. `publish` refuses a
+`RECLAIM` holding under its own command id with `HELD_FOR_RECLAIM`, as
+`reconcile` does. A restarted publisher calls `publish` again with the
+same request and an attestation: it takes the holding over, **finds** its
+intention rather than appending it again, and continues from step 3. It must name
+itself differently from the holder it displaces: the store answers a take-over
+under the same holder as a replay and would keep the dead pid on the row.
+
+Eight test-only fault seams sit between the steps (`afterLeaseAcquired` …
+`afterOutcomeRecorded`); the suite crashes at each and reconciles from a new
+plane over the same files. **Nothing in the field calls the plane yet.**
 
 ## The incarnation every coordination store carries
 

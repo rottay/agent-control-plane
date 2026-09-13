@@ -177,6 +177,26 @@ const ArtifactReferenceRecord = z
     }
   });
 
+/**
+ * The intention of a publication (artifacts §8, step 2).
+ *
+ * `intendedReference` is the reference the publication will record if it
+ * succeeds, stated before a byte moves (P-36/local escalón C, ADR 0083, decision
+ * 64). Artifacts §8 `:260-262` lets reconciliation "complete the original
+ * reference" after a crash between the rename and the success, and without this
+ * block nothing durable says which reference that was. It is the whole
+ * `ArtifactReferenceRecord` — the id included, which is what makes the completed
+ * reference the original one — with its two refinements inherited rather than
+ * restated.
+ *
+ * **Facts, not identity.** The fold reads no field of it, no key is derived from
+ * it, and a body without it parses exactly as before: optional in the schema,
+ * so a historical intention keeps its digest and a reader of either shape reads
+ * both. That is ADR 0076's criterion for staying on the version in force. The
+ * private plane always writes it; an intention without it can only come from
+ * another producer, and reconciliation abandons one rather than invent a
+ * reference.
+ */
 const PublicationIntendedPayload = z
   .strictObject({
     commandId: Identifier,
@@ -188,6 +208,7 @@ const PublicationIntendedPayload = z
     keyReference: Identifier.nullable(),
     encryptionProfile: Identifier,
     artifactPinId: Identifier,
+    intendedReference: ArtifactReferenceRecord.optional(),
   })
   .superRefine((value, ctx) => {
     // `ck_artifact_blob_read_model__key_reference_matches_encryption`.

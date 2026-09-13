@@ -5,10 +5,12 @@ import Database from "better-sqlite3";
 import {
   AccountActionEvent,
   ArtifactRegistryEvent,
+  BLOB_LIFECYCLE_STATES,
   CONTRACT_VERSION,
   ControlPlaneEvent,
   IdempotencyCoordinates,
   InitiativeEvent,
+  PIN_HOLDER_KINDS,
   SUPPORTED_CONTRACT_VERSIONS,
   V2_IDEMPOTENCY_NAMESPACE,
 } from "@acp/contracts";
@@ -594,6 +596,34 @@ function isInstant(value: unknown): value is string {
 
 function isBoundedIdentifier(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= REGISTRY_IDENTIFIER_MAX;
+}
+
+/**
+ * The arguments of the artifact plane's read verbs, refused by name before a
+ * statement runs. A digest is artifacts §3's domain; an identifier is the
+ * registry door's bound; a generation is a positive integer.
+ */
+function requireArtifactDigest(value: string, field: string): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new LedgerQueryError(field + " must be 64 lowercase hexadecimal characters");
+  }
+  return value;
+}
+
+function requireArtifactIdentifier(value: string, field: string): string {
+  if (!isBoundedIdentifier(value)) {
+    throw new LedgerQueryError(
+      field + " must be a non-empty string of at most " + String(REGISTRY_IDENTIFIER_MAX) + " characters",
+    );
+  }
+  return value;
+}
+
+function requireArtifactCount(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new LedgerQueryError(field + " must be a positive integer");
+  }
+  return value;
 }
 
 /**
@@ -6259,6 +6289,102 @@ export class Ledger {
       eventSha256: row.event_sha256,
       causation: causationFromRow(row, row.sequence),
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Reading the artifact plane (P-36/local escalón C)
+  // -------------------------------------------------------------------------
+  //
+  // Escalón A left the four tables readable by the fold alone. The private
+  // publisher of escalón C cannot work that way: it proposes a generation and an
+  // ordinal ("the producer proposes, the ledger verifies"), it reads a reference
+  // to authorize a read, and its reconciler finds the intention a crashed
+  // command left behind. So the fold's own view is exposed here, read-only, on
+  // `getOutboxCommand`'s pattern: no file, no clock, no write, and the door and
+  // the fold do not change (ADR 0083). The answers are the tables as they stand
+  // outside any transaction; a caller that acts on one does so under the blob
+  // lease, which is what keeps it stable.
+
+  /** One generation of some content, or null. */
+  getArtifactBlob(contentSha256: string, blobGeneration: number): ArtifactBlobReadModel | null {
+    this.#assertOpen("getArtifactBlob");
+    return this.#artifactBaseView().blob(
+      requireArtifactDigest(contentSha256, "contentSha256"),
+      requireArtifactCount(blobGeneration, "blobGeneration"),
+    );
+  }
+
+  /** The one generation of this content that is not `RECLAIMED`, or null. */
+  getUnreclaimedArtifactBlob(contentSha256: string): ArtifactBlobReadModel | null {
+    this.#assertOpen("getUnreclaimedArtifactBlob");
+    return this.#artifactBaseView().unreclaimedBlob(requireArtifactDigest(contentSha256, "contentSha256"));
+  }
+
+  /** The highest generation this content ever had, or zero: a new publication proposes one past it. */
+  getHighestArtifactBlobGeneration(contentSha256: string): number {
+    this.#assertOpen("getHighestArtifactBlobGeneration");
+    return this.#artifactBaseView().highestBlobGeneration(requireArtifactDigest(contentSha256, "contentSha256"));
+  }
+
+  /** Every generation in one lifecycle state, in key order. `STAGED` is a publication in flight. */
+  listArtifactBlobsInState(lifecycleState: ArtifactBlobReadModel["lifecycleState"]): readonly ArtifactBlobReadModel[] {
+    this.#assertOpen("listArtifactBlobsInState");
+    if (!(BLOB_LIFECYCLE_STATES as readonly string[]).includes(lifecycleState)) {
+      throw new LedgerQueryError("lifecycleState must be one of " + BLOB_LIFECYCLE_STATES.join(", "));
+    }
+    const rows = this.#stmt(
+      "SELECT * FROM artifact_blob_read_model WHERE lifecycle_state = ? ORDER BY content_sha256, blob_generation",
+    ).all(lifecycleState) as ArtifactBlobRow[];
+    return rows.map(artifactBlobRowToModel);
+  }
+
+  /**
+   * One reference, or null. Its scope and policy are what authorize a read;
+   * knowing a digest authorizes nothing (artifacts §4).
+   */
+  getArtifactReference(artifactReferenceId: string): ArtifactReferenceReadModel | null {
+    this.#assertOpen("getArtifactReference");
+    return this.#artifactBaseView().reference(requireArtifactIdentifier(artifactReferenceId, "artifactReferenceId"));
+  }
+
+  /** One pin, live or released, or null. */
+  getArtifactPin(artifactPinId: string): ArtifactPinReadModel | null {
+    this.#assertOpen("getArtifactPin");
+    return this.#artifactBaseView().pin(requireArtifactIdentifier(artifactPinId, "artifactPinId"));
+  }
+
+  /**
+   * Every live pin of one holder kind, in the order they were taken. A live
+   * `PUBLICATION` pin is a publication that has neither succeeded nor been
+   * abandoned: the reconciler's worklist.
+   */
+  listLiveArtifactPins(pinHolderKind: ArtifactPinReadModel["pinHolderKind"]): readonly ArtifactPinReadModel[] {
+    this.#assertOpen("listLiveArtifactPins");
+    if (!(PIN_HOLDER_KINDS as readonly string[]).includes(pinHolderKind)) {
+      throw new LedgerQueryError("pinHolderKind must be one of " + PIN_HOLDER_KINDS.join(", "));
+    }
+    const rows = this.#stmt(
+      "SELECT * FROM artifact_pin_read_model WHERE pin_holder_kind = ? AND released_sequence IS NULL " +
+        "ORDER BY acquired_sequence, artifact_pin_id",
+    ).all(pinHolderKind) as ArtifactPinRow[];
+    return rows.map(artifactPinRowToModel);
+  }
+
+  /**
+   * The events of one artifact subject, in ordinal order — the content digest
+   * for a publication, the reference or the pin otherwise. The next ordinal is
+   * one past the last; an intention's exact recorded body is here for a retry
+   * that must find it rather than append it again. Each row is re-parsed, and a
+   * row that no longer satisfies the contract fails closed.
+   */
+  listArtifactEvents(subjectId: string): readonly ArtifactEventRecord[] {
+    this.#assertOpen("listArtifactEvents");
+    const rows = this.#stmt(
+      "SELECT " +
+        REGISTRY_EVENT_COLUMNS +
+        " FROM registry_events WHERE document_id = ? AND subject_kind = 'ARTIFACT' ORDER BY document_version",
+    ).all(requireArtifactIdentifier(subjectId, "subjectId")) as RegistryEventRow[];
+    return rows.map((row) => this.#artifactRowToRecord(row));
   }
 
   // -------------------------------------------------------------------------

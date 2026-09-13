@@ -13393,3 +13393,155 @@ describe("the artifact plane rebuilds from the stream alone (N-P36-19, N-P36A-17
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// P-36/local escalón C — the artifact plane is read through the fold's own view
+//
+// H-1 of the preaudit, adjudicated: the private publisher proposes a generation
+// and an ordinal, authorizes a read by reference and reconciles by command, so
+// the fold's view is exposed read-only. N-P36C-13: none of these verbs writes,
+// reads a file or reads a clock, and the door and the fold do not change. The
+// intended reference of decision 64 is a fact the fold never reads.
+// ---------------------------------------------------------------------------
+
+describe("the artifact plane is read through the fold's own view, and a read moves nothing (H-1, N-P36C-13)", () => {
+  function planeHistory(path: string): void {
+    const ledger = open(path);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    publishContentA(ledger);
+    ledger.appendArtifactEvent(referenceRecorded());
+    ledger.appendArtifactEvent(pinAcquired());
+    ledger.appendArtifactEvent(publicationIntended({ content: CONTENT_B, commandId: "cmd-b", pinId: "pin-publication-b" }));
+    ledger.close();
+  }
+
+  it("answers each question the publisher and the reconciler ask, from the tables as they stand", () => {
+    const path = temporaryDatabase();
+    planeHistory(path);
+    const ledger = open(path);
+
+    expect(ledger.getArtifactBlob(CONTENT_A, 1)?.lifecycleState).toBe("PUBLISHED");
+    expect(ledger.getArtifactBlob(CONTENT_A, 2)).toBeNull();
+    expect(ledger.getUnreclaimedArtifactBlob(CONTENT_B)).toMatchObject({ blobGeneration: 1, lifecycleState: "STAGED" });
+    expect(ledger.getUnreclaimedArtifactBlob("c".repeat(64))).toBeNull();
+    expect(ledger.getHighestArtifactBlobGeneration(CONTENT_A)).toBe(1);
+    expect(ledger.getHighestArtifactBlobGeneration("c".repeat(64))).toBe(0);
+    expect(ledger.listArtifactBlobsInState("STAGED").map((blob) => blob.contentSha256)).toEqual([CONTENT_B]);
+    expect(ledger.listArtifactBlobsInState("PUBLISHED").map((blob) => blob.contentSha256)).toEqual([CONTENT_A]);
+
+    expect(ledger.getArtifactReference("ref-1")).toMatchObject({ scopeKind: "TASK", scopeId: "task-1", contentSha256: CONTENT_A });
+    expect(ledger.getArtifactReference("ref-absent")).toBeNull();
+    expect(ledger.getArtifactPin("pin-publication-1")?.releasedSequence).not.toBeNull();
+    expect(ledger.getArtifactPin("pin-absent")).toBeNull();
+    expect(ledger.listLiveArtifactPins("PUBLICATION").map((pin) => [pin.artifactPinId, pin.pinHolderId])).toEqual([
+      ["pin-publication-b", "cmd-b"],
+    ]);
+    expect(ledger.listLiveArtifactPins("TASK").map((pin) => pin.artifactPinId)).toEqual(["pin-task-1"]);
+
+    const events = ledger.listArtifactEvents(CONTENT_A);
+    expect(events.map((record) => [record.event.artifactEventKind, record.event.subjectOrdinal])).toEqual([
+      ["PUBLICATION_INTENDED", 1],
+      ["PUBLICATION_SUCCEEDED", 2],
+    ]);
+    ledger.close();
+    const stored = registryRows(path).filter((row) => row["document_id"] === CONTENT_A).map((row) => row["event_json"]);
+    expect(events.map((record) => record.canonicalJson)).toEqual(stored);
+
+    const again = open(path, { readOnly: true });
+    expect(again.listArtifactEvents("ref-2").map((record) => record.event.artifactEventKind)).toEqual(["REFERENCE_RECORDED"]);
+    expect(again.listArtifactEvents("subject-never-recorded")).toEqual([]);
+    // A document subject is not an artifact subject, whatever its id.
+    const documentId = String(registryRows(path)[0]?.["document_id"]);
+    expect(again.listArtifactEvents(documentId)).toEqual([]);
+  });
+
+  it("N-P36C-13: every read leaves the stream, the four tables, the head and the watermarks exactly as they were", () => {
+    const path = temporaryDatabase();
+    planeHistory(path);
+    const snapshot = (): unknown => ({
+      registry: registryRows(path),
+      tables: artifactTables(path),
+      watermarks: readWatermarks(path),
+      meta: readRows(path, "SELECT key, value FROM ledger_meta ORDER BY key"),
+    });
+    const before = snapshot();
+
+    const ledger = open(path);
+    ledger.getArtifactBlob(CONTENT_A, 1);
+    ledger.getUnreclaimedArtifactBlob(CONTENT_B);
+    ledger.getHighestArtifactBlobGeneration(CONTENT_B);
+    ledger.listArtifactBlobsInState("STAGED");
+    ledger.getArtifactReference("ref-1");
+    ledger.getArtifactPin("pin-task-1");
+    ledger.listLiveArtifactPins("PUBLICATION");
+    ledger.listArtifactEvents(CONTENT_B);
+    ledger.close();
+    expect(snapshot()).toEqual(before);
+
+    // And the rebuild, which reads no file and no clock, still reproduces them.
+    const rebuilt = open(path);
+    rebuilt.rebuildReadModel();
+    expect(rebuilt.verifyIntegrity().problems).toEqual([]);
+    rebuilt.close();
+    expect(artifactTables(path)).toEqual((before as { tables: unknown }).tables);
+  });
+
+  it("refuses a malformed argument by name before a statement runs", () => {
+    const ledger = open(temporaryDatabase());
+    for (const action of [
+      () => ledger.getArtifactBlob("A".repeat(64), 1),
+      () => ledger.getArtifactBlob("../" + "a".repeat(61), 1),
+      () => ledger.getArtifactBlob(CONTENT_A, 0),
+      () => ledger.getArtifactBlob(CONTENT_A, 1.5),
+      () => ledger.getUnreclaimedArtifactBlob(""),
+      () => ledger.getHighestArtifactBlobGeneration("a".repeat(63)),
+      () => ledger.listArtifactBlobsInState("GONE" as never),
+      () => ledger.getArtifactReference(""),
+      () => ledger.getArtifactPin("x".repeat(513)),
+      () => ledger.listLiveArtifactPins("OWNER" as never),
+      () => ledger.listArtifactEvents(""),
+    ]) {
+      expect(caught(action)).toBeInstanceOf(LedgerQueryError);
+    }
+    ledger.close();
+    expect(() => ledger.listArtifactEvents(CONTENT_A)).toThrow(/closed/i);
+  });
+
+  it("records an intended reference as a fact: replayed exactly, refused under the same key with another, and never read by the fold (decision 64)", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const eventId = randomUUID();
+    const intended = (reference: Record<string, unknown>): Record<string, unknown> => {
+      const body = publicationIntended({ eventId, idempotencyKey: "artifact/intention-1" });
+      return { ...body, payload: { ...(body["payload"] as Record<string, unknown>), intendedReference: reference } };
+    };
+    const first = ledger.appendArtifactEvent(intended(referenceRecord()));
+    expect(first.inserted).toBe(true);
+    expect(first.record.event.artifactEventKind === "PUBLICATION_INTENDED" && first.record.event.payload.intendedReference).toEqual(referenceRecord());
+
+    // The same body is an exact replay and writes nothing.
+    const replay = ledger.appendArtifactEvent(intended(referenceRecord()));
+    expect([replay.inserted, replay.record.sequence]).toEqual([false, first.record.sequence]);
+    // Another reference under the same key is another body: the door's guard, not a new intention.
+    expect(caught(() => ledger.appendArtifactEvent(intended(referenceRecord({ artifactReferenceId: "ref-other" }))))).toBeInstanceOf(
+      LedgerIdempotencyConflictError,
+    );
+    expect(ledger.listArtifactEvents(CONTENT_A)).toHaveLength(1);
+    expect(ledger.listLiveArtifactPins("PUBLICATION")).toHaveLength(1);
+
+    // The fold does not compare a success's reference with the block: that
+    // equality is the private plane's to keep (N-P36C-17), and the fold is unchanged.
+    const succeeded = ledger.appendArtifactEvent(publicationSucceeded({ reference: referenceRecord({ artifactReferenceId: "ref-not-the-block" }) }));
+    expect(succeeded.inserted).toBe(true);
+    expect(ledger.getArtifactReference("ref-not-the-block")).not.toBeNull();
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+
+    // A rebuild reproduces the same rows from a stream whose intention carries the block.
+    const before = artifactTables(path);
+    const rebuilt = open(path);
+    rebuilt.rebuildReadModel();
+    rebuilt.close();
+    expect(artifactTables(path)).toEqual(before);
+  });
+});

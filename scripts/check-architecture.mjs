@@ -9778,6 +9778,74 @@ const P36B_WRITE_SET = [
   "docs/audit/architecture/database/coordination/index.md",
 ];
 
+/**
+ * P-36/local, escalón C — a publication names its bytes only after they survive
+ * the fsync (ADR 0083, decisions 64-66). Brief
+ * `.acp-local/evidence/p36/acp-p36c-writer-brief-v3.md`, which absorbed the Fable
+ * preaudit's REJECT (H-1..H-17, N-P36C-1..16) and its delta's
+ * ACCEPT_WITH_CORRECTIONS (C-1..C-7, N-P36C-17..18), with the DT's adjudications of
+ * H-1, H-2, C-1, C-2 and C-6.
+ *
+ * **What lands.** `src/artifact-plane/index.ts`: the publisher, the private reader
+ * and the reconciler of artifacts §8-§10 over escalón A's door and escalón B's
+ * lease — lease, `PUBLICATION_INTENDED`, staging written and **verified**,
+ * `fsync(file)`, `rename`, `fsync(dir)`, `PUBLICATION_SUCCEEDED`, release — under
+ * `private-artifacts/`, whose one producer is `artifactPlaneRootFor` (decision
+ * 65). Eight fault seams between the steps. Read-only verbs on the ledger for the
+ * fold's own view (H-1): `getArtifactBlob`, `getUnreclaimedArtifactBlob`,
+ * `getHighestArtifactBlobGeneration`, `listArtifactBlobsInState`,
+ * `getArtifactReference`, `getArtifactPin`, `listLiveArtifactPins`,
+ * `listArtifactEvents`. The contract's `PublicationIntendedPayload` gains the
+ * optional `intendedReference`, the whole `ArtifactReferenceRecord` (H-2, C-1,
+ * decision 64). `L-P36C-1..5`.
+ *
+ * **What does NOT land, declared.** No change to the door or to any fold
+ * (`projection/index.ts` untouched). No migration and no second backend. No GC,
+ * no `RECLAIM` holding, no `REFERENCE_TOMBSTONED`. No encryption at rest:
+ * `ENCRYPTED_AT_REST` is refused by name. No worker and no child process: the
+ * lease's exclusion across processes is B's evidence. No producer in the field.
+ * `artifact-store/index.ts` is byte-stable and its P8 pins do not move.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 133 → **138** for `L-P36C-1..5`. The ADR
+ * corpus 82 → 83; the decision register 63 → 66. The ledger README gains the
+ * plane's section and corrects escalón A's "no publisher and no reconciler".
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (`"2.4.0"`) and
+ * `SUPPORTED_CONTRACT_VERSIONS`: the block is facts the fold never reads, not a
+ * way of computing identity (ADR 0076's criterion), and a body without it parses
+ * and digests as before. `CONTRACTS_SCHEMA_EXPORTS` (no new export).
+ * `MIGRATIONS` (15), `EXPECTED_SCHEMA_OBJECTS`, `DERIVED_TABLES`,
+ * `PROJECTION_SOURCES`, `COORDINATION_STORES` (4), the ledger README's
+ * `### Errors` bijection: every refusal of the plane is a value or an existing
+ * class. The event vocabulary (`CONTROL_PLANE_EVENT_TYPES`, 33) and the
+ * `execution` family (15): no event-type file is touched — the plane appends
+ * through escalón A's artifact door, whose events are registry rows, never task
+ * events. The
+ * postaudit's C-1/O-2 delta (`REFERENCE_REFUSED_BY_DOOR`, N-P36C-19/20) moves no
+ * count and no law.
+ *
+ * **Fourteen paths; three are new to the fence** — the plane, its suite and ADR
+ * 0083 (`grep -Fc` over this file, each 0 before this block). The other eleven are
+ * admitted by `P36A_WRITE_SET` and `P36B_WRITE_SET`. `artifact-lease-store/index.ts`
+ * is admitted and, untouched, left so on precedent C-7; so is `src/types/index.ts`.
+ */
+const P36C_WRITE_SET = [
+  "packages/persistence/ledger/src/artifact-plane/index.ts",
+  "packages/persistence/ledger/test/artifact-plane/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0083-a-publication-names-its-bytes-only-after-they-survive-the-fsync.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "packages/persistence/ledger/src/artifact-lease-store/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/kernel/contracts/src/schemas/artifact-record/index.ts",
+  "packages/kernel/contracts/test/schemas/artifact-record/index.test.ts",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9991,6 +10059,7 @@ const WRITE_SET = [
   ...P18G_WRITE_SET,
   ...P36A_WRITE_SET,
   ...P36B_WRITE_SET,
+  ...P36C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -11325,6 +11394,29 @@ const PATH_SCOPED_LAWS = [
   {
     law: "no artifact blob lease verb frees a row by the clock",
     scope: "packages/persistence/ledger/src/artifact-lease-store/index.ts",
+  },
+  // P-36/local C (L-P36C-1..5). Five new path-shaped surfaces, so five new rows:
+  // the register and the `requireScope` call sites both move 133 -> 138, and
+  // `assertPathScopedInventory` fails printing both numbers if only one side of
+  // this edit lands. The three filesystem laws are the twins artifacts §10 asks
+  // for; the fourth is repository-wide for the reason `L-P36B-3` is (decision
+  // 65); the fifth is `L-P36B-2`'s twin over the plane, with the unlink added.
+  {
+    law: "the artifact plane resolves its root once and checks it on every use",
+    scope: "packages/persistence/ledger/src/artifact-plane/index.ts",
+  },
+  {
+    law: "the artifact plane opens nothing by following a symbolic link",
+    scope: "packages/persistence/ledger/src/artifact-plane/index.ts",
+  },
+  {
+    law: "the artifact plane checks a digest before it derives a path",
+    scope: "packages/persistence/ledger/src/artifact-plane/index.ts",
+  },
+  { law: "the private artifact root has exactly one producer", scope: "packages/*/*/src/**" },
+  {
+    law: "the artifact plane reads no clock, mints no identity and removes no published object",
+    scope: "packages/persistence/ledger/src/artifact-plane/index.ts",
   },
 ];
 
@@ -25304,6 +25396,227 @@ const QUARANTINE_WINDOW_SITES = [DAEMON_PORTS_SITE];
   }
   requireScope("no artifact blob lease verb frees a row by the clock", clockScanned);
   notes.push("the artifact blob lease store lists what is overdue and frees nothing by the clock");
+}
+
+// --- 21m. the private artifact plane (P-36/local C) ------------------------
+//
+// The publisher, the reader and the reconciler of artifacts §8-§10. The laws
+// below are the filesystem twins §10 `:362-366` names -- a root resolved once, no
+// link followed, a digest checked before it becomes a path -- plus the subroot's
+// single producer and the purity law the coordination stores already carry,
+// restated over the one module in this package that moves the bytes a digest
+// names. What the suite drills against the disk, these keep from drifting.
+
+const ARTIFACT_PLANE_SITE = "packages/persistence/ledger/src/artifact-plane/index.ts";
+
+// L-P36C-1 -- the artifact plane resolves its root once and checks it on every use.
+//
+// Artifacts §10 `:365`: "la raíz se resuelve una sola vez y toda ruta se comprueba
+// contra ella". One `realpathSync`, and the identity it recorded -- device and
+// inode -- compared in a named check that every entry point calls. A second
+// resolution would be a second root, silently followed through whatever link
+// stands in an ancestor by then.
+{
+  let rootScanned = 0;
+  const source = readIfPresent(ARTIFACT_PLANE_SITE);
+  if (source === null) {
+    fail(ARTIFACT_PLANE_SITE + " is missing; the artifact plane laws would stand over nothing");
+  } else {
+    rootScanned += 1;
+    const code = stripComments(source);
+    const resolutions = code.split("realpathSync(").length - 1;
+    if (resolutions !== 1) {
+      fail(
+        ARTIFACT_PLANE_SITE +
+          " resolves a path " +
+          String(resolutions) +
+          " time(s); the root is resolved exactly once, at open, and every later use is checked against it",
+      );
+    }
+    if (!/const assertRootIntact = \(\): void =>/.test(code) || !code.includes(".dev !== rootIdentity.dev") || !code.includes(".ino !== rootIdentity.ino")) {
+      fail(ARTIFACT_PLANE_SITE + " no longer checks the root's recorded identity by device and inode");
+    }
+    const checks = code.split("assertRootIntact();").length - 1;
+    if (checks < 4) {
+      fail(
+        ARTIFACT_PLANE_SITE +
+          " checks its root at " +
+          String(checks) +
+          " site(s); publish, read, reconcile and the placement of bytes each check it",
+      );
+    }
+  }
+  requireScope("the artifact plane resolves its root once and checks it on every use", rootScanned);
+  notes.push("the artifact plane resolves its root once and checks its identity on every use");
+}
+
+// L-P36C-2 -- the artifact plane opens nothing by following a symbolic link.
+//
+// Artifacts §10 `:366`: "los symlinks se rechazan al abrir". One descriptor-opening
+// call, and it ORs `O_NOFOLLOW` into whatever it is asked; components are looked
+// at with `lstat`, modes set through a descriptor, directories created without
+// `recursive`. Every convenience that resolves a path by following it is absent.
+{
+  let linkScanned = 0;
+  const source = readIfPresent(ARTIFACT_PLANE_SITE);
+  if (source !== null) {
+    linkScanned += 1;
+    const code = stripComments(source);
+    const opens = code.split("openSync(").length - 1;
+    if (opens !== 1 || !code.includes("openSync(path, flags | constants.O_NOFOLLOW, mode)")) {
+      fail(
+        ARTIFACT_PLANE_SITE +
+          " opens a descriptor at " +
+          String(opens) +
+          " site(s); exactly one may, and it is `openSync(path, flags | constants.O_NOFOLLOW, mode)`",
+      );
+    }
+    for (const following of [
+      "readFileSync",
+      "writeFileSync",
+      "appendFileSync",
+      "copyFileSync",
+      "existsSync",
+      "createReadStream",
+      "createWriteStream",
+      "truncateSync",
+    ]) {
+      if (code.includes(following)) {
+        fail(ARTIFACT_PLANE_SITE + " uses " + following + ", which follows a link it was never asked to accept");
+      }
+    }
+    for (const [pattern, name] of [
+      [/(?<![lf])statSync\(/, "statSync"],
+      [/(?<!f)chmodSync\(/, "chmodSync"],
+      [/recursive\s*:\s*true/, "a recursive mkdir"],
+    ]) {
+      if (pattern.test(code)) {
+        fail(ARTIFACT_PLANE_SITE + " uses " + name + ", which follows a link in a component");
+      }
+    }
+  }
+  requireScope("the artifact plane opens nothing by following a symbolic link", linkScanned);
+  notes.push("the artifact plane opens one kind of descriptor, with O_NOFOLLOW, and follows no link");
+}
+
+// L-P36C-3 -- the artifact plane checks a digest before it derives a path.
+//
+// Artifacts §10 `:362-364`: paths derive from the digest, sharded by its first
+// two hex characters, and never from an untrusted reference. The shard is taken
+// in exactly one place, and there it is taken from the checked digest.
+{
+  let digestScanned = 0;
+  const source = readIfPresent(ARTIFACT_PLANE_SITE);
+  if (source !== null) {
+    digestScanned += 1;
+    const code = stripComments(source);
+    const shards = code.split(".slice(0, 2)").length - 1;
+    if (shards !== 1 || !code.includes('requireDigest(contentSha256, "contentSha256").slice(0, 2)')) {
+      fail(
+        ARTIFACT_PLANE_SITE +
+          " takes a shard at " +
+          String(shards) +
+          " site(s); exactly one may, from a digest `requireDigest` has checked",
+      );
+    }
+    if (!code.includes("/^[0-9a-f]{64}$/")) {
+      fail(ARTIFACT_PLANE_SITE + " no longer checks a digest as 64 lowercase hexadecimal characters");
+    }
+    const reconcileAt = code.indexOf("const reconcile = ");
+    const firstLine = reconcileAt === -1 ? "" : code.slice(reconcileAt, code.indexOf("\n", code.indexOf("{", reconcileAt) + 1) + 200);
+    if (!firstLine.includes('requireDigest(request.contentSha256, "contentSha256")')) {
+      fail(ARTIFACT_PLANE_SITE + "'s reconcile no longer checks the caller's digest before anything else");
+    }
+    if (code.includes(".staging\"") && !code.includes('join(shard, contentSha256 + ".staging")')) {
+      fail(ARTIFACT_PLANE_SITE + " names a staging path from something other than the checked digest");
+    }
+  }
+  requireScope("the artifact plane checks a digest before it derives a path", digestScanned);
+  notes.push("the artifact plane derives every path from a checked digest, sharded in one place");
+}
+
+// L-P36C-4 -- the private artifact root has exactly one producer.
+//
+// Decision 65. The subroot is named once, beside the legacy `artifacts/` and not
+// under it, and not derived from `artifactRootFor`, whose one home `L-F3-2`
+// keeps. A second module composing it would be a second answer to where a
+// private digest resolves; the plane reaching for the legacy store would be the
+// bare-digest reader adjudication 2 separated it from.
+{
+  let producerScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const namers = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!relativePath.endsWith(".ts")) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      producerScanned += 1;
+      if (stripComments(content).includes('"private-artifacts"')) namers.push(relativePath);
+    }
+    if (namers.join(", ") !== ARTIFACT_PLANE_SITE) {
+      fail(
+        "the private artifact root is composed by [" +
+          namers.join(", ") +
+          "]; exactly one module may produce it, and it is " +
+          ARTIFACT_PLANE_SITE,
+      );
+    }
+    const plane = stripComments(readIfPresent(ARTIFACT_PLANE_SITE) ?? "");
+    if (!/export function artifactPlaneRootFor\(/.test(plane)) {
+      fail(ARTIFACT_PLANE_SITE + " no longer declares artifactPlaneRootFor; the rule this law protects has moved");
+    }
+    for (const legacy of ["artifactRootFor", "artifact-store", "publishArtifact", "readArtifact", "hasArtifact"]) {
+      if (plane.includes(legacy)) {
+        fail(ARTIFACT_PLANE_SITE + " names " + legacy + "; the private plane neither derives from nor reads the legacy store");
+      }
+    }
+  }
+  requireScope("the private artifact root has exactly one producer", producerScanned);
+  notes.push("one module composes the private artifact root, and it touches nothing of the legacy store");
+}
+
+// L-P36C-5 -- the artifact plane reads no clock, mints no identity and removes no
+// published object.
+//
+// `L-P36B-2`'s twin over the plane. Every instant, pid, attestation and identifier
+// is the caller's -- so nothing here is a preimage and the contract stays where it
+// is. And the one unlink is of the plane's own staging path: collection is
+// P-36 completo, so no `RECLAIM` holding is asked for and no object is removed.
+{
+  let purityScanned = 0;
+  const source = readIfPresent(ARTIFACT_PLANE_SITE);
+  if (source !== null) {
+    purityScanned += 1;
+    const code = stripComments(source);
+    for (const forbidden of ["Date.now(", "new Date(", "process.env", "process.hrtime", "process.pid"]) {
+      if (code.includes(forbidden)) {
+        fail(ARTIFACT_PLANE_SITE + " reads " + forbidden + "; every instant and every process is the caller's argument");
+      }
+    }
+    for (const forbidden of ["randomUUID", "randomBytes", "Math.random"]) {
+      if (code.includes(forbidden)) {
+        fail(ARTIFACT_PLANE_SITE + " mints an identity with " + forbidden + "; every identifier arrives with the request");
+      }
+    }
+    const unlinks = code.split("unlinkSync(").length - 1;
+    if (unlinks !== 1 || !code.includes("unlinkSync(staging)")) {
+      fail(
+        ARTIFACT_PLANE_SITE +
+          " unlinks at " +
+          String(unlinks) +
+          " site(s); exactly one may, and it removes the plane's own staging path",
+      );
+    }
+    for (const forbidden of ["rmSync", "rmdirSync", '"RECLAIM"']) {
+      if (code.includes(forbidden)) {
+        fail(ARTIFACT_PLANE_SITE + " names " + forbidden + "; the plane removes no published object and collects nothing");
+      }
+    }
+  }
+  requireScope("the artifact plane reads no clock, mints no identity and removes no published object", purityScanned);
+  notes.push("the artifact plane reads no clock, mints no identity and unlinks only its own staging path");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
