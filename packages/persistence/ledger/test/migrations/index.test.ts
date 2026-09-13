@@ -38,6 +38,8 @@ import {
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
   TASK_REVISION_MIGRATION,
   TASK_REVISION_PROJECTION,
+  TASK_SUBMISSION_MIGRATION,
+  TASK_SUBMISSION_PROJECTION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
@@ -181,7 +183,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -202,11 +204,12 @@ describe("migration 7 appends the watermark table without touching the applied s
       "task_revision_envelope_reference",
       "model_version_registry",
       "initiative_registration_detail",
+      "task_submission",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11, 12, 13, 14, 15 and 17 seed rows into it, which is what a
+    // Migrations 9, 11, 12, 13, 14, 15, 17 and 19 seed rows into it, which is what a
     // migration that adds a projection does; none of them creates, alters or
     // drops the table.
     const creating = MIGRATIONS.filter((migration) =>
@@ -216,7 +219,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -292,6 +295,7 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "dispatch_attempt_read_model@control_plane_events",
       "prompt_occurrence_read_model@control_plane_events",
       "response_occurrence_read_model@control_plane_events",
+      "task_submission_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
       "artifact_blob_read_model@registry_events",
@@ -514,7 +518,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
     ]);
   });
 
@@ -740,7 +744,7 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(19);
+    expect(PROJECTION_SOURCES).toHaveLength(20);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -1121,7 +1125,8 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
       ).toEqual([{ projectionName: name, sourceStream: "control_plane_events" }]);
       expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "table", name });
     }
-    expect(PROJECTION_NAMES).toHaveLength(10);
+    // Ten when this migration landed; the eleventh is P-14 C's client key.
+    expect(PROJECTION_NAMES).toHaveLength(11);
   });
 
   it("clears the answers before the prompts, and the prompts before the deliveries", () => {
@@ -1487,9 +1492,9 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION - 1]?.name).toBe(
       "task_revision_envelope_reference",
     );
-    // Sixteen when this migration landed; the seventeenth is P-14 A's and the
-    // eighteenth P-14 B's.
-    expect(MIGRATIONS).toHaveLength(18);
+    // Sixteen when this migration landed; the seventeenth is P-14 A's, the
+    // eighteenth P-14 B's and the nineteenth P-14 C's.
+    expect(MIGRATIONS).toHaveLength(19);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1584,8 +1589,9 @@ describe("migration 17 folds the model version registry from the registry stream
     expect(SEVENTEENTH?.name).toBe("model_version_registry");
     expect(MODEL_VERSION_REGISTRY_MIGRATION).toBe(17);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION - 1]?.name).toBe("model_version_registry");
-    // Seventeen when this migration landed; the eighteenth is P-14 B's.
-    expect(MIGRATIONS).toHaveLength(18);
+    // Seventeen when this migration landed; the eighteenth is P-14 B's and the
+    // nineteenth P-14 C's.
+    expect(MIGRATIONS).toHaveLength(19);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1700,12 +1706,14 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     .filter((line) => !line.trimStart().startsWith("--"))
     .join("\n");
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(EIGHTEENTH?.version).toBe(18);
     expect(EIGHTEENTH?.name).toBe("initiative_registration_detail");
     expect(INITIATIVE_REGISTRATION_MIGRATION).toBe(18);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION - 1]?.name).toBe("initiative_registration_detail");
-    expect(MIGRATIONS).toHaveLength(18);
+    // Eighteen when this migration landed; the nineteenth is P-14 C's.
+    expect(MIGRATIONS).toHaveLength(19);
+    expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
   it("N-P14B-8: adds planning's three columns in place, nullable and with no default", () => {
@@ -1728,5 +1736,71 @@ describe("migration 18 adds the initiative projection's three columns and nothin
       { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
     ]);
     expect(INITIATIVE_PROJECTION_NAMES).toContain("initiative_read_model");
+  });
+});
+
+/**
+ * Migration 19, the task's client key (P-14 C, ADR 0087).
+ *
+ * The text: one STRICT table with contracts §15's unique pair, the checks the
+ * dictionary states, and one watermark seeded at the task head — no trigger, no
+ * foreign key, no index of its own name. `test/ledger` asserts what the fold, the
+ * door and the retroactive fold do with it.
+ */
+describe("migration 19 gives a task's client key its one home", () => {
+  const NINETEENTH = MIGRATIONS[18];
+
+  const statements = (NINETEENTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(NINETEENTH?.version).toBe(19);
+    expect(NINETEENTH?.name).toBe("task_submission");
+    expect(TASK_SUBMISSION_MIGRATION).toBe(19);
+    expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
+    expect(MIGRATIONS).toHaveLength(19);
+  });
+
+  it("creates the table STRICT, unique on the client key and on nothing else", () => {
+    expect(statements).toContain("CREATE TABLE task_submission_read_model (");
+    expect(statements).toContain(") STRICT;");
+    expect(statements).toContain(
+      "CONSTRAINT ux_task_submission_read_model__request UNIQUE (client_scope, client_request_key)",
+    );
+    for (const column of [
+      "client_scope       TEXT    NOT NULL",
+      "client_request_key TEXT    NOT NULL",
+      "task_id            TEXT    NOT NULL",
+      "revision_number    INTEGER NOT NULL",
+      "envelope_sha256    TEXT    NOT NULL",
+      "sequence           INTEGER NOT NULL",
+      "created_at         TEXT    NOT NULL",
+    ]) {
+      expect(statements, column).toContain(column);
+    }
+    expect(statements.match(/UNIQUE/g)).toHaveLength(1);
+    expect(statements).not.toMatch(/PRIMARY KEY|FOREIGN KEY|TRIGGER|CREATE INDEX|CREATE UNIQUE INDEX|DROP |ALTER |ON CONFLICT/);
+  });
+
+  it("seeds its one watermark from the task head, never from a literal zero", () => {
+    expect(statements).toContain("'task_submission_read_model',");
+    expect(statements).toContain("'control_plane_events',");
+    for (const key of ["head_sequence", "event_count", "head_event_sha256"]) {
+      expect(statements, key).toContain("WHERE key = '" + key + "'");
+    }
+  });
+
+  it("declares the projection in all four places that have to agree", () => {
+    expect(TASK_SUBMISSION_PROJECTION).toBe("task_submission_read_model");
+    expect(DERIVED_TABLES).toContain(TASK_SUBMISSION_PROJECTION);
+    expect(PROJECTION_NAMES).toContain(TASK_SUBMISSION_PROJECTION);
+    expect(PROJECTION_SOURCES.filter((source) => source.projectionName === TASK_SUBMISSION_PROJECTION)).toEqual([
+      { projectionName: TASK_SUBMISSION_PROJECTION, sourceStream: "control_plane_events" },
+    ]);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes(TASK_SUBMISSION_PROJECTION))).toEqual([
+      { type: "table", name: TASK_SUBMISSION_PROJECTION },
+    ]);
   });
 });

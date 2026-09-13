@@ -10,16 +10,16 @@ table that this document omits fails. It also asserts that every response and
 query schema named below is exported by `@acp/protocol`.
 
 The parity suite is the behavioral authority **where it reaches**, and it does
-not reach every route. Eleven of the twenty-five arms below are compared in full
+not reach every route. Eleven of the twenty-six arms below are compared in full
 against an independently built CLI-side producer, including ordering,
 pagination, cursors and redaction; `eventStream` GET is compared in part, on one
 frame's item; `health` has no ledger content and so has no CLI build to compare
 against, and is checked as the contract's declared non-ledger exception instead.
-The remaining twelve arms — `taskLifecycle` GET, and the eleven belonging to the
-eight initiative and account routes — have no CLI-side parity comparison.
-`initiatives` POST is the one of them a command answers, and its two doors are
-compared by their own suites through the one orchestration both call, not by the
-parity suite. The
+The remaining thirteen arms — `taskLifecycle` GET, `tasks` POST, and the eleven
+belonging to the eight initiative and account routes — have no CLI-side parity
+comparison. `initiatives` POST and `tasks` POST are the two of them a command
+answers, and each pair of doors is compared by its own suites through the one
+orchestration both call, not by the parity suite. The
 `CLI` column below says which arms a command answers; that a command answers an
 arm is not by itself a claim that a behavioral comparison exists for it.
 
@@ -48,7 +48,7 @@ arm is not by itself a claim that a behavioral comparison exists for it.
 | --- | --- | --- | --- | --- | --- | --- |
 | `health` | GET | `/api/v1/health` | — | none | `HealthResponse` | — |
 | `overview` | GET | `/api/v1/overview` | — | none | `OverviewResponse` | `overview`:GET |
-| `tasks` | GET | `/api/v1/tasks` | — | `TasksQuery` | `TaskPageResponse` | `tasks`:GET |
+| `tasks` | GET, POST | `/api/v1/tasks` | — | `TasksQuery` | `TaskPageResponse` / `TaskIntakeResponse` | `tasks`:GET, `intake`:POST |
 | `taskById` | GET | `/api/v1/tasks/:taskId` | `taskId` (uuid) | none | `TaskDetailResponse` | `task`:GET |
 | `workers` | GET | `/api/v1/workers` | — | `WorkersQuery` | `WorkerPageResponse` | `workers`:GET |
 | `workerByIdentity` | GET | `/api/v1/workers/:identity` | `identity` (worker identity string) | none | `WorkerDetailResponse` | `worker`:GET |
@@ -89,6 +89,7 @@ the mechanism and its anchors.
 | `taskToolCalls` | `ToolCallExecuteRequest` | one explicit tool call, and whatever it did: this is the only route that starts a child process, and a refused call is a `200` with a recorded row rather than an error |
 | `taskLifecycle` | `TaskLifecycleRequest` | one lifecycle verb — `CANCEL` or `ATTACH` — against an attempt already running; the rows it appends are the ones the cancellation settlement already produced, and `ATTACH` appends none |
 | `initiatives` | `InitiativeRegistrationRequest` | one initiative, under the caller's own `initiativeId`; its objective is published to the private artifact plane and the event carries the digest and the reference, never the objective |
+| `tasks` | `TaskIntakeRequest` | one task intake, under the caller's client key and task id: the envelope published to the private artifact plane, revision 1 recorded by reference, and the role resolved from the registry with the vector it was read at; nothing executes the task |
 
 A write that is refused answers with a classified refusal rather than a bare
 failure: `AccountActionRefusalDto` names which rule refused it.
@@ -115,6 +116,22 @@ appending nothing. The same id with another slug, title or objective is `409`
 `WRITE_REFUSED` with `CONFLICT` and the field that differs as the detail. A body
 the schema refuses, a credential-shaped objective included, is `400` before the
 plane sees a byte. No door mints an initiative id.
+
+**`tasks` POST is idempotent on the caller's client key.** The request carries the
+`TaskEnvelope` whole and, beside it, `clientScope`, `clientRequestKey`,
+`roadmapVersionId` and `stepId` (both or neither), `role`, `slot`, `transportKind`
+and `recordedBy`. The same body sent again, by this route or by
+`acp intake --request`, answers `200` with `replayed: true` and the task that exists,
+publishing and appending nothing. The same key with another envelope, roadmap link,
+step, role, slot or transport is `409` `WRITE_REFUSED` with `CONFLICT` and the field
+as the detail; so is another key naming a task that already entered, at
+`envelope.taskId`. An initiative or roadmap version that does not exist, or a role the
+envelope does not admit, is `409` with `REQUEST_INVALID`; a role the registry does not
+resolve is `409` with `AUTHORITY_REFUSED`, the resolver's code, and for a retired
+model version the proposal `MIGRATE_TO_ACTIVE_MODEL_VERSION`. A body the schema
+refuses, the envelope's own contract included, is `400` before the plane sees a byte.
+An intake takes no lease: two tasks with overlapping write-sets both enter, and the
+conflict is reported when one is acquired. No door mints a task id or a client key.
 
 **`ATTACH` blocks until the invocation completes, and no request timeout is
 imposed.** A caller that attaches to a long run holds the HTTP connection open

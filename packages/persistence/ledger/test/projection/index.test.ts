@@ -68,6 +68,9 @@ import {
   routingAssignmentId,
   taskAttemptKey,
   taskRevisionKey,
+  assertSameTaskSubmission,
+  nextTaskSubmissionProjection,
+  taskIntakePayloadOf,
   OUTBOX_V1_COMMAND_STREAMS,
   applyEventToOutboxFold,
   computeOutboxCommandId,
@@ -80,6 +83,7 @@ import {
 } from "../../src/projection/index.js";
 import {
   LedgerArtifactEncryptionConflictError,
+  LedgerIdempotencyConflictError,
   LedgerValidationError,
 } from "../../src/errors/index.js";
 import {
@@ -87,6 +91,8 @@ import {
   DELIVERED_ARTIFACT_EVENT_KINDS,
   DISPATCH_STATES,
   INITIATIVE_REGISTRATION_PAYLOAD_KEYS,
+  TASK_INTAKE_PAYLOAD_KEYS,
+  TASK_INTAKE_TRANSITION_ID,
 } from "../../src/types/index.js";
 import type { RegistryDocument, TaskReadModel } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
@@ -3220,5 +3226,157 @@ describe("the initiative fold reads the closed registration payload and nothing 
       objectiveSha256: null,
       repositorySha256: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-14 escalón C — the intake's closed payload and its client key (ADR 0087)
+// ---------------------------------------------------------------------------
+
+const INTAKE_TASK = "9d9d9d9d-9d9d-4d9d-8d9d-9d9d9d9d9d01";
+const OTHER_INTAKE_TASK = "9d9d9d9d-9d9d-4d9d-8d9d-9d9d9d9d9d02";
+
+function intakePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    revisionId: "rev-intake-1",
+    revisionNumber: 1,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    restoredFromRevisionId: null,
+    envelopeArtifactReferenceId: "ref-intake-1",
+    initiativeId: INITIATIVE_A,
+    clientScope: "claude/opus/implementer/01",
+    clientRequestKey: "intake-0001",
+    roadmapVersionId: null,
+    stepId: null,
+    role: "implementer",
+    commitPolicy: "NO_COMMIT",
+    resolution: {
+      assignmentId: "assignment-1",
+      assignmentVersion: 1,
+      slot: 0,
+      modelVersionId: "claude-opus-5@2026-06-01",
+      provider: "claude",
+      model: "claude-opus-5",
+      release: "2026-06-01",
+      transportKind: "CLI_SUBSCRIPTION",
+      watermarks: [
+        {
+          projectionName: "model_version_read_model",
+          sourceStream: "registry_events",
+          appliedThroughSequence: 2,
+          eventCount: 2,
+          sourceHeadSha256: "c".repeat(64),
+        },
+      ],
+    },
+    ...overrides,
+  };
+}
+
+function intakeEvent(
+  payload: Record<string, unknown> = intakePayload(),
+  overrides: Partial<ControlPlaneEvent> = {},
+): ControlPlaneEvent {
+  const taskId = overrides.taskId ?? INTAKE_TASK;
+  return executionEvent("TASK_DISCOVERED", payload, {
+    taskId,
+    transitionId: TASK_INTAKE_TRANSITION_ID,
+    idempotencyKey: buildV2IdempotencyKey({
+      stream: "control_plane_events",
+      taskId,
+      revisionNumber: 1,
+      attemptNumber: 1,
+      transitionId: TASK_INTAKE_TRANSITION_ID,
+    }),
+    fromState: null,
+    toState: "DISCOVERED",
+    ...overrides,
+  });
+}
+
+describe("the intake payload is closed, and anything else is not an intake (P-14 C)", () => {
+  it("reads every declared key back, and names no other", () => {
+    const read = taskIntakePayloadOf(intakeEvent());
+    expect(read).not.toBeNull();
+    expect(Object.keys(read ?? {}).sort()).toEqual(
+      TASK_INTAKE_PAYLOAD_KEYS.filter((key) => key !== "restoredFromRevisionId").sort(),
+    );
+    expect(read?.resolution.watermarks).toHaveLength(1);
+  });
+
+  it("is not an intake under another transition, type or origin state", () => {
+    expect(taskIntakePayloadOf(intakeEvent(intakePayload(), { transitionId: "discovered" }))).toBeNull();
+    expect(taskIntakePayloadOf(intakeEvent(intakePayload(), { type: "TASK_CLASSIFIED" }))).toBeNull();
+    expect(taskIntakePayloadOf(intakeEvent(intakePayload(), { fromState: "DISCOVERED" }))).toBeNull();
+  });
+
+  it("folds a stray key, a missing key, a half roadmap link or an empty vector as no intake at all", () => {
+    const partial = intakePayload();
+    delete partial["commitPolicy"];
+    for (const payload of [
+      intakePayload({ objective: "never in the stream" }),
+      partial,
+      intakePayload({ roadmapVersionId: "66666666-6666-4666-8666-666666666601" }),
+      intakePayload({ stepId: "step.one" }),
+      intakePayload({ role: "janitor" }),
+      intakePayload({ clientScope: "has space" }),
+      intakePayload({ restoredFromRevisionId: "rev-0" }),
+      intakePayload({ resolution: { ...(intakePayload()["resolution"] as Record<string, unknown>), watermarks: [] } }),
+      intakePayload({ resolution: { ...(intakePayload()["resolution"] as Record<string, unknown>), fallbacks: [] } }),
+    ]) {
+      expect(taskIntakePayloadOf(intakeEvent(payload)), JSON.stringify(Object.keys(payload))).toBeNull();
+    }
+    const linked = intakePayload({ roadmapVersionId: "66666666-6666-4666-8666-666666666601", stepId: "step.one" });
+    expect(taskIntakePayloadOf(intakeEvent(linked))?.stepId).toBe("step.one");
+  });
+});
+
+describe("the client key row and the three task columns fold from one intake (P-14 C)", () => {
+  it("reads the key row's digest from the revision record, and its task from the event", () => {
+    const event = intakeEvent();
+    const submission = nextTaskSubmissionProjection(event, 7);
+    const revision = nextTaskRevisionProjection(event, 7);
+    expect(submission).toEqual({
+      clientScope: "claude/opus/implementer/01",
+      clientRequestKey: "intake-0001",
+      taskId: INTAKE_TASK,
+      revisionNumber: revision?.revisionNumber,
+      envelopeSha256: revision?.envelopeSha256,
+      sequence: 7,
+      createdAt: event.occurredAt,
+    });
+    expect(nextTaskSubmissionProjection(executionEvent("TASK_DISCOVERED", intakePayload(), { fromState: null }), 7)).toBeNull();
+  });
+
+  it("writes step, role and commit policy once, and carries them past every later event", () => {
+    const linked = intakeEvent(intakePayload({ roadmapVersionId: "66666666-6666-4666-8666-666666666601", stepId: "step.one" }));
+    const first = nextTaskProjection(null, linked, 1);
+    expect([first.stepId, first.role, first.commitPolicy]).toEqual(["step.one", "implementer", "NO_COMMIT"]);
+    const later = nextTaskProjection(first, executionEvent("TASK_CLASSIFIED", {}, { taskId: INTAKE_TASK }), 2);
+    expect([later.stepId, later.role, later.commitPolicy]).toEqual(["step.one", "implementer", "NO_COMMIT"]);
+    const legacy = nextTaskProjection(null, executionEvent("TASK_DISCOVERED", {}, { fromState: null }), 1);
+    expect([legacy.stepId, legacy.role, legacy.commitPolicy]).toEqual([null, null, null]);
+  });
+
+  it("refuses a second row under one key that names another task, by name, in the snapshot as at the door", () => {
+    const snapshot = createProjectionSnapshot();
+    applyEventToSnapshot(snapshot, intakeEvent(), 1);
+    expect(snapshot.taskSubmissions.size).toBe(1);
+    let thrown: unknown;
+    try {
+      applyEventToSnapshot(snapshot, intakeEvent(intakePayload(), { taskId: OTHER_INTAKE_TASK }), 2);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(LedgerIdempotencyConflictError);
+
+    const one = nextTaskSubmissionProjection(intakeEvent(), 1);
+    const again = nextTaskSubmissionProjection(intakeEvent(), 9);
+    if (one === null || again === null) throw new Error("expected two rows");
+    // The birth attributes stay out of the comparison: a replay arrives elsewhere.
+    expect(() => {
+      assertSameTaskSubmission(one, again);
+    }).not.toThrow();
   });
 });

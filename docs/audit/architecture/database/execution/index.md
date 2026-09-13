@@ -21,15 +21,15 @@ attempt_number)` → `route_segment_id` → `effect_id` → `dispatch_attempt_id
 | --- | --- | --- | --- |
 | `task_id` | TEXT | NOT NULL | PK. Estable de por vida (§6.1 canónico). |
 | `initiative_id` | TEXT | NULL | Aditivo mig. 4; `NULL` sólo en filas de antes de esa migración, nunca en escritura nueva. |
-| `step_id` | TEXT | NULL | **Aditivo, aplicado en migración 11, sin productor todavía.** `NULL` para tareas fuera de un roadmap (si el caso de uso lo permite); documentado explícitamente, no un `NULL` accidental. |
-| `role` | TEXT | NULL | **Aditivo, aplicado en migración 11, sin productor todavía.** Vigente desde la primera revisión; `NULL` sólo antes de existir la primera revisión. Ningún evento la trae hoy y nadie inventa una clave de payload para llenarla: `NULL` significa «no registrado aún», no «ausente». |
+| `step_id` | TEXT | NULL | **Aditivo, aplicado en migración 11; productor desde P-14 C: el ingreso** (ADR 0087). Se pliega de la clave de payload `stepId` del `TASK_DISCOVERED` de ingreso (transición `intake`), escrita una vez y arrastrada. `NULL` **sólo** para una tarea que ingresó sin vínculo a roadmap —`stepId` y `roadmapVersionId` viajan como par, ambos o ninguno—, y para toda tarea que no entró por la puerta de ingreso. La existencia del paso dentro del documento del roadmap no se verifica: es deuda de P-26. |
+| `role` | TEXT | NULL | **Aditivo, aplicado en migración 11; productor desde P-14 C: el ingreso** (ADR 0087). Se pliega de la clave de payload `role` del ingreso —el rol cuya asignación GLOBAL resolvió A, con su vector en `resolution`—, escrita una vez con la primera revisión y arrastrada. P-14 C es el packet que nombra esa clave de payload, en voz alta y en el payload cerrado del ingreso; ningún otro evento la escribe. `NULL` significa «no registrado», no «ausente»: toda tarea que no entró por la puerta de ingreso. |
 | `envelope_sha256` | TEXT | NULL | **Aditivo, aplicado en migración 11.** Denormalización de conveniencia del `envelope_sha256` de la **revisión vigente** (`task_revision_read_model`, §2); no autoritativo — la autoridad es la fila de revisión. Se mueve junto con `latest_revision_number` —una revisión mayor reemplaza los dos— o no se mueve: una tarea que anunciara el número de una revisión y el envelope de otra es el único fallo que una columna de conveniencia no puede producir. `latest_attempt_number` responde otra pregunta y tiene su propia regla, en su fila. |
-| `commit_policy` | TEXT | NULL | **Aditivo, aplicado en migración 11, sin productor todavía.** |
+| `commit_policy` | TEXT | NULL | **Aditivo, aplicado en migración 11; productor desde P-14 C: el ingreso** (ADR 0087). Se pliega de la clave de payload `commitPolicy` del ingreso, copia del `commitPolicy` del envelope, escrita una vez y arrastrada. `NULL` para toda tarea que no entró por la puerta de ingreso. |
 | `duel_id` | TEXT | NULL | **Aditivo, NO aplicado en migración 11.** Su productor es el flujo de duelos ([planning](../planning/index.md) §9 `adjudication_read_model`) y la columna va con ese packet: una columna sin productor apunta a un puerto vacío. `NULL` fuera de un duelo de modelos. |
 | `current_state` | TEXT | NOT NULL | Valor preservado de la cohorte indicada por `state_vocabulary`, nunca traducción por similitud de nombre ([contratos §2.2](../../contracts/index.md)). |
 | `state_vocabulary` | TEXT | NOT NULL | **Aditivo, NO aplicado en migración 11.** Va con la transición de vocabulario de estados ([contratos §2.2](../../contracts/index.md)), que trae su `CHECK` y su escritura por cohorte; separarla de su productor dejaría una columna `NOT NULL` con default y sin nadie que escriba el valor explícito. Cuando llegue: default de migración `LEGACY` para filas preexistentes; `CHECK IN ('LEGACY','TASK_V2')`; el fold siempre escribe el valor explícito según la cohorte del evento y el default no autoriza inserts nuevos sin versión. No se modifica ningún evento histórico. |
 | `latest_revision_number` | INTEGER | NULL | **Aditivo, aplicado en migración 11.** `NULL` sólo antes de existir la primera revisión (transición desde el legacy `latest_attempt`), y `NULL` para siempre en una tarea cuya historia entera precede a esa migración. |
-| `latest_attempt_number` | INTEGER | NULL | **Aditivo, aplicado en migración 11.** Igual nulidad. **Regla del fold** (ADR 0068, que enmienda ADR 0067 §6): envelope y número de revisión se mueven juntos con la revisión mayor; el intento conserva el máximo dentro de la misma revisión; una revisión anterior no mueve nada. Dentro de una revisión los intentos son una secuencia: un evento tardío que anuncie un intento anterior no puede hacer retroceder la columna, igual que `latest_attempt` nunca baja. Una revisión mayor **sí** reinicia el intento — el intento 1 de la revisión 3 no es «menor» que el intento 3 de la revisión 2, es otra unidad de trabajo. |
+| `latest_attempt_number` | INTEGER | NULL | **Aditivo, aplicado en migración 11.** Igual nulidad. **Regla del fold** (ADR 0068, que enmienda ADR 0067 §6): envelope y número de revisión se mueven juntos con la revisión mayor; el intento conserva el máximo dentro de la misma revisión; una revisión anterior no mueve nada. Dentro de una revisión los intentos son una secuencia: un evento tardío que anuncie un intento anterior no puede hacer retroceder la columna, igual que `latest_attempt` nunca baja. Una revisión mayor **sí** reinicia el intento — el intento 1 de la revisión 3 no es «menor» que el intento 3 de la revisión 2, es otra unidad de trabajo. **Efecto declarado del ingreso (P-14 C, ADR 0087):** el ingreso lleva el registro de la revisión 1 con `attemptNumber: 1`, así que la columna vale 1 mientras `task_attempt_read_model` no tiene fila: la fila de intento nace sólo de `TASK_ATTEMPT_OPENED`. |
 | `latest_attempt` | INTEGER | NOT NULL | **Legacy, congelado.** Contador plano pre-revisión; se sigue poblando por compatibilidad de lectura mientras conviven ambas formas (§15.4 canónico), no se lee para lógica nueva. |
 | `event_count` | INTEGER | NOT NULL | — |
 | `first_sequence` | INTEGER | NOT NULL | — |
@@ -48,6 +48,45 @@ attempt_number)` → `route_segment_id` → `effect_id` → `dispatch_attempt_id
 | --- | --- |
 | `task_read_model_by_state` | `INDEX (current_state, task_id)`, legacy. |
 | Rebuild | Determinista desde `control_plane_events`. |
+
+### 1.1 `task_submission_read_model` — la clave del cliente
+
+**Aplicado en migración 19 (P-14 C, ADR 0087).** Cierra Q1: el hogar de
+`UNIQUE(client_scope, client_request_key)` de [contratos §15](../../contracts/index.md)
+para tareas es **esta** tabla derivada, plegada del `TASK_DISCOVERED` de ingreso
+(transición `intake`, payload cerrado). Es la única fuente; ningún duelo de
+planificación la reemplaza. Una fila por clave: qué tarea, qué revisión y qué digest
+de envelope produjo esa clave. El digest **no** es parte de la clave: es la
+precondición que una segunda sumisión compara.
+
+La fila es **insert-only por el fold**: misma clave con la misma tarea, revisión y
+digest es replay y no escribe; con cualquier otra cosa se rehúsa por nombre
+(`LedgerIdempotencyConflictError`, en la puerta de append y en el rebuild, con la
+misma comparación), nunca `ON CONFLICT DO UPDATE` ni un error de SQLite. Tarea,
+revisión y digest salen del **mismo** registro de revisión que pliega
+`task_revision_read_model`: las dos filas no pueden nombrar dos envelopes. Sin
+trigger ni FK: es derivada, un rebuild la vacía y la repliega, y la tarea que nombra
+nace del mismo evento en la misma transacción.
+
+| Columna | Tipo | Nullable | Semántica |
+| --- | --- | --- | --- |
+| `client_scope` | TEXT | NOT NULL | Mitad de la clave. `CHECK (length > 0)`; gramática `TASK_CLIENT_KEY_PATTERN` (ASCII, primer carácter alfanumérico, hasta 200 de `A-Za-z0-9._:/-`, sin espacio). Clave de payload `clientScope`. |
+| `client_request_key` | TEXT | NOT NULL | La otra mitad, misma gramática. Clave de payload `clientRequestKey`. |
+| `task_id` | TEXT | NOT NULL | El `taskId` **del evento**, nunca del payload. |
+| `revision_number` | INTEGER | NOT NULL | `CHECK >= 1`. La revisión que la clave produjo; 1 en P-14 C. Una revisión nueva se pide con una operación nueva y otra clave (contratos §15). |
+| `envelope_sha256` | TEXT | NOT NULL | Sha-256 minúsculo (`CHECK`). El digest de identidad de esa revisión (§2), precondición comparada. |
+| `sequence` | INTEGER | NOT NULL | `CHECK >= 1`. Posición del evento de ingreso en el stream de tareas. |
+| `created_at` | TEXT | NOT NULL | `occurredAt` del evento de ingreso; nunca un reloj. |
+
+### Índices / OCC / transacción / rebuild
+
+| Objeto | Forma |
+| --- | --- |
+| `ux_task_submission_read_model__request` | `UNIQUE (client_scope, client_request_key)`, restricción de tabla. |
+| Watermark | `task_submission_read_model`@`control_plane_events`, sembrado a la cabeza del stream de tareas en la migración. |
+| Transacción | La del append que pliega el ingreso; la migración 19 repliega el stream existente en `afterSql`. |
+| Rebuild | Determinista desde `control_plane_events`; `verifyIntegrity` compara las filas como conjunto exacto en ambas direcciones. |
+| Lectura | `getTaskSubmission(clientScope, clientRequestKey)`. |
 
 ---
 

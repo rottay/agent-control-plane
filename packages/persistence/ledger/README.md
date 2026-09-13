@@ -40,6 +40,7 @@ ledger.close();
 | `getEventByIdempotencyKey(key)` | One record by idempotency key, or null. |
 | `listEvents(query?)` | Sequence-ordered page. Filters: task, type, emitter, destination state. |
 | `getTask(taskId)` / `listTasks(query?)` | Derived task read model, ordered by task id. |
+| `getTaskSubmission(clientScope, clientRequestKey)` | The row one client key produced — the task, its revision and the envelope digest — or null. Both halves are held to `TASK_CLIENT_KEY_PATTERN` first; a key the fold could never have written is a `LedgerQueryError`. |
 | `getWorker(identity)` / `listWorkers(query?)` | Derived worker read model, ordered by identity. |
 | `getExecutionRoute(taskId, attempt)` / `listExecutionRoutes(taskId)` | The route an attempt was admitted on, keyed by the pair. Null, or empty, when nothing recorded one. |
 | `getOutboxCommand(commandId)` / `listOutboxCommands()` | An outbox command folded from its own events, or every one in intention order: what a lost outbox cache is rebuilt to. No table holds it. |
@@ -173,7 +174,8 @@ fifteenth class cannot arrive without appearing here.
 | `registry_events` | authority | versioned configuration documents and artifact events, on a third hash chain, with the common field profile complete from its first migration; `subject_kind` says which, since migration 15 |
 | `account_event_integrity` | authority | the account stream's hash chain, one link per row from sequence 1. Evidence, not a projection: a rebuild never touches it |
 | `ledger_meta` | authority | head sequence, head digest and event count, one set per stream; plus this file's own identity: `instance_id`, `restore_id`, `restore_epoch` |
-| `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable) |
+| `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable); since P-14 C, the `step_id`, `role` and `commit_policy` an intake recorded, written once (`NULL` for a task that entered any other way) |
+| `task_submission_read_model` | derived | one row per client key a task entered under, since migration 19: the task, its revision and the envelope digest, insert-only and refused by name under another task |
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
 | `worker_task_read_model` | derived | emitter to task associations |
 | `execution_route_read_model` | derived | the route each `(task, attempt)` was admitted on: provider, model, account, transport and the capability-policy version that chose them |
@@ -1143,12 +1145,47 @@ every holding, only after the private root was seen to stand.
 
 ### What this escalón does not do
 
-No task intake and no `client_scope` (escalón C). No reconciliation of a holding a
+No task intake and no `client_scope`: escalón C delivered both, beside this, in
+**A task's intake and its client key** below. No reconciliation of a holding a
 dead process left inside a publication — the plane answers `QUIESCENCE_UNPROVEN` —
 and no retry of a publication that ended abandoned: the pair is refused
 `PUBLICATION_ALREADY_ABANDONED` until another decision. No producer of
 `repository_sha256`. A reference published and not yet named by a registration,
 because the process died between the two, stays until a retry names it.
+
+## A task's intake and its client key
+
+P-14 escalón C (ADR 0087; decisions 77-79). The orchestration that enters a task,
+`intakeTask`, lives in `@acp/runtime`, because it resolves the role through
+`@acp/accounts` and this package may not import it. What lives here is the ledger's
+half: the fold of the intake, the client key's one home, and the refusals that keep
+both true.
+
+### The intake, as the stream records it
+
+An intake is one `TASK_DISCOVERED` from no state under its own transition,
+`TASK_INTAKE_TRANSITION_ID` (`intake`), keyed V2 at revision 1, attempt 1. Its
+payload is closed — `TASK_INTAKE_PAYLOAD_KEYS`: the revision record the fold already
+reads by presence, the initiative, the client key, the roadmap link as a pair, the
+role, the commit policy and a `resolution` (`TASK_INTAKE_RESOLUTION_KEYS`) with the
+vector of watermarks it was read at. The envelope is not in it. `taskIntakePayloadOf`
+is the fold's one reading, and it is total: anything short of the closed shape is not
+an intake, and folds as it did before. `nextTaskProjection` writes `step_id`, `role`
+and `commit_policy` from an intake once and carries them. An intake's task reads
+`latest_attempt_number` 1 with no attempt row: the attempt row is born of its own
+opening, and an opening from nothing is refused for a task an intake opened.
+
+### The client key
+
+Migration 19 creates `task_submission_read_model`, `STRICT`, unique on
+`(client_scope, client_request_key)`, with no trigger and no foreign key, seeds its
+watermark at the task head and folds the task stream again in the same transaction.
+The row is insert-only by the fold: its task, revision and digest come from the same
+revision record the revision row does. The same key naming the same row is a replay;
+naming anything else is refused by `assertSameTaskSubmission` with
+`LedgerIdempotencyConflictError` — at the append door and in `applyEventToSnapshot`,
+by one comparison — so a door that lost a race reads the class and decides again, and
+never meets a `SqliteError`. `verifyIntegrity` compares the rows both ways.
 
 ## Integrity
 

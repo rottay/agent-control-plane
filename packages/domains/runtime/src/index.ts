@@ -491,3 +491,19 @@ export type {
   RecordedRoute,
   RecoveredLifecycleContext,
 } from "./lifecycle-operation/index.js";
+
+// P-14 escalón C: the task intake. One orchestration both doors call -- the
+// gateway's `POST tasks` and the CLI's `acp intake` -- that enters one task
+// under its client's key: the envelope published to the private plane, revision
+// 1 recorded by reference, and the role resolved from the registry alone with
+// the vector it was read at. It takes no lease and reads no conflict graph, and
+// nothing runs the task it records.
+export { TASK_INTAKE_WRITE_REFUSALS, intakeTask } from "./intake/index.js";
+export type {
+  TaskIntakeFields,
+  TaskIntakeIdentities,
+  TaskIntakeInput,
+  TaskIntakeOutcome,
+  TaskIntakeTestFaults,
+  TaskIntakeWriteRefusal,
+} from "./intake/index.js";

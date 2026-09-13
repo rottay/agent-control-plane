@@ -400,8 +400,12 @@ export type {
   TaskAttemptReadModel,
   TaskPage,
   TaskQuery,
+  TaskIntakePayload,
+  TaskIntakeResolution,
+  TaskIntakeWatermark,
   TaskReadModel,
   TaskRevisionReadModel,
+  TaskSubmissionReadModel,
   WorkerPage,
   WorkerQuery,
   WorkerReadModel,
@@ -427,6 +431,24 @@ export { DOCUMENT_KINDS } from "./types/index.js";
  * restated either list would be a second authority on the payload's shape.
  */
 export { MODEL_VERSION_PAYLOAD_KEYS, MODEL_VERSION_STATUSES } from "./types/index.js";
+
+/**
+ * P-14 escalón C: the task intake's closed payload, its transition and the
+ * client key's grammar (ADR 0087).
+ *
+ * The fold holds the stream to these, and `@acp/runtime`'s intake is the one
+ * producer of the shape, so the producer reads them from here rather than
+ * restating them: `taskIntakePayloadOf` is the fold's own reading of one event,
+ * which the producer uses to read a recorded intake back for a replay.
+ */
+export {
+  TASK_CLIENT_KEY_PATTERN,
+  TASK_INTAKE_PAYLOAD_KEYS,
+  TASK_INTAKE_RESOLUTION_KEYS,
+  TASK_INTAKE_TRANSITION_ID,
+  TASK_INTAKE_WATERMARK_KEYS,
+} from "./types/index.js";
+export { taskIntakePayloadOf } from "./projection/index.js";
 
 /**
  * The artifact plane's two closed sets (P-36/local A, ADR 0081).

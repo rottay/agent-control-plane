@@ -178,8 +178,28 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * it deserves saying because this packet adds a migration: migration 18 adds
  * three nullable columns to a read model, which is ledger schema and not the
  * shape of a recorded event. ADR 0086 carries the reasoning.
+ *
+ * `0.16.0` → `0.17.0` at P-14/C: the plane's sixth write door. `tasks` answers
+ * POST beside its GET and enters one task — the envelope published to the
+ * private plane, one revision, the resolution of its role — and two schemas
+ * arrive with it: `TaskIntakeRequest` and `TaskIntakeResponse`.
+ *
+ * Minor for the reason `0.13.0` gave first: the route surface moves.
+ * `API_WRITE_ROUTES` goes from five to six. `API_ALLOWED_METHODS` stays exactly
+ * `["GET"]`, and no error code is added: an intake refuses with `BAD_REQUEST`
+ * and `WRITE_REFUSED`, the second carrying the refusal's class, its code and the
+ * field. No existing DTO changes shape: `TaskSummary` and `TaskDetail` still read
+ * what they read, and a task that entered by the door is `DISCOVERED` in both.
+ *
+ * `CONTRACT_VERSION` does not move: the event this door appends is the
+ * `TASK_DISCOVERED` the contract has always carried, its payload a bounded
+ * record, and the envelope's preimage is untouched — nothing the intake needs
+ * lives inside the envelope. `LEDGER_CONTRACT_VERSION` does not move either,
+ * though this packet adds a migration: migration 19 creates a derived table,
+ * which is ledger schema and not the shape of a recorded event. ADR 0087 carries
+ * the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.16.0" as const;
+export const API_CONTRACT_VERSION = "0.17.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

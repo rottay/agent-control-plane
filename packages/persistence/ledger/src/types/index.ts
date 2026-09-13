@@ -197,6 +197,154 @@ export interface TaskReadModel {
   readonly envelopeSha256: string | null;
   readonly latestRevisionNumber: number | null;
   readonly latestAttemptNumber: number | null;
+  /**
+   * What the intake door recorded when the task entered (P-14 C, execution §1).
+   *
+   * Written once, by the `TASK_DISCOVERED` that opens a task through the intake
+   * door, and carried by every later event. `null` on every task that entered
+   * any other way — the legacy daemon walk records none of the three — which
+   * means "not recorded", never "absent". `stepId` is also `null` on a task that
+   * entered with no roadmap link, which is the one case the dictionary allows.
+   */
+  readonly stepId: string | null;
+  readonly role: string | null;
+  readonly commitPolicy: string | null;
+}
+
+/**
+ * The client key one task entered under — contracts §15, execution §1.1 (P-14 C).
+ *
+ * `(clientScope, clientRequestKey)` is the request link's idempotency key, and
+ * it is unique. The row names what the key produced: the task, its revision and
+ * the envelope digest that revision carries. The digest is not part of the key;
+ * it is the precondition a second submission under the same key is compared
+ * against. Insert-only: a second arrival with the same row is a replay, with
+ * another row it is refused.
+ */
+export interface TaskSubmissionReadModel {
+  readonly clientScope: string;
+  readonly clientRequestKey: string;
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly envelopeSha256: string;
+  /** The task-stream position of the event that folded the row. */
+  readonly sequence: number;
+  /** The folding event's `occurredAt`. Never a clock read. */
+  readonly createdAt: string;
+}
+
+/**
+ * The transition an intake records (P-14 C, ADR 0087).
+ *
+ * Its own name, and deliberately not `discovered`: the daemon's walk writes its
+ * discovery under that transition, with a submission digest the continuity of
+ * P-15 expects to find there, and an intake written under the same name would be
+ * a discovery that carries none. One module builds an event under it (L-P14C-1).
+ */
+export const TASK_INTAKE_TRANSITION_ID = "intake";
+
+/**
+ * The grammar of both halves of a task's client key (P-14 C).
+ *
+ * ASCII, an alphanumeric first character, then up to 199 more of a set that
+ * admits `.`, `_`, `:`, `/` and `-`: a worker identity, a uuid and a dotted
+ * operator name all fit, and a space — the snapshot's separator — does not.
+ * Restated by `@acp/protocol`'s request schema, which may not import this
+ * package; the fold holds the stream to this one.
+ */
+export const TASK_CLIENT_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
+
+/**
+ * The payload of the `TASK_DISCOVERED` the intake door records, by name (P-14 C,
+ * ADR 0087).
+ *
+ * Closed, and held by the fold rather than by the append door, on
+ * `INITIATIVE_REGISTRATION_PAYLOAD_KEYS`' precedent: the contract's payload is a
+ * bounded record, and history recorded under another shape stays readable. The
+ * first six are the revision record the fold already reads by presence, and
+ * `initiativeId` is the attribution it already reads from this event type. The
+ * envelope is not among these keys: its bytes go to the private plane, and the
+ * stream records the digest and the reference that names them.
+ */
+export const TASK_INTAKE_PAYLOAD_KEYS = [
+  "revisionId",
+  "revisionNumber",
+  "attemptNumber",
+  "envelopeSha256",
+  "restoredFromRevisionId",
+  "envelopeArtifactReferenceId",
+  "initiativeId",
+  "clientScope",
+  "clientRequestKey",
+  "roadmapVersionId",
+  "stepId",
+  "role",
+  "commitPolicy",
+  "resolution",
+] as const;
+
+/**
+ * The keys of an intake's `resolution`: the GLOBAL assignment the role resolved
+ * to, and the vector of watermarks it was read at (E4, N-P14-3).
+ */
+export const TASK_INTAKE_RESOLUTION_KEYS = [
+  "assignmentId",
+  "assignmentVersion",
+  "slot",
+  "modelVersionId",
+  "provider",
+  "model",
+  "release",
+  "transportKind",
+  "watermarks",
+] as const;
+
+/** The keys of one watermark an intake's resolution records. */
+export const TASK_INTAKE_WATERMARK_KEYS = [
+  "projectionName",
+  "sourceStream",
+  "appliedThroughSequence",
+  "eventCount",
+  "sourceHeadSha256",
+] as const;
+
+/** One watermark row a resolution was read at, as the intake payload records it. */
+export interface TaskIntakeWatermark {
+  readonly projectionName: string;
+  readonly sourceStream: string;
+  readonly appliedThroughSequence: number;
+  readonly eventCount: number;
+  readonly sourceHeadSha256: string;
+}
+
+/** The resolution an intake recorded. */
+export interface TaskIntakeResolution {
+  readonly assignmentId: string;
+  readonly assignmentVersion: number;
+  readonly slot: number;
+  readonly modelVersionId: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly release: string;
+  readonly transportKind: string;
+  readonly watermarks: readonly TaskIntakeWatermark[];
+}
+
+/** The closed intake payload, read back from one `TASK_DISCOVERED`. */
+export interface TaskIntakePayload {
+  readonly revisionId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly envelopeSha256: string;
+  readonly envelopeArtifactReferenceId: string;
+  readonly initiativeId: string;
+  readonly clientScope: string;
+  readonly clientRequestKey: string;
+  readonly roadmapVersionId: string | null;
+  readonly stepId: string | null;
+  readonly role: string;
+  readonly commitPolicy: string;
+  readonly resolution: TaskIntakeResolution;
 }
 
 /**

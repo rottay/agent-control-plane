@@ -30,6 +30,8 @@ import {
   InitiativeRegistrationRequest,
   InitiativeRegistrationResponse,
   InitiativeRoadmapResponse,
+  TaskIntakeRequest,
+  TaskIntakeResponse,
   RoadmapVersionWriteRequest,
   ApiErrorCode,
   ACCOUNTS_UNAVAILABLE_REASONS,
@@ -447,19 +449,23 @@ describe("routes", () => {
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     // P8-8D-pre: the read plane's method list did not move when the first
     // write route arrived, and it has not moved since. The exceptions live in
-    // their own frozen table, which is the one that grows -- five entries as of
-    // P-14/B, the newest being the initiative registration.
+    // their own frozen table, which is the one that grows -- six entries as of
+    // P-14/C, the newest being the task intake.
     expect([...API_WRITE_ROUTES]).toEqual([
       "initiativeRoadmap",
       "accountActions",
       "taskToolCalls",
       "taskLifecycle",
       "initiatives",
+      "tasks",
     ]);
     expect([...API_WRITE_METHODS]).toEqual(["GET", "POST"]);
     expect(Object.isFrozen(API_WRITE_ROUTES)).toBe(true);
     expect(isWriteRoute("initiativeRoadmap")).toBe(true);
-    expect(isWriteRoute("tasks")).toBe(false);
+    // `tasks` answered reads only until P-14/C gave it the intake; the single
+    // task beside it still does.
+    expect(isWriteRoute("tasks")).toBe(true);
+    expect(isWriteRoute("taskById")).toBe(false);
   });
 
   it("builds a task path from a validated identifier", () => {
@@ -2260,10 +2266,169 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
   });
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.16.0");
+    // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
+    expect(API_CONTRACT_VERSION).toBe("0.17.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(15);
+  });
+});
+
+describe("the task intake's wire contract (P-14/C)", () => {
+  const TASK_ID = "66666666-6666-4666-8666-666666666666";
+  const INITIATIVE_ID = "55555555-5555-4555-8555-555555555555";
+  const VERSION_ID = "77777777-7777-4777-8777-777777777777";
+
+  function envelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      contractVersion: LEDGER_CONTRACT_VERSION,
+      taskId: TASK_ID,
+      initiativeId: INITIATIVE_ID,
+      title: "Enter a task",
+      objective: "Enter one task by command and by API.",
+      classification: "MECHANICAL",
+      issuedBy: "kimi/k3/coordinator/01",
+      issuedAt: "2026-09-13T12:00:00.000Z",
+      authority: [],
+      readSet: [],
+      writeSet: ["docs/intake.md"],
+      conflictKeys: [],
+      allowedCommands: [],
+      forbiddenActions: [],
+      output: { kind: "DIFF", description: "" },
+      validation: { commands: [], independentVerifierRequired: false },
+      eligibility: { roles: ["implementer"], providers: null, requiredCapabilities: [] },
+      budget: { maxTokens: 1000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 100 },
+      visualEvidenceRequired: false,
+      commitPolicy: "NO_COMMIT",
+      checkpointPolicy: { onEveryAtomicStep: true, maxStepsWithoutCheckpoint: 1 },
+      ...overrides,
+    };
+  }
+
+  function intake(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      envelope: envelope(),
+      clientScope: WRITER,
+      clientRequestKey: "intake-0001",
+      roadmapVersionId: VERSION_ID,
+      stepId: "step.one",
+      role: "implementer",
+      slot: 0,
+      transportKind: "CLI_SUBSCRIPTION",
+      recordedBy: WRITER,
+      ...overrides,
+    };
+  }
+
+  function response(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      replayed: false,
+      sequence: 1,
+      task: {
+        taskId: TASK_ID,
+        revisionNumber: 1,
+        revisionId: "88888888-8888-4888-8888-888888888888",
+        envelopeSha256: SHA256,
+        envelopeArtifactReferenceId: "99999999-9999-4999-8999-999999999999",
+        state: "DISCOVERED",
+        resolution: {
+          assignmentId: "routing:GLOBAL:implementer:0",
+          assignmentVersion: 1,
+          slot: 0,
+          modelVersionId: "model-one",
+          provider: "claude",
+          model: "claude-opus-5",
+          release: "2026-06-01",
+          transportKind: "CLI_SUBSCRIPTION",
+          watermarks: [
+            {
+              projectionName: "model_version_read_model",
+              sourceStream: "registry_events",
+              appliedThroughSequence: 3,
+              eventCount: 3,
+              sourceHeadSha256: SHA256,
+            },
+          ],
+        },
+      },
+      ...overrides,
+    };
+  }
+
+  it("admits the nine fields, the envelope beside everything that is not the work", () => {
+    expect(TaskIntakeRequest.safeParse(intake()).success).toBe(true);
+    expect(Object.keys(TaskIntakeRequest.shape).sort()).toEqual([
+      "clientRequestKey",
+      "clientScope",
+      "envelope",
+      "recordedBy",
+      "roadmapVersionId",
+      "role",
+      "slot",
+      "stepId",
+      "transportKind",
+    ]);
+    expect(TaskIntakeRequest.safeParse(intake({ roadmapVersionId: null, stepId: null })).success).toBe(true);
+  });
+
+  it("parses the envelope through the contract's own schema, strictly", () => {
+    expect(TaskIntakeRequest.safeParse(intake({ envelope: envelope({ stepId: "step.one" }) })).success).toBe(false);
+    expect(TaskIntakeRequest.safeParse(intake({ envelope: envelope({ taskId: "not-a-uuid" }) })).success).toBe(false);
+    const planted = TaskIntakeRequest.safeParse(
+      intake({ envelope: envelope({ objective: "deploy with sk-ant-api03-" + "A".repeat(40) }) }),
+    );
+    expect(planted.success).toBe(false);
+    expect(planted.error?.issues.map((issue) => issue.path.join("."))).toContain("envelope.objective");
+  });
+
+  it("holds the key, the step, the role, the slot and the transport to their grammars", () => {
+    for (const bad of [
+      { clientScope: "" },
+      { clientScope: "has space" },
+      { clientRequestKey: "k".repeat(201) },
+      { stepId: "../escape" },
+      { roadmapVersionId: "not-a-uuid" },
+      { role: "janitor" },
+      { slot: -1 },
+      { slot: 1.5 },
+      { transportKind: "PIGEON" },
+      { recordedBy: "nobody" },
+    ]) {
+      expect(TaskIntakeRequest.safeParse(intake(bad)).success, JSON.stringify(bad)).toBe(false);
+    }
+    expect(TaskIntakeRequest.safeParse(intake({ clientRequestKey: "k".repeat(200) })).success).toBe(true);
+  });
+
+  it("refuses what the door computes, so a caller cannot state it", () => {
+    for (const computed of [{ envelopeSha256: SHA256 }, { revisionId: "r" }, { taskId: TASK_ID }]) {
+      expect(TaskIntakeRequest.safeParse(intake(computed)).success).toBe(false);
+    }
+  });
+
+  it("N-P14C-16: answers the task by digest and reference, and never echoes the envelope", () => {
+    expect(TaskIntakeResponse.safeParse(response()).success).toBe(true);
+    const echoed = response();
+    (echoed["task"] as Record<string, unknown>)["envelope"] = envelope();
+    expect(TaskIntakeResponse.safeParse(echoed).success).toBe(false);
+    const objective = response();
+    (objective["task"] as Record<string, unknown>)["objective"] = "Enter one task.";
+    expect(TaskIntakeResponse.safeParse(objective).success).toBe(false);
+    expect(TaskIntakeResponse.safeParse(response({ sequence: 0 })).success).toBe(false);
+    const unread = response();
+    ((unread["task"] as Record<string, unknown>)["resolution"] as Record<string, unknown>)["watermarks"] = [];
+    expect(TaskIntakeResponse.safeParse(unread).success).toBe(false);
+  });
+
+  it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
+    expect(API_CONTRACT_VERSION).toBe("0.17.0");
+    expect(isWriteRoute("tasks")).toBe(true);
+    expect(API_WRITE_ROUTES).toHaveLength(6);
+    expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+    expect(API_ERROR_CODES).toHaveLength(15);
+    expect(LEDGER_CONTRACT_VERSION).toBe("2.5.0");
   });
 });
 
@@ -2741,7 +2906,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.16.0");
+    expect(API_CONTRACT_VERSION).toBe("0.17.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -2758,7 +2923,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.16.0");
+    expect(API_CONTRACT_VERSION).toBe("0.17.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -2771,7 +2936,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(15);
-    expect(API_CONTRACT_VERSION).toBe("0.16.0");
+    expect(API_CONTRACT_VERSION).toBe("0.17.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape

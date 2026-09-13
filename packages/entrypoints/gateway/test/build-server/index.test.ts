@@ -662,7 +662,7 @@ describe("integrity", () => {
     // 3 rather than at 0 — a ledger created empty and then grown has a baseline
     // of 0, and 0 is never ahead of anything.
     //
-    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15, 16, 17 and 18 as well, because
+    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15, 16, 17, 18 and 19 as well, because
     // the reopen re-applies everything the row set no longer claims. `ALTER TABLE
     // ... ADD COLUMN` is not idempotent, so a re-applied 11 over a schema that
     // still carries the coordinate aborts on "duplicate column name". The order
@@ -698,6 +698,13 @@ describe("integrity", () => {
     // Migration 18 goes before 17 (P-14 B): its three columns are `ADD COLUMN`s,
     // which a re-applied 18 aborts on, so they are dropped by name. Nothing in
     // `initiative_events` moves; the re-applied 18 folds the registration again.
+    //
+    // Migration 19 goes before 18 (P-14 C): its table and its one watermark row,
+    // or the re-applied 19 aborts on a table that already exists. This fixture
+    // holds no intake — an intake names a registered TASK_ENVELOPE reference,
+    // which is an artifact event, and 15's reverse rebuild above requires a
+    // stream with none — so the re-applied 19 folds no row; the retroactive fold
+    // over a real intake is the ledger suite's.
     const beforeRewind = registryEvidence(path);
     const beforeModelVersions = modelVersionEvidence(path);
     const beforeInitiatives = initiativeColumnEvidence(path);
@@ -705,6 +712,7 @@ describe("integrity", () => {
       { title: "The rewind initiative", objective_sha256: "2".repeat(64), repository_sha256: null },
     ]);
     const rewind = new DatabaseSync(path);
+    rewindTaskSubmission(rewind);
     rewindInitiativeRegistrationDetail(rewind);
     rewindModelVersionRegistry(rewind);
     rewindTaskRevisionEnvelopeReference(rewind);
@@ -776,7 +784,11 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(18);
+    ).toBe(19);
+    // P-14 C: and it re-applied 19 without aborting — the client key table is back.
+    expect(
+      reapplied.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").all("task_submission_read_model"),
+    ).toHaveLength(1);
     reapplied.close();
     // N-P14A-15: and it re-applied 17 over the document already in the stream,
     // folding it back into the same rows at a watermark level with the head.
@@ -1182,6 +1194,7 @@ describe("the served surface matches the frozen route table", () => {
       "taskToolCalls",
       "taskLifecycle",
       "initiatives",
+      "tasks",
     ]);
     await app.close();
   });
@@ -1209,6 +1222,7 @@ describe("the served surface matches the frozen route table", () => {
       "taskToolCalls",
       "taskLifecycle",
       "initiatives",
+      "tasks",
     ]);
     await app.close();
   });
@@ -1219,9 +1233,10 @@ describe("the served surface matches the frozen route table", () => {
     // change that leaked would show up here as a read route suddenly
     // accepting a POST, which is the failure this asserts against.
     //
-    // P-14/B made one parameterless route a write, `initiatives`. It leaves this
-    // loop by the write table rather than by a list restated here, and its own
-    // three-verb 405 set is asserted below, so the property still covers it.
+    // P-14/B made one parameterless route a write, `initiatives`, and P-14/C a
+    // second, `tasks`. Both leave this loop by the write table rather than by a
+    // list restated here, and their own three-verb 405 sets are asserted below,
+    // so the property still covers them.
     const { path } = seedDatabase();
     const app = buildServer({ ledgerPath: path });
     const writePatterns: readonly string[] = API_WRITE_ROUTES.map((name) => API_ROUTES[name]);
@@ -1232,13 +1247,15 @@ describe("the served surface matches the frozen route table", () => {
         expect({ url, method, status: response.statusCode }).toEqual({ url, method, status: 405 });
       }
     }
-    for (const method of ["PUT", "PATCH", "DELETE"] as const) {
-      const response = await app.inject({ method, url: API_ROUTES.initiatives });
-      expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
+    for (const url of [API_ROUTES.initiatives, API_ROUTES.tasks]) {
+      for (const method of ["PUT", "PATCH", "DELETE"] as const) {
+        const response = await app.inject({ method, url });
+        expect({ url, method, status: response.statusCode }).toEqual({ url, method, status: 405 });
+      }
+      // Answered, not refused — and with no bearer configured, answered by the guard.
+      const posted = await app.inject({ method: "POST", url, payload: {} });
+      expect({ url, status: posted.statusCode }).toEqual({ url, status: 403 });
     }
-    // Answered, not refused — and with no bearer configured, answered by the guard.
-    const posted = await app.inject({ method: "POST", url: API_ROUTES.initiatives, payload: {} });
-    expect(posted.statusCode).toBe(403);
     await app.close();
   });
 
@@ -1262,11 +1279,12 @@ describe("the served surface matches the frozen route table", () => {
   const INJECTION_EXCLUDED = [API_ROUTES.eventStream];
 
   /**
-   * The parameterless routes that answer POST rather than refusing it (P-14/B),
-   * pinned for `INJECTION_EXCLUDED`'s reason: a list that grows a route at a
-   * time until the 405 arm below covers nothing is the failure the pin prevents.
+   * The parameterless routes that answer POST rather than refusing it (P-14/B,
+   * P-14/C), pinned for `INJECTION_EXCLUDED`'s reason: a list that grows a route
+   * at a time until the 405 arm below covers nothing is the failure the pin
+   * prevents. Written in the write table's order, which the equality below reads.
    */
-  const POST_ANSWERED = [API_ROUTES.initiatives];
+  const POST_ANSWERED = [API_ROUTES.initiatives, API_ROUTES.tasks];
 
   it("excludes exactly one parameterless route from GET injection, and says which", () => {
     // The pin. Without it, "we skip the ones inject cannot do" is a sentence
@@ -1329,6 +1347,7 @@ describe("the served surface matches the frozen route table", () => {
       "taskToolCalls",
       "taskLifecycle",
       "initiatives",
+      "tasks",
     ]);
     await app.close();
   });
@@ -1496,6 +1515,17 @@ describe("the accounts clock seam", () => {
 
 /** The initiative the rewind fixtures register in the closed payload (P-14 B). */
 const REWIND_INITIATIVE = "77777777-7777-4777-8777-777777777777";
+
+/**
+ * Migration 19 undone on a raw handle (P-14 C): the client key table and its one
+ * watermark row. No index or trigger of its own name stands beside it.
+ */
+function rewindTaskSubmission(raw: DatabaseSync): void {
+  raw.exec(
+    "DROP TABLE task_submission_read_model;" +
+      "DELETE FROM projection_watermark WHERE projection_name = 'task_submission_read_model';",
+  );
+}
 
 /**
  * Migration 18 undone on a raw handle (P-14 B): the initiative projection's three

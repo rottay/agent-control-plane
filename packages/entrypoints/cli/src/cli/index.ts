@@ -83,6 +83,7 @@ import type { OutputFormat } from "../format/index.js";
 import { ToolCallRefused, runToolCallVerb } from "../tool-call/index.js";
 import { LifecycleRefused, runLifecycleVerb } from "../lifecycle/index.js";
 import { InitiativeRefused, runInitiativeVerb } from "../initiative/index.js";
+import { IntakeRefused, runIntakeVerb } from "../intake/index.js";
 import type { LifecycleDriverFactory, LifecycleOutcome } from "../lifecycle/index.js";
 import {
   buildEventPage,
@@ -244,6 +245,15 @@ export const SWITCH_DECISION_COMMAND = "switch-decision";
  */
 export const INITIATIVE_COMMAND = "initiative";
 
+/**
+ * The task intake verb's name, as one literal (P-14/C).
+ *
+ * Named for the initiative verb's reason: the table declares it, `run` branches
+ * on it and `SURFACE_MAP` pairs it with `tasks` POST. Not `submission`, which is
+ * the planning verb it has always been and stays.
+ */
+export const INTAKE_COMMAND = "intake";
+
 type OptionName = keyof typeof OPTIONS;
 type ParsedValues = Partial<Record<OptionName, string | boolean>>;
 
@@ -378,6 +388,16 @@ const COMMANDS: readonly CommandSpec[] = [
     options: ["request"],
     summary: "register one initiative from a request document and print the registration",
   },
+  // P-14/C. The fifth verb that writes, through the same writable open. It
+  // reads one request document -- the API's POST body, byte for byte -- and
+  // enters the task it names through the orchestration the gateway calls too.
+  // It executes nothing.
+  {
+    name: INTAKE_COMMAND,
+    positional: null,
+    options: ["request"],
+    summary: "enter one task from a request document and print the intake",
+  },
 ];
 
 /**
@@ -453,10 +473,11 @@ const USAGE = ((): string => {
     "  --reserve-tokens <n>       Tokens held back for checkpoint and verification.",
     "  --duration-seconds <n>     Wall-clock seconds the next atomic step may take.",
     "",
-    "Every read verb opens the ledger query-only. Four verbs write, and they",
+    "Every read verb opens the ledger query-only. Five verbs write, and they",
     "share one writable open: `" + TOOL_CALL_COMMAND + "` records one receipt, `" + CANCEL_COMMAND + "` appends",
-    "one cancellation (`" + ATTACH_COMMAND + "` takes the same handle and appends nothing), and",
-    "`" + INITIATIVE_COMMAND + "` registers one initiative, its objective to the private plane. The CLI",
+    "one cancellation (`" + ATTACH_COMMAND + "` takes the same handle and appends nothing),",
+    "`" + INITIATIVE_COMMAND + "` registers one initiative, its objective to the private plane, and",
+    "`" + INTAKE_COMMAND + "` enters one task, its envelope to the private plane; it runs nothing. The CLI",
     "prints no absolute path and no event payload value. `acp submission` opens no",
     "ledger at all: it reads three documents, elects a route and prints one",
     "document to stdout, creating and modifying no file.",
@@ -671,6 +692,21 @@ function fromLifecycleError(error: unknown): CliFailure {
 function fromInitiativeError(error: unknown): CliFailure {
   if (error instanceof LedgerError) return fromLedgerError(error);
   if (error instanceof InitiativeRefused || error instanceof ToolCallRefused) {
+    return failure(refusalExitCode(error.code), error.code, error.message, error.at);
+  }
+  return fromUnknownError(error);
+}
+
+/**
+ * Map the intake verb's refusal onto this package's exit-code table (P-14/C).
+ *
+ * The initiative verb's shape and reason: the document ladder and the writable
+ * open refuse with `ToolCallRefused`, the intake with its own class, and one
+ * table names the number for all of them.
+ */
+function fromIntakeError(error: unknown): CliFailure {
+  if (error instanceof LedgerError) return fromLedgerError(error);
+  if (error instanceof IntakeRefused || error instanceof ToolCallRefused) {
     return failure(refusalExitCode(error.code), error.code, error.message, error.at);
   }
   return fromUnknownError(error);
@@ -1896,6 +1932,23 @@ export async function run(
       return EXIT_OK;
     } catch (error: unknown) {
       return emitFailure(fromInitiativeError(error), format, io);
+    }
+  }
+
+  // P-14/C. The intake verb branches beside the other four writers and for
+  // their reasons: below the `--database` law, above the read-only open, and
+  // through the writable open the tool-call module owns.
+  if (spec.name === INTAKE_COMMAND) {
+    try {
+      const result = runIntakeVerb({
+        databasePath,
+        requestPath: stringOption(values, "request") ?? "",
+      });
+      // JSON regardless of `--format`, on the tool call's precedent.
+      io.stdout(renderJson(result.document));
+      return EXIT_OK;
+    } catch (error: unknown) {
+      return emitFailure(fromIntakeError(error), format, io);
     }
   }
 

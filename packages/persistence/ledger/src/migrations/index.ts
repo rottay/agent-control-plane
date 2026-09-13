@@ -2461,6 +2461,67 @@ ALTER TABLE initiative_read_model ADD COLUMN objective_sha256 TEXT;
 ALTER TABLE initiative_read_model ADD COLUMN repository_sha256 TEXT;
 `,
   },
+  {
+    version: 19,
+    name: "task_submission",
+    sql: `
+-- A task enters once by its client's key, with its revision and its envelope by
+-- reference (P-14 escalón C, ADR 0087).
+--
+-- Contracts §15 gives the request link its idempotency key,
+-- UNIQUE(client_scope, client_request_key), and no dictionary gave the pair a
+-- home for tasks. Execution §1.1 closes it here: one derived row per task that
+-- entered by the intake door, folded from the \`TASK_DISCOVERED\` that opens the
+-- task, naming the task, its revision and the envelope digest that revision
+-- carries. The digest is not part of the key: it is the precondition a second
+-- submission under the same key is compared against.
+--
+-- **Insert-only, by the fold.** The same key with the same row is a replay and
+-- writes nothing; the same key with another row is refused by name before the
+-- constraint could abort. Never ON CONFLICT DO UPDATE: a key whose task could be
+-- rewritten would make "this request" the name of whichever arrived last.
+--
+-- **Derived, so no trigger and no foreign key.** The authority is
+-- \`control_plane_events\`; a rebuild clears this table and folds it again. The
+-- task a row names is born by the same event in the same transaction, so a
+-- foreign key would restate the fold's own order.
+CREATE TABLE task_submission_read_model (
+  client_scope       TEXT    NOT NULL,
+  client_request_key TEXT    NOT NULL,
+  task_id            TEXT    NOT NULL,
+  revision_number    INTEGER NOT NULL,
+  envelope_sha256    TEXT    NOT NULL,
+  sequence           INTEGER NOT NULL,
+  created_at         TEXT    NOT NULL,
+  CONSTRAINT ux_task_submission_read_model__request UNIQUE (client_scope, client_request_key),
+  CONSTRAINT ck_task_submission_read_model__client_scope CHECK (length(client_scope) > 0),
+  CONSTRAINT ck_task_submission_read_model__client_request_key CHECK (length(client_request_key) > 0),
+  CONSTRAINT ck_task_submission_read_model__revision_number CHECK (revision_number >= 1),
+  CONSTRAINT ck_task_submission_read_model__envelope_sha256 CHECK (
+    length(envelope_sha256) = 64 AND envelope_sha256 NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT ck_task_submission_read_model__sequence CHECK (sequence >= 1)
+) STRICT;
+
+-- One watermark, seeded from the head of the task stream in migration 11's form.
+-- The rows it describes are folded from the stream the code holds, and SQL
+-- cannot run the fold, so the code folds the task stream after this text and
+-- inside the same transaction (\`afterSql\`, migration 17's precedent): a ledger
+-- that already holds an intake event is level with its head the moment the
+-- migration commits.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  'task_submission_read_model',
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  '1970-01-01T00:00:00.000Z';
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -2511,6 +2572,9 @@ export const DERIVED_TABLES: readonly string[] = [
   "execution_route_segment_read_model",
   "task_attempt_read_model",
   "task_revision_read_model",
+  // P-14 C. No foreign key names it and it names none, so its place is free; it
+  // sits beside the task rows it is folded with.
+  "task_submission_read_model",
   "task_read_model",
   "worker_read_model",
   "execution_route_read_model",
@@ -2542,6 +2606,8 @@ export const PROJECTION_NAMES: readonly string[] = [
   // And P-18/protocolo D's pair, in the dictionary's order.
   "prompt_occurrence_read_model",
   "response_occurrence_read_model",
+  // And P-14 C's client key, named `TASK_SUBMISSION_PROJECTION` below.
+  "task_submission_read_model",
 ];
 
 /**
@@ -2712,6 +2778,21 @@ export const MODEL_VERSION_REGISTRY_MIGRATION = 17;
 export const INITIATIVE_REGISTRATION_MIGRATION = 18;
 
 /**
+ * The projection that holds one row per client key a task entered under (P-14 C,
+ * contracts §15, execution §1.1).
+ */
+export const TASK_SUBMISSION_PROJECTION = "task_submission_read_model";
+
+/**
+ * The migration that creates the task submission projection (P-14 C, ADR 0087).
+ *
+ * Named for `INITIATIVE_REGISTRATION_MIGRATION`'s reasons: the suite and the
+ * rewind fixtures hold the number against where the SQL sits, and the ledger
+ * hangs the retroactive fold of the task stream off this exact version.
+ */
+export const TASK_SUBMISSION_MIGRATION = 19;
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -2786,6 +2867,7 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: DISPATCH_ATTEMPT_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: PROMPT_OCCURRENCE_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: RESPONSE_OCCURRENCE_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: TASK_SUBMISSION_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ARTIFACT_BLOB_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -2997,6 +3079,10 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "ux_model_version_eligible_role__role" },
   { type: "table", name: "model_version_transport" },
   { type: "index", name: "ux_model_version_transport__transport" },
+  // P-14 C. One table and nothing else: the client key's uniqueness is a table
+  // constraint, whose automatic index carries the reserved prefix this inventory
+  // excludes, and the rule a second submission is held to is the fold's.
+  { type: "table", name: "task_submission_read_model" },
 ];
 
 export interface MigrationConformance {

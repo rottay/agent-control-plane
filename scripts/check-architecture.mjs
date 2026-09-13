@@ -10083,6 +10083,97 @@ const P14B_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-14 escalón C — a task enters once by its client's key, with its revision and
+ * its envelope by reference (ADR 0087; writer brief v2: v1 + Fable preaudit
+ * H-1..H-5, M-6..M-9, L-10 as the DT adjudicated them).
+ *
+ * **What lands.** `intakeTask` in `@acp/runtime`, the one orchestration both doors
+ * call: the request is held to its form with the envelope parsed whole and its
+ * digest computed, never taken; a recorded client key is compared — envelope,
+ * roadmap link, step, role, slot, transport — for a replay or `CONFLICT`; then the
+ * task is new, the initiative and the roadmap version exist, the role is one the
+ * envelope admits and resolves from the registry alone through `resolveAssignment`,
+ * with the vector it was read at; the envelope is published to the private plane as a
+ * `TASK_ENVELOPE` scoped to the task under derived keys a retry reuses; one
+ * `TASK_DISCOVERED` under the `intake` transition, V2 at 1/1, with a closed payload,
+ * is appended. Migration 19 creates `task_submission_read_model`, unique on the
+ * client key, insert-only by the fold and refused by name with
+ * `LedgerIdempotencyConflictError`, and refolds the task stream; the fold writes
+ * `step_id`, `role` and `commit_policy` once. The gateway answers POST on `tasks`
+ * through `registerGetAndPost`; the CLI gains `acp intake --request <path>` through
+ * `openForWrite`. `@acp/protocol` gains `TaskIntakeRequest` and `TaskIntakeResponse`.
+ *
+ * **What does NOT land, declared.** No execution of an intake and no change to the
+ * scheduler, the daemon or `acp submission`. No lease and no conflict graph in the
+ * intake. No read of the envelope by either door. No step model (P-26) and no
+ * authority preflight (P-23). No `INITIATIVE`/`STEP` routing partition. No contracts
+ * change: `TaskEnvelope` and `ControlPlaneEvent` are untouched.
+ *
+ * **Pins that move.** `MIGRATIONS` 18 → 19; `DERIVED_TABLES`, `PROJECTION_NAMES`,
+ * `PROJECTION_SOURCES` and `EXPECTED_SCHEMA_OBJECTS` gain the table (status
+ * projections 18 → 19, watermark rows 19 → 20). `API_CONTRACT_VERSION` `0.16.0` →
+ * `0.17.0`, with the two tool-call suites that pin the literal. `API_WRITE_ROUTES`
+ * 5 → 6; `SURFACE_MAP` gains `intake` → `tasks` POST, `DOCUMENT`.
+ * `RUNTIME_PUBLIC_EXPORTS` gains eight names. `PATH_SCOPED_LAWS` 139 → **140** for
+ * L-P14C-1. The ADR corpus 86 → 87; the decision register 76 → 79. The CLI's writing
+ * verbs four → five, in its README, its banner and its manifest description.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (`"2.5.0"`),
+ * `CONTRACTS_SCHEMA_EXPORTS`, `CONTROL_PLANE_EVENT_TYPES` (33),
+ * `LEDGER_CONTRACT_VERSION`, `PROJECTOR_VERSION` (1). `API_ALLOWED_METHODS`
+ * (`["GET"]`) and `API_ERROR_CODES` (15). L-B4B-11 and `CLI_WRITABLE_OPEN_SITE`: the
+ * new verb shares the tool call's one writable open. `COORDINATION_STORES` (4).
+ * `submission` stays `CLI_ONLY`.
+ *
+ * **Forty paths; seven are new to the fence** — the orchestration and its suite,
+ * the gateway seam and its suite, the CLI verb and its suite, and ADR 0087. The
+ * other thirty-three are admitted by historical blocks. The brief's header counted
+ * thirty-six for the forty its own list carries.
+ */
+const P14C_WRITE_SET = [
+  "packages/domains/runtime/src/intake/index.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/entrypoints/gateway/src/task-intake/index.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/README.md",
+  "packages/entrypoints/cli/src/intake/index.ts",
+  "packages/entrypoints/cli/test/intake/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/cli/package.json",
+  "packages/entrypoints/cli/README.md",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "docs/api-reference.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0087-a-task-enters-once-by-its-clients-key.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -10300,6 +10391,7 @@ const WRITE_SET = [
   ...P36D_WRITE_SET,
   ...P14A_WRITE_SET,
   ...P14B_WRITE_SET,
+  ...P14C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -11662,6 +11754,12 @@ const PATH_SCOPED_LAWS = [
   // `requireScope` call sites both move 138 -> 139.
   {
     law: "no production source mints an initiative, and one module builds its registration",
+    scope: "packages/*/*/src/**",
+  },
+  // P-14/C. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 139 -> 140.
+  {
+    law: "no production source mints a task, and one module builds its intake",
     scope: "packages/*/*/src/**",
   },
 ];
@@ -18884,6 +18982,18 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "LifecycleVerb",
   "RecordedRoute",
   "RecoveredLifecycleContext",
+  // P-14 escalón C: the task intake, appended as a group for the reason the
+  // lifecycle names above are. Two values -- the orchestration and the refusal
+  // vocabulary a door exhausts -- and the six types a door passes and receives.
+  // No contract name is re-exported.
+  "TASK_INTAKE_WRITE_REFUSALS",
+  "intakeTask",
+  "TaskIntakeFields",
+  "TaskIntakeIdentities",
+  "TaskIntakeInput",
+  "TaskIntakeOutcome",
+  "TaskIntakeTestFaults",
+  "TaskIntakeWriteRefusal",
 ];
 
 /**
@@ -25936,6 +26046,52 @@ const INITIATIVE_REGISTRATION_SITE = "packages/persistence/ledger/src/initiative
   notes.push("no production source mints an initiative id, and one module builds the registration event");
 }
 
+// L-P14C-1 -- no production source mints a task, and one module builds its intake
+// (P-14/C, M-9, N-P14-11, ADR 0087).
+//
+// Contracts §15 keys an intake by the client's own key and the envelope names the
+// task: a door that minted a task id on a retry would enter a second task. So no
+// `src/` assigns a `taskId` from `randomUUID(`. And an event under the intake's
+// transition -- `transitionId: TASK_INTAKE_TRANSITION_ID`, or the literal the
+// constant holds -- is built in exactly one module, the orchestration both doors
+// call: a second construction would be a second payload, and a discovery written
+// under `intake` by the daemon's walk would be one P-15's continuity cannot find.
+// The constant's own declaration and the fold's comparison against it are reads.
+const TASK_INTAKE_SITE = "packages/domains/runtime/src/intake/index.ts";
+{
+  let intakeScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const builders = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      intakeScanned += 1;
+      const code = stripComments(content);
+      if (/\btaskId\s*[:=]\s*(?:crypto\.)?randomUUID\(/.test(code)) {
+        fail(
+          relativePath +
+            " assigns a taskId from randomUUID; a task's id is the envelope's, and a minted one is a second task" +
+            " on every retry",
+        );
+      }
+      if (/\btransitionId\s*:\s*(?:TASK_INTAKE_TRANSITION_ID\b|["'`]intake["'`])/.test(code)) builders.push(relativePath);
+    }
+    if (builders.join(", ") !== TASK_INTAKE_SITE) {
+      fail(
+        "an event under the intake transition is built by [" +
+          builders.join(", ") +
+          "]; exactly one module may build it, and it is " +
+          TASK_INTAKE_SITE,
+      );
+    }
+  }
+  requireScope("no production source mints a task, and one module builds its intake", intakeScanned);
+  notes.push("no production source mints a task id, and one module builds the intake event");
+}
+
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
 //
 // Four laws, and one thing they have in common: each is the durable form of a
@@ -26257,10 +26413,11 @@ if (securityDoc === null) {
 // without documentation nor a documented route that no longer exists can pass.
 //
 // The parity suite stays the behavioral authority where it reaches, which is
-// eleven of the twenty-five arms in full and `eventStream` GET in part; the
-// eleven arms of the initiative and account routes have no CLI-side parity
-// comparison — `initiatives` POST is compared by its own suites, through the one
-// orchestration both doors call, not by the parity suite — and
+// eleven of the twenty-six arms in full and `eventStream` GET in part; the
+// eleven arms of the initiative and account routes and `tasks` POST have no
+// CLI-side parity comparison — `initiatives` POST and `tasks` POST are each
+// compared by their own suites, through the one orchestration both doors call,
+// not by the parity suite — and
 // `health` has no ledger content to build one from. This law proves something
 // narrower and total: that the readable artifact and the frozen table name the
 // same set of routes, and that the CLI column agrees with `SURFACE_MAP` both

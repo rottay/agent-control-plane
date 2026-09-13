@@ -189,6 +189,9 @@ export {
   // the response, so the pair is reachable from the one entry point.
   InitiativeRegistrationRequest,
   InitiativeRegistrationResponse,
+  // P-14/C: the task intake, on the same terms as the registration above it.
+  TaskIntakeRequest,
+  TaskIntakeResponse,
   RollupSummary,
   StreamIntegrityCoverageDto,
   TASK_STATE_COUNT,

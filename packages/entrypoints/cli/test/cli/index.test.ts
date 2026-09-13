@@ -331,9 +331,11 @@ describe("usage", () => {
     expect(result.stdout).toContain("tool-call writes one receipt");
     expect(result.stdout).toContain("cancel settles one cancellation");
     // And the closing paragraph no longer claims the CLI never writes. P-14/B
-    // added the fourth writing verb, and the sentence counts it.
-    expect(result.stdout).toContain("Four verbs write, and they");
+    // added the fourth writing verb and P-14/C the fifth, and the sentence
+    // counts them.
+    expect(result.stdout).toContain("Five verbs write, and they");
     expect(result.stdout).toContain("`initiative` registers one initiative");
+    expect(result.stdout).toContain("`intake` enters one task");
     expect(result.stdout).not.toContain("This CLI opens the ledger read-only and never writes");
     // Old-V2 R1, F7. This was a `toContain` sweep over twelve of the fourteen
     // names, against the whole of stdout: `task` was satisfied by the word
@@ -369,11 +371,12 @@ describe("usage", () => {
       // again — `IntegrityResult` is a `z.strictObject`, so a reader pinned at
       // 0.14.0 rejects the result rather than ignoring the key. To 0.16.0 at
       // P-14/B for a fifth write route, `initiatives` POST, which this CLI
-      // answers too as `acp initiative`.
+      // answers too as `acp initiative`, and to 0.17.0 at P-14/C for a sixth,
+      // `tasks` POST, which it answers as `acp intake`.
       // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.16.0",
+      apiContractVersion: "0.17.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });
@@ -1185,7 +1188,7 @@ describe("integrity", () => {
     // stream that already holds three rows. A ledger created empty and then
     // grown has a baseline of 0, and 0 is never ahead of anything.
     //
-    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15, 16, 17 and 18 as well, because
+    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15, 16, 17, 18 and 19 as well, because
     // the reopen re-applies everything the row set no longer claims. `ALTER TABLE
     // ... ADD COLUMN` is not idempotent, so a re-applied 11 over a schema that
     // still carries the coordinate aborts on "duplicate column name". The order
@@ -1221,6 +1224,13 @@ describe("integrity", () => {
     // Migration 18 goes before 17 (P-14 B): its three columns are `ADD COLUMN`s,
     // which a re-applied 18 aborts on, so they are dropped by name. Nothing in
     // `initiative_events` moves; the re-applied 18 folds the registration again.
+    //
+    // Migration 19 goes before 18 (P-14 C): its table and its one watermark row,
+    // or the re-applied 19 aborts on a table that already exists. This fixture
+    // holds no intake — an intake names a registered TASK_ENVELOPE reference,
+    // which is an artifact event, and 15's reverse rebuild above requires a
+    // stream with none — so the re-applied 19 folds no row; the retroactive fold
+    // over a real intake is the ledger suite's.
     const beforeRewind = registryEvidence(path);
     const beforeModelVersions = modelVersionEvidence(path);
     const beforeInitiatives = initiativeColumnEvidence(path);
@@ -1228,6 +1238,7 @@ describe("integrity", () => {
       { title: "The rewind initiative", objective_sha256: "2".repeat(64), repository_sha256: null },
     ]);
     const rewind = new DatabaseSync(path);
+    rewindTaskSubmission(rewind);
     rewindInitiativeRegistrationDetail(rewind);
     rewindModelVersionRegistry(rewind);
     rewindTaskRevisionEnvelopeReference(rewind);
@@ -1299,7 +1310,11 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(18);
+    ).toBe(19);
+    // P-14 C: and it re-applied 19 without aborting — the client key table is back.
+    expect(
+      reapplied.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").all("task_submission_read_model"),
+    ).toHaveLength(1);
     reapplied.close();
     // N-P14A-15: and it re-applied 17 over the document already in the stream,
     // folding it back into the same rows at a watermark level with the head.
@@ -3111,6 +3126,17 @@ describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => 
 
 /** The initiative the rewind fixtures register in the closed payload (P-14 B). */
 const REWIND_INITIATIVE = "77777777-7777-4777-8777-777777777777";
+
+/**
+ * Migration 19 undone on a raw handle (P-14 C): the client key table and its one
+ * watermark row. No index or trigger of its own name stands beside it.
+ */
+function rewindTaskSubmission(raw: DatabaseSync): void {
+  raw.exec(
+    "DROP TABLE task_submission_read_model;" +
+      "DELETE FROM projection_watermark WHERE projection_name = 'task_submission_read_model';",
+  );
+}
 
 /**
  * Migration 18 undone on a raw handle (P-14 B): the initiative projection's three

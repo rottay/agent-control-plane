@@ -40,6 +40,7 @@ routes that also accept a write are named in a separate frozen table,
 | `taskToolCalls` | `POST /api/v1/tasks/:taskId/tool-calls` | one explicit tool call — the only route that starts a child process |
 | `taskLifecycle` | `POST /api/v1/tasks/:taskId/lifecycle` | one lifecycle verb against an attempt already running — `CANCEL` or `ATTACH`, through the same operation the CLI door calls |
 | `initiatives` | `POST /api/v1/initiatives` | one initiative, under the caller's own id, through `registerInitiative` — the orchestration `acp initiative` calls too; its objective goes to the private artifact plane and the stream records the digest and the reference |
+| `tasks` | `POST /api/v1/tasks` | one task intake, under the caller's client key and task id, through `intakeTask` — the orchestration `acp intake` calls too; its envelope goes to the private artifact plane, revision 1 names it by reference, and nothing executes the task |
 
 The fifth (P-14/B) is the portfolio route's own POST: the GET beside it is
 unchanged and unguarded. Its seam, `initiative-write`, decides nothing — it
@@ -53,6 +54,20 @@ The same body again is `200` with `replayed: true`. The initiative read model
 serves the objective back from the plane, by reference and under the
 initiative's own scope; bytes the plane cannot produce are `LEDGER_INTEGRITY`,
 never a null objective.
+
+The sixth (P-14/C) is the task list's own POST, on the same terms: the GET beside
+it is unchanged and unguarded, and its seam, `task-intake`, decides nothing — it
+opens the writable ledger, the blob lease store and the plane for one intake,
+hands them to `intakeTask` in `@acp/runtime` with the identifiers the route minted,
+and closes them. A body `TaskIntakeRequest` refuses, the envelope's own contract
+included, is `400`. An intake the recorded state refuses is `409 WRITE_REFUSED`,
+its message carrying the class — `CONFLICT` for the same client key with another
+request or a task that already entered, `REQUEST_INVALID` for an initiative, a
+roadmap version or a role that does not hold, `AUTHORITY_REFUSED` for a role the
+registry does not resolve, `CONTENT_REJECTED` when the plane declines — the code,
+and a retired model version's proposal, and its detail the field. The same body
+again is `200` with `replayed: true`. The task reads it `DISCOVERED` and nothing
+more: an intake takes no lease and runs nothing.
 
 All are registered through the same guarded registrar, so the bearer check is
 **structural rather than remembered**: a future write route registered through

@@ -102,6 +102,7 @@ new records from `_template.md`, which carries the required fields.
 | 0084 | [A revision of the new cohort names its envelope by reference, never by digest](0084-a-revision-names-its-envelope-by-reference-never-by-digest.md) | accepted |
 | 0085 | [A role resolves from the registry alone, or not at all](0085-a-role-resolves-from-the-registry-alone.md) | accepted |
 | 0086 | [An initiative enters by command and by API, and its objective never touches the stream](0086-an-initiative-enters-by-command-and-by-api.md) | accepted |
+| 0087 | [A task enters once by its client's key, with its revision and its envelope by reference](0087-a-task-enters-once-by-its-clients-key.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

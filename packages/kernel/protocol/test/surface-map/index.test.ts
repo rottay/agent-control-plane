@@ -274,6 +274,31 @@ describe("the initiative registration is one document at two doors (P-14/B)", ()
   });
 });
 
+describe("the task intake is one document at two doors (P-14/C)", () => {
+  it("pairs intake with tasks POST, and leaves the task list GET a projection", () => {
+    const post = SURFACE_MAP.filter((entry) => entry.route === "tasks" && entry.method === "POST");
+    expect(post).toEqual([{ command: "intake", route: "tasks", method: "POST", equivalence: "DOCUMENT" }]);
+    const get = SURFACE_MAP.filter((entry) => entry.route === "tasks" && entry.method === "GET");
+    expect(get.map((entry) => [entry.command, entry.equivalence])).toEqual([["tasks", "PROJECTION"]]);
+    // `submission` is still the planning verb it was: the intake did not become it.
+    expect(SURFACE_MAP.filter((entry) => entry.command === "submission").map((entry) => entry.equivalence)).toEqual([
+      "CLI_ONLY",
+    ]);
+  });
+
+  it("N-P14C-22: names the arm when the entry is dropped", () => {
+    const dropped = defects(without((entry) => entry.command === "intake"));
+    expect(names(dropped, "missing", "tasks POST")).toBe(true);
+  });
+
+  it("names the command when the CLI half is checked without the verb", () => {
+    const commands = SURFACE_MAP.flatMap((entry) => (entry.command === null ? [] : [entry.command]));
+    const withoutVerb = commands.filter((command) => command !== "intake");
+    const found = surfaceDefects({ entries: SURFACE_MAP, routes: ROUTES, writeRoutes: WRITE_ROUTES, commands: withoutVerb });
+    expect(names(found, "intake", "this CLI does not have")).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // F8 — the causal regression the stale prose could not have had
 // ---------------------------------------------------------------------------

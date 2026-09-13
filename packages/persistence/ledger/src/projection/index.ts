@@ -22,6 +22,7 @@ import {
 import { canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import {
   LedgerArtifactEncryptionConflictError,
+  LedgerIdempotencyConflictError,
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
@@ -44,6 +45,11 @@ import {
   MODEL_VERSION_PAYLOAD_KEYS,
   MODEL_VERSION_STATUSES,
   REDACTION_VERDICTS,
+  TASK_CLIENT_KEY_PATTERN,
+  TASK_INTAKE_PAYLOAD_KEYS,
+  TASK_INTAKE_RESOLUTION_KEYS,
+  TASK_INTAKE_TRANSITION_ID,
+  TASK_INTAKE_WATERMARK_KEYS,
 } from "../types/index.js";
 import type {
   ArtifactBlobReadModel,
@@ -76,8 +82,12 @@ import type {
   RoutingAssignmentProjection,
   RoutingAssignmentReadModel,
   TaskAttemptReadModel,
+  TaskIntakePayload,
+  TaskIntakeResolution,
+  TaskIntakeWatermark,
   TaskReadModel,
   TaskRevisionReadModel,
+  TaskSubmissionReadModel,
   WorkerReadModel,
 } from "../types/index.js";
 
@@ -410,6 +420,10 @@ export function nextTaskProjection(
   // the record it denormalizes.
   const revision = nextTaskRevisionProjection(event, sequence);
   const attemptNumber = revisionAttemptNumber(event);
+  // What the intake door recorded (P-14 C). Only an intake states it, and only
+  // an intake can open a task, so on every later event this is null and the
+  // row's own value is carried.
+  const intake = taskIntakePayloadOf(event);
 
   if (current === null) {
     return {
@@ -422,6 +436,9 @@ export function nextTaskProjection(
       envelopeSha256: revision?.envelopeSha256 ?? null,
       latestRevisionNumber: revision?.revisionNumber ?? null,
       latestAttemptNumber: revision === null ? null : attemptNumber,
+      stepId: intake?.stepId ?? null,
+      role: intake?.role ?? null,
+      commitPolicy: intake?.commitPolicy ?? null,
     };
   }
 
@@ -473,6 +490,12 @@ export function nextTaskProjection(
     envelopeSha256: newer ? revision.envelopeSha256 : current.envelopeSha256,
     latestRevisionNumber: newer ? revision.revisionNumber : current.latestRevisionNumber,
     latestAttemptNumber,
+    // Written once, like the attribution above. `fromState: null` keeps an
+    // intake from ever reaching this branch through the door; the carry is what
+    // a later event does to them.
+    stepId: current.stepId,
+    role: current.role,
+    commitPolicy: current.commitPolicy,
   };
 }
 
@@ -712,6 +735,195 @@ function envelopeArtifactReferenceOf(event: ControlPlaneEvent): string | null {
  */
 export function taskRevisionKey(taskId: string, revisionNumber: number): string {
   return taskId + " " + String(revisionNumber);
+}
+
+// ---------------------------------------------------------------------------
+// P-14 escalón C — the task's intake and its client key (ADR 0087)
+// ---------------------------------------------------------------------------
+
+const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
+const INTAKE_TEXT_MAX = 512;
+const INTAKE_WATERMARKS_MAX = 16;
+const COMMIT_POLICIES: readonly string[] = ["NO_COMMIT", "LOCAL_COMMIT_WITH_RECEIPT"];
+
+function intakeText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= INTAKE_TEXT_MAX;
+}
+
+function intakeCount(value: unknown, minimum: number): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+}
+
+function intakeRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function intakeWatermarkOf(value: unknown): TaskIntakeWatermark | null {
+  if (!intakeRecord(value) || undeclaredKey(value, TASK_INTAKE_WATERMARK_KEYS) !== null) return null;
+  const { projectionName, sourceStream, appliedThroughSequence, eventCount, sourceHeadSha256 } = value;
+  if (!intakeText(projectionName) || !intakeText(sourceStream)) return null;
+  if (!intakeCount(appliedThroughSequence, 0) || !intakeCount(eventCount, 0)) return null;
+  if (typeof sourceHeadSha256 !== "string" || !SHA256_HEX_PATTERN.test(sourceHeadSha256)) return null;
+  return { projectionName, sourceStream, appliedThroughSequence, eventCount, sourceHeadSha256 };
+}
+
+function intakeResolutionOf(value: unknown): TaskIntakeResolution | null {
+  if (!intakeRecord(value) || undeclaredKey(value, TASK_INTAKE_RESOLUTION_KEYS) !== null) return null;
+  const { assignmentId, assignmentVersion, slot, modelVersionId, provider, model, release, transportKind } = value;
+  if (!intakeText(assignmentId) || !intakeCount(assignmentVersion, 1) || !intakeCount(slot, 0)) return null;
+  if (!intakeText(modelVersionId) || !intakeText(provider) || !intakeText(model) || !intakeText(release)) {
+    return null;
+  }
+  if (typeof transportKind !== "string" || !(TRANSPORT_KINDS as readonly string[]).includes(transportKind)) {
+    return null;
+  }
+  const listed = value["watermarks"];
+  if (!Array.isArray(listed) || listed.length === 0 || listed.length > INTAKE_WATERMARKS_MAX) return null;
+  const watermarks: TaskIntakeWatermark[] = [];
+  for (const entry of listed) {
+    const watermark = intakeWatermarkOf(entry);
+    if (watermark === null) return null;
+    watermarks.push(watermark);
+  }
+  return { assignmentId, assignmentVersion, slot, modelVersionId, provider, model, release, transportKind, watermarks };
+}
+
+/**
+ * The closed intake payload of one `TASK_DISCOVERED`, or null (P-14 C).
+ *
+ * Total, for `initiativeRegistrationPayloadOf`'s reason: the stream has no
+ * delete path, and a fold that refused a stored event would be disowning
+ * history. The event must be a `TASK_DISCOVERED` from no state, under
+ * `TASK_INTAKE_TRANSITION_ID`, whose payload carries every key of
+ * `TASK_INTAKE_PAYLOAD_KEYS` in its shape and no other — or it is not an intake,
+ * and it folds exactly as it did before this escalón. The intake door is the one
+ * producer of this shape (L-P14C-1).
+ *
+ * The shape, key by key: a first revision's record with no restore; the
+ * initiative as a uuid; the client key in `TASK_CLIENT_KEY_PATTERN`; the roadmap
+ * link as a pair that is both present or both `null` (N-P14-8); a role of the
+ * contract's vocabulary; a commit policy of the contract's two; and the
+ * resolution with a non-empty vector. Whether the initiative, the version or the
+ * assignment exists is the door's question, asked before the append, and never
+ * the fold's.
+ */
+export function taskIntakePayloadOf(event: ControlPlaneEvent): TaskIntakePayload | null {
+  if (event.type !== "TASK_DISCOVERED" || event.fromState !== null) return null;
+  if (event.transitionId !== TASK_INTAKE_TRANSITION_ID) return null;
+  const payload = event.payload;
+  if (undeclaredKey(payload, TASK_INTAKE_PAYLOAD_KEYS) !== null) return null;
+  for (const key of TASK_INTAKE_PAYLOAD_KEYS) {
+    if (!(key in payload)) return null;
+  }
+
+  const { revisionId, revisionNumber, attemptNumber, envelopeSha256, envelopeArtifactReferenceId } = payload;
+  if (!intakeText(revisionId) || !intakeCount(revisionNumber, 1) || !intakeCount(attemptNumber, 1)) return null;
+  if (typeof envelopeSha256 !== "string" || !SHA256_HEX_PATTERN.test(envelopeSha256)) return null;
+  if (payload["restoredFromRevisionId"] !== null) return null;
+  if (!intakeText(envelopeArtifactReferenceId)) return null;
+
+  const { initiativeId, clientScope, clientRequestKey, roadmapVersionId, stepId, role, commitPolicy } = payload;
+  if (typeof initiativeId !== "string" || !UUID_PATTERN.test(initiativeId)) return null;
+  if (typeof clientScope !== "string" || !TASK_CLIENT_KEY_PATTERN.test(clientScope)) return null;
+  if (typeof clientRequestKey !== "string" || !TASK_CLIENT_KEY_PATTERN.test(clientRequestKey)) return null;
+  if (roadmapVersionId !== null && (typeof roadmapVersionId !== "string" || !UUID_PATTERN.test(roadmapVersionId))) {
+    return null;
+  }
+  if (stepId !== null && (typeof stepId !== "string" || !LOCAL_KEY_PATTERN.test(stepId))) return null;
+  if ((roadmapVersionId === null) !== (stepId === null)) return null;
+  if (typeof role !== "string" || !(WORKER_ROLES as readonly string[]).includes(role)) return null;
+  if (typeof commitPolicy !== "string" || !COMMIT_POLICIES.includes(commitPolicy)) return null;
+
+  const resolution = intakeResolutionOf(payload["resolution"]);
+  if (resolution === null) return null;
+
+  return {
+    revisionId,
+    revisionNumber,
+    attemptNumber,
+    envelopeSha256,
+    envelopeArtifactReferenceId,
+    initiativeId,
+    clientScope,
+    clientRequestKey,
+    roadmapVersionId,
+    stepId,
+    role,
+    commitPolicy,
+    resolution,
+  };
+}
+
+/**
+ * The client key row one event folds, if it is an intake (P-14 C).
+ *
+ * The task, the revision number and the envelope digest are read from the SAME
+ * revision record `nextTaskRevisionProjection` folds, not from a second reading
+ * of the payload, so the key row and the revision row cannot come to name two
+ * envelopes. The row's task is the EVENT's: a payload cannot claim another
+ * task's key.
+ */
+export function nextTaskSubmissionProjection(
+  event: ControlPlaneEvent,
+  sequence: number,
+): TaskSubmissionReadModel | null {
+  const intake = taskIntakePayloadOf(event);
+  if (intake === null) return null;
+  const revision = nextTaskRevisionProjection(event, sequence);
+  if (revision === null) return null;
+  return {
+    clientScope: intake.clientScope,
+    clientRequestKey: intake.clientRequestKey,
+    taskId: event.taskId,
+    revisionNumber: revision.revisionNumber,
+    envelopeSha256: revision.envelopeSha256,
+    sequence,
+    createdAt: event.occurredAt,
+  };
+}
+
+/** The key of one submission row, for the in-memory snapshot. Neither half contains a space. */
+export function taskSubmissionKey(clientScope: string, clientRequestKey: string): string {
+  return clientScope + " " + clientRequestKey;
+}
+
+/**
+ * The comparable form of a submission row: what the key produced.
+ *
+ * `sequence` and `createdAt` are the birth attributes and stay out, for
+ * `canonicalRevision`'s reason: a replay of the same request arrives at another
+ * position and names the same task, the same revision and the same envelope.
+ */
+function canonicalTaskSubmission(submission: TaskSubmissionReadModel): string {
+  return canonicalJsonStringify({
+    clientScope: submission.clientScope,
+    clientRequestKey: submission.clientRequestKey,
+    taskId: submission.taskId,
+    revisionNumber: submission.revisionNumber,
+    envelopeSha256: submission.envelopeSha256,
+  });
+}
+
+/**
+ * Refuse a second row under one client key that names anything else (P-14 C).
+ *
+ * One function for the append door and for `applyEventToSnapshot`, so the
+ * incremental path and a rebuild refuse the same histories. The refusal is
+ * `LedgerIdempotencyConflictError`, by name and never a constraint failure: the
+ * client key IS the request link's idempotency key (contracts §15), and a door
+ * that lost a race to it reads the class and decides again. The message carries
+ * the key and two digests of the comparable rows, never the rows.
+ */
+export function assertSameTaskSubmission(stored: TaskSubmissionReadModel, arriving: TaskSubmissionReadModel): void {
+  const storedForm = canonicalTaskSubmission(stored);
+  const arrivingForm = canonicalTaskSubmission(arriving);
+  if (storedForm === arrivingForm) return;
+  throw new LedgerIdempotencyConflictError(
+    "client request " + taskSubmissionKey(stored.clientScope, stored.clientRequestKey),
+    sha256Hex(storedForm),
+    sha256Hex(arrivingForm),
+  );
 }
 
 /**
@@ -2102,6 +2314,12 @@ export interface ProjectionSnapshot {
   readonly promptOccurrences: Map<string, PromptOccurrenceReadModel>;
   readonly responseOccurrences: Map<string, ResponseOccurrenceReadModel>;
   readonly responseOccurrenceClaims: Map<string, string>;
+  /**
+   * P-14 C's client keys, insert-only, keyed by `taskSubmissionKey`. A second
+   * arrival under one key that names anything else fails the rebuild at the
+   * event that caused it, through the comparison the append door uses.
+   */
+  readonly taskSubmissions: Map<string, TaskSubmissionReadModel>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -2122,6 +2340,7 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     promptOccurrences: new Map<string, PromptOccurrenceReadModel>(),
     responseOccurrences: new Map<string, ResponseOccurrenceReadModel>(),
     responseOccurrenceClaims: new Map<string, string>(),
+    taskSubmissions: new Map<string, TaskSubmissionReadModel>(),
   };
 }
 
@@ -2198,6 +2417,19 @@ export function applyEventToSnapshot(
       }
     } else {
       snapshot.taskRevisions.set(key, revision);
+    }
+  }
+
+  // The client key, when the event is an intake (P-14 C). After the revision it
+  // is read from, and insert-only on the door's own comparison.
+  const submission = nextTaskSubmissionProjection(event, sequence);
+  if (submission !== null) {
+    const key = taskSubmissionKey(submission.clientScope, submission.clientRequestKey);
+    const existing = snapshot.taskSubmissions.get(key);
+    if (existing !== undefined) {
+      assertSameTaskSubmission(existing, submission);
+    } else {
+      snapshot.taskSubmissions.set(key, submission);
     }
   }
 

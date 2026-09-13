@@ -9,6 +9,8 @@ import {
   InitiativePortfolioResponse,
   InitiativeRegistrationRequest,
   InitiativeRegistrationResponse,
+  TaskIntakeRequest,
+  TaskIntakeResponse,
   InitiativeRoadmapResponse,
   AccountActionRequest,
   AccountActionWriteResponse,
@@ -75,6 +77,7 @@ import { loadBearerGuard } from "../bearer/index.js";
 import type { BearerLoadOutcome } from "../bearer/index.js";
 import { recordRoadmapVersion } from "../roadmap-write/index.js";
 import { recordInitiativeRegistration } from "../initiative-write/index.js";
+import { recordTaskIntake } from "../task-intake/index.js";
 import {
   initiativeDetailDto,
   initiativeSummary,
@@ -398,23 +401,96 @@ export function registerRoutes(
     return buildIntegrity(source);
   });
 
-  registerGet(app, API_ROUTES.tasks, (request) => {
-    const query = parseQuery(TasksQuery, queryOf(request));
-    const { ledger } = requireOpen(source);
-    const page = ledger.listTasks({ state: query.state, afterTaskId: query.cursor, limit: query.limit });
-    const items = page.tasks.map(taskSummary);
-    return TaskPageResponse.parse({
-      apiContractVersion: API_CONTRACT_VERSION,
-      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
-      items,
-      page: {
-        nextCursor: page.nextCursor,
-        hasMore: page.hasMore,
-        limit: query.limit,
-        returned: items.length,
-      },
-    });
-  });
+  // P-14/C: the sixth write door. The GET is the task list, unchanged and
+  // unguarded; the POST enters one task, through the same guarded registrar as
+  // every other write, so the bearer is inherited by where this is written.
+  registerGetAndPost(
+    app,
+    API_ROUTES.tasks,
+    (request) => {
+      const query = parseQuery(TasksQuery, queryOf(request));
+      const { ledger } = requireOpen(source);
+      const page = ledger.listTasks({ state: query.state, afterTaskId: query.cursor, limit: query.limit });
+      const items = page.tasks.map(taskSummary);
+      return TaskPageResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        items,
+        page: {
+          nextCursor: page.nextCursor,
+          hasMore: page.hasMore,
+          limit: query.limit,
+          returned: items.length,
+        },
+      });
+    },
+    (request) => {
+      assertEmptyQuery(queryOf(request));
+      // Door one: the schema, the envelope's contract included. Malformed is the
+      // caller's typing — 400, naming the field and never its value: the
+      // objective is free text.
+      const parsed = TaskIntakeRequest.safeParse(request.body);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw new ApiRouteError(
+          "BAD_REQUEST",
+          "the task intake request did not satisfy the contract",
+          (issue?.path ?? []).map((segment) => String(segment)).join(".") || "(root)",
+        );
+      }
+      const { ledger } = requireOpen(source);
+
+      // Every identity but the key's and the task's is minted here, and the
+      // instant and the pid are read here: the seam and the orchestration read
+      // none.
+      const outcome = recordTaskIntake({
+        ledger,
+        request: parsed.data,
+        recordedAt: new Date().toISOString(),
+        holderPid: process.pid,
+        leaseStoreIncarnationId: randomUUID(),
+        eventId: randomUUID(),
+        revisionId: randomUUID(),
+        commandId: randomUUID(),
+        artifactPinId: randomUUID(),
+        artifactReferenceId: randomUUID(),
+        intentionEventId: randomUUID(),
+        terminalEventId: randomUUID(),
+      });
+
+      // Door two: the decision, the registry, the plane and the stream. A
+      // coherent request the recorded state refuses is a 409 carrying the
+      // refusal's class, its code and — for a retired version — its proposal.
+      if (!outcome.ok) {
+        throw new ApiRouteError(
+          "WRITE_REFUSED",
+          "the task intake was refused: " +
+            outcome.reason +
+            " " +
+            outcome.code +
+            (outcome.proposal === null ? "" : "; proposal " + outcome.proposal),
+          outcome.at,
+        );
+      }
+
+      return TaskIntakeResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        replayed: outcome.replayed,
+        sequence: outcome.sequence,
+        task: {
+          taskId: outcome.task.taskId,
+          revisionNumber: outcome.task.revisionNumber,
+          revisionId: outcome.task.revisionId,
+          envelopeSha256: outcome.task.envelopeSha256,
+          envelopeArtifactReferenceId: outcome.task.envelopeArtifactReferenceId,
+          state: outcome.task.state,
+          resolution: outcome.task.resolution,
+        },
+      });
+    },
+    bearer,
+  );
 
   registerGet(app, API_ROUTES.taskById, (request) => {
     assertEmptyQuery(queryOf(request));

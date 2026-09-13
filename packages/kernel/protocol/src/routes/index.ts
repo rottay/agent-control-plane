@@ -139,6 +139,11 @@ export const API_WRITE_ROUTES = Object.freeze([
   // publishes its objective to the private plane before the event names it. The
   // GET beside it is the portfolio, unchanged.
   "initiatives",
+  // P-14/C. The sixth, and of the fifth's kind: it records a task the caller
+  // already composed — under the caller's own key and the caller's own task id —
+  // and publishes its envelope to the private plane before the event names it.
+  // It executes nothing. The GET beside it is the task list, unchanged.
+  "tasks",
 ] as const);
 export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 

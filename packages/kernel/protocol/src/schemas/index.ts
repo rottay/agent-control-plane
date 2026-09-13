@@ -11,6 +11,8 @@ import {
   INITIATIVE_STATUSES,
   LIFECYCLE_STATES,
   ROADMAP_VERSION_KINDS,
+  TRANSPORT_KINDS,
+  TaskEnvelope,
   TaskState,
   WORKER_IDENTITY_PATTERN,
   WORKER_ROLES,
@@ -2024,6 +2026,117 @@ export const InitiativeRegistrationResponse = z
   })
   .superRefine(attachGuards);
 export type InitiativeRegistrationResponse = z.infer<typeof InitiativeRegistrationResponse>;
+
+// ---------------------------------------------------------------------------
+// The task intake (P-14/C)
+// ---------------------------------------------------------------------------
+
+/**
+ * One half of a task's client key: the ledger's `TASK_CLIENT_KEY_PATTERN`,
+ * restated because this package may not import `@acp/ledger`. ASCII, an
+ * alphanumeric first character, then up to 199 of `A-Za-z0-9._:/-`.
+ */
+const TaskClientKey = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/);
+
+/** A roadmap step's local key: execution §6.1's `LocalKey` grammar, restated. */
+const StepLocalKey = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+
+const TransportKindDto = z.enum(TRANSPORT_KINDS);
+
+/**
+ * What a caller sends to enter a task, by either door.
+ *
+ * **The same bytes on both doors**, for `InitiativeRegistrationRequest`'s
+ * reason: the API's POST body and the CLI's `--request` document are parsed by
+ * this one schema, and that identity is the equivalence claim.
+ *
+ * **The envelope is the contract's, embedded by import.** `TaskEnvelope` is not
+ * restated here, so an envelope this schema admits is one the contract admits,
+ * and its digest is the one `envelope_sha256` names. Everything that is not the
+ * work — the client key, the roadmap link, the role, the slot and transport the
+ * role resolves for, and the producer — travels **beside** the envelope and never
+ * inside it: a field inside would enter the envelope's preimage and move every
+ * pinned digest.
+ *
+ * **The caller names the key and the task.** `(clientScope, clientRequestKey)` is
+ * the request link's idempotency key (contracts §15) and `envelope.taskId` is the
+ * task's id; no door mints either. The same key with the same request is a
+ * replay; the same key with another envelope, another roadmap link, another
+ * role, slot or transport is refused.
+ *
+ * **Bounded here, decided there.** This schema holds each field to its shape. That
+ * the initiative and the roadmap version exist, that a step travels with a
+ * version and only with one, that the role is eligible for the envelope and
+ * resolves in the registry — those are the intake's, which answers
+ * `WRITE_REFUSED` (409) with its class, its code and the field.
+ *
+ * The envelope travels once, inward. It is published to the private plane and
+ * the ledger records its digest and reference; it is never echoed back.
+ */
+export const TaskIntakeRequest = z
+  .strictObject({
+    envelope: TaskEnvelope,
+    clientScope: TaskClientKey,
+    clientRequestKey: TaskClientKey,
+    roadmapVersionId: Uuid.nullable(),
+    stepId: StepLocalKey.nullable(),
+    role: WorkerRole,
+    slot: Count,
+    transportKind: TransportKindDto,
+    recordedBy: WorkerIdentityString,
+  })
+  .superRefine(attachGuards);
+export type TaskIntakeRequest = z.infer<typeof TaskIntakeRequest>;
+
+/**
+ * What both doors print when a task entered, or was found entered, under a key.
+ *
+ * `replayed` says which: true when the key already named this request and
+ * nothing was published or appended. `sequence` is the intake's own position in
+ * the task stream, in both cases. The task carries the envelope's digest and the
+ * private reference that names its bytes, never the envelope; and the
+ * resolution the role was admitted on, with the vector of watermarks it was read
+ * at.
+ */
+export const TaskIntakeResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    replayed: z.boolean(),
+    sequence: Sequence,
+    task: z.strictObject({
+      taskId: Uuid,
+      revisionNumber: Sequence,
+      revisionId: z.string().min(1).max(512),
+      envelopeSha256: Sha256Hex,
+      envelopeArtifactReferenceId: z.string().min(1).max(512),
+      state: TaskState,
+      resolution: z.strictObject({
+        assignmentId: z.string().min(1).max(512),
+        assignmentVersion: Sequence,
+        slot: Count,
+        modelVersionId: z.string().min(1).max(512),
+        provider: z.string().min(1).max(512),
+        model: z.string().min(1).max(512),
+        release: z.string().min(1).max(512),
+        transportKind: TransportKindDto,
+        watermarks: z
+          .array(
+            z.strictObject({
+              projectionName: z.string().min(1).max(512),
+              sourceStream: z.string().min(1).max(512),
+              appliedThroughSequence: SequenceOrZero,
+              eventCount: Count,
+              sourceHeadSha256: Sha256Hex,
+            }),
+          )
+          .min(1)
+          .max(16),
+      }),
+    }),
+  })
+  .superRefine(attachGuards);
+export type TaskIntakeResponse = z.infer<typeof TaskIntakeResponse>;
 
 // ---------------------------------------------------------------------------
 // The roadmap content read (P8-8D-c2)

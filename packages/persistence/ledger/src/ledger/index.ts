@@ -47,6 +47,7 @@ import {
   INITIATIVE_REGISTRATION_MIGRATION,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_MIGRATION,
+  TASK_SUBMISSION_MIGRATION,
   ACCOUNT_STREAM,
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
@@ -127,6 +128,9 @@ import {
   nextExecutionRouteProjection,
   nextTaskAttemptProjection,
   nextTaskRevisionProjection,
+  nextTaskSubmissionProjection,
+  assertSameTaskSubmission,
+  taskSubmissionKey,
   ENVELOPE_ARTIFACT_REFERENCE_KEY,
   taskAttemptKey,
   taskRevisionKey,
@@ -227,6 +231,8 @@ import {
   type TaskAttemptReadModel,
   type TaskReadModel,
   type TaskRevisionReadModel,
+  type TaskSubmissionReadModel,
+  TASK_CLIENT_KEY_PATTERN,
   type WorkerPage,
   type WorkerQuery,
   type WorkerReadModel,
@@ -1195,15 +1201,25 @@ interface TaskRow {
   readonly latest_revision_number: number | null;
   readonly latest_attempt_number: number | null;
   /**
-   * Additive at migration 11 and **with no producer yet**, which is documented
-   * rather than accidental (execution §1). Nothing reads them into a model:
-   * inventing a payload key to fill them would be a read model built to satisfy
-   * a column. They exist so the table stops drifting from the dictionary one
-   * packet at a time, and a reader treats `NULL` as "not recorded yet".
+   * Additive at migration 11, and produced from P-14 C by the intake door alone
+   * (execution §1): the closed intake payload names them, and the fold writes
+   * them once. `NULL` on every task that entered any other way, which a reader
+   * treats as "not recorded", never as "absent".
    */
   readonly role: string | null;
   readonly step_id: string | null;
   readonly commit_policy: string | null;
+}
+
+/** One stored client key row (P-14 C). Snake case, because it is a row. */
+interface TaskSubmissionRow {
+  readonly client_scope: string;
+  readonly client_request_key: string;
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly envelope_sha256: string;
+  readonly sequence: number;
+  readonly created_at: string;
 }
 
 /** One stored revision row. Snake case, because it is a row. */
@@ -1431,6 +1447,21 @@ function taskRowToModel(row: TaskRow): TaskReadModel {
     envelopeSha256: row.envelope_sha256,
     latestRevisionNumber: row.latest_revision_number,
     latestAttemptNumber: row.latest_attempt_number,
+    stepId: row.step_id,
+    role: row.role,
+    commitPolicy: row.commit_policy,
+  };
+}
+
+function taskSubmissionRowToModel(row: TaskSubmissionRow): TaskSubmissionReadModel {
+  return {
+    clientScope: row.client_scope,
+    clientRequestKey: row.client_request_key,
+    taskId: row.task_id,
+    revisionNumber: row.revision_number,
+    envelopeSha256: row.envelope_sha256,
+    sequence: row.sequence,
+    createdAt: row.created_at,
   };
 }
 
@@ -2163,6 +2194,68 @@ function foldInitiativesAtMigration(db: Database.Database): void {
   }
 }
 
+/**
+ * Fold the task stream a ledger already holds for its intakes, once, as
+ * migration 19 lands (P-14 C, ADR 0087).
+ *
+ * `foldInitiativesAtMigration`'s shape. The migration creates the client key
+ * table empty and seeds its watermark at the head, and `task_read_model` already
+ * carries `step_id`, `role` and `commit_policy` as NULL; a stream that already
+ * holds an intake in the closed payload would then be rows the integrity replay
+ * refuses. So the stream is folded again inside the transaction that applies the
+ * migration, through the same functions the door and the rebuild use: each
+ * intake inserts its key row — a second row under one key that names another
+ * task is refused by name, as the door refuses it — and writes the three columns
+ * of the task it opened, and nothing else. A row that no longer reads as an
+ * event is skipped rather than refused, for `foldModelVersionsAtMigration`'s
+ * reason.
+ */
+function foldTaskSubmissionsAtMigration(db: Database.Database): void {
+  const rows = db
+    .prepare("SELECT sequence, event_json FROM control_plane_events WHERE type = 'TASK_DISCOVERED' ORDER BY sequence ASC")
+    .all() as { readonly sequence: number; readonly event_json: string }[];
+  const folded = new Map<string, TaskSubmissionReadModel>();
+  const insert = db.prepare(
+    "INSERT INTO task_submission_read_model (" +
+      "client_scope, client_request_key, task_id, revision_number, envelope_sha256, sequence, created_at" +
+      ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
+  const update = db.prepare(
+    "UPDATE task_read_model SET step_id = ?, role = ?, commit_policy = ? WHERE task_id = ? AND first_sequence = ?",
+  );
+  for (const row of rows) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(row.event_json);
+    } catch {
+      continue;
+    }
+    const parsed = ControlPlaneEvent.safeParse(decoded);
+    if (!parsed.success) continue;
+    const event = parsed.data;
+    const submission = nextTaskSubmissionProjection(event, row.sequence);
+    if (submission === null) continue;
+    const key = taskSubmissionKey(submission.clientScope, submission.clientRequestKey);
+    const existing = folded.get(key);
+    if (existing !== undefined) {
+      assertSameTaskSubmission(existing, submission);
+      continue;
+    }
+    folded.set(key, submission);
+    insert.run(
+      submission.clientScope,
+      submission.clientRequestKey,
+      submission.taskId,
+      submission.revisionNumber,
+      submission.envelopeSha256,
+      submission.sequence,
+      submission.createdAt,
+    );
+    const task = nextTaskProjection(null, event, row.sequence);
+    update.run(task.stepId, task.role, task.commitPolicy, task.taskId, row.sequence);
+  }
+}
+
 function activateAccountIntegrity(db: Database.Database, activatedAt: string): void {
   const rows = db
     .prepare("SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC")
@@ -2433,6 +2526,11 @@ export class Ledger {
               // this folds the stream again so the rows carry what it says.
               if (migration.version === INITIATIVE_REGISTRATION_MIGRATION) {
                 foldInitiativesAtMigration(db);
+              }
+              // Migration 19 seeded its watermark at the task head; this makes
+              // its rows, and the three task columns an intake names, level with it.
+              if (migration.version === TASK_SUBMISSION_MIGRATION) {
+                foldTaskSubmissionsAtMigration(db);
               }
             },
           });
@@ -4930,6 +5028,12 @@ export class Ledger {
     const revision = nextTaskRevisionProjection(event, sequence);
     if (revision !== null) this.#insertTaskRevision(revision);
 
+    // The client key, when the event is an intake (P-14 C). After the revision
+    // row it reads the same record from; `applyEventToSnapshot` folds it in the
+    // same place.
+    const submission = nextTaskSubmissionProjection(event, sequence);
+    if (submission !== null) this.#insertTaskSubmission(submission);
+
     // The attempt record, when this event opens one. After the revision, and
     // that order is the foreign key's: `foreign_keys` is ON, the opening
     // announces both, and the parent row has to be there before the child names
@@ -5001,8 +5105,9 @@ export class Ledger {
         "task_id, initiative_id, current_state, latest_attempt, event_count, first_sequence, " +
         "last_sequence, last_event_id, last_event_type, last_transition_id, last_emitted_by, " +
         "created_at, updated_at, is_terminal, " +
-        "envelope_sha256, latest_revision_number, latest_attempt_number" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "envelope_sha256, latest_revision_number, latest_attempt_number, " +
+        "step_id, role, commit_policy" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (task_id) DO UPDATE SET " +
         "initiative_id = excluded.initiative_id, " +
         "current_state = excluded.current_state, latest_attempt = excluded.latest_attempt, " +
@@ -5017,7 +5122,10 @@ export class Ledger {
         // and never a blank overwriting a known one.
         "envelope_sha256 = excluded.envelope_sha256, " +
         "latest_revision_number = excluded.latest_revision_number, " +
-        "latest_attempt_number = excluded.latest_attempt_number",
+        "latest_attempt_number = excluded.latest_attempt_number, " +
+        // Written once by the intake and carried by the fold (P-14 C), so
+        // `excluded` is again the value the row already holds or the first one.
+        "step_id = excluded.step_id, role = excluded.role, commit_policy = excluded.commit_policy",
     ).run(
       task.taskId,
       task.initiativeId,
@@ -5036,6 +5144,9 @@ export class Ledger {
       task.envelopeSha256,
       task.latestRevisionNumber,
       task.latestAttemptNumber,
+      task.stepId,
+      task.role,
+      task.commitPolicy,
     );
   }
 
@@ -5168,6 +5279,43 @@ export class Ledger {
       revision.contractVersion,
       revision.sequence,
       revision.envelopeArtifactReferenceId,
+    );
+  }
+
+  /**
+   * Write one client key row, or refuse (P-14 C, contracts §15).
+   *
+   * **Insert-only, and never `ON CONFLICT DO UPDATE`**, for the revision's
+   * reason: a key whose task could be rewritten would make "this request" a name
+   * for whichever arrival came last. The same key naming the same task, revision
+   * and envelope is a replay and writes nothing. The same key naming anything
+   * else is refused with `LedgerIdempotencyConflictError`, before the table's
+   * constraint could abort without a name: a door that lost a race to this key
+   * reads the class, reads the row and decides again. `applyEventToSnapshot`
+   * compares through the same function.
+   */
+  #insertTaskSubmission(submission: TaskSubmissionReadModel): void {
+    const existing = this.#stmt(
+      "SELECT * FROM task_submission_read_model WHERE client_scope = ? AND client_request_key = ?",
+    ).get(submission.clientScope, submission.clientRequestKey) as TaskSubmissionRow | undefined;
+
+    if (existing !== undefined) {
+      assertSameTaskSubmission(taskSubmissionRowToModel(existing), submission);
+      return;
+    }
+
+    this.#stmt(
+      "INSERT INTO task_submission_read_model (" +
+        "client_scope, client_request_key, task_id, revision_number, envelope_sha256, sequence, created_at" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      submission.clientScope,
+      submission.clientRequestKey,
+      submission.taskId,
+      submission.revisionNumber,
+      submission.envelopeSha256,
+      submission.sequence,
+      submission.createdAt,
     );
   }
 
@@ -7630,6 +7778,10 @@ export class Ledger {
       // already refused never reaches this loop at all, which is the half of
       // N-P18-8 that makes two rebuilds identical rather than merely equal.
       for (const attempt of snapshot.taskAttempts.values()) this.#insertTaskAttempt(attempt);
+      // The client keys (P-14 C). Cleared above; every insert lands on an empty
+      // key, and a second row under one key the snapshot already refused never
+      // reaches this loop.
+      for (const submission of snapshot.taskSubmissions.values()) this.#insertTaskSubmission(submission);
       // The P-18/protocolo C cohort, parent-first. `DERIVED_TABLES` cleared all
       // three above — children first, because the foreign keys point upward —
       // so every insert here lands on an empty coordinate and no conflict
@@ -9170,6 +9322,20 @@ export class Ledger {
       }
     }
 
+    // The client keys (P-14 C), on the same terms: a key row no event accounts
+    // for is a claim that a request entered when it did not.
+    this.#compareRowSet(
+      problems,
+      "task_submission_read_model",
+      snapshot.taskSubmissions,
+      new Map(
+        (this.#stmt("SELECT * FROM task_submission_read_model").all() as TaskSubmissionRow[]).map((row) => [
+          taskSubmissionKey(row.client_scope, row.client_request_key),
+          taskSubmissionRowToModel(row),
+        ]),
+      ),
+    );
+
     // The P-18/protocolo C cohort, compared as exact sets in both directions
     // like every projection above. The three are compared by the same helper
     // rather than by three copies of the same twenty lines, because the
@@ -9359,6 +9525,28 @@ export class Ledger {
       nextCursor: hasMore && last !== undefined ? last.sequence : null,
       hasMore,
     };
+  }
+
+  /**
+   * The row one client key produced, or null (P-14 C, contracts §15).
+   *
+   * The read the intake door decides a second submission with: the task, the
+   * revision and the envelope digest the key already names. Both halves are held
+   * to `TASK_CLIENT_KEY_PATTERN` before anything is read, because a key the fold
+   * would never have written is a question with no row to answer it.
+   */
+  getTaskSubmission(clientScope: string, clientRequestKey: string): TaskSubmissionReadModel | null {
+    this.#assertOpen("getTaskSubmission");
+    if (typeof clientScope !== "string" || !TASK_CLIENT_KEY_PATTERN.test(clientScope)) {
+      throw new LedgerQueryError("clientScope must satisfy the client key grammar");
+    }
+    if (typeof clientRequestKey !== "string" || !TASK_CLIENT_KEY_PATTERN.test(clientRequestKey)) {
+      throw new LedgerQueryError("clientRequestKey must satisfy the client key grammar");
+    }
+    const row = this.#stmt(
+      "SELECT * FROM task_submission_read_model WHERE client_scope = ? AND client_request_key = ?",
+    ).get(clientScope, clientRequestKey) as TaskSubmissionRow | undefined;
+    return row === undefined ? null : taskSubmissionRowToModel(row);
   }
 
   getTask(taskId: string): TaskReadModel | null {

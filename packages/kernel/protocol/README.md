@@ -42,7 +42,7 @@ than trusting this table.
   P8-8C, and `API_ALLOWED_METHODS` still says `["GET"]` because that describes
   the read plane, which did not change. The writes are recorded in a separate
   frozen table, `API_WRITE_ROUTES`, rather than by softening the first one.
-  There are **five**, and the table grows visibly rather than a method quietly
+  There are **six**, and the table grows visibly rather than a method quietly
   appearing on a route:
 
   | Write route | Method and path | Added by |
@@ -52,6 +52,7 @@ than trusting this table.
   | `taskToolCalls` | `POST /api/v1/tasks/:taskId/tool-calls` | V2-B4b stage 3C |
   | `taskLifecycle` | `POST /api/v1/tasks/:taskId/lifecycle` | V2 L3 |
   | `initiatives` | `POST /api/v1/initiatives` | P-14/B |
+  | `tasks` | `POST /api/v1/tasks` | P-14/C |
 
   This table said **two** while there were three: `taskToolCalls` landed at
   V2-B4b stage 3C and the count was not moved with it. Corrected at V2 L3,
@@ -65,6 +66,15 @@ than trusting this table.
   and `acp initiative --request` are the same bytes. The request names the
   caller's own `initiativeId` and carries the objective inward once; the
   response carries the objective's digest and never the objective.
+
+  The sixth (P-14/C) moved it to `0.17.0`. Its pair is `TaskIntakeRequest` and
+  `TaskIntakeResponse`, exported on the same terms: the POST body and
+  `acp intake --request` are the same bytes. The request embeds the contract's
+  `TaskEnvelope` by import and carries everything that is not the work beside it
+  — the client key, the roadmap link, the role, slot and transport the role
+  resolves for, and the producer — so nothing outside the envelope enters its
+  preimage. The response carries the envelope's digest and reference, the
+  revision and the resolution with its vector, and never the envelope.
 
   A reader asking "what can mutate?" gets one short answer; a reader asking
   "is this route a read?" gets the unchanged one.
