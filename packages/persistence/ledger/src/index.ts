@@ -201,6 +201,42 @@ export type {
   OutboxStream,
 } from "./outbox-store/index.js";
 
+/**
+ * P-36/local escalón B: the artifact blob lease store.
+ *
+ * A fifth database beside the ledger and the three coordination stores,
+ * answering the question artifacts §8 asks first: *may I operate on these bytes,
+ * now?* One holding per digest, `PUBLISH` or `RECLAIM`, under the token
+ * `(store_incarnation_id, generation)` plus the holder's identity. Exported for
+ * the reason the others are — `better-sqlite3` is fenced here by equality — and
+ * **inert**: the publisher and the reconciler are escalón C's.
+ * `artifactBlobLeaseStorePath` is the single producer of its path. It reads no
+ * ledger, and no verb frees a blob by the clock.
+ */
+export {
+  ARTIFACT_BLOB_LEASE_OPERATIONS,
+  ARTIFACT_BLOB_LEASE_QUIESCENCE_BASES,
+  ARTIFACT_BLOB_LEASE_REFUSALS,
+  MAX_ARTIFACT_BLOB_LEASE_GENERATION,
+  artifactBlobLeaseStorePath,
+  openArtifactBlobLeaseStore,
+} from "./artifact-lease-store/index.js";
+
+export type {
+  ArtifactBlobLeaseGrant,
+  ArtifactBlobLeaseIncarnation,
+  ArtifactBlobLeaseOperation,
+  ArtifactBlobLeaseOutcome,
+  ArtifactBlobLeaseQuiescence,
+  ArtifactBlobLeaseQuiescenceBasis,
+  ArtifactBlobLeaseRefusal,
+  ArtifactBlobLeaseRow,
+  ArtifactBlobLeaseStore,
+  ArtifactBlobLeaseTestFaults,
+  ArtifactBlobLeaseToken,
+  OpenArtifactBlobLeaseStoreOptions,
+} from "./artifact-lease-store/index.js";
+
 export type {
   LeaseDecision,
   LeaseExpectedToken,

@@ -14,6 +14,7 @@ qué falta entregar. Las reglas transversales viven en el [maestro](../index.md)
 | `tool_claim` | `tool-claims.sqlite` | coordination store | vivacidad |
 | `account_reservation` | `account-reservations.sqlite` | coordination store | vivacidad |
 | `outbox_message` | `outbox.sqlite` | coordination store | vivacidad |
+| `artifact_blob_lease` | `artifact-blob-leases.sqlite` | coordination store; diccionario en [artefactos §7](../artifacts/index.md), archivo por [decisión 62](../../../decisions/index.md) | vivacidad |
 | Archivo de cuentas del owner | fuera de todo repositorio | documento externo | nada: entra por digest |
 
 **Ninguno es autoridad de negocio.** Todos conceden, y el ledger registra. Una

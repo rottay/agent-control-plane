@@ -9725,6 +9725,59 @@ const P36A_WRITE_SET = [
   "docs/audit/architecture/database/artifacts/index.md",
 ];
 
+/**
+ * P-36/local, escalón B — a blob lease excludes the second publisher, and no
+ * clock releases it (ADR 0082, decisions 62-63). Brief
+ * `.acp-local/evidence/p36/acp-p36b-writer-brief-v2.md`, which absorbed the Fable
+ * preaudit's ACCEPT_WITH_CORRECTIONS (H-1..H-12, N-P36B-1..13) and the DT's
+ * adjudications Q-P36B-1 and Q-P36B-2.
+ *
+ * **What lands.** `artifact-blob-leases.sqlite`, the fifth coordination file of
+ * §8.1, in the outbox's mould (H-3): its own migration list under its own
+ * bookkeeping name, `coordination_store_meta` as migration 1 with a required
+ * incarnation and no adoption window, then artifacts §7's `artifact_blob_lease`
+ * column by column (H-4) — the PRIMARY KEY on the digest alone, the positive
+ * generation, the two-word operation CHECK (Q-P36B-1), the five nullities as
+ * equalities of nullity tests, the partial unique operation id, and two triggers
+ * that validate the incarnation on insert and update and hold the generation
+ * rule by mutation. Verbs `acquire`, `release`, `revoke`, `takeOver`, reads
+ * `read`, `readToken`, `incarnation`, and the read-only `listOverdue`. One
+ * producer of the path, `artifactBlobLeaseStorePath` (Q-P36B-2).
+ *
+ * **What does NOT land, declared.** No read of the ledger (H-1): the blob's
+ * state is step 2's. No `sweep` and no verb that frees by the clock (H-2). No
+ * renewal verb. No restore procedure — a holding across a rotated incarnation is
+ * frozen, not freed. No publisher, reconciler, filesystem or collector: escalón C
+ * and P-36 completo. No producer and no consumer: the store is inert.
+ *
+ * **Pins that move.** `COORDINATION_STORES` 3 → 4; `L-X1-4` 4 → 5 stores with its
+ * two prose strings rewritten; `PATH_SCOPED_LAWS` 129 → **133** for L-P36B-1..4,
+ * and the three E1 rows' scope names four stores; `TEST_ONLY_DOMAINS.ledger`
+ * 3 → 4 for the race worker. The ADR corpus 81 → 82; decisions 61 → 63.
+ *
+ * **Pins that do NOT move.** `MIGRATIONS` (15), `EXPECTED_SCHEMA_OBJECTS`,
+ * `DERIVED_TABLES`, `PROJECTION_SOURCES`: a separate file with its own list.
+ * `CONTRACT_VERSION` (`"2.4.0"`) and every event type. The ledger README's
+ * `### Errors` bijection: every refusal is a value. `artifact-store` and its P8
+ * pins.
+ *
+ * **Ten paths; four are new to the fence** — the store, its suite, the race
+ * worker and ADR 0082 (`grep -Fc` over this file, each 0 before this block). The
+ * other six are admitted by historical blocks.
+ */
+const P36B_WRITE_SET = [
+  "packages/persistence/ledger/src/artifact-lease-store/index.ts",
+  "packages/persistence/ledger/test/artifact-lease-store/index.test.ts",
+  "packages/persistence/ledger/test/artifact-lease-race-worker/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0082-a-blob-lease-excludes-the-second-publisher.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/architecture/database/coordination/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9937,6 +9990,7 @@ const WRITE_SET = [
   ...CORR2_WRITE_SET,
   ...P18G_WRITE_SET,
   ...P36A_WRITE_SET,
+  ...P36B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -11224,21 +11278,21 @@ const PATH_SCOPED_LAWS = [
   // 127, and `assertPathScopedInventory` fails printing both numbers if only
   // one side of this edit lands.
   //
-  // All three are scoped to the same set — the three coordination stores this
-  // package holds — rather than to one file each. That is the point of them: a
+  // All three are scoped to the same set — the coordination stores this package
+  // holds, four since P-36/local B — rather than to one file each. That is the point of them: a
   // law over one module says nothing about the next store somebody adds, and
   // §8.1 is written about "cada archivo de coordinación".
   {
     law: "every coordination store carries its own incarnation metadata",
-    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store}/index.ts",
+    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store,artifact-lease-store}/index.ts",
   },
   {
     law: "no coordination store mints an identity",
-    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store}/index.ts",
+    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store,artifact-lease-store}/index.ts",
   },
   {
     law: "a coordination token names its incarnation, and the number comes second",
-    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store}/index.ts",
+    scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store,artifact-lease-store}/index.ts",
   },
   // P-18/protocolo F (L-P18F-1, L-P18F-2). Two new path-shaped surfaces, so two
   // new rows: the register and the `requireScope` call sites both move 127 ->
@@ -11253,6 +11307,24 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the outbox command id has one grammar, and the quarantine builder mints none",
     scope: "packages/*/*/src/** (every tracked source file)",
+  },
+  // P-36/local B (L-P36B-1..4). Four new path-shaped surfaces, so four new rows:
+  // the register and the `requireScope` call sites both move 129 -> 133, and
+  // `assertPathScopedInventory` fails printing both numbers if only one side of
+  // this edit lands. The outbox's twins over the fifth coordination file; the
+  // third row is repository-wide for the reason `L-X1-3` is (decision 62).
+  {
+    law: "every artifact blob lease mutation is immediate",
+    scope: "packages/persistence/ledger/src/artifact-lease-store/index.ts",
+  },
+  {
+    law: "the artifact blob lease store deletes nothing, reads no clock and mints no identity",
+    scope: "packages/persistence/ledger/src/artifact-lease-store/index.ts",
+  },
+  { law: "the artifact blob lease path has exactly one producer", scope: "packages/*/*/src/**" },
+  {
+    law: "no artifact blob lease verb frees a row by the clock",
+    scope: "packages/persistence/ledger/src/artifact-lease-store/index.ts",
   },
 ];
 
@@ -18001,6 +18073,10 @@ const TEST_ONLY_DOMAINS = {
       domain: "outbox-race-worker",
       why: "a spawned-fixture entry point that reads an outbox token, waits for the parent's marker, and then compare-and-sets against it: the property is that two processes holding the same version cannot both apply, which one process can only pretend to test",
     },
+    {
+      domain: "artifact-lease-race-worker",
+      why: "a spawned-fixture entry point that prepares a blob lease grant or reads a standing token, waits for the parent's marker, and then acquires, takes over or releases: the properties are that two processes cannot both hold one digest and that two reconcilers observing the same generation cannot both take it, which one process can only pretend to test",
+    },
   ],
   providers: [
     { domain: "testing", why: "the fake-provider harness the provider suites share" },
@@ -24031,6 +24107,9 @@ const TOOL_CLAIM_SITE = "packages/persistence/ledger/src/tool-claim-store/index.
 // Declared here rather than beside its own laws in 21h, because `L-X1-4` below
 // counts the stores of this package and the outbox is now the fourth.
 const OUTBOX_SITE = "packages/persistence/ledger/src/outbox-store/index.ts";
+// The fifth, for the same reason: `L-X1-4` and `COORDINATION_STORES` both count
+// it before its own laws in 21l are reached (P-36/local B).
+const ARTIFACT_BLOB_LEASE_SITE = "packages/persistence/ledger/src/artifact-lease-store/index.ts";
 
 // L-X1-1 -- every claim mutation is immediate.
 //
@@ -24167,14 +24246,15 @@ const OUTBOX_SITE = "packages/persistence/ledger/src/outbox-store/index.ts";
 
 // L-X1-4 -- each store in this package migrates under its own name.
 //
-// The ledger, the worktree arbiter, the claim store and the outbox are four
-// databases in one package. A shared migration-table name is how a file opened
-// by the wrong module looks migrated when it is not -- so the four names are
-// distinct, and that is checked rather than remembered.
+// The ledger, the worktree arbiter, the claim store, the outbox and the artifact
+// blob lease store are five databases in one package. A shared migration-table
+// name is how a file opened by the wrong module looks migrated when it is not --
+// so the five names are distinct, and that is checked rather than remembered.
 //
-// P-18/E2 added the fourth. The two sentences below moved with it: they counted
-// the stores and named them, so a row added without touching them would have
-// left this law passing green while stating a number that is no longer true.
+// P-18/E2 added the fourth and P-36/local B the fifth. The two sentences below
+// moved with each: they count the stores and name them, so a row added without
+// touching them would leave this law passing green while stating a number that
+// is no longer true.
 {
   let migrationScanned = 0;
   const names = new Map([
@@ -24182,6 +24262,7 @@ const OUTBOX_SITE = "packages/persistence/ledger/src/outbox-store/index.ts";
     ["packages/persistence/ledger/src/lease-store/index.ts", "lease_schema_migrations"],
     [TOOL_CLAIM_SITE, "tool_claim_schema_migrations"],
     [OUTBOX_SITE, "outbox_schema_migrations"],
+    [ARTIFACT_BLOB_LEASE_SITE, "artifact_blob_lease_schema_migrations"],
   ]);
   const seen = new Set();
   for (const [site, table] of names) {
@@ -24200,11 +24281,12 @@ const OUTBOX_SITE = "packages/persistence/ledger/src/outbox-store/index.ts";
     seen.add(table);
   }
   if (seen.size !== names.size) {
-    fail("the four stores in this package do not carry four distinct migration table names");
+    fail("the five stores in this package do not carry five distinct migration table names");
   }
   requireScope("each store in this package migrates under its own name", migrationScanned);
   notes.push(
-    "the ledger, the lease store, the claim store and the outbox each migrate under their own table name",
+    "the ledger, the lease store, the claim store, the outbox and the artifact blob lease store each migrate" +
+      " under their own table name",
   );
 }
 
@@ -24727,13 +24809,16 @@ function claimTransactRegions(code) {
 // Coordination §8.1 gives every coordination file its own
 // `coordination_store_meta`, and the three laws below are what make that a
 // property of the tree rather than of one module. E2 built the outbox with it;
-// E1 retrofitted the two stores that already had adopters. A law written over
-// one file would say nothing about the next one somebody adds.
+// E1 retrofitted the two stores that already had adopters; P-36/local B built
+// the artifact blob lease store with it from birth. A law written over one file
+// would say nothing about the next one somebody adds -- and the fourth row is
+// that next one.
 
 const COORDINATION_STORES = [
   { site: LEASE_STORE_SITE, kind: "WORKTREE_LEASE", number: "token.fence" },
   { site: TOOL_CLAIM_SITE, kind: "TOOL_CLAIM", number: "token.claimId" },
   { site: OUTBOX_SITE, kind: "OUTBOX", number: "token.expectedVersion" },
+  { site: ARTIFACT_BLOB_LEASE_SITE, kind: "ARTIFACT_BLOB_LEASE", number: "token.generation" },
 ];
 
 /** The closed dictionary of §8.1 `:378`, in the order the specification gives. */
@@ -24805,7 +24890,7 @@ const STORE_KINDS = ["WORKTREE_LEASE", "TOOL_CLAIM", "ACCOUNT_RESERVATION", "OUT
     }
   }
   requireScope("every coordination store carries its own incarnation metadata", metaScanned);
-  notes.push("the three coordination stores each carry the section 8.1 metadata and register their own kind");
+  notes.push("the four coordination stores each carry the section 8.1 metadata and register their own kind");
 }
 
 // L-P18E1-2 -- no coordination store mints an identity.
@@ -25023,6 +25108,202 @@ const QUARANTINE_WINDOW_SITES = [DAEMON_PORTS_SITE];
   }
   requireScope("the outbox command id has one grammar, and the quarantine builder mints none", grammarScanned);
   notes.push("one source spells the command id preimage, and the quarantine builder mints no identity");
+}
+
+// --- 21l. the artifact blob lease store (P-36/local B) ----------------------
+//
+// The fifth file of coordination §8.1 and the exclusion artifacts §8 acquires
+// first. `COORDINATION_STORES` and `L-X1-4` above already count it; the four
+// laws below are the outbox's twins restated over this file, because a law that
+// stands over one module says nothing about the next. There is no twin of the
+// outbox's predicate law: this store decides inside the lock, as the worktree
+// arbiter does, and its generation rule is held by the schema's trigger and
+// drilled against the database rather than pinned as a string.
+
+// L-P36B-1 -- every artifact blob lease mutation is immediate.
+//
+// The PRIMARY KEY on the digest prevents two rows; `BEGIN IMMEDIATE` prevents
+// two decisions about one. A publisher and a collector that both read "free"
+// outside the lock would both write. The region walk is string-aware because
+// the SQL literals carry unbalanced parentheses of their own.
+{
+  let leaseScanned = 0;
+  const source = readIfPresent(ARTIFACT_BLOB_LEASE_SITE);
+  if (source === null) {
+    fail(ARTIFACT_BLOB_LEASE_SITE + " is missing; the artifact blob lease laws would stand over nothing");
+  } else {
+    leaseScanned += 1;
+    const code = stripComments(source);
+    const regions = [];
+    for (let at = code.indexOf("db.transaction("); at !== -1; at = code.indexOf("db.transaction(", at + 1)) {
+      let depth = 0;
+      let quote = null;
+      let cursor = at + "db.transaction".length;
+      for (; cursor < code.length; cursor += 1) {
+        const character = code[cursor];
+        if (quote !== null) {
+          if (character === "\\") cursor += 1;
+          else if (character === quote) quote = null;
+          continue;
+        }
+        if (character === '"' || character === "'" || character === "`") {
+          quote = character;
+          continue;
+        }
+        if (character === "(") depth += 1;
+        else if (character === ")") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      regions.push([at, cursor]);
+    }
+    if (regions.length === 0) {
+      fail(
+        ARTIFACT_BLOB_LEASE_SITE +
+          " opens no transaction; the incarnation, the row, the comparison and the write must be one unit",
+      );
+    }
+    if (!code.includes(".immediate(")) {
+      fail(
+        ARTIFACT_BLOB_LEASE_SITE +
+          " never takes the write lock at BEGIN; a deferred transaction discovers the conflict at" +
+          " first write, which is after a publisher and a collector have already both decided the blob is free",
+      );
+    }
+    for (const match of code.matchAll(/\b(INSERT|UPDATE)\s+(?:INTO\s+)?[a-z_]+/g)) {
+      const at = match.index ?? 0;
+      if (!regions.some(([start, end]) => at > start && at < end)) {
+        fail(
+          ARTIFACT_BLOB_LEASE_SITE +
+            " mutates outside a transaction (" +
+            match[0] +
+            "); a generation compared outside the lock is the generation as it was, not as it is",
+        );
+      }
+    }
+  }
+  requireScope("every artifact blob lease mutation is immediate", leaseScanned);
+  notes.push("every artifact blob lease mutation sits inside an immediate transaction");
+}
+
+// L-P36B-2 -- the artifact blob lease store deletes nothing, reads no clock and
+// mints no identity.
+//
+// A row removed is a generation that restarts at 1, and a holder that wakes up
+// would find its own number again. Every instant and every process is the
+// caller's -- including the pid a holding records and the pid a quiescence
+// attestation names -- and §8.1 gives the incarnation no implicit default.
+{
+  let purityScanned = 0;
+  const source = readIfPresent(ARTIFACT_BLOB_LEASE_SITE);
+  if (source === null) {
+    fail(ARTIFACT_BLOB_LEASE_SITE + " is missing; the artifact blob lease purity law would stand over nothing");
+  } else {
+    purityScanned += 1;
+    const code = stripComments(source);
+    if (/\bDELETE\b/.test(code)) {
+      fail(
+        ARTIFACT_BLOB_LEASE_SITE +
+          " contains a DELETE; a row removed is a generation that restarts at one, which a stale holder" +
+          " would read as its own",
+      );
+    }
+    for (const forbidden of ["Date.now(", "new Date(", "process.env", "process.hrtime", "process.pid"]) {
+      if (code.includes(forbidden)) {
+        fail(
+          ARTIFACT_BLOB_LEASE_SITE +
+            " reads " +
+            forbidden +
+            "; every instant and every process is the caller's argument, and quiescence is the caller's proof",
+        );
+      }
+    }
+    for (const forbidden of ["randomUUID", "randomBytes", "Math.random"]) {
+      if (code.includes(forbidden)) {
+        fail(
+          ARTIFACT_BLOB_LEASE_SITE +
+            " mints an identity with " +
+            forbidden +
+            "; the incarnation, the operation id and the holder are all supplied",
+        );
+      }
+    }
+  }
+  requireScope("the artifact blob lease store deletes nothing, reads no clock and mints no identity", purityScanned);
+  notes.push("the artifact blob lease store deletes nothing, reads no clock and mints no identity");
+}
+
+// L-P36B-3 -- the artifact blob lease path has exactly one producer.
+//
+// Decision 62. Neither artifacts §7 nor coordination §1 named the file, so it is
+// named once, beside the ledger. The publisher and the reconciler of escalón C
+// are two doors, and a collector will be a third; three doors that each composed
+// the path are three arbiters, each certain it is the only one.
+{
+  let pathScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const namers = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!relativePath.endsWith(".ts")) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      pathScanned += 1;
+      if (stripComments(content).includes("artifact-blob-leases.sqlite")) namers.push(relativePath);
+    }
+    if (namers.join(", ") !== ARTIFACT_BLOB_LEASE_SITE) {
+      fail(
+        "the artifact blob lease filename is composed by [" +
+          namers.join(", ") +
+          "]; exactly one module may produce it, and it is " +
+          ARTIFACT_BLOB_LEASE_SITE,
+      );
+    }
+  }
+  requireScope("the artifact blob lease path has exactly one producer", pathScanned);
+  notes.push("one module composes the artifact blob lease path, and no other source file names it");
+}
+
+// L-P36B-4 -- no artifact blob lease verb frees a row by the clock.
+//
+// Artifacts §7 `:224` and §9 `:343-347`: expiring does not concede the blob to
+// another, it enables reconciliation. `sweep` is lawful in the worktree arbiter
+// and would here be exactly the transfer §9 forbids -- a collector admitted over
+// a publisher nobody proved quiescent -- so its absence is a law, not a note, and
+// an instant may select rows for a caller and may not decide that one is free.
+{
+  let clockScanned = 0;
+  const source = readIfPresent(ARTIFACT_BLOB_LEASE_SITE);
+  if (source === null) {
+    fail(ARTIFACT_BLOB_LEASE_SITE + " is missing; the expiry law would stand over nothing");
+  } else {
+    clockScanned += 1;
+    const code = stripComments(source);
+    if (/\bsweep\b/i.test(code)) {
+      fail(
+        ARTIFACT_BLOB_LEASE_SITE +
+          " names a sweep; expiry enables a caller to reconcile and frees no blob here",
+      );
+    }
+    for (const match of code.matchAll(/\b(expires_at|acquired_at)\s*<=?\s/g)) {
+      const at = match.index ?? 0;
+      const select = code.lastIndexOf("SELECT", at);
+      const mutate = Math.max(code.lastIndexOf("UPDATE", at), code.lastIndexOf("INSERT", at));
+      if (select < mutate) {
+        fail(
+          ARTIFACT_BLOB_LEASE_SITE +
+            " compares " +
+            match[1] +
+            " inside a statement that writes; an instant may select holdings for a caller to reconcile and" +
+            " may not decide that one of them has ended",
+        );
+      }
+    }
+  }
+  requireScope("no artifact blob lease verb frees a row by the clock", clockScanned);
+  notes.push("the artifact blob lease store lists what is overdue and frees nothing by the clock");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------

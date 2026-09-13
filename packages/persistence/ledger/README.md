@@ -771,8 +771,9 @@ by the contract's guards — the refusal names the path, never the value.
 ### What this escalón does not do
 
 No filesystem: nothing opens, writes, synchronizes or renames a file, and no
-read path resolves an artifact. No lease store, no publisher, no reconciler —
-escalones B and C. No producer: nothing outside the suite appends an artifact
+read path resolves an artifact. No lease store — escalón B landed it as its own
+file; see **The artifact blob lease store** below — and no publisher and no
+reconciler, which are escalón C's. No producer: nothing outside the suite appends an artifact
 event. No contract bump: the escalón defines no preimage and no derived key.
 `artifact-store` above is untouched and stays the legacy digest store it was.
 
@@ -1186,24 +1187,85 @@ F, in the ledger rather than here — `listOutboxCommands` is what a row is rebu
 from (ADR 0078). `readToken` reads the row and the incarnation from one read
 transaction, so a token never pairs a version with another incarnation's id.
 
+## The artifact blob lease store
+
+P-36/local escalón B (artifacts §7-§9, coordination §8.1; ADR 0082). A fifth
+database, answering the question artifacts §8 asks **first**: *may I operate on
+these bytes, now?* One holding per digest, whichever operation it is —
+`PUBLISH` or `RECLAIM` — held from before the intention is recorded until the
+filesystem has finished.
+
+`openArtifactBlobLeaseStore` opens `artifact-blob-leases.sqlite`, whose path has
+one producer, `artifactBlobLeaseStorePath`, derived from the ledger's own. It is
+built in the outbox's mould: its own migration list under
+`artifact_blob_lease_schema_migrations`, `coordination_store_meta` as migration 1,
+a **required** incarnation, and the wrong-file guard that refuses the ledger and
+every sibling before writing. Migration 2 is artifacts §7's table: the digest as
+the whole primary key, a positive generation, the two-word operation, five
+operation columns that are null exactly when the operation is, and a partial
+unique operation id. Two triggers validate the incarnation on insert and update
+and hold the generation rule: a new holding advances it by exactly one, the same
+holding conserves it, a release conserves it, a revocation advances it, and a
+free row stays where it was freed. No row is ever removed.
+
+Every verb is one immediate transaction with the decision inside the lock, as in
+the worktree arbiter — no version is carried across a dispatch here.
+
+| Verb | What it does |
+| --- | --- |
+| `acquire(grant)` | Take a free blob: generation 1 on the first grant, `OLD + 1` over a freed row. A holding answers `HELD`, expired or not; the grant that already stands answers `UNCHANGED`. |
+| `release(token)` | The holder's own. The whole token — incarnation, generation, holder, operation id — is compared; the generation is conserved. |
+| `revoke(token, quiescence)` | End a quiescent holder's holding without granting it. `OLD + 1`. |
+| `takeOver(token, quiescence, grant)` | Grant a quiescent holder's blob to someone else at `OLD + 1`, against the incarnation and generation observed. Two reconcilers on one observation: one wins. |
+| `read` / `readToken` / `incarnation` | The row, the token of the holding that stands, this file's incarnation read now. |
+| `listOverdue(now)` | The holdings expired at `now`. Reads, and moves nothing. |
+
+**The store does not read the ledger.** The blob's state — staged, published, a
+generation to deduplicate — is consulted by the publisher inside the ledger's
+append, which is step 2 of §8. The two files share no transaction, and none is
+claimed.
+
+**Nothing frees a blob by the clock.** Expiry enables reconciliation and
+concedes nothing; there is no `sweep`.
+
+**Quiescence is named, not proven.** The store reads no process, so it cannot
+tell whether a holder is dead and reaped. The two verbs that end somebody else's
+holding therefore require a quiescence attestation — `DEATH_AND_REAP_PROVEN` or
+`STALE_FENCE_REFUSED_BY_BACKEND`, and the pid it is about — and refuse one that
+names a process the row does not record. The proof is the caller's.
+
+**Refusals are values.** `HELD`, `OPERATION_ID_IN_USE`, `NOT_HELD`,
+`INCARNATION_SUPERSEDED`, `GENERATION_SUPERSEDED`, `HOLDER_MISMATCH` and
+`QUIESCENCE_OF_ANOTHER_PROCESS` are facts about the file, returned with the row as
+it stands. A malformed argument — a digest that is not 64 lowercase hex
+characters included — throws `LedgerQueryError` before the database is touched.
+
+A holding written under an incarnation that has since rotated is frozen, not
+freed, and a file with lease rows but no metadata is refused at `open`: the
+procedure that re-issues holdings is coordination §8.2's.
+
+**Nothing calls it yet.** The publisher and the reconciler are escalón C's.
+
 ## The incarnation every coordination store carries
 
-Three of the four databases in this package coordinate rather than record: the
-worktree arbiter, the claim store and the outbox. Each of them hands out a
-number that a caller carries away and brings back — a `fence`, a `claim_id`, a
-`row_version` — and every one of those numbers **repeats** when the file is lost
-and rebuilt. A fence restarts at 1. A version is born at 0. A claim replayed
-into a new file carries the id it always had.
+Four of the five databases in this package coordinate rather than record: the
+worktree arbiter, the claim store, the outbox and the artifact blob lease store.
+Each of them hands out a number that a caller carries away and brings back — a
+`fence`, a `claim_id`, a `row_version`, a `generation` — and every one of those
+numbers **repeats** when the file is lost and rebuilt. A fence and a generation
+restart at 1. A version is born at 0. A claim replayed into a new file carries
+the id it always had.
 
 So the number is never the token. Each of these files carries one row of
 `coordination_store_meta`: the kind of store it is, out of a closed dictionary of
 five, an incarnation, and the instant that incarnation began. The token is the
 **pair** — `(store_incarnation_id, fence)` for a lease, the incarnation plus
 `claim_id` for a claim, the incarnation plus command, version and state for an
-outbox message — and a token whose number matches a rebuilt record is refused
+outbox message, `(store_incarnation_id, generation)` plus the holder's identity
+for a blob lease — and a token whose number matches a rebuilt record is refused
 anyway.
 
-Three properties hold across all three stores, and a fence law keeps each one:
+Three properties hold across all four stores, and a fence law keeps each one:
 
 - **The kind is the identity, not the filename.** A file whose metadata declares
   another store's kind is refused at `open`, before a handle exists. The `CHECK`
@@ -1218,8 +1280,8 @@ Three properties hold across all three stores, and a fence law keeps each one:
   that read it at `open` would carry the answer from before a restore into the
   first decision taken after one.
 
-**The adoption window, stated.** The outbox requires an incarnation: it was built
-after the rule and has no callers. The lease store and the claim store take it
+**The adoption window, stated.** The outbox and the artifact blob lease store
+require an incarnation: they were built after the rule and have no callers. The lease store and the claim store take it
 as an **optional** argument, because they were shipped first and their callers —
 the daemon, the CLI, the gateway — open them with no options at all. A file with
 no metadata registers none and refuses nothing: grants stamp `NULL` and no token
