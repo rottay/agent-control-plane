@@ -9520,6 +9520,76 @@ const P18F_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * CORR-2 — two defects of the dispatch door, reproduced first and then
+ * corrected, and the P-18 value types moved into the concepts that own them
+ * (ADR 0079, decisions 55-56). Brief `.acp-local/evidence/corr2/
+ * acp-corr2-writer-brief-v1.md`; reproduction and proposals
+ * `acp-corr2-fable-repro-v1.md`, both PERSISTE on `e180ef5`. A corrective
+ * packet on CORR-1's form: single postaudit, no preaudit.
+ *
+ * **C-H1 — a known outcome was redelivered.** `#assertDispatchIntention`
+ * consulted `effect_read_model.outcome_status` for `OUTCOME_UNKNOWN` alone, so
+ * an effect that had already ended `SUCCEEDED`, `FAILED` or `CANCELLED` admitted
+ * a second `DISPATCH_INTENDED` and the fold reproduced it with `verifyIntegrity`
+ * green. The door now refuses every non-null outcome — execution §6.1 `:304-305`
+ * "un desenlace terminal se reutiliza", with no exception for `FAILED` or
+ * `CANCELLED` — at `payload.dispatch.effectId`. `OUTCOME_UNKNOWN` keeps its own
+ * text. Door-only, on O-1's precedent: the guard reads the effect's outcome and
+ * not the deliveries' states, so `ABANDONED → dsp-2` and a `SETTLED` delivery
+ * with no outcome still admit the next, and the fold does not change.
+ *
+ * **C-H2 — a present-invalid value collapsed into absence.**
+ * `dispatchOutcomeRecord` read `effectOutcomeStatus` with `recordWord`, which
+ * answered `null` for a missing key and for `"INVALID_STATUS"` alike, so the
+ * event stored the word and the projection wrote no outcome — after which a
+ * second resolution could record one. The reader now returns
+ * `DispatchOutcomeReading`, D's rejecting-union shape, and each of the four
+ * optional fields (`effectOutcomeStatus`, `acceptedAt`, `externalHandle`,
+ * `providerIdempotencyKey`) reads three ways: absent, lawful, or a refusal
+ * naming the field. An explicit JSON `null` is present-invalid. The door and the
+ * fold throw the same issue, so a planted history fails the rebuild in the
+ * door's words.
+ *
+ * **C-H3 — two pure type leaves.** `src/projection/types/index.ts` takes the
+ * value types C, D and F declared in the projection (thirteen, one of them the
+ * new reading); `src/outbox-store/types/index.ts` takes the nine E2 declared in
+ * the store. Each concept's `index.ts` re-exports every name, so no import
+ * outside the package changes, and the types older than P-18 stay where they
+ * are. Like `daemon/src/composition/types/index.ts` (P13, V11), a pure type
+ * leaf carries no mirrored suite; the shape of each is pinned in its concept's
+ * existing suite instead.
+ *
+ * **Pins that do NOT move.** No migration, no DDL, no event type (vocabulary
+ * 33, `execution` 15), no event shape, no error class, no
+ * `CONTRACT_VERSION` (`"2.4.0"`), no `API_CONTRACT_VERSION`, no
+ * `PATH_SCOPED_LAWS` row, no public export of `@acp/ledger`. The ADR corpus
+ * 78 → 79 is counted by `assertAdrNumbering()`; the decision register gains
+ * rows 55-56.
+ *
+ * **Fourteen paths; three are new to the fence** — the two type leaves and ADR
+ * 0079 (`grep -Fc` over this file, each 0 before this block). The other eleven
+ * are admitted by historical blocks. One is admitted and left unmodified,
+ * precedent C-7: `packages/persistence/ledger/src/index.ts`, whose surface this
+ * packet was forbidden to change and did not need to.
+ */
+const CORR2_WRITE_SET = [
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/outbox-store/index.ts",
+  "packages/persistence/ledger/src/projection/types/index.ts",
+  "packages/persistence/ledger/src/outbox-store/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/outbox-store/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0079-a-known-outcome-is-reused-and-a-present-invalid-word-is-refused-by-name.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9729,6 +9799,7 @@ const WRITE_SET = [
   ...P18E1_WRITE_SET,
   ...P18D_WRITE_SET,
   ...P18F_WRITE_SET,
+  ...CORR2_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

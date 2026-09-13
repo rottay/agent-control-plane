@@ -37,7 +37,6 @@ import type {
   CausationRef,
   DispatchAttemptReadModel,
   DispatchState,
-  EffectOutcomeStatus,
   EffectReadModel,
   ExecutionRouteSegmentReadModel,
   ExecutionRouteReadModel,
@@ -57,6 +56,41 @@ import type {
   TaskRevisionReadModel,
   WorkerReadModel,
 } from "../types/index.js";
+
+import type {
+  DispatchOutcomeReading,
+  DispatchOutcomeRecord,
+  OccurrenceOwner,
+  OccurrenceReading,
+  OccurrenceRefusal,
+  OutboxAttemptRecord,
+  OutboxCommandIntention,
+  OutboxEventEntry,
+  OutboxFold,
+  OutboxPredecessor,
+  OutboxReading,
+} from "./types/index.js";
+
+/**
+ * The value types of the P-18/protocolo folds live in their own leaf,
+ * `./types/index.ts`, and are re-exported here unchanged so every importer keeps
+ * reading them from this module (CORR-2, ADR 0079).
+ */
+export type {
+  DispatchOutcomeReading,
+  DispatchOutcomeRecord,
+  OccurrenceOwner,
+  OccurrenceReading,
+  OccurrenceRefusal,
+  OutboxAttemptRecord,
+  OutboxCommandIntention,
+  OutboxDeliveryAttempt,
+  OutboxDeliveryObservation,
+  OutboxEventEntry,
+  OutboxFold,
+  OutboxPredecessor,
+  OutboxReading,
+} from "./types/index.js";
 
 /**
  * The one payload key the recorded route travels under (V2-B1c).
@@ -1139,37 +1173,53 @@ export function nextDispatchAttemptProjection(
 }
 
 /**
- * What a resolution event says happened to one delivery, and to its effect.
+ * The three optional text fields of a resolution, in the order they are read.
  *
- * The third type is the one that is easy to leave out of a three-type cut, and
- * without it `dispatch_state` could never leave `INTENDED` and
- * `effect_read_model.outcome_status` could never be written at all. "Outcome"
- * here spans every move after the intention, because every one of them is a
- * report about how that delivery went: claimed locally, accepted externally,
- * settled, abandoned.
- *
- * `effectOutcomeStatus` is optional because not every move is also the effect's
- * ending — `INTENDED → CLAIMED` says nothing about the operation's result. When
- * it is present, the effect's pair is written from it and from this event's own
- * instant.
+ * `effectOutcomeStatus` is the fourth optional field and is read apart, against
+ * its vocabulary rather than as text.
  */
-export interface DispatchOutcomeRecord {
-  readonly dispatchAttemptId: string;
-  readonly dispatchState: DispatchState;
-  readonly terminalAt: string | null;
-  readonly acceptedAt: string | null;
-  readonly externalHandle: string | null;
-  readonly providerIdempotencyKey: string | null;
-  readonly effectOutcomeStatus: EffectOutcomeStatus | null;
-  readonly recordedAt: string;
-  readonly sequence: number;
+const OUTCOME_OPTIONAL_TEXT_KEYS = ["acceptedAt", "externalHandle", "providerIdempotencyKey"] as const;
+
+/**
+ * What a present value is, for a refusal that must not echo it.
+ *
+ * A string is shown through `printable`, so an operator reads a word the event
+ * chose only when it is shaped like one; anything else is named by its kind and
+ * never printed.
+ */
+function shownValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value.length === 0 ? "an empty string" : '"' + printable(value) + '"';
+  }
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  return typeof value === "object" ? "an object" : "a " + typeof value;
 }
 
-/** The resolution one event records, if it is one that carries a record. */
+/**
+ * The resolution one event records, if it is one that carries a record — or the
+ * optional field that stops it being one.
+ *
+ * `null` for any other type, and for a payload that does not constitute a
+ * resolution at all: no record, no delivery, no state of the five, or a terminal
+ * pair that disagrees. The append door refuses those with its own message; the
+ * fold projects nothing for them.
+ *
+ * **Present-invalid is not absent** (CORR-2, ADR 0079). Each of the four
+ * optional fields is read three ways: the key absent is the event saying
+ * nothing, a lawful value is the value, and anything else the event carries under
+ * the key — a word outside the vocabulary, a number, an object, an empty string,
+ * or an explicit JSON `null` — is a refusal naming the field. Before this, the
+ * third case collapsed into the first, so `effectOutcomeStatus: "INVALID_STATUS"`
+ * was stored in the event and projected as no outcome at all, and a later
+ * resolution could then record one: the outcome that is recorded once became
+ * one that could be recorded twice. The door and the fold both read through
+ * this function, so both refuse with these words.
+ */
 export function dispatchOutcomeRecord(
   event: ControlPlaneEvent,
   sequence: number,
-): DispatchOutcomeRecord | null {
+): DispatchOutcomeReading | null {
   if (event.type !== DISPATCH_OUTCOME_RECORDED) return null;
 
   const record = payloadRecord(event.payload, OUTCOME_KEY);
@@ -1186,16 +1236,47 @@ export function dispatchOutcomeRecord(
   const terminal = dispatchState === "SETTLED" || dispatchState === "ABANDONED";
   if (terminal !== (terminalAt !== null)) return null;
 
+  for (const key of OUTCOME_OPTIONAL_TEXT_KEYS) {
+    if (record[key] !== undefined && recordText(record, key) === null) {
+      return {
+        kind: "refused",
+        path: "payload." + OUTCOME_KEY + "." + key,
+        message:
+          key +
+          ", when present, is non-empty text; this event says " +
+          shownValue(record[key]) +
+          ", and a value that is not one is refused rather than read as absent",
+      };
+    }
+  }
+
+  const effectOutcomeStatus = recordWord(record, "effectOutcomeStatus", EFFECT_OUTCOME_STATUSES);
+  if (record["effectOutcomeStatus"] !== undefined && effectOutcomeStatus === null) {
+    return {
+      kind: "refused",
+      path: "payload." + OUTCOME_KEY + ".effectOutcomeStatus",
+      message:
+        "effectOutcomeStatus, when present, is one of " +
+        EFFECT_OUTCOME_STATUSES.join(", ") +
+        "; this event says " +
+        shownValue(record["effectOutcomeStatus"]) +
+        ", and a word the vocabulary does not hold is refused rather than read as no outcome",
+    };
+  }
+
   return {
-    dispatchAttemptId,
-    dispatchState,
-    terminalAt,
-    acceptedAt: recordText(record, "acceptedAt"),
-    externalHandle: recordText(record, "externalHandle"),
-    providerIdempotencyKey: recordText(record, "providerIdempotencyKey"),
-    effectOutcomeStatus: recordWord(record, "effectOutcomeStatus", EFFECT_OUTCOME_STATUSES),
-    recordedAt: event.occurredAt,
-    sequence,
+    kind: "record",
+    record: {
+      dispatchAttemptId,
+      dispatchState,
+      terminalAt,
+      acceptedAt: recordText(record, "acceptedAt"),
+      externalHandle: recordText(record, "externalHandle"),
+      providerIdempotencyKey: recordText(record, "providerIdempotencyKey"),
+      effectOutcomeStatus,
+      recordedAt: event.occurredAt,
+      sequence,
+    },
   };
 }
 
@@ -1348,32 +1429,6 @@ export function canonicalDispatchBirth(dispatch: DispatchAttemptReadModel): stri
 // ---------------------------------------------------------------------------
 // P-18/protocolo D — the prompt a delivery sent, and the answer it received.
 // ---------------------------------------------------------------------------
-
-/**
- * How one occurrence event reads: a row, or the reason it is not one.
- *
- * One reader serves both callers, which is this file's founding rule applied
- * to a refusal as well as to a row. The append door throws the refusal by name;
- * the fold projects no row for it. Written twice, the door and a rebuild would
- * come to disagree about which payloads are occurrences, and the disagreement
- * would only surface as a rebuild quietly holding fewer rows than the live base.
- */
-export type OccurrenceReading<T> =
-  | { readonly kind: "row"; readonly row: T }
-  | { readonly kind: "refused"; readonly path: string; readonly message: string };
-
-/** Why one occurrence cannot be linked to what it claims to belong to. */
-export interface OccurrenceRefusal {
-  readonly path: string;
-  readonly message: string;
-}
-
-/** The attempt coordinate a delivery's effect belongs to. */
-export interface OccurrenceOwner {
-  readonly taskId: string;
-  readonly revisionNumber: number;
-  readonly attemptNumber: number;
-}
 
 /** A lowercase sha-256 hex digest, the shape every digest in this schema has. */
 const OCCURRENCE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
@@ -2193,8 +2248,14 @@ export function applyEventToSnapshot(
 
   // The resolution, last, because it reads rows the three folds above may have
   // written in this same event. Unlike them it is a reduce: it replaces a
-  // delivery's row and may write an effect's outcome pair.
-  const outcome = dispatchOutcomeRecord(event, sequence);
+  // delivery's row and may write an effect's outcome pair. A present-invalid
+  // field is refused here with the door's own words (CORR-2): a stored history
+  // holding one is a history the door would have refused.
+  const outcomeReading = dispatchOutcomeRecord(event, sequence);
+  if (outcomeReading?.kind === "refused") {
+    throw new LedgerValidationError([{ path: outcomeReading.path, message: outcomeReading.message }]);
+  }
+  const outcome = outcomeReading === null ? null : outcomeReading.record;
   if (outcome !== null) {
     const current = snapshot.dispatchAttempts.get(outcome.dispatchAttemptId);
     if (current === undefined) {
@@ -2587,48 +2648,6 @@ export function computeOutboxCommandId(input: Parameters<typeof outboxCommandIdP
   return sha256Hex(outboxCommandIdPreimageV1(input));
 }
 
-/** What an intention says, once its grammar has been checked. */
-export interface OutboxCommandIntention {
-  readonly sagaId: string;
-  readonly commandId: string;
-  readonly phase: string;
-  readonly commandKind: OutboxCommandKind;
-  readonly intentStream: OutboxStream;
-  readonly targetKind: string;
-  readonly targetId: string;
-  readonly deadlineAt: string;
-  readonly fence: number | null;
-  readonly targetStoreIncarnationId: string | null;
-}
-
-/** What an attempt says. */
-export interface OutboxDeliveryAttempt {
-  readonly commandId: string;
-  readonly deliveryAttemptId: string;
-}
-
-/** What an observation says. */
-export interface OutboxDeliveryObservation {
-  readonly commandId: string;
-  readonly deliveryAttemptId: string;
-  readonly outboxState: OutboxState;
-  readonly failureCode: OutboxFailureCode | null;
-  readonly responseHandle: string | null;
-}
-
-/**
- * How one outbox event reads: what it says, or the reason it says nothing.
- *
- * `readPromptOccurrence`'s rule, one escalón later: one reader serves the door
- * and the fold, so the two cannot come to disagree about which payloads are
- * commands.
- */
-export type OutboxReading =
-  | { readonly kind: "intention"; readonly row: OutboxCommandIntention }
-  | { readonly kind: "attempt"; readonly row: OutboxDeliveryAttempt }
-  | { readonly kind: "observation"; readonly row: OutboxDeliveryObservation }
-  | { readonly kind: "refused"; readonly path: string; readonly message: string };
-
 function outboxRefused(path: string, message: string): OutboxReading {
   return { kind: "refused", path, message };
 }
@@ -2917,37 +2936,6 @@ function readOutboxObservation(event: ControlPlaneEvent): OutboxReading {
       responseHandle: handle ?? null,
     },
   };
-}
-
-/**
- * One event as the outbox fold sees it: the event, where it sits, and what it
- * names as its cause.
- *
- * The digest and the causal reference are inputs no other fold here needs,
- * because an outbox command is anchored on events rather than on rows: the
- * intention's own digest is what the cache stores as its anchor, and an
- * attempt's cause is what ties it to the intention it serves.
- */
-export interface OutboxEventEntry {
-  readonly event: ControlPlaneEvent;
-  readonly sequence: number;
-  readonly sha256: string;
-  readonly causation: CausationRef | null;
-}
-
-/** One recorded delivery attempt: which command it serves and the event that recorded it. */
-export interface OutboxAttemptRecord {
-  readonly deliveryAttemptId: string;
-  readonly commandId: string;
-  readonly sequence: number;
-  readonly sha256: string;
-}
-
-/** The event immediately before an intention: the one a revocation answers. */
-export interface OutboxPredecessor {
-  readonly taskId: string;
-  readonly type: ControlPlaneEvent["type"];
-  readonly toState: ControlPlaneEvent["toState"];
 }
 
 /**
@@ -3283,23 +3271,6 @@ export function nextOutboxCommand(
     },
     attempt,
   };
-}
-
-/**
- * The outbox fold over a whole stream: every command, every attempt, and the
- * last event seen.
- *
- * Kept apart from `ProjectionSnapshot` because what it folds is not a table.
- * `rebuildReadModel` and `verifyIntegrity` drive it beside the snapshot, so a
- * stored history the door would have refused fails at the event that caused it,
- * and `listOutboxCommands` drives it to answer what a lost cache would be
- * rebuilt to.
- */
-export interface OutboxFold {
-  readonly commands: Map<string, OutboxCommandReadModel>;
-  readonly attempts: Map<string, OutboxAttemptRecord>;
-  /** The event most recently folded, of any type, under its one key. Replaced, never accumulated. */
-  readonly previous: Map<"event", OutboxPredecessor>;
 }
 
 export function createOutboxFold(): OutboxFold {

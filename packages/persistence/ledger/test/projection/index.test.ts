@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import {
   CONTRACT_VERSION,
@@ -1448,10 +1449,8 @@ describe("the three P-18/protocolo C folds are gated and total (execution §4, �
         outcome: record,
       });
 
-    expect(
-      dispatchOutcomeRecord(wrap({ dispatchAttemptId: "dsp-1", dispatchState: "CLAIMED" }), 1)
-        ?.dispatchState,
-    ).toBe("CLAIMED");
+    const claimed = dispatchOutcomeRecord(wrap({ dispatchAttemptId: "dsp-1", dispatchState: "CLAIMED" }), 1);
+    expect(claimed?.kind === "record" ? claimed.record.dispatchState : null).toBe("CLAIMED");
 
     // A terminal state needs its instant, and a non-terminal state may not
     // carry one. Both halves, because half a fact is the failure the pair
@@ -2288,3 +2287,186 @@ describe("the outbox fold reconstructs, and refuses what the door refuses (datos
     expect(different?.message).toContain("CONFLICT");
   });
 });
+
+// ---------------------------------------------------------------------------
+// CORR-2 — a present-invalid word is refused by name, never read as absent
+// ---------------------------------------------------------------------------
+
+/** One `DISPATCH_OUTCOME_RECORDED` for `dsp-1`, with the record the caller shapes. */
+function outcomeEvent(record: Record<string, unknown>): ControlPlaneEvent {
+  return executionEvent("DISPATCH_OUTCOME_RECORDED", {
+    revisionNumber: 1,
+    attemptNumber: 1,
+    outcome: { dispatchAttemptId: "dsp-1", ...record },
+  });
+}
+
+const SETTLED_AT = "2026-09-12T09:00:00.000Z";
+
+/** Every present-invalid value the four optional fields are drilled with, per field. */
+const PRESENT_INVALID: readonly (readonly [string, unknown])[] = [
+  ["effectOutcomeStatus", "INVALID_STATUS"],
+  ["effectOutcomeStatus", "succeeded"],
+  ["effectOutcomeStatus", 42],
+  ["effectOutcomeStatus", null],
+  ["effectOutcomeStatus", ""],
+  ["acceptedAt", 42],
+  ["acceptedAt", null],
+  ["externalHandle", { nested: "handle" }],
+  ["externalHandle", ""],
+  ["providerIdempotencyKey", ["key"]],
+  ["providerIdempotencyKey", null],
+];
+
+describe("a resolution reads three ways, and present-invalid is not absent (CORR-2)", () => {
+  it("N-CORR2-H2-R: every optional field refuses a present value its grammar does not admit, by name", () => {
+    for (const [field, value] of PRESENT_INVALID) {
+      const reading = dispatchOutcomeRecord(
+        outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, [field]: value }),
+        4,
+      );
+      const label = field + " = " + JSON.stringify(value);
+      expect(reading?.kind, label).toBe("refused");
+      if (reading?.kind !== "refused") continue;
+      expect(reading.path, label).toBe("payload.outcome." + field);
+      expect(reading.message, label).toContain(field + ", when present,");
+    }
+
+    // The word is shown when it is shaped like one, and never otherwise: a
+    // value carrying a line break is named, not echoed.
+    const shaped = dispatchOutcomeRecord(
+      outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, effectOutcomeStatus: "INVALID_STATUS" }),
+      4,
+    );
+    expect(shaped?.kind === "refused" ? shaped.message : "").toContain('"INVALID_STATUS"');
+    const hostile = dispatchOutcomeRecord(
+      outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, effectOutcomeStatus: "BAD\nWORD" }),
+      4,
+    );
+    const hostileMessage = hostile?.kind === "refused" ? hostile.message : "";
+    expect(hostileMessage).toContain("<unprintable identifier>");
+    expect(hostileMessage).not.toContain("WORD");
+    const numeric = dispatchOutcomeRecord(
+      outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, acceptedAt: 42 }),
+      4,
+    );
+    expect(numeric?.kind === "refused" ? numeric.message : "").toContain("says a number");
+  });
+
+  it("P-CORR2-H2-R: an absent key is absence, and a lawful value is the value", () => {
+    const absent = dispatchOutcomeRecord(outcomeEvent({ dispatchState: "CLAIMED" }), 3);
+    expect(absent?.kind).toBe("record");
+    if (absent?.kind === "record") {
+      expect(absent.record).toMatchObject({
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "CLAIMED",
+        terminalAt: null,
+        acceptedAt: null,
+        externalHandle: null,
+        providerIdempotencyKey: null,
+        effectOutcomeStatus: null,
+        sequence: 3,
+      });
+    }
+
+    for (const status of ["SUCCEEDED", "FAILED", "CANCELLED", "OUTCOME_UNKNOWN"]) {
+      const reading = dispatchOutcomeRecord(
+        outcomeEvent({
+          dispatchState: "SETTLED",
+          terminalAt: SETTLED_AT,
+          acceptedAt: SETTLED_AT,
+          externalHandle: "handle-1",
+          providerIdempotencyKey: "provider-key-1",
+          effectOutcomeStatus: status,
+        }),
+        4,
+      );
+      expect(reading?.kind, status).toBe("record");
+      if (reading?.kind !== "record") continue;
+      expect(reading.record.effectOutcomeStatus).toBe(status);
+      expect(reading.record.acceptedAt).toBe(SETTLED_AT);
+      expect(reading.record.externalHandle).toBe("handle-1");
+      expect(reading.record.providerIdempotencyKey).toBe("provider-key-1");
+    }
+
+    // What is not a resolution at all still reads as nothing, not as a refusal:
+    // the door refuses it with its own message and the fold projects no row.
+    expect(dispatchOutcomeRecord(outcomeEvent({ dispatchState: "SETTLED", effectOutcomeStatus: 42 }), 4)).toBeNull();
+    expect(dispatchOutcomeRecord(executionEvent("DISPATCH_INTENDED", { outcome: {} }), 4)).toBeNull();
+  });
+
+  it("N-CORR2-H2-F: the fold refuses with the reader's issue, and moves neither the delivery nor the effect", () => {
+    for (const [field, value] of PRESENT_INVALID) {
+      const snapshot = snapshotWithDelivery();
+      const event = outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, [field]: value });
+      const reading = dispatchOutcomeRecord(event, 3);
+      let issue: unknown = null;
+      try {
+        applyEventToSnapshot(snapshot, event, 3);
+      } catch (error) {
+        expect(error).toBeInstanceOf(LedgerValidationError);
+        issue = (error as LedgerValidationError).issues[0];
+      }
+      const label = field + " = " + JSON.stringify(value);
+      expect(reading?.kind, label).toBe("refused");
+      expect(issue, label).toEqual(
+        reading?.kind === "refused" ? { path: reading.path, message: reading.message } : "a refusal",
+      );
+      expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState, label).toBe("INTENDED");
+      expect(snapshot.effects.get(OCCURRENCE_EFFECT)?.outcomeStatus, label).toBeNull();
+    }
+
+    // And the lawful form of the same resolution still folds.
+    const snapshot = snapshotWithDelivery();
+    applyEventToSnapshot(
+      snapshot,
+      outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, effectOutcomeStatus: "SUCCEEDED" }),
+      3,
+    );
+    expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState).toBe("SETTLED");
+    expect(snapshot.effects.get(OCCURRENCE_EFFECT)?.outcomeStatus).toBe("SUCCEEDED");
+  });
+});
+
+describe("the P-18 value types of the projection live in a pure type leaf (CORR-2, C-H3)", () => {
+  it("declares types and nothing else, and the concept's module re-exports every one", () => {
+    const leaf = readSourceCode("src/projection/types/index.ts");
+    const declared = [...leaf.matchAll(/^export (?:interface|type) ([A-Za-z]+)/gm)].map((match) => String(match[1]));
+    expect(declared).toEqual([
+      "DispatchOutcomeRecord",
+      "DispatchOutcomeReading",
+      "OccurrenceReading",
+      "OccurrenceRefusal",
+      "OccurrenceOwner",
+      "OutboxCommandIntention",
+      "OutboxDeliveryAttempt",
+      "OutboxDeliveryObservation",
+      "OutboxReading",
+      "OutboxEventEntry",
+      "OutboxAttemptRecord",
+      "OutboxPredecessor",
+      "OutboxFold",
+    ]);
+    // Imports only types, and holds no value, no function and no class.
+    for (const line of leaf.split("\n").filter((each) => /^import\b/.test(each))) {
+      expect(line).toMatch(/^import type /);
+    }
+    expect(leaf).not.toMatch(/^export (?:const|function|class|let|enum)\b/m);
+
+    const module = readSourceCode("src/projection/index.ts");
+    const reexport = /^export type \{([^}]*)\} from "\.\/types\/index\.js";$/m.exec(module);
+    expect(reexport).not.toBeNull();
+    const reexported = (reexport?.[1] ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+    expect([...reexported].sort()).toEqual([...declared].sort());
+    for (const name of declared) {
+      const redeclared = new RegExp("^export (?:interface|type) " + name + "\\b", "m").test(module);
+      expect({ name, redeclared }).toEqual({ name, redeclared: false });
+    }
+  });
+});
+
+/** A source file of this package with its comments removed. */
+function readSourceCode(relativePath: string): string {
+  const source = readFileSync(new URL("../../" + relativePath, import.meta.url), "utf8");
+  return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
+}

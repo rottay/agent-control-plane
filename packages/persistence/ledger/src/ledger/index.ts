@@ -117,6 +117,7 @@ import {
   nextWorkerTaskProjection,
   routingFallbackKey,
   workerTaskKey,
+  type DispatchOutcomeRecord,
   type InitiativeProjectionSnapshot,
   type ProjectionSnapshot,
   type WorkerTaskProjection,
@@ -3800,6 +3801,35 @@ export class Ledger {
       ]);
     }
 
+    // And the other half of the same sentence (execution §6.1 `:304-305`, CORR-2):
+    // "un desenlace terminal se reutiliza". An effect that already ended
+    // SUCCEEDED, FAILED or CANCELLED has an answer, and the answer is what a
+    // repeated step gets back — `lookUpEffect` already says so, with
+    // `reconciliationRequired: false`. Another delivery of it is not a genuinely
+    // new one (`:310-311`); a genuinely new operation intends a new effect. No
+    // exception for FAILED or CANCELLED: retrying one is an owner's written
+    // decision, not a default. The guard reads the effect's outcome and not the
+    // deliveries' states, so an ABANDONED delivery with no outcome recorded, or a
+    // SETTLED one that reported none, still admits the next. Door-only, on O-1's
+    // precedent below: every stored delivery passed this check when it was
+    // written, and the fold does not change.
+    if (effectRow.outcome_status !== null) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + DISPATCH_KEY + ".effectId",
+          message:
+            "effect " +
+            effectRow.effect_id +
+            " already ended " +
+            effectRow.outcome_status +
+            " at " +
+            String(effectRow.outcome_recorded_at) +
+            "; a known outcome is reused, never redelivered (execution §6.1), and a genuinely " +
+            "new operation intends a new effect",
+        },
+      ]);
+    }
+
     // And the same rule in its live form (postaudit of C, O-1; adjudicated to
     // F). A delivery still outstanding — `INTENDED`, `CLAIMED` or `INFLIGHT` — is
     // exactly the uncertainty `OUTCOME_UNKNOWN` names once it is recorded: it may
@@ -3896,8 +3926,8 @@ export class Ledger {
     revisionNumber: number,
     attemptNumber: number,
   ): void {
-    const outcome = dispatchOutcomeRecord(event, 0);
-    if (outcome === null) {
+    const reading = dispatchOutcomeRecord(event, 0);
+    if (reading === null) {
       throw new LedgerValidationError([
         {
           path: "payload." + OUTCOME_KEY,
@@ -3908,6 +3938,12 @@ export class Ledger {
         },
       ]);
     }
+    // A present-invalid optional field, named by the reader (CORR-2). The fold
+    // throws the same issue, so a rebuild refuses this history in these words.
+    if (reading.kind === "refused") {
+      throw new LedgerValidationError([{ path: reading.path, message: reading.message }]);
+    }
+    const outcome = reading.record;
 
     const row = this.#stmt(
       "SELECT * FROM dispatch_attempt_read_model WHERE dispatch_attempt_id = ?",
@@ -4442,8 +4478,14 @@ export class Ledger {
     const dispatch = nextDispatchAttemptProjection(event, sequence);
     if (dispatch !== null) this.#insertDispatchAttempt(dispatch);
 
+    // `#assertDispatchOutcome` has already refused a present-invalid field in
+    // this transaction; the refusal is thrown again here only so this write can
+    // never read one as absence.
     const outcome = dispatchOutcomeRecord(event, sequence);
-    if (outcome !== null) this.#applyDispatchOutcome(outcome);
+    if (outcome?.kind === "refused") {
+      throw new LedgerValidationError([{ path: outcome.path, message: outcome.message }]);
+    }
+    if (outcome !== null) this.#applyDispatchOutcome(outcome.record);
 
     // The P-18/protocolo D pair, last, for `applyEventToSnapshot`'s order: an
     // answer names a prompt and a prompt names a delivery.
@@ -4820,9 +4862,7 @@ export class Ledger {
    * plus the two comparisons that make it safe on the **rebuild** path where
    * there is no door.
    */
-  #applyDispatchOutcome(outcome: ReturnType<typeof dispatchOutcomeRecord>): void {
-    if (outcome === null) return;
-
+  #applyDispatchOutcome(outcome: DispatchOutcomeRecord): void {
     const row = this.#stmt(
       "SELECT * FROM dispatch_attempt_read_model WHERE dispatch_attempt_id = ?",
     ).get(outcome.dispatchAttemptId) as DispatchAttemptRow | undefined;

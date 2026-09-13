@@ -589,6 +589,45 @@ effect, or intends a second effect from it.
 itself clean is a statement about the destination, not about whether the earlier
 delivery landed.
 
+### What the dispatch door refuses
+
+Every refusal is a `LedgerValidationError` with a `path`. Beside the refusals of
+the segment it announces, a `DISPATCH_INTENDED` is refused, in this order, when:
+
+- its payload does not constitute an intention — `payload.dispatch`;
+- its delivery id is already recorded with a different birth — an identical one
+  is a replay and writes nothing;
+- its effect has not been intended — `payload.dispatch.effectId`;
+- its effect ended `OUTCOME_UNKNOWN`: an uncertain exposure is reconciled, never
+  resent — `payload.dispatch.effectId`;
+- its effect ended `SUCCEEDED`, `FAILED` or `CANCELLED`: **a known outcome is
+  reused, never redelivered** (execution §6.1, CORR-2), and a genuinely new
+  operation intends a new effect — `payload.dispatch.effectId`. There is no
+  exception for `FAILED` or `CANCELLED`. The rule reads the effect's outcome, not
+  the deliveries' states: after an `ABANDONED` delivery, or a `SETTLED` one that
+  reported no outcome, the next delivery is admitted;
+- an earlier delivery of the effect is still `INTENDED`, `CLAIMED` or `INFLIGHT`
+  — `payload.dispatch.effectId`;
+- its effect belongs to another attempt — `payload.dispatch.effectId`;
+- its ordinal is not one past the effect's highest —
+  `payload.dispatch.attemptOrdinal`.
+
+The two outcome rules are door-only: every stored delivery passed them when it
+was written, and the fold does not restate them.
+
+A `DISPATCH_OUTCOME_RECORDED` is refused when its payload does not constitute a
+resolution, when its delivery does not exist or belongs to another attempt, when
+its state is not a forward move of the five, or when it names an outcome other
+than the one the effect already recorded. And **a present-invalid value is never
+read as absence** (CORR-2): each of the four optional fields —
+`effectOutcomeStatus`, `acceptedAt`, `externalHandle`, `providerIdempotencyKey`
+— is either absent, lawful (a word of `EFFECT_OUTCOME_STATUSES`, or non-empty
+text), or refused at `payload.outcome.<field>`. A word outside the vocabulary, a
+number, an object, an empty string and an explicit `null` are all refused, and
+the refusal shows a string only when it is shaped like an identifier. The door
+and `applyEventToSnapshot` read through one function and throw the same issue,
+so `rebuildReadModel` refuses a stored history holding one in the door's words.
+
 ### What this escalón does not write
 
 `provider_idempotency_key`, `external_handle` and `accepted_at` exist with their
@@ -1024,6 +1063,12 @@ the decision sees the state it is deciding against. An outbox row is read by one
 process, carried across an **external dispatch**, and written back afterwards —
 and no lock may be held across a network call. The window between the read and
 the write is what the version closes.
+
+The store's value types — the anchor, the incarnation, the row, the seed, the
+token, the mutation, the compare-and-set outcome, the handle and its options —
+are declared in the pure type leaf `src/outbox-store/types/index.ts` and
+re-exported by the store's module, exactly as the P-18 reading types of the
+projection live in `src/projection/types/index.ts` (CORR-2). No import changes.
 
 A read returns four things: the file's incarnation, the command, the version and
 the state. A mutation hands the same four back. Three of them are the `UPDATE`'s

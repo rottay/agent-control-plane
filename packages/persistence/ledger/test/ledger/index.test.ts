@@ -15,6 +15,7 @@ import {
   buildIdempotencyKey,
   buildInitiativeIdempotencyKey,
   buildV2IdempotencyKey,
+  type ControlPlaneEvent,
   type ControlPlaneEventType,
   type TaskState,
 } from "@acp/contracts";
@@ -57,6 +58,7 @@ import {
   MIGRATIONS,
   applyMigrations,
 } from "../../src/migrations/index.js";
+import { applyEventToSnapshot, createProjectionSnapshot } from "../../src/projection/index.js";
 
 // ---------------------------------------------------------------------------
 // Temporary databases
@@ -8546,6 +8548,8 @@ interface OutcomeInput {
   readonly attemptNumber?: number;
   readonly attempt?: number;
   readonly occurredAt?: string;
+  /** Keys written into the outcome record verbatim, for a value no typed field can carry. */
+  readonly overrides?: Record<string, unknown>;
 }
 
 /** One `DISPATCH_OUTCOME_RECORDED` event. */
@@ -8570,6 +8574,7 @@ function dispatchOutcome(input: OutcomeInput): Record<string, unknown> {
         ...(input.effectOutcomeStatus === undefined
           ? {}
           : { effectOutcomeStatus: input.effectOutcomeStatus }),
+        ...(input.overrides ?? {}),
       },
     },
   });
@@ -11559,6 +11564,328 @@ describe("a delivery beside an outstanding one is refused (postaudit of C, O-1; 
     );
     expect(ledger.append(second).inserted).toBe(true);
     expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchState)).toEqual(["ABANDONED", "INTENDED"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CORR-2 — a known outcome is reused, and a present-invalid word is refused
+// ---------------------------------------------------------------------------
+
+describe("a known outcome is reused, never redelivered (execution §6.1, CORR-2)", () => {
+  it("N-CORR2-H1-1: a second delivery of an effect that ended SUCCEEDED, FAILED or CANCELLED is refused", () => {
+    for (const status of ["SUCCEEDED", "FAILED", "CANCELLED"] as const) {
+      const ledger = open(temporaryDatabase());
+      const taskId = randomUUID();
+      const effectId = seedDelivery(ledger, taskId);
+      ledger.append(
+        dispatchOutcome({
+          taskId,
+          transitionId: "settle-1",
+          dispatchAttemptId: "dsp-1",
+          dispatchState: "SETTLED",
+          terminalAt: EFFECT_AT,
+          effectOutcomeStatus: status,
+        }),
+      );
+      const before = ledger.listEvents({ limit: 1000 }).events.length;
+
+      const refusal = refusalOf(() =>
+        ledger.append(
+          dispatchIntention({ taskId, transitionId: "dispatch-2", effectId, dispatchAttemptId: "dsp-2", attemptOrdinal: 2 }),
+        ),
+      );
+      expect(refusal.path, status).toBe("payload.dispatch.effectId");
+      expect(refusal.message, status).toContain("already ended " + status + " at " + EFFECT_AT);
+      expect(refusal.message, status).toContain("a known outcome is reused, never redelivered");
+
+      // Nothing advanced: no event, no second delivery, the outcome unmoved.
+      expect(ledger.listEvents({ limit: 1000 }).events.length, status).toBe(before);
+      expect(
+        ledger.listDispatchAttempts(effectId).map((row) => [row.dispatchAttemptId, row.dispatchState]),
+        status,
+      ).toEqual([["dsp-1", "SETTLED"]]);
+      expect(ledger.getEffect(effectId)?.outcomeStatus, status).toBe(status);
+      expect(ledger.verifyIntegrity().ok, status).toBe(true);
+    }
+  });
+
+  it("N-CORR2-H1-2: the exact intention of the first delivery is still a replay once the outcome is known", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    const first = dispatchIntention({ taskId, transitionId: "dispatch-1", effectId });
+    const landed = ledger.append(first);
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "SUCCEEDED",
+      }),
+    );
+
+    const replay = ledger.append(first);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(landed.record.sequence);
+    expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchAttemptId)).toEqual(["dsp-1"]);
+  });
+
+  it("P-CORR2-H1: a settled delivery that reported no outcome admits the next, and OUTCOME_UNKNOWN keeps its own words", () => {
+    // The guard reads the effect's outcome, not the delivery's state: a SETTLED
+    // delivery with no outcome recorded leaves nothing to reuse.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(
+      dispatchOutcome({ taskId, transitionId: "settle-1", dispatchAttemptId: "dsp-1", dispatchState: "SETTLED", terminalAt: EFFECT_AT }),
+    );
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBeNull();
+    const second = ledger.append(
+      dispatchIntention({ taskId, transitionId: "dispatch-2", effectId, dispatchAttemptId: "dsp-2", attemptOrdinal: 2 }),
+    );
+    expect(second.inserted).toBe(true);
+    expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchState)).toEqual(["SETTLED", "INTENDED"]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // OUTCOME_UNKNOWN is refused before the new branch, in its unchanged text.
+    const uncertain = open(temporaryDatabase());
+    const uncertainTask = randomUUID();
+    const uncertainEffect = seedDelivery(uncertain, uncertainTask);
+    uncertain.append(
+      dispatchOutcome({
+        taskId: uncertainTask,
+        transitionId: "settle-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "OUTCOME_UNKNOWN",
+      }),
+    );
+    const refusal = refusalOf(() =>
+      uncertain.append(
+        dispatchIntention({
+          taskId: uncertainTask,
+          transitionId: "dispatch-2",
+          effectId: uncertainEffect,
+          dispatchAttemptId: "dsp-2",
+          attemptOrdinal: 2,
+        }),
+      ),
+    );
+    expect(refusal.path).toBe("payload.dispatch.effectId");
+    expect(refusal.message).toContain("OUTCOME_UNKNOWN");
+    expect(refusal.message).toContain("reconcile");
+    expect(refusal.message).not.toContain("a known outcome is reused");
+  });
+});
+
+/** The present-invalid values the door is drilled with, one row per field and value. */
+const PRESENT_INVALID_OUTCOME_FIELDS: readonly (readonly [string, unknown])[] = [
+  ["effectOutcomeStatus", 42],
+  ["effectOutcomeStatus", "succeeded"],
+  ["effectOutcomeStatus", null],
+  ["acceptedAt", 42],
+  ["acceptedAt", null],
+  ["externalHandle", {}],
+  ["externalHandle", ""],
+  ["providerIdempotencyKey", 7],
+  ["providerIdempotencyKey", null],
+];
+
+describe("a present-invalid word is refused by name, never read as absent (CORR-2)", () => {
+  it("N-CORR2-H2-1: an outcome outside the vocabulary is refused at the door, and nothing moves", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+
+    const refusal = refusalOf(() =>
+      ledger.append(
+        dispatchOutcome({
+          taskId,
+          transitionId: "settle-bad",
+          dispatchAttemptId: "dsp-1",
+          dispatchState: "SETTLED",
+          terminalAt: EFFECT_AT,
+          effectOutcomeStatus: "INVALID_STATUS",
+        }),
+      ),
+    );
+    expect(refusal.path).toBe("payload.outcome.effectOutcomeStatus");
+    expect(refusal.message).toContain("INVALID_STATUS");
+    expect(refusal.message).toContain("SUCCEEDED, FAILED, CANCELLED, OUTCOME_UNKNOWN");
+
+    expect(ledger.listEvents({ limit: 1000 }).events.length).toBe(3);
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBeNull();
+    expect(
+      ledger.listDispatchAttempts(effectId).map((row) => [row.dispatchAttemptId, row.dispatchState]),
+    ).toEqual([["dsp-1", "INTENDED"]]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // The way round "recorded once" that the collapse opened is closed: the
+    // first outcome this effect records is the lawful one.
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle-ok",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "SUCCEEDED",
+      }),
+    );
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+  });
+
+  it("N-CORR2-H2-2: a number, a lowercase word and an explicit null are refused alike, and so are the three text fields", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+
+    for (const [index, [field, value]] of PRESENT_INVALID_OUTCOME_FIELDS.entries()) {
+      for (const state of ["CLAIMED", "SETTLED"] as const) {
+        const label = state + " " + field + " = " + JSON.stringify(value);
+        const refusal = refusalOf(() =>
+          ledger.append(
+            dispatchOutcome({
+              taskId,
+              transitionId: "resolve-" + String(index) + "-" + state,
+              dispatchAttemptId: "dsp-1",
+              dispatchState: state,
+              ...(state === "SETTLED" ? { terminalAt: EFFECT_AT } : {}),
+              overrides: { [field]: value },
+            }),
+          ),
+        );
+        expect(refusal.path, label).toBe("payload.outcome." + field);
+        expect(refusal.message, label).toContain(field + ", when present,");
+      }
+    }
+
+    expect(ledger.listEvents({ limit: 1000 }).events.length).toBe(3);
+    expect(ledger.listDispatchAttempts(effectId)[0]?.dispatchState).toBe("INTENDED");
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBeNull();
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-CORR2-H2-3: a stored resolution holding one is refused by the rebuild in the door's words", () => {
+    // The door no longer lets this history in, so it is planted with a correct
+    // chain; without the plant the fold could not be reached at all.
+    const taskId = randomUUID();
+    const bad = dispatchOutcome({
+      taskId,
+      transitionId: "settle-bad",
+      dispatchAttemptId: "dsp-1",
+      dispatchState: "SETTLED",
+      terminalAt: EFFECT_AT,
+      effectOutcomeStatus: "INVALID_STATUS",
+    });
+
+    const door = open(temporaryDatabase());
+    seedDelivery(door, taskId);
+    const atDoor = refusalOf(() => door.append(bad));
+
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.close();
+    plantChainedEvent(path, bad);
+
+    const reopened = open(path);
+    const atRebuild = refusalOf(() => reopened.rebuildReadModel());
+    expect(atRebuild).toEqual(atDoor);
+    expect(atRebuild.path).toBe("payload.outcome.effectOutcomeStatus");
+
+    // And the verifier never reports this ledger sound: it refuses the same event.
+    const verified = caught(() => reopened.verifyIntegrity());
+    expect(verified).toBeInstanceOf(LedgerValidationError);
+    expect((verified as LedgerValidationError).issues[0]).toEqual(atDoor);
+    expect(reopened.getEffect(effectId)?.outcomeStatus).toBeNull();
+  });
+
+  it("N-CORR2-H2-4: the door and the fold refuse with identical words, field by field", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedDelivery(ledger, taskId);
+    const stored = ledger.listEvents({ limit: 1000 }).events;
+
+    const cases: readonly (readonly [string, unknown])[] = [
+      ["effectOutcomeStatus", "INVALID_STATUS"],
+      ...PRESENT_INVALID_OUTCOME_FIELDS,
+    ];
+    for (const [index, [field, value]] of cases.entries()) {
+      const label = field + " = " + JSON.stringify(value);
+      const event = dispatchOutcome({
+        taskId,
+        transitionId: "settle-" + String(index),
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        overrides: { [field]: value },
+      });
+      const atDoor = refusalOf(() => ledger.append(event));
+
+      const snapshot = createProjectionSnapshot();
+      for (const record of stored) applyEventToSnapshot(snapshot, record.event, record.sequence);
+      const folded = caught(() => {
+        applyEventToSnapshot(snapshot, event as unknown as ControlPlaneEvent, stored.length + 1);
+      });
+      expect(folded, label).toBeInstanceOf(LedgerValidationError);
+      expect((folded as LedgerValidationError).issues, label).toEqual([atDoor]);
+    }
+  });
+
+  it("P-CORR2-H2: CLAIMED and INFLIGHT without an outcome still land, and SETTLED with SUCCEEDED writes the pair once", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const LATER = "2026-09-12T09:30:00.000Z";
+
+    for (const [state, extra] of [
+      ["CLAIMED", {}],
+      ["INFLIGHT", { acceptedAt: EFFECT_AT, externalHandle: "handle-1" }],
+    ] as const) {
+      const landed = ledger.append(
+        dispatchOutcome({ taskId, transitionId: "move-" + state, dispatchAttemptId: "dsp-1", dispatchState: state, ...extra }),
+      );
+      expect(landed.inserted, state).toBe(true);
+      expect(ledger.getEffect(effectId)?.outcomeStatus, state).toBeNull();
+      expect(ledger.getEffect(effectId)?.outcomeRecordedAt, state).toBeNull();
+    }
+    expect(ledger.listDispatchAttempts(effectId)[0]?.externalHandle).toBe("handle-1");
+
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle-1",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "SUCCEEDED",
+      }),
+    );
+    // The same answer again, later, is a replay of the pair: the first instant stands.
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle-again",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: LATER,
+        effectOutcomeStatus: "SUCCEEDED",
+        occurredAt: LATER,
+      }),
+    );
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+    expect(ledger.getEffect(effectId)?.outcomeRecordedAt).toBe(EFFECT_AT);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    ledger.rebuildReadModel();
+    expect(ledger.getEffect(effectId)?.outcomeRecordedAt).toBe(EFFECT_AT);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 });
 

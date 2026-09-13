@@ -919,6 +919,45 @@ describe("expiry obliges a caller and authorises nothing here", () => {
 
 // ---------------------------------------------------------------------------
 
+describe("the store's value types live in a pure type leaf (CORR-2, C-H3)", () => {
+  it("declares the nine shapes and nothing else, and the store's module re-exports every one", () => {
+    const strip = (source: string): string =>
+      source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    const leaf = strip(readFileSync(join(PACKAGE_ROOT, "src", "outbox-store", "types", "index.ts"), "utf8"));
+    const declared = [...leaf.matchAll(/^export (?:interface|type) ([A-Za-z]+)/gm)].map((match) => String(match[1]));
+    expect(declared).toEqual([
+      "OutboxEventAnchor",
+      "OutboxIncarnation",
+      "OutboxRow",
+      "OutboxMessageSeed",
+      "OutboxCasToken",
+      "OutboxMutation",
+      "OutboxCasOutcome",
+      "OutboxStore",
+      "OpenOutboxStoreOptions",
+    ]);
+    for (const line of leaf.split("\n").filter((each) => /^import\b/.test(each))) {
+      expect(line).toMatch(/^import type /);
+    }
+    expect(leaf).not.toMatch(/^export (?:const|function|class|let|enum)\b/m);
+
+    // The module keeps the vocabularies and the types read off them, and
+    // declares none of the nine again.
+    const module = readModuleSource();
+    const reexport = /^export type \{([^}]*)\} from "\.\/types\/index\.js";$/m.exec(module);
+    expect(reexport).not.toBeNull();
+    const reexported = (reexport?.[1] ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+    expect([...reexported].sort()).toEqual([...declared].sort());
+    for (const name of declared) {
+      const redeclared = new RegExp("^export (?:interface|type) " + name + "\\b", "m").test(module);
+      expect({ name, redeclared }).toEqual({ name, redeclared: false });
+    }
+    expect(module).toMatch(/^export type OutboxState = /m);
+    expect(module).toMatch(/^export type OutboxCommandKind = /m);
+    expect(module).toMatch(/^export type OutboxStream = /m);
+  });
+});
+
 describe("what this module does not do", () => {
   it("reads no clock, no environment and no process", () => {
     const source = readModuleSource();
