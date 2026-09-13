@@ -185,6 +185,10 @@ export {
   RoadmapVersionKindDto,
   RoadmapVersionWriteRequest,
   RoadmapVersionWriteResponse,
+  // P-14/B: the initiative registration. Both doors parse the request and print
+  // the response, so the pair is reachable from the one entry point.
+  InitiativeRegistrationRequest,
+  InitiativeRegistrationResponse,
   RollupSummary,
   StreamIntegrityCoverageDto,
   TASK_STATE_COUNT,

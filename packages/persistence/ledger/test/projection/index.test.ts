@@ -43,6 +43,8 @@ import {
   nextExecutionRouteSegmentProjection,
   requestSha256,
   nextExecutionRouteProjection,
+  initiativeRegistrationPayloadOf,
+  nextInitiativeProjection,
   nextRoutingAssignmentFromInitiative,
   nextRoutingAssignmentProjection,
   GLOBAL_ASSIGNMENT_REFUSALS,
@@ -84,6 +86,7 @@ import {
   ARTIFACT_ACCESS_POLICY_IDS,
   DELIVERED_ARTIFACT_EVENT_KINDS,
   DISPATCH_STATES,
+  INITIATIVE_REGISTRATION_PAYLOAD_KEYS,
 } from "../../src/types/index.js";
 import type { RegistryDocument, TaskReadModel } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
@@ -3140,5 +3143,82 @@ describe("the artifact fold decides artifacts §8.1 once, for the door and the r
       }).path,
     ).toBe("payload.reference.classification");
     expect(snapshot.references.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The initiative projection's registration columns (P-14 B, ADR 0086)
+// ---------------------------------------------------------------------------
+
+describe("the initiative fold reads the closed registration payload and nothing else (P-14 B)", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const PAYLOAD = {
+    slug: "acp-p14",
+    title: "The P-14 bootstrap",
+    objectiveSha256: "d".repeat(64),
+    objectiveArtifactReferenceId: "objective-reference",
+  };
+
+  function initiativeEvent(overrides: Record<string, unknown> = {}): InitiativeEvent {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "66666666-6666-4666-8666-666666666666",
+      initiativeId: INITIATIVE,
+      transitionId: "register",
+      idempotencyKey: INITIATIVE + "/1/register",
+      type: "INITIATIVE_REGISTERED",
+      fromStatus: null,
+      toStatus: "ACTIVE",
+      emittedBy: "kimi/k3/coordinator/01",
+      occurredAt: "2026-09-13T12:00:00.000Z",
+      recordedAt: "2026-09-13T12:00:00.000Z",
+      payload: { ...PAYLOAD },
+      ...overrides,
+    } as InitiativeEvent;
+  }
+
+  it("names the four keys in the order the door writes them", () => {
+    expect([...INITIATIVE_REGISTRATION_PAYLOAD_KEYS]).toEqual(["slug", "title", "objectiveSha256", "objectiveArtifactReferenceId"]);
+    expect(initiativeRegistrationPayloadOf(initiativeEvent())).toEqual(PAYLOAD);
+  });
+
+  it("is total: every other shape is no registration facts, never a throw", () => {
+    const shapes: Record<string, unknown>[] = [
+      {},
+      { slug: "acp-p8", title: "The P8 initiative" },
+      { slug: "acp-p8", title: "The P8 initiative", objective: "Land the execution boundary" },
+      { ...PAYLOAD, objective: "never in the stream" },
+      { ...PAYLOAD, slug: "Not-Lowercase" },
+      { ...PAYLOAD, slug: "s".repeat(81) },
+      { ...PAYLOAD, title: "" },
+      { ...PAYLOAD, title: "t".repeat(201) },
+      { ...PAYLOAD, objectiveSha256: "D".repeat(64) },
+      { ...PAYLOAD, objectiveSha256: 7 },
+      { ...PAYLOAD, objectiveArtifactReferenceId: "" },
+      { ...PAYLOAD, objectiveArtifactReferenceId: "r".repeat(513) },
+    ];
+    for (const payload of shapes) {
+      expect(initiativeRegistrationPayloadOf(initiativeEvent({ payload })), JSON.stringify(payload).slice(0, 80)).toBeNull();
+    }
+    // Only a registration carries registration facts, whatever its payload says.
+    expect(
+      initiativeRegistrationPayloadOf(initiativeEvent({ type: "INITIATIVE_STATE_CHANGED", fromStatus: "ACTIVE", toStatus: "PAUSED" })),
+    ).toBeNull();
+  });
+
+  it("projects title and digest on the registration, carries them forward, and never produces a repository digest", () => {
+    const registered = nextInitiativeProjection(null, initiativeEvent(), 1);
+    expect(registered).toMatchObject({ title: PAYLOAD.title, objectiveSha256: PAYLOAD.objectiveSha256, repositorySha256: null });
+    const paused = nextInitiativeProjection(
+      registered,
+      initiativeEvent({ type: "INITIATIVE_STATE_CHANGED", transitionId: "pause", fromStatus: "ACTIVE", toStatus: "PAUSED", payload: {} }),
+      2,
+    );
+    expect(paused).toMatchObject({ currentStatus: "PAUSED", eventCount: 2, title: PAYLOAD.title, objectiveSha256: PAYLOAD.objectiveSha256 });
+    expect(nextInitiativeProjection(null, initiativeEvent({ payload: {} }), 1)).toMatchObject({
+      title: null,
+      objectiveSha256: null,
+      repositorySha256: null,
+    });
   });
 });

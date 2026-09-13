@@ -3,18 +3,22 @@
 The observation CLI of the Agent Control Plane.
 
 `acp` answers questions about a ledger. **Every read verb opens it query-only;
-three named verbs — `tool-call`, `cancel` and `attach` — share one short-lived
-writable handle, and between them append at most one row each: `tool-call` a
-receipt, `cancel` a cancellation, `attach` nothing at all.** The first narrowing
-is V2-B4b stage 3D's and the second is V2 L2's, and both are stated rather than
-softened: what changed is not "this CLI now writes", it is that three named
-verbs do and every other one still cannot.
+four named verbs — `tool-call`, `cancel`, `attach` and `initiative` — share one
+short-lived writable handle, and between them append at most one row each to a
+stream: `tool-call` a receipt, `cancel` a cancellation, `attach` nothing at all,
+and `initiative` one registration, after publishing its objective to the private
+artifact plane.** The first narrowing is V2-B4b stage 3D's, the second V2 L2's
+and the third P-14/B's, and all three are stated rather than softened: what
+changed is not "this CLI now writes", it is that four named verbs do and every
+other one still cannot.
 
-For every verb but those three, the posture is unchanged and structural rather
+For every verb but those four, the posture is unchanged and structural rather
 than promised: the ledger is opened with `readOnly: true`, which puts SQLite
 itself into query-only mode. Nothing in this package calls `append()` or
-`rebuildReadModel()` — every row that lands is appended by `@acp/runtime`,
-which is the one authority on what a tool call or a cancellation may be. A CLI
+`rebuildReadModel()` — every row that lands is appended by `@acp/runtime`, which
+is the one authority on what a tool call or a cancellation may be, or by
+`registerInitiative` in `@acp/ledger`, the one authority on what a registration
+may be. A CLI
 that could repair a ledger would still be a CLI that could rewrite recorded
 history, and this one cannot.
 
@@ -45,10 +49,11 @@ acp <command> --database <path> [options]
 | `tool-call`         | Execute one explicit tool call and record what it did                     |
 | `cancel`            | Stop a durable invocation and settle the ledger once                      |
 | `attach`            | Rejoin a durable invocation already in flight                             |
+| `initiative`        | Register one initiative from a request document and print the registration |
 
 The table above said eight while there were fourteen: `submission`,
 `switch-decision`, `tool-calls`, `tool-call`, `cancel` and `attach` all landed
-without it. Where each command meets the API — and which two meet nothing,
+without it. `initiative`, the fifteenth, landed with its row (P-14/B). Where each command meets the API — and which two meet nothing,
 because the plane serves no route that plans or decides — is declared in
 `SURFACE_MAP` (`packages/kernel/protocol/src/surface-map/index.ts`), the one
 place the CLI/API relation is written down.
@@ -94,10 +99,10 @@ acp integrity --database ./control-plane.sqlite
 search of the working directory. A tool that guesses which ledger it is reading
 is a tool that eventually reads the wrong one and reports confidently about it.
 
-### 2. Read only for every verb but three, structurally
+### 2. Read only for every verb but four, structurally
 
 `openLedger(path, { readOnly: true })` is how this package opens a ledger for
-every verb except `tool-call`, `cancel` and `attach`. The handle refuses
+every verb except `tool-call`, `cancel`, `attach` and `initiative`. The handle refuses
 mutation, SQLite refuses mutation, and the append-only triggers in the schema
 refuse mutation. The suite drives every read verb and asserts the event count
 and the applied-migration set are unchanged afterwards — a claim about every
@@ -131,6 +136,20 @@ the other one is precisely what drill D4 refuses.
 An attempt that has not yet reached `RUN_STARTED` has recorded no route, so
 there is nothing to recover and the verbs refuse, naming `attempt.route`. That
 window is a daemon-internal one, and it is refused rather than guessed.
+
+`initiative` is P-14/B's exception, and it takes the same open again — the fence
+law still counts one writable `openLedger(` — and reads its `--request` document
+through the tool call's own uid ladder, `readOperatorDocument`, exported rather
+than copied. The document is the API's POST body byte for byte,
+`InitiativeRegistrationRequest`: the caller's own `initiativeId`, a slug, a
+title, the objective and `recordedBy`. The verb decides nothing. It opens the
+blob lease store and the private plane beside the ledger, mints the identifiers a
+registration needs — never the initiative's — and calls `registerInitiative`,
+which the gateway's POST calls too: the objective is published to the plane and
+the stream records its digest and reference, never the objective. The same
+document sent twice, by this verb or by the API, is the same row, printed with
+`replayed: true`; the same id with another slug, title or objective is refused
+`WRITE_REFUSED` with `CONFLICT` and the field that differs.
 
 **One bound `tool-call` does not have: nothing serializes two runs of it.** A tool call
 spends its coordinate by recording *after* the tool answers, so two overlapping
@@ -190,7 +209,7 @@ envelope on stderr.
 | `2`  | The request was malformed: bad command, option, or filter — or it named an attempt that had already ended (`TASK_TERMINAL`, printed as a document). |
 | `4`  | Nothing is there to act on, from either of two sources: the ledger holds no such task, worker or attempt (an envelope on stderr), or the ledger holds the attempt and the engine answered that it holds no invocation at its address (`INVOCATION_NOT_FOUND`, printed as a document on stdout). Not a retry loop: confirm the endpoint is registered, then ask once more — the ledger remains the authority on what the task did. |
 | `5`  | The ledger could not be read, the engine could not be reached, or the effect's postcondition could not be established (`POSTCONDITION_UNKNOWN`, printed as a document, nothing appended). |
-| `6`  | The recorded history will not carry this write: an integrity check failed, or a write door — `tool-call` or a lifecycle verb — refused because the ledger disagrees with the coordinates the request named (`WRITE_REFUSED`). Both write doors answer with this code. Nothing about the invocation was wrong, so it is neither a `2` to argue with nor a `5` to retry. |
+| `6`  | The recorded history will not carry this write: an integrity check failed, or a write door — `tool-call`, a lifecycle verb or `initiative` — refused because the ledger disagrees with the coordinates the request named (`WRITE_REFUSED`). Every write door answers with this code. Nothing about the invocation was wrong, so it is neither a `2` to argue with nor a `5` to retry. |
 | `7`  | Another caller holds this tool coordinate.                    |
 | `8`  | This engine does not serve the lifecycle verb that was asked. |
 

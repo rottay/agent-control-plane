@@ -2432,6 +2432,35 @@ SELECT
   '1970-01-01T00:00:00.000Z';
 `,
   },
+  {
+    version: 18,
+    name: "initiative_registration_detail",
+    sql: `
+-- An initiative enters by command and by API, and its objective never touches
+-- the stream (P-14 escalón B, ADR 0086).
+--
+-- Planning §1 gives \`initiative_read_model\` three additive columns. \`title\` and
+-- \`objective_sha256\` have a producer from this migration on: the registration
+-- door records a closed payload — slug, title, the objective's digest and the
+-- private reference that names its bytes — and the fold projects the title and
+-- the digest from it. \`repository_sha256\` has no semantics in planning §1 and
+-- no producer here; it is added because the dictionary adds it, and it stays
+-- NULL.
+--
+-- **Additive, and the table is not rebuilt**, for migration 16's reason: a
+-- nullable column with no default is added without rewriting a row. No CHECK
+-- and no trigger: the dictionary states none, and the only shape a value can
+-- take is the one the fold writes. No watermark moves either — the stream's head
+-- does not move — but the rows do not stay as they are: a ledger may already
+-- hold a registration in the closed shape, and SQL cannot run the fold, so the
+-- code folds the initiative stream again after this text and inside the same
+-- transaction (\`afterSql\`, migration 17's precedent), with the same function the
+-- door and the rebuild use.
+ALTER TABLE initiative_read_model ADD COLUMN title TEXT;
+ALTER TABLE initiative_read_model ADD COLUMN objective_sha256 TEXT;
+ALTER TABLE initiative_read_model ADD COLUMN repository_sha256 TEXT;
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -2671,6 +2700,16 @@ export const MODEL_VERSION_PROJECTION = "model_version_read_model";
  * of its own: the ledger hangs the retroactive fold off this exact version.
  */
 export const MODEL_VERSION_REGISTRY_MIGRATION = 17;
+
+/**
+ * The migration that gives the initiative projection its three additive
+ * columns (P-14 B, ADR 0086).
+ *
+ * Named for `MODEL_VERSION_REGISTRY_MIGRATION`'s reasons: the suite and the
+ * rewind fixtures hold the number against where the SQL sits, and the ledger
+ * hangs the retroactive fold of the initiative stream off this exact version.
+ */
+export const INITIATIVE_REGISTRATION_MIGRATION = 18;
 
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).

@@ -39,6 +39,20 @@ routes that also accept a write are named in a separate frozen table,
 | `accountActions` | `POST /api/v1/accounts/:accountId/actions` | an account action |
 | `taskToolCalls` | `POST /api/v1/tasks/:taskId/tool-calls` | one explicit tool call — the only route that starts a child process |
 | `taskLifecycle` | `POST /api/v1/tasks/:taskId/lifecycle` | one lifecycle verb against an attempt already running — `CANCEL` or `ATTACH`, through the same operation the CLI door calls |
+| `initiatives` | `POST /api/v1/initiatives` | one initiative, under the caller's own id, through `registerInitiative` — the orchestration `acp initiative` calls too; its objective goes to the private artifact plane and the stream records the digest and the reference |
+
+The fifth (P-14/B) is the portfolio route's own POST: the GET beside it is
+unchanged and unguarded. Its seam, `initiative-write`, decides nothing — it
+opens a writable ledger, the blob lease store and the plane for one
+registration, hands them to `registerInitiative` with the identifiers the route
+minted, and closes them. A body the schema refuses is `400`; a registration the
+recorded state refuses — `CONFLICT` for the same id with other content,
+`REQUEST_INVALID` for a slug outside the contract's grammar, `CONTENT_REJECTED`
+when the plane declines — is `409 WRITE_REFUSED` with the field as the detail.
+The same body again is `200` with `replayed: true`. The initiative read model
+serves the objective back from the plane, by reference and under the
+initiative's own scope; bytes the plane cannot produce are `LEDGER_INTEGRITY`,
+never a null objective.
 
 All are registered through the same guarded registrar, so the bearer check is
 **structural rather than remembered**: a future write route registered through

@@ -10,13 +10,16 @@ table that this document omits fails. It also asserts that every response and
 query schema named below is exported by `@acp/protocol`.
 
 The parity suite is the behavioral authority **where it reaches**, and it does
-not reach every route. Eleven of the twenty-four arms below are compared in full
+not reach every route. Eleven of the twenty-five arms below are compared in full
 against an independently built CLI-side producer, including ordering,
 pagination, cursors and redaction; `eventStream` GET is compared in part, on one
 frame's item; `health` has no ledger content and so has no CLI build to compare
 against, and is checked as the contract's declared non-ledger exception instead.
-The remaining eleven arms — `taskLifecycle` GET, and the ten belonging to the
-eight initiative and account routes — have no CLI-side comparison at all. The
+The remaining twelve arms — `taskLifecycle` GET, and the eleven belonging to the
+eight initiative and account routes — have no CLI-side parity comparison.
+`initiatives` POST is the one of them a command answers, and its two doors are
+compared by their own suites through the one orchestration both call, not by the
+parity suite. The
 `CLI` column below says which arms a command answers; that a command answers an
 arm is not by itself a claim that a behavioral comparison exists for it.
 
@@ -52,7 +55,7 @@ arm is not by itself a claim that a behavioral comparison exists for it.
 | `events` | GET | `/api/v1/events` | — | `EventsQuery` | `EventPageResponse` | `events`:GET |
 | `status` | GET | `/api/v1/status` | — | none | `LedgerStatusResponse` | `status`:GET |
 | `integrity` | GET | `/api/v1/integrity` | — | none | `IntegrityResult` | `integrity`:GET |
-| `initiatives` | GET | `/api/v1/initiatives` | — | none | `InitiativePortfolioResponse` | — |
+| `initiatives` | GET, POST | `/api/v1/initiatives` | — | none | `InitiativePortfolioResponse` / `InitiativeRegistrationResponse` | `initiative`:POST |
 | `initiativeById` | GET | `/api/v1/initiatives/:initiativeId` | `initiativeId` (uuid) | none | `InitiativeDetailResponse` | — |
 | `initiativeRoadmap` | GET, POST | `/api/v1/initiatives/:initiativeId/roadmap` | `initiativeId` (uuid) | none | `InitiativeRoadmapResponse` / `RoadmapVersionWriteResponse` | — |
 | `initiativeRoadmapContent` | GET | `/api/v1/initiatives/:initiativeId/roadmap/content` | `initiativeId` (uuid) | `RoadmapContentQuery` | `RoadmapContentResponse` | — |
@@ -85,6 +88,7 @@ the mechanism and its anchors.
 | `accountActions` | `AccountActionRequest` | an account action, with the refusal vocabulary the accounts domain defines |
 | `taskToolCalls` | `ToolCallExecuteRequest` | one explicit tool call, and whatever it did: this is the only route that starts a child process, and a refused call is a `200` with a recorded row rather than an error |
 | `taskLifecycle` | `TaskLifecycleRequest` | one lifecycle verb — `CANCEL` or `ATTACH` — against an attempt already running; the rows it appends are the ones the cancellation settlement already produced, and `ATTACH` appends none |
+| `initiatives` | `InitiativeRegistrationRequest` | one initiative, under the caller's own `initiativeId`; its objective is published to the private artifact plane and the event carries the digest and the reference, never the objective |
 
 A write that is refused answers with a classified refusal rather than a bare
 failure: `AccountActionRefusalDto` names which rule refused it.
@@ -102,6 +106,15 @@ Its request is a strict object of four fields — `verb`, `mode`, `taskId`,
 ledger and verified against the digest the attempt's own events carry. The
 scenario is startup configuration (`--scenario`); a body that names one is a
 `400` on the unknown key, before any ledger is opened.
+
+**`initiatives` POST is idempotent on the caller's id.** The request names the
+initiative — `initiativeId`, `slug`, `title`, `objective`, `recordedBy` — and the
+same body sent again, by this route or by `acp initiative --request`, answers
+`200` with `replayed: true` and the registration that exists, publishing and
+appending nothing. The same id with another slug, title or objective is `409`
+`WRITE_REFUSED` with `CONFLICT` and the field that differs as the detail. A body
+the schema refuses, a credential-shaped objective included, is `400` before the
+plane sees a byte. No door mints an initiative id.
 
 **`ATTACH` blocks until the invocation completes, and no request timeout is
 imposed.** A caller that attaches to a long run holds the HTTP connection open

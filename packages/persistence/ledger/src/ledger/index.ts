@@ -44,6 +44,7 @@ import {
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
   MODEL_VERSION_PROJECTION,
+  INITIATIVE_REGISTRATION_MIGRATION,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_MIGRATION,
   ACCOUNT_STREAM,
@@ -1143,6 +1144,9 @@ interface InitiativeRow {
   readonly last_emitted_by: string;
   readonly created_at: string;
   readonly updated_at: string;
+  readonly title: string | null;
+  readonly objective_sha256: string | null;
+  readonly repository_sha256: string | null;
 }
 
 interface RoadmapVersionRow {
@@ -1606,6 +1610,9 @@ function initiativeRowToModel(row: InitiativeRow): InitiativeReadModel {
     lastEmittedBy: row.last_emitted_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    title: row.title,
+    objectiveSha256: row.objective_sha256,
+    repositorySha256: row.repository_sha256,
   };
 }
 
@@ -2116,6 +2123,46 @@ function foldModelVersionsAtMigration(db: Database.Database): void {
   }
 }
 
+/**
+ * Fold the initiative stream a ledger already holds, once, as migration 18 lands
+ * (P-14 B, ADR 0086).
+ *
+ * The migration adds `title`, `objective_sha256` and `repository_sha256` as NULL
+ * on every row, and a registration already recorded in the closed payload would
+ * then be a row the integrity replay refuses. So the stream is folded again,
+ * inside the transaction that applies the migration, through the same projection
+ * function the door and the rebuild use, and only the three new columns are
+ * written: every other column is already level with the head, and rewriting it
+ * would be a second opinion about a fold that did not change. A row that no
+ * longer reads as an event is skipped rather than refused here, for
+ * `foldModelVersionsAtMigration`'s reason.
+ */
+function foldInitiativesAtMigration(db: Database.Database): void {
+  const rows = db
+    .prepare("SELECT sequence, event_json FROM initiative_events ORDER BY sequence ASC")
+    .all() as { readonly sequence: number; readonly event_json: string }[];
+  const folded = new Map<string, InitiativeReadModel>();
+  for (const row of rows) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(row.event_json);
+    } catch {
+      continue;
+    }
+    const parsed = InitiativeEvent.safeParse(decoded);
+    if (!parsed.success) continue;
+    const event = parsed.data;
+    folded.set(event.initiativeId, nextInitiativeProjection(folded.get(event.initiativeId) ?? null, event, row.sequence));
+  }
+  const update = db.prepare(
+    "UPDATE initiative_read_model SET title = ?, objective_sha256 = ?, repository_sha256 = ? " +
+      "WHERE initiative_id = ?",
+  );
+  for (const initiative of folded.values()) {
+    update.run(initiative.title, initiative.objectiveSha256, initiative.repositorySha256, initiative.initiativeId);
+  }
+}
+
 function activateAccountIntegrity(db: Database.Database, activatedAt: string): void {
   const rows = db
     .prepare("SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC")
@@ -2381,6 +2428,11 @@ export class Ledger {
               // makes the rows level with it, in the same transaction.
               if (migration.version === MODEL_VERSION_REGISTRY_MIGRATION) {
                 foldModelVersionsAtMigration(db);
+              }
+              // Migration 18 added three columns to rows that already exist;
+              // this folds the stream again so the rows carry what it says.
+              if (migration.version === INITIATIVE_REGISTRATION_MIGRATION) {
+                foldInitiativesAtMigration(db);
               }
             },
           });
@@ -5736,14 +5788,16 @@ export class Ledger {
       "INSERT INTO initiative_read_model (" +
         "initiative_id, current_status, event_count, first_sequence, last_sequence, " +
         "last_event_id, last_event_type, last_transition_id, last_emitted_by, created_at, " +
-        "updated_at" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "updated_at, title, objective_sha256, repository_sha256" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (initiative_id) DO UPDATE SET " +
         "current_status = excluded.current_status, event_count = excluded.event_count, " +
         "last_sequence = excluded.last_sequence, last_event_id = excluded.last_event_id, " +
         "last_event_type = excluded.last_event_type, " +
         "last_transition_id = excluded.last_transition_id, " +
-        "last_emitted_by = excluded.last_emitted_by, updated_at = excluded.updated_at",
+        "last_emitted_by = excluded.last_emitted_by, updated_at = excluded.updated_at, " +
+        "title = excluded.title, objective_sha256 = excluded.objective_sha256, " +
+        "repository_sha256 = excluded.repository_sha256",
     ).run(
       initiative.initiativeId,
       initiative.currentStatus,
@@ -5756,6 +5810,9 @@ export class Ledger {
       initiative.lastEmittedBy,
       initiative.createdAt,
       initiative.updatedAt,
+      initiative.title,
+      initiative.objectiveSha256,
+      initiative.repositorySha256,
     );
   }
 

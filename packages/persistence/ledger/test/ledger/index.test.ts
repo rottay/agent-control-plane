@@ -59,6 +59,7 @@ import {
   DERIVED_TABLES,
   EXECUTION_EFFECT_MIGRATION,
   EXECUTION_OCCURRENCE_MIGRATION,
+  INITIATIVE_REGISTRATION_MIGRATION,
   MIGRATIONS,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
@@ -324,13 +325,14 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    // Seventeen since P-14 A added the model version registry, beside P-36/local's
-    // artifact registry and envelope reference, P-18/protocolo D's prompt and
-    // response occurrences, C's effect, deliveries and route segment, B's attempt
-    // record, P-05/B's revision coordinate, P-08's sidecar and the registry
-    // stream, typed causal triple and watermark table of P-09.
+    // Eighteen since P-14 B added the initiative projection's three columns,
+    // beside P-14 A's model version registry, P-36/local's artifact registry and
+    // envelope reference, P-18/protocolo D's prompt and response occurrences, C's
+    // effect, deliveries and route segment, B's attempt record, P-05/B's revision
+    // coordinate, P-08's sidecar and the registry stream, typed causal triple and
+    // watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1314,6 +1316,22 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
 }
 
 /**
+ * Migration 18 undone: the initiative projection's three columns (P-14 B).
+ *
+ * `ADD COLUMN` is not idempotent, so a re-applied 18 over a table that still
+ * carries them aborts on "duplicate column name". No index or trigger names
+ * them, so `DROP COLUMN` needs nothing before it, and no watermark moves,
+ * because 18 seeded none.
+ */
+function dropInitiativeRegistrationDetail(raw: Database.Database): void {
+  raw.exec(
+    "ALTER TABLE initiative_read_model DROP COLUMN repository_sha256; " +
+      "ALTER TABLE initiative_read_model DROP COLUMN objective_sha256; " +
+      "ALTER TABLE initiative_read_model DROP COLUMN title;",
+  );
+}
+
+/**
  * Migration 17 undone: the model version registry (P-14 A).
  *
  * Children first, because `foreign_keys` is ON and each child names its model
@@ -1323,6 +1341,9 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
  * and the re-applied migration folds them again.
  */
 function dropModelVersionRegistry(raw: Database.Database): void {
+  // Eighteen first: rewinding past 17 means rewinding past everything applied
+  // after it, and a re-applied 18 over its own columns aborts.
+  dropInitiativeRegistrationDetail(raw);
   raw.exec(
     "DROP INDEX ux_model_version_transport__transport; " +
       "DROP TABLE model_version_transport; " +
@@ -2990,7 +3011,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3418,7 +3439,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -5612,7 +5633,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -7597,7 +7618,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7656,7 +7677,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7707,7 +7728,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -7856,7 +7877,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -13041,9 +13062,9 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     expect(before.columns.map((column) => column["name"])).not.toContain("subject_kind");
 
     const migrated = open(path);
-    // Fifteen applies over the history at fourteen, and sixteen and seventeen after it.
+    // Fifteen applies over the history at fourteen, and sixteen, seventeen and eighteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(MODEL_VERSION_REGISTRY_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(INITIATIVE_REGISTRATION_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -14220,11 +14241,11 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
       });
 
       const migrated = open(path);
-      // Sixteen re-applies, and seventeen after it: the tail is everything past the rewind.
+      // Sixteen re-applies, and seventeen and eighteen after it: the tail is everything past the rewind.
       expect(migrated.status().migrations.map((migration) => migration.version), version).toContain(
         TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
       );
-      expect(migrated.status().migrations.at(-1)?.version, version).toBe(MODEL_VERSION_REGISTRY_MIGRATION);
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(INITIATIVE_REGISTRATION_MIGRATION);
       expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
         [version, null],
         [version, null],
@@ -14672,7 +14693,9 @@ describe("migration 17 lands whole over a registry that already holds model vers
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(MODEL_VERSION_REGISTRY_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(MODEL_VERSION_REGISTRY_MIGRATION);
+    // Seventeen re-applies, and eighteen after it.
+    expect(migrated.status().migrations.map((migration) => migration.version)).toContain(MODEL_VERSION_REGISTRY_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(INITIATIVE_REGISTRATION_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -14713,5 +14736,150 @@ describe("migration 17 lands whole over a registry that already holds model vers
     const reopened = open(path);
     expect(reopened.getModelVersion(MODEL_ONE).modelVersion?.row.status).toBe("ACTIVE");
     expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Migration 18: the initiative projection's three additive columns (P-14 B)
+// ---------------------------------------------------------------------------
+
+/** The closed registration payload, as the registration door records it. */
+const CLOSED_REGISTRATION_PAYLOAD = {
+  slug: "acp-p14",
+  title: "The P-14 bootstrap",
+  objectiveSha256: "c".repeat(64),
+  objectiveArtifactReferenceId: "objective-reference-a",
+} as const;
+
+/** One initiative in the closed payload, one in an older shape, and a later event on the first. */
+function seedRegistrationCohorts(ledger: Ledger): void {
+  ledger.appendInitiativeEvent(makeInitiativeEvent({ payload: { ...CLOSED_REGISTRATION_PAYLOAD } }));
+  ledger.appendInitiativeEvent(
+    makeInitiativeEvent({ initiativeId: INITIATIVE_B, payload: { slug: "acp-p8", title: "The P8 initiative" } }),
+  );
+  ledger.appendInitiativeEvent(
+    makeInitiativeEvent({
+      transitionId: "pause",
+      type: "INITIATIVE_STATE_CHANGED",
+      fromStatus: "ACTIVE",
+      toStatus: "PAUSED",
+      occurredAt: "2026-08-30T13:00:00.000Z",
+    }),
+  );
+}
+
+function readInitiativeColumns(path: string): unknown {
+  const raw = new Database(path);
+  try {
+    return raw
+      .prepare(
+        "SELECT initiative_id, current_status, event_count, title, objective_sha256, repository_sha256 " +
+          "FROM initiative_read_model ORDER BY initiative_id",
+      )
+      .all();
+  } finally {
+    raw.close();
+  }
+}
+
+describe("migration 18 gives the initiative projection its registration columns (P-14 B, N-P14B-8/9)", () => {
+  it("N-P14B-8: the fold projects title and digest from the closed payload only, and a later event carries them", () => {
+    const ledger = open(temporaryDatabase());
+    seedRegistrationCohorts(ledger);
+
+    const closed = ledger.getInitiative(INITIATIVE_A);
+    expect(closed).toMatchObject({
+      currentStatus: "PAUSED",
+      eventCount: 2,
+      title: CLOSED_REGISTRATION_PAYLOAD.title,
+      objectiveSha256: CLOSED_REGISTRATION_PAYLOAD.objectiveSha256,
+      repositorySha256: null,
+    });
+    // An older shape — a slug and a title, no digest — is history the fold
+    // reads as no registration facts, rather than as half of them.
+    expect(ledger.getInitiative(INITIATIVE_B)).toMatchObject({ title: null, objectiveSha256: null, repositorySha256: null });
+
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    const before = ledger.listInitiatives();
+    ledger.rebuildReadModel();
+    expect(ledger.listInitiatives()).toEqual(before);
+  });
+
+  it("N-P14B-8: a closed payload with a stray key or a malformed digest projects nothing", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({ payload: { ...CLOSED_REGISTRATION_PAYLOAD, objective: "never in the stream" } }),
+    );
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent({ initiativeId: INITIATIVE_B, payload: { ...CLOSED_REGISTRATION_PAYLOAD, objectiveSha256: "C".repeat(64) } }),
+    );
+    expect(ledger.getInitiative(INITIATIVE_A)).toMatchObject({ title: null, objectiveSha256: null });
+    expect(ledger.getInitiative(INITIATIVE_B)).toMatchObject({ title: null, objectiveSha256: null });
+  });
+
+  it("N-P14B-8: re-applied over both cohorts, it refolds the columns and moves no watermark", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedRegistrationCohorts(ledger);
+    ledger.close();
+    const before = { rows: readInitiativeColumns(path), watermarks: readWatermarks(path) };
+
+    withRawDatabase(path, (raw) => {
+      dropInitiativeRegistrationDetail(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(INITIATIVE_REGISTRATION_MIGRATION);
+      const columns = raw.prepare("SELECT name FROM pragma_table_info('initiative_read_model')").all() as { readonly name: string }[];
+      expect(columns.map((column) => column.name)).not.toContain("title");
+    });
+
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(INITIATIVE_REGISTRATION_MIGRATION);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+    expect(readInitiativeColumns(path)).toEqual(before.rows);
+    expect(readWatermarks(path)).toEqual(before.watermarks);
+  });
+
+  it("N-P14B-9: a failure part way through adds no column, and the next open applies it whole", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedRegistrationCohorts(ledger);
+    ledger.close();
+    withRawDatabase(path, (raw) => {
+      dropInitiativeRegistrationDetail(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(INITIATIVE_REGISTRATION_MIGRATION);
+      const eighteenth = MIGRATIONS.filter((migration) => migration.version === INITIATIVE_REGISTRATION_MIGRATION);
+      const run = raw.transaction((): void => {
+        applyMigrations(raw, eighteenth, "2026-09-13T12:00:00.000Z", {
+          afterSql: () => {
+            throw new Error("induced failure after the SQL and before the row");
+          },
+        });
+      });
+      expect(() => {
+        run.immediate();
+      }).toThrow("induced failure");
+      const columns = raw.prepare("SELECT name FROM pragma_table_info('initiative_read_model')").all() as { readonly name: string }[];
+      expect(columns.map((column) => column.name).filter((name) => /title|_sha256$/.test(name))).toEqual([]);
+      expect(raw.prepare("SELECT version FROM schema_migrations WHERE version = ?").all(INITIATIVE_REGISTRATION_MIGRATION)).toEqual([]);
+    });
+    const reopened = open(path);
+    expect(reopened.getInitiative(INITIATIVE_A)?.title).toBe(CLOSED_REGISTRATION_PAYLOAD.title);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("names a stored title the replay disagrees with as a projection problem", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedRegistrationCohorts(ledger);
+    ledger.close();
+    withRawDatabase(path, (raw) => {
+      raw.prepare("UPDATE initiative_read_model SET title = ? WHERE initiative_id = ?").run("A title nobody recorded", INITIATIVE_B);
+    });
+    const reopened = open(path);
+    const report = reopened.verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(report.problems.map((problem) => problem.detail)).toContain(
+      "initiative_read_model row for initiative " + INITIATIVE_B + " disagrees with a replay",
+    );
   });
 });

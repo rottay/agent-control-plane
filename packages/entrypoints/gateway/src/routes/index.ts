@@ -7,6 +7,8 @@ import {
   HealthResponse,
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
+  InitiativeRegistrationRequest,
+  InitiativeRegistrationResponse,
   InitiativeRoadmapResponse,
   AccountActionRequest,
   AccountActionWriteResponse,
@@ -72,6 +74,7 @@ import { recordAccountAction } from "../account-actions/index.js";
 import { loadBearerGuard } from "../bearer/index.js";
 import type { BearerLoadOutcome } from "../bearer/index.js";
 import { recordRoadmapVersion } from "../roadmap-write/index.js";
+import { recordInitiativeRegistration } from "../initiative-write/index.js";
 import {
   initiativeDetailDto,
   initiativeSummary,
@@ -535,20 +538,88 @@ export function registerRoutes(
     sendApiError(reply, "NOT_FOUND", "no route matches " + request.method + " " + request.url);
   });
   // -------------------------------------------------------------------------
-  // P8-8A: the initiative data plane. Read-only, like every route above it.
+  // P8-8A: the initiative data plane. Read-only, like every route above it —
+  // except the portfolio's POST, which P-14/B added.
   // -------------------------------------------------------------------------
 
-  registerGet(app, API_ROUTES.initiatives, (request) => {
-    assertEmptyQuery(queryOf(request));
-    const { ledger } = requireOpen(source);
-    const items = portfolio(ledger).map(initiativeSummary);
-    return InitiativePortfolioResponse.parse({
-      apiContractVersion: API_CONTRACT_VERSION,
-      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
-      items,
-      count: items.length,
-    });
-  });
+  // P-14/B: the fifth write door. The GET is the portfolio, unchanged and
+  // unguarded; the POST registers one initiative, through the same guarded
+  // registrar as every other write, so the bearer is inherited by where this is
+  // written.
+  registerGetAndPost(
+    app,
+    API_ROUTES.initiatives,
+    (request) => {
+      assertEmptyQuery(queryOf(request));
+      const { ledger } = requireOpen(source);
+      const items = portfolio(ledger).map(initiativeSummary);
+      return InitiativePortfolioResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        items,
+        count: items.length,
+      });
+    },
+    (request) => {
+      assertEmptyQuery(queryOf(request));
+      // Door one: the schema. Malformed is the caller's typing — 400, naming
+      // the field and never its value: the objective is free text.
+      const parsed = InitiativeRegistrationRequest.safeParse(request.body);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw new ApiRouteError(
+          "BAD_REQUEST",
+          "the initiative registration request did not satisfy the contract",
+          (issue?.path ?? []).map((segment) => String(segment)).join(".") || "(root)",
+        );
+      }
+      const { ledger } = requireOpen(source);
+
+      // Every identity but the initiative's is minted here, and the instant
+      // and the pid are read here: the seam and the orchestration read none.
+      const outcome = recordInitiativeRegistration({
+        ledger,
+        request: parsed.data,
+        recordedAt: new Date().toISOString(),
+        holderPid: process.pid,
+        leaseStoreIncarnationId: randomUUID(),
+        eventId: randomUUID(),
+        commandId: randomUUID(),
+        artifactPinId: randomUUID(),
+        artifactReferenceId: randomUUID(),
+        intentionEventId: randomUUID(),
+        terminalEventId: randomUUID(),
+      });
+
+      // Door two: the decision, the plane and the stream. A coherent request
+      // the recorded state refuses is a 409 carrying the refusal's own name.
+      if (!outcome.ok) {
+        throw new ApiRouteError(
+          "WRITE_REFUSED",
+          "the initiative registration was refused: " + outcome.reason,
+          outcome.at,
+        );
+      }
+
+      return InitiativeRegistrationResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        replayed: outcome.replayed,
+        sequence: outcome.sequence,
+        registration: {
+          initiativeId: outcome.registration.initiativeId,
+          slug: outcome.registration.slug,
+          title: outcome.registration.title,
+          objectiveSha256: outcome.registration.objectiveSha256,
+          status: outcome.registration.status,
+          eventCount: outcome.registration.eventCount,
+          createdAt: outcome.registration.createdAt,
+          updatedAt: outcome.registration.updatedAt,
+        },
+      });
+    },
+    bearer,
+  );
 
   registerGet(app, API_ROUTES.initiativeById, (request) => {
     assertEmptyQuery(queryOf(request));

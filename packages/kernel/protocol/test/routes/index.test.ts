@@ -171,14 +171,16 @@ describe("the stream route is a read, and does not collide with the paged one (V
     // list a reviewer glances at to answer "what can mutate?", and it did not
     // move.
     expect(isWriteRoute("eventStream")).toBe(false);
-    // The table moved at V2-B4b stage 3C and again at V2 L3: `taskToolCalls` is
-    // the third entry and `taskLifecycle` the fourth. The stream still adds
-    // nothing, which is what this test is about.
+    // The table moved at V2-B4b stage 3C, at V2 L3 and at P-14/B:
+    // `taskToolCalls` is the third entry, `taskLifecycle` the fourth and
+    // `initiatives` the fifth. The stream still adds nothing, which is what
+    // this test is about.
     expect([...API_WRITE_ROUTES]).toEqual([
       "initiativeRoadmap",
       "accountActions",
       "taskToolCalls",
       "taskLifecycle",
+      "initiatives",
     ]);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
   });
@@ -191,5 +193,18 @@ describe("the stream route is a read, and does not collide with the paged one (V
     expect(API_ROUTES.eventStream.startsWith(API_ROUTES.events + "/")).toBe(true);
     const patterns = [...API_ROUTE_PATTERNS];
     expect(new Set(patterns).size).toBe(patterns.length);
+  });
+});
+
+describe("the portfolio route takes the fifth write (P-14/B)", () => {
+  it("answers POST beside its GET, on the same path, with no parameter to encode", () => {
+    expect(isWriteRoute("initiatives")).toBe(true);
+    expect(API_WRITE_ROUTES.at(-1)).toBe("initiatives");
+    expect(API_ROUTES.initiatives).toBe("/api/v1/initiatives");
+    expect(API_ROUTES.initiatives).not.toContain(":");
+    // The read plane's method list is the one that does not grow.
+    expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+    // The single-initiative routes stay reads: the write is the collection's.
+    expect(isWriteRoute("initiativeById")).toBe(false);
   });
 });

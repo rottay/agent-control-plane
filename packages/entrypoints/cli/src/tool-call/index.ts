@@ -138,7 +138,7 @@ export class ToolCallRefused extends Error {
 }
 
 /** A document a tool call needs, and how strictly its mode is judged. */
-interface DocumentSpec {
+export interface DocumentSpec {
   readonly path: string;
   /** The field path a refusal names. Never the path itself. */
   readonly at: string;
@@ -159,8 +159,14 @@ function refuse(message: string, at: string): never {
  * The same ladder the gateway's bearer loader and the daemon's config door
  * already use, spelled the same way. Every refusal names the field and never
  * the path, because a path in a diagnostic is a path in a terminal log.
+ *
+ * **Exported, and exported rather than repeated (P-14/B)**, on `openForWrite`'s
+ * precedent: `acp initiative` reads a request document too, and a second copy
+ * of this ladder would be a second answer to "who may hand this plane a
+ * document". Its refusals stay `ToolCallRefused`, which the command module maps
+ * for both verbs through one table.
  */
-function readOperatorDocument(spec: DocumentSpec): unknown {
+export function readOperatorDocument(spec: DocumentSpec): unknown {
   if (spec.path === "") refuse("--" + spec.at + " is required", spec.at);
   if (!isAbsolute(spec.path)) refuse("--" + spec.at + " must be an absolute path", spec.at);
 

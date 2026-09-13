@@ -253,6 +253,27 @@ describe("one arm two commands reach is admitted, and admitted on purpose", () =
   });
 });
 
+describe("the initiative registration is one document at two doors (P-14/B)", () => {
+  it("pairs initiative with initiatives POST, and leaves the portfolio GET api-only", () => {
+    const post = SURFACE_MAP.filter((entry) => entry.route === "initiatives" && entry.method === "POST");
+    expect(post).toEqual([{ command: "initiative", route: "initiatives", method: "POST", equivalence: "DOCUMENT" }]);
+    const get = SURFACE_MAP.filter((entry) => entry.route === "initiatives" && entry.method === "GET");
+    expect(get.map((entry) => [entry.command, entry.equivalence])).toEqual([[null, "API_ONLY"]]);
+  });
+
+  it("N-P14B-12: names the arm when the entry is dropped", () => {
+    const dropped = defects(without((entry) => entry.command === "initiative"));
+    expect(names(dropped, "missing", "initiatives POST")).toBe(true);
+  });
+
+  it("names the command when the CLI half is checked without the verb", () => {
+    const commands = SURFACE_MAP.flatMap((entry) => (entry.command === null ? [] : [entry.command]));
+    const withoutVerb = commands.filter((command) => command !== "initiative");
+    const found = surfaceDefects({ entries: SURFACE_MAP, routes: ROUTES, writeRoutes: WRITE_ROUTES, commands: withoutVerb });
+    expect(names(found, "initiative", "this CLI does not have")).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // F8 — the causal regression the stale prose could not have had
 // ---------------------------------------------------------------------------

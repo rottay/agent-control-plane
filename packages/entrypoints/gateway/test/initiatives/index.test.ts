@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -15,10 +15,20 @@ import {
   RoadmapContentResponse,
   RoadmapVersionWriteResponse,
 } from "@acp/protocol";
-import { openLedger, publishArtifact } from "@acp/ledger";
+import {
+  LedgerIntegrityError,
+  artifactBlobLeaseStorePath,
+  artifactPlaneRootFor,
+  openArtifactBlobLeaseStore,
+  openArtifactPlane,
+  openLedger,
+  publishArtifact,
+  registerInitiative,
+} from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildServer } from "../../src/build-server/index.js";
+import { registrationDetail } from "../../src/initiatives/index.js";
 
 /**
  * Evidence for the initiative data plane.
@@ -728,11 +738,12 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
 
 describe("the initiative plane mutates nothing", () => {
   it("answers every non-GET on the read-only initiative paths with 405", async () => {
-    // The portfolio and the detail stay read-only: all four non-GET verbs
-    // refuse, exactly as they did before the plane took a write route.
+    // The detail stays read-only: all four non-GET verbs refuse, exactly as
+    // they did before the plane took a write route. The portfolio left this
+    // list at P-14/B, and the test below says what it answers instead.
     const { path, alpha } = seed();
     const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
-    const readOnlyPaths = ["/api/v1/initiatives", "/api/v1/initiatives/" + alpha];
+    const readOnlyPaths = ["/api/v1/initiatives/" + alpha];
 
     for (const url of readOnlyPaths) {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
@@ -741,6 +752,22 @@ describe("the initiative plane mutates nothing", () => {
         expect(ApiError.parse(response.json()).error.code).toBe("METHOD_NOT_ALLOWED");
       }
     }
+    await app.close();
+  });
+
+  it("refuses PUT, PATCH and DELETE on the portfolio path, but no longer POST (P-14/B)", async () => {
+    // The same split the roadmap path took at P8-8D-pre: three verbs still
+    // refuse, and POST is answered. What POST does is `test/initiative-write`'s.
+    const { path } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
+    const url = "/api/v1/initiatives";
+    for (const method of ["PUT", "PATCH", "DELETE"] as const) {
+      const response = await app.inject({ method, url });
+      expect({ method, status: response.statusCode }).toEqual({ method, status: 405 });
+      expect(ApiError.parse(response.json()).error.code).toBe("METHOD_NOT_ALLOWED");
+    }
+    const posted = await app.inject({ method: "POST", url, headers: WRITE_AUTH, payload: {} });
+    expect(posted.statusCode).not.toBe(405);
     await app.close();
   });
 
@@ -1055,5 +1082,75 @@ describe("GET /api/v1/initiatives/:id/agents — the scoped workers (C3)", () =>
     const body = InitiativeAgentsResponse.parse(response.json());
     expect(body.count).toBe(0);
     expect(body.items).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The registration detail's two sources (P-14/B, ADR 0086)
+// ---------------------------------------------------------------------------
+
+describe("the registration detail reads the objective from where the registration put it", () => {
+  const OBJECTIVE = "Keep the objective in the private plane and its digest in the stream.";
+
+  function registeredByTheDoor(): { readonly path: string; readonly initiativeId: string } {
+    const path = temporaryDatabase();
+    const initiativeId = randomUUID();
+    const ledger = openLedger(path);
+    const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(path), { incarnationId: randomUUID(), createdAt: AT });
+    const plane = openArtifactPlane({ ledger, leaseStore, ledgerPath: path });
+    const outcome = registerInitiative({
+      ledger,
+      plane,
+      request: { initiativeId, slug: "acp-p14", title: "The P-14 bootstrap", objective: OBJECTIVE, recordedBy: COORDINATOR },
+      recordedAt: AT,
+      holderPid: process.pid,
+      identities: {
+        eventId: randomUUID(),
+        commandId: randomUUID(),
+        artifactPinId: randomUUID(),
+        artifactReferenceId: randomUUID(),
+        intentionEventId: randomUUID(),
+        terminalEventId: randomUUID(),
+      },
+    });
+    leaseStore.close();
+    ledger.close();
+    expect(outcome.ok).toBe(true);
+    return { path, initiativeId };
+  }
+
+  it("serves a legacy registration's objective from its payload, as before", () => {
+    const { path, alpha, beta } = seed();
+    const ledger = openLedger(path, { readOnly: true });
+    expect(registrationDetail(ledger, alpha)).toEqual({
+      slug: "acp-p8",
+      title: "The P8 initiative",
+      objective: "Land the execution boundary",
+    });
+    expect(registrationDetail(ledger, beta)).toEqual({ slug: null, title: null, objective: null });
+    ledger.close();
+    // A legacy read opens no plane, so it creates no private root.
+    expect(existsSync(artifactPlaneRootFor(path))).toBe(false);
+  });
+
+  it("serves a door registration's objective from the plane, through a read-only handle", () => {
+    const { path, initiativeId } = registeredByTheDoor();
+    const ledger = openLedger(path, { readOnly: true });
+    expect(registrationDetail(ledger, initiativeId)).toEqual({ slug: "acp-p14", title: "The P-14 bootstrap", objective: OBJECTIVE });
+    ledger.close();
+  });
+
+  it("throws an integrity failure, never a null objective, when the private root is gone", () => {
+    const { path, initiativeId } = registeredByTheDoor();
+    rmSync(artifactPlaneRootFor(path), { recursive: true, force: true });
+    const ledger = openLedger(path, { readOnly: true });
+    let thrown: unknown;
+    try {
+      registrationDetail(ledger, initiativeId);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    ledger.close();
+    expect(thrown).toBeInstanceOf(LedgerIntegrityError);
   });
 });

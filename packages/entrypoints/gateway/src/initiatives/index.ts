@@ -1,4 +1,4 @@
-import { readArtifact } from "@acp/ledger";
+import { readArtifact, readInitiativeObjective } from "@acp/ledger";
 import { UNSCOPED_INITIATIVE, computeTokenRollups } from "@acp/observation";
 import type { TaskTokenRollup, TokenRollups } from "@acp/observation";
 import type {
@@ -25,12 +25,19 @@ import type {
  * and can be recomputed from them. If this module and its callers were
  * deleted, no fact would be lost.
  *
- * **The registration details are nullable on purpose.** `slug`, `title` and
- * `objective` are not columns of the initiative projection — they arrive in
- * the `INITIATIVE_REGISTERED` event's payload, which is a bounded free-form
- * record. An initiative registered without them has none, and this module
- * reports null rather than an empty string: null says the stream never carried
- * one, whereas `""` is a value that reads as a title nobody wrote.
+ * **The registration details are nullable on purpose.** `slug` and `title`
+ * arrive in the `INITIATIVE_REGISTERED` event's payload, which is a bounded
+ * free-form record. An initiative registered without them has none, and this
+ * module reports null rather than an empty string: null says the stream never
+ * carried one, whereas `""` is a value that reads as a title nobody wrote.
+ *
+ * **The objective is never in the stream (P-14/B, ADR 0086).** A registration
+ * recorded by the registration door names its objective by digest and private
+ * reference, and the objective is read back from the plane under the
+ * initiative's own scope. That read is never answered with null: bytes the
+ * plane cannot produce are an integrity failure, and `readInitiativeObjective`
+ * throws it. Only history older than the door still carries an objective in
+ * its payload, and it is read as before.
  */
 
 /** The registration facts a stream may or may not have carried. */
@@ -93,10 +100,14 @@ export function registrationDetail(ledger: Ledger, initiativeId: string): Initia
   for (const record of page.events) {
     if (record.event.type !== "INITIATIVE_REGISTERED") continue;
     const payload = record.event.payload;
+    // The registration door's cohort: the objective comes from the plane, by
+    // reference. Null means the payload is not that cohort's, and the legacy
+    // read below stands unchanged.
+    const published = readInitiativeObjective(ledger, record.event);
     return Object.freeze({
       slug: stringOrNull(payload["slug"]),
       title: stringOrNull(payload["title"]),
-      objective: stringOrNull(payload["objective"]),
+      objective: published ?? stringOrNull(payload["objective"]),
     });
   }
   return Object.freeze({ slug: null, title: null, objective: null });

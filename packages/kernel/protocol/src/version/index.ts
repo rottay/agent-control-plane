@@ -157,8 +157,29 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * creates the account integrity sidecar, which is **ledger schema**, not the
  * shape of a recorded event. No event type, payload key or history is
  * reinterpreted. ADR 0065 carries the reasoning.
+ *
+ * `0.15.0` → `0.16.0` at P-14/B: the plane's fifth write door. `initiatives`
+ * answers POST beside its GET and registers one initiative, and two schemas
+ * arrive with it — `InitiativeRegistrationRequest` and
+ * `InitiativeRegistrationResponse`.
+ *
+ * Minor for the reason `0.13.0` gave first: the route surface moves.
+ * `API_WRITE_ROUTES` goes from four to five, and a reader at `0.15.0` that
+ * asked this table what can mutate was told something that is no longer the
+ * whole answer. `API_ALLOWED_METHODS` stays exactly `["GET"]`, and no error code
+ * is added: a registration refuses with `BAD_REQUEST` and `WRITE_REFUSED`, which
+ * a `0.15.0` reader already branches on. No existing DTO changes shape either —
+ * `InitiativeSummary` still serves `objective`, now read back from the private
+ * plane by reference for a registration that published one.
+ *
+ * `CONTRACT_VERSION` does not move: the event this door appends is the
+ * `INITIATIVE_REGISTERED` the contract has carried since P8, with its bounded
+ * payload unchanged. `LEDGER_CONTRACT_VERSION` does not move either, and here too
+ * it deserves saying because this packet adds a migration: migration 18 adds
+ * three nullable columns to a read model, which is ledger schema and not the
+ * shape of a recorded event. ADR 0086 carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.15.0" as const;
+export const API_CONTRACT_VERSION = "0.16.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

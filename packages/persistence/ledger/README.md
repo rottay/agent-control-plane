@@ -55,6 +55,9 @@ ledger.close();
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
 | `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head; nothing here reads a ledger. |
+| `decideInitiativeRegistration(request)` | Pure. Parses a candidate through `Initiative`, guards included, and compares it with the registration the stream holds under the same id: grant, replay or `CONFLICT`. |
+| `registerInitiative(input)` | The one registration both doors call: decide, publish the objective to the private plane, append one `INITIATIVE_REGISTERED` whose closed payload carries the objective's digest and reference. Handles, instants, the pid and identifiers are injected; it opens nothing and reads no clock. |
+| `readInitiativeObjective(ledger, event)` | The objective a registration published, read back by reference under the initiative's scope; null for a registration that never published one, and a `LedgerIntegrityError` rather than null when the plane cannot produce it. |
 | `rebuildReadModel()` | Drop and replay every projection of both streams, transactionally. |
 | `verifyIntegrity()` | Full report. Never throws on a finding; returns problems. |
 | `status()` | Effective pragmas, applied migrations, head, counts, projections, this file's identity. |
@@ -181,7 +184,7 @@ fifteenth class cannot arrive without appearing here.
 | `dispatch_attempt_read_model` | derived | one row per concrete external delivery of one effect, in the five states of execution §7 |
 | `prompt_occurrence_read_model` | derived | one row per prompt a delivery sent: digests and counts, the effective segment and account, never the bytes |
 | `response_occurrence_read_model` | derived | the one answer to one prompt occurrence, attributed through that prompt and nothing else |
-| `initiative_read_model` | derived | current status, counts, first and last position |
+| `initiative_read_model` | derived | current status, counts, first and last position; since migration 18, the `title` and `objective_sha256` a registration recorded in the closed payload (`NULL` otherwise), and `repository_sha256`, which nothing produces |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
 | `routing_assignment_fallback` | derived | one row per fallback of one assignment, in attempt order |
@@ -1079,6 +1082,73 @@ No product door publishes a model version or an assignment, and no task intake
 records a resolution: escalones B and C of P-14. No `INITIATIVE`/`STEP` partition.
 No lifecycle rule between versions and no check that a provider is stable across
 them. The policy file and `resolveRoute` in `@acp/accounts` are untouched.
+
+## An initiative's registration, by command and by API
+
+The gateway's `POST /api/v1/initiatives` and the CLI's `acp initiative` register
+an initiative through one orchestration, `registerInitiative` (P-14 B, migration
+18, ADR 0086). The doors open a writable ledger, the blob lease store and the
+private plane, mint the identifiers and read the clock; everything about whether
+a registration may be recorded and what it says lives here.
+
+### The request is not the payload
+
+The candidate is composed from the request — the caller's own `initiativeId`, the
+slug, the title, the objective — with this build's contract version, `ACTIVE` and
+the recording instant, and parsed through `@acp/contracts`' `Initiative` whole, so
+the credential guards run over the objective before anything is published. The
+event records a closed payload of four keys, `INITIATIVE_REGISTRATION_PAYLOAD_KEYS`:
+`slug`, `title`, `objectiveSha256` and `objectiveArtifactReferenceId`. The objective
+is never in `event_json`. The append door does not close the payload — the
+contract's is still a bounded record, and history written under another shape
+stays readable — the orchestration is the one producer of the closed shape.
+
+### The key, the replay and the conflict
+
+The idempotency key is `initiativeId/1/register`. A registration under an id the
+stream already holds is compared with the recorded event, field by field: the same
+slug, title and objective digest is a replay that publishes nothing, appends
+nothing and answers the row that exists; any difference is `CONFLICT` at the field
+that differs. A registration older than the closed payload compares as different.
+An append that loses a race re-reads the stream and decides again.
+
+| Refusal | At | When |
+| --- | --- | --- |
+| `REQUEST_INVALID` | `candidate.<field>`, or `recordedBy` | outside `Initiative`, a credential in the objective, a status other than `ACTIVE`, a producer that is not a worker identity |
+| `CONFLICT` | `candidate.slug`, `candidate.title` or `candidate.objective` | the id is registered with other content |
+| `CONTENT_REJECTED` | the plane's own word | the plane refused or abandoned the objective's publication |
+| `WRITE_CONFLICT` | `objective` or `initiativeId` | another writer's publication or registration landed first and the re-read found neither a replay nor a conflict |
+
+### The objective in the private plane
+
+The objective's UTF-8 bytes are published as a `PLAN_DOCUMENT`, `INTERNAL`,
+scoped `INITIATIVE`/`initiativeId`, `PERMANENT`, under `SCOPE_EQUALITY_V1`, as
+`text/plain; charset=utf-8` in plaintext. The intention and terminal keys are
+derived from the initiative and the digest, so one objective of one initiative
+has exactly one publication: a retry finds the intention by its key and reuses its
+identities, instants and reference, and whatever identifiers the retry's door
+minted are ignored. The holding is taken under the door's `recordedBy` and pid for
+an informative five minutes. Two initiatives with one objective share one blob
+and hold two references, and neither can read the other's.
+
+### The migration, and the read back
+
+Migration 18 adds `title`, `objective_sha256` and `repository_sha256` to
+`initiative_read_model` in place, nullable, and folds the initiative stream again
+in the same transaction so a registration already recorded in the closed payload
+is level with its row. No watermark, schema object or derived table moves. The
+gateway's initiative read serves the objective through `readInitiativeObjective`,
+which opens the plane over the handle it is given with a lease store that refuses
+every holding, only after the private root was seen to stand.
+
+### What this escalón does not do
+
+No task intake and no `client_scope` (escalón C). No reconciliation of a holding a
+dead process left inside a publication — the plane answers `QUIESCENCE_UNPROVEN` —
+and no retry of a publication that ended abandoned: the pair is refused
+`PUBLICATION_ALREADY_ABANDONED` until another decision. No producer of
+`repository_sha256`. A reference published and not yet named by a registration,
+because the process died between the two, stays until a retry names it.
 
 ## Integrity
 

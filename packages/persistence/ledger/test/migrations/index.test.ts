@@ -22,6 +22,7 @@ import {
   INITIATIVE_PROJECTION_NAMES,
   INITIATIVE_STREAM,
   MIGRATIONS,
+  INITIATIVE_REGISTRATION_MIGRATION,
   MODEL_VERSION_PROJECTION,
   MODEL_VERSION_REGISTRY_MIGRATION,
   PROJECTION_NAMES,
@@ -180,7 +181,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -200,6 +201,7 @@ describe("migration 7 appends the watermark table without touching the applied s
       "artifact_registry",
       "task_revision_envelope_reference",
       "model_version_registry",
+      "initiative_registration_detail",
     ]);
   });
 
@@ -512,7 +514,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
     ]);
   });
 
@@ -1485,8 +1487,9 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION - 1]?.name).toBe(
       "task_revision_envelope_reference",
     );
-    // Sixteen when this migration landed; the seventeenth is P-14 A's.
-    expect(MIGRATIONS).toHaveLength(17);
+    // Sixteen when this migration landed; the seventeenth is P-14 A's and the
+    // eighteenth P-14 B's.
+    expect(MIGRATIONS).toHaveLength(18);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1576,12 +1579,14 @@ describe("migration 17 folds the model version registry from the registry stream
     .filter((line) => !line.trimStart().startsWith("--"))
     .join("\n");
 
-  it("N-P14A-18: sits at the tail of a set whose order is fixed", () => {
+  it("N-P14A-18: sits at the position a set whose order is fixed gave it", () => {
     expect(SEVENTEENTH?.version).toBe(17);
     expect(SEVENTEENTH?.name).toBe("model_version_registry");
     expect(MODEL_VERSION_REGISTRY_MIGRATION).toBe(17);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION - 1]?.name).toBe("model_version_registry");
-    expect(MIGRATIONS).toHaveLength(17);
+    // Seventeen when this migration landed; the eighteenth is P-14 B's.
+    expect(MIGRATIONS).toHaveLength(18);
+    expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
   it("creates the three tables of accounts §6 STRICT, with the dictionary's checks", () => {
@@ -1675,5 +1680,53 @@ describe("migration 17 folds the model version registry from the registry stream
       { type: "index", name: "ux_model_version_transport__transport" },
     ]);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+  });
+});
+
+/**
+ * Migration 18, the initiative projection's registration columns (P-14 B, ADR
+ * 0086).
+ *
+ * The text: three nullable `ADD COLUMN`s in place, planning §1's names, and
+ * nothing else — no CHECK, no trigger, no index, no watermark, no rebuild.
+ * `test/ledger` asserts what the text and the retroactive fold do to a ledger
+ * that already holds registrations.
+ */
+describe("migration 18 adds the initiative projection's three columns and nothing else", () => {
+  const EIGHTEENTH = MIGRATIONS[17];
+
+  const statements = (EIGHTEENTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(EIGHTEENTH?.version).toBe(18);
+    expect(EIGHTEENTH?.name).toBe("initiative_registration_detail");
+    expect(INITIATIVE_REGISTRATION_MIGRATION).toBe(18);
+    expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION - 1]?.name).toBe("initiative_registration_detail");
+    expect(MIGRATIONS).toHaveLength(18);
+  });
+
+  it("N-P14B-8: adds planning's three columns in place, nullable and with no default", () => {
+    expect(statements.trim().split("\n")).toEqual([
+      "ALTER TABLE initiative_read_model ADD COLUMN title TEXT;",
+      "ALTER TABLE initiative_read_model ADD COLUMN objective_sha256 TEXT;",
+      "ALTER TABLE initiative_read_model ADD COLUMN repository_sha256 TEXT;",
+    ]);
+    expect(statements).not.toMatch(/NOT NULL|DEFAULT|CHECK|TRIGGER|INDEX|projection_watermark|DROP /);
+  });
+
+  it("inventories no schema object and declares no projection of its own", () => {
+    // Three columns are not an object: the inventory, the derived tables and the
+    // watermark pairs are what they were at seventeen.
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("initiative_read_model"))).toEqual([
+      { type: "table", name: "initiative_read_model" },
+      { type: "index", name: "initiative_read_model_by_status" },
+    ]);
+    expect(PROJECTION_SOURCES.filter((source) => source.projectionName === "initiative_read_model")).toEqual([
+      { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
+    ]);
+    expect(INITIATIVE_PROJECTION_NAMES).toContain("initiative_read_model");
   });
 });

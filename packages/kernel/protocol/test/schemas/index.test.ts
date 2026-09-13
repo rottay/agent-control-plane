@@ -27,6 +27,8 @@ import {
   HealthResponse,
   InitiativeDetailResponse,
   InitiativePortfolioResponse,
+  InitiativeRegistrationRequest,
+  InitiativeRegistrationResponse,
   InitiativeRoadmapResponse,
   RoadmapVersionWriteRequest,
   ApiErrorCode,
@@ -445,13 +447,14 @@ describe("routes", () => {
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     // P8-8D-pre: the read plane's method list did not move when the first
     // write route arrived, and it has not moved since. The exceptions live in
-    // their own frozen table, which is the one that grows -- four entries as of
-    // V2 L3, the newest being the lifecycle door.
+    // their own frozen table, which is the one that grows -- five entries as of
+    // P-14/B, the newest being the initiative registration.
     expect([...API_WRITE_ROUTES]).toEqual([
       "initiativeRoadmap",
       "accountActions",
       "taskToolCalls",
       "taskLifecycle",
+      "initiatives",
     ]);
     expect([...API_WRITE_METHODS]).toEqual(["GET", "POST"]);
     expect(Object.isFrozen(API_WRITE_ROUTES)).toBe(true);
@@ -2184,6 +2187,86 @@ describe("the accounts read (P8-8F)", () => {
   });
 });
 
+describe("the initiative registration's wire contract (P-14/B)", () => {
+  const INITIATIVE_ID = "55555555-5555-4555-8555-555555555555";
+
+  function registration(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      initiativeId: INITIATIVE_ID,
+      slug: "acp-p14",
+      title: "The P-14 bootstrap",
+      objective: "Register an initiative by command and by API.",
+      recordedBy: WRITER,
+      ...overrides,
+    };
+  }
+
+  function response(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      replayed: false,
+      sequence: 1,
+      registration: {
+        initiativeId: INITIATIVE_ID,
+        slug: "acp-p14",
+        title: "The P-14 bootstrap",
+        objectiveSha256: SHA256,
+        status: "ACTIVE",
+        eventCount: 1,
+        createdAt: "2026-09-13T12:00:00.000Z",
+        updatedAt: "2026-09-13T12:00:00.000Z",
+      },
+      ...overrides,
+    };
+  }
+
+  it("admits the five fields and names the caller's own initiative id", () => {
+    expect(InitiativeRegistrationRequest.safeParse(registration()).success).toBe(true);
+    expect(Object.keys(InitiativeRegistrationRequest.shape).sort()).toEqual(
+      ["initiativeId", "objective", "recordedBy", "slug", "title"],
+    );
+    expect(InitiativeRegistrationRequest.safeParse(registration({ initiativeId: "not-a-uuid" })).success).toBe(false);
+  });
+
+  it("refuses what the door composes or computes, so a caller cannot state it", () => {
+    for (const composed of [{ status: "ACTIVE" }, { createdAt: "2026-09-13T12:00:00.000Z" }, { objectiveSha256: SHA256 }]) {
+      expect(InitiativeRegistrationRequest.safeParse(registration(composed)).success).toBe(false);
+    }
+  });
+
+  it("bounds every field, the objective at the contract's four thousand", () => {
+    expect(InitiativeRegistrationRequest.safeParse(registration({ objective: "o".repeat(4_000) })).success).toBe(true);
+    expect(InitiativeRegistrationRequest.safeParse(registration({ objective: "o".repeat(4_001) })).success).toBe(false);
+    expect(InitiativeRegistrationRequest.safeParse(registration({ objective: "" })).success).toBe(false);
+    expect(InitiativeRegistrationRequest.safeParse(registration({ title: "t".repeat(201) })).success).toBe(false);
+    expect(InitiativeRegistrationRequest.safeParse(registration({ slug: "s".repeat(81) })).success).toBe(false);
+  });
+
+  it("N-P14B-4: refuses a credential-shaped objective at its own path, before any door acts", () => {
+    const planted = registration({ objective: "deploy with sk-ant-api03-" + "A".repeat(40) });
+    const parsed = InitiativeRegistrationRequest.safeParse(planted);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.path.join("."))).toContain("objective");
+  });
+
+  it("answers the registration by digest and never echoes the objective", () => {
+    expect(InitiativeRegistrationResponse.safeParse(response()).success).toBe(true);
+    const echoed = response();
+    (echoed["registration"] as Record<string, unknown>)["objective"] = "Register an initiative.";
+    expect(InitiativeRegistrationResponse.safeParse(echoed).success).toBe(false);
+    expect(InitiativeRegistrationResponse.safeParse(response({ replayed: "yes" })).success).toBe(false);
+    expect(InitiativeRegistrationResponse.safeParse(response({ sequence: 0 })).success).toBe(false);
+  });
+
+  it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
+    expect(API_CONTRACT_VERSION).toBe("0.16.0");
+    expect(isWriteRoute("initiatives")).toBe(true);
+    expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+    expect(API_ERROR_CODES).toHaveLength(15);
+  });
+});
+
 describe("the document bound is a byte bound (P8-8G R2)", () => {
   function write(content: string): Record<string, unknown> {
     return {
@@ -2658,7 +2741,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.15.0");
+    expect(API_CONTRACT_VERSION).toBe("0.16.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -2675,7 +2758,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.15.0");
+    expect(API_CONTRACT_VERSION).toBe("0.16.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -2688,7 +2771,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(15);
-    expect(API_CONTRACT_VERSION).toBe("0.15.0");
+    expect(API_CONTRACT_VERSION).toBe("0.16.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape

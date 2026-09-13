@@ -134,6 +134,11 @@ export const API_WRITE_ROUTES = Object.freeze([
   // about an invocation already running. The API contract version moves with
   // it, as it did for the third.
   "taskLifecycle",
+  // P-14/B. The fifth, and a return to the first kind: it records a decision
+  // the caller already made — an initiative, by the caller's own id — and
+  // publishes its objective to the private plane before the event names it. The
+  // GET beside it is the portfolio, unchanged.
+  "initiatives",
 ] as const);
 export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 

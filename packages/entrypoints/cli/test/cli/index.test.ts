@@ -330,8 +330,10 @@ describe("usage", () => {
     expect(result.stdout).toContain("every read verb opens the ledger query-only");
     expect(result.stdout).toContain("tool-call writes one receipt");
     expect(result.stdout).toContain("cancel settles one cancellation");
-    // And the closing paragraph no longer claims the CLI never writes.
-    expect(result.stdout).toContain("Three verbs write, and they");
+    // And the closing paragraph no longer claims the CLI never writes. P-14/B
+    // added the fourth writing verb, and the sentence counts it.
+    expect(result.stdout).toContain("Four verbs write, and they");
+    expect(result.stdout).toContain("`initiative` registers one initiative");
     expect(result.stdout).not.toContain("This CLI opens the ledger read-only and never writes");
     // Old-V2 R1, F7. This was a `toContain` sweep over twelve of the fourteen
     // names, against the whole of stdout: `task` was satisfied by the word
@@ -365,11 +367,13 @@ describe("usage", () => {
       // required field, this time on the integrity result: `coverage`, which
       // says from when each stream's chain is evidence. Same strictness reason
       // again — `IntegrityResult` is a `z.strictObject`, so a reader pinned at
-      // 0.14.0 rejects the result rather than ignoring the key.
+      // 0.14.0 rejects the result rather than ignoring the key. To 0.16.0 at
+      // P-14/B for a fifth write route, `initiatives` POST, which this CLI
+      // answers too as `acp initiative`.
       // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.15.0",
+      apiContractVersion: "0.16.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });
@@ -1152,13 +1156,36 @@ describe("integrity", () => {
         transports: ["CLI_SUBSCRIPTION"],
       },
     });
+    // And one registration in the closed payload the initiative door records, so
+    // migration 18 has title and digest to fold back when it is re-applied
+    // (N-P14B-8). The reference is not resolved at append: the stream records
+    // what the door published, and this fixture publishes nothing.
+    ledger.appendInitiativeEvent({
+      contractVersion: LEDGER_CONTRACT_VERSION,
+      eventId: randomUUID(),
+      initiativeId: REWIND_INITIATIVE,
+      transitionId: "register",
+      idempotencyKey: REWIND_INITIATIVE + "/1/register",
+      type: "INITIATIVE_REGISTERED",
+      fromStatus: null,
+      toStatus: "ACTIVE",
+      emittedBy: B1E_ACTOR,
+      occurredAt: "2026-08-27T00:00:00.000Z",
+      recordedAt: "2026-08-27T00:00:00.000Z",
+      payload: {
+        slug: "acp-rewind",
+        title: "The rewind initiative",
+        objectiveSha256: "2".repeat(64),
+        objectiveArtifactReferenceId: "objective-rewind",
+      },
+    });
     ledger.close();
 
     // Rewind past migration 10 and reopen, so the sidecar activates over a
     // stream that already holds three rows. A ledger created empty and then
     // grown has a baseline of 0, and 0 is never ahead of anything.
     //
-    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15, 16 and 17 as well, because
+    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15, 16, 17 and 18 as well, because
     // the reopen re-applies everything the row set no longer claims. `ALTER TABLE
     // ... ADD COLUMN` is not idempotent, so a re-applied 11 over a schema that
     // still carries the coordinate aborts on "duplicate column name". The order
@@ -1190,9 +1217,18 @@ describe("integrity", () => {
     // version table by a foreign key, so they go first, each unique index before
     // its table, and its one watermark row with them. Nothing in `registry_events`
     // moves; the re-applied 17 folds the document again.
+    //
+    // Migration 18 goes before 17 (P-14 B): its three columns are `ADD COLUMN`s,
+    // which a re-applied 18 aborts on, so they are dropped by name. Nothing in
+    // `initiative_events` moves; the re-applied 18 folds the registration again.
     const beforeRewind = registryEvidence(path);
     const beforeModelVersions = modelVersionEvidence(path);
+    const beforeInitiatives = initiativeColumnEvidence(path);
+    expect(beforeInitiatives).toEqual([
+      { title: "The rewind initiative", objective_sha256: "2".repeat(64), repository_sha256: null },
+    ]);
     const rewind = new DatabaseSync(path);
+    rewindInitiativeRegistrationDetail(rewind);
     rewindModelVersionRegistry(rewind);
     rewindTaskRevisionEnvelopeReference(rewind);
     rewindArtifactRegistry(rewind);
@@ -1263,11 +1299,14 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(17);
+    ).toBe(18);
     reapplied.close();
     // N-P14A-15: and it re-applied 17 over the document already in the stream,
     // folding it back into the same rows at a watermark level with the head.
     expect(modelVersionEvidence(path)).toEqual(beforeModelVersions);
+    // N-P14B-8: and it re-applied 18 over the registration already in the stream,
+    // folding its title and digest back into the columns it added.
+    expect(initiativeColumnEvidence(path)).toEqual(beforeInitiatives);
 
     const raw = new DatabaseSync(path);
     raw.exec(
@@ -3069,6 +3108,34 @@ describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => 
     expect(Object.keys(EXIT_CODE_BY_API_ERROR_CODE).sort()).toEqual([...API_ERROR_CODES].sort());
   });
 });
+
+/** The initiative the rewind fixtures register in the closed payload (P-14 B). */
+const REWIND_INITIATIVE = "77777777-7777-4777-8777-777777777777";
+
+/**
+ * Migration 18 undone on a raw handle (P-14 B): the initiative projection's three
+ * additive columns, by name. No index, trigger or watermark names them.
+ */
+function rewindInitiativeRegistrationDetail(raw: DatabaseSync): void {
+  raw.exec(
+    "ALTER TABLE initiative_read_model DROP COLUMN repository_sha256;" +
+      "ALTER TABLE initiative_read_model DROP COLUMN objective_sha256;" +
+      "ALTER TABLE initiative_read_model DROP COLUMN title;",
+  );
+}
+
+/** The three registration columns of the initiative projection, as a raw handle sees them (P-14 B). */
+function initiativeColumnEvidence(path: string): unknown {
+  const raw = new DatabaseSync(path);
+  try {
+    return raw
+      .prepare("SELECT title, objective_sha256, repository_sha256 FROM initiative_read_model ORDER BY initiative_id")
+      .all()
+      .map((row) => ({ ...row }));
+  } finally {
+    raw.close();
+  }
+}
 
 /**
  * Migration 17 undone on a raw handle (P-14 A): the model version registry's two

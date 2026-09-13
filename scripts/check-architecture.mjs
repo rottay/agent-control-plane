@@ -9991,6 +9991,98 @@ const P14A_WRITE_SET = [
   "packages/entrypoints/gateway/test/build-server/index.test.ts",
 ];
 
+/**
+ * P-14 escalón B — an initiative enters by command and by API, and its objective
+ * never touches the stream (ADR 0086; writer brief v3: v1 + Fable preaudit
+ * H-1..H-5, M-6/M-7 + the DT's rulings on the writer's NEEDS_DECISION §1-§3).
+ *
+ * **What lands.** `registerInitiative` in `@acp/ledger`, the one orchestration
+ * both doors call: `decideInitiativeRegistration` parses the request through
+ * `Initiative` whole, guards over the objective included, and compares a second
+ * registration under the caller's `initiativeId` against the recorded event —
+ * replay or `CONFLICT`; the objective is published to the private plane as a
+ * `PLAN_DOCUMENT` scoped to the initiative, under derived intention and terminal
+ * keys whose recorded identities a retry reuses; one `INITIATIVE_REGISTERED` with
+ * a closed four-key payload (slug, title, objective digest, objective reference)
+ * is appended. `readInitiativeObjective` reads it back by reference for the GET.
+ * Migration 18 adds `title`, `objective_sha256` and `repository_sha256` to
+ * `initiative_read_model` and refolds the stream in the same transaction. The
+ * gateway answers POST on `initiatives` through `registerGetAndPost`; the CLI
+ * gains `acp initiative --request <path>`, through `openForWrite` and the tool
+ * call's exported `readOperatorDocument`. `@acp/protocol` gains
+ * `InitiativeRegistrationRequest` and `InitiativeRegistrationResponse`.
+ *
+ * **What does NOT land, declared.** No task intake and no `client_scope` (C, Q1).
+ * No contracts change: `InitiativeEvent` keeps its bounded payload and no artifact
+ * class is added. No reconciliation of a holding a dead process left, and no
+ * retry of an abandoned objective publication. No producer of
+ * `repository_sha256`. `resolveRoute` and the policy file are untouched.
+ *
+ * **Pins that move.** `MIGRATIONS` 17 → 18. `API_CONTRACT_VERSION` `0.15.0` →
+ * `0.16.0`, with the two tool-call suites that pin the literal. `API_WRITE_ROUTES`
+ * 4 → 5; `SURFACE_MAP` gains `initiative` → `initiatives` POST, `DOCUMENT`.
+ * `PATH_SCOPED_LAWS` 138 → **139** for L-P14B-1. The ADR corpus 85 → 86; the
+ * decision register 73 → 76. The CLI's writing verbs three → four, in its README,
+ * its banner and its manifest description.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (`"2.5.0"`),
+ * `CONTRACTS_SCHEMA_EXPORTS`, `LEDGER_CONTRACT_VERSION`, `PROJECTOR_VERSION` (1).
+ * `API_ALLOWED_METHODS` (`["GET"]`) and `API_ERROR_CODES` (15). L-B4B-11 and
+ * `CLI_WRITABLE_OPEN_SITE`: the new verb shares the tool call's one writable open
+ * (H-3). `EXPECTED_SCHEMA_OBJECTS`, `DERIVED_TABLES` and `PROJECTION_SOURCES`:
+ * three columns are not an object, a table or a projection. `COORDINATION_STORES`
+ * (4). L-P36C-4 (the private root's one producer).
+ *
+ * **Forty-one paths; seven are new to the fence** — the orchestration and its
+ * suite, the gateway seam and its suite, the CLI verb and its suite, and ADR 0086
+ * (`grep -Fc` over this file, each 0 before this block). The other thirty-four
+ * are admitted by historical blocks. The brief's "five new routes and the ADR"
+ * counted one fewer than the six new routes its own list carries.
+ */
+const P14B_WRITE_SET = [
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/src/initiative-registration/index.ts",
+  "packages/persistence/ledger/test/initiative-registration/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/initiatives/index.ts",
+  "packages/entrypoints/gateway/src/initiative-write/index.ts",
+  "packages/entrypoints/gateway/test/initiative-write/index.test.ts",
+  "packages/entrypoints/gateway/test/initiatives/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/README.md",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/tool-call/index.ts",
+  "packages/entrypoints/cli/src/initiative/index.ts",
+  "packages/entrypoints/cli/test/initiative/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/cli/package.json",
+  "packages/entrypoints/cli/README.md",
+  "docs/api-reference.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0086-an-initiative-enters-by-command-and-by-api.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -10207,6 +10299,7 @@ const WRITE_SET = [
   ...P36C_WRITE_SET,
   ...P36D_WRITE_SET,
   ...P14A_WRITE_SET,
+  ...P14B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -11564,6 +11657,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the artifact plane reads no clock, mints no identity and removes no published object",
     scope: "packages/persistence/ledger/src/artifact-plane/index.ts",
+  },
+  // P-14/B. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 138 -> 139.
+  {
+    law: "no production source mints an initiative, and one module builds its registration",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -25783,6 +25882,60 @@ const ARTIFACT_PLANE_SITE = "packages/persistence/ledger/src/artifact-plane/inde
   notes.push("the artifact plane reads no clock, mints no identity and unlinks only its own staging path");
 }
 
+// L-P14B-1 -- no production source mints an initiative, and one module builds
+// its registration (P-14/B, N-P14-11, ADR 0086).
+//
+// E2 keeps an initiative's id the caller's: it is the registration's
+// idempotency coordinate, and a door that minted one on a retry would register a
+// second initiative. So no `src/` assigns an `initiativeId` from `randomUUID(`
+// or from a uuid literal -- the second is the fixture initiative a default would
+// be. And the `INITIATIVE_REGISTERED` the stream records is built in exactly one
+// module, the orchestration both doors call: a second construction would be a
+// second payload, and the objective's absence from the stream is a property of
+// that one construction. Comparisons against the type name are reads, and stay
+// admitted everywhere.
+const INITIATIVE_REGISTRATION_SITE = "packages/persistence/ledger/src/initiative-registration/index.ts";
+{
+  let initiativeScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const builders = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      initiativeScanned += 1;
+      const code = stripComments(content);
+      if (/\binitiativeId\s*[:=]\s*(?:crypto\.)?randomUUID\(/.test(code)) {
+        fail(
+          relativePath +
+            " assigns an initiativeId from randomUUID; an initiative's id is the caller's, and a minted one is" +
+            " a second initiative on every retry",
+        );
+      }
+      if (/\binitiativeId\s*[:=]\s*["'`][0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}["'`]/.test(code)) {
+        fail(
+          relativePath +
+            " assigns an initiativeId from a uuid literal; production source registers no fixture initiative" +
+            " and defaults to none",
+        );
+      }
+      if (/\btype\s*:\s*["'`]INITIATIVE_REGISTERED["'`]/.test(code)) builders.push(relativePath);
+    }
+    if (builders.join(", ") !== INITIATIVE_REGISTRATION_SITE) {
+      fail(
+        "an INITIATIVE_REGISTERED is built by [" +
+          builders.join(", ") +
+          "]; exactly one module may build it, and it is " +
+          INITIATIVE_REGISTRATION_SITE,
+      );
+    }
+  }
+  requireScope("no production source mints an initiative, and one module builds its registration", initiativeScanned);
+  notes.push("no production source mints an initiative id, and one module builds the registration event");
+}
+
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
 //
 // Four laws, and one thing they have in common: each is the durable form of a
@@ -26104,8 +26257,10 @@ if (securityDoc === null) {
 // without documentation nor a documented route that no longer exists can pass.
 //
 // The parity suite stays the behavioral authority where it reaches, which is
-// eleven of the twenty-four arms in full and `eventStream` GET in part; the ten
-// arms of the initiative and account routes have no CLI-side comparison, and
+// eleven of the twenty-five arms in full and `eventStream` GET in part; the
+// eleven arms of the initiative and account routes have no CLI-side parity
+// comparison — `initiatives` POST is compared by its own suites, through the one
+// orchestration both doors call, not by the parity suite — and
 // `health` has no ledger content to build one from. This law proves something
 // narrower and total: that the readable artifact and the frozen table name the
 // same set of routes, and that the CLI column agrees with `SURFACE_MAP` both

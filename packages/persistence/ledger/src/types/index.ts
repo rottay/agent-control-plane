@@ -1057,7 +1057,34 @@ export interface InitiativeReadModel {
   readonly lastEmittedBy: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /**
+   * The title the registration recorded (planning §1, P-14 B). Null for an
+   * initiative whose registration predates the closed payload, or carries
+   * another shape: the fold reads the closed payload and nothing else.
+   */
+  readonly title: string | null;
+  /** The digest of the objective the registration published, never the objective. */
+  readonly objectiveSha256: string | null;
+  /** Always null in this build: planning §1 gives it no semantics and nothing produces it. */
+  readonly repositorySha256: string | null;
 }
+
+/**
+ * The payload of an `INITIATIVE_REGISTERED` the registration door records, by
+ * name (P-14 B, ADR 0086).
+ *
+ * Closed, and held by the one module that builds the event rather than by the
+ * append door: the contract's payload is a bounded record, and history the
+ * stream already accepted under another shape stays readable. The objective is
+ * not among these keys and never will be — its bytes go to the private plane,
+ * and the stream records the digest and the reference that names them.
+ */
+export const INITIATIVE_REGISTRATION_PAYLOAD_KEYS = [
+  "slug",
+  "title",
+  "objectiveSha256",
+  "objectiveArtifactReferenceId",
+] as const;
 
 /**
  * Derived per-roadmap-version projection.

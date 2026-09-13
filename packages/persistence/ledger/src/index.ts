@@ -297,6 +297,45 @@ export type {
   RoadmapVersionRequest,
 } from "./roadmap-version/index.js";
 
+/**
+ * P-14 escalón B: the initiative registration, by command and by API.
+ *
+ * One orchestration both doors call: the decision over `Initiative`, the
+ * objective published to the private plane under the initiative's scope, and
+ * one `INITIATIVE_REGISTERED` whose closed payload carries the objective's digest
+ * and reference and never the objective. The reader resolves the objective back
+ * by reference for the cohort that published one.
+ */
+export {
+  INITIATIVE_OBJECTIVE_ENCRYPTION_PROFILE,
+  INITIATIVE_OBJECTIVE_HOLDING_WINDOW_MS,
+  INITIATIVE_OBJECTIVE_MEDIA_TYPE,
+  INITIATIVE_REGISTRATION_REFUSALS,
+  INITIATIVE_REGISTRATION_TRANSITION_ID,
+  INITIATIVE_REGISTRATION_WRITE_REFUSALS,
+  decideInitiativeRegistration,
+  initiativeObjectiveIdempotencyKeys,
+  initiativeRegistrationEvent,
+  initiativeRegistrationIdempotencyKey,
+  readInitiativeObjective,
+  recordedInitiativeRegistrationOf,
+  registerInitiative,
+} from "./initiative-registration/index.js";
+
+export type {
+  InitiativeRegistrationDecision,
+  InitiativeRegistrationDecisionRequest,
+  InitiativeRegistrationFields,
+  InitiativeRegistrationIdentities,
+  InitiativeRegistrationInput,
+  InitiativeRegistrationOutcome,
+  InitiativeRegistrationRefusal,
+  InitiativeRegistrationTestFaults,
+  InitiativeRegistrationWriteRefusal,
+  RecordedInitiativeRegistration,
+  RegisteredInitiative,
+} from "./initiative-registration/index.js";
+
 export type {
   AppendBatchResult,
   AppendResult,

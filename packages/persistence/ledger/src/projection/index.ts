@@ -39,6 +39,7 @@ import {
   DISPATCH_STATES,
   DISPATCH_STATE_TRANSITIONS,
   EFFECT_OUTCOME_STATUSES,
+  INITIATIVE_REGISTRATION_PAYLOAD_KEYS,
   MODEL_RESOLUTION_STATUSES,
   MODEL_VERSION_PAYLOAD_KEYS,
   MODEL_VERSION_STATUSES,
@@ -3463,12 +3464,66 @@ export function foldOutboxCommands(
 // The initiative stream's projections
 // ---------------------------------------------------------------------------
 
-/** Apply one initiative event to an initiative projection row. */
+/** The registration facts the closed payload carries (P-14 B, ADR 0086). */
+export interface InitiativeRegistrationPayload {
+  readonly slug: string;
+  readonly title: string;
+  readonly objectiveSha256: string;
+  readonly objectiveArtifactReferenceId: string;
+}
+
+/** The slug grammar of `Initiative`, restated as a test over one value. */
+const INITIATIVE_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const INITIATIVE_SLUG_MAX = 80;
+const INITIATIVE_TITLE_MAX = 200;
+/** The contract's `Identifier` bound for an artifact reference id. */
+const ARTIFACT_REFERENCE_ID_MAX = 512;
+
+/**
+ * The closed registration payload of one `INITIATIVE_REGISTERED`, or null.
+ *
+ * Total, for `nextModelVersionProjection`'s reason: the stream has no delete
+ * path, so a fold that refused a stored event would be disowning history. Every
+ * key of `INITIATIVE_REGISTRATION_PAYLOAD_KEYS` present, in its shape, and no
+ * other key — or null. The registration door is the one producer of this shape;
+ * a payload written before it (`{}`, or a slug and a title with no digest) is
+ * history the fold reads as no registration facts at all, rather than as half
+ * of them.
+ */
+export function initiativeRegistrationPayloadOf(event: InitiativeEvent): InitiativeRegistrationPayload | null {
+  if (event.type !== "INITIATIVE_REGISTERED") return null;
+  const payload = event.payload;
+  const keys = INITIATIVE_REGISTRATION_PAYLOAD_KEYS as readonly string[];
+  if (undeclaredKey(payload, keys) !== null) return null;
+  const { slug, title, objectiveSha256, objectiveArtifactReferenceId } = payload;
+  if (typeof slug !== "string" || slug.length > INITIATIVE_SLUG_MAX || !INITIATIVE_SLUG_PATTERN.test(slug)) {
+    return null;
+  }
+  if (typeof title !== "string" || title.length === 0 || title.length > INITIATIVE_TITLE_MAX) return null;
+  if (typeof objectiveSha256 !== "string" || !/^[0-9a-f]{64}$/.test(objectiveSha256)) return null;
+  if (
+    typeof objectiveArtifactReferenceId !== "string" ||
+    objectiveArtifactReferenceId.length === 0 ||
+    objectiveArtifactReferenceId.length > ARTIFACT_REFERENCE_ID_MAX
+  ) {
+    return null;
+  }
+  return { slug, title, objectiveSha256, objectiveArtifactReferenceId };
+}
+
+/**
+ * Apply one initiative event to an initiative projection row.
+ *
+ * `title` and `objective_sha256` are planning §1's additives (migration 18):
+ * set by a registration that carries the closed payload, carried unchanged by
+ * every later event, and null otherwise. `repository_sha256` has no producer.
+ */
 export function nextInitiativeProjection(
   current: InitiativeReadModel | null,
   event: InitiativeEvent,
   sequence: number,
 ): InitiativeReadModel {
+  const registration = initiativeRegistrationPayloadOf(event);
   const base = {
     initiativeId: event.initiativeId,
     currentStatus: event.toStatus,
@@ -3478,6 +3533,9 @@ export function nextInitiativeProjection(
     lastTransitionId: event.transitionId,
     lastEmittedBy: event.emittedBy,
     updatedAt: event.occurredAt,
+    title: registration?.title ?? current?.title ?? null,
+    objectiveSha256: registration?.objectiveSha256 ?? current?.objectiveSha256 ?? null,
+    repositorySha256: null,
   } as const;
 
   if (current === null) {

@@ -1959,6 +1959,73 @@ export const RoadmapVersionWriteResponse = z.strictObject({
 export type RoadmapVersionWriteResponse = z.infer<typeof RoadmapVersionWriteResponse>;
 
 // ---------------------------------------------------------------------------
+// The initiative registration (P-14/B)
+// ---------------------------------------------------------------------------
+
+/**
+ * What a caller sends to register an initiative, by either door.
+ *
+ * **The same bytes on both doors.** The API's POST body and the CLI's
+ * `--request` document are parsed by this one schema, as the tool call's are:
+ * that identity is the equivalence claim, and a CLI-local request type would
+ * make it untestable.
+ *
+ * **The caller names the initiative.** `initiativeId` is the client's own, and
+ * it is the registration's idempotency coordinate: a retry with the same id and
+ * the same content is a replay, and the same id with other content is refused.
+ * No door mints one, because an id a door minted on a retry would be a second
+ * initiative.
+ *
+ * **Bounded here, shaped by the contract.** This schema bounds every field and
+ * runs the guards, so a credential-shaped objective is refused before the plane
+ * sees a byte (400). The slug's grammar, the status an initiative opens with and
+ * the comparison against a registration already recorded are the decision's,
+ * which parses the whole `Initiative` and answers `WRITE_REFUSED` (409).
+ *
+ * The objective travels once, inward. It is published to the private plane and
+ * the ledger records its digest and reference; it is never echoed back.
+ */
+export const InitiativeRegistrationRequest = z
+  .strictObject({
+    initiativeId: Uuid,
+    slug: z.string().min(1).max(80),
+    title: z.string().min(1).max(200),
+    objective: z.string().min(1).max(4_000),
+    recordedBy: WorkerIdentityString,
+  })
+  .superRefine(attachGuards);
+export type InitiativeRegistrationRequest = z.infer<typeof InitiativeRegistrationRequest>;
+
+/**
+ * What both doors print when an initiative is registered or found registered.
+ *
+ * `replayed` says which: true when the stream already held this registration
+ * and nothing was published or appended. `sequence` is the registration's own
+ * position in the initiative stream, in both cases. The registration carries the
+ * objective's digest and never the objective, for the reason the request docblock
+ * gives.
+ */
+export const InitiativeRegistrationResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    replayed: z.boolean(),
+    sequence: Sequence,
+    registration: z.strictObject({
+      initiativeId: Uuid,
+      slug: z.string().min(1).max(80),
+      title: z.string().min(1).max(200),
+      objectiveSha256: Sha256Hex,
+      status: InitiativeStatusDto,
+      eventCount: z.number().int().positive(),
+      createdAt: Timestamp,
+      updatedAt: Timestamp,
+    }),
+  })
+  .superRefine(attachGuards);
+export type InitiativeRegistrationResponse = z.infer<typeof InitiativeRegistrationResponse>;
+
+// ---------------------------------------------------------------------------
 // The roadmap content read (P8-8D-c2)
 // ---------------------------------------------------------------------------
 
