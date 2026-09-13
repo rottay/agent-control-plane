@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  CONTRACT_VERSION,
   ControlPlaneEvent,
   buildIdempotencyKey,
   buildV2IdempotencyKey,
@@ -351,6 +352,7 @@ const REVISION = Object.freeze({
   revisionNumber: 1,
   attemptNumber: 1,
   envelopeSha256: "e".repeat(64),
+  envelopeArtifactReferenceId: "ref-envelope-0001",
 });
 
 const V2_INVOCATION: DurableInvocation = { ...INVOCATION, revision: REVISION };
@@ -359,9 +361,20 @@ function buildWith(invocation: DurableInvocation, step: PlanStep, plan: readonly
   return buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan, route: TEST_ROUTE });
 }
 
-/** The whole walk's bytes, in order, as one digest. */
-function walkDigest(invocation: DurableInvocation, plan: readonly PlanStep[]): string {
-  const bytes = plan.map((step) => JSON.stringify(buildWith(invocation, step, plan))).join("\n");
+/**
+ * The whole walk's bytes, in order, as one digest.
+ *
+ * `stampedAs` rewrites the one field a contract bump moves on every event of
+ * every producer, and nothing else, so a vector lifted before a bump still
+ * speaks for every other byte after it (P-36/local D).
+ */
+function walkDigest(invocation: DurableInvocation, plan: readonly PlanStep[], stampedAs?: string): string {
+  const bytes = plan
+    .map((step) => {
+      const event = buildWith(invocation, step, plan);
+      return JSON.stringify(stampedAs === undefined ? event : { ...event, contractVersion: stampedAs });
+    })
+    .join("\n");
   return createHash("sha256").update(bytes, "utf8").digest("hex");
 }
 
@@ -371,12 +384,28 @@ describe("N-G-1: an invocation without a revision builds exactly the bytes it bu
     // a6ed7c3) over this file's fixture, never by calling the function under
     // test: a re-derivation would agree with any change at all. A mismatch here
     // means V1 moved, and the repair is to stop, not to re-pin.
-    expect(walkDigest(INVOCATION, LIFECYCLE_PLAN)).toBe(
+    //
+    // P-36/local D moved `CONTRACT_VERSION` to 2.5.0 (ADR 0084), and every
+    // event every producer builds carries it — so the literals are NOT re-pinned:
+    // they are held over the same walk with that one field stamped as it was at
+    // a6ed7c3. Every other byte of a V1 walk is still the byte HEAD built, and
+    // the carriage of the envelope reference reached none of them.
+    expect(CONTRACT_VERSION).toBe("2.5.0");
+    expect(walkDigest(INVOCATION, LIFECYCLE_PLAN, "2.4.0")).toBe(
       "5c8e92f22adcb75867c79bfa353bf4dc90c57028532c06253640b4437cc2291f",
     );
-    expect(walkDigest(INVOCATION, READ_ONLY_PLAN)).toBe(
+    expect(walkDigest(INVOCATION, READ_ONLY_PLAN, "2.4.0")).toBe(
       "52a198c05201c7d6da21d2bafd9b91f87f2498f6ddf76eb104e2d415d6118148",
     );
+    // And the version is the only field the bump moved: stamped as built, the
+    // walk differs from the vector, and every event states the version in force.
+    expect(walkDigest(INVOCATION, LIFECYCLE_PLAN)).not.toBe(
+      "5c8e92f22adcb75867c79bfa353bf4dc90c57028532c06253640b4437cc2291f",
+    );
+    for (const step of LIFECYCLE_PLAN) {
+      expect(buildWith(INVOCATION, step).contractVersion).toBe(CONTRACT_VERSION);
+      expect(Object.keys(buildWith(INVOCATION, step).payload)).not.toContain("envelopeArtifactReferenceId");
+    }
   });
 
   it("threads no opening into a V1 walk and has none to build", () => {
@@ -423,10 +452,15 @@ describe("N-G-2: every event of a revision-bearing walk carries the coordinate a
 });
 
 describe("N-G-7: the opening is B's payload, field by field, and nothing more", () => {
-  it("builds exactly the six keys an opening without a restored revision carries", () => {
+  it("builds exactly the seven keys an opening without a restored revision carries", () => {
+    // Seven since P-36/local D: the revision record of the version in force
+    // names its envelope by reference (decision 41, ADR 0084), carried from the
+    // invocation exactly as the digest is.
     const opening = buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP);
+    expect(opening.contractVersion).toBe("2.5.0");
     expect(Object.keys(opening.payload).sort()).toEqual([
       "attemptNumber",
+      "envelopeArtifactReferenceId",
       "envelopeSha256",
       "invocationId",
       "legacyAttemptNumber",
@@ -438,9 +472,17 @@ describe("N-G-7: the opening is B's payload, field by field, and nothing more", 
       revisionNumber: 1,
       attemptNumber: 1,
       envelopeSha256: REVISION.envelopeSha256,
+      envelopeArtifactReferenceId: REVISION.envelopeArtifactReferenceId,
       invocationId: V2_INVOCATION.invocationId,
       legacyAttemptNumber: V2_INVOCATION.attempt,
     });
+    // The reference is the caller's, never a function of the digest.
+    const renamed = buildWith(
+      { ...V2_INVOCATION, revision: { ...REVISION, envelopeArtifactReferenceId: "ref-envelope-other" } },
+      ATTEMPT_OPENING_STEP,
+    );
+    expect(renamed.payload["envelopeArtifactReferenceId"]).toBe("ref-envelope-other");
+    expect(renamed.payload["envelopeSha256"]).toBe(REVISION.envelopeSha256);
     // No route, no digest of the submission, no initiative: those bind at the
     // discovery that follows.
     expect(JSON.stringify(opening.payload)).not.toContain(TEST_ROUTE.accountId);
@@ -452,7 +494,8 @@ describe("N-G-7: the opening is B's payload, field by field, and nothing more", 
     const wider = { ...REVISION, cwd: "/Users/someone", transcript: "a conversation" };
     const opening = buildWith({ ...INVOCATION, revision: wider }, ATTEMPT_OPENING_STEP);
     expect(JSON.stringify(opening.payload)).not.toContain("/Users/");
-    expect(Object.keys(opening.payload)).toHaveLength(6);
+    // Seven since P-36/local D: the envelope reference joined the six.
+    expect(Object.keys(opening.payload)).toHaveLength(7);
   });
 
   it("opens from no state into DISCOVERED, uncaused, at the submission instant", () => {

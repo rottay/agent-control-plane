@@ -73,7 +73,12 @@ this table against the barrel.
   it. ADR 0072 recorded what that escalón owed, and ADR 0076 pays it. **It holds
   three from P-18/protocolo F**, which moved the literal to `"2.4.0"` on the same
   criterion — a recomputed identity and a per-payload version — and keeps
-  `"2.3.0"` beside `"2.2.0"` for the same reason (ADR 0078).
+  `"2.3.0"` beside `"2.2.0"` for the same reason (ADR 0078). **It holds four
+  from P-36/local D**, which moved the literal to `"2.5.0"` for a different
+  reason, stated as one: decision 41 fixes a cohort of revision records by
+  `contract_version`, and a cohort keyed on a version nobody moved could not
+  exist. The bump pays that cohort, not an identity; `"2.4.0"` stays readable
+  for ever beside the other two (ADR 0084).
 - **Only the version in force is emitted.** The other half of the pair above,
   and the debt ADR 0072 named. `AdmittedContractVersion` is `z.literal` of
   `CONTRACT_VERSION`, and it governs the three shapes that are instruments of

@@ -60,6 +60,7 @@ import {
   EXECUTION_EFFECT_MIGRATION,
   EXECUTION_OCCURRENCE_MIGRATION,
   MIGRATIONS,
+  TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
   applyMigrations,
 } from "../../src/migrations/index.js";
 import { applyEventToSnapshot, createProjectionSnapshot } from "../../src/projection/index.js";
@@ -327,7 +328,7 @@ describe("open", () => {
     // record, P-05/B's revision coordinate, P-08's sidecar and the registry
     // stream, typed causal triple and watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1311,6 +1312,21 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
 }
 
 /**
+ * Migration 16 undone: the envelope reference's trigger, then its column.
+ *
+ * In that order because SQLite refuses `DROP COLUMN` for a column a trigger
+ * names (M-7). The column has to go at all for migration 11's reason: `ADD
+ * COLUMN` is not idempotent, and a re-applied 16 aborts on "duplicate column
+ * name". No watermark moves, because 16 seeded none.
+ */
+function dropTaskRevisionEnvelopeReference(raw: Database.Database): void {
+  raw.exec(
+    "DROP TRIGGER tr_task_revision_read_model__validate_envelope_reference; " +
+      "ALTER TABLE task_revision_read_model DROP COLUMN envelope_artifact_reference_id;",
+  );
+}
+
+/**
  * Migration 15 undone: the four artifact read models, and `registry_events`
  * rebuilt back into migration 9's shape (P-36/local A, M-8 and D-3).
  *
@@ -1330,6 +1346,9 @@ function dropArtifactRegistry(raw: Database.Database): void {
   if (artifacts.n !== 0) {
     throw new Error("a ledger holding artifact events cannot be rewound past migration 15");
   }
+  // Sixteen first: rewinding past 15 means rewinding past everything applied
+  // after it, and a re-applied 16 over its own column aborts.
+  dropTaskRevisionEnvelopeReference(raw);
 
   raw.exec(
     "DROP TABLE artifact_tombstone_read_model; " +
@@ -2942,7 +2961,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3370,7 +3389,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -5454,7 +5473,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -6209,6 +6228,17 @@ describe("the duplicate preflight names what it finds and repairs nothing", () =
 
 const REVISION_ENVELOPE = "e".repeat(64);
 
+/**
+ * The artifact reference a revision of the version in force names its envelope
+ * by (P-36/local D, decision 41). The door refuses a reference the registry does
+ * not hold as a `TASK_ENVELOPE`, so every ledger that takes such a revision is
+ * handed one first by `plantEnvelopeReference`.
+ */
+const ENVELOPE_REFERENCE = "ref-task-envelope-1";
+
+/** The bytes the planted envelope reference names; no other fixture uses them. */
+const ENVELOPE_CONTENT = "7".repeat(64);
+
 /** The payload keys that constitute a revision record. */
 function revisionPayload(
   overrides: Record<string, unknown> = {},
@@ -6218,8 +6248,160 @@ function revisionPayload(
     revisionNumber: 1,
     attemptNumber: 1,
     envelopeSha256: REVISION_ENVELOPE,
+    envelopeArtifactReferenceId: ENVELOPE_REFERENCE,
     ...overrides,
   };
+}
+
+/**
+ * Register a `TASK_ENVELOPE` reference through the artifact door, once.
+ *
+ * A fixture, not a publication: the plane that would write the envelope's
+ * bytes is adoption's (ADR 0084), and the revision door asks only that the
+ * reference exist with that class. The first reference publishes
+ * `ENVELOPE_CONTENT`; any other is recorded against the same generation.
+ * Idempotent, so a helper that seeds an attempt can call it unconditionally.
+ */
+function plantEnvelopeReference(
+  ledger: Ledger,
+  artifactReferenceId = ENVELOPE_REFERENCE,
+  artifactClass = "TASK_ENVELOPE",
+): void {
+  if (ledger.getArtifactReference(artifactReferenceId) !== null) return;
+  const envelope = referenceRecord({
+    artifactReferenceId,
+    artifactClass,
+    scopeId: "envelope",
+  });
+  if (ledger.getArtifactBlob(ENVELOPE_CONTENT, 1) === null) {
+    ledger.appendArtifactEvent(
+      publicationIntended({
+        content: ENVELOPE_CONTENT,
+        commandId: "cmd-envelope",
+        pinId: "pin-envelope",
+      }),
+    );
+    ledger.appendArtifactEvent(
+      publicationSucceeded({
+        content: ENVELOPE_CONTENT,
+        commandId: "cmd-envelope",
+        pinId: "pin-envelope",
+        reference: envelope,
+      }),
+    );
+    return;
+  }
+  ledger.appendArtifactEvent(
+    referenceRecorded({ content: ENVELOPE_CONTENT, reference: envelope }),
+  );
+}
+
+/**
+ * Rewrite a seeded ledger into the shape a build before migration 16 left it.
+ *
+ * A V2 history seeded through today's door carries the envelope reference, and
+ * the registry holds the `TASK_ENVELOPE` that `plantEnvelopeReference` put
+ * there. No build before 16 could have written either: a revision was stamped
+ * `2.4.0` at the latest and named no reference, and the registry of such a ledger
+ * held no artifact event. So a fixture that rewinds a V2 history past 15 has to
+ * take both away first, or it rewinds a ledger that never existed — and
+ * `dropArtifactRegistry` refuses it.
+ *
+ * What moves: every `2.5.0` task event is restamped `version` — `2.4.0` unless
+ * a drill asks for an older member of the cohort — without the key,
+ * the chain is recomputed from genesis and the head and watermarks follow it;
+ * the planted registry rows and their three read-model rows are removed and the
+ * registry head returns to genesis; the revision rows take the version and the
+ * `NULL` their events now state. The append-only triggers are captured from
+ * `sqlite_master` and put back verbatim, as `restampHistory` does. Refuses a
+ * ledger whose registry holds anything but the planted envelope, or whose task
+ * stream carries a typed causal reference the recomputed chain would orphan.
+ */
+function demoteEnvelopeCohort(path: string, version = "2.4.0"): void {
+  withRawDatabase(path, (raw) => {
+    const registry = raw
+      .prepare("SELECT subject_kind, content_digest FROM registry_events")
+      .all() as { readonly subject_kind: string; readonly content_digest: string }[];
+    if (registry.some((row) => row.subject_kind !== "ARTIFACT" || row.content_digest !== ENVELOPE_CONTENT)) {
+      throw new Error("only a registry holding the planted envelope alone can be demoted");
+    }
+    const anchored = raw
+      .prepare("SELECT COUNT(*) AS n FROM control_plane_events WHERE causation_sha256 IS NOT NULL")
+      .get() as { readonly n: number };
+    if (anchored.n !== 0) {
+      throw new Error("a task stream with typed causal references cannot be rechained by this fixture");
+    }
+
+    const capture = (names: readonly string[]): readonly string[] =>
+      (
+        raw
+          .prepare(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN (" +
+              names.map(() => "?").join(", ") +
+              ")",
+          )
+          .all(...names) as { readonly sql: string }[]
+      ).map((row) => row.sql);
+
+    const registryTriggers = capture(["tr_registry_events__deny_delete"]);
+    expect(registryTriggers).toHaveLength(1);
+    raw.exec(
+      "DROP TRIGGER tr_registry_events__deny_delete; " +
+        "DELETE FROM artifact_pin_read_model; " +
+        "DELETE FROM artifact_reference_read_model; " +
+        "DELETE FROM artifact_blob_read_model; " +
+        "DELETE FROM registry_events; " +
+        "DELETE FROM sqlite_sequence WHERE name = 'registry_events';",
+    );
+    for (const sql of registryTriggers) raw.exec(sql);
+    const meta = raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?");
+    meta.run("0", "registry_head_sequence");
+    meta.run("0", "registry_event_count");
+    meta.run(GENESIS_SHA256, "registry_head_event_sha256");
+    raw
+      .prepare(
+        "UPDATE projection_watermark SET applied_sequence = 0, event_count = 0, " +
+          "source_head_sha256 = ? WHERE source_stream = 'registry_events'",
+      )
+      .run(GENESIS_SHA256);
+
+    const streamTriggers = capture(["control_plane_events_deny_update", "control_plane_events_deny_delete"]);
+    expect(streamTriggers).toHaveLength(2);
+    raw.exec(
+      "DROP TRIGGER control_plane_events_deny_update; " +
+        "DROP TRIGGER control_plane_events_deny_delete;",
+    );
+    const rows = raw
+      .prepare("SELECT sequence, event_json FROM control_plane_events ORDER BY sequence")
+      .all() as { readonly sequence: number; readonly event_json: string }[];
+    const rewrite = raw.prepare(
+      "UPDATE control_plane_events SET event_json = ?, contract_version = ?, " +
+        "previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?",
+    );
+    let previous = GENESIS_SHA256;
+    for (const row of rows) {
+      const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+      if (decoded["contractVersion"] === CONTRACT_VERSION) decoded["contractVersion"] = version;
+      const payload = decoded["payload"] as Record<string, unknown>;
+      delete payload["envelopeArtifactReferenceId"];
+      const rewritten = canonicalJsonStringify(decoded);
+      const digest = chainDigest(previous, rewritten);
+      rewrite.run(rewritten, decoded["contractVersion"], previous, digest, row.sequence);
+      previous = digest;
+    }
+    meta.run(previous, "head_event_sha256");
+    raw
+      .prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = ?")
+      .run(previous, "control_plane_events");
+    for (const sql of streamTriggers) raw.exec(sql);
+
+    raw
+      .prepare(
+        "UPDATE task_revision_read_model SET contract_version = ?, " +
+          "envelope_artifact_reference_id = NULL",
+      )
+      .run(version);
+  });
 }
 
 interface StreamCoordinateRow {
@@ -6253,6 +6435,7 @@ interface RevisionRow {
   readonly created_by: string;
   readonly contract_version: string;
   readonly sequence: number;
+  readonly envelope_artifact_reference_id: string | null;
 }
 
 function readRevisions(path: string): RevisionRow[] {
@@ -6442,6 +6625,7 @@ describe("the V2 coordinate travels on the stream, or does not travel at all", (
     // The door's half of the same law. The columns are a projection of the
     // body, never a second source a caller has to remember to fill.
     const ledger = open(temporaryDatabase());
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     ledger.append(makeEvent({ taskId, transitionId: "v1" }));
     ledger.append(
@@ -6478,6 +6662,7 @@ describe("the V2 coordinate travels on the stream, or does not travel at all", (
     // reach this fold at all is with a second event that differs in the attempt
     // and in nothing else.
     const ledger = open(temporaryDatabase());
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const coordinate = {
       revisionId: randomUUID(),
@@ -6546,6 +6731,7 @@ describe("the revision record is written once, or refused", () => {
   it("N3 and N4: the coordinate and the revision id are each unique", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
     ledger.append(
@@ -6562,9 +6748,10 @@ describe("the revision record is written once, or refused", () => {
           .prepare(
             "INSERT INTO task_revision_read_model (task_id, revision_number, revision_id, " +
               "envelope_sha256, restored_from_revision_id, created_at, created_by, " +
-              "contract_version, sequence) VALUES (?, 1, ?, ?, NULL, ?, ?, ?, 2)",
+              "contract_version, sequence, envelope_artifact_reference_id) " +
+              "VALUES (?, 1, ?, ?, NULL, ?, ?, ?, 2, ?)",
           )
-          .run(taskId, randomUUID(), REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION),
+          .run(taskId, randomUUID(), REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION, ENVELOPE_REFERENCE),
       ).toThrow(/UNIQUE|PRIMARY KEY/i);
 
       // N3: and the revision id is globally unique, so a handle cannot name two
@@ -6574,9 +6761,10 @@ describe("the revision record is written once, or refused", () => {
           .prepare(
             "INSERT INTO task_revision_read_model (task_id, revision_number, revision_id, " +
               "envelope_sha256, restored_from_revision_id, created_at, created_by, " +
-              "contract_version, sequence) VALUES (?, 2, ?, ?, NULL, ?, ?, ?, 3)",
+              "contract_version, sequence, envelope_artifact_reference_id) " +
+              "VALUES (?, 2, ?, ?, NULL, ?, ?, ?, 3, ?)",
           )
-          .run(randomUUID(), revisionId, REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION),
+          .run(randomUUID(), revisionId, REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION, ENVELOPE_REFERENCE),
       ).toThrow(/UNIQUE/i);
 
       // The CHECK is real too: revision numbering starts at one.
@@ -6585,9 +6773,10 @@ describe("the revision record is written once, or refused", () => {
           .prepare(
             "INSERT INTO task_revision_read_model (task_id, revision_number, revision_id, " +
               "envelope_sha256, restored_from_revision_id, created_at, created_by, " +
-              "contract_version, sequence) VALUES (?, 0, ?, ?, NULL, ?, ?, ?, 4)",
+              "contract_version, sequence, envelope_artifact_reference_id) " +
+              "VALUES (?, 0, ?, ?, NULL, ?, ?, ?, 4, ?)",
           )
-          .run(randomUUID(), randomUUID(), REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION),
+          .run(randomUUID(), randomUUID(), REVISION_ENVELOPE, "2026-09-11T09:00:00.000Z", "kimi/k3/coordinator/01", CONTRACT_VERSION, ENVELOPE_REFERENCE),
       ).toThrow(/CHECK|constraint/i);
     });
   });
@@ -6595,6 +6784,7 @@ describe("the revision record is written once, or refused", () => {
   it("N14: a second arrival at one coordinate is a replay, or a refusal, never a rewrite", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
     const payload = revisionPayload({ revisionId });
@@ -6683,6 +6873,7 @@ describe("the revision record is written once, or refused", () => {
     // the same reason a different digest is.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
     const restored = randomUUID();
@@ -6737,6 +6928,7 @@ describe("the revision record is written once, or refused", () => {
     // agree rather than leaving a reader to guess.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const first = randomUUID();
 
@@ -6790,6 +6982,7 @@ describe("the revision record is written once, or refused", () => {
     // that two rebuilds at one head produce byte-identical rows.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     seedTask(ledger, taskId, "kimi/k3/coordinator/01");
     const afterSeed = ledger.getTask(taskId)?.currentState ?? "DISCOVERED";
@@ -6836,6 +7029,9 @@ describe("the revision record is written once, or refused", () => {
         "contract_version",
         "created_at",
         "created_by",
+        // P-36/local D: a reference, a name the registry resolves — not a path,
+        // and not a digest.
+        "envelope_artifact_reference_id",
         "envelope_sha256",
         "restored_from_revision_id",
         "revision_id",
@@ -6862,6 +7058,7 @@ describe("the V2 idempotency key travels through the real door", () => {
   it("P-P18-1: a V2 key is stored and read back identical, under its imported namespace", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const event = makeEvent({
       taskId,
@@ -6918,6 +7115,7 @@ describe("the V2 idempotency key travels through the real door", () => {
     // under V1 has to be closed before the ledger is ever consulted.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const payload = revisionPayload({ revisionNumber: 2, attemptNumber: 1 });
 
@@ -7184,8 +7382,10 @@ describe("a version this build does not read is refused, by name", () => {
     //
     // P-18/protocolo F moved the literal again (ADR 0078), so the set now holds
     // two supported-but-not-current members; the loop at the end walks all three.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", CONTRACT_VERSION]);
-    expect(CONTRACT_VERSION).toBe("2.4.0");
+    // P-36/local D moved it once more (ADR 0084), for a cohort rather than an
+    // identity: three supported-but-not-current members, four in the loop.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.5.0");
 
     // The history is fabricated with `restampVersion` rather than taken from a
     // fixture, and the correction matters: there is no recorded `"2.2.0"`
@@ -7257,7 +7457,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7270,6 +7470,7 @@ describe("a version this build does not read is refused, by name", () => {
     // And new work under the version in force lands on top of the migrated
     // history: an attempt of another task, and an effect inside it.
     const fresh = randomUUID();
+    plantEnvelopeReference(migrated);
     migrated.append(attemptOpening({ taskId: fresh, attempt: 1, transitionId: "open", invocationId: "inv-1" }));
     migrated.append(effectIntention({ taskId: fresh, transitionId: "effect-1", invocationId: "inv-1" }));
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
@@ -7287,8 +7488,10 @@ describe("a version this build does not read is refused, by name", () => {
     // before the bump and partly by a later build — stopped at 13 — is opened by
     // this build, which applies 14 over both cohorts, and must then read, verify,
     // rebuild and record a prompt and its answer on top. D carried no bump; the
-    // newer cohort is stamped with whatever version is in force, which is
-    // `"2.4.0"` since F.
+    // newer cohort was stamped with the version in force at 13, which is
+    // `"2.4.0"` — seeded under today's `"2.5.0"` and demoted to that shape,
+    // because P-36/local D moved the version and a build at 13 knew no envelope
+    // reference.
     const path = temporaryDatabase();
     const ledger = open(path);
     const oldTask = randomUUID();
@@ -7300,6 +7503,9 @@ describe("a version this build does not read is refused, by name", () => {
     const taskId = randomUUID();
     const effectId = seedDelivery(middle, taskId);
     middle.close();
+    // The middle cohort was written by a build stopped at 13, which stamped 2.4.0
+    // and knew no envelope reference (P-36/local D).
+    demoteEnvelopeCohort(path);
 
     withRawDatabase(path, (raw) => {
       dropExecutionOccurrences(raw);
@@ -7310,14 +7516,16 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
-      CONTRACT_VERSION,
-      CONTRACT_VERSION,
-      CONTRACT_VERSION,
+      "2.4.0",
+      "2.4.0",
+      "2.4.0",
     ]);
+    // Migration 16 applied over that cohort leaves its revision row NULL.
+    expect(readRevisions(path).map((row) => row.envelope_artifact_reference_id)).toEqual([null]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     expect(migrated.rebuildReadModel().replayedEvents).toBe(4);
     expect(migrated.verifyIntegrity().ok).toBe(true);
@@ -7326,7 +7534,7 @@ describe("a version this build does not read is refused, by name", () => {
     migrated.append(
       responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
     );
-    expect(CONTRACT_VERSION).toBe("2.4.0");
+    expect(CONTRACT_VERSION).toBe("2.5.0");
     expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
     expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
@@ -7358,7 +7566,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -7466,14 +7674,15 @@ describe("a version this build does not read is refused, by name", () => {
       reopened.appendBatch(quarantineBatch(taskId).map((event) => ({ ...event, contractVersion: "2.3.0" }))),
     );
     expect(stale.path).toBe("contractVersion");
-    expect(stale.message).toContain("2.4.0");
+    // The version in force, which P-36/local D moved on to 2.5.0 (ADR 0084).
+    expect(stale.message).toContain(CONTRACT_VERSION);
 
     expect(reopened.appendBatch(quarantineBatch(taskId)).insertedCount).toBe(3);
     expect(reopened.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.3.0",
-      "2.4.0",
-      "2.4.0",
-      "2.4.0",
+      CONTRACT_VERSION,
+      CONTRACT_VERSION,
+      CONTRACT_VERSION,
     ]);
     expect(reopened.getOutboxCommand(revokeCommandId())?.state).toBe("PENDING");
     expect(reopened.verifyIntegrity().ok).toBe(true);
@@ -7504,7 +7713,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -7735,6 +7944,7 @@ function attemptOpening(input: OpeningInput): Record<string, unknown> {
         revisionNumber,
         attemptNumber,
         envelopeSha256: REVISION_ENVELOPE,
+        envelopeArtifactReferenceId: ENVELOPE_REFERENCE,
         invocationId: input.invocationId ?? "inv-" + String(attemptNumber),
         legacyAttemptNumber: input.legacyAttemptNumber ?? input.attempt,
       },
@@ -7815,6 +8025,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // `NaN`, and a coordinate numbered `NaN` is a row nothing can find.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
 
     // A task whose history is V1 and whose flat attempt has reached 3. The next
     // coordinate's assignment is 4, not 1: the counter is per task, and the
@@ -7883,6 +8094,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // invocationId distinto para la misma coordenada".
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
 
@@ -7951,6 +8163,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // name so the refusal names both attempts rather than arriving as an abort.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
 
@@ -8002,6 +8215,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // column.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
 
@@ -8060,6 +8274,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // log already holds — so this is asserted, not assumed.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
 
     ledger.append(
@@ -8081,6 +8296,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // than in a fourth trigger (ADR 0073), so it is drilled through the door.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
 
     const disagreeing = caught(() =>
@@ -8113,6 +8329,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
         revisionNumber: 1,
         attemptNumber: 1,
         envelopeSha256: REVISION_ENVELOPE,
+        envelopeArtifactReferenceId: ENVELOPE_REFERENCE,
         invocationId: "inv-1",
       };
       if (bad !== undefined) payload["legacyAttemptNumber"] = bad;
@@ -8140,6 +8357,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
             revisionNumber: 1,
             attemptNumber: 1,
             envelopeSha256: REVISION_ENVELOPE,
+            envelopeArtifactReferenceId: ENVELOPE_REFERENCE,
             legacyAttemptNumber: 1,
           },
         }),
@@ -8156,6 +8374,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // the operator would be handed a `SqliteError` naming a constraint.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
 
     const orphan = caught(() =>
@@ -8218,6 +8437,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // escalón inherits a constraint that has been seen to work.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     ledger.append(
       attemptOpening({ taskId, attempt: 1, transitionId: "attempt.open", invocationId: "inv-1" }),
@@ -8284,6 +8504,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // knows the bound would never be exercised at all.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     ledger.append(makeEvent({ taskId, attempt: 10_000, transitionId: "discover" }));
 
@@ -8321,6 +8542,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // clock would differ between them while agreeing with neither.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
 
@@ -8385,6 +8607,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     const twoInvocations = temporaryDatabase();
     {
       const ledger = open(twoInvocations);
+      plantEnvelopeReference(ledger);
       const taskId = randomUUID();
       const revisionId = randomUUID();
       ledger.append(
@@ -8416,6 +8639,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     const oneFlatNumber = temporaryDatabase();
     {
       const ledger = open(oneFlatNumber);
+      plantEnvelopeReference(ledger);
       const taskId = randomUUID();
       const revisionId = randomUUID();
       ledger.append(
@@ -8456,6 +8680,7 @@ describe("every attempt opens with its own identity, assigned once", () => {
     // row nobody wrote is a claim that a run happened when it did not.
     const path = temporaryDatabase();
     const ledger = open(path);
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     ledger.append(
       attemptOpening({ taskId, attempt: 1, transitionId: "a1", invocationId: "inv-a" }),
@@ -8727,6 +8952,7 @@ function seedOpenAttempt(
   taskId: string,
   invocationId = "inv-1",
 ): void {
+  plantEnvelopeReference(ledger);
   ledger.append(
     attemptOpening({ taskId, attempt: 1, transitionId: "open", invocationId }),
   );
@@ -10676,6 +10902,7 @@ describe("an answer keeps its origin (execution §8.2)", () => {
     // §7 `:343`: the coordinate is the prompt's own attempt. A second attempt of
     // the same task, and an answer to attempt 1's prompt recorded there.
     const ledger = open(temporaryDatabase());
+    plantEnvelopeReference(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
     ledger.append(
@@ -10861,6 +11088,8 @@ describe("migration 14 lands whole, and its rows rebuild deterministically", () 
     const head = seeded.status().headSequence;
     expect(head).toBeGreaterThan(0);
     seeded.close();
+    // A ledger at 13 held no envelope reference and no artifact event (P-36/local D).
+    demoteEnvelopeCohort(path);
 
     withRawDatabase(path, (raw) => {
       dropExecutionOccurrences(raw);
@@ -12662,7 +12891,9 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     expect(before.columns.map((column) => column["name"])).not.toContain("subject_kind");
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ARTIFACT_REGISTRY_MIGRATION);
+    // Fifteen applies over the history at fourteen, and sixteen after it.
+    expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -13543,5 +13774,411 @@ describe("the artifact plane is read through the fold's own view, and a read mov
     rebuilt.rebuildReadModel();
     rebuilt.close();
     expect(artifactTables(path)).toEqual(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-36/local escalón D — a revision of the new cohort names its envelope by
+// reference, never by digest (decision 41, migration 16, ADR 0084), and the
+// intention's block earns the stream's rules (O-1 of escalón C's postaudit)
+//
+// The negatives are the preaudit's N-P36D-1..14. The fold's form and cohort are
+// drilled in `test/projection`; the migration's text in `test/migrations`. What
+// is asserted here is the door, the row, the trigger and a rebuild.
+// ---------------------------------------------------------------------------
+
+/** A revision payload with the envelope reference removed, and nothing else changed. */
+function withoutEnvelopeReference(payload: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(payload).filter(([key]) => key !== "envelopeArtifactReferenceId"));
+}
+
+describe("a revision names its envelope by a registered reference, by cohort, never by digest (P-36/local D)", () => {
+  /** A revision record under the version in force, on a task of its own. */
+  function revisionEvent(
+    taskId: string,
+    payload: Record<string, unknown>,
+    transitionId = "revise",
+  ): Record<string, unknown> {
+    return makeEvent({ taskId, transitionId, payload });
+  }
+
+  it("N-P36D-1: the door refuses a revision of the new cohort that names no reference, by name, and so does a rebuild", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    plantEnvelopeReference(ledger);
+    const taskId = randomUUID();
+    const bare = withoutEnvelopeReference(revisionPayload());
+
+    const refused = refusalOf(() => ledger.append(revisionEvent(taskId, bare)));
+    expect(refused.path).toBe("payload.envelopeArtifactReferenceId");
+    expect(refused.message).toContain("names none");
+    // Nothing moved: no event, no row, no half of either.
+    expect(ledger.status().headSequence).toBe(0);
+    expect(readRevisions(path)).toEqual([]);
+    const doorWords = refused.message;
+    ledger.close();
+
+    // The same history planted past the door: the rebuild refuses it with the
+    // same words, because it folds with the same function.
+    plantChainedEvent(path, revisionEvent(taskId, bare));
+    const reopened = open(path);
+    const rebuild = caught(() => reopened.rebuildReadModel());
+    expect(rebuild).toBeInstanceOf(LedgerValidationError);
+    expect((rebuild as Error).message).toContain(doorWords);
+    expect(readRevisions(path)).toEqual([]);
+  });
+
+  it("N-P36D-3: a present value that is not a reference is refused at the door by name, never as a SqliteError", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    plantEnvelopeReference(ledger);
+    for (const value of [null, "", 7, { id: ENVELOPE_REFERENCE }]) {
+      const error = caught(() =>
+        ledger.append(
+          revisionEvent(randomUUID(), revisionPayload({ envelopeArtifactReferenceId: value })),
+        ),
+      );
+      expect(error, JSON.stringify(value)).toBeInstanceOf(LedgerValidationError);
+      expect((error as LedgerValidationError).issues[0]?.path).toBe("payload.envelopeArtifactReferenceId");
+    }
+    expect(ledger.status().headSequence).toBe(0);
+    ledger.close();
+  });
+
+  it("N-P36D-10: a reference the registry does not hold, or holds under another class, is refused by name before anything is written", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    plantEnvelopeReference(ledger);
+    plantEnvelopeReference(ledger, "ref-evidence-1", "EVIDENCE");
+    const registryHead = registryRows(path).length;
+
+    const missing = refusalOf(() =>
+      ledger.append(
+        revisionEvent(randomUUID(), revisionPayload({ envelopeArtifactReferenceId: "ref-nobody-registered" })),
+      ),
+    );
+    expect(missing.path).toBe("payload.envelopeArtifactReferenceId");
+    expect(missing.message).toContain("the registry does not hold");
+    // The value is producer-supplied text and is never echoed.
+    expect(missing.message).not.toContain("ref-nobody-registered");
+
+    const wrongClass = refusalOf(() =>
+      ledger.append(
+        revisionEvent(randomUUID(), revisionPayload({ envelopeArtifactReferenceId: "ref-evidence-1" })),
+      ),
+    );
+    expect(wrongClass.path).toBe("payload.envelopeArtifactReferenceId");
+    expect(wrongClass.message).toContain("of class EVIDENCE");
+    expect(wrongClass.message).toContain("a revision's envelope is a TASK_ENVELOPE");
+
+    // An opening goes through the same door first, so the refusal names the
+    // reference rather than whatever the attempt's compare-and-set meets next.
+    const opening = caught(() =>
+      ledger.append(
+        attemptOpening({
+          taskId: randomUUID(),
+          attempt: 1,
+          transitionId: "open",
+          payload: { ...revisionPayload({ envelopeArtifactReferenceId: "ref-evidence-1" }), invocationId: "inv-x", legacyAttemptNumber: 1 },
+        }),
+      ),
+    );
+    expect(opening).toBeInstanceOf(LedgerValidationError);
+    expect((opening as LedgerValidationError).issues[0]?.path).toBe("payload.envelopeArtifactReferenceId");
+
+    expect(ledger.status().headSequence).toBe(0);
+    expect(registryRows(path)).toHaveLength(registryHead);
+    expect(readRevisions(path)).toEqual([]);
+
+    // And the registered TASK_ENVELOPE is admitted, into a row that holds it.
+    const taskId = randomUUID();
+    ledger.append(revisionEvent(taskId, revisionPayload()));
+    expect(readRevisions(path).map((row) => [row.task_id, row.envelope_artifact_reference_id, row.contract_version])).toEqual([
+      [taskId, ENVELOPE_REFERENCE, CONTRACT_VERSION],
+    ]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+  });
+
+  it("N-P36D-4: a reference is never derived from the digest, even when the registry holds bytes under it", () => {
+    // The envelope's digest is also a content digest the registry holds, under a
+    // TASK_ENVELOPE reference of its own. A reader that "helpfully" resolved the
+    // missing reference through the digest would find one. The door does not.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendArtifactEvent(publicationIntended({ content: REVISION_ENVELOPE, commandId: "cmd-by-digest", pinId: "pin-by-digest" }));
+    ledger.appendArtifactEvent(
+      publicationSucceeded({
+        content: REVISION_ENVELOPE,
+        commandId: "cmd-by-digest",
+        pinId: "pin-by-digest",
+        reference: referenceRecord({ artifactReferenceId: "ref-under-the-digest", artifactClass: "TASK_ENVELOPE" }),
+      }),
+    );
+    expect(ledger.getArtifactBlob(REVISION_ENVELOPE, 1)?.lifecycleState).toBe("PUBLISHED");
+
+    const bare = withoutEnvelopeReference(revisionPayload());
+    expect(refusalOf(() => ledger.append(revisionEvent(randomUUID(), bare))).path).toBe(
+      "payload.envelopeArtifactReferenceId",
+    );
+    expect(
+      refusalOf(() =>
+        ledger.append(
+          revisionEvent(randomUUID(), revisionPayload({ envelopeArtifactReferenceId: REVISION_ENVELOPE })),
+        ),
+      ).message,
+    ).toContain("the registry does not hold");
+    expect(readRevisions(path)).toEqual([]);
+    ledger.close();
+  });
+
+  it("N-P36D-9: a second arrival naming another reference is refused as written once; the same reference is a replay", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    plantEnvelopeReference(ledger);
+    plantEnvelopeReference(ledger, "ref-task-envelope-2");
+    const taskId = randomUUID();
+    const payload = revisionPayload();
+
+    ledger.append(revisionEvent(taskId, payload, "r1"));
+    const again = ledger.append(
+      makeEvent({ taskId, transitionId: "r2", fromState: "DISCOVERED", toState: "DISCOVERED", payload }),
+    );
+    expect(again.inserted).toBe(true);
+    expect(readRevisions(path)).toHaveLength(1);
+
+    const renamed = refusalOf(() =>
+      ledger.append(
+        makeEvent({
+          taskId,
+          transitionId: "r3",
+          fromState: "DISCOVERED",
+          toState: "DISCOVERED",
+          payload: { ...payload, envelopeArtifactReferenceId: "ref-task-envelope-2" },
+        }),
+      ),
+    );
+    expect(renamed.path).toBe("payload.revisionNumber");
+    expect(renamed.message).toContain("already recorded with different content, and a revision record is written once");
+    expect(readRevisions(path)[0]?.envelope_artifact_reference_id).toBe(ENVELOPE_REFERENCE);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+
+    // The rebuild takes the same two branches: the replay folds to nothing, and
+    // the planted rename refuses the rebuild with the door's words.
+    const rebuilt = open(path);
+    expect(rebuilt.rebuildReadModel().replayedEvents).toBe(2);
+    rebuilt.close();
+    plantChainedEvent(
+      path,
+      makeEvent({
+        taskId,
+        transitionId: "r3",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        payload: { ...payload, envelopeArtifactReferenceId: "ref-task-envelope-2" },
+      }),
+    );
+    const reopened = open(path);
+    expect((caught(() => reopened.rebuildReadModel()) as Error).message).toContain("written once");
+  });
+
+  it("Q-D2: a second attempt stamped after the upgrade reaches a revision of the cohort before, and its row stays NULL", () => {
+    // A revision in flight at the upgrade: recorded under 2.4.0, row NULL for
+    // ever. Its second attempt is new work, so it is stamped 2.5.0 and carries
+    // the reference its version requires. The comparison is the three facts; the
+    // reference stays in the log, not in the row.
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    const taskId = randomUUID();
+    const revisionId = randomUUID();
+    plantEnvelopeReference(seeded);
+    seeded.append(attemptOpening({ taskId, attempt: 1, transitionId: "a1", revisionId, invocationId: "inv-a" }));
+    seeded.close();
+    demoteEnvelopeCohort(path);
+    expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id])).toEqual([["2.4.0", null]]);
+
+    const upgraded = open(path);
+    expect(upgraded.verifyIntegrity().ok).toBe(true);
+    plantEnvelopeReference(upgraded);
+    upgraded.append(
+      attemptOpening({
+        taskId,
+        attempt: 2,
+        attemptNumber: 2,
+        transitionId: "a2",
+        revisionId,
+        invocationId: "inv-b",
+        fromState: ATTEMPT_TASK_STATE,
+      }),
+    );
+    expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id])).toEqual([["2.4.0", null]]);
+    expect(readAttempts(path).map((row) => row.attempt_number)).toEqual([1, 2]);
+    expect(upgraded.listEvents().events.map((record) => record.event.contractVersion)).toEqual(["2.4.0", CONTRACT_VERSION]);
+    expect(upgraded.verifyIntegrity().ok).toBe(true);
+    expect(upgraded.rebuildReadModel().replayedEvents).toBe(2);
+    expect(readRevisions(path).map((row) => row.envelope_artifact_reference_id)).toEqual([null]);
+    expect(upgraded.verifyIntegrity().ok).toBe(true);
+    upgraded.close();
+  });
+
+  it("N-P36D-5: the trigger refuses both crossings of the cohort at the SQL level", () => {
+    const path = temporaryDatabase();
+    open(path).close();
+    withRawDatabase(path, (raw) => {
+      const insert = raw.prepare(
+        "INSERT INTO task_revision_read_model (task_id, revision_number, revision_id, envelope_sha256, " +
+          "restored_from_revision_id, created_at, created_by, contract_version, sequence, " +
+          "envelope_artifact_reference_id) VALUES (?, 1, ?, ?, NULL, ?, ?, ?, 1, ?)",
+      );
+      const row = (version: string, reference: string | null): (() => unknown) => () =>
+        insert.run(randomUUID(), randomUUID(), REVISION_ENVELOPE, "2026-09-13T09:00:00.000Z", "kimi/k3/coordinator/01", version, reference);
+
+      for (const version of ["2.2.0", "2.3.0", "2.4.0"]) {
+        expect(row(version, ENVELOPE_REFERENCE), version).toThrow(/must be NULL on a revision of contract version 2\.2\.0, 2\.3\.0 or 2\.4\.0/);
+        expect(row(version, null), version).not.toThrow();
+      }
+      for (const version of [CONTRACT_VERSION, "2.6.0", "3.0.0"]) {
+        expect(row(version, null), version).toThrow(/is required on a revision of every later contract version/);
+        expect(row(version, ""), version).toThrow(/is required on a revision of every later contract version/);
+        expect(row(version, ENVELOPE_REFERENCE), version).not.toThrow();
+      }
+    });
+  });
+
+  it("N-P36D-6: a 2.2.0, 2.3.0 or 2.4.0 revision history rewound past 16 opens, migrates, verifies and rebuilds with every row NULL", () => {
+    for (const version of ["2.2.0", "2.3.0", "2.4.0"]) {
+      const path = temporaryDatabase();
+      const seeded = open(path);
+      const taskId = randomUUID();
+      seedOpenAttempt(seeded, taskId);
+      seeded.append(revisionEvent(randomUUID(), revisionPayload()));
+      seeded.close();
+      demoteEnvelopeCohort(path, version);
+      withRawDatabase(path, (raw) => {
+        dropTaskRevisionEnvelopeReference(raw);
+        raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION);
+        const columns = raw.prepare("SELECT name FROM pragma_table_info('task_revision_read_model')").all() as { readonly name: string }[];
+        expect(columns.map((column) => column.name), version).not.toContain("envelope_artifact_reference_id");
+      });
+
+      const migrated = open(path);
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION);
+      expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
+        [version, null],
+        [version, null],
+      ]);
+      expect(migrated.verifyIntegrity().ok, version).toBe(true);
+      expect(migrated.rebuildReadModel().replayedEvents, version).toBe(2);
+      expect(migrated.verifyIntegrity().ok, version).toBe(true);
+      expect(readRevisions(path).every((row) => row.envelope_artifact_reference_id === null), version).toBe(true);
+
+      // And new work of the new cohort lands on top, reference and all.
+      plantEnvelopeReference(migrated);
+      const fresh = randomUUID();
+      migrated.append(revisionEvent(fresh, revisionPayload()));
+      expect(readRevisions(path).find((row) => row.task_id === fresh)?.envelope_artifact_reference_id, version).toBe(ENVELOPE_REFERENCE);
+      expect(migrated.rebuildReadModel().replayedEvents, version).toBe(3);
+      expect(migrated.verifyIntegrity().ok, version).toBe(true);
+      migrated.close();
+    }
+  });
+
+  it("N-P36D-11: the cohort cannot be left by stamping an older version on new work", () => {
+    // A producer that wanted to skip the reference by stamping 2.4.0 is refused
+    // for the version before the fold is ever asked, with both numbers named.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const bare = withoutEnvelopeReference(revisionPayload());
+    const stale = refusalOf(() =>
+      ledger.append({ ...revisionEvent(randomUUID(), bare), contractVersion: "2.4.0" }),
+    );
+    expect(stale.path).toBe("contractVersion");
+    expect(stale.message).toContain(CONTRACT_VERSION);
+    expect(stale.message).toContain("2.4.0");
+    expect(CONTRACT_VERSION).toBe("2.5.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0"]);
+    ledger.close();
+  });
+});
+
+describe("an intention's intended reference earns the stream's rules at the door and at a rebuild (O-1, P-36/local D)", () => {
+  function intendedWith(reference: Record<string, unknown> | undefined): Record<string, unknown> {
+    const body = publicationIntended();
+    if (reference === undefined) return body;
+    return { ...body, payload: { ...(body["payload"] as Record<string, unknown>), intendedReference: reference } };
+  }
+
+  it("N-P36D-12: a SECRET_BEARING block and a policy outside the closed set are refused on the append, and nothing is written", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+
+    const secret = onlyIssue(caught(() => ledger.appendArtifactEvent(intendedWith(referenceRecord({ classification: "SECRET_BEARING" })))));
+    expect(secret.path).toBe("payload.intendedReference.classification");
+    expect(secret.message).toContain("never published in the stream");
+
+    const policy = onlyIssue(caught(() => ledger.appendArtifactEvent(intendedWith(referenceRecord({ accessPolicyId: "OTHER_V1" })))));
+    expect(policy.path).toBe("payload.intendedReference.accessPolicyId");
+    expect(policy.message).toContain("the closed set is SCOPE_EQUALITY_V1");
+
+    expect(registryRows(path)).toEqual([]);
+    expect(artifactTables(path)["blobs"]).toEqual([]);
+    ledger.close();
+  });
+
+  it("N-P36D-13: an intention with a valid block, or with none, is admitted and rebuilds to the same rows", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    expect(ledger.appendArtifactEvent(intendedWith(referenceRecord())).inserted).toBe(true);
+    const other = publicationIntended({ content: CONTENT_B, commandId: "cmd-2", pinId: "pin-publication-2" });
+    expect(ledger.appendArtifactEvent(other).inserted).toBe(true);
+    ledger.close();
+
+    const before = artifactTables(path);
+    const rebuilt = open(path);
+    expect(rebuilt.rebuildReadModel().replayedRegistryEvents).toBe(2);
+    expect(rebuilt.verifyIntegrity().problems).toEqual([]);
+    rebuilt.close();
+    expect(artifactTables(path)).toEqual(before);
+  });
+
+  it("N-P36D-12, rebuild: a planted intention whose block the door refuses fails the rebuild and the integrity replay in the door's own words", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    // A stream that already holds a valid block, so the rebuild has something
+    // it must keep reading before it meets the planted one.
+    ledger.appendArtifactEvent(intendedWith(referenceRecord()));
+    const planted = publicationIntended({ content: CONTENT_B, commandId: "cmd-2", pinId: "pin-publication-2" });
+    const secret = { ...planted, payload: { ...(planted["payload"] as Record<string, unknown>), intendedReference: referenceRecord({ classification: "SECRET_BEARING" }) } };
+    const doorWords = onlyIssue(caught(() => ledger.appendArtifactEvent(secret))).message;
+    ledger.close();
+
+    plantRegistryRow(
+      path,
+      {
+        subjectKind: "ARTIFACT",
+        documentKind: null,
+        artifactEventKind: "PUBLICATION_INTENDED",
+        documentId: CONTENT_B,
+        documentVersion: 1,
+        parentDocumentVersion: null,
+        contentDigest: CONTENT_B,
+      },
+      secret,
+    );
+
+    // The row's shape is lawful — the contract admits the block — so what refuses
+    // it is the fold's own stateless rule, thrown at the event that caused it with
+    // the door's words, and the rebuild rolls back.
+    const reopened = open(path);
+    const rebuild = caught(() => reopened.rebuildReadModel());
+    expect(rebuild).toBeInstanceOf(LedgerValidationError);
+    expect((rebuild as LedgerValidationError).issues[0]?.path).toBe("payload.intendedReference.classification");
+    expect((rebuild as LedgerValidationError).message).toContain(doorWords);
+    const verified = caught(() => reopened.verifyIntegrity());
+    expect(verified).toBeInstanceOf(LedgerValidationError);
+    expect((verified as LedgerValidationError).message).toContain(doorWords);
+    expect(artifactTables(path)["blobs"]).toHaveLength(1);
+    reopened.close();
   });
 });

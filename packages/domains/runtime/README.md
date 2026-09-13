@@ -205,9 +205,10 @@ benign replay becomes a hard conflict at the exact moment recovery is running.
 
 The V2 coordinate follows the same law (P-18/protocolo G, ADR 0080). A
 `DurableInvocation` may carry an optional `revision` — `revisionId`,
-`revisionNumber`, `attemptNumber`, `envelopeSha256` — captured at submission.
-Without it, every key, id and payload is byte-identical to what the walk built
-before G. With it:
+`revisionNumber`, `attemptNumber`, `envelopeSha256` and, since P-36/local D,
+`envelopeArtifactReferenceId` — captured at submission. Without it, every key,
+id and payload is what the walk built before G, save the contract version every
+event states. With it:
 
 - every event carries `revisionNumber` and `attemptNumber` and keys by
   `buildV2IdempotencyKey`, imported from `@acp/contracts` and never restated
@@ -219,7 +220,13 @@ before G. With it:
   that differs from the invocation's, and refuses any other V2 step whose
   opening is not in the ledger;
 - event ids, operation ids and `invocationId` stay over the flat attempt, which
-  is already one per coordinate: no identity formula is new.
+  is already one per coordinate: no identity formula is new;
+- the opening names the envelope by the registered `TASK_ENVELOPE` reference the
+  caller hands in (P-36/local D, ADR 0084). Contract version `2.5.0` requires it
+  on every revision record, and the ledger's door refuses one the registry does
+  not hold. The reference is **carried, not published**: it is not in any
+  preimage, this domain mints none and never derives one from the digest, and
+  writing the envelope's bytes is adoption's.
 
 What does not speak V2 yet is declared, not hidden. The daemon, durability, the
 CLI and the gateway derive V1 invocations until the adoption binds a revision.

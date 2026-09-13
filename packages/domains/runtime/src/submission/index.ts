@@ -155,8 +155,10 @@ export function canonicalSubmissionDigest(submission: DaemonSubmission): string 
  * and a preimage that grew a revision would give an existing run a second
  * identity. Omitted, the returned value has no `revision` member at all — not
  * an `undefined` one — so every V1 caller receives exactly the object it
- * received before G. The four fields are projected one by one, so a wider
- * value handed in cannot widen what the walk carries.
+ * received before G. The fields are projected one by one, so a wider value
+ * handed in cannot widen what the walk carries — five of them since P-36/local
+ * D, which added the envelope reference the opening must name (ADR 0084), and
+ * which is carried here as the digest is: outside the preimage.
  */
 export function deriveInvocation(
   taskId: string,
@@ -180,6 +182,7 @@ export function deriveInvocation(
       revisionNumber: revision.revisionNumber,
       attemptNumber: revision.attemptNumber,
       envelopeSha256: revision.envelopeSha256,
+      envelopeArtifactReferenceId: revision.envelopeArtifactReferenceId,
     }),
   };
 }

@@ -27,6 +27,9 @@ import {
   applyEventToSnapshot,
   canonicalAttempt,
   canonicalRevision,
+  ENVELOPE_ARTIFACT_REFERENCE_KEY,
+  PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS,
+  sameRevisionRecord,
   createProjectionSnapshot,
   dispatchOutcomeRecord,
   dispatchTransitionAdmitted,
@@ -54,6 +57,7 @@ import {
   readResponseOccurrence,
   routingAssignmentId,
   taskAttemptKey,
+  taskRevisionKey,
   OUTBOX_V1_COMMAND_STREAMS,
   applyEventToOutboxFold,
   computeOutboxCommandId,
@@ -521,10 +525,13 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
   const REVISION_ID = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d01";
   const OTHER_REVISION = "1d1d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d02";
   const ENVELOPE = "e".repeat(64);
+  // A registered reference is the door's question, never the fold's (M-5.3),
+  // so any non-empty string stands for one here.
+  const ENVELOPE_REFERENCE = "ref-envelope-2";
 
   function revisionEvent(
     payload: Record<string, unknown>,
-    overrides: { readonly occurredAt?: string } = {},
+    overrides: { readonly occurredAt?: string; readonly contractVersion?: string } = {},
   ): ControlPlaneEvent {
     // These fold inputs are cast rather than parsed, so the contract's door
     // never sees them — which is exactly why the key is composed correctly
@@ -534,7 +541,7 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
     const attemptNumber = payload["attemptNumber"];
     const occurredAt = overrides.occurredAt ?? "2026-09-11T09:00:00.000Z";
     return {
-      contractVersion: CONTRACT_VERSION,
+      contractVersion: overrides.contractVersion ?? CONTRACT_VERSION,
       eventId: "2e2e2e2e-2e2e-4e2e-8e2e-2e2e2e2e2e01",
       taskId: REVISION_TASK,
       attempt: 3,
@@ -565,12 +572,16 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
     } as unknown as ControlPlaneEvent;
   }
 
-  const COMPLETE = {
+  /** The four keys that make an event a revision record at all. */
+  const RECORD = {
     revisionId: REVISION_ID,
     revisionNumber: 2,
     attemptNumber: 1,
     envelopeSha256: ENVELOPE,
   };
+
+  /** The record as the version in force states it: with its envelope reference. */
+  const COMPLETE = { ...RECORD, envelopeArtifactReferenceId: ENVELOPE_REFERENCE };
 
   it("N5: an event with no revision keys leaves the projection untouched", () => {
     expect(nextTaskRevisionProjection(revisionEvent({}), 7)).toBeNull();
@@ -595,7 +606,9 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
     // Each key removed in turn. A fold that accepted three of four would mint a
     // record with a field it invented, and the record is the authority for what
     // was asked — there is nothing to invent it from.
-    for (const missing of Object.keys(COMPLETE)) {
+    // The envelope reference is not one of the four: its absence is a refusal
+    // decided by the cohort, drilled below, not a partial record.
+    for (const missing of Object.keys(RECORD)) {
       const partial = Object.fromEntries(
         Object.entries(COMPLETE).filter(([key]) => key !== missing),
       );
@@ -612,24 +625,80 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
     }
   });
 
-  it("N6: refuses a revision that carries an artifact reference this contract has no column for", () => {
-    // B-5. The key belongs to P-36/local, and this build has nowhere to put it.
-    // Ignoring it would silently drop a fact the writer believed it recorded;
-    // interpreting it would be a reader pretending to understand a plane that
-    // does not exist here. So the event is refused and the refusal names the
-    // key — which is the one case where this fold does NOT stay total, and the
-    // distinction is deliberate: a payload this contract has no opinion about
-    // is ignored, a payload claiming a fact it cannot represent is not.
-    const carrying = revisionEvent({
-      ...COMPLETE,
-      envelopeArtifactReferenceId: "4a4a4a4a-4a4a-4a4a-8a4a-4a4a4a4a4a01",
-    });
-    expect(() => nextTaskRevisionProjection(carrying, 7)).toThrow(LedgerValidationError);
-    expect(() => nextTaskRevisionProjection(carrying, 7)).toThrow(/artifact reference/);
+  it("N6 / N-P36D-2: refuses a revision of the cohort before that carries an envelope reference", () => {
+    // B-5, now conditioned on the cohort (decision 41). A record stamped 2.2.0,
+    // 2.3.0 or 2.4.0 was written by a build with no plane to mint a reference,
+    // so a reference on it is a fact its own contract cannot represent. Ignoring
+    // it would drop what the writer believed it recorded; interpreting it would
+    // be a reader pretending to understand. The refusal names the key.
+    expect([...PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0"]);
+    for (const contractVersion of PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS) {
+      for (const value of [ENVELOPE_REFERENCE, null, "", 7]) {
+        const issue = refusedWith(() =>
+          nextTaskRevisionProjection(
+            revisionEvent({ ...RECORD, envelopeArtifactReferenceId: value }, { contractVersion }),
+            7,
+          ),
+        );
+        expect(issue.path, contractVersion).toBe("payload." + ENVELOPE_ARTIFACT_REFERENCE_KEY);
+        expect(issue.message).toContain("carries no envelope reference");
+      }
 
-    // The same payload without that key folds cleanly, so the refusal is about
-    // the key and not about the rest of the record.
-    expect(nextTaskRevisionProjection(revisionEvent(COMPLETE), 7)).not.toBeNull();
+      // The same record without the key folds cleanly, to a row holding null:
+      // the refusal is about the key, not about the rest of the record.
+      const prior = nextTaskRevisionProjection(revisionEvent(RECORD, { contractVersion }), 7);
+      expect(prior?.envelopeArtifactReferenceId, contractVersion).toBeNull();
+      expect(prior?.contractVersion).toBe(contractVersion);
+    }
+  });
+
+  it("N-P36D-1 / N-P36D-4: requires the reference from the cohort on, and never reads one off the digest", () => {
+    // The version in force is outside the frozen list, so its record must name
+    // its envelope by reference. The digest is right there in the payload, and
+    // it is exactly what the fold must not fall back to.
+    expect(PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS).not.toContain(CONTRACT_VERSION);
+    const issue = refusedWith(() => nextTaskRevisionProjection(revisionEvent(RECORD), 7));
+    expect(issue.path).toBe("payload." + ENVELOPE_ARTIFACT_REFERENCE_KEY);
+    expect(issue.message).toContain("names none");
+    expect(issue.message).toContain("never derived from the envelope's digest");
+
+    // A later bump falls into the same cohort without anyone editing the list.
+    const later = refusedWith(() =>
+      nextTaskRevisionProjection(revisionEvent(RECORD, { contractVersion: "2.6.0" }), 7),
+    );
+    expect(later.path).toBe("payload." + ENVELOPE_ARTIFACT_REFERENCE_KEY);
+
+    // And a partial record still is no record, reference or not: the cohort is
+    // asked only of an event that constitutes a revision.
+    const partial = Object.fromEntries(
+      Object.entries(RECORD).filter(([key]) => key !== "envelopeSha256"),
+    );
+    expect(nextTaskRevisionProjection(revisionEvent(partial), 7)).toBeNull();
+  });
+
+  it("N-P36D-3: a present value that is not a reference is refused by name, never read as absent", () => {
+    // CORR-2, decision 56. `null` is a writer that said something; reading it as
+    // absent would launder a malformed record into a row, and the row into the
+    // trigger's nameless abort.
+    for (const [value, words] of [
+      [null, "holds null"],
+      ["", "holds an empty string"],
+      [42, "holds a number"],
+      [{ artifactReferenceId: ENVELOPE_REFERENCE }, "holds a object"],
+      [true, "holds a boolean"],
+    ] as const) {
+      const issue = refusedWith(() =>
+        nextTaskRevisionProjection(
+          revisionEvent({ ...RECORD, envelopeArtifactReferenceId: value }),
+          7,
+        ),
+      );
+      expect(issue.path, JSON.stringify(value)).toBe("payload." + ENVELOPE_ARTIFACT_REFERENCE_KEY);
+      expect(issue.message, JSON.stringify(value)).toContain(words);
+    }
+    expect(nextTaskRevisionProjection(revisionEvent(COMPLETE), 7)?.envelopeArtifactReferenceId).toBe(
+      ENVELOPE_REFERENCE,
+    );
   });
 
   it("takes every field from the event, never from the payload's say-so", () => {
@@ -641,6 +710,9 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
       revisionNumber: 2,
       revisionId: REVISION_ID,
       envelopeSha256: ENVELOPE,
+      // The payload's, verbatim: a reference is a name the producer carries,
+      // never something this fold computes (decision 41).
+      envelopeArtifactReferenceId: ENVELOPE_REFERENCE,
       restoredFromRevisionId: null,
       createdAt: "2026-09-11T09:00:00.000Z",
       createdBy: EMITTED_BY,
@@ -828,6 +900,55 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
       canonicalRevision({ ...born!, restoredFromRevisionId: OTHER_REVISION }),
     ).not.toBe(canonicalRevision({ ...born!, restoredFromRevisionId: null }));
   });
+
+  it("N-P36D-9 / Q-D2: counts the envelope reference only when the stored row holds one", () => {
+    // `sameRevisionRecord` is what the door and the snapshot both call. A row
+    // of the new cohort holds a reference, so another reference at its
+    // coordinate is a second answer to where the envelope's bytes are.
+    const stored = nextTaskRevisionProjection(revisionEvent(COMPLETE), 10)!;
+    const replay = nextTaskRevisionProjection(
+      revisionEvent(COMPLETE, { occurredAt: "2026-09-11T17:45:00.000Z" }),
+      44,
+    )!;
+    const other = nextTaskRevisionProjection(
+      revisionEvent({ ...COMPLETE, envelopeArtifactReferenceId: "ref-envelope-other" }),
+      44,
+    )!;
+    expect(sameRevisionRecord(stored, replay)).toBe(true);
+    expect(sameRevisionRecord(stored, other)).toBe(false);
+    // `canonicalRevision` alone would call them the same, which is why it is
+    // not what the two callers consult any more.
+    expect(canonicalRevision(stored)).toBe(canonicalRevision(other));
+
+    // A row of the cohort before holds null for ever. A second attempt of it,
+    // stamped after the upgrade, carries the reference its own version
+    // requires — and agrees with the row on the three facts it has.
+    const prior = nextTaskRevisionProjection(revisionEvent(RECORD, { contractVersion: "2.4.0" }), 10)!;
+    expect(prior.envelopeArtifactReferenceId).toBeNull();
+    expect(sameRevisionRecord(prior, stored)).toBe(true);
+    expect(sameRevisionRecord(prior, other)).toBe(true);
+
+    // And the three facts still separate both cohorts.
+    expect(sameRevisionRecord(prior, { ...stored, envelopeSha256: "f".repeat(64) })).toBe(false);
+    expect(sameRevisionRecord(stored, { ...replay, revisionId: OTHER_REVISION })).toBe(false);
+
+    // In the snapshot, which is the rebuild's fold: the same answers.
+    const key = taskRevisionKey(REVISION_TASK, 2);
+    const snapshot = createProjectionSnapshot();
+    applyEventToSnapshot(snapshot, revisionEvent(RECORD, { contractVersion: "2.4.0" }), 1);
+    applyEventToSnapshot(snapshot, revisionEvent(COMPLETE), 2);
+    expect(snapshot.taskRevisions.get(key)?.envelopeArtifactReferenceId).toBeNull();
+    const renamed = createProjectionSnapshot();
+    applyEventToSnapshot(renamed, revisionEvent(COMPLETE), 1);
+    applyEventToSnapshot(renamed, revisionEvent(COMPLETE), 2);
+    expect(() => {
+      applyEventToSnapshot(
+        renamed,
+        revisionEvent({ ...COMPLETE, envelopeArtifactReferenceId: "ref-envelope-other" }),
+        3,
+      );
+    }).toThrow(/already recorded with different content/);
+  });
 });
 
 describe("the attempt fold reads an opening, or reads nothing", () => {
@@ -841,6 +962,7 @@ describe("the attempt fold reads an opening, or reads nothing", () => {
     revisionNumber: 2,
     attemptNumber: 1,
     envelopeSha256: ENVELOPE,
+    envelopeArtifactReferenceId: "ref-envelope-opening",
     invocationId: "inv-0001",
     legacyAttemptNumber: 4,
   };
@@ -2633,6 +2755,28 @@ describe("an artifact event names its subject by rule, never by hash (H-3, H-4)"
       artifactEventRefusal(foldEvent("PIN_ACQUIRED", { artifactPinId: "p", contentSha256: FOLD_CONTENT, blobGeneration: 1, pinHolderKind: "PUBLICATION", pinHolderId: "c" }))?.path,
     ).toBe("payload.pinHolderKind");
     expect(artifactEventRefusal(foldSuccess())).toBeNull();
+  });
+
+  it("N-P36D-12 / N-P36D-13: runs the same two rules over an intention's intended reference (O-1)", () => {
+    // Escalón C's postaudit, O-1. The fold never reads the block, but it rides
+    // the stream, and a SECRET_BEARING reference is kept out of the stream
+    // wherever it would ride.
+    expect(
+      artifactEventRefusal(foldIntention({ intendedReference: foldReference({ classification: "SECRET_BEARING" }) })),
+    ).toEqual({
+      path: "payload.intendedReference.classification",
+      message: artifactEventRefusal(foldSuccess({ reference: foldReference({ classification: "SECRET_BEARING" }) }))?.message,
+    });
+    const policy = artifactEventRefusal(foldIntention({ intendedReference: foldReference({ accessPolicyId: "OTHER_V1" }) }));
+    expect(policy?.path).toBe("payload.intendedReference.accessPolicyId");
+    expect(policy?.message).toBe(
+      artifactEventRefusal(foldSuccess({ reference: foldReference({ accessPolicyId: "OTHER_V1" }) }))?.message,
+    );
+    // A valid block, and no block at all (the schema's optionality, decision 64).
+    expect(artifactEventRefusal(foldIntention({ intendedReference: foldReference() }))).toBeNull();
+    expect(artifactEventRefusal(foldIntention())).toBeNull();
+    // A TASK_ENVELOPE block earns no special treatment: class is not a stream rule.
+    expect(artifactEventRefusal(foldIntention({ intendedReference: foldReference({ artifactClass: "TASK_ENVELOPE" }) }))).toBeNull();
   });
 });
 

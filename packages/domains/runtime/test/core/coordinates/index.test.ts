@@ -102,6 +102,7 @@ describe("the V2 coordinate (P-18/protocolo G)", () => {
     revisionNumber: 1,
     attemptNumber: 1,
     envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: "ref-envelope-0001",
   };
   const FLAT: DurableInvocation = { ...INVOCATION, taskId: "11111111-1111-4111-8111-111111111112" };
   const V2: DurableInvocation = { ...FLAT, revision: REVISION };

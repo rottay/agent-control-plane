@@ -90,7 +90,7 @@ import {
   canonicalAttempt,
   canonicalDispatchBirth,
   canonicalEffect,
-  canonicalRevision,
+  sameRevisionRecord,
   canonicalSegment,
   dispatchOutcomeRecord,
   dispatchTransitionAdmitted,
@@ -118,6 +118,7 @@ import {
   nextExecutionRouteProjection,
   nextTaskAttemptProjection,
   nextTaskRevisionProjection,
+  ENVELOPE_ARTIFACT_REFERENCE_KEY,
   taskAttemptKey,
   taskRevisionKey,
   nextInitiativeProjection,
@@ -1078,6 +1079,8 @@ interface TaskRevisionRow {
   readonly created_by: string;
   readonly contract_version: string;
   readonly sequence: number;
+  /** Additive at migration 16; `NULL` on every revision of the cohort before it. */
+  readonly envelope_artifact_reference_id: string | null;
 }
 
 /** One stored attempt row. Snake case, because it is a row. */
@@ -1299,6 +1302,7 @@ function taskRevisionRowToModel(row: TaskRevisionRow): TaskRevisionReadModel {
     revisionNumber: row.revision_number,
     revisionId: row.revision_id,
     envelopeSha256: row.envelope_sha256,
+    envelopeArtifactReferenceId: row.envelope_artifact_reference_id,
     restoredFromRevisionId: row.restored_from_revision_id,
     createdAt: row.created_at,
     createdBy: row.created_by,
@@ -3093,6 +3097,12 @@ export class Ledger {
     // a raw SQLite error nobody can catch by class.
     this.#assertCausationResolves(causation);
 
+    // The envelope reference a revision record of the new cohort names, looked
+    // up by name before anything is written (P-36/local D, M-5.3). Before the
+    // attempt's identity, so an opening naming a reference nobody registered is
+    // refused for the reference rather than for whatever the CAS meets next.
+    this.#assertEnvelopeReference(event);
+
     const head = this.#readHead();
     const previousSha256 = head.sha256;
     const eventSha256 = chainDigest(previousSha256, canonicalJson);
@@ -4805,6 +4815,74 @@ export class Ledger {
   }
 
   /**
+   * Refuse a revision record whose envelope reference the registry does not
+   * hold as a `TASK_ENVELOPE` (P-36/local D, decision 41, M-5.3).
+   *
+   * **At the door, by name, and nowhere else.** The fold checks the reference's
+   * form and cohort; whether it exists is a question about
+   * `artifact_reference_read_model`, which is a projection of the registry
+   * stream, while the revision row is a projection of the task stream. A
+   * trigger or a foreign key across the two would make a rebuild depend on the
+   * order it folds the streams in, and a rebuild that clears every derived table
+   * and replays one chain at a time would abort on history this door accepted.
+   * So the look-up is here — a `SELECT` before anything is written, the way the
+   * opening's foreign key is guarded — and a rebuild trusts what the door
+   * checked, as it trusts every other cross-stream fact.
+   *
+   * The fold runs first and raises its own refusals by name: a key out of its
+   * cohort, a key missing from the cohort that requires it, a present value that
+   * is not a reference. What is left is a well-formed reference, and it must name
+   * a registered reference of class `TASK_ENVELOPE`. The refusal names the key
+   * and never echoes the value, which is producer-supplied text. A replay of a
+   * stored revision is checked too: references are never removed in this build,
+   * so the answer cannot have changed, and one path is simpler than two.
+   *
+   * What is **not** checked, declared: the reference's scope, retention and
+   * tombstone. Scope is the private reader's law (decision 66 (g)), nothing in
+   * this build tombstones a reference, and a revision records which bytes were
+   * asked about rather than who may read them.
+   */
+  #assertEnvelopeReference(event: ControlPlaneEvent): void {
+    const revision = nextTaskRevisionProjection(event, 0);
+    const named = revision?.envelopeArtifactReferenceId ?? null;
+    if (revision === null || named === null) return;
+
+    const reference = this.#stmt(
+      "SELECT artifact_class FROM artifact_reference_read_model WHERE artifact_reference_id = ?",
+    ).get(named) as { readonly artifact_class: string } | undefined;
+
+    if (reference === undefined) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + ENVELOPE_ARTIFACT_REFERENCE_KEY,
+          message:
+            "revision " +
+            String(revision.revisionNumber) +
+            " of task " +
+            event.taskId +
+            " names its envelope by an artifact reference the registry does not hold;" +
+            " a revision's envelope is read by a registered reference, never by its digest",
+        },
+      ]);
+    }
+    if (reference.artifact_class !== "TASK_ENVELOPE") {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + ENVELOPE_ARTIFACT_REFERENCE_KEY,
+          message:
+            "revision " +
+            String(revision.revisionNumber) +
+            " of task " +
+            event.taskId +
+            " names an artifact reference of class " +
+            reference.artifact_class +
+            "; a revision's envelope is a TASK_ENVELOPE",
+        },
+      ]);
+    }
+  }
+
+  /**
    * Write one revision row, or refuse (P-05/B).
    *
    * **Insert-only, and never `ON CONFLICT DO UPDATE`** (execution §2). A
@@ -4829,9 +4907,10 @@ export class Ledger {
       // C-7). This door and `applyEventToSnapshot` decide "same revision"
       // with one function, so the incremental path and a rebuild refuse
       // exactly the same histories — which is the property `verifyIntegrity`
-      // depends on. What it compares, and why it excludes the birth
-      // attributes, is argued where it is defined.
-      if (canonicalRevision(stored) !== canonicalRevision(revision)) {
+      // depends on. What it compares, why it excludes the birth attributes and
+      // why the envelope reference counts only when this row holds one (Q-D2)
+      // are argued where it is defined.
+      if (!sameRevisionRecord(stored, revision)) {
         throw new LedgerValidationError([
           {
             path: "payload.revisionNumber",
@@ -4850,8 +4929,9 @@ export class Ledger {
     this.#stmt(
       "INSERT INTO task_revision_read_model (" +
         "task_id, revision_number, revision_id, envelope_sha256, " +
-        "restored_from_revision_id, created_at, created_by, contract_version, sequence" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "restored_from_revision_id, created_at, created_by, contract_version, sequence, " +
+        "envelope_artifact_reference_id" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       revision.taskId,
       revision.revisionNumber,
@@ -4862,6 +4942,7 @@ export class Ledger {
       revision.createdBy,
       revision.contractVersion,
       revision.sequence,
+      revision.envelopeArtifactReferenceId,
     );
   }
 

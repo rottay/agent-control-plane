@@ -32,11 +32,13 @@ import {
   RESPONSE_OCCURRENCE_PROJECTION,
   TASK_ATTEMPT_MIGRATION,
   TASK_ATTEMPT_PROJECTION,
+  TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
   TASK_REVISION_MIGRATION,
   TASK_REVISION_PROJECTION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
+import { PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS } from "../../src/projection/index.js";
 import { DOCUMENT_KINDS } from "../../src/types/index.js";
 import type { AppliedMigration } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
@@ -176,7 +178,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -194,6 +196,7 @@ describe("migration 7 appends the watermark table without touching the applied s
       "execution_effect_identity",
       "execution_occurrences",
       "artifact_registry",
+      "task_revision_envelope_reference",
     ]);
   });
 
@@ -417,7 +420,7 @@ describe("migration 8 types causality without touching the applied seven", () =>
     expect(EIGHTH?.sql ?? "").not.toContain("validate_v2_coordinate");
   });
 
-  it("inventories every trigger named by the §3.2 convention, and there are eight", () => {
+  it("inventories every trigger named by the §3.2 convention, and there are nine", () => {
     // Without the inventory, dropping a trigger would leave `schema_migrations`
     // untouched and no check would notice. Migration 9 recreates the first two
     // under the same names, so the inventory does not move for them; the other
@@ -441,6 +444,10 @@ describe("migration 8 types causality without touching the applied seven", () =>
       // is a shape check on insert, like the two `__validate_new_rows` above,
       // and it exists because SQLite cannot add a CHECK to an applied table.
       { type: "trigger", name: "tr_control_plane_events__validate_v2_coordinate" },
+      // P-36/local D: the envelope reference's cohort rule. A shape check on
+      // insert for the reason the one above is — SQLite cannot add a CHECK to
+      // an applied table, and migration 16 adds a column to one.
+      { type: "trigger", name: "tr_task_revision_read_model__validate_envelope_reference" },
     ]);
     // And the legacy prefix still names exactly the three streams that coined
     // it, so the rename did not quietly move one of theirs.
@@ -501,7 +508,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
   });
 
@@ -940,10 +947,12 @@ describe("migration 12 adds the attempt's own record without touching the applie
     // `payload.legacyAttemptNumber` and the `attempt` column is held by the
     // append door as a typed refusal naming the expected value — something a
     // `BEFORE INSERT` trigger could not do, because the expected value comes
-    // from `MAX(attempt)` and the projection. So `tr_` stays at eight.
+    // from `MAX(attempt)` and the projection. So `tr_` stayed at eight here;
+    // the ninth is migration 16's, which is another table's rule.
     expect(statements).not.toContain("CREATE TRIGGER");
     const triggers = EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"));
-    expect(triggers).toHaveLength(8);
+    expect(triggers).toHaveLength(9);
+    expect(triggers.filter((object) => object.name.startsWith("tr_task_attempt"))).toEqual([]);
   });
 
   it("seeds its watermark from the head, never from a literal zero", () => {
@@ -1022,7 +1031,8 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
     // No trigger: every rule of §8 that one row can carry is a CHECK, and the
     // equality between a prompt and its delivery is the fold's and the door's.
     expect(statements).not.toContain("CREATE TRIGGER");
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(8);
+    // Eight when this migration landed; migration 16 adds the ninth.
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
   });
 
   it("names both tables' constraints by the §3.2 convention, and §8's pair verbatim", () => {
@@ -1172,7 +1182,8 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
     expect(FIFTEENTH?.name).toBe("artifact_registry");
     expect(ARTIFACT_REGISTRY_MIGRATION).toBe(15);
     expect(MIGRATIONS[ARTIFACT_REGISTRY_MIGRATION - 1]?.name).toBe("artifact_registry");
-    expect(MIGRATIONS).toHaveLength(15);
+    // No longer the tail: migration 16 follows it and holds the length pin.
+    expect(MIGRATIONS[15]?.version).toBe(16);
   });
 
   it("rebuilds in the fixed order: create, copy, drop the five triggers, drop, rename, recreate, then the children", () => {
@@ -1419,7 +1430,7 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
     expect(referenceAt).toBeLessThan(blobAt);
   });
 
-  it("inventories four tables and nine indexes, and still eight triggers", () => {
+  it("inventories four tables and nine indexes, and no trigger of its own", () => {
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("artifact_") || object.name.includes("_artifact_"))).toEqual([
       { type: "table", name: "artifact_blob_read_model" },
       { type: "index", name: "ix_artifact_blob_read_model__lifecycle_state" },
@@ -1435,7 +1446,107 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
       { type: "index", name: "ux_artifact_pin_read_model__content_sha256_holder__live" },
       { type: "table", name: "artifact_tombstone_read_model" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(8);
+    // Eight when this migration landed; the ninth is migration 16's.
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
     expect(statements).not.toMatch(/CREATE TRIGGER tr_artifact/);
+  });
+});
+
+/**
+ * Migration 16, the envelope reference of a revision by cohort (P-36/local D,
+ * decision 41, ADR 0084).
+ *
+ * What is asserted here is the text: additive, two-sided, a closed list rather
+ * than a comparison, and nothing that reaches across to the registry stream.
+ * `test/ledger` asserts what the text does to a ledger that already has
+ * revisions of every earlier cohort.
+ */
+describe("migration 16 names a revision's envelope by reference, by cohort, never by digest", () => {
+  const SIXTEENTH = MIGRATIONS[15];
+  const ELEVENTH = MIGRATIONS[10];
+
+  /** The statements with the commentary removed, as for 11, 12, 14 and 15. */
+  const statements = (SIXTEENTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(SIXTEENTH?.version).toBe(16);
+    expect(SIXTEENTH?.name).toBe("task_revision_envelope_reference");
+    expect(TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION).toBe(16);
+    expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION - 1]?.name).toBe(
+      "task_revision_envelope_reference",
+    );
+    expect(MIGRATIONS).toHaveLength(16);
+  });
+
+  it("N-P36D-8: adds the column in place and rebuilds, drops and seeds nothing", () => {
+    expect(statements).toContain(
+      "ALTER TABLE task_revision_read_model ADD COLUMN envelope_artifact_reference_id TEXT;",
+    );
+    // Nullable, with no default: the one shape `ADD COLUMN` admits in place,
+    // and `NULL` on every existing row is exactly the cohort before.
+    expect(statements).not.toMatch(/envelope_artifact_reference_id TEXT\s+NOT NULL/);
+    expect(statements).not.toMatch(/DEFAULT/);
+    expect(statements).not.toContain("CREATE TABLE");
+    expect(statements).not.toContain("DROP ");
+    expect(statements).not.toContain("RENAME");
+    expect(statements).not.toContain("UPDATE ");
+    // No watermark row: no projection is added, and the one this column belongs
+    // to is level with its stream the moment the column exists.
+    expect(statements).not.toContain("projection_watermark");
+    expect(statements.match(/ALTER TABLE/g)).toHaveLength(1);
+    // And migration 11, applied and immutable, still creates the table without
+    // the column — the deferral is what decision 41 records.
+    expect(ELEVENTH?.sql ?? "").not.toMatch(/^\s+envelope_artifact_reference_id/m);
+  });
+
+  it("N-P36D-5: one BEFORE INSERT trigger refuses both crossings of the cohort", () => {
+    expect(statements.match(/CREATE TRIGGER/g)).toHaveLength(1);
+    expect(statements).toContain(
+      "CREATE TRIGGER tr_task_revision_read_model__validate_envelope_reference\n" +
+        "BEFORE INSERT ON task_revision_read_model\n",
+    );
+    // Backward: the cohort before, holding a reference.
+    expect(statements).toContain(
+      "WHERE NEW.contract_version IN ('2.2.0', '2.3.0', '2.4.0')\n" +
+        "    AND NEW.envelope_artifact_reference_id IS NOT NULL;",
+    );
+    // Forward: every later version, holding none or an empty one.
+    expect(statements).toContain(
+      "WHERE NEW.contract_version NOT IN ('2.2.0', '2.3.0', '2.4.0')\n" +
+        "    AND (NEW.envelope_artifact_reference_id IS NULL OR NEW.envelope_artifact_reference_id = '');",
+    );
+    expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({
+      type: "trigger",
+      name: "tr_task_revision_read_model__validate_envelope_reference",
+    });
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+  });
+
+  it("freezes the cohort as a closed list, spelled as the fold spells it, and never compares versions", () => {
+    // M-5.2. A comparison of version strings would put `2.10.0` before `2.4.0`
+    // and would read a future bump through a rule nobody wrote for it.
+    const lists = [...statements.matchAll(/IN \(([^)]*)\)/g)].map((match) => match[1] ?? "");
+    expect(lists).toHaveLength(2);
+    for (const list of lists) {
+      expect([...list.matchAll(/'([^']*)'/g)].map((match) => match[1])).toEqual([
+        ...PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS,
+      ]);
+    }
+    expect(statements).not.toMatch(/contract_version\s*(<|>|<=|>=|BETWEEN|GLOB|LIKE)/);
+  });
+
+  it("N-P36D-4: reaches nothing on the registry stream and derives nothing from a digest", () => {
+    // M-5.3. Existence is the door's question: a trigger or a foreign key onto
+    // `artifact_reference_read_model` would make a rebuild depend on the order
+    // it folds the streams in.
+    const beyondTheColumn = statements.replaceAll("envelope_artifact_reference_id", "");
+    expect(beyondTheColumn).not.toContain("artifact_");
+    expect(statements).not.toContain("REFERENCES");
+    expect(statements).not.toContain("SELECT artifact");
+    expect(statements).not.toContain("envelope_sha256");
+    expect(DERIVED_TABLES).toContain(TASK_REVISION_PROJECTION);
   });
 });

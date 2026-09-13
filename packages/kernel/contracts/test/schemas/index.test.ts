@@ -560,8 +560,9 @@ describe("the V2 idempotency key", () => {
     // refuses a supported-but-not-current version is the issuer's rule, and it
     // lives on `AdmittedContractVersion` and at the ledger's append door rather
     // than on this schema. `"2.4.0"` stood here after C and moved above in its
-    // turn, when P-18/protocolo F put it in force (ADR 0078).
-    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.5.0" })).success).toBe(false);
+    // turn, when P-18/protocolo F put it in force (ADR 0078). `"2.5.0"` stood
+    // here after F and moved above when P-36/local D put it in force (ADR 0084).
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.6.0" })).success).toBe(false);
     expect(ControlPlaneEvent.safeParse(event({ contractVersion: "1.0.0" })).success).toBe(false);
   });
 
@@ -2627,9 +2628,10 @@ describe("only the version in force is emitted (ADR 0072's debt, ADR 0076)", () 
     // set is what makes a bump survivable; the literal is what keeps a producer
     // from choosing between two versions, which is a producer whose output
     // nobody can predict.
-    // F moved the literal again (ADR 0078); the pair's shape did not move.
-    expect(CONTRACT_VERSION).toBe("2.4.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0"]);
+    // F moved the literal again (ADR 0078), and P-36/local D once more (ADR
+    // 0084); the pair's shape did not move.
+    expect(CONTRACT_VERSION).toBe("2.5.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0"]);
     expect(SUPPORTED_CONTRACT_VERSIONS).toContain(CONTRACT_VERSION);
 
     expect(AdmittedContractVersion.safeParse(CONTRACT_VERSION).success).toBe(true);
@@ -2637,7 +2639,8 @@ describe("only the version in force is emitted (ADR 0072's debt, ADR 0076)", () 
     // whole mechanism, and before the bump it was an empty category.
     expect(AdmittedContractVersion.safeParse("2.2.0").success).toBe(false);
     expect(AdmittedContractVersion.safeParse("2.3.0").success).toBe(false);
-    expect(AdmittedContractVersion.safeParse("2.5.0").success).toBe(false);
+    expect(AdmittedContractVersion.safeParse("2.4.0").success).toBe(false);
+    expect(AdmittedContractVersion.safeParse("2.6.0").success).toBe(false);
   });
 
   it("holds the three admission shapes to the version in force, and not the event", () => {
@@ -2835,10 +2838,11 @@ describe("three outbox types, a command id grammar and a bump (P-18/protocolo F,
   it("moves the version in force to 2.4.0 and keeps every earlier one readable", () => {
     // ADR 0076's criterion, read for F: the door and the fold recompute
     // `command_id` under a prefix that did not exist, and every payload carries
-    // `outboxContractVersion`. That is C's class, not D's.
-    expect(CONTRACT_VERSION).toBe("2.4.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0"]);
-    for (const version of ["2.2.0", "2.3.0"]) {
+    // `outboxContractVersion`. That is C's class, not D's. P-36/local D moved
+    // the literal on to 2.5.0 (ADR 0084), and 2.4.0 joined the readable set.
+    expect(CONTRACT_VERSION).toBe("2.5.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0"]);
+    for (const version of ["2.2.0", "2.3.0", "2.4.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
       expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
     }
@@ -2865,9 +2869,31 @@ describe("the artifact record lands without a bump (P-36/local A, ADR 0081)", ()
     // Artifact events live in `registry_events`, never in the task stream, so the
     // 33 names of `CONTROL_PLANE_EVENT_TYPES` do not move. And the DT's ruling
     // (H-4) closes the version question: the escalón defines no preimage and no
-    // derived key, which is ADR 0076's criterion for carrying one.
+    // derived key, which is ADR 0076's criterion for carrying one. The version
+    // did move later, in P-36/local D, for a cohort rather than an identity
+    // (ADR 0084): the event vocabulary did not move with it.
     expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(33);
-    expect(CONTRACT_VERSION).toBe("2.4.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0"]);
+    expect(CONTRACT_VERSION).toBe("2.5.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0"]);
+  });
+});
+
+describe("the version moves for a cohort, not an identity (P-36/local D, ADR 0084)", () => {
+  it("puts 2.5.0 in force, keeps 2.2.0 through 2.4.0 readable and refuses to issue them", () => {
+    // Decision 41 keys `envelope_artifact_reference_id` on a cohort of
+    // `contract_version`. Every revision any earlier build recorded carries one
+    // of the first three members, so the reference's cohort is the version
+    // after them — and the literal has to move for the cohort to exist at all.
+    // No event type, no preimage and no schema moves with it: the reference is
+    // a payload key the ledger's fold reads by name.
+    expect(CONTRACT_VERSION).toBe("2.5.0");
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(33);
+    for (const version of ["2.2.0", "2.3.0", "2.4.0"]) {
+      expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
+      expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
+    }
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.5.0" })).success).toBe(true);
+    expect(AdmittedContractVersion.safeParse("2.5.0").success).toBe(true);
+    expect(TaskEnvelope.safeParse(envelope({ contractVersion: "2.4.0" })).success).toBe(false);
   });
 });

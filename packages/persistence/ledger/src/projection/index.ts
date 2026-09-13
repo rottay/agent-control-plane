@@ -154,15 +154,41 @@ const ENVELOPE_SHA256_KEY = "envelopeSha256";
 const RESTORED_FROM_REVISION_ID_KEY = "restoredFromRevisionId";
 
 /**
- * The key a revision record may NOT carry in this version of the contract.
+ * The key a revision record names its envelope's bytes by (P-36/local D).
  *
- * `envelope_artifact_reference_id` belongs to P-36/local. A reader of this
- * build that met the key would have to either ignore it — silently dropping a
- * fact the writer thought it recorded — or interpret a reference to a plane
- * that does not exist here. Neither is acceptable, so the fold refuses the
- * event outright and the refusal names the key.
+ * Decision 41: `task_revision_read_model.envelope_artifact_reference_id` is
+ * keyed on a cohort of `contract_version`. Exported so the append door's
+ * existence check names the same key the fold reads, by import rather than by a
+ * second literal.
+ *
+ * **Before the cohort, the key is refused rather than ignored.** A reader that
+ * met it on a `2.2.0`, `2.3.0` or `2.4.0` record would have to either drop a
+ * fact the writer thought it recorded or interpret a reference no build of that
+ * contract could mint. **From the cohort on, it is required**, and a present
+ * value that is not a non-empty string is refused by name rather than read as
+ * absent (CORR-2, decision 56). The fold checks form only: whether the
+ * reference exists, and names a `TASK_ENVELOPE`, is the append door's question,
+ * because the answer lives on another stream and a rebuild folds the streams
+ * one at a time (ADR 0084).
+ *
+ * Nothing here, or anywhere, derives a reference from `envelopeSha256`.
  */
-const ARTIFACT_REFERENCE_KEY = "envelopeArtifactReferenceId";
+export const ENVELOPE_ARTIFACT_REFERENCE_KEY = "envelopeArtifactReferenceId";
+
+/**
+ * The contract versions whose revision records carry no envelope reference.
+ *
+ * A closed list, frozen at the members that existed before migration 16 and
+ * spelled identically in that migration's trigger — never a comparison of
+ * version strings. A version is either one of these three, and its record
+ * holds `null`, or it is not, and its record holds a reference; a later bump
+ * falls into the second cohort without touching an applied migration.
+ */
+export const PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS: readonly string[] = [
+  "2.2.0",
+  "2.3.0",
+  "2.4.0",
+];
 
 /**
  * The two payload keys only an attempt's opening may state (P-18/protocolo B).
@@ -567,12 +593,13 @@ export function nextExecutionRouteProjection(
  * projection disown history the log accepted, and the event tables have no
  * delete path at all — replay has to stay total.
  *
- * There is one exception to that totality, and it is deliberate: an event whose
- * payload carries an artifact reference key is **refused** rather than folded.
- * See `ARTIFACT_REFERENCE_KEY`. The distinction is between a payload this
- * contract has no opinion about — which is ignored — and a payload that claims
- * a fact this contract cannot represent, which is a reader being asked to
- * pretend it understood something.
+ * There is one exception to that totality, and it is deliberate: the envelope
+ * reference is **refused** rather than folded when it is out of its cohort —
+ * present on a record of the cohort before it, absent or malformed on a record
+ * of the cohort that carries it. See `ENVELOPE_ARTIFACT_REFERENCE_KEY`. The
+ * distinction is between a payload this contract has no opinion about — which
+ * is ignored — and a payload that claims, or omits, a fact its own version
+ * decides, which is a reader being asked to pretend it understood something.
  *
  * The row's identity comes from the EVENT's `taskId` and the payload's
  * `revisionNumber`; a payload cannot claim another task's revision. `createdBy`
@@ -600,28 +627,71 @@ export function nextTaskRevisionProjection(
     return null;
   }
 
-  if (payload[ARTIFACT_REFERENCE_KEY] !== undefined) {
-    throw new LedgerValidationError([
-      {
-        path: "payload." + ARTIFACT_REFERENCE_KEY,
-        message:
-          "a revision record in this contract version carries no artifact reference; " +
-          "the key belongs to a later migration and this reader will not guess at it",
-      },
-    ]);
-  }
-
   return {
     taskId: event.taskId,
     revisionNumber,
     revisionId,
     envelopeSha256,
+    envelopeArtifactReferenceId: envelopeArtifactReferenceOf(event),
     restoredFromRevisionId: payloadText(payload, RESTORED_FROM_REVISION_ID_KEY),
     createdAt: event.occurredAt,
     createdBy: event.emittedBy,
     contractVersion: event.contractVersion,
     sequence,
   };
+}
+
+/**
+ * The envelope reference one revision record carries, decided by its cohort.
+ *
+ * Three refusals, each by name and none of them a `null` in disguise: a key on
+ * a record of the cohort before the reference; no key on a record of the cohort
+ * that carries it; and a key whose value is not a non-empty string — `null`,
+ * `""`, a number or an object is a writer that said something, and reading it
+ * as absent would launder a malformed record into a row the trigger then
+ * aborts on without a name.
+ */
+function envelopeArtifactReferenceOf(event: ControlPlaneEvent): string | null {
+  const path = "payload." + ENVELOPE_ARTIFACT_REFERENCE_KEY;
+  const value = event.payload[ENVELOPE_ARTIFACT_REFERENCE_KEY];
+  if (PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS.includes(event.contractVersion)) {
+    if (value === undefined) return null;
+    throw new LedgerValidationError([
+      {
+        path,
+        message:
+          "a revision record of contract version " +
+          event.contractVersion +
+          " carries no envelope reference; the key belongs to the cohort after " +
+          PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS.join(", ") +
+          " and this reader will not guess at it",
+      },
+    ]);
+  }
+  if (value === undefined) {
+    throw new LedgerValidationError([
+      {
+        path,
+        message:
+          "a revision record of contract version " +
+          event.contractVersion +
+          " names its envelope by artifact reference, and this payload names none;" +
+          " a reference is never derived from the envelope's digest",
+      },
+    ]);
+  }
+  if (typeof value !== "string" || value.length === 0) {
+    throw new LedgerValidationError([
+      {
+        path,
+        message:
+          "an envelope reference is a non-empty string, and this payload holds " +
+          (value === null ? "null" : typeof value === "string" ? "an empty string" : "a " + typeof value) +
+          "; a present value that is not a reference is not an absent one",
+      },
+    ]);
+  }
+  return value;
 }
 
 /**
@@ -2105,7 +2175,7 @@ export function applyEventToSnapshot(
     const key = taskRevisionKey(revision.taskId, revision.revisionNumber);
     const existing = snapshot.taskRevisions.get(key);
     if (existing !== undefined) {
-      if (canonicalRevision(existing) !== canonicalRevision(revision)) {
+      if (!sameRevisionRecord(existing, revision)) {
         throw new LedgerValidationError([
           {
             path: "payload." + REVISION_NUMBER_KEY,
@@ -2511,6 +2581,8 @@ function claimOrRefuse(
  * identically. Two implementations of "same content" are two definitions of it,
  * and a rebuild that refused a history the door had accepted would leave
  * `verifyIntegrity` comparing a stored projection against a different rule.
+ * Since P-36/local D the two callers reach it through `sameRevisionRecord`,
+ * which adds the envelope reference where the stored row holds one.
  */
 export function canonicalRevision(revision: TaskRevisionReadModel): string {
   return [
@@ -2518,6 +2590,37 @@ export function canonicalRevision(revision: TaskRevisionReadModel): string {
     revision.envelopeSha256,
     revision.restoredFromRevisionId ?? "",
   ].join("\u0000");
+}
+
+/**
+ * Whether a second arrival at a stored revision's coordinate is the same
+ * record (P-36/local D, Q-D2).
+ *
+ * `canonicalRevision`'s three facts, always, and the envelope reference **only
+ * when the stored row holds one**. A row of the new cohort holds a reference,
+ * so a second arrival naming another one — or none — is two answers to where
+ * the envelope's bytes are, and is refused; the same reference is a replay. A
+ * row of the cohort before holds `null` for ever: the table is insert-only and
+ * the trigger keeps it so. A second attempt of such a revision, stamped after
+ * the upgrade, arrives carrying the reference its own version requires, and
+ * comparing it against a `null` nobody may ever fill would leave every revision
+ * in flight at the upgrade without a second attempt. So that comparison is the
+ * three facts as before, and the arrival's reference stays in the log, not in
+ * the row.
+ *
+ * Exported for `canonicalRevision`'s reason: the append door and the snapshot
+ * decide "same revision" with this one function, so the incremental path and a
+ * rebuild refuse exactly the same histories.
+ */
+export function sameRevisionRecord(
+  stored: TaskRevisionReadModel,
+  arriving: TaskRevisionReadModel,
+): boolean {
+  if (canonicalRevision(stored) !== canonicalRevision(arriving)) return false;
+  return (
+    stored.envelopeArtifactReferenceId === null ||
+    stored.envelopeArtifactReferenceId === arriving.envelopeArtifactReferenceId
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -3704,31 +3807,27 @@ export function artifactEventKindRefusal(kind: unknown): LedgerValidationIssue |
  * `PUBLICATION` pin is born and released by its publication's own events, never
  * by `PIN_ACQUIRED` or `PIN_RELEASED` — which is what lets a publication's
  * success find exactly the pin its intention took.
+ *
+ * The first two run over **every** reference an event carries, and that
+ * includes the `intendedReference` block of a `PUBLICATION_INTENDED` (O-1 of
+ * escalón C's postaudit, P-36/local D). The fold never reads that block, but it
+ * is in the stream all the same, and a stream that refused a `SECRET_BEARING`
+ * reference on the success while recording it verbatim on the intention would
+ * hold exactly the material §10 keeps out — one event earlier. The door and the
+ * rebuild both call this function, so a planted intention is refused on replay
+ * with the words the door would have used.
  */
 export function artifactEventRefusal(event: ArtifactRegistryEvent): LedgerValidationIssue | null {
   if (
     event.artifactEventKind === "PUBLICATION_SUCCEEDED" ||
     event.artifactEventKind === "REFERENCE_RECORDED"
   ) {
-    const reference = event.payload.reference;
-    if (reference.classification === "SECRET_BEARING") {
-      return {
-        path: "payload.reference.classification",
-        message:
-          "a SECRET_BEARING artifact is never published in the stream: it designates material" +
-          " that demands review and blocking, and it is not a permission to store credentials",
-      };
-    }
-    if (!(ARTIFACT_ACCESS_POLICY_IDS as readonly string[]).includes(reference.accessPolicyId)) {
-      return {
-        path: "payload.reference.accessPolicyId",
-        message:
-          "access policy " +
-          printable(reference.accessPolicyId) +
-          " is not one this build defines; the closed set is " +
-          ARTIFACT_ACCESS_POLICY_IDS.join(", "),
-      };
-    }
+    const refusal = artifactReferenceRefusal(event.payload.reference, "payload.reference");
+    if (refusal !== null) return refusal;
+  }
+  if (event.artifactEventKind === "PUBLICATION_INTENDED" && event.payload.intendedReference !== undefined) {
+    const refusal = artifactReferenceRefusal(event.payload.intendedReference, "payload.intendedReference");
+    if (refusal !== null) return refusal;
   }
   if (event.artifactEventKind === "PIN_ACQUIRED" && event.payload.pinHolderKind === "PUBLICATION") {
     return {
@@ -3736,6 +3835,32 @@ export function artifactEventRefusal(event: ArtifactRegistryEvent): LedgerValida
       message:
         "a PUBLICATION pin is taken by its PUBLICATION_INTENDED and released by that publication's" +
         " success or abandonment, never by PIN_ACQUIRED",
+    };
+  }
+  return null;
+}
+
+/** The two stream rules a reference record earns wherever it rides, at `path`. */
+function artifactReferenceRefusal(
+  reference: { readonly classification: string; readonly accessPolicyId: string },
+  path: string,
+): LedgerValidationIssue | null {
+  if (reference.classification === "SECRET_BEARING") {
+    return {
+      path: path + ".classification",
+      message:
+        "a SECRET_BEARING artifact is never published in the stream: it designates material" +
+        " that demands review and blocking, and it is not a permission to store credentials",
+    };
+  }
+  if (!(ARTIFACT_ACCESS_POLICY_IDS as readonly string[]).includes(reference.accessPolicyId)) {
+    return {
+      path: path + ".accessPolicyId",
+      message:
+        "access policy " +
+        printable(reference.accessPolicyId) +
+        " is not one this build defines; the closed set is " +
+        ARTIFACT_ACCESS_POLICY_IDS.join(", "),
     };
   }
   return null;

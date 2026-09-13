@@ -217,15 +217,18 @@ export interface TaskReadModel {
  * constraint there would forbid exactly the case the model exists to allow —
  * which is why `restoredFromRevisionId` exists to say so explicitly.
  *
- * `envelopeArtifactReferenceId` is absent, not forgotten: the artifact plane is
- * P-36/local and a `NOT NULL` reference cannot be minted without it. Decision
- * 41 and ADR 0067 record the deferral.
+ * `envelopeArtifactReferenceId` is the reference the envelope's bytes are read
+ * by (P-36/local D, decision 41, ADR 0084). `null` on every revision recorded
+ * under `2.2.0`, `2.3.0` or `2.4.0` — the cohort before the plane that mints it —
+ * and never `null` on a later one. It is never derived from `envelopeSha256`:
+ * knowing a digest grants no access to the bytes it names.
  */
 export interface TaskRevisionReadModel {
   readonly taskId: string;
   readonly revisionNumber: number;
   readonly revisionId: string;
   readonly envelopeSha256: string;
+  readonly envelopeArtifactReferenceId: string | null;
   readonly restoredFromRevisionId: string | null;
   readonly createdAt: string;
   readonly createdBy: string;

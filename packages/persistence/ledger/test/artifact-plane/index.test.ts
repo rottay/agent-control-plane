@@ -1133,8 +1133,15 @@ describe("a crash at each seam is reconciled from a new plane over the same subs
   });
 
   it("N-P36C-20: another producer's intention whose block no success may carry is abandoned over valid bytes, which stay; the reconciler keeps no holding and the next intention re-stages the generation", () => {
+    // Replanted in P-36/local D (H-4). The block used to be SECRET_BEARING, which
+    // the intention's door now refuses on the append (O-1). What reaches the
+    // reconciler is a block the intention's door admits and the success's door
+    // refuses: a reference id another publication has already registered, which
+    // `assertReferenceIsNew` keeps from being recorded twice.
     const ledgerPath = temporaryLedgerPath();
     const foreign = substrates(ledgerPath);
+    expectVerb(foreign.plane.publish(request({ content: OTHER_BYTES, command: 5 })), "PUBLISHED");
+    expect(foreign.ledger.getArtifactReference("ref-5")?.contentSha256).not.toBe(DIGEST);
     expect(
       foreign.leaseStore.acquire({ contentSha256: DIGEST, operation: "PUBLISH", operationId: "cmd-foreign", holder: "someone/else/01", holderPid: DEAD_PID, acquiredAt: AT, expiresAt: LATER }).verb,
     ).toBe("APPLIED");
@@ -1149,7 +1156,7 @@ describe("a crash at each seam is reconciled from a new plane over the same subs
       recordedBy: "someone/else/01",
       occurredAt: AT,
       recordedAt: AT,
-      payload: { commandId: "cmd-foreign", contentSha256: DIGEST, blobGeneration: 1, mediaType: "text/plain", sizeBytes: BYTES.byteLength, encryptionStatus: "PLAINTEXT", keyReference: null, encryptionProfile: "local-plaintext-v1", artifactPinId: "pin-foreign", intendedReference: reference({ classification: "SECRET_BEARING" }) },
+      payload: { commandId: "cmd-foreign", contentSha256: DIGEST, blobGeneration: 1, mediaType: "text/plain", sizeBytes: BYTES.byteLength, encryptionStatus: "PLAINTEXT", keyReference: null, encryptionProfile: "local-plaintext-v1", artifactPinId: "pin-foreign", intendedReference: reference({ artifactReferenceId: "ref-5" }) },
     });
     mkdirSync(join(rootOf(ledgerPath), DIGEST.slice(0, 2)), { mode: 0o700 });
     writeFileSync(objectPath(ledgerPath), BYTES, { mode: 0o600 });
@@ -1159,11 +1166,16 @@ describe("a crash at each seam is reconciled from a new plane over the same subs
     const durable = inodeOf(objectPath(ledgerPath));
     const outcome = expectVerb(next.plane.reconcile(reconciliation()), "ABANDONED");
     expect(outcome).toMatchObject({ refusal: "REFERENCE_REFUSED_BY_DOOR", blobGeneration: 1, release: { verb: "APPLIED" } });
-    expect(leaseRows(ledgerPath)).toMatchObject([{ operation: null }]);
+    expect(next.leaseStore.read(DIGEST)?.operation).toBeNull();
+    expect(leaseRows(ledgerPath).map((row) => row["operation"])).toEqual([null, null]);
     const events = next.ledger.listArtifactEvents(DIGEST).map((record) => record.event);
     expect(events.map((event) => event.artifactEventKind)).toEqual(["PUBLICATION_INTENDED", "PUBLICATION_ABANDONED"]);
     expect(events[1]).toMatchObject({ eventId: uuid(9001), idempotencyKey: "artifact/reconciliation/terminal", recordedBy: RECONCILER });
-    expect(rows(ledgerPath, "SELECT COUNT(*) AS n FROM artifact_reference_read_model")).toEqual([{ n: 0 }]);
+    // The one reference is the other publication's, untouched; none names these bytes.
+    expect(rows(ledgerPath, "SELECT artifact_reference_id FROM artifact_reference_read_model")).toEqual([
+      { artifact_reference_id: "ref-5" },
+    ]);
+    expect(rows(ledgerPath, "SELECT COUNT(*) AS n FROM artifact_reference_read_model WHERE content_sha256 = '" + DIGEST + "'")).toEqual([{ n: 0 }]);
     expect(next.ledger.listLiveArtifactPins("PUBLICATION")).toEqual([]);
     expect(next.ledger.getArtifactBlob(DIGEST, 1)).toMatchObject({ lifecycleState: "PUBLICATION_ABANDONED", graceStartedAt: AT });
     expect(readFileSync(objectPath(ledgerPath))).toEqual(BYTES);

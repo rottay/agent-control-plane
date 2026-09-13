@@ -818,6 +818,7 @@ describe("the invocation identity survived its relocation byte for byte", () => 
       revisionNumber: 2,
       attemptNumber: 1,
       envelopeSha256: "e".repeat(64),
+      envelopeArtifactReferenceId: "ref-envelope-0001",
     };
     const carried = deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64), revision);
     expect(carried.invocationId).toBe("3cea5666-4abb-5bdf-8089-3f961124f281");
@@ -837,15 +838,20 @@ describe("the invocation identity survived its relocation byte for byte", () => 
       revisionNumber: 1,
       attemptNumber: 1,
       envelopeSha256: "e".repeat(64),
+      envelopeArtifactReferenceId: "ref-envelope-0002",
       credentialRef: "secret://nope",
     };
     const carried = deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64), wider);
+    // Five since P-36/local D (ADR 0084), and the fifth outside the preimage.
     expect(Object.keys(carried.revision ?? {}).sort()).toEqual([
       "attemptNumber",
+      "envelopeArtifactReferenceId",
       "envelopeSha256",
       "revisionId",
       "revisionNumber",
     ]);
+    expect(carried.revision?.envelopeArtifactReferenceId).toBe("ref-envelope-0002");
+    expect(carried.invocationId).toBe(deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64)).invocationId);
   });
 
   it("depends on the task and the attempt, and on nothing else", () => {

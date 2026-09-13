@@ -733,6 +733,17 @@ describe("N10: no checkpoint content reaches an event payload", () => {
 
 const SUBMITTED_AT = "2026-08-27T12:00:00.000Z";
 
+/**
+ * The `TASK_ENVELOPE` reference a G fixture's revision names (P-36/local D).
+ *
+ * One per task: the ledger's door asks only that the reference be registered
+ * with that class (decision 41, ADR 0084), and the runtime carries it without
+ * minting it.
+ */
+function envelopeReferenceFor(taskId: string): string {
+  return "ref-envelope-" + taskId;
+}
+
 /** The revision every G fixture runs under unless it says otherwise. */
 function revisionFor(taskId: string, revisionNumber = 1): NonNullable<DurableInvocation["revision"]> {
   return {
@@ -740,7 +751,62 @@ function revisionFor(taskId: string, revisionNumber = 1): NonNullable<DurableInv
     revisionNumber,
     attemptNumber: 1,
     envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: envelopeReferenceFor(taskId),
   };
+}
+
+/**
+ * Register the task's envelope reference in the ledger, as a fixture.
+ *
+ * Not a publication by the runtime — publishing an envelope's bytes is
+ * adoption's (ADR 0084). Two artifact events through the ledger's own artifact
+ * door, over bytes no other fixture names, so the opening the walk builds
+ * finds the reference its version requires.
+ */
+function plantEnvelopeReference(ledger: Ledger, taskId: string): void {
+  const reference = envelopeReferenceFor(taskId);
+  if (ledger.getArtifactReference(reference) !== null) return;
+  const content = "7".repeat(64);
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: SUBMITTED_AT,
+    recordedAt: SUBMITTED_AT,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: content, blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
 }
 
 /** A revision-bearing invocation, derived by the submission path's own producer. */
@@ -756,6 +822,7 @@ function v2ContextFor(name: string, taskId: string): {
   invocation: DurableInvocation;
 } {
   const base = contextFor(name, taskId, []);
+  plantEnvelopeReference(base.ledger, taskId);
   const invocation = v2InvocationFor(taskId);
   return {
     ...base,
@@ -801,6 +868,7 @@ describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
     const ledgerPath = scenarioLedgerPath(root);
     const ledger = openLedger(ledgerPath);
     ledgers.push(ledger);
+    plantEnvelopeReference(ledger, taskId);
     const invocation = v2InvocationFor(taskId);
 
     const supervisor = new SqliteSupervisor({
@@ -876,6 +944,7 @@ describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
     const ledgerPath = scenarioLedgerPath(root);
     const ledger = openLedger(ledgerPath);
     ledgers.push(ledger);
+    plantEnvelopeReference(ledger, taskId);
     const invocation = v2InvocationFor(taskId);
     const supervisor = new SqliteSupervisor({
       ledger,

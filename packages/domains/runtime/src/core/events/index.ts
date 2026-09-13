@@ -294,8 +294,8 @@ export const ATTEMPT_OPENING_STEP: PlanStep = Object.freeze({
  * coordinate, the invocation it names and the flat assignment it proposes.
  * Projected one by one from named members, so a wider invocation cannot widen
  * the payload — the ledger's door reads the two identity keys and does **not**
- * refuse a stray one, which makes this builder the only thing that keeps an
- * eighth key out (the contract's own comment says as much). No
+ * refuse a stray one, which makes this builder the only thing that keeps a
+ * ninth key out (the contract's own comment says as much). No
  * `submissionDigest`, no route, no initiative: those bind at the discovery that
  * follows, one event later than a V1 walk binds them, and the window between
  * the two holds no work.
@@ -305,6 +305,12 @@ export const ATTEMPT_OPENING_STEP: PlanStep = Object.freeze({
  * by name (ADR 0073). `appendPlanStep` checks the same arithmetic against the
  * ledger before it appends, so a walk that would be refused never reaches the
  * door. Both instants are the submission's, like every other event of the walk.
+ *
+ * The revision record includes the envelope reference since P-36/local D: the
+ * opening is stamped with the version in force, and from `2.5.0` a revision
+ * record names its envelope by a registered reference (decision 41, ADR 0084).
+ * The reference is the invocation's, carried; nothing here publishes an
+ * envelope or derives a reference from its digest.
  */
 function buildAttemptOpening(
   invocation: DurableInvocation,
@@ -341,6 +347,7 @@ function buildAttemptOpening(
       revisionNumber: revision.revisionNumber,
       attemptNumber: revision.attemptNumber,
       envelopeSha256: revision.envelopeSha256,
+      envelopeArtifactReferenceId: revision.envelopeArtifactReferenceId,
       invocationId: invocation.invocationId,
       legacyAttemptNumber: invocation.attempt,
     },

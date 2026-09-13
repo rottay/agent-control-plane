@@ -115,17 +115,29 @@ export interface DurableInvocation {
  * The revision record an attempt opening carries (P-18/protocolo B's grammar).
  *
  * `SUBMISSION`-origin: captured before ingress and carried on the invocation,
- * never looked up by the handler. The four fields are the ones the opening's
+ * never looked up by the handler. The five fields are the ones the opening's
  * payload needs to fold `task_revision_read_model` from the same event that
  * opens the attempt. `restoredFromRevisionId` is deliberately absent: a restored
  * revision is recovery's to produce, and a member no producer can fill is
  * stocking.
+ *
+ * **`envelopeArtifactReferenceId` is carried, not published** (P-36/local D,
+ * ADR 0084). From contract version `2.5.0` a revision record names the
+ * registered `TASK_ENVELOPE` reference its envelope's bytes are read by
+ * (decision 41), and the ledger's door refuses one that names none, or one the
+ * registry does not hold. The walk stamps the version in force, so the member
+ * is required here: an optional one would build openings the door refuses.
+ * The caller hands it in exactly as it hands in `envelopeSha256`; this domain
+ * mints no reference, writes no envelope bytes and never derives a reference
+ * from the digest. Publishing the envelope is adoption's. It is not in the
+ * preimage of `invocationId`, for the reason the other four are not.
  */
 export interface InvocationRevision {
   readonly revisionId: string;
   readonly revisionNumber: number;
   readonly attemptNumber: number;
   readonly envelopeSha256: string;
+  readonly envelopeArtifactReferenceId: string;
 }
 
 /** One side effect within an attempt, addressable and therefore probeable. */

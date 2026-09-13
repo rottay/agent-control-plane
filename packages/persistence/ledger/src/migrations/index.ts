@@ -2274,6 +2274,63 @@ FROM (
 );
 `,
   },
+  {
+    version: 16,
+    name: "task_revision_envelope_reference",
+    sql: `
+-- A revision names its envelope's bytes by reference, never by digest
+-- (P-36/local D, decision 41, ADR 0084).
+--
+-- Migration 11 created \`task_revision_read_model\` without
+-- \`envelope_artifact_reference_id\` on purpose: the column is \`NOT NULL\` in the
+-- dictionary and only the artifact plane mints its value, so a nullable column
+-- there would have been a column with no producer pointing at an empty port.
+-- The plane exists now (migration 15 and escalón C), and decision 41 says how
+-- the column arrives: \`ADD COLUMN\`, a \`BEFORE INSERT\` trigger by cohort of
+-- \`contract_version\`, the value carried as a key of the revision record's
+-- payload, \`NULL\` on every revision recorded before, and nothing ever derives a
+-- reference from a digest.
+--
+-- **Additive, and the table is not rebuilt.** A nullable column with no default
+-- is added without rewriting a row, and every row already there reads \`NULL\` —
+-- which is exactly the value the cohort before holds. So no row is rewritten, no index moves and no watermark moves: the fold
+-- over the existing history yields the same rows with \`NULL\` in the new field,
+-- and the projection is level with its stream the moment the column exists.
+ALTER TABLE task_revision_read_model ADD COLUMN envelope_artifact_reference_id TEXT;
+
+-- The cohort, in both directions, as one trigger.
+--
+-- The cohort before is a CLOSED list frozen here, never a comparison of version
+-- strings: \`'2.2.0'\`, \`'2.3.0'\` and \`'2.4.0'\` are every version any build
+-- before this migration could have stamped, a migration is immutable, and a
+-- version bumped later falls into the cohort after without touching this text.
+-- The fold's \`PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS\` spells the same three,
+-- and the suite holds the two spellings equal.
+--
+-- Backward: a revision of the cohort before holding a reference is a row that
+-- claims bytes no build of its contract could have named. Forward: a revision
+-- of the cohort after without one — or with an empty one — is the column this
+-- migration exists to fill, left empty.
+--
+-- **Existence is not checked here, and cannot be.** Whether the reference names
+-- a \`TASK_ENVELOPE\` is a question about \`artifact_reference_read_model\`, a
+-- projection of the registry stream; this row is a projection of the task
+-- stream. A rebuild clears every derived table and folds one chain at a time, so
+-- a trigger or a foreign key reaching across would abort a rebuild on history the
+-- append door accepted. The door asks that question, by name, before it writes.
+CREATE TRIGGER tr_task_revision_read_model__validate_envelope_reference
+BEFORE INSERT ON task_revision_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'task_revision_read_model.envelope_artifact_reference_id must be NULL on a revision of contract version 2.2.0, 2.3.0 or 2.4.0')
+  WHERE NEW.contract_version IN ('2.2.0', '2.3.0', '2.4.0')
+    AND NEW.envelope_artifact_reference_id IS NOT NULL;
+
+  SELECT RAISE(ABORT, 'task_revision_read_model.envelope_artifact_reference_id is required on a revision of every later contract version')
+  WHERE NEW.contract_version NOT IN ('2.2.0', '2.3.0', '2.4.0')
+    AND (NEW.envelope_artifact_reference_id IS NULL OR NEW.envelope_artifact_reference_id = '');
+END;
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -2485,6 +2542,15 @@ export const ARTIFACT_TOMBSTONE_PROJECTION = "artifact_tombstone_read_model";
  * fixtures hold the number against where the SQL actually sits.
  */
 export const ARTIFACT_REGISTRY_MIGRATION = 15;
+
+/**
+ * The migration that gives a revision its envelope reference by cohort
+ * (P-36/local D, decision 41).
+ *
+ * Named for `ARTIFACT_REGISTRY_MIGRATION`'s reason: the suite and the rewind
+ * fixtures hold the number against where the SQL actually sits.
+ */
+export const TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION = 16;
 
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
@@ -2755,6 +2821,12 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "table", name: "artifact_pin_read_model" },
   { type: "index", name: "ux_artifact_pin_read_model__content_sha256_holder__live" },
   { type: "table", name: "artifact_tombstone_read_model" },
+  // P-36/local D. One trigger and nothing else: migration 16 adds a column, and a
+  // column is not a schema object here. Inventoried for the reason every `tr_`
+  // is — dropping it leaves `schema_migrations` intact while the table quietly
+  // admits a revision of the new cohort with no reference, or one of the old
+  // cohort with a reference no build of its contract could have named.
+  { type: "trigger", name: "tr_task_revision_read_model__validate_envelope_reference" },
 ];
 
 export interface MigrationConformance {

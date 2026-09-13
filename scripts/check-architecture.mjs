@@ -9846,6 +9846,83 @@ const P36C_WRITE_SET = [
   "packages/kernel/contracts/test/schemas/artifact-record/index.test.ts",
 ];
 
+/**
+ * P-36/local, escalón D — a revision of the new cohort names its envelope by
+ * reference, never by digest (ADR 0084, decisions 67-69). The last escalón of
+ * P-36/local. Brief `.acp-local/evidence/p36/acp-p36d-writer-brief-v3.md`, which
+ * absorbed the Fable preaudit's ACCEPT_WITH_CORRECTIONS (H-1..H-4, M-5..M-7,
+ * L-8..L-9) and the DT's rulings on the writer's NEEDS_DECISION (Q-D1, Q-D2).
+ *
+ * **What lands.** Migration 16: `task_revision_read_model` gains
+ * `envelope_artifact_reference_id` by `ADD COLUMN`, and one two-sided `BEFORE
+ * INSERT` trigger keyed on a closed list of the versions before the cohort
+ * (decision 41). `CONTRACT_VERSION` 2.4.0 → **2.5.0**, because the cohort is keyed
+ * on the version: the bump pays the cohort, not an identity. The fold decides the
+ * reference by cohort and refuses by name; the append door checks it names a
+ * registered `TASK_ENVELOPE`; `sameRevisionRecord` is the one comparison of door
+ * and snapshot, and counts the reference only where the stored row holds one
+ * (Q-D2). `@acp/runtime` carries the reference on `InvocationRevision` into the
+ * opening's payload (Q-D1). `artifactEventRefusal` runs its two reference rules
+ * over `intendedReference` too (O-1 of escalón C's postaudit).
+ *
+ * **What does NOT land, declared.** No publication of a task envelope, by the
+ * runtime or anyone — adoption. No existence check in the trigger, and no foreign
+ * key across the task and registry streams. No new event type, no new contract
+ * schema or export, no new ledger barrel export, no new error class. The plane,
+ * the lease store and `artifact-store` are untouched. `execution/index.md` is not
+ * edited: ADR 0084 carries its precision ("required from 2.5.0").
+ *
+ * **Pins that move.** `CONTRACT_VERSION` 2.4.0 → 2.5.0 and
+ * `SUPPORTED_CONTRACT_VERSIONS` gains "2.5.0". `MIGRATIONS` 15 → 16;
+ * `EXPECTED_SCHEMA_OBJECTS` gains one trigger and the `tr_` inventory 8 → 9. The
+ * three `envelope-identity` vectors. The ADR corpus 83 → 84; the decision register
+ * 66 → 69. The ledger README gains the section on the envelope reference; the
+ * contracts and runtime READMEs narrate the bump and the carriage.
+ *
+ * **Pins that do NOT move.** `CONTROL_PLANE_EVENT_TYPES` (33) and the `execution`
+ * family (15). `CONTRACTS_SCHEMA_EXPORTS`. `DERIVED_TABLES`, `PROJECTION_NAMES`,
+ * `PROJECTION_SOURCES` and the watermark rows: migration 16 adds a column, not a
+ * projection. `PATH_SCOPED_LAWS` and `COORDINATION_STORES` (4). The ledger
+ * README's `### Errors` bijection. The narrations of `"2.4.0"` in the historical
+ * blocks above are history and stay as written.
+ *
+ * **Twenty-nine paths; one is new to the fence** — ADR 0084. The other twenty-eight
+ * are admitted by historical blocks. `packages/kernel/contracts/src/schemas/task-envelope/index.ts`
+ * is admitted and, untouched, left so: the envelope's schema already pins
+ * `AdmittedContractVersion`, and the bump reaches it through that symbol.
+ */
+const P36D_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/edges/telemetry/test/testing/index.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0084-a-revision-names-its-envelope-by-reference-never-by-digest.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/persistence/ledger/test/artifact-plane/index.test.ts",
+  "packages/domains/runtime/src/contracts/index.ts",
+  "packages/domains/runtime/src/submission/index.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "packages/domains/runtime/test/core/coordinates/index.test.ts",
+  "packages/domains/runtime/README.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -10060,6 +10137,7 @@ const WRITE_SET = [
   ...P36A_WRITE_SET,
   ...P36B_WRITE_SET,
   ...P36C_WRITE_SET,
+  ...P36D_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

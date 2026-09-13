@@ -626,7 +626,7 @@ describe("integrity", () => {
     // 3 rather than at 0 — a ledger created empty and then grown has a baseline
     // of 0, and 0 is never ahead of anything.
     //
-    // Rewinding to before 10 means undoing 11, 12, 13, 14 and 15 as well, because
+    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15 and 16 as well, because
     // the reopen re-applies everything the row set no longer claims. `ALTER TABLE
     // ... ADD COLUMN` is not idempotent, so a re-applied 11 over a schema that
     // still carries the coordinate aborts on "duplicate column name". The order
@@ -646,8 +646,16 @@ describe("integrity", () => {
     // migration 9's own text after it. The copy leaves `subject_kind` and
     // `artifact_event_kind` behind, which is lawful because this ledger holds no
     // artifact event at all.
+    //
+    // Migration 16 goes before 15, and in the order SQLite forces (P-36/local D,
+    // M-7): its trigger names `envelope_artifact_reference_id`, and `DROP COLUMN`
+    // is refused for a column a trigger references, so the trigger goes first and
+    // the column after it. The revision table is dropped further down in any
+    // case; undoing 16 by name keeps the rewind an exact reverse of the set, so a
+    // later escalón that stops short of 11 inherits a rewind that still works.
     const beforeRewind = registryEvidence(path);
     const rewind = new DatabaseSync(path);
+    rewindTaskRevisionEnvelopeReference(rewind);
     rewindArtifactRegistry(rewind);
     rewind.exec("DELETE FROM ledger_meta WHERE key LIKE 'account_integrity_%'");
     rewind.exec(
@@ -701,6 +709,23 @@ describe("integrity", () => {
     // preserve is preserved — the rows and their chain, the sequence counter,
     // and both foreign triggers byte for byte.
     expect(registryEvidence(path)).toEqual(beforeRewind);
+    // N-P36D-7: and it re-applied 16 over the table 11 recreated, without
+    // aborting — the column and its trigger are back.
+    const reapplied = new DatabaseSync(path);
+    expect(
+      reapplied
+        .prepare("SELECT name FROM pragma_table_info('task_revision_read_model') WHERE name = ?")
+        .all("envelope_artifact_reference_id"),
+    ).toHaveLength(1);
+    expect(
+      reapplied
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .all("tr_task_revision_read_model__validate_envelope_reference"),
+    ).toHaveLength(1);
+    expect(
+      (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
+    ).toBe(16);
+    reapplied.close();
 
     // Now reach past the door. Both tables are append-only by trigger, which is
     // exactly why this state cannot arise through the ledger's API and has to
@@ -1381,6 +1406,18 @@ describe("the accounts clock seam", () => {
     expect(Object.keys(accepted.options).some((key) => /now|clock|instant|time/i.test(key))).toBe(false);
   });
 });
+
+/**
+ * Migration 16 undone on a raw handle (P-36/local D): the envelope reference's
+ * trigger, then its column, in the order SQLite forces (M-7). No watermark,
+ * because 16 seeded none.
+ */
+function rewindTaskRevisionEnvelopeReference(raw: DatabaseSync): void {
+  raw.exec(
+    "DROP TRIGGER tr_task_revision_read_model__validate_envelope_reference;" +
+      "ALTER TABLE task_revision_read_model DROP COLUMN envelope_artifact_reference_id;",
+  );
+}
 
 /**
  * Migration 15 undone on a raw handle (P-36/local A): the four artifact tables,

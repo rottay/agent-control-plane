@@ -172,7 +172,7 @@ fifteenth class cannot arrive without appearing here.
 | `worker_read_model` | derived | observed emitters, event and distinct task counts |
 | `worker_task_read_model` | derived | emitter to task associations |
 | `execution_route_read_model` | derived | the route each `(task, attempt)` was admitted on: provider, model, account, transport and the capability-policy version that chose them |
-| `task_revision_read_model` | derived | one row per `(task, revision)`: the revision's stable handle, its envelope digest and what it restored |
+| `task_revision_read_model` | derived | one row per `(task, revision)`: the revision's stable handle, its envelope digest, the registered reference its envelope's bytes are read by (`NULL` before contract version `2.5.0`, since migration 16) and what it restored |
 | `task_attempt_read_model` | derived | one row per `(task, revision, attempt)`: the flat assignment that goes in the legacy `attempt` column, and the invocation the attempt is in bijection with |
 | `execution_route_segment_read_model` | derived | one row per stretch of one attempt's route, with explicit lineage back to the segment that handed off to it |
 | `effect_read_model` | derived | one row per logical operation of a run, found by its logical key rather than by a physical coordinate |
@@ -366,9 +366,10 @@ carry its own `occurred_at` — execution §3 calls that "un reintento de la mis
 revisión, no una revisión nueva" — where before, advancing
 `latest_attempt_number` required restating the first arrival's timestamp. The
 replay keeps the first arrival's birth attributes; a rebuild reproduces them.
-One exported function, `canonicalRevision`, is what both the append door and the
+One exported function, `sameRevisionRecord`, is what both the append door and the
 snapshot compare with, because two implementations of "same content" would be
-two definitions of it.
+two definitions of it. It compares `canonicalRevision`'s three fields always, and
+the envelope reference **only when the stored row holds one** (below).
 
 **There is deliberately no `UNIQUE(task_id, envelope_sha256)`.** Restoring an
 earlier envelope is a *new* revision with the *same* digest, and that uniqueness
@@ -376,11 +377,46 @@ would forbid exactly the case the model exists to allow;
 `restored_from_revision_id` is what says why the two agree. The index over the
 digest answers "which revisions share this envelope" and is not unique.
 
-`envelope_artifact_reference_id` is **absent, not forgotten**. The artifact
-plane is P-36/local, the column is `NOT NULL` in the target dictionary, and a
-`NOT NULL` column cannot be populated without the plane that mints the
-reference. Nothing here ever derives a reference from a digest. Decision 41
-records the deferral; P-36/local adds the column with a cohort trigger.
+### The envelope reference, by cohort (migration 16)
+
+P-36/local escalón D (decision 41; ADR 0084, decisions 67-69). Migration 11
+created the table without `envelope_artifact_reference_id` on purpose — a
+`NOT NULL` column nothing could fill. Migration 16 adds it by `ADD COLUMN`,
+nullable and with no default, so every row already there reads `NULL`, and one
+`BEFORE INSERT` trigger holds the cohort in both directions:
+
+| `contract_version` | `envelope_artifact_reference_id` |
+| --- | --- |
+| `2.2.0`, `2.3.0`, `2.4.0` — a closed list frozen in the migration | must be `NULL` |
+| anything else — `2.5.0` today, and every later bump without touching 16 | required, and not empty |
+
+The cohort is keyed on the version, so the version had to move:
+`CONTRACT_VERSION` is `"2.5.0"`. The bump pays the cohort, not an identity
+(ADR 0084) — a reference is a fact the fold reads, and nothing is derived from it.
+
+The reference travels as `payload.envelopeArtifactReferenceId` of the revision
+record. **The fold checks form and cohort**, and refuses by name: the key on a
+record of the cohort before; no key on a record of the cohort after; a present
+value that is not a non-empty string (`null`, `""`, a number), which is never read
+as absent. **The append door checks existence**, by name and before anything is
+written: the reference must be in `artifact_reference_read_model` with
+`artifact_class = 'TASK_ENVELOPE'`. That look-up lives at the door and nowhere
+else, because the reference is a projection of the registry stream and the
+revision of the task stream: a trigger or a foreign key across them would make a
+rebuild depend on the order it folds the streams in. Scope, retention and
+tombstones are not asked — scope is the private reader's law.
+
+**Written once, and the reference counts only where the row holds one.** A row of
+the new cohort holds a reference, so a second arrival naming another is refused
+as a second answer to where the envelope's bytes are. A row of the cohort before
+holds `NULL` for ever; a second attempt of that revision stamped after the upgrade
+carries the reference its version requires, agrees with the row on the three
+facts, and is admitted — the reference stays in the log, not in the row.
+
+**Nothing derives a reference from a digest**, here or anywhere: a revision whose
+digest the registry holds bytes under, and that names no reference, is refused
+all the same. This build publishes no envelope: `@acp/runtime` carries the
+reference its caller hands in, and writing the envelope's bytes is adoption's.
 
 ### What `task_read_model` gained, and what is still empty
 
@@ -768,7 +804,10 @@ again is idempotent.
 `artifactEventKind`: reclamation, collection and tombstoning are P-36 completo. A
 `SECRET_BEARING` reference, which never enters the stream. An access policy other
 than `SCOPE_EQUALITY_V1`, the one identifier closed in code while the policy table
-has no dictionary (decision 59). And every credential key or secret-shaped value,
+has no dictionary (decision 59). Both rules run over **every** reference an event
+carries, the `intendedReference` block of a `PUBLICATION_INTENDED` included
+(P-36/local D, decision 69): the fold never reads that block, but it rides the
+stream, and a rebuild meeting a planted one refuses it in the door's words. And every credential key or secret-shaped value,
 by the contract's guards — the refusal names the path, never the value.
 
 ### What this escalón does not do
@@ -1320,7 +1359,10 @@ pins of that digest:
 | a `RECLAIM` holding / nothing | `HELD_FOR_RECLAIM` / `NOTHING_TO_RECONCILE` |
 
 An intention without `intendedReference` — another producer's — is abandoned even
-over valid bytes, which stay. **No refusal leaves a digest held**: `publish`
+over valid bytes, which stay. One with a block the door admits on the intention
+but refuses on the success — a reference id already registered — ends the same
+way; a `SECRET_BEARING` block or a foreign policy never reaches the reconciler,
+because the door refuses the intention itself (P-36/local D). **No refusal leaves a digest held**: `publish`
 refuses a reference id the ledger already records before the lease (unless it is
 this command's own recorded success, which replays), a success the door still
 refuses is the abandonment in the table, and any other failure of a terminal

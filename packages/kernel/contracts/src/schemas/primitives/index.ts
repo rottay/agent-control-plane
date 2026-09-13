@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.4.0" as const;
+export const CONTRACT_VERSION = "2.5.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -60,8 +60,19 @@ export const CONTRACT_VERSION = "2.4.0" as const;
  * `OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1` — and a per-payload
  * `outboxContractVersion` of their own. `"2.3.0"` joins `"2.2.0"` here for ever,
  * for the same reason: history recorded under it has to stay readable.
+ *
+ * **Four members from P-36/local D (ADR 0084), and a second reason to move.**
+ * ADR 0076's criterion is about identity, and under it alone D would not bump:
+ * the reference a revision record gains names its envelope's bytes, and nothing
+ * is derived from it. D moves the literal anyway because decision 41 fixes a
+ * **cohort by version** — `task_revision_read_model.envelope_artifact_reference_id`
+ * is `NULL` on every revision recorded under `"2.2.0"`, `"2.3.0"` or `"2.4.0"`
+ * and required on every later one — and a cohort keyed on a version the
+ * producer never moved could not tell a revision recorded before migration 16
+ * from one recorded after it. The bump pays the cohort, not an identity.
+ * `"2.4.0"` joins the other two here for ever.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0", "2.4.0"] as const;
+export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0", "2.4.0", "2.5.0"] as const;
 
 /**
  * The UTF-8 byte length of a string, browser-safe.

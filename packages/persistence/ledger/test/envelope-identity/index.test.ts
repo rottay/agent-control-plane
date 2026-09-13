@@ -53,8 +53,15 @@ import {
  * computed twice before being written down: by `envelopeSha256`, and
  * independently, as sha-256 of the prefix and the recursively key-sorted JSON of
  * `TaskEnvelope.parse` — the two agree on all three.
+ *
+ * P-36/local D moved the version to `"2.5.0"` (ADR 0084) and the three vectors
+ * moved with it once more, for the same reason and with the same consequence
+ * declared — and for no other: the envelope's schema, the prefix and the
+ * encoding did not move, and a revision's envelope reference is a key of the
+ * revision record's payload, never a field of the envelope. Computed twice
+ * again, the same two ways, and the two agree on all three.
  */
-const CONTRACT = "2.4.0";
+const CONTRACT = "2.5.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -393,10 +400,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "40ed2c3377a78c6dc79c423c93f3e6850879b6c21be2f5148d263f25deb56f4b"],
+      [envelope(), "0a5f6cc3efbac459892314227f49ff46171370e93f5cb63f7ea701fe9de3a1d4"],
       [
         withObjective("Delete the production ledger."),
-        "e5f9d7709e966cb9ebc1d41fcf80e5243393a5d2932e9ac9caf78f42aca5a561",
+        "38e513e9e367d269ee26090a6e3d3e3ce7fd7a54bec5c6df8c556bc338d501cf",
       ],
       [
         envelope({
@@ -406,7 +413,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "22d38e16fd4278a2ca63e2e235827c824577e78762ba714fc55ed0bc50d7e97f",
+        "3d8782377524e1bf9f2e4a1349b1dc9fca53352a30df1e5eb94bad9c1ec84cea",
       ],
     ];
 
