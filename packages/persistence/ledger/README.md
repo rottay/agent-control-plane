@@ -42,6 +42,7 @@ ledger.close();
 | `getTask(taskId)` / `listTasks(query?)` | Derived task read model, ordered by task id. |
 | `getWorker(identity)` / `listWorkers(query?)` | Derived worker read model, ordered by identity. |
 | `getExecutionRoute(taskId, attempt)` / `listExecutionRoutes(taskId)` | The route an attempt was admitted on, keyed by the pair. Null, or empty, when nothing recorded one. |
+| `getOutboxCommand(commandId)` / `listOutboxCommands()` | An outbox command folded from its own events, or every one in intention order: what a lost outbox cache is rebuilt to. No table holds it. |
 | `appendInitiativeEvent(event, causation?)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
 | `appendRegistryEvent(document, causation?)` | The same pipeline on the registry stream: one version of one configuration document, on its own chain. A unit door; there is no registry batch. |
 | `getInitiative(id)` | Derived initiative read model, or null. |
@@ -56,6 +57,8 @@ ledger.close();
 | `close()` | Release the handle. |
 | `envelopeSha256(value)` | Pure. The revision identity of a task envelope; parses before it hashes. |
 | `envelopeIdentityPreimageV1(value)` | Pure. The bytes that digest is taken over. |
+| `computeOutboxCommandId(input)` / `outboxCommandIdPreimageV1(input)` | Pure. The id of one command, over `(sagaId, phase, targetKind, targetId)` under the contract's prefix; the door recomputes it. |
+| `foldOutboxCommands(entries)` | Pure. Every command a sequence of stream events folds to, refusing what the append door refuses. |
 
 Options are `{ readOnly?, busyTimeoutMs? }`. Pages are bounded: default 100,
 maximum 1000, and cursors are exclusive.
@@ -656,6 +659,57 @@ resolves with no prompt leaves both tables empty. Nothing emits either type:
 execution §8 `:421` — no occurrence for a call a transport does not make
 observable — is a guarantee the producer of escalón G owes.
 
+## The command intention, and the quarantine it commits with
+
+P-18/protocolo F (coordination §6.2, datos §11; ADR 0078). Three same-state types
+on `execution` — `OUTBOX_COMMAND_INTENDED`, `OUTBOX_DELIVERY_INTENDED`,
+`OUTBOX_DELIVERY_OBSERVED` — and **no table**. The separate outbox is a cache;
+what the ledger records is the complete event, and a command's state is a fold
+of at most one intention, its attempts and their observations.
+
+### One intention, and an identity the door recomputes
+
+The intention carries its saga, command id, phase, kind, stream, target,
+deadline and the nullable pair of fence and target store incarnation, and
+nothing else: the payload is closed and versioned `outboxContractVersion = 1`.
+`commandId` is the digest of `(sagaId, phase, targetKind, targetId)` under
+`OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1`; the door recomputes it and refuses one
+that does not match. A command is intended once — the same one again is refused
+as a reuse, another under its id as a `CONFLICT`. The V1 matrix is checked before
+any of that: a kind outside it, or a stream this door does not realise, is
+refused `CAPABILITY_UNSUPPORTED`.
+
+### A quarantine commits with its intention to revoke
+
+Inside the ledger the quarantine and the intention to revoke the lease are
+atomic. A `REVOKE_LEASE` intention is admitted only inside `appendBatch`,
+immediately after the quarantine event it answers — `WRITE_SET_VIOLATION_DETECTED`
+or the move to `SUSPECT_WORKTREE` — of the same task, inserted by that same
+batch. And a batch that moves a task to `SUSPECT_WORKTREE` without a
+`REVOKE_LEASE` intention of its own rolls back whole. A unitary `append` of that
+move is still admitted: the daemon's conformance gate writes one, and the
+window is declared and fenced (`L-P18F-1`) until the adoption closes it.
+
+### Attempts, observations, and what a lost cache comes back as
+
+An attempt names its command and the intention as its causal reference; an
+observation names the attempt as its own. A new attempt needs the command
+`PENDING`, and the same attempt again counts once. An observation reports on the
+attempt in force, moves the state by coordination §2's transitions, carries a
+failure word from `OUTBOX_FAILURE_CODES` exactly when the state is a failure, and
+nothing leaves a terminal state. So an intention with no attempt folds `PENDING`,
+and an attempt with no outcome folds `RECONCILING` — never `PENDING`: losing the
+cache never turns an uncertain delivery into one that may be resent.
+`rebuildReadModel` and `verifyIntegrity` drive the same fold, so a stored history
+the door would have refused fails the rebuild at the event that caused it.
+
+### What this escalón does not do
+
+No reconciler and no dispatcher: F records and folds, and the rules a future
+reconciler must follow are written into ADR 0078. No migration. The contract
+moves to `"2.4.0"`, because the door and the fold recompute an identity that did
+not exist and every payload carries a version of its own — ADR 0076's criterion.
+
 ## The account stream's hash chain
 
 `account_events` shipped in migration 5 with no `previous_sha256` and no
@@ -1004,8 +1058,10 @@ computes it, and this store imposes uniqueness and nothing else.
 
 **Nothing calls it yet.** This is substrate, landed alone and adopted later, the
 way the worktree arbiter and the claim store were. The saga, the command
-identity and the events that rebuild a row from history are not here; ADR 0074
-records what this escalón closes and what it leaves owed.
+identity and the events that rebuild a row from history arrived in P-18/protocolo
+F, in the ledger rather than here — `listOutboxCommands` is what a row is rebuilt
+from (ADR 0078). `readToken` reads the row and the incarnation from one read
+transaction, so a token never pairs a version with another incarnation's id.
 
 ## The incarnation every coordination store carries
 
@@ -1048,6 +1104,16 @@ is compared. Until a packet makes those callers supply an incarnation, what the
 pair proves is proven in this package's suite and not in the field. ADR 0075
 records the window; refusing at runtime for missing metadata is forbidden there
 by name, because it would close the window by stopping the daemon.
+
+**The lease's revocation, and its acknowledgement.** P-18/protocolo F gave the
+worktree arbiter the two verbs coordination §3 `:96-97` describes. `REVOKE`
+advances the fence by exactly one, clears the holder and stamps the ledger
+command it serves in `operation_id`; `ACKNOWLEDGE_REVOCATION` records
+`revocation_acknowledged_at` and does not move the fence again. A grant may
+carry the command it answers, and a release or a sweep of a live grant ends
+that correlation, so a released record never passes for a revocation. No
+trigger and no token compare-and-set came with them: decision 46's retrofit is
+still its own packet.
 
 In the two retrofitted stores the metadata is migration **2**, behind the table
 it governs, and the new columns are nullable on every row written before them:

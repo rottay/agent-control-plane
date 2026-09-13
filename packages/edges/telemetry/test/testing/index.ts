@@ -122,9 +122,9 @@ type ProjectableEvent = ProjectableEvents[number];
  * A literal, and it has to be: reading it from `@acp/contracts` is exactly the
  * import this package may not make.
  *
- * **It stays at `"2.2.0"` across the bump to `"2.3.0"`** (P-18/protocolo C,
- * ADR 0076), and that is the mechanism working rather than a fixture nobody
- * updated. These fixtures are *stored history*: what reads them is
+ * **It stays at `"2.2.0"` across the bumps to `"2.3.0"`** (P-18/protocolo C,
+ * ADR 0076) **and to `"2.4.0"`** (P-18/protocolo F, ADR 0078), and that is the
+ * mechanism working rather than a fixture nobody updated. These fixtures are *stored history*: what reads them is
  * `ControlPlaneEvent`, which admits `SUPPORTED_CONTRACT_VERSIONS`, and a set
  * that stopped admitting `"2.2.0"` would make every event any earlier build
  * recorded unreadable. The issuer's rule — only the version in force is

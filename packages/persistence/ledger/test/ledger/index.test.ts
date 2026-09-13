@@ -34,12 +34,18 @@ import {
   LEDGER_MIGRATIONS,
   canonicalJsonStringify,
   chainDigest,
+  computeOutboxCommandId,
   effectIdV1,
   effectIdempotencyKeyV1,
+  foldOutboxCommands,
   logicalOperationSha256,
+  openLeaseStore,
   openLedger,
   requestSha256,
   type CausationRef,
+  type LeaseRow,
+  type LeaseStore,
+  type OutboxCommandReadModel,
   type IntegrityReport,
   type Ledger,
   type StreamIntegrityCoverage,
@@ -7077,8 +7083,11 @@ describe("a version this build does not read is refused, by name", () => {
     // bump, "supported but not current" was an empty category and this could
     // only assert the invariant that made the drill possible later. The set now
     // holds two members and the category is real.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", CONTRACT_VERSION]);
-    expect(CONTRACT_VERSION).toBe("2.3.0");
+    //
+    // P-18/protocolo F moved the literal again (ADR 0078), so the set now holds
+    // two supported-but-not-current members; the loop at the end walks all three.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.4.0");
 
     // The history is fabricated with `restampVersion` rather than taken from a
     // fixture, and the correction matters: there is no recorded `"2.2.0"`
@@ -7130,7 +7139,7 @@ describe("a version this build does not read is refused, by name", () => {
     // already at migration 13. The field case is the other order: a ledger the
     // previous build wrote, stopped at 12, opened by this build — which applies
     // 13 over a history that is 2.2.0 end to end, and must then read, verify,
-    // rebuild and take new 2.3.0 work on top.
+    // rebuild and take new work under the version in force on top.
     const path = temporaryDatabase();
     const ledger = open(path);
     const taskId = randomUUID();
@@ -7168,19 +7177,20 @@ describe("a version this build does not read is refused, by name", () => {
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
       "2.2.0",
-      "2.3.0",
-      "2.3.0",
+      CONTRACT_VERSION,
+      CONTRACT_VERSION,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
   });
 
-  it("P-P18-2, escalón D: a 2.2.0 history under a 2.3.0 one, rewound to 13, migrates to 14 and takes occurrences", () => {
+  it("P-P18-2, escalón D: a 2.2.0 history under a newer one, rewound to 13, migrates to 14 and takes occurrences", () => {
     // The field case one migration later. A ledger written partly by the build
-    // before the bump and partly by escalón C's build — stopped at 13 — is
-    // opened by this build, which applies 14 over both cohorts, and must then
-    // read, verify, rebuild and record a prompt and its answer on top. No bump
-    // is involved: D's events are stamped with the version C put in force.
+    // before the bump and partly by a later build — stopped at 13 — is opened by
+    // this build, which applies 14 over both cohorts, and must then read, verify,
+    // rebuild and record a prompt and its answer on top. D carried no bump; the
+    // newer cohort is stamped with whatever version is in force, which is
+    // `"2.4.0"` since F.
     const path = temporaryDatabase();
     const ledger = open(path);
     const oldTask = randomUUID();
@@ -7206,9 +7216,9 @@ describe("a version this build does not read is refused, by name", () => {
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
-      "2.3.0",
-      "2.3.0",
-      "2.3.0",
+      CONTRACT_VERSION,
+      CONTRACT_VERSION,
+      CONTRACT_VERSION,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     expect(migrated.rebuildReadModel().replayedEvents).toBe(4);
@@ -7218,7 +7228,7 @@ describe("a version this build does not read is refused, by name", () => {
     migrated.append(
       responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
     );
-    expect(CONTRACT_VERSION).toBe("2.3.0");
+    expect(CONTRACT_VERSION).toBe("2.4.0");
     expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
     expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
@@ -7282,13 +7292,49 @@ describe("a version this build does not read is refused, by name", () => {
       issue = (error as LedgerValidationError).issues[0];
     }
     expect(issue?.path).toBe("contractVersion");
-    expect(issue?.message).toContain("2.3.0");
+    expect(issue?.message).toContain(CONTRACT_VERSION);
     expect(issue?.message).toContain("2.2.0");
 
     // The stream is untouched by either refusal, and the handle is still usable.
     expect(reopened.status().headSequence).toBe(1);
     expect(reopened.verifyIntegrity().ok).toBe(true);
     reopened.close();
+  });
+  it("P-P18-2, escalón F: a 2.3.0 history reads, rebuilds and takes a quarantine batch; new 2.3.0 work does not", () => {
+    // F is the second escalón to carry a bump (ADR 0078), so the drill C wrote
+    // for 2.2.0 is owed again for 2.3.0: history recorded under the version C
+    // put in force stays readable, its exact replay is still admitted, and new
+    // work stamped with it is refused by name.
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const discovered = makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT });
+    ledger.append(discovered);
+    ledger.close();
+    restampHistory(path, "2.3.0");
+
+    const reopened = open(path);
+    expect(reopened.listEvents().events.map((record) => record.event.contractVersion)).toEqual(["2.3.0"]);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    expect(reopened.rebuildReadModel().replayedEvents).toBe(1);
+
+    expect(reopened.append({ ...discovered, contractVersion: "2.3.0" }).inserted).toBe(false);
+    const stale = refusalOf(() =>
+      reopened.appendBatch(quarantineBatch(taskId).map((event) => ({ ...event, contractVersion: "2.3.0" }))),
+    );
+    expect(stale.path).toBe("contractVersion");
+    expect(stale.message).toContain("2.4.0");
+
+    expect(reopened.appendBatch(quarantineBatch(taskId)).insertedCount).toBe(3);
+    expect(reopened.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
+      "2.3.0",
+      "2.4.0",
+      "2.4.0",
+      "2.4.0",
+    ]);
+    expect(reopened.getOutboxCommand(revokeCommandId())?.state).toBe("PENDING");
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    expect(reopened.rebuildReadModel().replayedEvents).toBe(4);
   });
 });
 
@@ -9468,10 +9514,28 @@ describe("the route segment, its lineage and its coordinate (execution §4)", ()
     const effectId = firstEffectId(taskId);
     ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
 
+    // Each handoff abandons the delivery it hands off from first. Since
+    // P-18/protocolo F (postaudit of C, O-1) a new delivery beside an outstanding
+    // one is refused, and a lineage test that stacked them would now be testing
+    // that rule instead of the lineage; the abandonment is the fixture adjusting
+    // to the door, declared in F's SOURCE_READY.
+    const abandon = (dispatchAttemptId: string): void => {
+      ledger.append(
+        dispatchOutcome({
+          taskId,
+          transitionId: "abandon-" + dispatchAttemptId,
+          dispatchAttemptId,
+          dispatchState: "ABANDONED",
+          terminalAt: EFFECT_AT,
+        }),
+      );
+    };
+
     for (const [ordinal, account] of [
       [2, "acct-2"],
       [3, "acct-3"],
     ] as const) {
+      abandon("dsp-" + String(ordinal - 1));
       ledger.append(
         dispatchIntention({
           taskId,
@@ -10782,5 +10846,1023 @@ describe("migration 14 lands whole, and its rows rebuild deterministically", () 
     expect(details).toContain(
       "prompt_occurrence_read_model holds the row for po-ghost which no event accounts for",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo F — the command intention, its deliveries and its quarantine
+// ---------------------------------------------------------------------------
+
+const SAGA_AT = "2026-09-12T11:00:00.000Z";
+const SAGA = "5a6a7a8a-0000-4000-8000-000000000001";
+const SAGA_WORKTREE = "/tmp/acp-p18f-worktree";
+const SAGA_DEADLINE = "2026-09-12T12:00:00.000Z";
+const LEASE_INCARNATION = "4c4c4c4c-0000-4000-8000-000000000001";
+const ATTEMPT_ONE = "6b6b6b6b-0000-4000-8000-000000000001";
+const ATTEMPT_TWO = "6b6b6b6b-0000-4000-8000-000000000002";
+const QUARANTINED: TaskState = "SUSPECT_WORKTREE";
+
+/** The id of the one revocation these drills intend, as the door recomputes it. */
+function revokeCommandId(sagaId = SAGA, targetId = SAGA_WORKTREE): string {
+  return computeOutboxCommandId({ sagaId, phase: "QUARANTINE", targetKind: "WORKTREE_LEASE", targetId });
+}
+
+/** An `OUTBOX_COMMAND_INTENDED`, a `REVOKE_LEASE` unless the payload says otherwise. */
+function commandIntention(input: {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly state?: TaskState;
+  readonly payload?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const state = input.state ?? QUARANTINED;
+  return makeEvent({
+    taskId: input.taskId,
+    transitionId: input.transitionId,
+    type: "OUTBOX_COMMAND_INTENDED",
+    fromState: state,
+    toState: state,
+    occurredAt: SAGA_AT,
+    payload: {
+      outboxContractVersion: 1,
+      sagaId: SAGA,
+      commandId: revokeCommandId(),
+      phase: "QUARANTINE",
+      commandKind: "REVOKE_LEASE",
+      intentStream: "control_plane_events",
+      targetKind: "WORKTREE_LEASE",
+      targetId: SAGA_WORKTREE,
+      deadlineAt: SAGA_DEADLINE,
+      fence: 1,
+      targetStoreIncarnationId: LEASE_INCARNATION,
+      ...(input.payload ?? {}),
+    },
+  });
+}
+
+/** A non-revocation command's intention payload, with its id computed. */
+function otherCommand(commandKind: string, targetId: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const targetKind = commandKind === "RELEASE_RESERVATION" ? "ACCOUNT_RESERVATION" : "OPERATOR_CHANNEL";
+  return {
+    commandKind,
+    phase: "SETTLE",
+    targetKind,
+    targetId,
+    fence: null,
+    targetStoreIncarnationId: null,
+    commandId: computeOutboxCommandId({ sagaId: SAGA, phase: "SETTLE", targetKind, targetId }),
+    ...extra,
+  };
+}
+
+/** The quarantine batch: the finding, the move, and the intention to revoke. */
+function quarantineBatch(
+  taskId: string,
+  from: TaskState = "DISCOVERED",
+  intention: Record<string, unknown> = {},
+  prefix = "q",
+): Record<string, unknown>[] {
+  return [
+    makeEvent({
+      taskId,
+      transitionId: prefix + "-violation",
+      type: "WRITE_SET_VIOLATION_DETECTED",
+      fromState: from,
+      toState: from,
+      occurredAt: SAGA_AT,
+      payload: { leaseId: "lease-1", firstPathOutsideSet: "src/outside.ts", pathsOutsideSet: "1" },
+    }),
+    makeEvent({
+      taskId,
+      transitionId: prefix + "-quarantine",
+      type: "TASK_STATE_CHANGED",
+      fromState: from,
+      toState: QUARANTINED,
+      occurredAt: SAGA_AT,
+      payload: { taskId, toState: QUARANTINED },
+    }),
+    commandIntention({ taskId, transitionId: prefix + "-intend", payload: intention }),
+  ];
+}
+
+function deliveryIntention(input: {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly deliveryAttemptId: string;
+  readonly commandId?: string;
+  readonly state?: TaskState;
+  readonly extra?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const state = input.state ?? QUARANTINED;
+  return makeEvent({
+    taskId: input.taskId,
+    transitionId: input.transitionId,
+    type: "OUTBOX_DELIVERY_INTENDED",
+    fromState: state,
+    toState: state,
+    occurredAt: SAGA_AT,
+    payload: {
+      outboxContractVersion: 1,
+      commandId: input.commandId ?? revokeCommandId(),
+      deliveryAttemptId: input.deliveryAttemptId,
+      ...(input.extra ?? {}),
+    },
+  });
+}
+
+function deliveryObservation(input: {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly deliveryAttemptId: string;
+  readonly outboxState: string;
+  readonly failureCode?: string | null;
+  readonly responseHandle?: string | null;
+  readonly commandId?: string;
+  readonly state?: TaskState;
+}): Record<string, unknown> {
+  const state = input.state ?? QUARANTINED;
+  return makeEvent({
+    taskId: input.taskId,
+    transitionId: input.transitionId,
+    type: "OUTBOX_DELIVERY_OBSERVED",
+    fromState: state,
+    toState: state,
+    occurredAt: SAGA_AT,
+    payload: {
+      outboxContractVersion: 1,
+      commandId: input.commandId ?? revokeCommandId(),
+      deliveryAttemptId: input.deliveryAttemptId,
+      outboxState: input.outboxState,
+      failureCode: input.failureCode ?? null,
+      responseHandle: input.responseHandle ?? null,
+    },
+  });
+}
+
+/** The causal reference that names one recorded event of the task stream. */
+function causeOf(record: { readonly sequence: number; readonly eventSha256: string }): CausationRef {
+  return { stream: "control_plane_events", sequence: record.sequence, sha256: record.eventSha256 };
+}
+
+/** A discovered task, quarantined in one batch; returns the intention's record. */
+function seedQuarantined(ledger: Ledger, taskId: string): { readonly sequence: number; readonly eventSha256: string } {
+  ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+  const batch = ledger.appendBatch(quarantineBatch(taskId));
+  const record = batch.results[2]?.record;
+  if (record === undefined) throw new Error("the quarantine batch recorded no intention");
+  return record;
+}
+
+describe("a quarantine commits with its intention to revoke, or not at all (P-18/F, N-P18-14)", () => {
+  it("the finding, the move to SUSPECT_WORKTREE and the intention commit as one batch", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+
+    const batch = ledger.appendBatch(quarantineBatch(taskId));
+    expect(batch.insertedCount).toBe(3);
+    const intention = batch.results[2]!.record;
+    expect(ledger.getTask(taskId)?.currentState).toBe(QUARANTINED);
+
+    // Datos §11 `:548-550`: the intention is a complete command event of the
+    // ledger's own transaction, and the command it names is folded from it.
+    expect(ledger.getOutboxCommand(revokeCommandId())).toEqual({
+      commandId: revokeCommandId(),
+      sagaId: SAGA,
+      phase: "QUARANTINE",
+      commandKind: "REVOKE_LEASE",
+      targetKind: "WORKTREE_LEASE",
+      targetId: SAGA_WORKTREE,
+      deadlineAt: SAGA_DEADLINE,
+      fence: 1,
+      targetStoreIncarnationId: LEASE_INCARNATION,
+      taskId,
+      intentStream: "control_plane_events",
+      intentSequence: intention.sequence,
+      intentSha256: intention.eventSha256,
+      state: "PENDING",
+      attemptCount: 0,
+      lastDeliveryAttemptId: null,
+      lastAttemptStream: null,
+      lastAttemptSequence: null,
+      lastAttemptSha256: null,
+      lastFailureCode: null,
+      responseHandle: null,
+      createdAt: SAGA_AT,
+      updatedAt: SAGA_AT,
+    } satisfies OutboxCommandReadModel);
+
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    expect(ledger.rebuildReadModel().replayedEvents).toBe(4);
+    expect(ledger.listOutboxCommands()).toHaveLength(1);
+  });
+
+  it("N-F-1: an intention to revoke by append, or in a batch that did not insert its quarantine, is refused", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    const [violation, quarantine, intention] = quarantineBatch(taskId);
+    // The daemon's shape today: three separate appends. The two quarantine
+    // events are still admitted one by one — the declared legacy window.
+    expect(ledger.append(violation!).inserted).toBe(true);
+    expect(ledger.append(quarantine!).inserted).toBe(true);
+    const head = ledger.status().headSequence;
+
+    // By `append`, the intention has no batch to be atomic with.
+    expect(refusalOf(() => ledger.append(intention!)).path).toBe("payload.commandKind");
+    // In a batch of its own, the same.
+    expect(refusalOf(() => ledger.appendBatch([intention!])).path).toBe("payload.commandKind");
+    // And in a batch that merely replays the quarantine: those events committed
+    // in earlier transactions, so the intention is not atomic with them either.
+    const replayed = refusalOf(() => ledger.appendBatch([violation!, quarantine!, intention!]));
+    expect(replayed.path).toBe("payload.commandKind");
+    expect(replayed.message).toContain("commit together or not at all");
+
+    expect(ledger.status().headSequence).toBe(head);
+    expect(ledger.listOutboxCommands()).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-F-1, second wing: a batch that quarantines a task without its intention rolls back whole", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    const [violation, quarantine] = quarantineBatch(taskId);
+
+    const bare = refusalOf(() => ledger.appendBatch([violation!, quarantine!]));
+    expect(bare.path).toBe("candidates[1]");
+    expect(bare.message).toContain("no REVOKE_LEASE intention of its own");
+
+    // A command of another kind is not the intention to revoke.
+    const notify = commandIntention({
+      taskId,
+      transitionId: "notify",
+      payload: otherCommand("NOTIFY", "operator"),
+    });
+    expect(refusalOf(() => ledger.appendBatch([violation!, quarantine!, notify])).path).toBe("candidates[1]");
+
+    expect(ledger.status().headSequence).toBe(1);
+    expect(ledger.getTask(taskId)?.currentState).toBe("DISCOVERED");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("keeps the declared legacy window: a unitary move to SUSPECT_WORKTREE is still admitted", () => {
+    // ADR 0078 and decision 51. The daemon's conformance gate appends the move on
+    // its own today, and closing that window is the adoption's, not this door's.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    expect(ledger.append(quarantineBatch(taskId)[1]!).inserted).toBe(true);
+    expect(ledger.getTask(taskId)?.currentState).toBe(QUARANTINED);
+  });
+
+  it("N-P18-14: a failure before the commit leaves neither the quarantine nor its intention", () => {
+    let fail = false;
+    const ledger = open(temporaryDatabase(), {
+      __testFaults: {
+        beforeAppendCommit: () => {
+          if (fail) throw new Error("injected commit failure");
+        },
+      },
+    });
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+
+    fail = true;
+    expect(caught(() => ledger.appendBatch(quarantineBatch(taskId)))).toBeInstanceOf(Error);
+    fail = false;
+
+    expect(ledger.status().headSequence).toBe(1);
+    expect(ledger.getTask(taskId)?.currentState).toBe("DISCOVERED");
+    expect(ledger.listOutboxCommands()).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    expect(ledger.appendBatch(quarantineBatch(taskId)).insertedCount).toBe(3);
+  });
+
+  it("a rebuild refuses a stored intention to revoke that follows no quarantine", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    ledger.append(
+      makeEvent({ taskId, transitionId: "step", type: "ATOMIC_STEP_COMPLETED", fromState: "DISCOVERED", toState: "DISCOVERED", occurredAt: SAGA_AT }),
+    );
+    ledger.close();
+
+    // The one shape the door can never write, planted underneath it.
+    plantChainedEvent(path, commandIntention({ taskId, transitionId: "intend", state: "DISCOVERED" }));
+    const reopened = open(path);
+    const refusal = refusalOf(() => reopened.rebuildReadModel());
+    expect(refusal.path).toBe("payload.commandKind");
+  });
+});
+
+describe("the V1 matrix and the command's identity (P-18/F, N-P18-13)", () => {
+  it("N-F-7: outside the matrix is CAPABILITY_UNSUPPORTED, and nothing is written", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    const cases: readonly Record<string, unknown>[] = [
+      otherCommand("RELEASE_RESERVATION", "reservation-1", { intentStream: "initiative_events" }),
+      { ...otherCommand("NOTIFY", "operator"), commandKind: "REVOKE_LEASE", intentStream: "account_events" },
+      otherCommand("NOTIFY", "operator", { intentStream: "registry_events" }),
+      otherCommand("EXPORT_TELEMETRY", "exporter", { intentStream: "registry_events" }),
+      otherCommand("NOTIFY", "operator", { intentStream: "initiative_events" }),
+      otherCommand("RESTART_WORKER", "worker-1"),
+    ];
+    for (const [index, payload] of cases.entries()) {
+      const refusal = refusalOf(() =>
+        ledger.append(commandIntention({ taskId, transitionId: "matrix-" + String(index), state: "DISCOVERED", payload })),
+      );
+      expect(refusal.message, JSON.stringify(payload)).toContain("CAPABILITY_UNSUPPORTED");
+    }
+    expect(ledger.status().headSequence).toBe(1);
+    expect(ledger.listOutboxCommands()).toEqual([]);
+  });
+
+  it("N-P18-13: the four kinds are admitted on control_plane_events", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedQuarantined(ledger, taskId);
+    for (const [kind, target] of [
+      ["RELEASE_RESERVATION", "reservation-1"],
+      ["NOTIFY", "operator"],
+      ["EXPORT_TELEMETRY", "exporter"],
+    ] as const) {
+      expect(
+        ledger.append(commandIntention({ taskId, transitionId: "intend-" + kind, payload: otherCommand(kind, target) }))
+          .inserted,
+      ).toBe(true);
+    }
+    const commands = ledger.listOutboxCommands();
+    expect(commands.map((command) => command.commandKind)).toEqual([
+      "REVOKE_LEASE",
+      "RELEASE_RESERVATION",
+      "NOTIFY",
+      "EXPORT_TELEMETRY",
+    ]);
+    expect(new Set(commands.map((command) => command.state))).toEqual(new Set(["PENDING"]));
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-F-2: the door recomputes the command id and refuses one that does not match", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    const proposed = otherCommand("NOTIFY", "operator", { commandId: "f".repeat(64) });
+    const refusal = refusalOf(() =>
+      ledger.append(commandIntention({ taskId, transitionId: "intend", state: "DISCOVERED", payload: proposed })),
+    );
+    expect(refusal.path).toBe("payload.commandId");
+    expect(refusal.message).toContain(otherCommand("NOTIFY", "operator")["commandId"] as string);
+    expect(ledger.status().headSequence).toBe(1);
+  });
+
+  it("a command is intended once: the same one again is a reuse, another under its id a CONFLICT", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    const payload = otherCommand("NOTIFY", "operator");
+    ledger.append(commandIntention({ taskId, transitionId: "intend-1", state: "DISCOVERED", payload }));
+
+    const same = refusalOf(() =>
+      ledger.append(commandIntention({ taskId, transitionId: "intend-2", state: "DISCOVERED", payload })),
+    );
+    expect(same.message).toContain("already intended");
+    expect(same.message).not.toContain("CONFLICT");
+
+    const different = refusalOf(() =>
+      ledger.append(
+        commandIntention({
+          taskId,
+          transitionId: "intend-3",
+          state: "DISCOVERED",
+          payload: { ...payload, deadlineAt: "2026-09-12T13:00:00.000Z" },
+        }),
+      ),
+    );
+    expect(different.message).toContain("CONFLICT");
+    expect(ledger.listOutboxCommands()).toHaveLength(1);
+  });
+});
+
+describe("a delivery attempt and its observation attach to what they name (P-18/F)", () => {
+  it("N-F-3: an attempt needs its intention, and an observation its attempt", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const intention = seedQuarantined(ledger, taskId);
+
+    const orphan = refusalOf(() =>
+      ledger.append(
+        deliveryIntention({ taskId, transitionId: "attempt-orphan", deliveryAttemptId: ATTEMPT_ONE, commandId: "e".repeat(64) }),
+        causeOf(intention),
+      ),
+    );
+    expect(orphan.path).toBe("payload.commandId");
+
+    const unseen = refusalOf(() =>
+      ledger.append(
+        deliveryObservation({ taskId, transitionId: "observe", deliveryAttemptId: ATTEMPT_ONE, outboxState: "DELIVERED" }),
+        causeOf(intention),
+      ),
+    );
+    expect(unseen.path).toBe("payload.deliveryAttemptId");
+    expect(ledger.getOutboxCommand(revokeCommandId())?.state).toBe("PENDING");
+  });
+
+  it("an attempt names its intention as its cause, and an observation its attempt, or both are refused", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const intention = seedQuarantined(ledger, taskId);
+    const attempt = deliveryIntention({ taskId, transitionId: "attempt-1", deliveryAttemptId: ATTEMPT_ONE });
+
+    expect(refusalOf(() => ledger.append(attempt)).path).toBe("causation");
+    const quarantine = ledger.getEventBySequence(intention.sequence - 1)!;
+    expect(refusalOf(() => ledger.append(attempt, causeOf(quarantine))).path).toBe("causation");
+    const recorded = ledger.append(attempt, causeOf(intention)).record;
+    expect(ledger.getOutboxCommand(revokeCommandId())?.state).toBe("RECONCILING");
+
+    const observation = deliveryObservation({
+      taskId,
+      transitionId: "observe-1",
+      deliveryAttemptId: ATTEMPT_ONE,
+      outboxState: "DELIVERED",
+      responseHandle: LEASE_INCARNATION + ":2",
+    });
+    expect(refusalOf(() => ledger.append(observation, causeOf(intention))).path).toBe("causation");
+    expect(ledger.append(observation, causeOf(recorded)).inserted).toBe(true);
+    expect(ledger.getOutboxCommand(revokeCommandId())).toMatchObject({
+      state: "DELIVERED",
+      responseHandle: LEASE_INCARNATION + ":2",
+    });
+  });
+
+  it("N-F-4: the same attempt appended twice counts once", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const intention = seedQuarantined(ledger, taskId);
+    for (const transitionId of ["attempt-1", "attempt-1-again"]) {
+      expect(
+        ledger.append(deliveryIntention({ taskId, transitionId, deliveryAttemptId: ATTEMPT_ONE }), causeOf(intention))
+          .inserted,
+      ).toBe(true);
+    }
+    expect(ledger.getOutboxCommand(revokeCommandId())).toMatchObject({ attemptCount: 1, state: "RECONCILING" });
+  });
+
+  it("N-F-5: transitions are coordination §2's from the folded state, and a terminal state moves nowhere", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const intention = seedQuarantined(ledger, taskId);
+    const first = ledger.append(
+      deliveryIntention({ taskId, transitionId: "attempt-1", deliveryAttemptId: ATTEMPT_ONE }),
+      causeOf(intention),
+    ).record;
+    const observe = (
+      transitionId: string,
+      deliveryAttemptId: string,
+      outboxState: string,
+      cause: { readonly sequence: number; readonly eventSha256: string },
+      failureCode: string | null = null,
+    ): unknown =>
+      ledger.append(
+        deliveryObservation({ taskId, transitionId, deliveryAttemptId, outboxState, failureCode }),
+        causeOf(cause),
+      );
+
+    expect(refusalOf(() => observe("back-inflight", ATTEMPT_ONE, "INFLIGHT", first)).path).toBe("payload.outboxState");
+    // A new attempt beside an uncertain one is a resend, and refused.
+    expect(
+      refusalOf(() =>
+        ledger.append(deliveryIntention({ taskId, transitionId: "attempt-2-early", deliveryAttemptId: ATTEMPT_TWO }), causeOf(intention)),
+      ).message,
+    ).toContain("never resent");
+
+    observe("failed", ATTEMPT_ONE, "FAILED_RETRYABLE", first, "NOT_DISPATCHED_PROVEN");
+    expect(
+      refusalOf(() =>
+        ledger.append(deliveryIntention({ taskId, transitionId: "attempt-2-still", deliveryAttemptId: ATTEMPT_TWO }), causeOf(intention)),
+      ).path,
+    ).toBe("payload.deliveryAttemptId");
+    observe("pending", ATTEMPT_ONE, "PENDING", first);
+    const second = ledger.append(
+      deliveryIntention({ taskId, transitionId: "attempt-2", deliveryAttemptId: ATTEMPT_TWO }),
+      causeOf(intention),
+    ).record;
+
+    // The first attempt was superseded, and an observation reports on the one in force.
+    expect(refusalOf(() => observe("late", ATTEMPT_ONE, "DELIVERED", first)).message).toContain("superseded");
+    observe("delivered", ATTEMPT_TWO, "DELIVERED", second);
+    expect(refusalOf(() => observe("after", ATTEMPT_TWO, "DELIVERED", second)).message).toContain("terminal");
+
+    expect(ledger.getOutboxCommand(revokeCommandId())).toMatchObject({
+      state: "DELIVERED",
+      attemptCount: 2,
+      lastDeliveryAttemptId: ATTEMPT_TWO,
+      lastFailureCode: "NOT_DISPATCHED_PROVEN",
+    });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.rebuildReadModel();
+    expect(ledger.getOutboxCommand(revokeCommandId())?.state).toBe("DELIVERED");
+  });
+
+  it("an observation affects only the command and the attempt it names", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedQuarantined(ledger, taskId);
+    const notify = otherCommand("NOTIFY", "operator");
+    const intention = ledger.append(commandIntention({ taskId, transitionId: "notify", payload: notify })).record;
+    const attempt = ledger.append(
+      deliveryIntention({ taskId, transitionId: "notify-attempt", deliveryAttemptId: ATTEMPT_ONE, commandId: notify["commandId"] as string }),
+      causeOf(intention),
+    ).record;
+    ledger.append(
+      deliveryObservation({
+        taskId,
+        transitionId: "notify-observe",
+        deliveryAttemptId: ATTEMPT_ONE,
+        outboxState: "DELIVERED",
+        commandId: notify["commandId"] as string,
+      }),
+      causeOf(attempt),
+    );
+    // And the attempt serves its own command only: naming it for the revocation is refused.
+    expect(
+      refusalOf(() =>
+        ledger.append(
+          deliveryObservation({ taskId, transitionId: "cross", deliveryAttemptId: ATTEMPT_ONE, outboxState: "DELIVERED" }),
+          causeOf(attempt),
+        ),
+      ).path,
+    ).toBe("payload.deliveryAttemptId");
+    expect(ledger.getOutboxCommand(notify["commandId"] as string)?.state).toBe("DELIVERED");
+    expect(ledger.getOutboxCommand(revokeCommandId())?.state).toBe("PENDING");
+  });
+
+  it("an attempt recorded on another task than its command's is refused", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const intention = seedQuarantined(ledger, taskId);
+    const other = randomUUID();
+    ledger.append(makeEvent({ taskId: other, transitionId: "discover", occurredAt: SAGA_AT }));
+    const refusal = refusalOf(() =>
+      ledger.append(
+        deliveryIntention({ taskId: other, transitionId: "attempt", deliveryAttemptId: ATTEMPT_ONE, state: "DISCOVERED" }),
+        causeOf(intention),
+      ),
+    );
+    expect(refusal.path).toBe("payload.commandId");
+    expect(refusal.message).toContain("belongs to task " + taskId);
+  });
+
+  it("N-F-6: a half token is refused, and the token is conserved from the intention", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    expect(refusalOf(() => ledger.appendBatch(quarantineBatch(taskId, "DISCOVERED", { fence: null }))).path).toBe(
+      "payload.fence",
+    );
+    expect(
+      refusalOf(() => ledger.appendBatch(quarantineBatch(taskId, "DISCOVERED", { targetStoreIncarnationId: null }))).path,
+    ).toBe("payload.targetStoreIncarnationId");
+
+    const intention = ledger.appendBatch(quarantineBatch(taskId, "DISCOVERED", { fence: 7 })).results[2]!.record;
+    const attempt = ledger.append(
+      deliveryIntention({ taskId, transitionId: "attempt-1", deliveryAttemptId: ATTEMPT_ONE }),
+      causeOf(intention),
+    ).record;
+    ledger.append(
+      deliveryObservation({ taskId, transitionId: "observe-1", deliveryAttemptId: ATTEMPT_ONE, outboxState: "DELIVERED" }),
+      causeOf(attempt),
+    );
+    ledger.rebuildReadModel();
+    expect(ledger.getOutboxCommand(revokeCommandId())).toMatchObject({
+      fence: 7,
+      targetStoreIncarnationId: LEASE_INCARNATION,
+    });
+  });
+
+  it("N-F-10: a stray key, a credential-shaped handle and a free failure word are refused", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const intention = seedQuarantined(ledger, taskId);
+    expect(
+      refusalOf(() =>
+        ledger.append(
+          deliveryIntention({ taskId, transitionId: "stray", deliveryAttemptId: ATTEMPT_ONE, extra: { endpoint: "https://example.invalid" } }),
+          causeOf(intention),
+        ),
+      ).path,
+    ).toBe("payload.endpoint");
+    const attempt = ledger.append(
+      deliveryIntention({ taskId, transitionId: "attempt-1", deliveryAttemptId: ATTEMPT_ONE }),
+      causeOf(intention),
+    ).record;
+
+    // The contract's own guard refuses a value shaped like live credential material.
+    expect(
+      caught(() =>
+        ledger.append(
+          deliveryObservation({
+            taskId,
+            transitionId: "handle",
+            deliveryAttemptId: ATTEMPT_ONE,
+            outboxState: "DELIVERED",
+            responseHandle: "sk-" + "x".repeat(24),
+          }),
+          causeOf(attempt),
+        ),
+      ),
+    ).toBeInstanceOf(LedgerValidationError);
+    expect(
+      refusalOf(() =>
+        ledger.append(
+          deliveryObservation({
+            taskId,
+            transitionId: "free-word",
+            deliveryAttemptId: ATTEMPT_ONE,
+            outboxState: "FAILED_TERMINAL",
+            failureCode: "the target said no",
+          }),
+          causeOf(attempt),
+        ),
+      ).path,
+    ).toBe("payload.failureCode");
+    expect(ledger.getOutboxCommand(revokeCommandId())?.state).toBe("RECONCILING");
+  });
+});
+
+describe("a lost cache rebuilds from these events, and never to PENDING (P-18/F, N-F-8)", () => {
+  it("listOutboxCommands is the pure fold over the stream, and a rebuild agrees", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const intention = seedQuarantined(ledger, taskId);
+    ledger.append(deliveryIntention({ taskId, transitionId: "attempt-1", deliveryAttemptId: ATTEMPT_ONE }), causeOf(intention));
+    ledger.append(commandIntention({ taskId, transitionId: "notify", payload: otherCommand("NOTIFY", "operator") }));
+
+    const listed = ledger.listOutboxCommands();
+    // The attempt with no outcome is RECONCILING, never PENDING; the intention
+    // with no attempt is PENDING.
+    expect(listed.map((command) => [command.commandKind, command.state])).toEqual([
+      ["REVOKE_LEASE", "RECONCILING"],
+      ["NOTIFY", "PENDING"],
+    ]);
+
+    const entries = ledger.listEvents({ limit: 1000 }).events.map((record) => ({
+      event: record.event,
+      sequence: record.sequence,
+      sha256: record.eventSha256,
+      causation: record.causation,
+    }));
+    expect(foldOutboxCommands(entries)).toEqual(listed);
+
+    ledger.rebuildReadModel();
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    expect(ledger.listOutboxCommands()).toEqual(listed);
+  });
+
+  it("a rebuild refuses a stored observation of an attempt nobody intended", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedQuarantined(ledger, taskId);
+    ledger.close();
+
+    plantChainedEvent(
+      path,
+      deliveryObservation({ taskId, transitionId: "observe", deliveryAttemptId: ATTEMPT_ONE, outboxState: "DELIVERED" }),
+    );
+    const reopened = open(path);
+    expect(refusalOf(() => reopened.rebuildReadModel()).path).toBe("payload.deliveryAttemptId");
+    expect(caught(() => reopened.verifyIntegrity())).toBeInstanceOf(LedgerValidationError);
+  });
+});
+
+describe("a delivery beside an outstanding one is refused (postaudit of C, O-1; adjudicated to F)", () => {
+  it("refuses a second delivery while the first is outstanding, and admits it once the first is terminal", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const second = dispatchIntention({ taskId, transitionId: "dispatch-2", effectId, dispatchAttemptId: "dsp-2", attemptOrdinal: 2 });
+
+    for (const state of ["INTENDED", "INFLIGHT"] as const) {
+      if (state === "INFLIGHT") {
+        ledger.append(dispatchOutcome({ taskId, transitionId: "inflight", dispatchAttemptId: "dsp-1", dispatchState: "INFLIGHT" }));
+      }
+      const refusal = refusalOf(() => ledger.append(second));
+      expect(refusal.path, state).toBe("payload.dispatch.effectId");
+      expect(refusal.message, state).toContain("outstanding");
+    }
+
+    ledger.append(
+      dispatchOutcome({ taskId, transitionId: "abandon", dispatchAttemptId: "dsp-1", dispatchState: "ABANDONED", terminalAt: EFFECT_AT }),
+    );
+    expect(ledger.append(second).inserted).toBe(true);
+    expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchState)).toEqual(["ABANDONED", "INTENDED"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The saga's first three crash boundaries (testing §7 `:169-171`, `:178-179`)
+// ---------------------------------------------------------------------------
+
+/**
+ * One revocation saga over a real ledger and a real lease store, stopped at a
+ * boundary and reopened.
+ *
+ * **In process, on purpose** (H-8, adjudicated). A crash is modelled as the
+ * process stopping between two steps: both handles close and nothing after the
+ * boundary runs. The one boundary that lives *inside* a transaction — between
+ * the arbiter's compare-and-set and the ledger's acknowledgement — is crossed
+ * with the ledger's own `beforeAppendCommit` fault, so the acknowledgement's
+ * transaction really starts and really does not commit. The SIGKILL matrix and
+ * `synchronous = FULL` are the certified profile's and P-18/recuperación's
+ * (testing §10); ADR 0078 declares it.
+ *
+ * The reconciliation below is **test code, not a reconciler**: F registers and
+ * folds, and a reconciler is the blocked half's (H-3). It exists so the oracle
+ * can be stated as an outcome — the state both files reach — rather than as a
+ * snapshot nobody acts on.
+ */
+describe("the saga's first three crash boundaries leave the two files consistent (P-18/F, N-P18-15)", () => {
+  const stores: LeaseStore[] = [];
+  afterEach(() => {
+    // `close` is idempotent on a lease store, so a handle a test already closed
+    // is closed again harmlessly.
+    for (const store of stores.splice(0)) store.close();
+  });
+
+  const REVOKE_AT = "2026-09-12T11:05:00.000Z";
+  const ACK_AT = "2026-09-12T11:06:00.000Z";
+  const command = revokeCommandId();
+
+  function openStore(path: string): LeaseStore {
+    const store = openLeaseStore(path, { incarnationId: LEASE_INCARNATION, createdAt: SAGA_AT });
+    stores.push(store);
+    return store;
+  }
+
+  /** A second revocation of the same worktree, with and without the stale token. */
+  function assertNoSecondRevocation(store: LeaseStore): void {
+    const stale = store.transact(
+      SAGA_WORKTREE,
+      () => ({ verb: "REVOKE", at: REVOKE_AT, operationId: command }),
+      { incarnationId: LEASE_INCARNATION, fence: 1 },
+    );
+    expect(stale.verb).toBe("REFUSE");
+    expect(
+      caught(() => store.transact(SAGA_WORKTREE, () => ({ verb: "REVOKE", at: REVOKE_AT, operationId: command }))),
+    ).toBeInstanceOf(LedgerQueryError);
+    expect(store.read(SAGA_WORKTREE)?.fence).toBe(2);
+  }
+
+  function world(): { readonly ledgerPath: string; readonly storePath: string; readonly taskId: string } {
+    const ledgerPath = temporaryDatabase();
+    const storePath = join(dirname(ledgerPath), "leases.sqlite");
+    const taskId = randomUUID();
+    const ledger = open(ledgerPath);
+    ledger.append(makeEvent({ taskId, transitionId: "discover", occurredAt: SAGA_AT }));
+    ledger.close();
+    const store = openStore(storePath);
+    store.transact(SAGA_WORKTREE, () => ({
+      verb: "GRANT",
+      row: {
+        leaseId: "lease-1",
+        holder: "claude/opus/implementer/01",
+        acquiredAt: SAGA_AT,
+        expiresAt: SAGA_DEADLINE,
+        holderPid: null,
+        holderToken: null,
+      },
+    }));
+    store.close();
+    return { ledgerPath, storePath, taskId };
+  }
+
+  /** What a crash leaves: both files, reopened, and the one command. */
+  function reopen(paths: { readonly ledgerPath: string; readonly storePath: string }): {
+    readonly ledger: Ledger;
+    readonly store: LeaseStore;
+    readonly commandState: () => OutboxCommandReadModel;
+    readonly row: () => LeaseRow;
+  } {
+    const ledger = open(paths.ledgerPath);
+    const store = openStore(paths.storePath);
+    return {
+      ledger,
+      store,
+      commandState: () => ledger.getOutboxCommand(command)!,
+      row: () => store.read(SAGA_WORKTREE)!,
+    };
+  }
+
+  /**
+   * The oracle, as one function applied at every boundary and after every
+   * reconciliation: coordination §10 negative 8 and testing §7 `:178-179`.
+   */
+  function assertConsistent(state: OutboxCommandReadModel, row: LeaseRow): void {
+    // Never "released in the arbiter and alive in the ledger": once the arbiter
+    // has cleared the holder, the ledger does not say the revocation is still
+    // to be sent.
+    if (row.leaseId === null) expect(state.state).not.toBe("PENDING");
+    // An acknowledgement in the ledger names a revocation the arbiter holds for
+    // this very command.
+    if (state.state === "DELIVERED") {
+      expect(row.leaseId).toBeNull();
+      expect(row.operationId).toBe(command);
+    }
+    // No known effect duplicated: one command advanced the fence at most once.
+    expect(row.fence).toBeLessThanOrEqual(2);
+    // And the ledger's command still carries the token it was issued under.
+    expect({ fence: state.fence, incarnation: state.targetStoreIncarnationId }).toEqual({
+      fence: 1,
+      incarnation: LEASE_INCARNATION,
+    });
+  }
+
+  let transition = 0;
+  const next = (name: string): string => name + "-" + String((transition += 1));
+
+  function intend(ledger: Ledger, taskId: string): void {
+    ledger.appendBatch(quarantineBatch(taskId));
+  }
+
+  function attempt(ledger: Ledger, taskId: string, deliveryAttemptId: string): void {
+    const state = ledger.getOutboxCommand(command)!;
+    ledger.append(
+      deliveryIntention({ taskId, transitionId: next("attempt"), deliveryAttemptId }),
+      { stream: "control_plane_events", sequence: state.intentSequence, sha256: state.intentSha256 },
+    );
+  }
+
+  function observe(ledger: Ledger, taskId: string, outboxState: string, extra: { failureCode?: string; responseHandle?: string } = {}): void {
+    const state = ledger.getOutboxCommand(command)!;
+    // The anchor is read off the fold, which is exactly what a rebuilt cache has.
+    ledger.append(
+      deliveryObservation({
+        taskId,
+        transitionId: next("observe"),
+        deliveryAttemptId: state.lastDeliveryAttemptId!,
+        outboxState,
+        ...extra,
+      }),
+      { stream: "control_plane_events", sequence: state.lastAttemptSequence!, sha256: state.lastAttemptSha256! },
+    );
+  }
+
+  function revoke(store: LeaseStore): void {
+    const outcome = store.transact(
+      SAGA_WORKTREE,
+      () => ({ verb: "REVOKE", at: REVOKE_AT, operationId: command }),
+      { incarnationId: LEASE_INCARNATION, fence: 1 },
+    );
+    expect(outcome.verb).toBe("REVOKE");
+  }
+
+  /** Test-side reconciliation: read both files, and finish the saga without guessing. */
+  function reconcile(ledger: Ledger, store: LeaseStore, taskId: string): void {
+    let state = ledger.getOutboxCommand(command)!;
+    if (state.state === "RECONCILING" && store.read(SAGA_WORKTREE)?.operationId !== command) {
+      // No compare-and-set carries this command: nothing was dispatched, and
+      // that is proven by the arbiter rather than assumed (§2 `:51-54`).
+      observe(ledger, taskId, "FAILED_RETRYABLE", { failureCode: "NOT_DISPATCHED_PROVEN" });
+      observe(ledger, taskId, "PENDING");
+      state = ledger.getOutboxCommand(command)!;
+    }
+    if (state.state === "PENDING") {
+      attempt(ledger, taskId, state.attemptCount === 0 ? ATTEMPT_ONE : ATTEMPT_TWO);
+      revoke(store);
+      state = ledger.getOutboxCommand(command)!;
+    }
+    if (state.state === "RECONCILING") {
+      const row = store.read(SAGA_WORKTREE)!;
+      observe(ledger, taskId, "DELIVERED", { responseHandle: LEASE_INCARNATION + ":" + String(row.fence) });
+    }
+    if (store.read(SAGA_WORKTREE)?.revocationAcknowledgedAt === null) {
+      store.transact(SAGA_WORKTREE, () => ({ verb: "ACKNOWLEDGE_REVOCATION", at: ACK_AT }));
+    }
+  }
+
+  function assertSettled(ledger: Ledger, store: LeaseStore, attempts: number): void {
+    const state = ledger.getOutboxCommand(command)!;
+    const row = store.read(SAGA_WORKTREE)!;
+    assertConsistent(state, row);
+    expect(state).toMatchObject({ state: "DELIVERED", attemptCount: attempts });
+    expect(row).toMatchObject({ fence: 2, leaseId: null, operationId: command, revocationAcknowledgedAt: ACK_AT });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.rebuildReadModel();
+    expect(ledger.getOutboxCommand(command)).toEqual(state);
+  }
+
+  it("boundary 1: after the intention and before the compare-and-set, the command is PENDING and nothing moved", () => {
+    const paths = world();
+    {
+      const ledger = open(paths.ledgerPath);
+      intend(ledger, paths.taskId);
+      ledger.close();
+    }
+
+    const after = reopen(paths);
+    assertConsistent(after.commandState(), after.row());
+    expect(after.commandState()).toMatchObject({ state: "PENDING", attemptCount: 0 });
+    expect(after.row()).toMatchObject({ fence: 1, leaseId: "lease-1", operationId: null });
+
+    reconcile(after.ledger, after.store, paths.taskId);
+    assertSettled(after.ledger, after.store, 1);
+  });
+
+  it("boundary 1, with the attempt recorded: RECONCILING, never PENDING, and no resend until not-dispatched is proven", () => {
+    const paths = world();
+    {
+      const ledger = open(paths.ledgerPath);
+      intend(ledger, paths.taskId);
+      attempt(ledger, paths.taskId, ATTEMPT_ONE);
+      ledger.close();
+    }
+
+    const after = reopen(paths);
+    assertConsistent(after.commandState(), after.row());
+    expect(after.commandState()).toMatchObject({ state: "RECONCILING", attemptCount: 1 });
+    expect(after.row()).toMatchObject({ fence: 1, operationId: null });
+    // Lost-cache honesty: an uncertain delivery is not resent on its own.
+    expect(
+      refusalOf(() => {
+        attempt(after.ledger, paths.taskId, ATTEMPT_TWO);
+      }).message,
+    ).toContain("never resent");
+
+    reconcile(after.ledger, after.store, paths.taskId);
+    assertSettled(after.ledger, after.store, 2);
+    expect(after.commandState().lastFailureCode).toBe("NOT_DISPATCHED_PROVEN");
+  });
+
+  it("boundary 2: after the compare-and-set and before the ledger's acknowledgement, the reconciliation acknowledges", () => {
+    const paths = world();
+    {
+      let failCommit = false;
+      const ledger = open(paths.ledgerPath, {
+        __testFaults: {
+          beforeAppendCommit: () => {
+            if (failCommit) throw new Error("the process died inside the acknowledgement's transaction");
+          },
+        },
+      });
+      const store = openStore(paths.storePath);
+      intend(ledger, paths.taskId);
+      attempt(ledger, paths.taskId, ATTEMPT_ONE);
+      revoke(store);
+      failCommit = true;
+      expect(
+        caught(() => {
+          observe(ledger, paths.taskId, "DELIVERED", { responseHandle: LEASE_INCARNATION + ":2" });
+        }),
+      ).toBeInstanceOf(Error);
+      ledger.close();
+      store.close();
+    }
+
+    const after = reopen(paths);
+    // Coordination §10 negative 8: the arbiter has revoked, and the ledger says
+    // the revocation is uncertain — never that it is still to be sent.
+    assertConsistent(after.commandState(), after.row());
+    expect(after.commandState()).toMatchObject({ state: "RECONCILING", attemptCount: 1 });
+    expect(after.row()).toMatchObject({ fence: 2, leaseId: null, operationId: command, revocationAcknowledgedAt: null });
+    // No second revocation: the door refuses a resend, and the arbiter a revoke of nothing.
+    expect(
+      refusalOf(() => {
+        attempt(after.ledger, paths.taskId, ATTEMPT_TWO);
+      }).message,
+    ).toContain("never resent");
+    assertNoSecondRevocation(after.store);
+
+    reconcile(after.ledger, after.store, paths.taskId);
+    assertSettled(after.ledger, after.store, 1);
+  });
+
+  it("boundary 3: after the acknowledgement and before external work, both files agree and nothing can repeat", () => {
+    const paths = world();
+    {
+      const ledger = open(paths.ledgerPath);
+      const store = openStore(paths.storePath);
+      intend(ledger, paths.taskId);
+      attempt(ledger, paths.taskId, ATTEMPT_ONE);
+      revoke(store);
+      observe(ledger, paths.taskId, "DELIVERED", { responseHandle: LEASE_INCARNATION + ":2" });
+      store.transact(SAGA_WORKTREE, () => ({ verb: "ACKNOWLEDGE_REVOCATION", at: ACK_AT }));
+      ledger.close();
+      store.close();
+    }
+
+    const after = reopen(paths);
+    assertSettled(after.ledger, after.store, 1);
+    expect(
+      refusalOf(() => {
+        attempt(after.ledger, paths.taskId, ATTEMPT_TWO);
+      }).message,
+    ).toContain("DELIVERED");
+    assertNoSecondRevocation(after.store);
+    // A reconciliation run over a finished saga changes nothing.
+    reconcile(after.ledger, after.store, paths.taskId);
+    assertSettled(after.ledger, after.store, 1);
   });
 });

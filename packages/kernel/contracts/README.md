@@ -69,7 +69,10 @@ this table against the barrel.
   version bump should mean. **The set holds two members from P-18/protocolo C**,
   which is the escalón that moved `CONTRACT_VERSION` to `"2.3.0"`; `"2.2.0"`
   stays in it for ever, because every event any earlier build recorded carries
-  it. ADR 0072 recorded what that escalón owed, and ADR 0076 pays it.
+  it. ADR 0072 recorded what that escalón owed, and ADR 0076 pays it. **It holds
+  three from P-18/protocolo F**, which moved the literal to `"2.4.0"` on the same
+  criterion — a recomputed identity and a per-payload version — and keeps
+  `"2.3.0"` beside `"2.2.0"` for the same reason (ADR 0078).
 - **Only the version in force is emitted.** The other half of the pair above,
   and the debt ADR 0072 named. `AdmittedContractVersion` is `z.literal` of
   `CONTRACT_VERSION`, and it governs the three shapes that are instruments of
@@ -100,7 +103,17 @@ this table against the barrel.
   occurrence types of P-18/protocolo D, `PROMPT_OCCURRENCE_RECORDED` and
   `RESPONSE_OCCURRENCE_RECORDED`: what a run sent and what it received travel
   as digests and byte counts, and the transcript guard refuses the keys a
-  conversation would ride under (ADR 0077).
+  conversation would ride under (ADR 0077). The three outbox types of
+  P-18/protocolo F carry ids, vocabulary words, an instant and an opaque
+  response handle: the credential guard refuses a handle shaped like live
+  credential material, and `OUTBOX_FAILURE_CODES` closes the words a failed
+  delivery may give as its reason (ADR 0078).
+- **A key's grammar is the contract's, and its computation is not.**
+  `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1`, the two effect prefixes of
+  P-18/protocolo C and `OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1` of P-18/protocolo
+  F each declare a versioned preimage here, with its own trailing LF, and
+  `@acp/ledger` computes the digest: this package may reach no `node:` builtin.
+  A `v1` prefix is frozen; a new encoding is a new name.
 
 ## Consumers
 

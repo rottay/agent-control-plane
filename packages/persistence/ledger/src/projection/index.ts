@@ -12,10 +12,20 @@ import {
 import {
   EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
   EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
+  OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1,
+  OUTBOX_FAILURE_CODES,
 } from "@acp/contracts";
 
 import { canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import { LedgerValidationError } from "../errors/index.js";
+import {
+  OUTBOX_COMMAND_KINDS,
+  OUTBOX_STATES,
+  OUTBOX_STREAMS,
+  OUTBOX_TERMINAL_STATES,
+  OUTBOX_TRANSITIONS,
+} from "../outbox-store/index.js";
+import type { OutboxCommandKind, OutboxState, OutboxStream } from "../outbox-store/index.js";
 import {
   DISPATCH_STATES,
   DISPATCH_STATE_TRANSITIONS,
@@ -24,6 +34,7 @@ import {
   REDACTION_VERDICTS,
 } from "../types/index.js";
 import type {
+  CausationRef,
   DispatchAttemptReadModel,
   DispatchState,
   EffectOutcomeStatus,
@@ -31,6 +42,8 @@ import type {
   ExecutionRouteSegmentReadModel,
   ExecutionRouteReadModel,
   InitiativeReadModel,
+  OutboxCommandReadModel,
+  OutboxFailureCode,
   PromptOccurrenceReadModel,
   RegistryDocument,
   RegistryProjectionSnapshot,
@@ -2430,6 +2443,923 @@ export function canonicalRevision(revision: TaskRevisionReadModel): string {
     revision.envelopeSha256,
     revision.restoredFromRevisionId ?? "",
   ].join("\u0000");
+}
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo F — the outbox command, its deliveries and what was heard.
+// ---------------------------------------------------------------------------
+
+export const OUTBOX_COMMAND_INTENDED: ControlPlaneEvent["type"] = "OUTBOX_COMMAND_INTENDED";
+export const OUTBOX_DELIVERY_INTENDED: ControlPlaneEvent["type"] = "OUTBOX_DELIVERY_INTENDED";
+export const OUTBOX_DELIVERY_OBSERVED: ControlPlaneEvent["type"] = "OUTBOX_DELIVERY_OBSERVED";
+
+/** The three types, in the order a command lives through them. */
+export const OUTBOX_EVENT_TYPES: readonly ControlPlaneEvent["type"][] = [
+  OUTBOX_COMMAND_INTENDED,
+  OUTBOX_DELIVERY_INTENDED,
+  OUTBOX_DELIVERY_OBSERVED,
+];
+
+/**
+ * The neutral payload version coordination §6.2 `:303-304` fixes.
+ *
+ * One member. A payload stamped with anything else is refused rather than read
+ * as this version, because a grammar nobody wrote down is not one this door can
+ * check.
+ */
+export const OUTBOX_CONTRACT_VERSION = 1;
+
+/** §6.2 `:304-306`: the intention's payload, and nothing beside it. */
+export const OUTBOX_COMMAND_INTENTION_KEYS = [
+  "outboxContractVersion",
+  "sagaId",
+  "commandId",
+  "phase",
+  "commandKind",
+  "intentStream",
+  "targetKind",
+  "targetId",
+  "deadlineAt",
+  "fence",
+  "targetStoreIncarnationId",
+] as const;
+
+/** §6.2 `:306`: the attempt's payload. */
+export const OUTBOX_DELIVERY_ATTEMPT_KEYS = [
+  "outboxContractVersion",
+  "commandId",
+  "deliveryAttemptId",
+] as const;
+
+/** §6.2 `:307-308`: the observation's payload. */
+export const OUTBOX_DELIVERY_OBSERVATION_KEYS = [
+  "outboxContractVersion",
+  "commandId",
+  "deliveryAttemptId",
+  "outboxState",
+  "failureCode",
+  "responseHandle",
+] as const;
+
+/**
+ * The V1 matrix of coordination §6.2 `:287-292`, closed.
+ *
+ * Which streams may anchor the intention, the attempt and the acknowledgement
+ * of each kind. `registry_events` anchors none: it may be a causal *source* of
+ * configuration and never the anchor of an operative command (`:294-295`).
+ *
+ * The whole matrix is declared here, and this package realises one column of
+ * it: the task stream's door admits a kind only when the intention names
+ * `control_plane_events`. The `initiative_events` and `account_events` rows
+ * belong to those streams' doors, which a later escalón opens (ADR 0078).
+ */
+export const OUTBOX_V1_COMMAND_STREAMS: Readonly<Record<OutboxCommandKind, readonly OutboxStream[]>> =
+  Object.freeze({
+    RELEASE_RESERVATION: ["control_plane_events"],
+    REVOKE_LEASE: ["control_plane_events"],
+    NOTIFY: ["control_plane_events", "initiative_events", "account_events"],
+    EXPORT_TELEMETRY: ["control_plane_events", "initiative_events"],
+  });
+
+/** The states a failure word may accompany, and the two that require one. */
+const OUTBOX_FAILURE_STATES: readonly OutboxState[] = ["FAILED_RETRYABLE", "FAILED_TERMINAL", "ABANDONED"];
+const OUTBOX_FAILURE_REQUIRED: readonly OutboxState[] = ["FAILED_RETRYABLE", "FAILED_TERMINAL"];
+
+/** A lowercase canonical UUID, the shape `sagaId` and `deliveryAttemptId` take. */
+const OUTBOX_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** A phase or a target kind: a screaming-snake word, never prose. */
+const OUTBOX_WORD_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/** The same instant grammar every other timestamp in this ledger carries. */
+const OUTBOX_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** The longest reference a target id or a response handle may be. */
+const OUTBOX_REFERENCE_MAX = 512;
+
+/** Any C0 control character, or DEL. */
+// eslint-disable-next-line no-control-regex
+const OUTBOX_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
+
+function isOutboxReference(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= OUTBOX_REFERENCE_MAX &&
+    !OUTBOX_CONTROL_PATTERN.test(value)
+  );
+}
+
+function isOutboxInstant(value: unknown): value is string {
+  if (typeof value !== "string" || !OUTBOX_INSTANT_PATTERN.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+/**
+ * The preimage of `command_id`, version 1 — coordination §6 `:221`, ADR 0078.
+ *
+ * The four members in §6's order, under the contract's prefix.
+ * `effectIdPreimageV1` is the shape followed, for its reasons: the grammar is
+ * `@acp/contracts`', the canonicalizer and the sha-256 are this package's.
+ */
+export function outboxCommandIdPreimageV1(input: {
+  readonly sagaId: string;
+  readonly phase: string;
+  readonly targetKind: string;
+  readonly targetId: string;
+}): string {
+  return (
+    OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1 +
+    canonicalJsonStringify([input.sagaId, input.phase, input.targetKind, input.targetId])
+  );
+}
+
+/**
+ * The command's identity: the digest of the preimage above.
+ *
+ * Exported so the producer and the door compute it the one way. A producer
+ * proposes it in the intention and the door recomputes it; `@acp/runtime`'s
+ * quarantine builder calls this rather than restating it, which is what "runtime
+ * mints nothing" means for a value that is derived rather than chosen.
+ */
+export function computeOutboxCommandId(input: Parameters<typeof outboxCommandIdPreimageV1>[0]): string {
+  return sha256Hex(outboxCommandIdPreimageV1(input));
+}
+
+/** What an intention says, once its grammar has been checked. */
+export interface OutboxCommandIntention {
+  readonly sagaId: string;
+  readonly commandId: string;
+  readonly phase: string;
+  readonly commandKind: OutboxCommandKind;
+  readonly intentStream: OutboxStream;
+  readonly targetKind: string;
+  readonly targetId: string;
+  readonly deadlineAt: string;
+  readonly fence: number | null;
+  readonly targetStoreIncarnationId: string | null;
+}
+
+/** What an attempt says. */
+export interface OutboxDeliveryAttempt {
+  readonly commandId: string;
+  readonly deliveryAttemptId: string;
+}
+
+/** What an observation says. */
+export interface OutboxDeliveryObservation {
+  readonly commandId: string;
+  readonly deliveryAttemptId: string;
+  readonly outboxState: OutboxState;
+  readonly failureCode: OutboxFailureCode | null;
+  readonly responseHandle: string | null;
+}
+
+/**
+ * How one outbox event reads: what it says, or the reason it says nothing.
+ *
+ * `readPromptOccurrence`'s rule, one escalón later: one reader serves the door
+ * and the fold, so the two cannot come to disagree about which payloads are
+ * commands.
+ */
+export type OutboxReading =
+  | { readonly kind: "intention"; readonly row: OutboxCommandIntention }
+  | { readonly kind: "attempt"; readonly row: OutboxDeliveryAttempt }
+  | { readonly kind: "observation"; readonly row: OutboxDeliveryObservation }
+  | { readonly kind: "refused"; readonly path: string; readonly message: string };
+
+function outboxRefused(path: string, message: string): OutboxReading {
+  return { kind: "refused", path, message };
+}
+
+/** The outer shape all three share: a closed key set, the version, and no state move. */
+function outboxEnvelope(event: ControlPlaneEvent, keys: readonly string[]): OutboxReading | null {
+  const stray = undeclaredKey(event.payload, keys);
+  if (stray !== null) {
+    return outboxRefused(
+      "payload." + printable(stray),
+      event.type +
+        " carries exactly " +
+        keys.join(", ") +
+        "; " +
+        printable(stray) +
+        " is not part of that grammar, and a command payload carries references and vocabulary " +
+        "words, never credentials or a provider's prose",
+    );
+  }
+  if (event.payload["outboxContractVersion"] !== OUTBOX_CONTRACT_VERSION) {
+    return outboxRefused(
+      "payload.outboxContractVersion",
+      event.type + " is versioned outboxContractVersion = " + String(OUTBOX_CONTRACT_VERSION),
+    );
+  }
+  // §6.2 `:314-315`: on a task these are same-state events, and they claim
+  // neither an execution of the task nor an approval.
+  if (event.fromState !== event.toState) {
+    return outboxRefused(
+      "toState",
+      event.type +
+        " is a same-state event and moves no task; this one moves " +
+        String(event.fromState) +
+        " to " +
+        event.toState,
+    );
+  }
+  return null;
+}
+
+function outboxCommandIdOf(event: ControlPlaneEvent): string | null {
+  const value = event.payload["commandId"];
+  return typeof value === "string" && OCCURRENCE_DIGEST_PATTERN.test(value) ? value : null;
+}
+
+/**
+ * Read one outbox event off the stream — coordination §6.2.
+ *
+ * `null` for every other type. Everything one event can be wrong about is
+ * decided here, **including the V1 matrix and the recomputed identity**, because
+ * both are facts about the event alone: a kind outside the vocabulary or a
+ * stream the matrix does not list is refused `CAPABILITY_UNSUPPORTED` before any
+ * command exists (`:295-296`), and a `commandId` that is not the digest of the
+ * event's own four members is refused before it can name anything.
+ */
+export function readOutboxEvent(event: ControlPlaneEvent): OutboxReading | null {
+  if (event.type === OUTBOX_COMMAND_INTENDED) return readOutboxIntention(event);
+  if (event.type === OUTBOX_DELIVERY_INTENDED) return readOutboxAttempt(event);
+  if (event.type === OUTBOX_DELIVERY_OBSERVED) return readOutboxObservation(event);
+  return null;
+}
+
+function readOutboxIntention(event: ControlPlaneEvent): OutboxReading {
+  const envelope = outboxEnvelope(event, OUTBOX_COMMAND_INTENTION_KEYS);
+  if (envelope !== null) return envelope;
+  const payload = event.payload;
+
+  // The matrix first, because §6.2 `:295-296` places its refusal before the
+  // command is created, and a kind this build does not serve is not a command
+  // whose other fields are worth reading.
+  const kind = payload["commandKind"];
+  if (typeof kind !== "string" || !(OUTBOX_COMMAND_KINDS as readonly string[]).includes(kind)) {
+    return outboxRefused(
+      "payload.commandKind",
+      "CAPABILITY_UNSUPPORTED: the V1 command kinds are " +
+        OUTBOX_COMMAND_KINDS.join(", ") +
+        (typeof kind === "string" ? " and this intention names " + printable(kind) : ""),
+    );
+  }
+  const commandKind = kind as OutboxCommandKind;
+  const stream = payload["intentStream"];
+  if (typeof stream !== "string" || !(OUTBOX_STREAMS as readonly string[]).includes(stream)) {
+    return outboxRefused(
+      "payload.intentStream",
+      "CAPABILITY_UNSUPPORTED: an intention names one of the four streams " + OUTBOX_STREAMS.join(", "),
+    );
+  }
+  const intentStream = stream as OutboxStream;
+  if (!OUTBOX_V1_COMMAND_STREAMS[commandKind].includes(intentStream)) {
+    return outboxRefused(
+      "payload.intentStream",
+      "CAPABILITY_UNSUPPORTED: " +
+        commandKind +
+        " is anchored on " +
+        OUTBOX_V1_COMMAND_STREAMS[commandKind].join(", ") +
+        " and never on " +
+        intentStream +
+        "; no task, initiative or registry document is invented to host it",
+    );
+  }
+  if (intentStream !== "control_plane_events") {
+    return outboxRefused(
+      "payload.intentStream",
+      "CAPABILITY_UNSUPPORTED: " +
+        commandKind +
+        " on " +
+        intentStream +
+        " is a row of the V1 matrix that its own stream's door realises; the intention, the " +
+        "attempt and the acknowledgement use the stream of the original row, and this is the " +
+        "control_plane_events door",
+    );
+  }
+
+  const sagaId = payload["sagaId"];
+  if (typeof sagaId !== "string" || !OUTBOX_UUID_PATTERN.test(sagaId)) {
+    return outboxRefused(
+      "payload.sagaId",
+      "a saga is grouped under a lowercase UUID the caller supplies; nothing in this ledger mints one",
+    );
+  }
+  const phase = payload["phase"];
+  if (typeof phase !== "string" || !OUTBOX_WORD_PATTERN.test(phase)) {
+    return outboxRefused("payload.phase", "the phase is a screaming-snake word of at most 64 characters");
+  }
+  const targetKind = payload["targetKind"];
+  if (typeof targetKind !== "string" || !OUTBOX_WORD_PATTERN.test(targetKind)) {
+    return outboxRefused(
+      "payload.targetKind",
+      "the target kind is a screaming-snake word of at most 64 characters",
+    );
+  }
+  const targetId = payload["targetId"];
+  if (!isOutboxReference(targetId)) {
+    return outboxRefused(
+      "payload.targetId",
+      "the target id is a reference of 1 to " +
+        String(OUTBOX_REFERENCE_MAX) +
+        " characters with no control character",
+    );
+  }
+  const deadlineAt = payload["deadlineAt"];
+  if (!isOutboxInstant(deadlineAt)) {
+    return outboxRefused("payload.deadlineAt", "the deadline is an ISO-8601 instant in UTC with milliseconds");
+  }
+
+  // The fence and the target's incarnation are one token or none (§6 `:239-240`,
+  // §8.1 `:389`). Each nullity is tested on its own before either is compared,
+  // which is the trap E2's CHECK met: a disjunction of lawful shapes passes the
+  // half pair it exists to refuse.
+  const fenceValue = payload["fence"];
+  const incarnationValue = payload["targetStoreIncarnationId"];
+  const fenceAbsent = fenceValue === undefined || fenceValue === null;
+  const incarnationAbsent = incarnationValue === undefined || incarnationValue === null;
+  if (fenceAbsent !== incarnationAbsent) {
+    return outboxRefused(
+      fenceAbsent ? "payload.fence" : "payload.targetStoreIncarnationId",
+      "a fence and the target store incarnation travel together as one token, or neither does; " +
+        "a number without the file that issued it proves nothing",
+    );
+  }
+  if (!fenceAbsent) {
+    if (typeof fenceValue !== "number" || !Number.isSafeInteger(fenceValue) || fenceValue < 1) {
+      return outboxRefused("payload.fence", "a fence is a positive safe integer");
+    }
+    if (typeof incarnationValue !== "string" || !OUTBOX_UUID_PATTERN.test(incarnationValue)) {
+      return outboxRefused("payload.targetStoreIncarnationId", "a target store incarnation is a lowercase UUID");
+    }
+  }
+
+  // The identity, recomputed rather than believed (N-F-2).
+  const commandId = payload["commandId"];
+  const expected = computeOutboxCommandId({ sagaId, phase, targetKind, targetId });
+  if (commandId !== expected) {
+    return outboxRefused(
+      "payload.commandId",
+      "the command id is the digest of its saga, phase, target kind and target id under the " +
+        "versioned prefix; this ledger computes " +
+        expected +
+        " and the event states " +
+        (typeof commandId === "string" ? printable(commandId) : "none"),
+    );
+  }
+
+  return {
+    kind: "intention",
+    row: {
+      sagaId,
+      commandId: expected,
+      phase,
+      commandKind,
+      intentStream,
+      targetKind,
+      targetId,
+      deadlineAt,
+      fence: fenceAbsent ? null : fenceValue,
+      targetStoreIncarnationId: incarnationAbsent ? null : (incarnationValue as string),
+    },
+  };
+}
+
+function readOutboxAttempt(event: ControlPlaneEvent): OutboxReading {
+  const envelope = outboxEnvelope(event, OUTBOX_DELIVERY_ATTEMPT_KEYS);
+  if (envelope !== null) return envelope;
+  const commandId = outboxCommandIdOf(event);
+  if (commandId === null) {
+    return outboxRefused("payload.commandId", "a delivery attempt names its command by its sha-256 id");
+  }
+  const deliveryAttemptId = event.payload["deliveryAttemptId"];
+  if (typeof deliveryAttemptId !== "string" || !OUTBOX_UUID_PATTERN.test(deliveryAttemptId)) {
+    return outboxRefused(
+      "payload.deliveryAttemptId",
+      "a delivery attempt is named by a lowercase UUID the dispatcher supplies",
+    );
+  }
+  return { kind: "attempt", row: { commandId, deliveryAttemptId } };
+}
+
+function readOutboxObservation(event: ControlPlaneEvent): OutboxReading {
+  const envelope = outboxEnvelope(event, OUTBOX_DELIVERY_OBSERVATION_KEYS);
+  if (envelope !== null) return envelope;
+  const payload = event.payload;
+  const commandId = outboxCommandIdOf(event);
+  if (commandId === null) {
+    return outboxRefused("payload.commandId", "an observation names its command by its sha-256 id");
+  }
+  const deliveryAttemptId = payload["deliveryAttemptId"];
+  if (typeof deliveryAttemptId !== "string" || !OUTBOX_UUID_PATTERN.test(deliveryAttemptId)) {
+    return outboxRefused(
+      "payload.deliveryAttemptId",
+      "an observation names the delivery attempt it reports on by its UUID",
+    );
+  }
+  const state = payload["outboxState"];
+  if (typeof state !== "string" || !(OUTBOX_STATES as readonly string[]).includes(state)) {
+    return outboxRefused("payload.outboxState", "the observed state is one of " + OUTBOX_STATES.join(", "));
+  }
+  const outboxState = state as OutboxState;
+
+  // Decision 45's column, typed when it is written (Q-E6).
+  const code = payload["failureCode"];
+  let failureCode: OutboxFailureCode | null = null;
+  if (code !== undefined && code !== null) {
+    if (typeof code !== "string" || !(OUTBOX_FAILURE_CODES as readonly string[]).includes(code)) {
+      return outboxRefused(
+        "payload.failureCode",
+        "a failure code is one of " + OUTBOX_FAILURE_CODES.join(", ") + ", never free text",
+      );
+    }
+    failureCode = code as OutboxFailureCode;
+  }
+  if (failureCode !== null && !OUTBOX_FAILURE_STATES.includes(outboxState)) {
+    return outboxRefused(
+      "payload.failureCode",
+      "a failure code accompanies only " +
+        OUTBOX_FAILURE_STATES.join(", ") +
+        ", and this observation says " +
+        outboxState,
+    );
+  }
+  if (failureCode === null && OUTBOX_FAILURE_REQUIRED.includes(outboxState)) {
+    return outboxRefused(
+      "payload.failureCode",
+      outboxState +
+        " says why, in a word of the failure vocabulary; a failure recorded without its code " +
+        "would rebuild a cache row that claims it never failed",
+    );
+  }
+
+  const handle = payload["responseHandle"];
+  if (handle !== undefined && handle !== null && !isOutboxReference(handle)) {
+    return outboxRefused(
+      "payload.responseHandle",
+      "a response handle is an opaque reference of 1 to " +
+        String(OUTBOX_REFERENCE_MAX) +
+        " characters with no control character, never a secret",
+    );
+  }
+
+  return {
+    kind: "observation",
+    row: {
+      commandId,
+      deliveryAttemptId,
+      outboxState,
+      failureCode,
+      responseHandle: handle ?? null,
+    },
+  };
+}
+
+/**
+ * One event as the outbox fold sees it: the event, where it sits, and what it
+ * names as its cause.
+ *
+ * The digest and the causal reference are inputs no other fold here needs,
+ * because an outbox command is anchored on events rather than on rows: the
+ * intention's own digest is what the cache stores as its anchor, and an
+ * attempt's cause is what ties it to the intention it serves.
+ */
+export interface OutboxEventEntry {
+  readonly event: ControlPlaneEvent;
+  readonly sequence: number;
+  readonly sha256: string;
+  readonly causation: CausationRef | null;
+}
+
+/** One recorded delivery attempt: which command it serves and the event that recorded it. */
+export interface OutboxAttemptRecord {
+  readonly deliveryAttemptId: string;
+  readonly commandId: string;
+  readonly sequence: number;
+  readonly sha256: string;
+}
+
+/** The event immediately before an intention: the one a revocation answers. */
+export interface OutboxPredecessor {
+  readonly taskId: string;
+  readonly type: ControlPlaneEvent["type"];
+  readonly toState: ControlPlaneEvent["toState"];
+}
+
+/**
+ * Whether an event is a quarantine — contracts §13 `:559-561`, datos §11 `:546-550`.
+ *
+ * Two shapes, and both are the ones this tree already emits: the finding
+ * (`WRITE_SET_VIOLATION_DETECTED`) and the task's move to `SUSPECT_WORKTREE`.
+ * `LEASE_REVOKED` is **not** one of them: it records a revocation that happened,
+ * and inside the ledger's transaction nothing has happened at the arbiter yet —
+ * what commits there is the intention to revoke.
+ */
+export function isQuarantineEvent(event: Pick<ControlPlaneEvent, "type" | "toState">): boolean {
+  return (
+    event.type === "WRITE_SET_VIOLATION_DETECTED" ||
+    (event.type === "TASK_STATE_CHANGED" && event.toState === "SUSPECT_WORKTREE")
+  );
+}
+
+/**
+ * The comparable form of a command's birth: everything its intention fixed.
+ *
+ * No state, no counter, no anchor and no instant: those are what the command
+ * became or where it was recorded, and a second intention is compared on what
+ * it asks for.
+ */
+export function canonicalOutboxCommand(command: OutboxCommandReadModel): string {
+  return canonicalJsonStringify({
+    commandId: command.commandId,
+    sagaId: command.sagaId,
+    phase: command.phase,
+    commandKind: command.commandKind,
+    intentStream: command.intentStream,
+    targetKind: command.targetKind,
+    targetId: command.targetId,
+    deadlineAt: command.deadlineAt,
+    fence: command.fence,
+    targetStoreIncarnationId: command.targetStoreIncarnationId,
+    taskId: command.taskId,
+  });
+}
+
+/** Whether a causal reference names exactly one event of the task stream. */
+function causationNames(causation: CausationRef | null, sequence: number, sha256: string): boolean {
+  return (
+    causation !== null &&
+    causation.stream === "control_plane_events" &&
+    causation.sequence === sequence &&
+    causation.sha256 === sha256
+  );
+}
+
+/**
+ * Why one outbox event cannot attach to what it names, or `null`.
+ *
+ * Shared by the append door, which supplies `command` and `attempt` by folding
+ * the command's own history off the base, and by the fold, which reads them off
+ * its maps — so a rebuild refuses exactly the histories the door refuses, at the
+ * event that caused them. `predecessor` is the event immediately before this one:
+ * inside the batch at the door, in the stream at the fold.
+ *
+ * **An intention** is intended once. And a `REVOKE_LEASE` intention commits in
+ * the same transaction as the quarantine it answers, immediately after that
+ * quarantine's event and on the same task (contracts §13 `:559-561`): a
+ * quarantine without its intention, or an intention without its quarantine, is
+ * the three-transaction window datos §11 `:547` closes.
+ *
+ * **An attempt** serves a command that exists, on the command's own subject, and
+ * names the intention as its cause. A new attempt needs the command `PENDING`;
+ * the same attempt again is a replay and counts once (§6.2 `:321`).
+ *
+ * **An observation** reports on the command's current attempt, names that
+ * attempt as its cause, and moves the state by §2's transitions. Nothing leaves
+ * a terminal state and nothing amends one.
+ */
+export function outboxLinkRefusal(
+  entry: Pick<OutboxEventEntry, "event" | "causation">,
+  reading: Exclude<OutboxReading, { readonly kind: "refused" }>,
+  command: OutboxCommandReadModel | null,
+  attempt: OutboxAttemptRecord | null,
+  predecessor: OutboxPredecessor | null,
+): OccurrenceRefusal | null {
+  const { event, causation } = entry;
+
+  if (reading.kind === "intention") {
+    const row = reading.row;
+    if (command !== null) {
+      const proposed = canonicalOutboxCommand(outboxCommandBirth(event, row, 0, "", command.createdAt));
+      return {
+        path: "payload.commandId",
+        message:
+          canonicalOutboxCommand(command) === proposed
+            ? "command " +
+              row.commandId +
+              " is already intended; a command is intended once, and retrying it conserves its " +
+              "saga and command ids rather than intending it again"
+            : "CONFLICT: command " +
+              row.commandId +
+              " is already intended with a different kind, deadline, token or task; one saga, " +
+              "phase and target name one command",
+      };
+    }
+    if (
+      row.commandKind === "REVOKE_LEASE" &&
+      (predecessor === null || predecessor.taskId !== event.taskId || !isQuarantineEvent(predecessor))
+    ) {
+      return {
+        path: "payload.commandKind",
+        message:
+          "a REVOKE_LEASE intention commits in one appendBatch with the quarantine it answers, " +
+          "immediately after that quarantine's event on the same task; a quarantine and its " +
+          "intention to revoke commit together or not at all",
+      };
+    }
+    return null;
+  }
+
+  const commandId = reading.row.commandId;
+  if (command === null) {
+    return {
+      path: "payload.commandId",
+      message:
+        "no command " +
+        commandId +
+        " has been intended, and " +
+        (reading.kind === "attempt" ? "a delivery attempt" : "an observation") +
+        " serves a command that exists",
+    };
+  }
+  if (command.taskId !== event.taskId) {
+    return {
+      path: "payload.commandId",
+      message:
+        "command " +
+        commandId +
+        " belongs to task " +
+        command.taskId +
+        ", and its attempts and observations use the stream and subject of the original row",
+    };
+  }
+
+  if (reading.kind === "attempt") {
+    if (!causationNames(causation, command.intentSequence, command.intentSha256)) {
+      return {
+        path: "causation",
+        message:
+          "a delivery attempt names the intention it serves as its cause: control_plane_events, " +
+          "sequence " +
+          String(command.intentSequence) +
+          ", digest " +
+          command.intentSha256,
+      };
+    }
+    if (attempt !== null) {
+      if (attempt.commandId !== commandId) {
+        return {
+          path: "payload.deliveryAttemptId",
+          message:
+            "delivery attempt " +
+            reading.row.deliveryAttemptId +
+            " belongs to command " +
+            attempt.commandId +
+            ", and an attempt serves one command",
+        };
+      }
+      return null;
+    }
+    if (command.state !== "PENDING") {
+      return {
+        path: "payload.deliveryAttemptId",
+        message:
+          "a new delivery attempt needs its command PENDING, and command " +
+          commandId +
+          " is " +
+          command.state +
+          "; an uncertain delivery is reconciled, never resent",
+      };
+    }
+    return null;
+  }
+
+  const row = reading.row;
+  if (attempt?.commandId !== commandId) {
+    return {
+      path: "payload.deliveryAttemptId",
+      message:
+        "delivery attempt " +
+        row.deliveryAttemptId +
+        " has not been intended for command " +
+        commandId +
+        ", and an observation affects only the command and the attempt it names",
+    };
+  }
+  if (command.lastDeliveryAttemptId !== row.deliveryAttemptId) {
+    return {
+      path: "payload.deliveryAttemptId",
+      message:
+        "command " +
+        commandId +
+        " is on delivery attempt " +
+        String(command.lastDeliveryAttemptId) +
+        ", and an observation reports on the attempt in force; " +
+        row.deliveryAttemptId +
+        " was superseded",
+    };
+  }
+  if (!causationNames(causation, attempt.sequence, attempt.sha256)) {
+    return {
+      path: "causation",
+      message:
+        "an observation names the delivery attempt it reports on as its cause: " +
+        "control_plane_events, sequence " +
+        String(attempt.sequence) +
+        ", digest " +
+        attempt.sha256,
+    };
+  }
+  if ((OUTBOX_TERMINAL_STATES as readonly string[]).includes(command.state)) {
+    return {
+      path: "payload.outboxState",
+      message:
+        "command " +
+        commandId +
+        " is " +
+        command.state +
+        ", which is terminal; nothing leaves a terminal state and nothing amends one",
+    };
+  }
+  const lawful = OUTBOX_TRANSITIONS.get(command.state) ?? [];
+  if (row.outboxState !== command.state && !lawful.includes(row.outboxState)) {
+    return {
+      path: "payload.outboxState",
+      message:
+        "command " +
+        commandId +
+        " is " +
+        command.state +
+        " and may move only to " +
+        (lawful.join(", ") || "nothing"),
+    };
+  }
+  return null;
+}
+
+function outboxCommandBirth(
+  event: ControlPlaneEvent,
+  row: OutboxCommandIntention,
+  sequence: number,
+  sha256: string,
+  createdAt: string,
+): OutboxCommandReadModel {
+  return {
+    commandId: row.commandId,
+    sagaId: row.sagaId,
+    phase: row.phase,
+    commandKind: row.commandKind,
+    targetKind: row.targetKind,
+    targetId: row.targetId,
+    deadlineAt: row.deadlineAt,
+    fence: row.fence,
+    targetStoreIncarnationId: row.targetStoreIncarnationId,
+    taskId: event.taskId,
+    intentStream: row.intentStream,
+    intentSequence: sequence,
+    intentSha256: sha256,
+    state: "PENDING",
+    attemptCount: 0,
+    lastDeliveryAttemptId: null,
+    lastAttemptStream: null,
+    lastAttemptSequence: null,
+    lastAttemptSha256: null,
+    lastFailureCode: null,
+    responseHandle: null,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+/**
+ * What one admitted outbox event does to its command — the reduce.
+ *
+ * Pure, and called only after `outboxLinkRefusal` returned `null`. An intention
+ * is born `PENDING`. A new attempt counts once and leaves the command
+ * `RECONCILING`, anchored on the attempt's own event; a replayed attempt changes
+ * nothing. An observation moves the state and keeps the last failure code and
+ * the last handle any observation carried.
+ */
+export function nextOutboxCommand(
+  entry: OutboxEventEntry,
+  reading: Exclude<OutboxReading, { readonly kind: "refused" }>,
+  command: OutboxCommandReadModel | null,
+  attempt: OutboxAttemptRecord | null,
+): { readonly command: OutboxCommandReadModel; readonly attempt: OutboxAttemptRecord | null } {
+  const { event, sequence, sha256 } = entry;
+  if (reading.kind === "intention") {
+    return {
+      command: outboxCommandBirth(event, reading.row, sequence, sha256, event.recordedAt),
+      attempt: null,
+    };
+  }
+  if (command === null) {
+    throw new LedgerValidationError([
+      { path: "payload.commandId", message: "no command " + reading.row.commandId + " has been intended" },
+    ]);
+  }
+  if (reading.kind === "attempt") {
+    if (attempt !== null) return { command, attempt };
+    return {
+      command: {
+        ...command,
+        state: "RECONCILING",
+        attemptCount: command.attemptCount + 1,
+        lastDeliveryAttemptId: reading.row.deliveryAttemptId,
+        lastAttemptStream: "control_plane_events",
+        lastAttemptSequence: sequence,
+        lastAttemptSha256: sha256,
+        updatedAt: event.recordedAt,
+      },
+      attempt: {
+        deliveryAttemptId: reading.row.deliveryAttemptId,
+        commandId: reading.row.commandId,
+        sequence,
+        sha256,
+      },
+    };
+  }
+  return {
+    command: {
+      ...command,
+      state: reading.row.outboxState,
+      lastFailureCode: reading.row.failureCode ?? command.lastFailureCode,
+      responseHandle: reading.row.responseHandle ?? command.responseHandle,
+      updatedAt: event.recordedAt,
+    },
+    attempt,
+  };
+}
+
+/**
+ * The outbox fold over a whole stream: every command, every attempt, and the
+ * last event seen.
+ *
+ * Kept apart from `ProjectionSnapshot` because what it folds is not a table.
+ * `rebuildReadModel` and `verifyIntegrity` drive it beside the snapshot, so a
+ * stored history the door would have refused fails at the event that caused it,
+ * and `listOutboxCommands` drives it to answer what a lost cache would be
+ * rebuilt to.
+ */
+export interface OutboxFold {
+  readonly commands: Map<string, OutboxCommandReadModel>;
+  readonly attempts: Map<string, OutboxAttemptRecord>;
+  /** The event most recently folded, of any type, under its one key. Replaced, never accumulated. */
+  readonly previous: Map<"event", OutboxPredecessor>;
+}
+
+export function createOutboxFold(): OutboxFold {
+  return {
+    commands: new Map<string, OutboxCommandReadModel>(),
+    attempts: new Map<string, OutboxAttemptRecord>(),
+    previous: new Map<"event", OutboxPredecessor>(),
+  };
+}
+
+/**
+ * Fold one stream event into the outbox fold, or refuse it.
+ *
+ * Every event is offered, of every type, because a `REVOKE_LEASE` intention is
+ * checked against whatever event came immediately before it. That is the one
+ * rule the fold can only approximate: it sees the stream and not the batch, so
+ * two adjacent events written by two transactions look like one batch here.
+ * The door refuses that shape by construction — an intention to revoke by
+ * `append`, or in a batch that did not itself insert the quarantine, never
+ * commits — so a history of that shape is one the door never wrote (ADR 0078).
+ */
+export function applyEventToOutboxFold(fold: OutboxFold, entry: OutboxEventEntry): void {
+  const reading = readOutboxEvent(entry.event);
+  const predecessor = fold.previous.get("event") ?? null;
+  fold.previous.set("event", {
+    taskId: entry.event.taskId,
+    type: entry.event.type,
+    toState: entry.event.toState,
+  });
+  if (reading === null) return;
+  if (reading.kind === "refused") {
+    throw new LedgerValidationError([{ path: reading.path, message: reading.message }]);
+  }
+
+  const commandId = reading.row.commandId;
+  const command = fold.commands.get(commandId) ?? null;
+  const attempt =
+    reading.kind === "intention" ? null : (fold.attempts.get(reading.row.deliveryAttemptId) ?? null);
+  const refusal = outboxLinkRefusal(entry, reading, command, attempt, predecessor);
+  if (refusal !== null) throw new LedgerValidationError([refusal]);
+
+  const next = nextOutboxCommand(entry, reading, command, attempt);
+  fold.commands.set(commandId, next.command);
+  if (next.attempt !== null) fold.attempts.set(next.attempt.deliveryAttemptId, next.attempt);
+}
+
+/**
+ * Every command a sequence of stream events folds to, in intention order.
+ *
+ * The reconstruction datos §11 `:566-570` asks for, as a pure function: what a
+ * lost `outbox.sqlite` would be rebuilt to. An attempt with no outcome comes
+ * back `RECONCILING` and an intention with no attempt `PENDING`, and nothing
+ * else is guessed.
+ */
+export function foldOutboxCommands(
+  entries: Iterable<OutboxEventEntry>,
+): readonly OutboxCommandReadModel[] {
+  const fold = createOutboxFold();
+  for (const entry of entries) applyEventToOutboxFold(fold, entry);
+  return [...fold.commands.values()].sort((left, right) => left.intentSequence - right.intentSequence);
 }
 
 // ---------------------------------------------------------------------------

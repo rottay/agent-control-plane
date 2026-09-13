@@ -1240,14 +1240,22 @@ export function openOutboxStore(path: string, options: OpenOutboxStoreOptions): 
     readToken(commandId) {
       assertOpen("readToken");
       requireText(commandId, "commandId");
-      const row = readRow(commandId);
-      if (row === null) return null;
-      return {
-        incarnationId: readMeta().incarnationId,
-        commandId: row.commandId,
-        expectedVersion: row.rowVersion,
-        expectedState: row.state,
-      };
+      // One read transaction, deferred (postaudit of E2, O-1; adjudicated to F).
+      // The row and the incarnation are read from one snapshot, so a token can
+      // never pair a version from one incarnation with the id of another. Deferred
+      // rather than immediate because nothing here writes: it takes no write lock
+      // and serializes against no dispatcher, and `cas` still re-reads the live
+      // incarnation inside its own immediate transaction.
+      return db.transaction((): OutboxCasToken | null => {
+        const row = readRow(commandId);
+        if (row === null) return null;
+        return {
+          incarnationId: readMeta().incarnationId,
+          commandId: row.commandId,
+          expectedVersion: row.rowVersion,
+          expectedState: row.state,
+        };
+      })();
     },
     insert(seed) {
       assertOpen("insert");

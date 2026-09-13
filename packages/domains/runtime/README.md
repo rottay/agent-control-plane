@@ -71,6 +71,15 @@ record — the violating paths, the evidence digests and a recommended
 field in which a clean, a reset or a restore could be written, which is the law
 expressed as a shape rather than as a warning.
 
+`buildQuarantineBatch` (P-18/protocolo F, ADR 0078) turns that record into the
+batch the ledger commits atomically: the finding, the move to
+`SUSPECT_WORKTREE`, and the intention to revoke the lease, in that order and for
+one `appendBatch`. It is pure and it mints nothing — the saga is the caller's and
+a request without one is refused, and the command id is computed by
+`@acp/ledger`'s `computeOutboxCommandId`, the one function the ledger's door
+recomputes it with. It records no `LEASE_REVOKED`: inside the ledger's
+transaction nothing has happened at the arbiter yet.
+
 Importing this package has **no side effects**. It binds no socket, starts no
 listener, spawns no process and creates no directory. Filesystem work happens
 only inside an explicitly invoked drill, under a root this package resolves for

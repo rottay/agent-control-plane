@@ -2284,7 +2284,7 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     for (const channel of Object.values(STREAM_CHANNEL_BY_EVENT_TYPE)) {
       sizes[channel] = (sizes[channel] ?? 0) + 1;
     }
-    expect(sizes).toEqual({ lifecycle: 7, execution: 12, steps: 2, state: 7, progress: 2 });
+    expect(sizes).toEqual({ lifecycle: 7, execution: 15, steps: 2, state: 7, progress: 2 });
     const total = Object.values(sizes).reduce((sum, count) => sum + count, 0);
     expect(total).toBe(CONTROL_PLANE_EVENT_TYPES.length);
   });
@@ -2297,6 +2297,16 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     // `steps` is the durable walk's own beats and `progress` is usage
     // attribution; a receipt is neither.
     expect(STREAM_CHANNEL_BY_EVENT_TYPE.TOOL_CALL_RECORDED).toBe("execution");
+  });
+
+  it("puts the three outbox types on execution, by name (P-18/protocolo F)", () => {
+    // Asserted separately for the reason above. Intending a command, intending
+    // one delivery of it and observing how it went are "what it took to run it".
+    // They are not `state`: `LEASE_REVOKED` records a revocation that happened,
+    // and these record that one was asked for and what was heard back.
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.OUTBOX_COMMAND_INTENDED).toBe("execution");
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.OUTBOX_DELIVERY_INTENDED).toBe("execution");
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.OUTBOX_DELIVERY_OBSERVED).toBe("execution");
   });
 
   it("puts the two occurrence types on execution, by name (P-18/protocolo D)", () => {

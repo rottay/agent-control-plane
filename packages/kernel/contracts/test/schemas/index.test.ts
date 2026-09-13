@@ -18,6 +18,8 @@ import {
   CONTROL_PLANE_EVENT_TYPES,
   EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
   EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
+  OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1,
+  OUTBOX_FAILURE_CODES,
   SUPPORTED_CONTRACT_VERSIONS,
   V2_IDEMPOTENCY_NAMESPACE,
   Checkpoint,
@@ -557,8 +559,9 @@ describe("the V2 idempotency key", () => {
     // point of separating the set from the literal (ADR 0072, ADR 0076). What
     // refuses a supported-but-not-current version is the issuer's rule, and it
     // lives on `AdmittedContractVersion` and at the ledger's append door rather
-    // than on this schema.
-    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.4.0" })).success).toBe(false);
+    // than on this schema. `"2.4.0"` stood here after C and moved above in its
+    // turn, when P-18/protocolo F put it in force (ADR 0078).
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.5.0" })).success).toBe(false);
     expect(ControlPlaneEvent.safeParse(event({ contractVersion: "1.0.0" })).success).toBe(false);
   });
 
@@ -2624,15 +2627,17 @@ describe("only the version in force is emitted (ADR 0072's debt, ADR 0076)", () 
     // set is what makes a bump survivable; the literal is what keeps a producer
     // from choosing between two versions, which is a producer whose output
     // nobody can predict.
-    expect(CONTRACT_VERSION).toBe("2.3.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0"]);
+    // F moved the literal again (ADR 0078); the pair's shape did not move.
+    expect(CONTRACT_VERSION).toBe("2.4.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0"]);
     expect(SUPPORTED_CONTRACT_VERSIONS).toContain(CONTRACT_VERSION);
 
     expect(AdmittedContractVersion.safeParse(CONTRACT_VERSION).success).toBe(true);
     // Supported for reading, and refused for issuing. That difference is the
     // whole mechanism, and before the bump it was an empty category.
     expect(AdmittedContractVersion.safeParse("2.2.0").success).toBe(false);
-    expect(AdmittedContractVersion.safeParse("2.4.0").success).toBe(false);
+    expect(AdmittedContractVersion.safeParse("2.3.0").success).toBe(false);
+    expect(AdmittedContractVersion.safeParse("2.5.0").success).toBe(false);
   });
 
   it("holds the three admission shapes to the version in force, and not the event", () => {
@@ -2691,9 +2696,10 @@ describe("the effect's key grammar belongs to the contract (decision 42)", () =>
   });
 
   it("grows the vocabulary by exactly the three types P-18/protocolo C needs", () => {
-    // 28 when C landed; D's two occurrences are asserted in their own block
-    // below, so this one names C's three and the length is D's.
-    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(30);
+    // 28 when C landed; D's two occurrences and F's three outbox types are
+    // asserted in their own blocks below, so this one names C's three and the
+    // length is F's.
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(33);
     expect(new Set(CONTROL_PLANE_EVENT_TYPES).size).toBe(CONTROL_PLANE_EVENT_TYPES.length);
     for (const type of ["EFFECT_INTENDED", "DISPATCH_INTENDED", "DISPATCH_OUTCOME_RECORDED"]) {
       expect(CONTROL_PLANE_EVENT_TYPES, type).toContain(type);
@@ -2726,9 +2732,12 @@ describe("two occurrence types, and no bump (P-18/protocolo D, ADR 0077)", () =>
     // Two and not one: the answer has its own key, its own instant and its own
     // position, and may arrive late — after a handoff — so it cannot ride the
     // event of the prompt it answers (execution §8 `:406-418`).
-    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(30);
+    // 30 when D landed; F appended its three after these two, so the pair is
+    // located by name rather than by being last.
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(33);
     expect(new Set(CONTROL_PLANE_EVENT_TYPES).size).toBe(CONTROL_PLANE_EVENT_TYPES.length);
-    expect(CONTROL_PLANE_EVENT_TYPES.slice(-2)).toEqual(OCCURRENCE_TYPES);
+    const at = CONTROL_PLANE_EVENT_TYPES.indexOf("PROMPT_OCCURRENCE_RECORDED");
+    expect(CONTROL_PLANE_EVENT_TYPES.slice(at, at + 2)).toEqual(OCCURRENCE_TYPES);
     for (const type of OCCURRENCE_TYPES) {
       expect(
         ControlPlaneEvent.safeParse(
@@ -2739,14 +2748,16 @@ describe("two occurrence types, and no bump (P-18/protocolo D, ADR 0077)", () =>
     }
   });
 
-  it("keeps the version in force where escalón C left it", () => {
+  it("kept the version in force where escalón C left it", () => {
     // ADR 0076's criterion, applied: C bumped because its payloads carry digests
     // the fold recomputes and a per-payload contract version. D's payloads carry
     // digests nobody can recompute — their preimages are bytes that never enter
     // — plus counts and vocabulary words, and no new identity formula. That is
-    // escalón B's class, and B did not bump either.
-    expect(CONTRACT_VERSION).toBe("2.3.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0"]);
+    // escalón B's class, and B did not bump either. D kept `"2.3.0"`; F moved it
+    // on, by the same criterion read the other way, so what stays true of D is
+    // that `"2.3.0"` — the version its events were recorded under — is still read.
+    expect(SUPPORTED_CONTRACT_VERSIONS).toContain("2.3.0");
+    expect(CONTRACT_VERSION).not.toBe("2.3.0");
   });
 
   it("still refuses a transcript smuggled into an occurrence payload", () => {
@@ -2766,5 +2777,85 @@ describe("two occurrence types, and no bump (P-18/protocolo D, ADR 0077)", () =>
         type,
       ).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo F — the outbox command, its identity and its failure words
+// ---------------------------------------------------------------------------
+
+describe("three outbox types, a command id grammar and a bump (P-18/protocolo F, ADR 0078)", () => {
+  const OUTBOX_TYPES = ["OUTBOX_COMMAND_INTENDED", "OUTBOX_DELIVERY_INTENDED", "OUTBOX_DELIVERY_OBSERVED"];
+
+  it("grows the vocabulary by exactly the three names coordination §6.2 fixes", () => {
+    // The names are the specification's (§6.2 `:301-303`), and all three are
+    // same-state passthroughs: on a task they claim neither an execution nor an
+    // approval (`:314-315`).
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(33);
+    expect(new Set(CONTROL_PLANE_EVENT_TYPES).size).toBe(CONTROL_PLANE_EVENT_TYPES.length);
+    expect(CONTROL_PLANE_EVENT_TYPES.slice(-3)).toEqual(OUTBOX_TYPES);
+    for (const type of OUTBOX_TYPES) {
+      expect(
+        ControlPlaneEvent.safeParse(
+          event({ type, fromState: "SUSPECT_WORKTREE", toState: "SUSPECT_WORKTREE" }),
+        ).success,
+        type,
+      ).toBe(true);
+    }
+  });
+
+  it("declares the command id prefix once, in the envelope's shape", () => {
+    // Decision 44 left the key's grammar to F, "in @acp/contracts if it turns out
+    // to be grammar". The ledger recomputes it and refuses a mismatch, so it is.
+    expect(OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1).toBe("acp/outbox-command/v1\n");
+    const bytes = [...new TextEncoder().encode(OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1)];
+    expect(bytes[bytes.length - 1]).toBe(0x0a);
+    expect(bytes.filter((byte) => byte === 0x0a)).toHaveLength(1);
+    for (const other of [
+      ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1,
+      EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
+      EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
+    ]) {
+      expect(OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1).not.toBe(other);
+    }
+  });
+
+  it("closes the failure vocabulary at six words, and none of them is prose", () => {
+    expect([...OUTBOX_FAILURE_CODES]).toEqual([
+      "TARGET_REFUSED",
+      "TARGET_STALE_TOKEN",
+      "TARGET_INCARNATION_MISMATCH",
+      "TARGET_UNAVAILABLE",
+      "DEADLINE_EXCEEDED",
+      "NOT_DISPATCHED_PROVEN",
+    ]);
+    for (const code of OUTBOX_FAILURE_CODES) expect(code).toMatch(/^[A-Z][A-Z_]*$/);
+  });
+
+  it("moves the version in force to 2.4.0 and keeps every earlier one readable", () => {
+    // ADR 0076's criterion, read for F: the door and the fold recompute
+    // `command_id` under a prefix that did not exist, and every payload carries
+    // `outboxContractVersion`. That is C's class, not D's.
+    expect(CONTRACT_VERSION).toBe("2.4.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0"]);
+    for (const version of ["2.2.0", "2.3.0"]) {
+      expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
+      expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
+    }
+  });
+
+  it("still refuses a credential smuggled into a response handle", () => {
+    // The ledger's door checks the handle's shape; the contract's own guard is
+    // what refuses a value shaped like live credential material, for every type.
+    expect(
+      ControlPlaneEvent.safeParse(
+        event({
+          type: "OUTBOX_DELIVERY_OBSERVED",
+          fromState: "SUSPECT_WORKTREE",
+          toState: "SUSPECT_WORKTREE",
+          payload: { responseHandle: "sk-" + "x".repeat(24) },
+        }),
+      ).success,
+    ).toBe(false);
   });
 });

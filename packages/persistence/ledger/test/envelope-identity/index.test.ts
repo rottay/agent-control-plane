@@ -36,7 +36,8 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * The version in force, and the vectors below move with it (P-18/protocolo C).
+ * The version in force, and the vectors below move with it (P-18/protocolo C,
+ * and again in P-18/protocolo F).
  *
  * `TaskEnvelope.contractVersion` is `AdmittedContractVersion` from ADR 0076 —
  * only the version in force is emitted — so this fixture cannot stay at
@@ -46,8 +47,14 @@ import {
  * digests of genuinely different envelopes. That is consequence V3, declared in
  * the ADR: it is not the encoding moving under the same value, which is the one
  * thing this suite exists to catch.
+ *
+ * F moved the version to `"2.4.0"` (ADR 0078) and the three vectors moved with
+ * it, for the same reason and with the same consequence declared. They were
+ * computed twice before being written down: by `envelopeSha256`, and
+ * independently, as sha-256 of the prefix and the recursively key-sorted JSON of
+ * `TaskEnvelope.parse` — the two agree on all three.
  */
-const CONTRACT = "2.3.0";
+const CONTRACT = "2.4.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -386,10 +393,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "b452e232e98e097a4d7127b7e6f6705ffc821420d985f60b4da986e74cdad7bb"],
+      [envelope(), "40ed2c3377a78c6dc79c423c93f3e6850879b6c21be2f5148d263f25deb56f4b"],
       [
         withObjective("Delete the production ledger."),
-        "dbd9a30b5820a97dd3fa7f589bfc6388327505b62e452199e174e1f8e0ac8e28",
+        "e5f9d7709e966cb9ebc1d41fcf80e5243393a5d2932e9ac9caf78f42aca5a561",
       ],
       [
         envelope({
@@ -399,7 +406,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "d523b43531e8f5e0504337cc2765465b0f4f150b146a4a02588a4cec78d7c964",
+        "22d38e16fd4278a2ca63e2e235827c824577e78762ba714fc55ed0bc50d7e97f",
       ],
     ];
 

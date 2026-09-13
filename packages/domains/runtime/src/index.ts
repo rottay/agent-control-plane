@@ -63,9 +63,18 @@ export type {
 // whole -- this module mints no identifier, reads no clock and never runs git;
 // it decides, and the integrator commits under the receipt it returns. A
 // receipt can never authorize a push, and quarantine is never cleanup.
+//
+// P-18/protocolo F adds the quarantine batch: the three candidates one
+// `appendBatch` commits together — the finding, the move to SUSPECT_WORKTREE and
+// the intention to revoke the lease. It mints neither the saga nor the command
+// id; the first is the caller's and the second is computed by the ledger's own
+// function, so the door recomputes exactly what this builder proposed.
 export {
   AUTHORIZATION_REFUSALS,
+  QUARANTINE_PHASE,
+  QUARANTINE_TARGET_KIND,
   authorizeCommit,
+  buildQuarantineBatch,
   quarantineWorktree,
   recordCommit,
 } from "./commit-authorization/index.js";
@@ -80,6 +89,11 @@ export type {
   CommitRecordOutcome,
   CommitRecordRequest,
   CommitRecorded,
+  QuarantineBatchBuilt,
+  QuarantineBatchCoordinate,
+  QuarantineBatchOutcome,
+  QuarantineBatchRequest,
+  QuarantineEventIdentity,
   QuarantineOutcome,
   QuarantineRecord,
   QuarantineRequest,

@@ -133,11 +133,25 @@ import {
  *
  * `store_incarnation_id` is stamped by every grant with the incarnation read
  * inside the lock, and conserved by release and sweep. `operation_id` and
- * `revocation_acknowledged_at` are coordination §3's, declared here as nullable
- * columns and written by **no verb of this module** — escalón F owns the
- * intention that correlates a grant and the acknowledgement that answers a
- * revocation. Rows written before the column existed read back `NULL`, and a
- * re-grant over such a row stamps the live incarnation.
+ * `revocation_acknowledged_at` are coordination §3's. E1 declared them as
+ * nullable columns no verb wrote; P-18/protocolo F gives them their writers,
+ * and exactly the three §3 `:90-99` needs (ADR 0078, decision 52):
+ *
+ * - `GRANT` stamps `operation_id` from the grant when the caller correlates it,
+ *   and clears any acknowledgement a previous revocation left — a new holder is
+ *   not the revocation that came before it; releasing or sweeping that live
+ *   grant ends the correlation with it, so a released record can never pass for
+ *   a revocation;
+ * - `REVOKE` is the revocation's compare-and-set: `fence = OLD.fence + 1`, the
+ *   six holder columns cleared, `released_at` and `operation_id` stamped, and no
+ *   acknowledgement yet;
+ * - `ACKNOWLEDGE_REVOCATION` records that the ledger acknowledged it, and does
+ *   **not** move the fence again.
+ *
+ * No trigger and no token compare-and-set arrive with them: the validators and
+ * the four-case fence rule stay decision 46's packet. Rows written before the
+ * column existed read back `NULL`, and a re-grant over such a row stamps the
+ * live incarnation.
  */
 
 /** One row of the arbitration table, as the caller sees it. */
@@ -163,13 +177,20 @@ export interface LeaseRow {
    */
   readonly storeIncarnationId: string | null;
   /**
-   * The intention in the ledger this grant answers, or `null`. Coordination §3.
+   * The ledger command the last grant or revocation of this record answers, or
+   * `null`. Coordination §3 `:80`, §7 `:358-359`.
    *
-   * No verb of this module writes it: the correlation is escalón F's, and a
-   * store that invented one would be claiming an intention it cannot read.
+   * Supplied by the caller, never invented: a store that minted one would be
+   * claiming an intention it cannot read. `GRANT` stamps it when the grant
+   * carries one and clears it otherwise; `REVOKE` always stamps it.
    */
   readonly operationId: string | null;
-  /** When a revocation was acknowledged, or `null`. F's too; coordination §6. */
+  /**
+   * When the revocation this record carries was acknowledged, or `null`.
+   *
+   * Written only by `ACKNOWLEDGE_REVOCATION`, and only over a record `REVOKE`
+   * left; cleared by the next `GRANT`.
+   */
   readonly revocationAcknowledgedAt: string | null;
 }
 
@@ -213,6 +234,11 @@ export interface LeaseGrant {
   readonly expiresAt: string;
   readonly holderPid: number | null;
   readonly holderToken: string | null;
+  /**
+   * The ledger command this grant answers, when the caller correlates one
+   * (P-18/protocolo F). Optional, so every caller that grants today is unchanged.
+   */
+  readonly operationId?: string;
 }
 
 /**
@@ -221,10 +247,18 @@ export interface LeaseGrant {
  * `RELEASE` carries the instant it happened because this module reads no clock.
  * The alternative — a `Date.now()` inside the store — would make the expiry
  * drills depend on sleeping, and would put a clock in a substrate.
+ *
+ * `REVOKE` and `ACKNOWLEDGE_REVOCATION` are P-18/protocolo F's, and they are two
+ * verbs because coordination §3 `:96-97` gives them two fence rules: the
+ * revocation advances the fence and clears the holder, and its acknowledgement
+ * does not advance it again. `REVOKE` carries the command id it answers, so the
+ * arbiter row names the ledger intention its compare-and-set served.
  */
 export type LeaseDecision =
   | { readonly verb: "GRANT"; readonly row: LeaseGrant }
   | { readonly verb: "RELEASE"; readonly at: string }
+  | { readonly verb: "REVOKE"; readonly at: string; readonly operationId: string }
+  | { readonly verb: "ACKNOWLEDGE_REVOCATION"; readonly at: string }
   | { readonly verb: "REFUSE"; readonly reason: string };
 
 /**
@@ -239,6 +273,8 @@ export type LeaseDecision =
 export type LeaseStoreOutcome =
   | { readonly verb: "GRANT"; readonly row: LeaseRow }
   | { readonly verb: "RELEASE"; readonly row: LeaseRow }
+  | { readonly verb: "REVOKE"; readonly row: LeaseRow }
+  | { readonly verb: "ACKNOWLEDGE_REVOCATION"; readonly row: LeaseRow }
   | { readonly verb: "REFUSE"; readonly reason: string; readonly row: LeaseRow | null };
 
 export interface LeaseStore {
@@ -478,6 +514,7 @@ function requireGrant(grant: LeaseGrant): LeaseGrant {
   if (grant.holderPid !== null && !Number.isInteger(grant.holderPid)) {
     throw new LedgerQueryError("holderPid must be an integer or null");
   }
+  if (grant.operationId !== undefined) requireText(grant.operationId, "operationId");
   return grant;
 }
 
@@ -790,11 +827,15 @@ export function openLeaseStore(path: string, options: OpenLeaseStoreOptions = {}
         // too: the record is being granted again, so it belongs to this
         // incarnation whatever it belonged to before.
         const stamp = live === null ? null : live.incarnationId;
+        // The command this grant answers, or nothing; and no acknowledgement,
+        // because an acknowledgement belongs to a revocation and a grant is not one.
+        const operation = grant.operationId ?? null;
         if (current === null) {
           db.prepare(
             "INSERT INTO worktree_lease (worktree_path, fence, lease_id, holder, acquired_at," +
-              " expires_at, holder_pid, holder_token, released_at, store_incarnation_id)" +
-              " VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, ?)",
+              " expires_at, holder_pid, holder_token, released_at, store_incarnation_id," +
+              " operation_id, revocation_acknowledged_at)" +
+              " VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)",
           ).run(
             worktreePath,
             grant.leaseId,
@@ -804,12 +845,14 @@ export function openLeaseStore(path: string, options: OpenLeaseStoreOptions = {}
             grant.holderPid,
             grant.holderToken,
             stamp,
+            operation,
           );
         } else {
           db.prepare(
             "UPDATE worktree_lease SET fence = fence + 1, lease_id = ?, holder = ?," +
               " acquired_at = ?, expires_at = ?, holder_pid = ?, holder_token = ?, released_at = NULL," +
-              " store_incarnation_id = ? WHERE worktree_path = ?",
+              " store_incarnation_id = ?, operation_id = ?, revocation_acknowledged_at = NULL" +
+              " WHERE worktree_path = ?",
           ).run(
             grant.leaseId,
             grant.holder,
@@ -818,12 +861,61 @@ export function openLeaseStore(path: string, options: OpenLeaseStoreOptions = {}
             grant.holderPid,
             grant.holderToken,
             stamp,
+            operation,
             worktreePath,
           );
         }
         const granted = readRow(worktreePath);
         if (granted === null) throw new LedgerQueryError("the granted record could not be read back");
         return { verb: "GRANT", row: granted };
+      }
+
+      if (decision.verb === "REVOKE") {
+        // The revocation's compare-and-set (coordination §3 `:96-97`). The fence
+        // advances by exactly one and the holder is cleared, so a holder still
+        // running under the old token fails by fence; `operation_id` names the
+        // ledger command this revocation serves. It is stamped with the live
+        // incarnation, for the grant's reason: the fence it leaves is a number
+        // this incarnation issued. Only a live lease is revoked — revoking a
+        // record nobody holds would advance a fence without taking anything away.
+        const at = requireText(decision.at, "at");
+        const operation = requireText(decision.operationId, "operationId");
+        if (typeof current?.leaseId !== "string") {
+          throw new LedgerQueryError("cannot revoke a worktree whose lease is not live");
+        }
+        db.prepare(
+          "UPDATE worktree_lease SET fence = fence + 1, lease_id = NULL, holder = NULL," +
+            " acquired_at = NULL, expires_at = NULL, holder_pid = NULL, holder_token = NULL," +
+            " released_at = ?, store_incarnation_id = ?, operation_id = ?," +
+            " revocation_acknowledged_at = NULL WHERE worktree_path = ?",
+        ).run(at, live === null ? null : live.incarnationId, operation, worktreePath);
+        const revoked = readRow(worktreePath);
+        if (revoked === null) throw new LedgerQueryError("the revoked record could not be read back");
+        return { verb: "REVOKE", row: revoked };
+      }
+
+      if (decision.verb === "ACKNOWLEDGE_REVOCATION") {
+        // The acknowledgement, and the fence does not move (§3 `:97`, `:98`). It
+        // answers a revocation this record still carries — cleared, correlated,
+        // and not yet acknowledged — and nothing else: acknowledging a release, a
+        // live grant or an acknowledgement already recorded would state a
+        // revocation that never happened or restate one that already has.
+        const at = requireText(decision.at, "at");
+        const revoked =
+          current?.leaseId === null && current.operationId !== null && current.revocationAcknowledgedAt === null;
+        if (!revoked) {
+          throw new LedgerQueryError(
+            "cannot acknowledge a revocation this record does not carry unacknowledged",
+          );
+        }
+        db.prepare(
+          "UPDATE worktree_lease SET revocation_acknowledged_at = ? WHERE worktree_path = ?",
+        ).run(at, worktreePath);
+        const acknowledged = readRow(worktreePath);
+        if (acknowledged === null) {
+          throw new LedgerQueryError("the acknowledged record could not be read back");
+        }
+        return { verb: "ACKNOWLEDGE_REVOCATION", row: acknowledged };
       }
 
       // RELEASE. The holder columns are cleared and the record stays; `fence`
@@ -834,8 +926,16 @@ export function openLeaseStore(path: string, options: OpenLeaseStoreOptions = {}
       if (current === null) {
         throw new LedgerQueryError("cannot release a worktree that was never granted");
       }
+      //
+      // A release of a live lease also ends the correlation its grant carried
+      // (P-18/F): a released record answers no command, and a record that kept
+      // the grant's `operation_id` would look exactly like a revocation waiting
+      // for its acknowledgement. A release over a record already cleared — a
+      // revocation included — conserves it, so it cannot erase the evidence of a
+      // revocation nobody has acknowledged yet.
       db.prepare(
-        "UPDATE worktree_lease SET lease_id = NULL, holder = NULL, acquired_at = NULL," +
+        "UPDATE worktree_lease SET operation_id = CASE WHEN lease_id IS NULL THEN operation_id ELSE NULL END," +
+          " lease_id = NULL, holder = NULL, acquired_at = NULL," +
           " expires_at = NULL, holder_pid = NULL, holder_token = NULL, released_at = ?" +
           " WHERE worktree_path = ?",
       ).run(at, worktreePath);
@@ -853,8 +953,10 @@ export function openLeaseStore(path: string, options: OpenLeaseStoreOptions = {}
       )
       .all(now) as { worktree_path: string }[];
     if (expired.length === 0) return [];
+    // Only live records are swept, so the grant's correlation ends with them, on
+    // the release's reason.
     db.prepare(
-      "UPDATE worktree_lease SET lease_id = NULL, holder = NULL, acquired_at = NULL," +
+      "UPDATE worktree_lease SET operation_id = NULL, lease_id = NULL, holder = NULL, acquired_at = NULL," +
         " expires_at = NULL, holder_pid = NULL, holder_token = NULL, released_at = ?" +
         " WHERE lease_id IS NOT NULL AND expires_at IS NOT NULL AND expires_at <= ?",
     ).run(now, now);

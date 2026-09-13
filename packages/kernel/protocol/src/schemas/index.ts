@@ -1548,6 +1548,14 @@ export const STREAM_CHANNEL_BY_EVENT_TYPE: Readonly<
   // part of what the occurrence *is*, not usage attributed to an account.
   PROMPT_OCCURRENCE_RECORDED: "execution",
   RESPONSE_OCCURRENCE_RECORDED: "execution",
+  // The three outbox types of P-18/protocolo F, for C's reason. Intending a
+  // command, intending one delivery of it and observing how it went are "what
+  // it took to run it". They are not `state` either, although a revocation is
+  // what one of them asks for: `LEASE_REVOKED` records that a lease was revoked,
+  // and these record that the plane intended to ask for it and what it heard.
+  OUTBOX_COMMAND_INTENDED: "execution",
+  OUTBOX_DELIVERY_INTENDED: "execution",
+  OUTBOX_DELIVERY_OBSERVED: "execution",
   // steps — the durable walk's own beats.
   ATOMIC_STEP_COMPLETED: "steps",
   CHECKPOINT_WRITTEN: "steps",

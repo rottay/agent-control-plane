@@ -1,17 +1,22 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { CommitAuthorizationReceipt } from "@acp/contracts";
+import { CommitAuthorizationReceipt, buildIdempotencyKey } from "@acp/contracts";
 import type { Lease, PathDigest } from "@acp/contracts";
+import { computeOutboxCommandId, openLedger } from "@acp/ledger";
 
 import { checkWriteSetConformance } from "../../src/enforcement/index.js";
 import type { WorktreeObservation } from "../../src/enforcement/index.js";
 import {
   AUTHORIZATION_REFUSALS,
+  QUARANTINE_PHASE,
+  QUARANTINE_TARGET_KIND,
   authorizeCommit,
+  buildQuarantineBatch,
   quarantineWorktree,
   recordCommit,
 } from "../../src/commit-authorization/index.js";
@@ -20,7 +25,10 @@ import type {
   AuthorizationRefused,
   AuthorizationRequest,
   CommitRecordOutcome,
+  QuarantineBatchOutcome,
+  QuarantineBatchRequest,
   QuarantineOutcome,
+  QuarantineRecord,
 } from "../../src/commit-authorization/index.js";
 
 const NOW = "2026-08-29T12:00:00.000Z";
@@ -78,7 +86,7 @@ function request(overrides: Partial<AuthorizationRequest> = {}): AuthorizationRe
 }
 
 function refusal(
-  outcome: AuthorizationOutcome | CommitRecordOutcome | QuarantineOutcome,
+  outcome: AuthorizationOutcome | CommitRecordOutcome | QuarantineOutcome | QuarantineBatchOutcome,
 ): AuthorizationRefused {
   expect(outcome.ok).toBe(false);
   if (outcome.ok) throw new Error("expected a refusal");
@@ -555,5 +563,160 @@ describe("the module's own laws", () => {
     }
     // And the only place the field is written writes `false`.
     expect(code.includes("pushAuthorized: false")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo F — the quarantine batch
+// ---------------------------------------------------------------------------
+
+describe("the quarantine batch commits the finding, the move and the intention to revoke together", () => {
+  const TASK = "33333333-3333-4333-8333-333333333333";
+  const SAGA = "5a6a7a8a-0000-4000-8000-000000000001";
+  const INCARNATION = "4c4c4c4c-0000-4000-8000-000000000001";
+
+  function record(): QuarantineRecord {
+    const verdict = checkWriteSetConformance({
+      declaredWriteSet: ["src/allowed.ts"],
+      observation: observation({ untrackedPaths: ["src/sneaked-in.ts"] }),
+      lease: lease(),
+    });
+    if (!verdict.ok) throw new Error("fixture conformance refused");
+    const out = quarantineWorktree({
+      verdict,
+      lease: lease(),
+      observation: observation({ untrackedPaths: ["src/sneaked-in.ts"] }),
+      taskId: TASK,
+    });
+    if (!out.ok) throw new Error("fixture quarantine refused");
+    return out.record;
+  }
+
+  function batchRequest(overrides: Partial<QuarantineBatchRequest> = {}): QuarantineBatchRequest {
+    return {
+      record: record(),
+      sagaId: SAGA,
+      deadlineAt: "2026-08-29T12:30:00.000Z",
+      leaseToken: { incarnationId: INCARNATION, fence: 1 },
+      coordinate: {
+        taskId: TASK,
+        attempt: 1,
+        currentState: "DISCOVERED",
+        emittedBy: AUTHORIZER,
+        occurredAt: NOW,
+        recordedAt: NOW,
+        correlationId: null,
+        violation: { eventId: "44444444-4444-4444-8444-444444444401", transitionId: "conformance.0.0" },
+        quarantine: { eventId: "44444444-4444-4444-8444-444444444402", transitionId: "conformance.0.1" },
+        intention: { eventId: "44444444-4444-4444-8444-444444444403", transitionId: "conformance.0.2" },
+      },
+      ...overrides,
+    };
+  }
+
+  function built(outcome: QuarantineBatchOutcome) {
+    if (!outcome.ok) throw new Error("expected a batch, got " + outcome.reason + " at " + outcome.at);
+    return outcome;
+  }
+
+  it("builds three candidates in commit order, with the command id the ledger recomputes", () => {
+    const out = built(buildQuarantineBatch(batchRequest()));
+    expect(out.candidates.map((event) => [event.type, event.fromState, event.toState])).toEqual([
+      ["WRITE_SET_VIOLATION_DETECTED", "DISCOVERED", "DISCOVERED"],
+      ["TASK_STATE_CHANGED", "DISCOVERED", "SUSPECT_WORKTREE"],
+      ["OUTBOX_COMMAND_INTENDED", "SUSPECT_WORKTREE", "SUSPECT_WORKTREE"],
+    ]);
+    expect(out.commandId).toBe(
+      computeOutboxCommandId({
+        sagaId: SAGA,
+        phase: QUARANTINE_PHASE,
+        targetKind: QUARANTINE_TARGET_KIND,
+        targetId: WORKTREE,
+      }),
+    );
+    expect(out.candidates[2]?.payload).toEqual({
+      outboxContractVersion: 1,
+      sagaId: SAGA,
+      commandId: out.commandId,
+      phase: "QUARANTINE",
+      commandKind: "REVOKE_LEASE",
+      intentStream: "control_plane_events",
+      targetKind: "WORKTREE_LEASE",
+      targetId: WORKTREE,
+      deadlineAt: "2026-08-29T12:30:00.000Z",
+      fence: 1,
+      targetStoreIncarnationId: INCARNATION,
+    });
+    for (const event of out.candidates) {
+      expect(event.idempotencyKey).toBe(
+        buildIdempotencyKey({ taskId: TASK, attempt: 1, transitionId: event.transitionId }),
+      );
+    }
+    // No LEASE_REVOKED: inside the ledger's transaction nothing has happened at
+    // the arbiter yet, and the batch records only what did.
+    expect(out.candidates.map((event) => event.type)).not.toContain("LEASE_REVOKED");
+  });
+
+  it("N-F-11: mints nothing — no saga is invented, and the same request builds the same bytes", () => {
+    const { sagaId: _dropped, ...withoutSaga } = batchRequest();
+    void _dropped;
+    const missing = buildQuarantineBatch(withoutSaga as unknown as QuarantineBatchRequest);
+    expect(refusal(missing)).toEqual({ ok: false, reason: "REQUEST_INVALID", at: "request.sagaId" });
+    expect(refusal(buildQuarantineBatch(batchRequest({ sagaId: "not-a-uuid" }))).at).toBe("request.sagaId");
+    expect(JSON.stringify(buildQuarantineBatch(batchRequest()))).toBe(JSON.stringify(buildQuarantineBatch(batchRequest())));
+  });
+
+  it("carries no token when none is held, and refuses a half one or an already quarantined task", () => {
+    const tokenless = built(buildQuarantineBatch(batchRequest({ leaseToken: null })));
+    expect(tokenless.candidates[2]?.payload).toMatchObject({ fence: null, targetStoreIncarnationId: null });
+    expect(
+      refusal(buildQuarantineBatch(batchRequest({ leaseToken: { incarnationId: INCARNATION, fence: 0 } }))).at,
+    ).toBe("request.leaseToken.fence");
+    const quarantined = batchRequest();
+    expect(
+      refusal(
+        buildQuarantineBatch({
+          ...quarantined,
+          coordinate: { ...quarantined.coordinate, currentState: "SUSPECT_WORKTREE" },
+        }),
+      ).at,
+    ).toBe("request.coordinate.currentState");
+    expect(refusal(buildQuarantineBatch(batchRequest({ deadlineAt: "soon" }))).at).toBe("request.deadlineAt");
+  });
+
+  it("is admitted by a real ledger as one batch, and the command it intends is PENDING", () => {
+    const directory = mkdtempSync(join(tmpdir(), "acp-p18f-quarantine-"));
+    try {
+      const ledger = openLedger(join(directory, "control-plane.sqlite"));
+      try {
+        ledger.append({
+          contractVersion: built(buildQuarantineBatch(batchRequest())).candidates[0]?.contractVersion,
+          eventId: "44444444-4444-4444-8444-444444444400",
+          taskId: TASK,
+          attempt: 1,
+          transitionId: "discover",
+          idempotencyKey: buildIdempotencyKey({ taskId: TASK, attempt: 1, transitionId: "discover" }),
+          type: "TASK_DISCOVERED",
+          fromState: null,
+          toState: "DISCOVERED",
+          emittedBy: AUTHORIZER,
+          occurredAt: NOW,
+          recordedAt: NOW,
+          correlationId: null,
+          causationId: null,
+          payload: {},
+        });
+        const out = built(buildQuarantineBatch(batchRequest()));
+        expect(ledger.appendBatch(out.candidates).insertedCount).toBe(3);
+        expect(ledger.getTask(TASK)?.currentState).toBe("SUSPECT_WORKTREE");
+        expect(ledger.getOutboxCommand(out.commandId)?.state).toBe("PENDING");
+        // Replayed whole, the batch is a no-op rather than a second quarantine.
+        expect(ledger.appendBatch(out.candidates).insertedCount).toBe(0);
+      } finally {
+        ledger.close();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

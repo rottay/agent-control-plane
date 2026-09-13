@@ -10,6 +10,9 @@ import type {
   TransportKind,
   WorkerRole,
 } from "@acp/contracts";
+import type { OUTBOX_FAILURE_CODES } from "@acp/contracts";
+
+import type { OutboxCommandKind, OutboxState, OutboxStream } from "../outbox-store/index.js";
 
 /**
  * Public value types of the ledger package.
@@ -621,6 +624,68 @@ export interface ResponseOccurrenceReadModel {
   readonly redactionVerdict: RedactionVerdict;
   readonly recordedAt: string;
   readonly sequence: number;
+}
+
+/** A word of `OUTBOX_FAILURE_CODES`, the vocabulary the door imposes when it writes. */
+export type OutboxFailureCode = (typeof OUTBOX_FAILURE_CODES)[number];
+
+/**
+ * One outbox command, as the ledger's own events fold it — coordination §6 and
+ * §6.2 (P-18/protocolo F).
+ *
+ * **Not a table, and not a row of `outbox.sqlite`.** Datos §11 `:548-550` puts
+ * the command's intention in the ledger's transaction and makes the separate
+ * outbox a cache of it. This value is what that cache is rebuilt *from*: every
+ * field `outbox_message` needs to reconstruct a row, taken off three event types
+ * and nothing else — no migration, no derived table, no watermark.
+ *
+ * Identity comes from the intention and never moves: `commandId` is the digest of
+ * `(sagaId, phase, targetKind, targetId)` under the contract's prefix, the
+ * target's `fence` and `targetStoreIncarnationId` are conserved from it and never
+ * substituted by a current incarnation (§6 `:240`), and the anchor is the
+ * intention event's own stream, sequence and digest.
+ *
+ * `state` is §2's vocabulary with the fold's reading of §6.2 `:323-324`:
+ *
+ *  - an intention with no delivery attempt is `PENDING`;
+ *  - a recorded attempt with no observation is `RECONCILING` — **never
+ *    `PENDING`, and never `INFLIGHT`**: the ledger records the attempt before
+ *    anything is sent, cannot know whether the send happened, and the process
+ *    that owned an `INFLIGHT` row does not survive a lost cache;
+ *  - an observation moves the state by §2's transitions.
+ *
+ * `attemptCount` grows by one per new `deliveryAttemptId` and not on a replay.
+ * `lastFailureCode` keeps the last code any observation carried, so a command
+ * that failed and returned to `PENDING` still says why; `responseHandle` keeps
+ * the last opaque handle on the same terms.
+ */
+export interface OutboxCommandReadModel {
+  readonly commandId: string;
+  readonly sagaId: string;
+  readonly phase: string;
+  readonly commandKind: OutboxCommandKind;
+  readonly targetKind: string;
+  readonly targetId: string;
+  readonly deadlineAt: string;
+  readonly fence: number | null;
+  readonly targetStoreIncarnationId: string | null;
+  /** The real task that owns the saga — the subject every later event must repeat. */
+  readonly taskId: string;
+  readonly intentStream: OutboxStream;
+  readonly intentSequence: number;
+  readonly intentSha256: string;
+  readonly state: OutboxState;
+  readonly attemptCount: number;
+  readonly lastDeliveryAttemptId: string | null;
+  readonly lastAttemptStream: OutboxStream | null;
+  readonly lastAttemptSequence: number | null;
+  readonly lastAttemptSha256: string | null;
+  readonly lastFailureCode: OutboxFailureCode | null;
+  readonly responseHandle: string | null;
+  /** The intention event's own instant. */
+  readonly createdAt: string;
+  /** The instant of the last event that moved this command. Never a clock. */
+  readonly updatedAt: string;
 }
 
 export interface TaskQuery {

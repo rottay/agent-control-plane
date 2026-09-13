@@ -9430,6 +9430,96 @@ const P18D_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-18/protocolo F — the saga in the ledger: a command intention commits with
+ * its quarantine, or not at all (ADR 0078, decisions 50-54). Brief v3,
+ * `.acp-local/evidence/p18/acp-p18f-writer-brief-v3.md`; Fable preaudit
+ * ACCEPT_WITH_CORRECTIONS (H-1..H-13) and the DT's Q-F1..Q-F4 absorbed.
+ *
+ * **What lands.**
+ *   1. Three same-state types on `execution` — `OUTBOX_COMMAND_INTENDED`,
+ *      `OUTBOX_DELIVERY_INTENDED`, `OUTBOX_DELIVERY_OBSERVED` — with coordination
+ *      §6.2's payloads, closed, versioned `outboxContractVersion = 1`.
+ *   2. `command_id` as a formula: `OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1` in the
+ *      contract, `computeOutboxCommandId` in the ledger, recomputed by the door
+ *      and by the fold. `OUTBOX_FAILURE_CODES`, six words, imposed when written.
+ *   3. The door: the V1 matrix (`CAPABILITY_UNSUPPORTED` before any command
+ *      exists), one intention per command, attempts and observations anchored
+ *      by `CausationRef`, §2's transitions from the folded state. A
+ *      `REVOKE_LEASE` intention commits only inside `appendBatch`, immediately
+ *      after its quarantine; a batch that quarantines without it rolls back.
+ *   4. No table. `foldOutboxCommands` is a pure fold, `rebuildReadModel` and
+ *      `verifyIntegrity` drive it beside the snapshot, and `listOutboxCommands`
+ *      answers what a lost cache rebuilds to: an attempt with no outcome is
+ *      `RECONCILING`, never `PENDING`.
+ *   5. `lease-store` gains `REVOKE` (fence + 1) and `ACKNOWLEDGE_REVOCATION`
+ *      (fence conserved), and `LeaseGrant.operationId`. No trigger, no token
+ *      compare-and-set: decision 46 stands there.
+ *   6. `@acp/runtime`'s `buildQuarantineBatch`, pure, minting nothing.
+ *   7. Inherited: O-1 of E2 (`readToken` in one deferred read transaction) and
+ *      O-1 of C (a new delivery needs every earlier one terminal).
+ *
+ * **What does NOT land, declared.** No reconciler and no dispatcher — O-2 and
+ * O-3 of E2 are written into ADR 0078 as binding rules for P-18/recuperación's.
+ * No SIGKILL matrix: boundaries 1-3 are drilled in process. No boundary 4-8. No
+ * migration: `MIGRATIONS` 14, `DERIVED_TABLES` 15, `PROJECTION_NAMES` 10. No
+ * `API_CONTRACT_VERSION`. No operative commit, no B1-B3, no O-Δ1/O-Δ2. The
+ * daemon's three-append quarantine is untouched: it is the declared legacy
+ * window `L-P18F-1` names, closed by the adoption.
+ *
+ * **Pins that move.** `CONTRACT_VERSION` 2.3.0 → **2.4.0**, and
+ * `SUPPORTED_CONTRACT_VERSIONS` gains `"2.4.0"`. `CONTROL_PLANE_EVENT_TYPES`
+ * 30 → **33** at its three `toHaveLength` sites; the channel map's `execution`
+ * partition 12 → **15**. `CONTRACTS_SCHEMA_EXPORTS` 113 → **115**.
+ * `RUNTIME_PUBLIC_EXPORTS` gains eight names. `PATH_SCOPED_LAWS` 127 → **129**
+ * (`L-P18F-1`, `L-P18F-2`). The envelope-identity vectors move with the
+ * version (consequence V3, ADR 0076's, again). The ADR corpus 77 → 78 and the
+ * decision register gains rows 50-54.
+ *
+ * **Pins that do not move.** `API_CONTRACT_VERSION`, `ROADMAP_SHA256`, the
+ * migrations, the derived tables, the projection names, the ledger README's
+ * thirteen error classes (every refusal is a `LedgerValidationError` with a
+ * `path`, `CAPABILITY_UNSUPPORTED` included).
+ *
+ * **Thirty-one paths, one of them new** — ADR 0078. One is admitted and left
+ * unmodified, precedent C-7: `accounts/src/registry/index.ts`, conditional on
+ * the typecheck, which did not ask for it.
+ */
+const P18F_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/control-plane-event/index.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/src/outbox-store/index.ts",
+  "packages/persistence/ledger/src/lease-store/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/outbox-store/index.test.ts",
+  "packages/persistence/ledger/test/lease-store/index.test.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/domains/runtime/src/commit-authorization/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/README.md",
+  "packages/domains/runtime/test/commit-authorization/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+  "packages/domains/accounts/src/registry/index.ts",
+  "packages/edges/telemetry/test/testing/index.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/index.md",
+  "docs/architecture/0078-a-command-intention-commits-with-its-quarantine.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9638,6 +9728,7 @@ const WRITE_SET = [
   ...P18E2_WRITE_SET,
   ...P18E1_WRITE_SET,
   ...P18D_WRITE_SET,
+  ...P18F_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -10940,6 +11031,20 @@ const PATH_SCOPED_LAWS = [
   {
     law: "a coordination token names its incarnation, and the number comes second",
     scope: "packages/persistence/ledger/src/{lease-store,tool-claim-store,outbox-store}/index.ts",
+  },
+  // P-18/protocolo F (L-P18F-1, L-P18F-2). Two new path-shaped surfaces, so two
+  // new rows: the register and the `requireScope` call sites both move 127 ->
+  // 129, and `assertPathScopedInventory` fails printing both numbers if only one
+  // side of this edit lands. Both are repository-wide over `src`, because what
+  // each keeps true — one unitary quarantine window, one grammar for a command
+  // id — is broken by a second site anywhere, not by an edit to the first.
+  {
+    law: "the quarantine window is named, and appendBatch closes it everywhere else",
+    scope: "packages/*/*/src/** (every tracked source file)",
+  },
+  {
+    law: "the outbox command id has one grammar, and the quarantine builder mints none",
+    scope: "packages/*/*/src/** (every tracked source file)",
   },
 ];
 
@@ -17972,6 +18077,16 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "planStep",
   "probeEffect",
   "quarantineWorktree",
+  // P-18/protocolo F: the quarantine batch. The builder, its two fixed words
+  // and its five shapes; it mints no saga and no command id (L-P18F-2).
+  "QUARANTINE_PHASE",
+  "QUARANTINE_TARGET_KIND",
+  "QuarantineBatchBuilt",
+  "QuarantineBatchCoordinate",
+  "QuarantineBatchOutcome",
+  "QuarantineBatchRequest",
+  "QuarantineEventIdentity",
+  "buildQuarantineBatch",
   "pressureTransitionId",
   "recordCommit",
   "recordProviderPressure",
@@ -18433,6 +18548,12 @@ if (accountsIndex === null) {
   "AdmittedContractVersion",
   "EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1",
   "EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1",
+  // P-18/protocolo F. Two names, for C's reason: the versioned preimage of
+  // `command_id`, which the ledger's door recomputes, and the six failure words
+  // the door imposes on an observation — the vocabulary of the three outbox
+  // payloads, declared beside their types (ADR 0078).
+  "OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1",
+  "OUTBOX_FAILURE_CODES",
   "V2_IDEMPOTENCY_NAMESPACE",
   "V2_IDEMPOTENCY_STREAMS",
   "V2IdempotencyCoordinates",
@@ -24542,6 +24663,132 @@ const STORE_KINDS = ["WORKTREE_LEASE", "TOOL_CLAIM", "ACCOUNT_RESERVATION", "OUT
   }
   requireScope("a coordination token names its incarnation, and the number comes second", tokenScanned);
   notes.push("every coordination token carries an incarnation, and every store checks it before the number");
+}
+
+// --- 21k. the saga's intention in the ledger (P-18/protocolo F) -------------
+//
+// Contracts §13 `:559-561` and datos §11 `:546-550`: inside the ledger the
+// quarantine and the intention to revoke the lease are atomic. The door holds
+// that, and the two laws below hold what no behavioural test can: that there is
+// exactly one place allowed to be the exception, and exactly one grammar for
+// the identity every command carries.
+
+const LEDGER_DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
+const OUTBOX_COMMAND_GRAMMAR_SITE = "packages/kernel/contracts/src/schemas/control-plane-event/index.ts";
+const QUARANTINE_BATCH_SITE = "packages/domains/runtime/src/commit-authorization/index.ts";
+// The legacy window of ADR 0078 and decision 51, by name. The daemon's
+// conformance gate records a violation with unitary appends today — the three
+// transactions datos §11 `:547` retires — and the adoption, which is blocked,
+// is what moves it onto `buildQuarantineBatch`. Until then it is the one site
+// allowed to append a quarantine outside a batch, and a second one fails here.
+const QUARANTINE_WINDOW_SITES = [DAEMON_PORTS_SITE];
+
+// L-P18F-1 -- the quarantine window is named, and appendBatch closes it
+// everywhere else.
+//
+// Two halves. The door half: `appendBatch` still checks that every quarantine
+// it inserts carries its own intention to revoke — delete that call and every
+// batch drill of the ledger suite that builds a lawful batch still passes. The
+// window half: any source that appends and names the quarantine state is a
+// site that can write a quarantine without its intention, and only the named
+// one may.
+{
+  let windowScanned = 0;
+  const door = readIfPresent(LEDGER_DOOR_SITE);
+  if (door === null) {
+    fail(LEDGER_DOOR_SITE + " is missing; the quarantine atomicity law would stand over nothing");
+  } else {
+    const code = stripComments(door);
+    const start = code.indexOf("  appendBatch(");
+    const end = start === -1 ? -1 : code.indexOf("  #appendInTransaction(", start);
+    if (start === -1 || end === -1 || !code.slice(start, end).includes("this.#assertQuarantineBatch(inserted);")) {
+      fail(
+        LEDGER_DOOR_SITE +
+          " no longer checks, inside appendBatch, that every quarantine a batch inserts carries its" +
+          " intention to revoke; a quarantine without that intention is the three-transaction window" +
+          " datos section 11 closes",
+      );
+    }
+  }
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const windows = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!relativePath.endsWith(".ts") || relativePath === LEDGER_DOOR_SITE) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      windowScanned += 1;
+      const code = stripComments(content);
+      if (/\.append\(/.test(code) && /SUSPECT_WORKTREE|recommendedTaskState/.test(code)) windows.push(relativePath);
+    }
+    if (windows.join(", ") !== QUARANTINE_WINDOW_SITES.join(", ")) {
+      fail(
+        "the unitary quarantine window is open at [" +
+          windows.join(", ") +
+          "]; ADR 0078 and decision 51 name exactly [" +
+          QUARANTINE_WINDOW_SITES.join(", ") +
+          "], and every other quarantine is recorded through appendBatch with its intention",
+      );
+    }
+  }
+  requireScope("the quarantine window is named, and appendBatch closes it everywhere else", windowScanned);
+  notes.push("appendBatch holds a quarantine to its intention to revoke, and one named site keeps the legacy window");
+}
+
+// L-P18F-2 -- the outbox command id has one grammar, and the quarantine builder
+// mints none.
+//
+// The prefix literal lives in exactly one source file, so no second producer can
+// spell the preimage its own way and hand the door an id it will refuse — or,
+// worse, one it would accept for a different command. And the one builder of a
+// quarantine batch computes the id with the ledger's function and invents
+// neither it nor the saga: "runtime mints nothing" is a property of the source,
+// not a promise in a docblock.
+{
+  let grammarScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const namers = [];
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!relativePath.endsWith(".ts")) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      grammarScanned += 1;
+      if (stripComments(content).includes("acp/outbox-command/")) namers.push(relativePath);
+    }
+    if (namers.join(", ") !== OUTBOX_COMMAND_GRAMMAR_SITE) {
+      fail(
+        "the outbox command id preimage is spelled in [" +
+          namers.join(", ") +
+          "]; its grammar is the contract's and lives in " +
+          OUTBOX_COMMAND_GRAMMAR_SITE +
+          " alone",
+      );
+    }
+  }
+  const builder = readIfPresent(QUARANTINE_BATCH_SITE);
+  if (builder === null) {
+    fail(QUARANTINE_BATCH_SITE + " is missing; the quarantine builder law would stand over nothing");
+  } else {
+    const code = stripComments(builder);
+    if (!code.includes("computeOutboxCommandId(")) {
+      fail(QUARANTINE_BATCH_SITE + " no longer computes the command id with the ledger's function");
+    }
+    for (const forbidden of ["randomUUID", "deterministicUuid", "randomBytes", "Math.random"]) {
+      if (code.includes(forbidden)) {
+        fail(
+          QUARANTINE_BATCH_SITE +
+            " mints an identity with " +
+            forbidden +
+            "; the saga is the caller's and the command id is computed, never generated",
+        );
+      }
+    }
+  }
+  requireScope("the outbox command id has one grammar, and the quarantine builder mints none", grammarScanned);
+  notes.push("one source spells the command id preimage, and the quarantine builder mints no identity");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------

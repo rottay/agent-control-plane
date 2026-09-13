@@ -5,6 +5,7 @@ import {
   EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
   EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
   INITIATIVE_EVENT_TYPES,
+  OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1,
   buildIdempotencyKey,
   buildV2IdempotencyKey,
 } from "@acp/contracts";
@@ -42,6 +43,15 @@ import {
   readResponseOccurrence,
   routingAssignmentId,
   taskAttemptKey,
+  OUTBOX_V1_COMMAND_STREAMS,
+  applyEventToOutboxFold,
+  computeOutboxCommandId,
+  createOutboxFold,
+  foldOutboxCommands,
+  isQuarantineEvent,
+  outboxCommandIdPreimageV1,
+  readOutboxEvent,
+  type OutboxEventEntry,
 } from "../../src/projection/index.js";
 import { LedgerValidationError } from "../../src/errors/index.js";
 import { DISPATCH_STATES } from "../../src/types/index.js";
@@ -1928,5 +1938,353 @@ describe("the occurrence folds refuse what the door refuses (execution §8)", ()
     expect(snapshot.promptOccurrences.size).toBe(0);
     expect(snapshot.responseOccurrences.size).toBe(0);
     expect(snapshot.responseOccurrenceClaims.size).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo F — the outbox fold, as a pure function of stream events
+// ---------------------------------------------------------------------------
+
+const OUTBOX_TASK = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a0f";
+const OUTBOX_SAGA = "5a6a7a8a-0000-4000-8000-000000000001";
+const OUTBOX_WORKTREE = "/tmp/acp-p18f-worktree";
+const OUTBOX_DEADLINE = "2026-09-12T12:00:00.000Z";
+const OUTBOX_ATTEMPT_ONE = "6b6b6b6b-0000-4000-8000-000000000001";
+const OUTBOX_ATTEMPT_TWO = "6b6b6b6b-0000-4000-8000-000000000002";
+
+/** A task-stream event of any type at a given state, keyed V1. */
+function outboxStreamEvent(
+  type: ControlPlaneEvent["type"],
+  transitionId: string,
+  fromState: ControlPlaneEvent["toState"],
+  toState: ControlPlaneEvent["toState"],
+  payload: Record<string, unknown>,
+): ControlPlaneEvent {
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: "00000000-0000-4000-8000-" + createHash("sha256").update(transitionId).digest("hex").slice(0, 12),
+    taskId: OUTBOX_TASK,
+    attempt: 1,
+    transitionId,
+    idempotencyKey: buildIdempotencyKey({ taskId: OUTBOX_TASK, attempt: 1, transitionId }),
+    type,
+    fromState,
+    toState,
+    emittedBy: EMITTED_BY,
+    occurredAt: "2026-09-12T11:00:00.000Z",
+    recordedAt: "2026-09-12T11:00:00.000Z",
+    correlationId: null,
+    causationId: null,
+    payload,
+  } as ControlPlaneEvent;
+}
+
+const REVOKE_COMMAND = computeOutboxCommandId({
+  sagaId: OUTBOX_SAGA,
+  phase: "QUARANTINE",
+  targetKind: "WORKTREE_LEASE",
+  targetId: OUTBOX_WORKTREE,
+});
+
+function intentionPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    outboxContractVersion: 1,
+    sagaId: OUTBOX_SAGA,
+    commandId: REVOKE_COMMAND,
+    phase: "QUARANTINE",
+    commandKind: "REVOKE_LEASE",
+    intentStream: "control_plane_events",
+    targetKind: "WORKTREE_LEASE",
+    targetId: OUTBOX_WORKTREE,
+    deadlineAt: OUTBOX_DEADLINE,
+    fence: 1,
+    targetStoreIncarnationId: "4c4c4c4c-0000-4000-8000-000000000001",
+    ...overrides,
+  };
+}
+
+/** Entries with digests that stand in for a chain: the fold compares, it does not hash. */
+function entry(event: ControlPlaneEvent, sequence: number, causedBy: OutboxEventEntry | null = null): OutboxEventEntry {
+  return {
+    event,
+    sequence,
+    sha256: createHash("sha256").update(String(sequence)).digest("hex"),
+    causation:
+      causedBy === null
+        ? null
+        : { stream: "control_plane_events", sequence: causedBy.sequence, sha256: causedBy.sha256 },
+  };
+}
+
+/** The lawful saga prefix: a quarantine, then the intention to revoke it. */
+function quarantined(): { readonly entries: OutboxEventEntry[]; readonly intention: OutboxEventEntry } {
+  const violation = entry(
+    outboxStreamEvent("WRITE_SET_VIOLATION_DETECTED", "violation", "RUNNING", "RUNNING", {}),
+    1,
+  );
+  const quarantine = entry(
+    outboxStreamEvent("TASK_STATE_CHANGED", "quarantine", "RUNNING", "SUSPECT_WORKTREE", {}),
+    2,
+  );
+  const intention = entry(
+    outboxStreamEvent("OUTBOX_COMMAND_INTENDED", "intend", "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", intentionPayload()),
+    3,
+  );
+  return { entries: [violation, quarantine, intention], intention };
+}
+
+function attemptEntry(sequence: number, attemptId: string, cause: OutboxEventEntry): OutboxEventEntry {
+  return entry(
+    outboxStreamEvent("OUTBOX_DELIVERY_INTENDED", "attempt-" + String(sequence), "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", {
+      outboxContractVersion: 1,
+      commandId: REVOKE_COMMAND,
+      deliveryAttemptId: attemptId,
+    }),
+    sequence,
+    cause,
+  );
+}
+
+function observationEntry(
+  sequence: number,
+  attemptId: string,
+  cause: OutboxEventEntry,
+  outboxState: string,
+  extra: Record<string, unknown> = {},
+): OutboxEventEntry {
+  return entry(
+    outboxStreamEvent("OUTBOX_DELIVERY_OBSERVED", "observe-" + String(sequence), "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", {
+      outboxContractVersion: 1,
+      commandId: REVOKE_COMMAND,
+      deliveryAttemptId: attemptId,
+      outboxState,
+      failureCode: null,
+      responseHandle: null,
+      ...extra,
+    }),
+    sequence,
+    cause,
+  );
+}
+
+function foldRefusal(entries: readonly OutboxEventEntry[]): { readonly path: string; readonly message: string } | null {
+  try {
+    foldOutboxCommands(entries);
+    return null;
+  } catch (error) {
+    if (!(error instanceof LedgerValidationError)) throw error;
+    return error.issues[0] ?? null;
+  }
+}
+
+describe("the outbox command id is one encoding, frozen (coordination §6, ADR 0078)", () => {
+  it("pins the preimage and the digest, and computes them independently", () => {
+    const input = { sagaId: OUTBOX_SAGA, phase: "QUARANTINE", targetKind: "WORKTREE_LEASE", targetId: OUTBOX_WORKTREE };
+    // A literal, computed twice before it was written down: by this package's
+    // function, and by sha-256 over the prefix and a plain JSON array — which is
+    // what canonical JSON is for an array of four strings.
+    const preimage = OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1 + JSON.stringify([OUTBOX_SAGA, "QUARANTINE", "WORKTREE_LEASE", OUTBOX_WORKTREE]);
+    expect(outboxCommandIdPreimageV1(input)).toBe(preimage);
+    expect(computeOutboxCommandId(input)).toBe(createHash("sha256").update(preimage).digest("hex"));
+    expect(computeOutboxCommandId(input)).toBe("ca70e879e173730c58efcdcd48b59619449b34d62e410b3f41e914f5445c0872");
+  });
+
+  it("N-F-2: the same quadruple is the same id, and any other member is another", () => {
+    const base = { sagaId: OUTBOX_SAGA, phase: "QUARANTINE", targetKind: "WORKTREE_LEASE", targetId: OUTBOX_WORKTREE };
+    expect(computeOutboxCommandId({ ...base })).toBe(computeOutboxCommandId(base));
+    const others = [
+      { ...base, sagaId: "5a6a7a8a-0000-4000-8000-000000000002" },
+      { ...base, phase: "RELEASE" },
+      { ...base, targetKind: "ACCOUNT_RESERVATION" },
+      { ...base, targetId: "/tmp/another-worktree" },
+    ];
+    const ids = new Set([computeOutboxCommandId(base), ...others.map(computeOutboxCommandId)]);
+    expect(ids.size).toBe(5);
+  });
+});
+
+describe("the outbox reader is gated, closed and total (coordination §6.2)", () => {
+  it("reads nothing for every other type, and a quarantine is one of two shapes", () => {
+    expect(readOutboxEvent(outboxStreamEvent("TASK_READY", "ready", "DT_CLASSIFIED", "READY", {}))).toBeNull();
+    expect(isQuarantineEvent({ type: "WRITE_SET_VIOLATION_DETECTED", toState: "RUNNING" })).toBe(true);
+    expect(isQuarantineEvent({ type: "TASK_STATE_CHANGED", toState: "SUSPECT_WORKTREE" })).toBe(true);
+    expect(isQuarantineEvent({ type: "TASK_STATE_CHANGED", toState: "FAILED" })).toBe(false);
+    expect(isQuarantineEvent({ type: "LEASE_REVOKED", toState: "RUNNING" })).toBe(false);
+  });
+
+  it("N-F-7: refuses CAPABILITY_UNSUPPORTED outside the matrix, before any command exists", () => {
+    const cases: readonly [Record<string, unknown>, string][] = [
+      [{ commandKind: "RELEASE_RESERVATION", intentStream: "initiative_events" }, "payload.intentStream"],
+      [{ commandKind: "REVOKE_LEASE", intentStream: "account_events" }, "payload.intentStream"],
+      [{ commandKind: "NOTIFY", intentStream: "registry_events" }, "payload.intentStream"],
+      [{ commandKind: "EXPORT_TELEMETRY", intentStream: "registry_events" }, "payload.intentStream"],
+      // A row the matrix does list, realised by another stream's door.
+      [{ commandKind: "NOTIFY", intentStream: "initiative_events" }, "payload.intentStream"],
+      [{ commandKind: "RESTART_WORKER" }, "payload.commandKind"],
+    ];
+    for (const [overrides, path] of cases) {
+      const reading = readOutboxEvent(
+        outboxStreamEvent("OUTBOX_COMMAND_INTENDED", "intend", "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", intentionPayload(overrides)),
+      );
+      expect(reading?.kind, JSON.stringify(overrides)).toBe("refused");
+      if (reading?.kind !== "refused") continue;
+      expect(reading.path).toBe(path);
+      expect(reading.message).toContain("CAPABILITY_UNSUPPORTED");
+    }
+    // And the matrix is §6.2's, with registry_events in no row.
+    for (const streams of Object.values(OUTBOX_V1_COMMAND_STREAMS)) {
+      expect(streams).toContain("control_plane_events");
+      expect(streams).not.toContain("registry_events");
+    }
+  });
+
+  it("N-F-6 and N-F-10: a half token, a stray key, a free failure word and a moved state are refused", () => {
+    const intention = (overrides: Record<string, unknown>) =>
+      readOutboxEvent(
+        outboxStreamEvent("OUTBOX_COMMAND_INTENDED", "intend", "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", intentionPayload(overrides)),
+      );
+    const pathOf = (reading: ReturnType<typeof readOutboxEvent>): string | null =>
+      reading?.kind === "refused" ? reading.path : null;
+
+    expect(pathOf(intention({ targetStoreIncarnationId: null }))).toBe("payload.targetStoreIncarnationId");
+    expect(pathOf(intention({ fence: null }))).toBe("payload.fence");
+    expect(intention({ fence: null, targetStoreIncarnationId: null })?.kind).toBe("intention");
+    expect(pathOf(intention({ note: "revoke please" }))).toBe("payload.note");
+    expect(pathOf(intention({ outboxContractVersion: 2 }))).toBe("payload.outboxContractVersion");
+    expect(pathOf(intention({ commandId: "f".repeat(64) }))).toBe("payload.commandId");
+
+    const moved = readOutboxEvent(
+      outboxStreamEvent("OUTBOX_COMMAND_INTENDED", "intend", "RUNNING", "SUSPECT_WORKTREE", intentionPayload()),
+    );
+    expect(pathOf(moved)).toBe("toState");
+
+    const observe = (extra: Record<string, unknown>) =>
+      readOutboxEvent(observationEntry(9, OUTBOX_ATTEMPT_ONE, quarantined().intention, "DELIVERED", extra).event);
+    expect(pathOf(observe({ failureCode: "the target said no" }))).toBe("payload.failureCode");
+    expect(pathOf(observe({ failureCode: "TARGET_REFUSED" }))).toBe("payload.failureCode");
+    expect(pathOf(observe({ responseHandle: "line\nbreak" }))).toBe("payload.responseHandle");
+    expect(observe({ responseHandle: "lease:4c4c4c4c:2" })?.kind).toBe("observation");
+    const failed = readOutboxEvent(
+      observationEntry(9, OUTBOX_ATTEMPT_ONE, quarantined().intention, "FAILED_TERMINAL").event,
+    );
+    expect(pathOf(failed)).toBe("payload.failureCode");
+  });
+});
+
+describe("the outbox fold reconstructs, and refuses what the door refuses (datos §11)", () => {
+  it("N-F-8: an intention folds PENDING, and an attempt with no outcome RECONCILING, never PENDING", () => {
+    const { entries, intention } = quarantined();
+    const pending = foldOutboxCommands(entries);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      commandId: REVOKE_COMMAND,
+      state: "PENDING",
+      attemptCount: 0,
+      intentSequence: 3,
+      intentSha256: intention.sha256,
+      fence: 1,
+      targetStoreIncarnationId: "4c4c4c4c-0000-4000-8000-000000000001",
+      taskId: OUTBOX_TASK,
+    });
+
+    const attempt = attemptEntry(4, OUTBOX_ATTEMPT_ONE, intention);
+    const [reconciling] = foldOutboxCommands([...entries, attempt]);
+    expect(reconciling).toMatchObject({
+      state: "RECONCILING",
+      attemptCount: 1,
+      lastDeliveryAttemptId: OUTBOX_ATTEMPT_ONE,
+      lastAttemptStream: "control_plane_events",
+      lastAttemptSequence: 4,
+      lastAttemptSha256: attempt.sha256,
+    });
+  });
+
+  it("N-F-4: the same attempt replayed counts once", () => {
+    const { entries, intention } = quarantined();
+    const [command] = foldOutboxCommands([
+      ...entries,
+      attemptEntry(4, OUTBOX_ATTEMPT_ONE, intention),
+      attemptEntry(5, OUTBOX_ATTEMPT_ONE, intention),
+    ]);
+    expect(command?.attemptCount).toBe(1);
+    expect(command?.lastAttemptSequence).toBe(4);
+  });
+
+  it("N-F-5: a failed attempt returns to PENDING, keeps its code, and a terminal state moves nowhere", () => {
+    const { entries, intention } = quarantined();
+    const first = attemptEntry(4, OUTBOX_ATTEMPT_ONE, intention);
+    const failed = observationEntry(5, OUTBOX_ATTEMPT_ONE, first, "FAILED_RETRYABLE", { failureCode: "NOT_DISPATCHED_PROVEN" });
+    const again = observationEntry(6, OUTBOX_ATTEMPT_ONE, first, "PENDING");
+    const second = attemptEntry(7, OUTBOX_ATTEMPT_TWO, intention);
+    const delivered = observationEntry(8, OUTBOX_ATTEMPT_TWO, second, "DELIVERED", { responseHandle: "lease:2" });
+    const [command] = foldOutboxCommands([...entries, first, failed, again, second, delivered]);
+    expect(command).toMatchObject({
+      state: "DELIVERED",
+      attemptCount: 2,
+      lastDeliveryAttemptId: OUTBOX_ATTEMPT_TWO,
+      lastFailureCode: "NOT_DISPATCHED_PROVEN",
+      responseHandle: "lease:2",
+    });
+
+    // Out of a terminal state nothing moves, not even to itself.
+    const restated = observationEntry(9, OUTBOX_ATTEMPT_TWO, second, "DELIVERED");
+    expect(foldRefusal([...entries, first, failed, again, second, delivered, restated])?.path).toBe("payload.outboxState");
+    // RECONCILING does not go back to INFLIGHT.
+    expect(foldRefusal([...entries, first, observationEntry(5, OUTBOX_ATTEMPT_ONE, first, "INFLIGHT")])?.path).toBe(
+      "payload.outboxState",
+    );
+    // And a new attempt beside an uncertain one is refused.
+    expect(foldRefusal([...entries, first, attemptEntry(5, OUTBOX_ATTEMPT_TWO, intention)])?.message).toContain(
+      "never resent",
+    );
+  });
+
+  it("N-F-3: an attempt needs its intention, and an observation its attempt, as named causes", () => {
+    const { entries, intention } = quarantined();
+    // No intention at all.
+    expect(foldRefusal([entries[0]!, entries[1]!, attemptEntry(3, OUTBOX_ATTEMPT_ONE, entries[1]!)])?.path).toBe(
+      "payload.commandId",
+    );
+    // An attempt that names some other event as its cause.
+    expect(foldRefusal([...entries, attemptEntry(4, OUTBOX_ATTEMPT_ONE, entries[0]!)])?.path).toBe("causation");
+    // An observation of an attempt nobody intended.
+    const first = attemptEntry(4, OUTBOX_ATTEMPT_ONE, intention);
+    expect(foldRefusal([...entries, first, observationEntry(5, OUTBOX_ATTEMPT_TWO, first, "DELIVERED")])?.path).toBe(
+      "payload.deliveryAttemptId",
+    );
+    // An observation that names the intention rather than the attempt.
+    expect(foldRefusal([...entries, first, observationEntry(5, OUTBOX_ATTEMPT_ONE, intention, "DELIVERED")])?.path).toBe(
+      "causation",
+    );
+  });
+
+  it("N-F-1, fold half: a REVOKE_LEASE intention that does not follow a quarantine is refused", () => {
+    const { entries } = quarantined();
+    const unrelated = entry(outboxStreamEvent("ATOMIC_STEP_COMPLETED", "step", "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", {}), 3);
+    const intention = entry(
+      outboxStreamEvent("OUTBOX_COMMAND_INTENDED", "intend", "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", intentionPayload()),
+      4,
+    );
+    expect(foldRefusal([entries[0]!, entries[1]!, unrelated, intention])?.path).toBe("payload.commandKind");
+    expect(foldRefusal([intention])?.path).toBe("payload.commandKind");
+
+    // The fold offers every event, of every type, so the predecessor is always
+    // the event immediately before — never the last outbox event.
+    const fold = createOutboxFold();
+    for (const each of entries) applyEventToOutboxFold(fold, each);
+    expect(fold.commands.get(REVOKE_COMMAND)?.state).toBe("PENDING");
+    expect(fold.previous.get("event")?.type).toBe("OUTBOX_COMMAND_INTENDED");
+  });
+
+  it("refuses a second intention of one command, and says whether it is the same one", () => {
+    const { entries } = quarantined();
+    const repeat = (overrides: Record<string, unknown>, sequence: number) =>
+      entry(outboxStreamEvent("OUTBOX_COMMAND_INTENDED", "intend-" + String(sequence), "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", intentionPayload(overrides)), sequence);
+    const quarantine = entry(outboxStreamEvent("WRITE_SET_VIOLATION_DETECTED", "again", "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", {}), 4);
+    const same = foldRefusal([...entries, quarantine, repeat({}, 5)]);
+    expect(same?.message).toContain("already intended");
+    expect(same?.message).not.toContain("CONFLICT");
+    const different = foldRefusal([...entries, quarantine, repeat({ deadlineAt: "2026-09-12T13:00:00.000Z" }, 5)]);
+    expect(different?.message).toContain("CONFLICT");
   });
 });

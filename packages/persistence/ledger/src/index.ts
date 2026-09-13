@@ -253,6 +253,8 @@ export type {
   IntegrityProblemKind,
   IntegrityReport,
   ModelResolutionStatus,
+  OutboxCommandReadModel,
+  OutboxFailureCode,
   PromptOccurrenceReadModel,
   RedactionVerdict,
   ResponseOccurrenceReadModel,
@@ -334,6 +336,27 @@ export {
   logicalOperationSha256,
   requestSha256,
 } from "./projection/index.js";
+
+/**
+ * The outbox command saga's identity and its reconstruction (P-18/protocolo F).
+ *
+ * `computeOutboxCommandId` is exported so a producer computes `command_id` the
+ * one way the door recomputes it — `@acp/runtime`'s quarantine builder is the
+ * first caller, and it calls this rather than restating the formula.
+ * `foldOutboxCommands` is what a lost cache is rebuilt to, as a pure function of
+ * stream events; the ledger's `listOutboxCommands` answers the same question
+ * over its own stream. The V1 matrix and the payload version travel with them
+ * for the reason the execution vocabularies above do.
+ */
+export {
+  OUTBOX_CONTRACT_VERSION,
+  OUTBOX_V1_COMMAND_STREAMS,
+  computeOutboxCommandId,
+  foldOutboxCommands,
+  outboxCommandIdPreimageV1,
+} from "./projection/index.js";
+
+export type { OutboxEventEntry } from "./projection/index.js";
 
 export type {
   AccountActionAppendResult,

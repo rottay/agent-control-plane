@@ -127,6 +127,28 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   // key its own payload grammar does not declare.
   "PROMPT_OCCURRENCE_RECORDED",
   "RESPONSE_OCCURRENCE_RECORDED",
+  // The three of P-18/protocolo F (coordination §6.2 `:301-312`; ADR 0078).
+  // Same-state passthroughs on `execution`, for the reason C's three are:
+  // intending a command, intending one delivery of it and observing how that
+  // delivery went are things the plane *did*, and none of them is a task moving
+  // through its lifecycle.
+  //
+  // **The names are the specification's, not this escalón's.** §6.2 fixes all
+  // three and fixes what each payload carries: the intention names its saga,
+  // command, phase, kind, target, deadline and the nullable fence pair; the
+  // attempt names its command and its own delivery attempt; the observation
+  // names both, an outbox state, a nullable failure code and a nullable opaque
+  // response handle. Every payload is versioned `outboxContractVersion = 1`.
+  //
+  // What these rows are **not** is a row of `outbox.sqlite`. Datos §11 `:548-550`
+  // puts the command's intention inside the ledger's own transaction and says
+  // the separate outbox is a cache: losing it rebuilds from these three events,
+  // and never turns an uncertain delivery into `PENDING`.
+  //
+  // The payload grammar is the ledger door's, not this contract's, on C's terms.
+  "OUTBOX_COMMAND_INTENDED",
+  "OUTBOX_DELIVERY_INTENDED",
+  "OUTBOX_DELIVERY_OBSERVED",
 ] as const;
 
 export const ControlPlaneEventType = z.enum(CONTROL_PLANE_EVENT_TYPES);
@@ -266,6 +288,77 @@ export const EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1 = "acp/execution-effect/v1\n
  */
 export const EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1 =
   "acp/execution-effect-idempotency/v1\n";
+
+/**
+ * The version prefix of the outbox command identity preimage (P-18/protocolo F).
+ *
+ * ## The formula, stated once
+ *
+ *     preimage   = OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1 + canonicalJson([
+ *                    sagaId, phase, targetKind, targetId,
+ *                  ])
+ *     command_id = SHA256(preimage)
+ *
+ * Coordination §6 `:221` and datos §11 `:563-565` say `command_id` is
+ * "determinista por `(saga_id, phase, target_kind, target_id)`" and give no
+ * encoding. That is exactly C-4's situation for `effect_id` — a sentence, and no
+ * formula — so this escalón writes one down rather than letting two producers
+ * read the sentence two ways (ADR 0078).
+ *
+ * Decision 44 left the key's grammar to "the producer in P-18/F", with the note
+ * that if it turned out to be grammar it would land in this package. It is
+ * grammar: the ledger's door recomputes it and refuses a command whose id does
+ * not match, so a producer and the door must agree on the bytes. The
+ * computation is `@acp/ledger`'s, for `EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1`'s
+ * reason — this package may reach no `node:` builtin.
+ *
+ * The four members are §6's four, in its order. The kind of command is **not**
+ * in it: a saga that revokes a lease and releases a reservation names two
+ * different targets, and one target at one phase is one command whatever it is
+ * asked to do. The clock is not in it either, because retrying a command must
+ * conserve its identity (coordination §7 `:360-361`).
+ *
+ * Prefix discipline, placement and the frozen `v1` are
+ * `EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1`'s, for its reasons.
+ */
+export const OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1 = "acp/outbox-command/v1\n";
+
+/**
+ * Why one delivery of one outbox command did not end `DELIVERED`
+ * (P-18/protocolo F, decision 45's `last_failure_code`).
+ *
+ * Six words, closed. Contracts §16 fixes the seven-field failure record and
+ * gives no row to the outbox; this is the `code` that record carries for
+ * `origin ∈ {DURABILITY, EXECUTION}` in `phase ∈ {DISPATCH, RECOVERY}`, and the
+ * exhaustive §16 map is a later packet's (ADR 0078). The words name a fact about
+ * the destination or about the delivery, never a policy and never a provider's
+ * prose:
+ *
+ * - `TARGET_REFUSED` — the destination answered with a typed refusal;
+ * - `TARGET_STALE_TOKEN` — the destination's token had moved past the one the
+ *   command was issued under;
+ * - `TARGET_INCARNATION_MISMATCH` — the destination file is another incarnation
+ *   than the one the command names;
+ * - `TARGET_UNAVAILABLE` — the destination could not be reached;
+ * - `DEADLINE_EXCEEDED` — the command's deadline passed first;
+ * - `NOT_DISPATCHED_PROVEN` — reconciliation proved nothing was sent, which is
+ *   the one fact coordination §2 `:51-54` accepts for `FAILED_RETRYABLE` or
+ *   `ABANDONED` out of an uncertain delivery.
+ *
+ * **Imposed when written, not stored as a CHECK.** Decision 45 keeps
+ * `outbox_message.last_failure_code` a free `TEXT`; the ledger's door refuses a
+ * word outside this set, and the cache can only ever be rebuilt from what the
+ * door admitted. It lives here beside the three event types because it is the
+ * vocabulary of their payload.
+ */
+export const OUTBOX_FAILURE_CODES = [
+  "TARGET_REFUSED",
+  "TARGET_STALE_TOKEN",
+  "TARGET_INCARNATION_MISMATCH",
+  "TARGET_UNAVAILABLE",
+  "DEADLINE_EXCEEDED",
+  "NOT_DISPATCHED_PROVEN",
+] as const;
 
 /**
  * The V2 idempotency coordinates: the full revision-aware coordinate of an

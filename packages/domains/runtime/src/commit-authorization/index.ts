@@ -30,7 +30,8 @@
  */
 
 import { CONTRACT_VERSION, CommitAuthorizationReceipt } from "@acp/contracts";
-import { Lease, PathDigest, WorkerIdentityString } from "@acp/contracts";
+import { ControlPlaneEvent, Lease, PathDigest, WorkerIdentityString, buildIdempotencyKey } from "@acp/contracts";
+import { computeOutboxCommandId } from "@acp/ledger";
 
 import { checkWriteSetConformance } from "../enforcement/index.js";
 import type {
@@ -573,5 +574,251 @@ export function quarantineWorktree(request: QuarantineRequest): QuarantineOutcom
         event("TASK_STATE_CHANGED", { taskId, toState: "SUSPECT_WORKTREE" }),
       ]),
     }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 4. The quarantine batch (P-18/protocolo F)
+// ---------------------------------------------------------------------------
+
+/**
+ * The phase a quarantine's revocation is intended under, and the kind of target
+ * it names. Two words, fixed here because this builder is the one producer of
+ * that command: a second spelling would be a second `command_id` for one
+ * revocation.
+ */
+export const QUARANTINE_PHASE = "QUARANTINE";
+export const QUARANTINE_TARGET_KIND = "WORKTREE_LEASE";
+
+/** The id and transition of one candidate, both the caller's. */
+export interface QuarantineEventIdentity {
+  readonly eventId: string;
+  readonly transitionId: string;
+}
+
+/**
+ * Where the batch is recorded, all of it injected.
+ *
+ * Three identities for three events, one instant pair for all of them, and the
+ * task's state as the caller read it. This module reads no clock and mints no
+ * identifier, for the receipt's reason: the batch is evidence, and the same
+ * request has to build the same bytes on every retry.
+ */
+export interface QuarantineBatchCoordinate {
+  readonly taskId: string;
+  readonly attempt: number;
+  readonly currentState: string;
+  readonly emittedBy: string;
+  readonly occurredAt: string;
+  readonly recordedAt: string;
+  readonly correlationId: string | null;
+  readonly violation: QuarantineEventIdentity;
+  readonly quarantine: QuarantineEventIdentity;
+  readonly intention: QuarantineEventIdentity;
+}
+
+export interface QuarantineBatchRequest {
+  readonly record: QuarantineRecord;
+  /** The saga the revocation belongs to. Supplied, never generated here. */
+  readonly sagaId: string;
+  readonly deadlineAt: string;
+  /** The lease token the revocation is issued under, or `null` when none is held. */
+  readonly leaseToken: { readonly incarnationId: string; readonly fence: number } | null;
+  readonly coordinate: QuarantineBatchCoordinate;
+}
+
+export interface QuarantineBatchBuilt {
+  readonly ok: true;
+  /** The candidates for one `appendBatch`, in the order they must commit. */
+  readonly candidates: readonly ControlPlaneEvent[];
+  /** The id of the revocation command, as the ledger will recompute it. */
+  readonly commandId: string;
+}
+
+export type QuarantineBatchOutcome = QuarantineBatchBuilt | AuthorizationRefused;
+
+const LOWER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/**
+ * Build the batch that quarantines a worktree and intends to revoke its lease.
+ *
+ * Contracts §13 `:559-561` and datos §11 `:546-550`: inside the ledger the
+ * quarantine and the intention to revoke are **atomic**, and the intention is a
+ * complete command event rather than a row of a separate file. So what this
+ * returns is one batch of three candidates, in the order they must commit:
+ *
+ * 1. `WRITE_SET_VIOLATION_DETECTED`, the finding, same-state;
+ * 2. `TASK_STATE_CHANGED` to `SUSPECT_WORKTREE`, the quarantine;
+ * 3. `OUTBOX_COMMAND_INTENDED` of kind `REVOKE_LEASE`, immediately after it.
+ *
+ * `LEASE_REVOKED` is **not** in it. The daemon's gate writes it today, as the
+ * second of three separate appends; but inside the ledger's transaction nothing
+ * has happened at the arbiter yet, and recording a revocation there would be the
+ * cross-file atomicity datos §11 `:558` forbids anyone to claim. The revocation
+ * is the command's delivery, and its acknowledgement is an observation.
+ *
+ * **It is pure and it mints nothing.** The saga is the caller's, and a request
+ * without one is refused rather than given a UUID from here (N-F-11). The command
+ * id is not minted either: it is computed by `computeOutboxCommandId`, the one
+ * function the ledger's door recomputes it with. Every candidate is parsed by the
+ * contract before it is returned, so what comes back is admissible as an event;
+ * whether it is admissible *here* — the task's state, the batch's shape — is the
+ * ledger's to decide.
+ */
+export function buildQuarantineBatch(request: QuarantineBatchRequest): QuarantineBatchOutcome {
+  const raw: unknown = request;
+  if (typeof raw !== "object" || raw === null) return refuse("REQUEST_INVALID", "request");
+  const fields = raw as Record<string, unknown>;
+
+  const sagaId: unknown = fields["sagaId"];
+  if (typeof sagaId !== "string" || !LOWER_UUID.test(sagaId)) {
+    return refuse("REQUEST_INVALID", "request.sagaId");
+  }
+
+  const recordValue: unknown = fields["record"];
+  if (typeof recordValue !== "object" || recordValue === null) {
+    return refuse("REQUEST_INVALID", "request.record");
+  }
+  const record = recordValue as Record<string, unknown>;
+  const worktreePath: unknown = record["worktreePath"];
+  const leaseId: unknown = record["leaseId"];
+  const violatingPaths: unknown = record["violatingPaths"];
+  if (typeof worktreePath !== "string" || worktreePath === "") {
+    return refuse("REQUEST_INVALID", "request.record.worktreePath");
+  }
+  if (typeof leaseId !== "string" || leaseId === "") {
+    return refuse("REQUEST_INVALID", "request.record.leaseId");
+  }
+  if (!Array.isArray(violatingPaths) || violatingPaths.length === 0) {
+    return refuse("REQUEST_INVALID", "request.record.violatingPaths");
+  }
+  const firstPath: unknown = violatingPaths[0];
+  if (typeof firstPath !== "string" || firstPath === "") {
+    return refuse("REQUEST_INVALID", "request.record.violatingPaths[0]");
+  }
+  if (record["recommendedTaskState"] !== "SUSPECT_WORKTREE") {
+    return refuse("REQUEST_INVALID", "request.record.recommendedTaskState");
+  }
+
+  const deadline = Lease.shape.expiresAt.safeParse(fields["deadlineAt"]);
+  if (!deadline.success) return refuse("REQUEST_INVALID", "request.deadlineAt");
+
+  const tokenValue: unknown = fields["leaseToken"];
+  let token: { readonly incarnationId: string; readonly fence: number } | null = null;
+  if (tokenValue !== null) {
+    if (typeof tokenValue !== "object") {
+      return refuse("REQUEST_INVALID", "request.leaseToken");
+    }
+    const incarnationId: unknown = (tokenValue as Record<string, unknown>)["incarnationId"];
+    const fence: unknown = (tokenValue as Record<string, unknown>)["fence"];
+    if (typeof incarnationId !== "string" || !LOWER_UUID.test(incarnationId)) {
+      return refuse("REQUEST_INVALID", "request.leaseToken.incarnationId");
+    }
+    if (typeof fence !== "number" || !Number.isSafeInteger(fence) || fence < 1) {
+      return refuse("REQUEST_INVALID", "request.leaseToken.fence");
+    }
+    token = { incarnationId, fence };
+  }
+
+  const coordinateValue: unknown = fields["coordinate"];
+  if (typeof coordinateValue !== "object" || coordinateValue === null) {
+    return refuse("REQUEST_INVALID", "request.coordinate");
+  }
+  const coordinate = coordinateValue as QuarantineBatchCoordinate;
+  // A task already quarantined has nothing to quarantine; the move below would
+  // be a same-state `TASK_STATE_CHANGED`, which the contract refuses anyway.
+  if (coordinate.currentState === "SUSPECT_WORKTREE") {
+    return refuse("REQUEST_INVALID", "request.coordinate.currentState");
+  }
+  for (const name of ["violation", "quarantine", "intention"] as const) {
+    const identity: unknown = (coordinateValue as Record<string, unknown>)[name];
+    if (typeof identity !== "object" || identity === null) {
+      return refuse("REQUEST_INVALID", "request.coordinate." + name);
+    }
+  }
+
+  const commandId = computeOutboxCommandId({
+    sagaId,
+    phase: QUARANTINE_PHASE,
+    targetKind: QUARANTINE_TARGET_KIND,
+    targetId: worktreePath,
+  });
+
+  const candidate = (
+    identity: QuarantineEventIdentity,
+    type: ControlPlaneEvent["type"],
+    fromState: string,
+    toState: string,
+    payload: Record<string, unknown>,
+  ): unknown => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: identity.eventId,
+    taskId: coordinate.taskId,
+    attempt: coordinate.attempt,
+    transitionId: identity.transitionId,
+    idempotencyKey: buildIdempotencyKey({
+      taskId: coordinate.taskId,
+      attempt: coordinate.attempt,
+      transitionId: identity.transitionId,
+    }),
+    type,
+    fromState,
+    toState,
+    emittedBy: coordinate.emittedBy,
+    occurredAt: coordinate.occurredAt,
+    recordedAt: coordinate.recordedAt,
+    correlationId: coordinate.correlationId,
+    causationId: null,
+    payload,
+  });
+
+  const drafts: readonly unknown[] = [
+    candidate(
+      coordinate.violation,
+      "WRITE_SET_VIOLATION_DETECTED",
+      coordinate.currentState,
+      coordinate.currentState,
+      {
+        leaseId,
+        firstPathOutsideSet: firstPath,
+        pathsOutsideSet: String(violatingPaths.length),
+      },
+    ),
+    candidate(coordinate.quarantine, "TASK_STATE_CHANGED", coordinate.currentState, "SUSPECT_WORKTREE", {
+      taskId: coordinate.taskId,
+      toState: "SUSPECT_WORKTREE",
+    }),
+    candidate(coordinate.intention, "OUTBOX_COMMAND_INTENDED", "SUSPECT_WORKTREE", "SUSPECT_WORKTREE", {
+      outboxContractVersion: 1,
+      sagaId,
+      commandId,
+      phase: QUARANTINE_PHASE,
+      commandKind: "REVOKE_LEASE",
+      intentStream: "control_plane_events",
+      targetKind: QUARANTINE_TARGET_KIND,
+      targetId: worktreePath,
+      deadlineAt: deadline.data,
+      fence: token === null ? null : token.fence,
+      targetStoreIncarnationId: token === null ? null : token.incarnationId,
+    }),
+  ];
+
+  const candidates: ControlPlaneEvent[] = [];
+  for (let index = 0; index < drafts.length; index += 1) {
+    const parsed = ControlPlaneEvent.safeParse(drafts[index]);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return refuse(
+        "REQUEST_INVALID",
+        "candidates[" + String(index) + "]." + (issue?.path ?? []).join("."),
+      );
+    }
+    candidates.push(parsed.data);
+  }
+
+  return Object.freeze({
+    ok: true as const,
+    candidates: Object.freeze(candidates),
+    commandId,
   });
 }

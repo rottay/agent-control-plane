@@ -93,6 +93,7 @@ new records from `_template.md`, which carries the required fields.
 | 0075 | [Every coordination store names its own incarnation](0075-every-coordination-store-names-its-own-incarnation.md) | accepted |
 | 0076 | [An effect is looked up by its logical key, and the contract grows a version to say so](0076-an-effect-is-looked-up-by-its-logical-key.md) | accepted |
 | 0077 | [A prompt occurrence is a use, never a blob, and a late answer keeps its origin](0077-a-prompt-occurrence-is-a-use-never-a-blob.md) | accepted |
+| 0078 | [A command intention commits with its quarantine, and the contract grows a version to say so](0078-a-command-intention-commits-with-its-quarantine.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

@@ -120,6 +120,16 @@ import {
   type InitiativeProjectionSnapshot,
   type ProjectionSnapshot,
   type WorkerTaskProjection,
+  OUTBOX_COMMAND_INTENDED,
+  OUTBOX_EVENT_TYPES,
+  applyEventToOutboxFold,
+  createOutboxFold,
+  isQuarantineEvent,
+  nextOutboxCommand,
+  outboxLinkRefusal,
+  readOutboxEvent,
+  type OutboxAttemptRecord,
+  type OutboxPredecessor,
 } from "../projection/index.js";
 import {
   DISPATCH_STATE_TRANSITIONS,
@@ -151,6 +161,7 @@ import {
   type IntegrityProblem,
   type IntegrityReport,
   type ModelResolutionStatus,
+  type OutboxCommandReadModel,
   type PromptOccurrenceReadModel,
   type RedactionVerdict,
   type ResponseOccurrenceReadModel,
@@ -2661,11 +2672,22 @@ export class Ledger {
       const results: AppendResult[] = [];
       let level: StreamLevel | null = null;
       let insertedCount = 0;
+      // The event this batch inserted immediately before the one being
+      // appended, or null. A replay breaks the run: an event already recorded
+      // committed in some earlier transaction, and a revocation's intention is
+      // atomic only with a quarantine that commits in this one (P-18/F).
+      let predecessor: OutboxPredecessor | null = null;
+      const inserted: { readonly index: number; readonly event: ControlPlaneEvent }[] = [];
 
-      for (const { event, canonicalJson, causation } of prepared) {
-        const appended = this.#appendOneInTransaction(event, canonicalJson, causation);
+      for (const [index, { event, canonicalJson, causation }] of prepared.entries()) {
+        const appended = this.#appendOneInTransaction(event, canonicalJson, causation, predecessor);
         results.push(appended.result);
-        if (appended.head === null) continue;
+        if (appended.head === null) {
+          predecessor = null;
+          continue;
+        }
+        predecessor = { taskId: event.taskId, type: event.type, toState: event.toState };
+        inserted.push({ index, event });
         insertedCount += 1;
         // Each event's own recordedAt, so the watermark carries the instant of
         // the last event actually written rather than a clock read here.
@@ -2682,12 +2704,25 @@ export class Ledger {
         // and the watermarks commit together or not at all.
         this.#writeWatermarks(TASK_WATERMARKS, level);
 
-        // The outbox intention belongs in this transaction and is deliberately
-        // empty: P-18 owns `outbox_message` and fills the gap here, so that the
-        // transaction boundary does not have to be reopened to add it. Nothing
-        // in this packet writes an intention, and nothing here is atomic with an
-        // arbiter — the ledger and a coordination store are separate files and
-        // never share a transaction.
+        // The outbox intention belongs in this transaction, and P-18/F is the
+        // escalón that fills the gap (datos §11 `:546-547`). The intention itself
+        // is an ordinary event of this batch, checked by `#assertOutboxEvent` as
+        // it went in; what is left for here is the one rule no single event can
+        // see — the batch's own shape.
+        //
+        // A quarantine commits with its intention to revoke, or it does not
+        // commit (contracts §13 `:559-561`). The intention's half was held as each
+        // event went in: a `REVOKE_LEASE` intention follows its quarantine. This
+        // is the other half: a move to `SUSPECT_WORKTREE` in a batch that carries
+        // no `REVOKE_LEASE` intention of the same task rolls the whole batch back.
+        //
+        // **Inside `appendBatch` only.** A unitary `append` of that move is still
+        // admitted, because the daemon's conformance gate writes one today; that
+        // window is declared in ADR 0078 and decision 51 and is closed by the
+        // adoption, not by this door. And nothing here is atomic with an arbiter:
+        // the ledger and a coordination store are separate files and never share
+        // a transaction.
+        this.#assertQuarantineBatch(inserted);
 
         this.#faults.beforeAppendCommit?.();
       }
@@ -2709,7 +2744,9 @@ export class Ledger {
     canonicalJson: string,
     causation: CausationRef | null,
   ): AppendResult {
-    const appended = this.#appendOneInTransaction(event, canonicalJson, causation);
+    // No predecessor: a unitary append is its own transaction, so nothing it
+    // follows committed with it.
+    const appended = this.#appendOneInTransaction(event, canonicalJson, causation, null);
     if (appended.head === null) return appended.result;
 
     this.#writeWatermarks(TASK_WATERMARKS, {
@@ -2731,11 +2768,15 @@ export class Ledger {
    * chain, the insert, the contiguity check and the incremental projection. The
    * watermark is left to the caller because a batch advances it once, after its
    * last event, rather than once per event.
+   *
+   * `predecessor` is the event the same transaction inserted immediately before
+   * this one, or null — the only fact about a batch an outbox intention needs.
    */
   #appendOneInTransaction(
     event: ControlPlaneEvent,
     canonicalJson: string,
     causation: CausationRef | null,
+    predecessor: OutboxPredecessor | null,
   ): AppendedEvent {
     const existingByKey = this.#stmt(
       "SELECT " + EVENT_COLUMNS + " FROM control_plane_events WHERE idempotency_key = ?",
@@ -2840,6 +2881,11 @@ export class Ledger {
     // inside the same transaction, so a delivery intended earlier in this batch
     // is a row that is really there (§8 `:419-420`).
     this.#assertExecutionOccurrence(event);
+
+    // The outbox command, its deliveries and what was heard (P-18/F). After the
+    // causal reference resolved, because an attempt and an observation are
+    // anchored by exactly that reference.
+    this.#assertOutboxEvent(event, causation, predecessor);
 
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
@@ -3754,6 +3800,32 @@ export class Ledger {
       ]);
     }
 
+    // And the same rule in its live form (postaudit of C, O-1; adjudicated to
+    // F). A delivery still outstanding — `INTENDED`, `CLAIMED` or `INFLIGHT` — is
+    // exactly the uncertainty `OUTCOME_UNKNOWN` names once it is recorded: it may
+    // have reached the destination and nobody knows yet. "Habilita
+    // reconciliación, no reintento" is only a rule if a second delivery cannot be
+    // intended beside it. Door-only, on `operation_ordinal`'s precedent: every
+    // stored delivery passed this check when it was written.
+    const outstanding = this.#stmt(
+      "SELECT COUNT(*) AS n FROM dispatch_attempt_read_model " +
+        "WHERE effect_id = ? AND dispatch_state NOT IN ('SETTLED', 'ABANDONED')",
+    ).get(effectRow.effect_id) as { readonly n: number };
+    if (outstanding.n > 0) {
+      throw new LedgerValidationError([
+        {
+          path: "payload." + DISPATCH_KEY + ".effectId",
+          message:
+            "effect " +
+            effectRow.effect_id +
+            " still has " +
+            String(outstanding.n) +
+            " delivery outstanding, and a new delivery needs every earlier one SETTLED or " +
+            "ABANDONED; an outstanding delivery is reconciled, never resent beside",
+        },
+      ]);
+    }
+
     // The segment is this delivery's **effective** one and may differ from the
     // effect's initial segment — that is what a handoff is. What it may not do
     // is belong to another attempt, which §7 `:355` states and the check above
@@ -4087,6 +4159,208 @@ export class Ledger {
     return row === undefined
       ? undefined
       : { taskId: row.task_id, revisionNumber: row.revision_number, attemptNumber: row.attempt_number };
+  }
+
+  /**
+   * An outbox command, one delivery attempt of it, or what was observed about
+   * that attempt — checked under the write lock this transaction already holds
+   * (P-18/protocolo F, coordination §6.2).
+   *
+   * **The refusals are the fold's, read against the base.** What one event can
+   * be wrong about — the closed payload, the V1 matrix, the recomputed
+   * `commandId`, the failure vocabulary — is `readOutboxEvent`'s; what a link can
+   * be wrong about is `outboxLinkRefusal`'s. This method supplies the command and
+   * the attempt those functions ask about, by folding the command's own history
+   * off the stream, so the door and a rebuild refuse the same histories with the
+   * same words.
+   *
+   * **No table.** The command's state is not stored anywhere in this ledger: it is
+   * a fold of at most one intention, its attempts and their observations, read
+   * through `control_plane_events_by_type`. Datos §11 `:548-550` is why — the
+   * separate outbox is a cache of these events, and a second copy of their fold
+   * inside the ledger would be one more thing a rebuild had to agree with.
+   */
+  #assertOutboxEvent(
+    event: ControlPlaneEvent,
+    causation: CausationRef | null,
+    predecessor: OutboxPredecessor | null,
+  ): void {
+    const reading = readOutboxEvent(event);
+    if (reading === null) return;
+    if (reading.kind === "refused") {
+      throw new LedgerValidationError([{ path: reading.path, message: reading.message }]);
+    }
+
+    const history = this.#outboxCommandHistory(reading.row.commandId);
+    let attempt: OutboxAttemptRecord | null = null;
+    if (reading.kind !== "intention") {
+      attempt =
+        history.attempts.get(reading.row.deliveryAttemptId) ??
+        this.#outboxAttemptElsewhere(reading.row.deliveryAttemptId);
+    }
+
+    const refusal = outboxLinkRefusal(
+      { event, causation },
+      reading,
+      history.command,
+      attempt,
+      predecessor,
+    );
+    if (refusal !== null) throw new LedgerValidationError([refusal]);
+  }
+
+  /**
+   * One command's history, folded: its intention, its attempts and their
+   * observations, in stream order.
+   *
+   * Every row read here passed this door when it was written, so it is folded
+   * with the reduce alone. A stored row that no longer reads as an outbox event
+   * is not a history this door wrote, and is refused as corruption rather than
+   * skipped.
+   */
+  #outboxCommandHistory(commandId: string): {
+    readonly command: OutboxCommandReadModel | null;
+    readonly attempts: ReadonlyMap<string, OutboxAttemptRecord>;
+  } {
+    const rows = this.#stmt(
+      "SELECT sequence, event_json, event_sha256 FROM control_plane_events " +
+        "WHERE type IN (?, ?, ?) AND json_extract(event_json, '$.payload.commandId') = ? " +
+        "ORDER BY sequence",
+    ).all(...OUTBOX_EVENT_TYPES, commandId) as {
+      readonly sequence: number;
+      readonly event_json: string;
+      readonly event_sha256: string;
+    }[];
+
+    let command: OutboxCommandReadModel | null = null;
+    const attempts = new Map<string, OutboxAttemptRecord>();
+    for (const row of rows) {
+      const event = JSON.parse(row.event_json) as ControlPlaneEvent;
+      const reading = readOutboxEvent(event);
+      if (reading === null || reading.kind === "refused") {
+        throw new LedgerIntegrityError([
+          "control_plane_events holds sequence " +
+            String(row.sequence) +
+            " naming command " +
+            commandId +
+            " that does not read as an outbox event",
+        ]);
+      }
+      const attemptId = reading.kind === "intention" ? null : reading.row.deliveryAttemptId;
+      const next = nextOutboxCommand(
+        { event, sequence: row.sequence, sha256: row.event_sha256, causation: null },
+        reading,
+        command,
+        attemptId === null ? null : (attempts.get(attemptId) ?? null),
+      );
+      command = next.command;
+      if (next.attempt !== null) attempts.set(next.attempt.deliveryAttemptId, next.attempt);
+    }
+    return { command, attempts };
+  }
+
+  /** A delivery attempt recorded for some other command, or null. */
+  #outboxAttemptElsewhere(deliveryAttemptId: string): OutboxAttemptRecord | null {
+    const row = this.#stmt(
+      "SELECT sequence, event_json, event_sha256 FROM control_plane_events " +
+        "WHERE type = ? AND json_extract(event_json, '$.payload.deliveryAttemptId') = ? " +
+        "ORDER BY sequence LIMIT 1",
+    ).get("OUTBOX_DELIVERY_INTENDED", deliveryAttemptId) as
+      | { readonly sequence: number; readonly event_json: string; readonly event_sha256: string }
+      | undefined;
+    if (row === undefined) return null;
+    const event = JSON.parse(row.event_json) as ControlPlaneEvent;
+    const commandId = event.payload["commandId"];
+    return {
+      deliveryAttemptId,
+      commandId: typeof commandId === "string" ? commandId : "",
+      sequence: row.sequence,
+      sha256: row.event_sha256,
+    };
+  }
+
+  /**
+   * The batch's own shape: every quarantine move carries its intention to revoke.
+   *
+   * `inserted` is what this transaction actually wrote, with each event's
+   * position among the candidates. A replay inside the batch is not in it, for
+   * the reason a replay breaks the predecessor run: it committed elsewhere.
+   */
+  #assertQuarantineBatch(
+    inserted: readonly { readonly index: number; readonly event: ControlPlaneEvent }[],
+  ): void {
+    for (const { index, event } of inserted) {
+      if (event.type !== "TASK_STATE_CHANGED" || !isQuarantineEvent(event)) continue;
+      const answered = inserted.some(
+        (other) =>
+          other.event.type === OUTBOX_COMMAND_INTENDED &&
+          other.event.taskId === event.taskId &&
+          other.event.payload["commandKind"] === "REVOKE_LEASE",
+      );
+      if (!answered) {
+        throw new LedgerValidationError([
+          {
+            path: "candidates[" + String(index) + "]",
+            message:
+              "task " +
+              event.taskId +
+              " is quarantined in this batch with no REVOKE_LEASE intention of its own; inside " +
+              "appendBatch the quarantine and the intention to revoke the lease commit together " +
+              "or not at all",
+          },
+        ]);
+      }
+    }
+  }
+
+  /**
+   * Every outbox command this stream folds to, in intention order — what a lost
+   * cache would be rebuilt to (datos §11 `:566-570`).
+   *
+   * Read over the three outbox types only, through the type index, and folded
+   * with the reduce alone: every stored row passed the door. The histories the
+   * door refuses are refused again by `rebuildReadModel` and `verifyIntegrity`,
+   * which fold the whole stream.
+   */
+  listOutboxCommands(): readonly OutboxCommandReadModel[] {
+    this.#assertOpen("listOutboxCommands");
+    const rows = this.#stmt(
+      "SELECT sequence, event_json, event_sha256 FROM control_plane_events " +
+        "WHERE type IN (?, ?, ?) ORDER BY sequence",
+    ).all(...OUTBOX_EVENT_TYPES) as {
+      readonly sequence: number;
+      readonly event_json: string;
+      readonly event_sha256: string;
+    }[];
+    const commands = new Map<string, OutboxCommandReadModel>();
+    const attempts = new Map<string, OutboxAttemptRecord>();
+    for (const row of rows) {
+      const event = JSON.parse(row.event_json) as ControlPlaneEvent;
+      const reading = readOutboxEvent(event);
+      if (reading === null || reading.kind === "refused") {
+        throw new LedgerIntegrityError([
+          "control_plane_events holds sequence " +
+            String(row.sequence) +
+            " that does not read as an outbox event",
+        ]);
+      }
+      const attemptId = reading.kind === "intention" ? null : reading.row.deliveryAttemptId;
+      const next = nextOutboxCommand(
+        { event, sequence: row.sequence, sha256: row.event_sha256, causation: null },
+        reading,
+        commands.get(reading.row.commandId) ?? null,
+        attemptId === null ? null : (attempts.get(attemptId) ?? null),
+      );
+      commands.set(reading.row.commandId, next.command);
+      if (next.attempt !== null) attempts.set(next.attempt.deliveryAttemptId, next.attempt);
+    }
+    return [...commands.values()].sort((left, right) => left.intentSequence - right.intentSequence);
+  }
+
+  /** One outbox command, folded from its own events, or null. */
+  getOutboxCommand(commandId: string): OutboxCommandReadModel | null {
+    this.#assertOpen("getOutboxCommand");
+    return this.#outboxCommandHistory(commandId).command;
   }
 
   /** Incremental projection. Same rules as replay, applied to one event. */
@@ -5808,10 +6082,22 @@ export class Ledger {
 
     const run = this.#db.transaction((): RebuildResult => {
       const snapshot = createProjectionSnapshot();
+      // The outbox commands have no table to rebuild, and are folded anyway: a
+      // stored history the append door would have refused must fail the rebuild
+      // too, at the event that caused it (P-18/F).
+      const outbox = createOutboxFold();
       let lastRecordedAt = EPOCH_TIMESTAMP;
 
       const replay = this.#replay((event, row) => {
         applyEventToSnapshot(snapshot, event, row.sequence);
+        applyEventToOutboxFold(outbox, {
+          event,
+          sequence: row.sequence,
+          sha256: row.event_sha256,
+          // Only an outbox event is anchored by its reference; every other type
+          // is offered for its position alone.
+          causation: OUTBOX_EVENT_TYPES.includes(event.type) ? causationFromRow(row, row.sequence) : null,
+        });
         lastRecordedAt = event.recordedAt;
       });
 
@@ -6102,8 +6388,15 @@ export class Ledger {
     problems.push(...this.#checkSchemaShape());
 
     const snapshot = createProjectionSnapshot();
+    const outbox = createOutboxFold();
     const replay = this.#replay((event, row) => {
       applyEventToSnapshot(snapshot, event, row.sequence);
+      applyEventToOutboxFold(outbox, {
+        event,
+        sequence: row.sequence,
+        sha256: row.event_sha256,
+        causation: OUTBOX_EVENT_TYPES.includes(event.type) ? causationFromRow(row, row.sequence) : null,
+      });
     });
     problems.push(...replay.problems);
 

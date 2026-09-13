@@ -774,6 +774,36 @@ describe("N-P18-10 and N-P18-11 -- the incarnation is what the number cannot be"
     }).toEqual({ target: TARGET_INCARNATION, fence: 7, store: I2 });
   });
 
+  it("reads the row and the incarnation of a token from one snapshot (postaudit of E2, O-1)", () => {
+    // Two autocommit reads could pair a version read under one incarnation with
+    // the id of the next, if a blocked restore rewrote the metadata between
+    // them. No behavioural drill can land a write between two statements of one
+    // synchronous call, so the shape is asserted: `readToken` runs inside one
+    // read transaction, deferred — it writes nothing and must take no write lock.
+    const source = readModuleSource();
+    const start = source.indexOf("readToken(commandId) {");
+    const end = source.indexOf("insert(seed) {", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start, end);
+    expect(body).toContain("db.transaction(");
+    expect(body).toContain("})();");
+    expect(body).not.toContain(".immediate(");
+    expect(body.indexOf("db.transaction(")).toBeLessThan(body.indexOf("readRow(commandId)"));
+    expect(body.indexOf("readRow(commandId)")).toBeLessThan(body.indexOf("readMeta()"));
+
+    // And it still answers exactly what it answered before.
+    const store = open(temporaryStorePath());
+    store.insert(seedOf());
+    expect(store.readToken(COMMAND)).toEqual({
+      incarnationId: I1,
+      commandId: COMMAND,
+      expectedVersion: 0,
+      expectedState: "PENDING",
+    });
+    expect(store.readToken("e".repeat(64))).toBeNull();
+  });
+
   it("issues a token that is the incarnation and the row, never a bare number", () => {
     const store = open(temporaryStorePath());
     store.insert(seedOf({ fence: 7 }));

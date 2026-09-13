@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.3.0" as const;
+export const CONTRACT_VERSION = "2.4.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -53,8 +53,15 @@ export const CONTRACT_VERSION = "2.3.0" as const;
  * ever: every event any earlier build recorded carries it, and a set that
  * dropped it would make a routine upgrade a data loss event. That is the whole
  * reason this constant exists, and the bump is the first time it does anything.
+ *
+ * **Three members from P-18/protocolo F (ADR 0078).** F moved `CONTRACT_VERSION`
+ * again, on ADR 0076's criterion read the same way: its three outbox types carry
+ * an identity the door and the fold recompute — `command_id`, under
+ * `OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1` — and a per-payload
+ * `outboxContractVersion` of their own. `"2.3.0"` joins `"2.2.0"` here for ever,
+ * for the same reason: history recorded under it has to stay readable.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0"] as const;
+export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0", "2.4.0"] as const;
 
 /**
  * The UTF-8 byte length of a string, browser-safe.

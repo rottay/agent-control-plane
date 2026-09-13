@@ -1021,30 +1021,176 @@ describe("the store claims no driver capability", () => {
     }
   });
 
-  it("declares the two columns escalón F owns and writes neither of them", () => {
+  it("writes the two columns escalón F owns only where coordination §3 says, and never the fence twice", () => {
     const source = readModuleSource();
     // Every statement in this module that mutates the table, from the verb to
-    // the `.run(` that executes it. Four: the first grant, the re-grant, the
-    // release and the sweep.
+    // the `.run(` that executes it. Six since P-18/protocolo F: the first grant,
+    // the re-grant, the revocation, its acknowledgement, the release and the
+    // sweep. E1 pinned four and pinned both columns unwritten; F is the escalón
+    // that pin named, and the pin moves with it rather than being dropped.
     const mutations = [...source.matchAll(/(?:INSERT INTO|UPDATE) worktree_lease[\s\S]*?\.run\(/g)].map(
       (match) => match[0],
     );
-    expect(mutations).toHaveLength(4);
+    expect(mutations).toHaveLength(6);
 
     for (const column of ["operation_id", "revocation_acknowledged_at"]) {
-      // Declared, so escalón F can fill it without reopening the migration.
       expect({ column, declared: source.includes("ADD COLUMN " + column) }).toEqual({ column, declared: true });
-      // And written by nothing here. A store that stamped an operation id would
-      // be claiming an intention it cannot read.
-      for (const statement of mutations) {
-        expect({ column, written: statement.includes(column) }).toEqual({ column, written: false });
-      }
     }
+    // `operation_id`: the two grants (stamped or cleared), the revocation, and the
+    // release and the sweep, which end a live grant's correlation. Only the
+    // acknowledgement leaves it alone.
+    expect(mutations.filter((statement) => statement.includes("operation_id"))).toHaveLength(5);
+    // The acknowledgement column: cleared by both grants and by the revocation,
+    // set by the acknowledgement, and touched by nothing else — the release and
+    // the sweep never erase one.
+    expect(mutations.filter((statement) => statement.includes("revocation_acknowledged_at"))).toHaveLength(4);
 
-    // Non-vacuous: the column this escalón *does* stamp is in the two grants,
-    // and absent from the release and the sweep, which conserve it.
-    const stamping = mutations.filter((statement) => statement.includes("store_incarnation_id"));
-    expect(stamping).toHaveLength(2);
+    // The fence advances in exactly two statements — the re-grant and the
+    // revocation — and the acknowledgement names no fence at all (§3 `:97`).
+    expect(mutations.filter((statement) => statement.includes("fence = fence + 1"))).toHaveLength(2);
+    const acknowledgement = mutations.filter((statement) => statement.includes("SET revocation_acknowledged_at = ?"));
+    expect(acknowledgement).toHaveLength(1);
+    expect(acknowledgement[0]).not.toContain("fence");
+
+    // The incarnation is stamped where a fence is issued: the two grants and the revocation.
+    expect(mutations.filter((statement) => statement.includes("store_incarnation_id"))).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo F — the revocation, its acknowledgement and the grant's command
+// ---------------------------------------------------------------------------
+
+const COMMAND = "c".repeat(64);
+const OTHER_COMMAND = "d".repeat(64);
+
+describe("a revocation advances the fence once, and its acknowledgement never (coordination §3)", () => {
+  it("stamps the command a grant answers, and clears it on a grant that answers none", () => {
+    const store = open(temporaryStorePath(), { incarnationId: I1, createdAt: CREATED_AT });
+    const granted = store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf({ operationId: COMMAND }) }));
+    expect(granted.verb === "GRANT" ? granted.row : null).toMatchObject({
+      fence: 1,
+      operationId: COMMAND,
+      revocationAcknowledgedAt: null,
+    });
+    const regranted = store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf() }));
+    expect(regranted.verb === "GRANT" ? regranted.row : null).toMatchObject({ fence: 2, operationId: null });
+    expect(caught(() => store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf({ operationId: "" }) })))).toBeInstanceOf(
+      LedgerQueryError,
+    );
+  });
+
+  it("REVOKE: fence plus one, the holder cleared, the command stamped, no acknowledgement yet", () => {
+    const store = open(temporaryStorePath(), { incarnationId: I1, createdAt: CREATED_AT });
+    store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf({ holderToken: "opaque-handle" }) }));
+
+    const revoked = store.transact(WORKTREE, () => ({
+      verb: "REVOKE",
+      at: "2026-01-01T00:10:00.000Z",
+      operationId: COMMAND,
+    }));
+    expect(revoked.verb).toBe("REVOKE");
+    expect(store.read(WORKTREE)).toEqual({
+      worktreePath: WORKTREE,
+      fence: 2,
+      leaseId: null,
+      holder: null,
+      acquiredAt: null,
+      expiresAt: null,
+      holderPid: null,
+      holderToken: null,
+      releasedAt: "2026-01-01T00:10:00.000Z",
+      storeIncarnationId: I1,
+      operationId: COMMAND,
+      revocationAcknowledgedAt: null,
+    });
+
+    // The old holder's token no longer names the record: it fails by fence.
+    const stale = store.transact(WORKTREE, () => ({ verb: "RELEASE", at: "x" }), { incarnationId: I1, fence: 1 });
+    expect(stale.verb).toBe("REFUSE");
+  });
+
+  it("REVOKE refuses a record nobody holds, so a fence never advances without taking something away", () => {
+    const store = open(temporaryStorePath(), { incarnationId: I1, createdAt: CREATED_AT });
+    const revokeNothing = (): unknown =>
+      store.transact(WORKTREE, () => ({ verb: "REVOKE", at: "2026-01-01T00:10:00.000Z", operationId: COMMAND }));
+    expect(caught(revokeNothing)).toBeInstanceOf(LedgerQueryError);
+
+    store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf() }));
+    store.transact(WORKTREE, () => ({ verb: "RELEASE", at: "2026-01-01T00:05:00.000Z" }));
+    expect(caught(revokeNothing)).toBeInstanceOf(LedgerQueryError);
+    expect(store.read(WORKTREE)?.fence).toBe(1);
+
+    store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf() }));
+    expect(
+      caught(() => store.transact(WORKTREE, () => ({ verb: "REVOKE", at: "2026-01-01T00:10:00.000Z", operationId: "" }))),
+    ).toBeInstanceOf(LedgerQueryError);
+    expect(store.read(WORKTREE)?.fence).toBe(2);
+  });
+
+  it("ACKNOWLEDGE_REVOCATION records the acknowledgement and conserves the fence", () => {
+    const store = open(temporaryStorePath(), { incarnationId: I1, createdAt: CREATED_AT });
+    store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf() }));
+    store.transact(WORKTREE, () => ({ verb: "REVOKE", at: "2026-01-01T00:10:00.000Z", operationId: COMMAND }));
+
+    const acknowledged = store.transact(
+      WORKTREE,
+      () => ({ verb: "ACKNOWLEDGE_REVOCATION", at: "2026-01-01T00:11:00.000Z" }),
+      { incarnationId: I1, fence: 2 },
+    );
+    expect(acknowledged.verb).toBe("ACKNOWLEDGE_REVOCATION");
+    expect(store.read(WORKTREE)).toMatchObject({
+      fence: 2,
+      leaseId: null,
+      operationId: COMMAND,
+      revocationAcknowledgedAt: "2026-01-01T00:11:00.000Z",
+    });
+
+    // Acknowledged once. A second acknowledgement would restate a revocation
+    // that already has one.
+    expect(
+      caught(() => store.transact(WORKTREE, () => ({ verb: "ACKNOWLEDGE_REVOCATION", at: "2026-01-01T00:12:00.000Z" }))),
+    ).toBeInstanceOf(LedgerQueryError);
+
+    // And the next grant is a new holder, not that revocation: its
+    // acknowledgement and its command are cleared, and the fence moves once.
+    store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf({ operationId: OTHER_COMMAND }) }));
+    expect(store.read(WORKTREE)).toMatchObject({ fence: 3, operationId: OTHER_COMMAND, revocationAcknowledgedAt: null });
+  });
+
+  it("ACKNOWLEDGE_REVOCATION refuses a live lease, a released one and a swept one, which no revocation left", () => {
+    const store = open(temporaryStorePath(), { incarnationId: I1, createdAt: CREATED_AT });
+    const acknowledge = (): unknown =>
+      store.transact(WORKTREE, () => ({ verb: "ACKNOWLEDGE_REVOCATION", at: "2026-01-01T00:11:00.000Z" }));
+    expect(caught(acknowledge)).toBeInstanceOf(LedgerQueryError);
+    store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf({ operationId: COMMAND }) }));
+    expect(caught(acknowledge)).toBeInstanceOf(LedgerQueryError);
+
+    // Released: the grant's correlation ends with it, so the cleared record
+    // cannot pass for a revocation waiting to be acknowledged.
+    store.transact(WORKTREE, () => ({ verb: "RELEASE", at: "2026-01-01T00:05:00.000Z" }));
+    expect(store.read(WORKTREE)).toMatchObject({ fence: 1, leaseId: null, operationId: null });
+    expect(caught(acknowledge)).toBeInstanceOf(LedgerQueryError);
+
+    // Swept, on the same terms.
+    store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf({ operationId: COMMAND }) }));
+    expect(store.sweep("2026-01-01T02:00:00.000Z")).toHaveLength(1);
+    expect(store.read(WORKTREE)).toMatchObject({ fence: 2, leaseId: null, operationId: null });
+    expect(caught(acknowledge)).toBeInstanceOf(LedgerQueryError);
+  });
+
+  it("a release over an unacknowledged revocation does not erase it", () => {
+    const store = open(temporaryStorePath(), { incarnationId: I1, createdAt: CREATED_AT });
+    store.transact(WORKTREE, () => ({ verb: "GRANT", row: grantOf() }));
+    store.transact(WORKTREE, () => ({ verb: "REVOKE", at: "2026-01-01T00:10:00.000Z", operationId: COMMAND }));
+    store.transact(WORKTREE, () => ({ verb: "RELEASE", at: "2026-01-01T00:20:00.000Z" }));
+    expect(store.read(WORKTREE)).toMatchObject({ fence: 2, operationId: COMMAND, revocationAcknowledgedAt: null });
+    const acknowledged = store.transact(WORKTREE, () => ({
+      verb: "ACKNOWLEDGE_REVOCATION",
+      at: "2026-01-01T00:21:00.000Z",
+    }));
+    expect(acknowledged.verb).toBe("ACKNOWLEDGE_REVOCATION");
+    expect(store.read(WORKTREE)?.fence).toBe(2);
   });
 });
 
