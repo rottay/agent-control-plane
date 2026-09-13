@@ -100,6 +100,7 @@ new records from `_template.md`, which carries the required fields.
 | 0082 | [A blob lease excludes the second publisher, and no clock releases it](0082-a-blob-lease-excludes-the-second-publisher.md) | accepted |
 | 0083 | [A publication names its bytes only after they survive the fsync](0083-a-publication-names-its-bytes-only-after-they-survive-the-fsync.md) | accepted |
 | 0084 | [A revision of the new cohort names its envelope by reference, never by digest](0084-a-revision-names-its-envelope-by-reference-never-by-digest.md) | accepted |
+| 0085 | [A role resolves from the registry alone, or not at all](0085-a-role-resolves-from-the-registry-alone.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

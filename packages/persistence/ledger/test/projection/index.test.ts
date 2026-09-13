@@ -45,6 +45,14 @@ import {
   nextExecutionRouteProjection,
   nextRoutingAssignmentFromInitiative,
   nextRoutingAssignmentProjection,
+  GLOBAL_ASSIGNMENT_REFUSALS,
+  applyModelVersionToSnapshot,
+  applyRegistryModelVersionToSnapshot,
+  createModelVersionProjectionSnapshot,
+  globalAssignmentIssues,
+  modelVersionPayloadIssues,
+  nextModelVersionProjection,
+  type ModelVersionEligibility,
   nextTaskAttemptProjection,
   nextTaskProjection,
   nextTaskRevisionProjection,
@@ -501,6 +509,244 @@ describe("the routing assignment fold", () => {
         row: null,
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The model version registry and the GLOBAL assignment gate (P-14 A)
+// ---------------------------------------------------------------------------
+
+/**
+ * `modelVersionPayloadIssues`, `nextModelVersionProjection` and
+ * `globalAssignmentIssues`, asserted directly (ADR 0085).
+ *
+ * The payload is fixed by name and the door holds it; the fold is total over
+ * history and never refuses; the gate is a pure decision over an injected lookup,
+ * so every reason can be driven without a database.
+ */
+describe("the model version fold and the GLOBAL assignment gate", () => {
+  const MODEL_ONE = "claude-opus-5@2026-06-01";
+  const MODEL_TWO = "claude-sonnet-5@2026-06-01";
+  const AT = "2026-09-13T12:00:00.000Z";
+
+  function payload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      provider: "claude",
+      model: "claude-opus-5",
+      release: "2026-06-01",
+      status: "ACTIVE",
+      contextTokens: 200000,
+      policyVersion: "2026.09.0",
+      deprecatedAt: null,
+      eligibleRoles: ["implementer", "reviewer"],
+      transports: ["CLI_SUBSCRIPTION", "API_KEY"],
+      ...overrides,
+    };
+  }
+
+  function modelVersion(overrides: Record<string, unknown> = {}): RegistryDocument {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "0000cccc-0000-4000-8000-000000000001",
+      idempotencyKey: MODEL_ONE + "/1",
+      documentKind: "MODEL_VERSION",
+      documentId: MODEL_ONE,
+      documentVersion: 1,
+      parentDocumentVersion: null,
+      contentDigest: "1".repeat(64),
+      recordedBy: EMITTED_BY,
+      effectiveFrom: AT,
+      occurredAt: AT,
+      recordedAt: AT,
+      payload: payload(),
+      ...overrides,
+    } as RegistryDocument;
+  }
+
+  function assignment(fields: Record<string, unknown> = {}): RegistryDocument {
+    return {
+      ...modelVersion(),
+      documentKind: "ROUTING_ASSIGNMENT_GLOBAL",
+      documentId: "routing:GLOBAL:implementer:0",
+      payload: { role: "implementer", slot: 0, provider: "claude", modelVersionId: MODEL_ONE, fallbacks: [MODEL_TWO], ...fields },
+    } as RegistryDocument;
+  }
+
+  function without(record: Record<string, unknown>, key: string): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(record).filter(([name]) => name !== key));
+  }
+
+  function registry(entries: Record<string, ModelVersionEligibility>): (id: string) => ModelVersionEligibility | null {
+    return (id) => entries[id] ?? null;
+  }
+
+  const ACTIVE_BOTH: ModelVersionEligibility = { status: "ACTIVE", eligibleRoles: ["implementer", "reviewer"] };
+
+  it("admits the fixed payload, and names every way out of it by path without echoing a value", () => {
+    expect(modelVersionPayloadIssues(payload())).toEqual([]);
+    expect(modelVersionPayloadIssues(payload({ status: "RETIRED", deprecatedAt: AT }))).toEqual([]);
+    expect(modelVersionPayloadIssues(payload({ eligibleRoles: [], transports: [] }))).toEqual([]);
+
+    const cases: readonly [string, Record<string, unknown>, string][] = [
+      ["a closed payload refuses a rating parked in it", payload({ qualityScore: 0.9 }), "payload.qualityScore"],
+      ["latest_performance_window is economy's, never read here", payload({ latestPerformanceWindow: "w1" }), "payload.latestPerformanceWindow"],
+      ["an empty provider", payload({ provider: "" }), "payload.provider"],
+      ["a missing release", without(payload(), "release"), "payload.release"],
+      ["a status outside the three words", payload({ status: "SUNSET" }), "payload.status"],
+      ["negative context", payload({ contextTokens: -1 }), "payload.contextTokens"],
+      ["fractional context", payload({ contextTokens: 1.5 }), "payload.contextTokens"],
+      ["an absent deprecatedAt", without(payload(), "deprecatedAt"), "payload.deprecatedAt"],
+      ["ACTIVE with an instant (N-P14A-8)", payload({ deprecatedAt: AT }), "payload.deprecatedAt"],
+      ["RETIRED without one", payload({ status: "RETIRED" }), "payload.deprecatedAt"],
+      ["DEPRECATED with a non-instant", payload({ status: "DEPRECATED", deprecatedAt: "yesterday" }), "payload.deprecatedAt"],
+      ["a role outside the vocabulary", payload({ eligibleRoles: ["wizard"] }), "payload.eligibleRoles[0]"],
+      ["a role declared twice", payload({ eligibleRoles: ["implementer", "implementer"] }), "payload.eligibleRoles[1]"],
+      ["roles that are not a list", payload({ eligibleRoles: "implementer" }), "payload.eligibleRoles"],
+      ["a transport outside the contract", payload({ transports: ["CARRIER_PIGEON"] }), "payload.transports[0]"],
+      ["a transport declared twice", payload({ transports: ["API_KEY", "API_KEY"] }), "payload.transports[1]"],
+    ];
+    for (const [label, candidate, path] of cases) {
+      const issues = modelVersionPayloadIssues(candidate);
+      expect({ label, paths: issues.map((issue) => issue.path) }).toEqual({ label, paths: [path] });
+      expect(JSON.stringify(issues), label).not.toContain("CARRIER_PIGEON");
+      expect(JSON.stringify(issues), label).not.toContain("yesterday");
+    }
+  });
+
+  it("projects a version with its children in declared order, and never reads a performance window", () => {
+    const projected = nextModelVersionProjection(modelVersion(), 7);
+    expect(projected).toEqual({
+      modelVersionId: MODEL_ONE,
+      row: {
+        modelVersionId: MODEL_ONE,
+        provider: "claude",
+        model: "claude-opus-5",
+        release: "2026-06-01",
+        status: "ACTIVE",
+        contextTokens: 200000,
+        latestPerformanceWindow: null,
+        policyVersion: "2026.09.0",
+        deprecatedAt: null,
+        documentVersion: 1,
+        sequence: 7,
+      },
+      eligibleRoles: [
+        { modelVersionId: MODEL_ONE, ordinal: 0, role: "implementer" },
+        { modelVersionId: MODEL_ONE, ordinal: 1, role: "reviewer" },
+      ],
+      transports: [
+        { modelVersionId: MODEL_ONE, ordinal: 0, transportKind: "CLI_SUBSCRIPTION" },
+        { modelVersionId: MODEL_ONE, ordinal: 1, transportKind: "API_KEY" },
+      ],
+    });
+    expect(nextModelVersionProjection(assignment(), 7)).toBeNull();
+    expect(nextModelVersionProjection(modelVersion({ documentKind: "PRICE_TABLE" }), 7)).toBeNull();
+  });
+
+  it("N-P14A-8: a later version replaces the row and its children whole", () => {
+    const snapshot = createModelVersionProjectionSnapshot();
+    applyRegistryModelVersionToSnapshot(snapshot, modelVersion(), 1);
+    applyRegistryModelVersionToSnapshot(
+      snapshot,
+      modelVersion({
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        payload: payload({ status: "RETIRED", deprecatedAt: AT, eligibleRoles: ["reviewer"], transports: [] }),
+      }),
+      2,
+    );
+    expect(snapshot.modelVersions.get(MODEL_ONE)?.status).toBe("RETIRED");
+    expect(snapshot.modelVersions.get(MODEL_ONE)?.documentVersion).toBe(2);
+    expect(snapshot.eligibleRoles.get(MODEL_ONE)).toEqual([{ modelVersionId: MODEL_ONE, ordinal: 0, role: "reviewer" }]);
+    expect(snapshot.transports.get(MODEL_ONE)).toEqual([]);
+  });
+
+  it("N-P14A-9: an unreadable version in history projects no row, and removes the row an earlier version left", () => {
+    // Total, and fail-closed at once: the fold refuses nothing, and a version it
+    // cannot read leaves no ACTIVE row standing behind it.
+    const unreadable = modelVersion({ documentVersion: 2, parentDocumentVersion: 1, payload: { status: "RETIRED" } });
+    expect(nextModelVersionProjection(unreadable, 2)).toEqual({
+      modelVersionId: MODEL_ONE,
+      row: null,
+      eligibleRoles: [],
+      transports: [],
+    });
+    const snapshot = createModelVersionProjectionSnapshot();
+    applyRegistryModelVersionToSnapshot(snapshot, modelVersion(), 1);
+    expect(snapshot.modelVersions.has(MODEL_ONE)).toBe(true);
+    applyModelVersionToSnapshot(snapshot, nextModelVersionProjection(unreadable, 2) ?? { modelVersionId: "", row: null, eligibleRoles: [], transports: [] });
+    expect([snapshot.modelVersions.size, snapshot.eligibleRoles.size, snapshot.transports.size]).toEqual([0, 0, 0]);
+  });
+
+  it("admits an assignment whose version and fallbacks are ACTIVE and eligible, and gates no other kind", () => {
+    const lookup = registry({ [MODEL_ONE]: ACTIVE_BOTH, [MODEL_TWO]: ACTIVE_BOTH });
+    expect(globalAssignmentIssues(assignment(), lookup)).toEqual([]);
+    expect(globalAssignmentIssues(assignment({ fallbacks: undefined }), lookup)).toEqual([]);
+    expect(globalAssignmentIssues(modelVersion(), registry({}))).toEqual([]);
+    expect(GLOBAL_ASSIGNMENT_REFUSALS).toEqual([
+      "MODEL_VERSION_UNKNOWN",
+      "MODEL_VERSION_RETIRED",
+      "MODEL_VERSION_DEPRECATED",
+      "ROLE_NOT_ELIGIBLE",
+    ]);
+  });
+
+  it("N-P14A-1..4: refuses unknown, retired and deprecated versions and an ineligible role, each with its own word and path", () => {
+    const cases: readonly [string, Record<string, ModelVersionEligibility>, string, string][] = [
+      ["N-P14A-1", { [MODEL_TWO]: ACTIVE_BOTH }, "payload.modelVersionId", "MODEL_VERSION_UNKNOWN: "],
+      ["N-P14A-2", { [MODEL_ONE]: { status: "RETIRED", eligibleRoles: ["implementer"] }, [MODEL_TWO]: ACTIVE_BOTH }, "payload.modelVersionId", "MODEL_VERSION_RETIRED: "],
+      ["N-P14A-3", { [MODEL_ONE]: { status: "DEPRECATED", eligibleRoles: ["implementer"] }, [MODEL_TWO]: ACTIVE_BOTH }, "payload.modelVersionId", "MODEL_VERSION_DEPRECATED: "],
+      ["N-P14A-4", { [MODEL_ONE]: { status: "ACTIVE", eligibleRoles: ["reviewer"] }, [MODEL_TWO]: ACTIVE_BOTH }, "payload.role", "ROLE_NOT_ELIGIBLE: "],
+    ];
+    for (const [label, entries, path, word] of cases) {
+      const issues = globalAssignmentIssues(assignment(), registry(entries));
+      expect({ label, paths: issues.map((issue) => issue.path) }).toEqual({ label, paths: [path] });
+      expect(issues[0]?.message.startsWith(word), label).toBe(true);
+      expect(issues[0]?.message, label).not.toContain(MODEL_ONE);
+    }
+    // The retired version is the one with somewhere to go: the refusal proposes
+    // migration, and the deprecated one does not.
+    const retired = globalAssignmentIssues(assignment(), registry({ [MODEL_ONE]: { status: "RETIRED", eligibleRoles: [] }, [MODEL_TWO]: ACTIVE_BOTH }));
+    expect(retired[0]?.message).toContain("migrate the assignment to an ACTIVE model version");
+    const deprecated = globalAssignmentIssues(assignment(), registry({ [MODEL_ONE]: { status: "DEPRECATED", eligibleRoles: [] }, [MODEL_TWO]: ACTIVE_BOTH }));
+    expect(deprecated[0]?.message).not.toContain("migrate");
+  });
+
+  it("N-P14A-5: holds every fallback to the same rule, at the fallback's own path", () => {
+    const issues = globalAssignmentIssues(
+      assignment({ fallbacks: [MODEL_TWO, "ghost", "retired", "narrow"] }),
+      registry({
+        [MODEL_ONE]: ACTIVE_BOTH,
+        [MODEL_TWO]: ACTIVE_BOTH,
+        retired: { status: "RETIRED", eligibleRoles: ["implementer"] },
+        narrow: { status: "ACTIVE", eligibleRoles: ["verifier"] },
+      }),
+    );
+    expect(issues.map((issue) => [issue.path, issue.message.split(":")[0]])).toEqual([
+      ["payload.fallbacks[1]", "MODEL_VERSION_UNKNOWN"],
+      ["payload.fallbacks[2]", "MODEL_VERSION_RETIRED"],
+      ["payload.fallbacks[3]", "ROLE_NOT_ELIGIBLE"],
+    ]);
+  });
+
+  it("refuses an assignment the fold could not read, field by field, before any lookup", () => {
+    let looked = 0;
+    const counting = (): ModelVersionEligibility | null => {
+      looked += 1;
+      return ACTIVE_BOTH;
+    };
+    const issues = globalAssignmentIssues(
+      assignment({ role: "wizard", slot: -1, provider: "", modelVersionId: "", fallbacks: [1] }),
+      counting,
+    );
+    expect(issues.map((issue) => issue.path)).toEqual([
+      "payload.role",
+      "payload.slot",
+      "payload.provider",
+      "payload.modelVersionId",
+      "payload.fallbacks",
+    ]);
+    expect(looked).toBe(0);
   });
 });
 

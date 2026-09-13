@@ -1000,6 +1000,10 @@ export interface RebuildResult {
   readonly artifactReferenceRows: number;
   readonly artifactPinRows: number;
   readonly artifactTombstoneRows: number;
+  /** The model version registry and its two child tables, from the registry stream alone (P-14 A). */
+  readonly modelVersionRows: number;
+  readonly modelVersionEligibleRoleRows: number;
+  readonly modelVersionTransportRows: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,6 +1240,143 @@ export interface RoutingAssignmentProjection {
 export interface RegistryProjectionSnapshot {
   readonly routingAssignments: Map<string, RoutingAssignmentReadModel>;
   readonly routingFallbacks: Map<string, RoutingAssignmentFallbackRow>;
+}
+
+// ---------------------------------------------------------------------------
+// The model version registry (P-14 escalón A, ADR 0085)
+//
+// Accounts §6: the one registry of model versions, folded from the registry
+// stream's `MODEL_VERSION` documents. The payload those documents carry is fixed
+// by name — the camelCase mirror of the dictionary's columns — and the append
+// door holds it to that shape before it writes. `latest_performance_window` is
+// a column with no producer here: the number it points at is economy's.
+// ---------------------------------------------------------------------------
+
+/** The three lifecycle words of a model version (`ck_model_version_read_model__status`). */
+export const MODEL_VERSION_STATUSES = ["ACTIVE", "DEPRECATED", "RETIRED"] as const;
+
+export type ModelVersionStatus = (typeof MODEL_VERSION_STATUSES)[number];
+
+/**
+ * The payload of one `MODEL_VERSION` document, by name.
+ *
+ * Closed: a key outside these nine is refused at the door, so a rating or a
+ * price cannot be parked in the capability registry under a name nobody reads.
+ */
+export const MODEL_VERSION_PAYLOAD_KEYS = [
+  "provider",
+  "model",
+  "release",
+  "status",
+  "contextTokens",
+  "policyVersion",
+  "deprecatedAt",
+  "eligibleRoles",
+  "transports",
+] as const;
+
+/** One row of `model_version_read_model`: the version of a document the fold applied last. */
+export interface ModelVersionReadModel {
+  /** The document id. Exact, never an alias. */
+  readonly modelVersionId: string;
+  readonly provider: string;
+  /** The family alias; not an identity. */
+  readonly model: string;
+  readonly release: string;
+  readonly status: ModelVersionStatus;
+  readonly contextTokens: number;
+  /** Always null in this build: the snapshot it references is economy's, and nothing produces it. */
+  readonly latestPerformanceWindow: string | null;
+  readonly policyVersion: string;
+  /** Null if and only if `status` is `ACTIVE`. */
+  readonly deprecatedAt: string | null;
+  readonly documentVersion: number;
+  readonly sequence: number;
+}
+
+/** One eligible role of one model version, in declared order. */
+export interface ModelVersionEligibleRoleRow {
+  readonly modelVersionId: string;
+  readonly ordinal: number;
+  readonly role: WorkerRole;
+}
+
+/** One admitted transport of one model version, in declared order. */
+export interface ModelVersionTransportRow {
+  readonly modelVersionId: string;
+  readonly ordinal: number;
+  readonly transportKind: string;
+}
+
+/**
+ * One document's worth of model version projection.
+ *
+ * `row` is null when the version the fold is applying cannot be read. The
+ * document's earlier row is then removed rather than left standing: a version
+ * the registry holds and nobody can read is not a version that rules, and an
+ * ACTIVE row surviving a later version would be exactly that. The door refuses
+ * such a payload, so only a history written before the door checked can reach
+ * this branch.
+ */
+export interface ModelVersionProjection {
+  readonly modelVersionId: string;
+  readonly row: ModelVersionReadModel | null;
+  readonly eligibleRoles: readonly ModelVersionEligibleRoleRow[];
+  readonly transports: readonly ModelVersionTransportRow[];
+}
+
+/** The model version partition of an in-memory snapshot of the registry stream. */
+export interface ModelVersionProjectionSnapshot {
+  readonly modelVersions: Map<string, ModelVersionReadModel>;
+  /** Keyed by `modelVersionId`, each list in ordinal order. */
+  readonly eligibleRoles: Map<string, readonly ModelVersionEligibleRoleRow[]>;
+  readonly transports: Map<string, readonly ModelVersionTransportRow[]>;
+}
+
+/** A model version with its two child lists, as a read verb returns it. */
+export interface ModelVersionEntry {
+  readonly row: ModelVersionReadModel;
+  readonly eligibleRoles: readonly WorkerRole[];
+  readonly transports: readonly string[];
+}
+
+/**
+ * One watermark row a read was taken against, named by its pair.
+ *
+ * `ProjectionWatermarkStatus` without the projection name is a vector entry
+ * inside one projection; a reading spans two projections, so the name travels.
+ */
+export interface RegistryWatermarkReading {
+  readonly projectionName: string;
+  readonly sourceStream: string;
+  readonly appliedThroughSequence: number;
+  readonly eventCount: number;
+  readonly sourceHeadSha256: string;
+}
+
+/** `getModelVersion`: the entry or null, and the one watermark it was read at. */
+export interface ModelVersionReading {
+  readonly modelVersion: ModelVersionEntry | null;
+  readonly watermarks: readonly RegistryWatermarkReading[];
+}
+
+/**
+ * `getGlobalRoutingAssignment`: the GLOBAL assignment in force for one
+ * `(role, slot)`, the model version it names, and the vector it was read at.
+ *
+ * Everything here was read inside one read transaction, so the three watermark
+ * rows describe exactly the tables the rest came from (E4, N-P14-3). `assignment`
+ * is null when no assignment is in force; the vector is returned all the same,
+ * because "nothing was assigned at this vector" is itself the fact a refusal
+ * records.
+ */
+export interface GlobalRoutingAssignmentReading {
+  readonly assignment: RoutingAssignmentReadModel | null;
+  /** The assignment's fallbacks in attempt order; empty when there is no assignment. */
+  readonly fallbacks: readonly string[];
+  /** The model version the assignment names, or null when there is none or it is not registered. */
+  readonly modelVersion: ModelVersionEntry | null;
+  readonly watermarks: readonly RegistryWatermarkReading[];
 }
 
 // ---------------------------------------------------------------------------

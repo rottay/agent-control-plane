@@ -245,7 +245,42 @@ because the owner file names where credentials live, and demanding `0600` of a
 committed document every contributor reads would fail on any shared checkout
 while protecting nothing.
 
+## The GLOBAL assignment resolver
+
+P-14 A (ADR 0085) adds a second, separate path, and the separation is the point.
+The capability registry of accounts §6 is folded by `@acp/ledger` from the
+registry stream, and `resolveAssignment(request, reading)` resolves a role
+against it **alone**: no import of the policy module, no read of
+`policy/capability-policy.json`, and no default. A role with no GLOBAL
+assignment in force is `ASSIGNMENT_ABSENT`, never a fallback to the file above.
+
+This package may not import the ledger, so the reading is structural — this
+module's own `AssignmentReading`, which the caller maps from the ledger's
+`getGlobalRoutingAssignment`. The ledger's append door has already refused an
+assignment naming a version that was unknown, not `ACTIVE` or not eligible for
+its role when it was recorded. The resolver decides the two things the door
+cannot see:
+
+- **Transport.** The request names the transport; a version that does not admit
+  it is `TRANSPORT_NOT_ADMITTED`.
+- **Time.** A version retired after its assignment was admitted is
+  `MODEL_VERSION_RETIRED` with the proposal `MIGRATE_TO_ACTIVE_MODEL_VERSION`,
+  and is never silently replaced by a fallback; `DEPRECATED` is refused too.
+
+It also refuses an unknown version, a role the version does not declare, a
+provider on which the assignment and its version disagree, a request outside the
+vocabularies, and a reading that carries no vector or describes another
+coordinate. Every outcome, resolved or refused, carries the watermarks the reading
+was taken at. The resolution does not carry a policy version: restriction 6 keeps
+that read inside the policy module, and whether the registry's `policy_version`
+becomes the version a route stamps is P-28's and P-19's to decide. Pure: no clock,
+no I/O.
+
 ## What is deferred, and to where
+
+The convergence of `routeWithPolicy`/`resolveRoute` and the policy file with the
+registry-only resolver above is deferred to **P-28 and P-19** (P-14 adjudication,
+Q5): until then the two paths coexist, and the legacy one is untouched.
 
 The accounts **UI** and the `drain` / `account-ready` / `reauth-required`
 actions are **deferred to P8 by DT ruling**. P5 ships the read model a UI will

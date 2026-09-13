@@ -22,6 +22,8 @@ import {
   INITIATIVE_PROJECTION_NAMES,
   INITIATIVE_STREAM,
   MIGRATIONS,
+  MODEL_VERSION_PROJECTION,
+  MODEL_VERSION_REGISTRY_MIGRATION,
   PROJECTION_NAMES,
   PROJECTION_SOURCES,
   REGISTRY_PROJECTION_NAMES,
@@ -178,7 +180,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -197,11 +199,12 @@ describe("migration 7 appends the watermark table without touching the applied s
       "execution_occurrences",
       "artifact_registry",
       "task_revision_envelope_reference",
+      "model_version_registry",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11, 12, 13, 14 and 15 seed rows into it, which is what a
+    // Migrations 9, 11, 12, 13, 14, 15 and 17 seed rows into it, which is what a
     // migration that adds a projection does; none of them creates, alters or
     // drops the table.
     const creating = MIGRATIONS.filter((migration) =>
@@ -211,7 +214,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -293,6 +296,7 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "artifact_reference_read_model@registry_events",
       "artifact_pin_read_model@registry_events",
       "artifact_tombstone_read_model@registry_events",
+      "model_version_read_model@registry_events",
       "routing_assignment_read_model@registry_events",
       "routing_assignment_read_model@initiative_events",
     ]);
@@ -508,7 +512,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
   });
 
@@ -734,7 +738,7 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(18);
+    expect(PROJECTION_SOURCES).toHaveLength(19);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -1152,6 +1156,13 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
  */
 describe("migration 15 rebuilds the registry stream and adds the artifact plane", () => {
   const FIFTEENTH = MIGRATIONS[14];
+  /** The four names this migration seeds, as it spells them. */
+  const ARTIFACT_PROJECTIONS = [
+    ARTIFACT_BLOB_PROJECTION,
+    ARTIFACT_REFERENCE_PROJECTION,
+    ARTIFACT_PIN_PROJECTION,
+    ARTIFACT_TOMBSTONE_PROJECTION,
+  ] as const;
   const NINTH = MIGRATIONS[8];
 
   /** The statements with the commentary removed, as for 11, 12 and 14. */
@@ -1396,20 +1407,16 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
     for (const key of ["registry_head_sequence", "registry_event_count", "registry_head_event_sha256"]) {
       expect(statements, key).toContain("WHERE key = '" + key + "'");
     }
-    for (const name of REGISTRY_PROJECTION_NAMES) {
+    for (const name of ARTIFACT_PROJECTIONS) {
       expect(statements, name).toContain("SELECT '" + name + "'");
     }
     expect(statements).not.toContain("'registry_events',\n  1,\n  0,\n  0,");
   });
 
   it("declares the four projections in all four places that have to agree", () => {
-    expect(REGISTRY_PROJECTION_NAMES).toEqual([
-      ARTIFACT_BLOB_PROJECTION,
-      ARTIFACT_REFERENCE_PROJECTION,
-      ARTIFACT_PIN_PROJECTION,
-      ARTIFACT_TOMBSTONE_PROJECTION,
-    ]);
-    for (const name of REGISTRY_PROJECTION_NAMES) {
+    // The registry roster's first four; migration 17 appends the fifth.
+    expect(REGISTRY_PROJECTION_NAMES.slice(0, 4)).toEqual([...ARTIFACT_PROJECTIONS]);
+    for (const name of ARTIFACT_PROJECTIONS) {
       expect(DERIVED_TABLES, name).toContain(name);
       expect(PROJECTION_NAMES, name).not.toContain(name);
       expect(PROJECTION_SOURCES.filter((source) => source.projectionName === name)).toEqual([
@@ -1478,7 +1485,9 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION - 1]?.name).toBe(
       "task_revision_envelope_reference",
     );
-    expect(MIGRATIONS).toHaveLength(16);
+    // Sixteen when this migration landed; the seventeenth is P-14 A's.
+    expect(MIGRATIONS).toHaveLength(17);
+    expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
   it("N-P36D-8: adds the column in place and rebuilds, drops and seeds nothing", () => {
@@ -1548,5 +1557,123 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     expect(statements).not.toContain("SELECT artifact");
     expect(statements).not.toContain("envelope_sha256");
     expect(DERIVED_TABLES).toContain(TASK_REVISION_PROJECTION);
+  });
+});
+
+/**
+ * Migration 17, the model version registry (P-14 A, accounts §6, ADR 0085).
+ *
+ * The text: three STRICT tables with the dictionary's constraints under the §3.2
+ * names, three indexes, no trigger, no foreign key outside its own parent, and one
+ * watermark seeded from the registry head. `test/ledger` asserts what the text
+ * and the retroactive fold do to a ledger that already holds model versions.
+ */
+describe("migration 17 folds the model version registry from the registry stream", () => {
+  const SEVENTEENTH = MIGRATIONS[16];
+
+  const statements = (SEVENTEENTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("N-P14A-18: sits at the tail of a set whose order is fixed", () => {
+    expect(SEVENTEENTH?.version).toBe(17);
+    expect(SEVENTEENTH?.name).toBe("model_version_registry");
+    expect(MODEL_VERSION_REGISTRY_MIGRATION).toBe(17);
+    expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION - 1]?.name).toBe("model_version_registry");
+    expect(MIGRATIONS).toHaveLength(17);
+  });
+
+  it("creates the three tables of accounts §6 STRICT, with the dictionary's checks", () => {
+    for (const table of ["model_version_read_model", "model_version_eligible_role", "model_version_transport"]) {
+      expect(statements, table).toMatch(new RegExp("CREATE TABLE " + table + " \\([^;]*\\) STRICT;"));
+    }
+    for (const rule of [
+      "CONSTRAINT pk_model_version_read_model PRIMARY KEY (model_version_id)",
+      "CONSTRAINT ck_model_version_read_model__status CHECK (\n    status IN ('ACTIVE', 'DEPRECATED', 'RETIRED')\n  )",
+      "CONSTRAINT ck_model_version_read_model__context_tokens CHECK (context_tokens >= 0)",
+      "CONSTRAINT ck_model_version_read_model__deprecated_pair CHECK (\n    (status = 'ACTIVE') = (deprecated_at IS NULL)\n  )",
+      "CONSTRAINT pk_model_version_eligible_role PRIMARY KEY (model_version_id, ordinal)",
+      "CONSTRAINT ck_model_version_eligible_role__ordinal CHECK (ordinal >= 0)",
+      "CONSTRAINT pk_model_version_transport PRIMARY KEY (model_version_id, ordinal)",
+      "CONSTRAINT ck_model_version_transport__ordinal CHECK (ordinal >= 0)",
+    ]) {
+      expect(statements, rule).toContain(rule);
+    }
+    // `latest_performance_window` is a nullable column with no producer here:
+    // economy's snapshot is what it references.
+    expect(statements).toMatch(/latest_performance_window TEXT,/);
+  });
+
+  it("indexes by status and declares each role and transport once", () => {
+    expect(statements).toContain(
+      "CREATE INDEX ix_model_version_read_model__status\n  ON model_version_read_model (status, provider, model);",
+    );
+    expect(statements).toContain(
+      "CREATE UNIQUE INDEX ux_model_version_eligible_role__role\n  ON model_version_eligible_role (model_version_id, role);",
+    );
+    expect(statements).toContain(
+      "CREATE UNIQUE INDEX ux_model_version_transport__transport\n  ON model_version_transport (model_version_id, transport_kind);",
+    );
+  });
+
+  it("names no table but its own in a foreign key, and adds no trigger", () => {
+    // A foreign key into `registry_events` or the routing tables would make a
+    // rebuild depend on fold order; the check an assignment needs is the door's.
+    const references = [...statements.matchAll(/REFERENCES (\w+)/g)].map((match) => match[1]);
+    expect(references).toEqual(["model_version_read_model", "model_version_read_model"]);
+    expect(statements).toContain("CONSTRAINT fk_model_version_eligible_role__model_version_read_model");
+    expect(statements).toContain("CONSTRAINT fk_model_version_transport__model_version_read_model");
+    expect(statements).not.toContain("CREATE TRIGGER");
+    expect(statements).not.toContain("DROP ");
+    expect(statements).not.toContain("ALTER TABLE");
+  });
+
+  it("seeds its one watermark from the registry head, never from a literal zero", () => {
+    expect(statements.match(/INSERT INTO projection_watermark/g)).toHaveLength(1);
+    expect(statements).toContain(
+      "  'model_version_read_model',\n  'registry_events',\n  1,\n" +
+        "  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_head_sequence') AS INTEGER),",
+    );
+    for (const key of ["registry_head_sequence", "registry_event_count", "registry_head_event_sha256"]) {
+      expect(statements, key).toContain("WHERE key = '" + key + "'");
+    }
+    expect(statements).not.toContain("'registry_events',\n  1,\n  0,\n  0,");
+  });
+
+  it("declares the projection in all four places that have to agree, children cleared first", () => {
+    expect(MODEL_VERSION_PROJECTION).toBe("model_version_read_model");
+    expect(REGISTRY_PROJECTION_NAMES).toEqual([
+      ARTIFACT_BLOB_PROJECTION,
+      ARTIFACT_REFERENCE_PROJECTION,
+      ARTIFACT_PIN_PROJECTION,
+      ARTIFACT_TOMBSTONE_PROJECTION,
+      MODEL_VERSION_PROJECTION,
+    ]);
+    expect(PROJECTION_NAMES).not.toContain(MODEL_VERSION_PROJECTION);
+    expect(PROJECTION_SOURCES.filter((source) => source.projectionName === MODEL_VERSION_PROJECTION)).toEqual([
+      { projectionName: MODEL_VERSION_PROJECTION, sourceStream: "registry_events" },
+    ]);
+    // One watermark for three tables: the children are not projections of their own.
+    expect(PROJECTION_SOURCES.some((source) => source.projectionName.startsWith("model_version_") && source.projectionName !== MODEL_VERSION_PROJECTION)).toBe(false);
+    const transportAt = DERIVED_TABLES.indexOf("model_version_transport");
+    const roleAt = DERIVED_TABLES.indexOf("model_version_eligible_role");
+    const versionAt = DERIVED_TABLES.indexOf(MODEL_VERSION_PROJECTION);
+    expect(transportAt).toBeGreaterThanOrEqual(0);
+    expect(roleAt).toBeGreaterThanOrEqual(0);
+    expect(transportAt).toBeLessThan(versionAt);
+    expect(roleAt).toBeLessThan(versionAt);
+  });
+
+  it("N-P14A-16: inventories three tables and three indexes, and no trigger of its own", () => {
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("model_version_"))).toEqual([
+      { type: "table", name: "model_version_read_model" },
+      { type: "index", name: "ix_model_version_read_model__status" },
+      { type: "table", name: "model_version_eligible_role" },
+      { type: "index", name: "ux_model_version_eligible_role__role" },
+      { type: "table", name: "model_version_transport" },
+      { type: "index", name: "ux_model_version_transport__transport" },
+    ]);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
   });
 });

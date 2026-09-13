@@ -2331,6 +2331,107 @@ BEGIN
 END;
 `,
   },
+  {
+    version: 17,
+    name: "model_version_registry",
+    sql: `
+-- A role resolves from the registry alone, or not at all (P-14 escalón A,
+-- ADR 0085).
+--
+-- Accounts §6 moves the one registry of model versions here: a row per
+-- \`MODEL_VERSION\` document of \`registry_events\`, with its eligible roles and
+-- its admitted transports as child rows rather than JSON columns (§6.1). The
+-- stream has carried the document kind since migration 9; nothing folded it,
+-- so the eligibility a GLOBAL routing assignment is checked against lived in a
+-- policy file beside the code. From this migration the append door checks an
+-- assignment against these rows, by name, before it writes.
+--
+-- **No foreign key into \`registry_events\`, and none into the routing tables.**
+-- The dictionary names none, and the check an assignment needs is a typed
+-- lookup at the door (planning §6), not a constraint a rebuild would have to
+-- satisfy in fold order. The only foreign keys are the two children's, into
+-- this migration's own parent, which is why \`DERIVED_TABLES\` clears them first.
+CREATE TABLE model_version_read_model (
+  model_version_id          TEXT    NOT NULL,
+  provider                  TEXT    NOT NULL,
+  model                     TEXT    NOT NULL,
+  release                   TEXT    NOT NULL,
+  status                    TEXT    NOT NULL,
+  context_tokens            INTEGER NOT NULL,
+  latest_performance_window TEXT,
+  policy_version            TEXT    NOT NULL,
+  deprecated_at             TEXT,
+  document_version          INTEGER NOT NULL,
+  sequence                  INTEGER NOT NULL,
+  CONSTRAINT pk_model_version_read_model PRIMARY KEY (model_version_id),
+  CONSTRAINT ck_model_version_read_model__status CHECK (
+    status IN ('ACTIVE', 'DEPRECATED', 'RETIRED')
+  ),
+  CONSTRAINT ck_model_version_read_model__context_tokens CHECK (context_tokens >= 0),
+  -- An equality of truth values, for the reason migration 15's mirrors are one:
+  -- \`status\` is NOT NULL, so neither side can be NULL and the CHECK cannot pass
+  -- vacuously.
+  CONSTRAINT ck_model_version_read_model__deprecated_pair CHECK (
+    (status = 'ACTIVE') = (deprecated_at IS NULL)
+  ),
+  CONSTRAINT ck_model_version_read_model__document_version CHECK (document_version >= 1),
+  CONSTRAINT ck_model_version_read_model__sequence CHECK (sequence >= 1)
+) STRICT;
+
+CREATE INDEX ix_model_version_read_model__status
+  ON model_version_read_model (status, provider, model);
+
+CREATE TABLE model_version_eligible_role (
+  model_version_id TEXT    NOT NULL,
+  ordinal          INTEGER NOT NULL,
+  role             TEXT    NOT NULL,
+  CONSTRAINT pk_model_version_eligible_role PRIMARY KEY (model_version_id, ordinal),
+  CONSTRAINT ck_model_version_eligible_role__ordinal CHECK (ordinal >= 0),
+  CONSTRAINT fk_model_version_eligible_role__model_version_read_model
+    FOREIGN KEY (model_version_id) REFERENCES model_version_read_model (model_version_id)
+    ON DELETE RESTRICT
+) STRICT;
+
+-- A role is not declared twice under two ordinals.
+CREATE UNIQUE INDEX ux_model_version_eligible_role__role
+  ON model_version_eligible_role (model_version_id, role);
+
+CREATE TABLE model_version_transport (
+  model_version_id TEXT    NOT NULL,
+  ordinal          INTEGER NOT NULL,
+  transport_kind   TEXT    NOT NULL,
+  CONSTRAINT pk_model_version_transport PRIMARY KEY (model_version_id, ordinal),
+  CONSTRAINT ck_model_version_transport__ordinal CHECK (ordinal >= 0),
+  CONSTRAINT fk_model_version_transport__model_version_read_model
+    FOREIGN KEY (model_version_id) REFERENCES model_version_read_model (model_version_id)
+    ON DELETE RESTRICT
+) STRICT;
+
+-- The same criterion, for transports.
+CREATE UNIQUE INDEX ux_model_version_transport__transport
+  ON model_version_transport (model_version_id, transport_kind);
+
+-- One watermark, seeded from the head of the REGISTRY stream in migration 15's
+-- form. Unlike migration 15's four, the fold over an existing stream is not
+-- empty by construction: a ledger may already hold \`MODEL_VERSION\` documents.
+-- SQL cannot run the fold, so the code runs it after this text and inside the
+-- same transaction (\`afterSql\`, migration 10's precedent), and the rows it
+-- writes are exactly the rows a rebuild would. The watermark is level with the
+-- head the moment the migration commits, and not a moment before anything can
+-- observe it.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  'model_version_read_model',
+  'registry_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'registry_head_event_sha256'),
+  '1970-01-01T00:00:00.000Z';
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -2351,6 +2452,11 @@ export const MIGRATIONS: readonly Migration[] = SOURCES.map((source) => ({
  * reason: `fk_task_attempt_read_model__task_revision_read_model` points at it.
  */
 export const DERIVED_TABLES: readonly string[] = [
+  // The P-14 A registry, children first: each child names its model version by
+  // an immediate foreign key, so a wrong order aborts the DELETE that caused it.
+  "model_version_transport",
+  "model_version_eligible_role",
+  "model_version_read_model",
   // The P-36/local A cohort, children first: a tombstone names a reference and
   // a blob, a pin and a reference each name a blob. Immediate foreign keys, so a
   // wrong order here aborts the DELETE that caused it. Their other foreign keys
@@ -2438,6 +2544,9 @@ export const REGISTRY_PROJECTION_NAMES: readonly string[] = [
   "artifact_reference_read_model",
   "artifact_pin_read_model",
   "artifact_tombstone_read_model",
+  // P-14 A. One name for three tables: the children are folded with their
+  // parent, in the same transaction, and no watermark describes a child alone.
+  "model_version_read_model",
 ];
 
 /** The task stream's table name, as `projection_watermark.source_stream` spells it. */
@@ -2552,6 +2661,17 @@ export const ARTIFACT_REGISTRY_MIGRATION = 15;
  */
 export const TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION = 16;
 
+/** The one registry of model versions, folded from `MODEL_VERSION` documents (P-14 A, accounts §6). */
+export const MODEL_VERSION_PROJECTION = "model_version_read_model";
+
+/**
+ * The migration that creates the model version registry (P-14 A, ADR 0085).
+ *
+ * Named for `TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION`'s reason, and for one
+ * of its own: the ledger hangs the retroactive fold off this exact version.
+ */
+export const MODEL_VERSION_REGISTRY_MIGRATION = 17;
+
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
@@ -2633,6 +2753,7 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: ARTIFACT_REFERENCE_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_PIN_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_TOMBSTONE_PROJECTION, sourceStream: REGISTRY_STREAM },
+  { projectionName: MODEL_VERSION_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: INITIATIVE_STREAM },
 ];
@@ -2827,6 +2948,16 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   // admits a revision of the new cohort with no reference, or one of the old
   // cohort with a reference no build of its contract could have named.
   { type: "trigger", name: "tr_task_revision_read_model__validate_envelope_reference" },
+  // P-14 A. Three tables, three indexes and no trigger: every rule a row can
+  // carry is a CHECK, and the rule spanning an assignment and a version is the
+  // door's. The two unique indexes are the "declared once" of accounts §6.1 and
+  // are inventoried by name for the reason every other unique index is.
+  { type: "table", name: "model_version_read_model" },
+  { type: "index", name: "ix_model_version_read_model__status" },
+  { type: "table", name: "model_version_eligible_role" },
+  { type: "index", name: "ux_model_version_eligible_role__role" },
+  { type: "table", name: "model_version_transport" },
+  { type: "index", name: "ux_model_version_transport__transport" },
 ];
 
 export interface MigrationConformance {

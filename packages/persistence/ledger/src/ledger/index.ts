@@ -13,6 +13,7 @@ import {
   PIN_HOLDER_KINDS,
   SUPPORTED_CONTRACT_VERSIONS,
   V2_IDEMPOTENCY_NAMESPACE,
+  WORKER_ROLES,
 } from "@acp/contracts";
 
 import {
@@ -42,6 +43,8 @@ import {
 } from "../errors/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
+  MODEL_VERSION_PROJECTION,
+  MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_MIGRATION,
   ACCOUNT_STREAM,
   DERIVED_TABLES,
@@ -114,6 +117,11 @@ import {
   createInitiativeProjectionSnapshot,
   createProjectionSnapshot,
   createRegistryProjectionSnapshot,
+  applyRegistryModelVersionToSnapshot,
+  createModelVersionProjectionSnapshot,
+  globalAssignmentIssues,
+  modelVersionPayloadIssues,
+  nextModelVersionProjection,
   executionRouteKey,
   nextExecutionRouteProjection,
   nextTaskAttemptProjection,
@@ -180,6 +188,15 @@ import {
   type InitiativeEventQuery,
   type InitiativeEventRecord,
   type InitiativeReadModel,
+  type GlobalRoutingAssignmentReading,
+  type ModelVersionEligibleRoleRow,
+  type ModelVersionEntry,
+  type ModelVersionProjection,
+  type ModelVersionProjectionSnapshot,
+  type ModelVersionReadModel,
+  type ModelVersionReading,
+  type ModelVersionTransportRow,
+  type RegistryWatermarkReading,
   type IntegrityProblem,
   type IntegrityReport,
   type ModelResolutionStatus,
@@ -995,6 +1012,123 @@ interface RoutingFallbackRow {
   readonly assignment_id: string;
   readonly ordinal: number;
   readonly model_version_id: string;
+}
+
+interface ModelVersionRow {
+  readonly model_version_id: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly release: string;
+  readonly status: string;
+  readonly context_tokens: number;
+  readonly latest_performance_window: string | null;
+  readonly policy_version: string;
+  readonly deprecated_at: string | null;
+  readonly document_version: number;
+  readonly sequence: number;
+}
+
+interface ModelVersionEligibleRoleDbRow {
+  readonly model_version_id: string;
+  readonly ordinal: number;
+  readonly role: string;
+}
+
+interface ModelVersionTransportDbRow {
+  readonly model_version_id: string;
+  readonly ordinal: number;
+  readonly transport_kind: string;
+}
+
+function modelVersionRowToModel(row: ModelVersionRow): ModelVersionReadModel {
+  return {
+    modelVersionId: row.model_version_id,
+    provider: row.provider,
+    model: row.model,
+    release: row.release,
+    status: row.status as ModelVersionReadModel["status"],
+    contextTokens: row.context_tokens,
+    latestPerformanceWindow: row.latest_performance_window,
+    policyVersion: row.policy_version,
+    deprecatedAt: row.deprecated_at,
+    documentVersion: row.document_version,
+    sequence: row.sequence,
+  };
+}
+
+function modelVersionRoleRowToModel(row: ModelVersionEligibleRoleDbRow): ModelVersionEligibleRoleRow {
+  return {
+    modelVersionId: row.model_version_id,
+    ordinal: row.ordinal,
+    role: row.role as ModelVersionEligibleRoleRow["role"],
+  };
+}
+
+function modelVersionTransportRowToModel(row: ModelVersionTransportDbRow): ModelVersionTransportRow {
+  return {
+    modelVersionId: row.model_version_id,
+    ordinal: row.ordinal,
+    transportKind: row.transport_kind,
+  };
+}
+
+/**
+ * Write one model version projection through whichever statement source the
+ * caller holds (P-14 A).
+ *
+ * One writer for the three places that write these tables — the door, the
+ * rebuild and migration 17's retroactive fold — so they cannot come to disagree
+ * about what applying a version means. Children first out and last in, for the
+ * immediate foreign keys: the old children go, the row is replaced or removed,
+ * and the new children are inserted under it.
+ */
+function writeModelVersionProjection(
+  prepare: (sql: string) => Database.Statement,
+  projected: ModelVersionProjection,
+): void {
+  const { modelVersionId, row } = projected;
+  prepare("DELETE FROM model_version_transport WHERE model_version_id = ?").run(modelVersionId);
+  prepare("DELETE FROM model_version_eligible_role WHERE model_version_id = ?").run(modelVersionId);
+  if (row === null) {
+    prepare("DELETE FROM model_version_read_model WHERE model_version_id = ?").run(modelVersionId);
+    return;
+  }
+  prepare(
+    "INSERT INTO model_version_read_model (" +
+      "model_version_id, provider, model, release, status, context_tokens, " +
+      "latest_performance_window, policy_version, deprecated_at, document_version, sequence" +
+      ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+      "ON CONFLICT (model_version_id) DO UPDATE SET " +
+      "provider = excluded.provider, model = excluded.model, release = excluded.release, " +
+      "status = excluded.status, context_tokens = excluded.context_tokens, " +
+      "latest_performance_window = excluded.latest_performance_window, " +
+      "policy_version = excluded.policy_version, deprecated_at = excluded.deprecated_at, " +
+      "document_version = excluded.document_version, sequence = excluded.sequence",
+  ).run(
+    row.modelVersionId,
+    row.provider,
+    row.model,
+    row.release,
+    row.status,
+    row.contextTokens,
+    row.latestPerformanceWindow,
+    row.policyVersion,
+    row.deprecatedAt,
+    row.documentVersion,
+    row.sequence,
+  );
+  const insertRole = prepare(
+    "INSERT INTO model_version_eligible_role (model_version_id, ordinal, role) VALUES (?, ?, ?)",
+  );
+  for (const role of projected.eligibleRoles) {
+    insertRole.run(role.modelVersionId, role.ordinal, role.role);
+  }
+  const insertTransport = prepare(
+    "INSERT INTO model_version_transport (model_version_id, ordinal, transport_kind) VALUES (?, ?, ?)",
+  );
+  for (const transport of projected.transports) {
+    insertTransport.run(transport.modelVersionId, transport.ordinal, transport.transportKind);
+  }
 }
 
 interface InitiativeRow {
@@ -1948,6 +2082,40 @@ function assertNoDuplicateAccountVersions(db: Database.Database): void {
  * activation and diverge only as the stream grows past the baseline, which is
  * exactly the distinction the two pairs of keys exist to keep.
  */
+/**
+ * Fold the model versions a ledger already holds, once, as migration 17 lands
+ * (P-14 A, N-P14A-15).
+ *
+ * The migration seeds its watermark at the registry head, and a watermark at the
+ * head over an empty table is a claim the integrity replay would refuse the moment
+ * the stream holds a `MODEL_VERSION`. SQL cannot run the fold, so this does,
+ * inside the transaction that applies the migration, through the same projection
+ * function and the same writer the door and the rebuild use. A stored row that no
+ * longer reads as a document is skipped rather than refused here: the fold is
+ * total, and the integrity replay is where that row is named.
+ */
+function foldModelVersionsAtMigration(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      "SELECT sequence, event_json FROM registry_events " +
+        "WHERE subject_kind = 'DOCUMENT' AND document_kind = 'MODEL_VERSION' ORDER BY sequence ASC",
+    )
+    .all() as { readonly sequence: number; readonly event_json: string }[];
+  const prepare = (sql: string): Database.Statement => db.prepare(sql);
+  for (const row of rows) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.event_json);
+    } catch {
+      continue;
+    }
+    const document = tryNormalizeRegistryDocument(parsed);
+    if (document === null) continue;
+    const projected = nextModelVersionProjection(document, row.sequence);
+    if (projected !== null) writeModelVersionProjection(prepare, projected);
+  }
+}
+
 function activateAccountIntegrity(db: Database.Database, activatedAt: string): void {
   const rows = db
     .prepare("SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC")
@@ -2208,6 +2376,11 @@ export class Ledger {
             afterSql: (migration) => {
               if (migration.version === ACCOUNT_INTEGRITY_MIGRATION) {
                 activateAccountIntegrity(db, appliedAt);
+              }
+              // Migration 17 seeded its watermark at the registry head; this
+              // makes the rows level with it, in the same transaction.
+              if (migration.version === MODEL_VERSION_REGISTRY_MIGRATION) {
+                foldModelVersionsAtMigration(db);
               }
             },
           });
@@ -5652,13 +5825,19 @@ export class Ledger {
    * batch, and a door added on speculation is a boundary somebody later has to
    * defend. Adding one is additive when a caller needs it.
    *
-   * This is STORAGE. The ledger does not decide whether the model version a
-   * document names is active, whether the policy it points at is admissible,
-   * or whether the author was allowed to record it. Those belong to the
-   * modules that own each `documentKind`. What it does refuse is what it alone
-   * can see: a replayed key with different content, a reused event id, a
-   * version the document already holds, and a causal reference that does not
-   * resolve.
+   * This is STORAGE. The ledger does not decide whether the policy a document
+   * points at is admissible, or whether the author was allowed to record it.
+   * Those belong to the modules that own each `documentKind`. What it does
+   * refuse is what it alone can see: a replayed key with different content, a
+   * reused event id, a version the document already holds, and a causal
+   * reference that does not resolve.
+   *
+   * And, since P-14 A (ADR 0085), two typed lookups over its own read models,
+   * by name and never by score: a `MODEL_VERSION` payload outside its fixed
+   * shape, and a `ROUTING_ASSIGNMENT_GLOBAL` naming a model version that is not
+   * registered, not `ACTIVE`, or not eligible for the role. Both run after the
+   * replay and lineage checks and before the insert, so an exact replay of a
+   * document admitted earlier is still a replay, whatever has been retired since.
    */
   appendRegistryEvent(
     candidate: unknown,
@@ -5713,6 +5892,7 @@ export class Ledger {
     }
 
     this.#assertDocumentLineage(document);
+    this.#assertRegistryDocumentAdmissible(document);
     this.#assertCausationResolves(causation);
 
     const head = this.#readRegistryHead();
@@ -5891,10 +6071,46 @@ export class Ledger {
     }
   }
 
+  /**
+   * The two checks of P-14 A that read what the stream already registered
+   * (ADR 0085, decision 68's precedent: form where it is written, existence at
+   * the door).
+   *
+   * A `MODEL_VERSION` is held to its fixed payload, so a lifecycle word the fold
+   * cannot read never enters: a RETIRE written wrong cannot leave an ACTIVE row
+   * standing. A `ROUTING_ASSIGNMENT_GLOBAL` is held against
+   * `model_version_read_model` — the version it names and each fallback
+   * registered and `ACTIVE`, the role among the version's eligible roles. The
+   * refusal is `LedgerValidationError` with the path as `at` and a closed word at
+   * the head of each message; no value is echoed. Transport is not in the
+   * assignment and is not checked here: that half is the resolver's.
+   */
+  #assertRegistryDocumentAdmissible(document: RegistryDocument): void {
+    const issues =
+      document.documentKind === "MODEL_VERSION"
+        ? modelVersionPayloadIssues(document.payload)
+        : globalAssignmentIssues(document, (modelVersionId) => {
+            const row = this.#stmt(
+              "SELECT status FROM model_version_read_model WHERE model_version_id = ?",
+            ).get(modelVersionId) as { readonly status: string } | undefined;
+            if (row === undefined) return null;
+            const roles = this.#stmt(
+              "SELECT role FROM model_version_eligible_role WHERE model_version_id = ? ORDER BY ordinal",
+            ).all(modelVersionId) as { readonly role: string }[];
+            return {
+              status: row.status as ModelVersionReadModel["status"],
+              eligibleRoles: roles.map((entry) => entry.role),
+            };
+          });
+    if (issues.length > 0) throw new LedgerValidationError(issues);
+  }
+
   /** Incremental projection of the registry stream. Same rules as replay. */
   #projectRegistryDocument(document: RegistryDocument, sequence: number): void {
     const projected = nextRoutingAssignmentProjection(document, sequence);
     if (projected !== null) this.#applyRoutingAssignment(projected);
+    const modelVersion = nextModelVersionProjection(document, sequence);
+    if (modelVersion !== null) writeModelVersionProjection((sql) => this.#stmt(sql), modelVersion);
   }
 
   /**
@@ -6466,6 +6682,157 @@ export class Ledger {
         " FROM registry_events WHERE document_id = ? AND subject_kind = 'ARTIFACT' ORDER BY document_version",
     ).all(requireArtifactIdentifier(subjectId, "subjectId")) as RegistryEventRow[];
     return rows.map((row) => this.#artifactRowToRecord(row));
+  }
+
+  // -------------------------------------------------------------------------
+  // Reading the model version registry and the GLOBAL assignment (P-14 A)
+  // -------------------------------------------------------------------------
+  //
+  // Contracts §5 resolves an assignment against a vector of watermarks, never
+  // against "the latest". A reading made of separate statements is not a
+  // vector: another process may commit between two of them, and the watermark
+  // rows returned would describe tables other than the ones the answer came
+  // from. So each verb reads everything inside ONE deferred transaction — a
+  // read transaction, legal on a `query_only` handle, whose snapshot is fixed
+  // by its first read — and returns the watermark rows with the answer
+  // (N-P14-3). No clock, no file and no write. `rebuildReadModel` already
+  // refuses a broken chain on any of the three streams before it clears a row,
+  // so planning §6's rebuild rule needs nothing new here.
+
+  /**
+   * One model version with its eligible roles and transports, or null, and the
+   * one watermark row it was read at.
+   */
+  getModelVersion(modelVersionId: string): ModelVersionReading {
+    this.#assertOpen("getModelVersion");
+    const id = requireArtifactIdentifier(modelVersionId, "modelVersionId");
+    const run = this.#db.transaction(
+      (): ModelVersionReading => ({
+        modelVersion: this.#readModelVersionEntry(id),
+        watermarks: this.#readRegistryWatermarks([[MODEL_VERSION_PROJECTION, REGISTRY_STREAM]]),
+      }),
+    );
+    return run();
+  }
+
+  /**
+   * The GLOBAL assignment in force for one `(role, slot)`, its fallbacks, the
+   * model version it names, and the three watermark rows the answer was read at:
+   * the model version registry on the registry stream, and both heads of the
+   * routing projection.
+   *
+   * No assignment in force is an answer, not an error: `assignment` is null and
+   * the vector is returned all the same. Two assignments in force for the same
+   * coordinate — two documents, or two branches of one — is a question with no
+   * single answer, and is refused rather than settled by picking one.
+   */
+  getGlobalRoutingAssignment(query: { readonly role: string; readonly slot: number }): GlobalRoutingAssignmentReading {
+    this.#assertOpen("getGlobalRoutingAssignment");
+    const role = query.role;
+    const slot = query.slot;
+    if (typeof role !== "string" || !(WORKER_ROLES as readonly string[]).includes(role)) {
+      throw new LedgerQueryError("role must be one of " + WORKER_ROLES.join(", "));
+    }
+    if (!Number.isSafeInteger(slot) || slot < 0) {
+      throw new LedgerQueryError("slot must be an integer of zero or greater");
+    }
+
+    const run = this.#db.transaction((): GlobalRoutingAssignmentReading => {
+      const current = this.#stmt(
+        "SELECT * FROM routing_assignment_read_model " +
+          "WHERE scope_kind = 'GLOBAL' AND scope_id IS NULL AND role = ? AND slot = ? AND superseded_by IS NULL " +
+          "ORDER BY assignment_id",
+      ).all(role, slot) as RoutingAssignmentRow[];
+      const watermarks = this.#readRegistryWatermarks([
+        [MODEL_VERSION_PROJECTION, REGISTRY_STREAM],
+        [ROUTING_ASSIGNMENT_PROJECTION, INITIATIVE_STREAM],
+        [ROUTING_ASSIGNMENT_PROJECTION, REGISTRY_STREAM],
+      ]);
+
+      if (current.length > 1) {
+        throw new LedgerQueryError(
+          String(current.length) +
+            " GLOBAL routing assignments are in force for role " +
+            role +
+            " slot " +
+            String(slot) +
+            "; nothing resolves until one supersedes the others",
+        );
+      }
+      const row = current[0];
+      if (row === undefined) {
+        return { assignment: null, fallbacks: [], modelVersion: null, watermarks };
+      }
+
+      const assignment = routingAssignmentRowToModel(row);
+      const fallbacks = (
+        this.#stmt(
+          "SELECT * FROM routing_assignment_fallback WHERE assignment_id = ? ORDER BY ordinal",
+        ).all(assignment.assignmentId) as RoutingFallbackRow[]
+      ).map((fallback) => fallback.model_version_id);
+      return {
+        assignment,
+        fallbacks,
+        modelVersion: this.#readModelVersionEntry(assignment.modelVersionId),
+        watermarks,
+      };
+    });
+    return run();
+  }
+
+  #readModelVersionEntry(modelVersionId: string): ModelVersionEntry | null {
+    const row = this.#stmt("SELECT * FROM model_version_read_model WHERE model_version_id = ?").get(
+      modelVersionId,
+    ) as ModelVersionRow | undefined;
+    if (row === undefined) return null;
+    const roles = this.#stmt(
+      "SELECT * FROM model_version_eligible_role WHERE model_version_id = ? ORDER BY ordinal",
+    ).all(modelVersionId) as ModelVersionEligibleRoleDbRow[];
+    const transports = this.#stmt(
+      "SELECT * FROM model_version_transport WHERE model_version_id = ? ORDER BY ordinal",
+    ).all(modelVersionId) as ModelVersionTransportDbRow[];
+    return {
+      row: modelVersionRowToModel(row),
+      eligibleRoles: roles.map((entry) => modelVersionRoleRowToModel(entry).role),
+      transports: transports.map((entry) => entry.transport_kind),
+    };
+  }
+
+  /**
+   * The named watermark rows, in the table's own order. A pair this build
+   * publishes and the table does not hold is the ledger failing its own
+   * integrity, and a reading taken against a missing head is refused.
+   */
+  #readRegistryWatermarks(
+    pairs: readonly (readonly [string, string])[],
+  ): readonly RegistryWatermarkReading[] {
+    const select = this.#stmt(
+      "SELECT " + WATERMARK_COLUMNS + " FROM projection_watermark WHERE projection_name = ? AND source_stream = ?",
+    );
+    const readings = pairs.map(([projectionName, sourceStream]): RegistryWatermarkReading => {
+      const row = select.get(projectionName, sourceStream) as WatermarkRow | undefined;
+      if (row === undefined) {
+        throw new LedgerIntegrityError([
+          "projection_watermark is missing the row for " + projectionName + " on " + sourceStream,
+        ]);
+      }
+      return {
+        projectionName: row.projection_name,
+        sourceStream: row.source_stream,
+        appliedThroughSequence: row.applied_sequence,
+        eventCount: row.event_count,
+        sourceHeadSha256: row.source_head_sha256,
+      };
+    });
+    return readings.sort((a, b) =>
+      a.projectionName === b.projectionName
+        ? a.sourceStream < b.sourceStream
+          ? -1
+          : 1
+        : a.projectionName < b.projectionName
+          ? -1
+          : 1,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -7079,11 +7446,14 @@ export class Ledger {
       // The registry stream's artifact plane, folded in the same walk: one chain,
       // two planes, and the order of the rows is the order of the fold.
       const artifactSnapshot = createArtifactProjectionSnapshot();
+      // And the model version registry (P-14 A), from the same documents.
+      const modelVersionSnapshot = createModelVersionProjectionSnapshot();
       let lastRegistryRecordedAt = EPOCH_TIMESTAMP;
 
       const registryReplay = this.#replayRegistry(
         (document, row) => {
           applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
+          applyRegistryModelVersionToSnapshot(modelVersionSnapshot, document, row.sequence);
           lastRegistryRecordedAt = document.recordedAt;
         },
         (event, row) => {
@@ -7258,6 +7628,20 @@ export class Ledger {
       }
       for (const pin of artifactSnapshot.pins.values()) this.#upsertArtifactPin(pin);
 
+      // The model version registry, through the door's own writer. Cleared above
+      // children first; each version lands with its children under it. No
+      // eligibility is checked on the way: a rebuild folds what the door
+      // admitted, and an assignment whose model was retired afterwards is still
+      // history (N-P14A-7).
+      for (const [modelVersionId, row] of modelVersionSnapshot.modelVersions) {
+        writeModelVersionProjection((sql) => this.#stmt(sql), {
+          modelVersionId,
+          row,
+          eligibleRoles: modelVersionSnapshot.eligibleRoles.get(modelVersionId) ?? [],
+          transports: modelVersionSnapshot.transports.get(modelVersionId) ?? [],
+        });
+      }
+
       // The watermark rows are deleted and written back, not updated in place.
       // A rebuild regenerates the derived tables from the log, so there is no
       // partial watermark worth keeping, and a row belonging to a projection
@@ -7304,6 +7688,15 @@ export class Ledger {
         artifactReferenceRows: artifactSnapshot.references.size,
         artifactPinRows: artifactSnapshot.pins.size,
         artifactTombstoneRows: artifactSnapshot.tombstones.size,
+        modelVersionRows: modelVersionSnapshot.modelVersions.size,
+        modelVersionEligibleRoleRows: [...modelVersionSnapshot.eligibleRoles.values()].reduce(
+          (total, roles) => total + roles.length,
+          0,
+        ),
+        modelVersionTransportRows: [...modelVersionSnapshot.transports.values()].reduce(
+          (total, transports) => total + transports.length,
+          0,
+        ),
       };
     });
 
@@ -7390,9 +7783,11 @@ export class Ledger {
 
     const registrySnapshot = createRegistryProjectionSnapshot();
     const artifactSnapshot = createArtifactProjectionSnapshot();
+    const modelVersionSnapshot = createModelVersionProjectionSnapshot();
     const registryReplay = this.#replayRegistry(
       (document, row) => {
         applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
+        applyRegistryModelVersionToSnapshot(modelVersionSnapshot, document, row.sequence);
       },
       (event, row) => {
         applyArtifactEventToSnapshot(artifactSnapshot, event, row.sequence);
@@ -7728,6 +8123,7 @@ export class Ledger {
     problems.push(...this.#compareInitiativeProjections(initiativeSnapshot));
     problems.push(...this.#compareRoutingProjection(registrySnapshot, initiativeSnapshot));
     problems.push(...this.#compareArtifactProjections(artifactSnapshot));
+    problems.push(...this.#compareModelVersionProjection(modelVersionSnapshot));
 
     return {
       ok: problems.length === 0,
@@ -8329,6 +8725,89 @@ export class Ledger {
       new Map(
         (this.#stmt("SELECT * FROM artifact_tombstone_read_model").all() as ArtifactTombstoneRow[]).map(
           (row) => [row.artifact_reference_id, artifactTombstoneRowToModel(row)],
+        ),
+      ),
+    );
+
+    return problems;
+  }
+
+  /**
+   * Compare the model version registry and its two child tables against a fresh
+   * replay (P-14 A).
+   *
+   * Row for row, in canonical form, both directions, for the artifact plane's
+   * reason. The children are keyed by `(model_version_id, ordinal)`: a role moved
+   * to another ordinal, or a transport substituted, leaves every count unchanged
+   * while the registry claims an eligibility nobody recorded.
+   */
+  #compareModelVersionProjection(snapshot: ModelVersionProjectionSnapshot): IntegrityProblem[] {
+    const problems: IntegrityProblem[] = [];
+    const compare = <T>(
+      table: string,
+      expected: ReadonlyMap<string, T>,
+      stored: ReadonlyMap<string, T>,
+    ): void => {
+      for (const [key, row] of expected) {
+        const found = stored.get(key);
+        if (found === undefined) {
+          problems.push({
+            kind: "PROJECTION",
+            detail: table + " is missing the row " + safeRowIdentifier(key),
+            sequence: null,
+          });
+        } else if (canonicalJsonStringify(found) !== canonicalJsonStringify(row)) {
+          problems.push({
+            kind: "PROJECTION",
+            detail: table + " row for " + safeRowIdentifier(key) + " disagrees with a replay",
+            sequence: null,
+          });
+        }
+      }
+      for (const key of stored.keys()) {
+        if (!expected.has(key)) {
+          problems.push({
+            kind: "PROJECTION",
+            detail: table + " holds the row " + safeRowIdentifier(key) + " which no event accounts for",
+            sequence: null,
+          });
+        }
+      }
+    };
+    // The ordinal is always the text after the last colon, so two pairs cannot
+    // collide, and the key stays inside what `safeRowIdentifier` prints.
+    const childKey = (modelVersionId: string, ordinal: number): string =>
+      modelVersionId + ":" + String(ordinal);
+
+    compare(
+      MODEL_VERSION_PROJECTION,
+      snapshot.modelVersions,
+      new Map(
+        (this.#stmt("SELECT * FROM model_version_read_model").all() as ModelVersionRow[]).map((row) => [
+          row.model_version_id,
+          modelVersionRowToModel(row),
+        ]),
+      ),
+    );
+    compare(
+      "model_version_eligible_role",
+      new Map(
+        [...snapshot.eligibleRoles.values()].flat().map((row) => [childKey(row.modelVersionId, row.ordinal), row]),
+      ),
+      new Map(
+        (this.#stmt("SELECT * FROM model_version_eligible_role").all() as ModelVersionEligibleRoleDbRow[]).map(
+          (row) => [childKey(row.model_version_id, row.ordinal), modelVersionRoleRowToModel(row)],
+        ),
+      ),
+    );
+    compare(
+      "model_version_transport",
+      new Map(
+        [...snapshot.transports.values()].flat().map((row) => [childKey(row.modelVersionId, row.ordinal), row]),
+      ),
+      new Map(
+        (this.#stmt("SELECT * FROM model_version_transport").all() as ModelVersionTransportDbRow[]).map(
+          (row) => [childKey(row.model_version_id, row.ordinal), modelVersionTransportRowToModel(row)],
         ),
       ),
     );

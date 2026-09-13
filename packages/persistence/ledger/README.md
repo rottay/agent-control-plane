@@ -49,6 +49,8 @@ ledger.close();
 | `getArtifactBlob(digest, generation)` / `getUnreclaimedArtifactBlob(digest)` / `getHighestArtifactBlobGeneration(digest)` / `listArtifactBlobsInState(state)` | The artifact fold's own view of the blob read model, read-only and outside a transaction: what a publisher proposes a generation from. |
 | `getArtifactReference(id)` / `getArtifactPin(id)` / `listLiveArtifactPins(kind)` | A reference, a pin, and every live pin of one holder kind in the order taken: what a reader authorizes by and a reconciler works from. |
 | `listArtifactEvents(subjectId)` | The events of one artifact subject in ordinal order, each re-parsed: the next ordinal, and an intention's exact recorded body. |
+| `getGlobalRoutingAssignment({ role, slot })` | The GLOBAL assignment in force for one role and slot, its fallbacks, the model version it names with its roles and transports, and the three watermark rows it was read at — all from one read transaction. `assignment: null` when none is in force; two in force is a `LedgerQueryError`. |
+| `getModelVersion(modelVersionId)` | One model version with its roles and transports, or null, and the registry watermark it was read at, from one read transaction. |
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
@@ -183,6 +185,9 @@ fifteenth class cannot arrive without appearing here.
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
 | `routing_assignment_fallback` | derived | one row per fallback of one assignment, in attempt order |
+| `model_version_read_model` | derived | the one registry of model versions, one row per `MODEL_VERSION` document at the version applied last: provider, model, release, lifecycle status, context, policy version, `deprecated_at` null if and only if `ACTIVE`. `latest_performance_window` stays `NULL`: economy's |
+| `model_version_eligible_role` | derived | one row per role a model version declares eligible, in declared order, each role once |
+| `model_version_transport` | derived | one row per transport a model version admits, in declared order, each transport once |
 | `artifact_blob_read_model` | derived | one row per generation of some bytes, keyed `(content_sha256, blob_generation)`: size, media type, lifecycle state, encryption, and the event that first published it. No owner and no scope |
 | `artifact_reference_read_model` | derived | one row per authorized access to one generation: class, classification, scope, producer, policy, retention. Here lives the permission |
 | `artifact_pin_read_model` | derived | one row per protection of one generation from collection, with the sequences that took and released it |
@@ -987,12 +992,13 @@ Three things about it are stated here rather than left to be discovered.
   projection last move" has one answer. `status()` publishes the rows as
   stored — it does not recompute a head and does not judge. That division is
   deliberate: `verifyIntegrity()` is what judges.
-- **The fold validates no eligibility.** The contract has `model_version_id`
-  checked fail-closed against an ACTIVE model version; that is the write gate of
-  the module owning the semantics, not this one. The registry is storage, this
-  package may not import `@acp/accounts`, and `model_version_read_model` does not
-  exist. A document whose payload this fold cannot read projects **no row while
-  the document still stands**, exactly as a malformed route does.
+- **The fold validates no eligibility, and the door does** (amended by ADR
+  0085). A rebuild folds what the door admitted, so a document whose payload this
+  fold cannot read still projects **no row while the document still stands**,
+  and an assignment whose model was retired afterwards is folded as recorded. The
+  contract's fail-closed check on `model_version_id` is made at the append door,
+  against `model_version_read_model`, before the insert — see the model version
+  registry below.
 
 The document vocabulary itself — `DOCUMENT_KINDS`, fourteen names — is exported
 from this package and is **provisional there**. It belongs in `@acp/contracts`,
@@ -1016,6 +1022,63 @@ without either a null in a NOT NULL column or an initiative id in a field named
 `rebuildReadModel()` replays all three, and `verifyIntegrity()` verifies all
 three — each watermark is checked against the head of the stream it names, never
 another's.
+
+## The model version registry, and the gate a GLOBAL assignment passes
+
+Accounts §6's one registry of model versions is folded here from the registry
+stream's `MODEL_VERSION` documents (P-14 A, migration 17, ADR 0085): a row per
+document and two child tables, `model_version_eligible_role` and
+`model_version_transport`, rather than JSON columns. The ledger folds it; the
+semantics of resolving a role against it are `@acp/accounts`'.
+
+### A fixed payload, held at the door
+
+A `MODEL_VERSION` payload has exactly nine keys, the camelCase mirror of the
+dictionary: `provider`, `model`, `release`, `status`, `contextTokens`,
+`policyVersion`, `deprecatedAt`, `eligibleRoles`, `transports`
+(`MODEL_VERSION_PAYLOAD_KEYS`). Every one is required and no other is admitted,
+so a rating cannot be parked in the capability registry under a name nobody
+reads. `status` is one of `MODEL_VERSION_STATUSES`; `deprecatedAt` is null if and
+only if the status is `ACTIVE`; roles come from the worker vocabulary and
+transports from the contract's `TRANSPORT_KINDS`, each once. A payload outside
+the shape is a `LedgerValidationError` naming each path, and nothing is appended.
+
+### What the door refuses for an assignment
+
+After the replay, event-id and lineage checks and before the insert,
+`appendRegistryEvent` holds a `ROUTING_ASSIGNMENT_GLOBAL` against the registry:
+
+| Word at the head of the message | Path | When |
+| --- | --- | --- |
+| `MODEL_VERSION_UNKNOWN` | `payload.modelVersionId` | no model version with that id |
+| `MODEL_VERSION_RETIRED` | `payload.modelVersionId` | retired: blocks, and proposes migrating to an ACTIVE version |
+| `MODEL_VERSION_DEPRECATED` | `payload.modelVersionId` | deprecated: an assignment names ACTIVE only |
+| `ROLE_NOT_ELIGIBLE` | `payload.role` | the version does not declare the role |
+
+Each fallback is held to the same four rules at `payload.fallbacks[i]`. An
+assignment the fold could not read is refused field by field before any lookup.
+An exact replay of an assignment admitted before its version was retired is
+still a replay. Transport is not in the assignment, so it is not checked here.
+
+### The fold, the migration and the vector
+
+The fold refuses nothing. The row is the version applied last, its children
+replaced whole; a version the fold cannot read — only history from before
+migration 17 can hold one — leaves no row and removes the one an earlier version
+left. Migration 17 seeds one watermark at the registry head and, in the same
+transaction, folds the model versions the stream already holds through the same
+function the door and the rebuild write with.
+
+`getGlobalRoutingAssignment` and `getModelVersion` read everything inside one read
+transaction and return the watermark rows the answer came from, so a caller
+records the vector it read and not whatever the registry has become since.
+
+### What this escalón does not do
+
+No product door publishes a model version or an assignment, and no task intake
+records a resolution: escalones B and C of P-14. No `INITIATIVE`/`STEP` partition.
+No lifecycle rule between versions and no check that a provider is stable across
+them. The policy file and `resolveRoute` in `@acp/accounts` are untouched.
 
 ## Integrity
 

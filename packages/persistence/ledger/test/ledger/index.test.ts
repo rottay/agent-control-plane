@@ -60,6 +60,7 @@ import {
   EXECUTION_EFFECT_MIGRATION,
   EXECUTION_OCCURRENCE_MIGRATION,
   MIGRATIONS,
+  MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
   applyMigrations,
 } from "../../src/migrations/index.js";
@@ -323,12 +324,13 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    // Fourteen since P-18/protocolo D added the prompt and response
-    // occurrences, beside C's effect, deliveries and route segment, B's attempt
+    // Seventeen since P-14 A added the model version registry, beside P-36/local's
+    // artifact registry and envelope reference, P-18/protocolo D's prompt and
+    // response occurrences, C's effect, deliveries and route segment, B's attempt
     // record, P-05/B's revision coordinate, P-08's sidecar and the registry
     // stream, typed causal triple and watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1312,6 +1314,27 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
 }
 
 /**
+ * Migration 17 undone: the model version registry (P-14 A).
+ *
+ * Children first, because `foreign_keys` is ON and each child names its model
+ * version; each table's unique index before the table; and the one watermark
+ * row with them, or the reopen would find a row for a projection whose table it
+ * is about to create. Nothing in `registry_events` moves: the documents stay,
+ * and the re-applied migration folds them again.
+ */
+function dropModelVersionRegistry(raw: Database.Database): void {
+  raw.exec(
+    "DROP INDEX ux_model_version_transport__transport; " +
+      "DROP TABLE model_version_transport; " +
+      "DROP INDEX ux_model_version_eligible_role__role; " +
+      "DROP TABLE model_version_eligible_role; " +
+      "DROP INDEX ix_model_version_read_model__status; " +
+      "DROP TABLE model_version_read_model;",
+  );
+  raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?").run("model_version_read_model");
+}
+
+/**
  * Migration 16 undone: the envelope reference's trigger, then its column.
  *
  * In that order because SQLite refuses `DROP COLUMN` for a column a trigger
@@ -1320,6 +1343,9 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
  * name". No watermark moves, because 16 seeded none.
  */
 function dropTaskRevisionEnvelopeReference(raw: Database.Database): void {
+  // Seventeen first: rewinding past 16 means rewinding past everything applied
+  // after it, and a re-applied 17 over its own tables aborts.
+  dropModelVersionRegistry(raw);
   raw.exec(
     "DROP TRIGGER tr_task_revision_read_model__validate_envelope_reference; " +
       "ALTER TABLE task_revision_read_model DROP COLUMN envelope_artifact_reference_id;",
@@ -1875,6 +1901,7 @@ describe("projection watermark verification", () => {
   it("detects an event count that disagrees with the registry stream", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     expect(ledger.verifyIntegrity().ok).toBe(true);
     ledger.close();
@@ -1887,8 +1914,8 @@ describe("projection watermark verification", () => {
     expect(report.ok).toBe(false);
     expect(kindsOf(report.problems)).toEqual(["PROJECTION_META"]);
     expect(detailsOf(report.problems)).toContain(
-      "routing_assignment_read_model on registry_events counts 4 events through sequence 1 " +
-        "but that stream holds 1",
+      "routing_assignment_read_model on registry_events counts 4 events through sequence 3 " +
+        "but that stream holds 3",
     );
     expect(detailsOf(report.problems)).not.toContain("on initiative_events");
   });
@@ -1898,6 +1925,7 @@ describe("projection watermark verification", () => {
     const ledger = open(path);
     seedFixture(ledger);
     ledger.appendInitiativeEvent(makeInitiativeEvent());
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.close();
 
@@ -1953,20 +1981,21 @@ describe("projection watermark verification", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
-    // Seventeen projections since P-36/local A: the two task-stream folds, the
+    // Eighteen projections since P-14 A: the two task-stream folds, the
     // route fold, the revision fold, the attempt fold, the segment, effect and
     // delivery folds, the prompt and response occurrence folds, the two
-    // initiative-stream folds, the four artifact folds of the registry stream,
-    // and the two-source routing fold. Eighteen heads, because the last one has
-    // two — every one of them at zero on a ledger that has never been appended to.
-    expect(ledger.status().projections).toHaveLength(17);
+    // initiative-stream folds, the four artifact folds and the model version fold
+    // of the registry stream, and the two-source routing fold. Nineteen heads,
+    // because the last one has two — every one of them at zero on a ledger that
+    // has never been appended to.
+    expect(ledger.status().projections).toHaveLength(18);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -2961,7 +2990,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3173,7 +3202,7 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
     expect([...appliedByName(ledger).values()]).toEqual([
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
@@ -3198,7 +3227,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(18);
+    expect(rows).toHaveLength(19);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "dispatch_attempt_read_model",
@@ -3274,7 +3303,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(18);
+    expect(before).toHaveLength(19);
 
     tamper(path, (raw) => {
       raw
@@ -3389,7 +3418,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3438,7 +3467,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(18);
+    expect(rows).toHaveLength(19);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -4029,6 +4058,47 @@ function makeRegistryDocument(input: RegistryInput = {}): Record<string, unknown
   };
 }
 
+/**
+ * A `MODEL_VERSION` payload in the fixed shape the door holds it to (P-14 A,
+ * M-5): the camelCase mirror of accounts §6, every key present.
+ */
+function modelVersionPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    provider: "claude",
+    model: "claude-opus-5",
+    release: "2026-06-01",
+    status: "ACTIVE",
+    contextTokens: 200000,
+    policyVersion: "2026.09.0",
+    deprecatedAt: null,
+    eligibleRoles: ["coordinator", "implementer", "reviewer", "consultant", "verifier"],
+    transports: ["CLI_SUBSCRIPTION"],
+    ...overrides,
+  };
+}
+
+function makeModelVersionDocument(
+  modelVersionId: string,
+  input: RegistryInput = {},
+): Record<string, unknown> {
+  return makeRegistryDocument({
+    documentKind: "MODEL_VERSION",
+    documentId: modelVersionId,
+    payload: modelVersionPayload(),
+    ...input,
+  });
+}
+
+/**
+ * The two model versions `routingPayload` names, registered `ACTIVE` and eligible
+ * for every role, so a GLOBAL assignment passes the door (ADR 0085). Two registry
+ * sequences, and a test that counts the stream counts them.
+ */
+function seedModelVersions(ledger: Ledger): void {
+  ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE));
+  ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_TWO));
+}
+
 /** Every watermark row keyed by the pair, which is the table's own identity. */
 function appliedByPair(path: string): Map<string, number> {
   return new Map(
@@ -4100,6 +4170,26 @@ function readFallbacks(path: string): FallbackRow[] {
   }
 }
 
+/** The model version registry's three tables, by raw SQL, in key order (P-14 A). */
+function readModelVersionTables(path: string): {
+  readonly versions: unknown[];
+  readonly roles: unknown[];
+  readonly transports: unknown[];
+} {
+  const raw = new Database(path);
+  try {
+    return {
+      versions: raw.prepare("SELECT * FROM model_version_read_model ORDER BY model_version_id").all(),
+      roles: raw.prepare("SELECT * FROM model_version_eligible_role ORDER BY model_version_id, ordinal").all(),
+      transports: raw
+        .prepare("SELECT * FROM model_version_transport ORDER BY model_version_id, ordinal")
+        .all(),
+    };
+  } finally {
+    raw.close();
+  }
+}
+
 /** The registry stream's head, read the way the vector is: by raw SQL. */
 function readRegistryMeta(path: string): Map<string, string> {
   const raw = new Database(path);
@@ -4118,21 +4208,32 @@ describe("the registry stream carries its own chain, head and projection", () =>
     const path = temporaryDatabase();
     const ledger = open(path);
 
+    // The two model versions the assignment names come first, since P-14 A: the
+    // door refuses an assignment naming a version nobody registered. The first
+    // of them is what chains from genesis.
+    const genesis = ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE));
+    expect(genesis.record.sequence).toBe(1);
+    expect(genesis.record.previousSha256).toBe(GENESIS_SHA256);
+    expect(genesis.record.eventSha256).toBe(
+      chainDigest(GENESIS_SHA256, genesis.record.canonicalJson),
+    );
+    const second = ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_TWO));
+
     const result = ledger.appendRegistryEvent(makeRegistryDocument());
 
     expect(result.inserted).toBe(true);
-    expect(result.record.sequence).toBe(1);
-    expect(result.record.previousSha256).toBe(GENESIS_SHA256);
+    expect(result.record.sequence).toBe(3);
+    expect(result.record.previousSha256).toBe(second.record.eventSha256);
     expect(result.record.eventSha256).toBe(
-      chainDigest(GENESIS_SHA256, result.record.canonicalJson),
+      chainDigest(second.record.eventSha256, result.record.canonicalJson),
     );
     expect(result.record.causation).toBeNull();
     expect(ledger.verifyIntegrity().ok).toBe(true);
     ledger.close();
 
     const meta = readRegistryMeta(path);
-    expect(meta.get("registry_head_sequence")).toBe("1");
-    expect(meta.get("registry_event_count")).toBe("1");
+    expect(meta.get("registry_head_sequence")).toBe("3");
+    expect(meta.get("registry_event_count")).toBe("3");
     expect(meta.get("registry_head_event_sha256")).toBe(result.record.eventSha256);
 
     const rows = readRouting(path);
@@ -4155,7 +4256,7 @@ describe("the registry stream carries its own chain, head and projection", () =>
       slot: 0,
       model: MODEL_ONE,
       stream: "registry_events",
-      at: 1,
+      at: 3,
       superseded: null,
     });
     expect(readFallbacks(path).map((row) => row.model_version_id)).toEqual([MODEL_TWO]);
@@ -4164,6 +4265,7 @@ describe("the registry stream carries its own chain, head and projection", () =>
   it("supersedes the parent version rather than overwriting it", () => {
     const path = temporaryDatabase();
     const ledger = open(path);
+    seedModelVersions(ledger);
     const first = ledger.appendRegistryEvent(makeRegistryDocument());
     const second = ledger.appendRegistryEvent(
       makeRegistryDocument({
@@ -4174,7 +4276,7 @@ describe("the registry stream carries its own chain, head and projection", () =>
       }),
     );
     expect(second.inserted).toBe(true);
-    expect(first.record.sequence).toBe(1);
+    expect(first.record.sequence).toBe(3);
     expect(ledger.verifyIntegrity().ok).toBe(true);
     ledger.close();
 
@@ -4192,6 +4294,7 @@ describe("the registry stream carries its own chain, head and projection", () =>
 
   it("treats an exact replay as a no-op and a reused version as a refusal", () => {
     const ledger = open(temporaryDatabase());
+    seedModelVersions(ledger);
     const document = makeRegistryDocument();
     const first = ledger.appendRegistryEvent(document);
 
@@ -4230,6 +4333,7 @@ describe("the registry stream carries its own chain, head and projection", () =>
       task.record.sequence,
       task.record.eventSha256,
     );
+    seedModelVersions(ledger);
     const document = ledger.appendRegistryEvent(makeRegistryDocument(), causedByTask);
     expect(document.record.causation).toEqual(causedByTask);
 
@@ -4267,36 +4371,46 @@ describe("the registry stream carries its own chain, head and projection", () =>
       },
     });
 
+    armed = false;
+    seedModelVersions(ledger);
+    armed = true;
     expect(caught(() => ledger.appendRegistryEvent(makeRegistryDocument()))).toBeInstanceOf(Error);
     ledger.close();
 
     // Neither the row, nor the head, nor the projection, nor the watermark.
-    expect(readRegistryMeta(path).get("registry_head_sequence")).toBe("0");
+    expect(readRegistryMeta(path).get("registry_head_sequence")).toBe("2");
     expect(readRouting(path)).toEqual([]);
-    expect(appliedByPair(path).get("routing_assignment_read_model@registry_events")).toBe(0);
+    expect(appliedByPair(path).get("routing_assignment_read_model@registry_events")).toBe(2);
 
     armed = false;
     const reopened = open(path);
-    expect(reopened.appendRegistryEvent(makeRegistryDocument()).record.sequence).toBe(1);
+    expect(reopened.appendRegistryEvent(makeRegistryDocument()).record.sequence).toBe(3);
     expect(reopened.verifyIntegrity().ok).toBe(true);
   });
 
-  it("projects no row for a malformed routing payload, and leaves the event standing", () => {
-    // R4/C8. The fold projects what the event recorded; it validates no
-    // eligibility, and a payload it cannot read produces no row rather than a
-    // refusal to append.
+  it("refuses a malformed routing payload by name at the door, and appends nothing (ADR 0085)", () => {
+    // R4/C8 said a payload the fold cannot read produces no row rather than a
+    // refusal to append. The fold half still holds, and the projection suite
+    // holds it: a stored history is never disowned. The door half is amended by
+    // P-14 A — an assignment the fold would project nothing for is not one the
+    // door admits, so each unreadable field is refused at its own path.
     const path = temporaryDatabase();
     const ledger = open(path);
-    const result = ledger.appendRegistryEvent(
-      makeRegistryDocument({ payload: { role: "implementer" } }),
+    const refusal = caught(() =>
+      ledger.appendRegistryEvent(makeRegistryDocument({ payload: { role: "implementer" } })),
     );
-    expect(result.inserted).toBe(true);
+    expect(refusal).toBeInstanceOf(LedgerValidationError);
+    expect((refusal as LedgerValidationError).issues.map((issue) => issue.path)).toEqual([
+      "payload.slot",
+      "payload.provider",
+      "payload.modelVersionId",
+    ]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
     ledger.close();
 
     expect(readRouting(path)).toEqual([]);
-    expect(readRegistryMeta(path).get("registry_head_sequence")).toBe("1");
-    expect(appliedByPair(path).get("routing_assignment_read_model@registry_events")).toBe(1);
+    expect(readRegistryMeta(path).get("registry_head_sequence")).toBe("0");
+    expect(appliedByPair(path).get("routing_assignment_read_model@registry_events")).toBe(0);
   });
 });
 
@@ -4306,6 +4420,7 @@ describe("two heads under one projection name advance independently (negative 2)
     const ledger = open(path);
     seedFixture(ledger);
     ledger.appendInitiativeEvent(makeInitiativeEvent());
+    seedModelVersions(ledger);
     ledger.close();
 
     const before = singleSourceApplied(path);
@@ -4318,7 +4433,7 @@ describe("two heads under one projection name advance independently (negative 2)
     writer.close();
 
     const after = appliedByPair(path);
-    expect(after.get("routing_assignment_read_model@registry_events")).toBe(1);
+    expect(after.get("routing_assignment_read_model@registry_events")).toBe(3);
     // The sibling row of the SAME projection did not move. This is the whole
     // claim of the composite key, and no single-source projection can make it.
     expect(after.get("routing_assignment_read_model@initiative_events")).toBe(initiativeBefore);
@@ -4330,6 +4445,7 @@ describe("two heads under one projection name advance independently (negative 2)
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.close();
 
@@ -4337,7 +4453,7 @@ describe("two heads under one projection name advance independently (negative 2)
     const registryBefore = appliedByPair(path).get(
       "routing_assignment_read_model@registry_events",
     );
-    expect(registryBefore).toBe(1);
+    expect(registryBefore).toBe(3);
 
     const writer = open(path);
     writer.appendInitiativeEvent(makeInitiativeEvent());
@@ -4362,12 +4478,13 @@ describe("two heads under one projection name advance independently (negative 2)
     const ledger = open(path);
     seedFixture(ledger);
     ledger.appendInitiativeEvent(makeInitiativeEvent());
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     const status = ledger.status();
-    // Seventeen projections, not eighteen entries: the vector lives INSIDE the
+    // Eighteen projections, not nineteen entries: the vector lives INSIDE the
     // projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(17);
+    expect(status.projections).toHaveLength(18);
     expect(status.projections.map((projection) => projection.name)).toEqual([
       "artifact_blob_read_model",
       "artifact_pin_read_model",
@@ -4378,6 +4495,7 @@ describe("two heads under one projection name advance independently (negative 2)
       "execution_route_read_model",
       "execution_route_segment_read_model",
       "initiative_read_model",
+      "model_version_read_model",
       "prompt_occurrence_read_model",
       "response_occurrence_read_model",
       "roadmap_version_read_model",
@@ -4398,7 +4516,7 @@ describe("two heads under one projection name advance independently (negative 2)
       "registry_events",
     ]);
     expect(routing?.watermarks.map((watermark) => watermark.appliedThroughSequence)).toEqual([
-      1, 1,
+      1, 3,
     ]);
     expect(routing?.rowCount).toBe(1);
 
@@ -4409,12 +4527,12 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Eighteen rows in the table, eighteen entries across seventeen projections.
+    // Nineteen rows in the table, nineteen entries across eighteen projections.
     // Nothing in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(18);
+    expect(readWatermarks(path)).toHaveLength(19);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(18);
+    ).toHaveLength(19);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -4505,6 +4623,7 @@ describe("a projector version invalidates a pair, not a projection (negative 3)"
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.close();
 
@@ -4534,6 +4653,7 @@ describe("a projector version invalidates a pair, not a projection (negative 3)"
     // rebuilt would repair a ledger nobody asked it to touch.
     const path = temporaryDatabase();
     const ledger = open(path);
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.close();
 
@@ -4552,6 +4672,7 @@ describe("a projector version invalidates a pair, not a projection (negative 3)"
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.close();
 
@@ -4582,6 +4703,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
     const ledger = open(path);
     seedFixture(ledger);
     ledger.appendInitiativeEvent(makeInitiativeEvent());
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.appendRegistryEvent(
       makeRegistryDocument({
@@ -4602,9 +4724,10 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
     const live = {
       routing: readRouting(path),
       fallbacks: readFallbacks(path),
+      modelVersions: readModelVersionTables(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(18);
+    expect(live.watermarks).toHaveLength(19);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -4613,6 +4736,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
     const afterFirst = {
       routing: readRouting(path),
       fallbacks: readFallbacks(path),
+      modelVersions: readModelVersionTables(path),
       watermarks: readWatermarks(path),
     };
 
@@ -4622,6 +4746,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
     const afterSecond = {
       routing: readRouting(path),
       fallbacks: readFallbacks(path),
+      modelVersions: readModelVersionTables(path),
       watermarks: readWatermarks(path),
     };
 
@@ -4629,9 +4754,15 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
     expect(afterFirst).toEqual(live);
     expect(afterSecond).toEqual(afterFirst);
     expect(secondResult).toEqual(firstResult);
-    expect(firstResult.replayedRegistryEvents).toBe(3);
-    expect(firstResult.registryThroughSequence).toBe(3);
+    expect(firstResult.replayedRegistryEvents).toBe(5);
+    expect(firstResult.registryThroughSequence).toBe(5);
     expect(firstResult.routingAssignmentRows).toBe(3);
+    // P-14 A: the two model versions, each with five roles and one transport.
+    expect([
+      firstResult.modelVersionRows,
+      firstResult.modelVersionEligibleRoleRows,
+      firstResult.modelVersionTransportRows,
+    ]).toEqual([2, 10, 2]);
     expect(open(path).verifyIntegrity().ok).toBe(true);
   });
 });
@@ -4641,15 +4772,18 @@ describe("a rebuild refuses over any of the three broken chains (negative 10)", 
     const path = temporaryDatabase();
     const ledger = open(path);
     seedFixture(ledger);
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.close();
 
     const before = {
       routing: readRouting(path),
+      modelVersions: readModelVersionTables(path),
       watermarks: readWatermarks(path),
       tasks: readRouting(path).length,
     };
     expect(before.routing).toHaveLength(1);
+    expect(before.modelVersions.versions).toHaveLength(2);
 
     withRawDatabase(path, (raw) => {
       // The append-only trigger denies UPDATE, so the row is rewritten the only
@@ -4666,6 +4800,7 @@ describe("a rebuild refuses over any of the three broken chains (negative 10)", 
 
     // The refusal came before the DELETE: the derived rows are all still there.
     expect(readRouting(path)).toEqual(before.routing);
+    expect(readModelVersionTables(path)).toEqual(before.modelVersions);
     expect(readWatermarks(path)).toEqual(before.watermarks);
   });
 });
@@ -5263,9 +5398,12 @@ describe("a stored head is a count this code wrote, or it is refused", () => {
         .run("1e3", "registry_head_sequence");
     });
     const writer = open(path);
-    expect(caught(() => writer.appendRegistryEvent(makeRegistryDocument()))).toBeInstanceOf(
-      LedgerIntegrityError,
-    );
+    // A model version rather than an assignment: since P-14 A an assignment
+    // naming an unregistered version is refused before the head is read, and the
+    // claim here is about the head.
+    expect(
+      caught(() => writer.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE))),
+    ).toBeInstanceOf(LedgerIntegrityError);
   });
 
   it("still reads the healthy heads of all three streams", () => {
@@ -5281,13 +5419,14 @@ describe("a stored head is a count this code wrote, or it is refused", () => {
     const ledger = open(temporaryDatabase());
     seedFixture(ledger);
     ledger.appendInitiativeEvent(makeInitiativeEvent());
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     expect(ledger.status().headSequence).toBe(5);
     expect(ledger.status().eventCount).toBe(5);
     expect(ledger.status().initiativeHeadSequence).toBe(1);
     expect(ledger.status().initiativeEventCount).toBe(1);
-    expect(readRegistryMeta(ledger.path).get("registry_head_sequence")).toBe("1");
+    expect(readRegistryMeta(ledger.path).get("registry_head_sequence")).toBe("3");
     expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 
@@ -5473,7 +5612,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -6075,6 +6214,7 @@ describe("the account chain fails closed and preserves what it found", () => {
     const ledger = open(temporaryDatabase());
     seedFixture(ledger);
     ledger.appendInitiativeEvent(makeInitiativeEvent());
+    seedModelVersions(ledger);
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.appendAccountAction(action(1));
     ledger.appendAccountAction(action(2));
@@ -7457,7 +7597,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7516,7 +7656,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7555,6 +7695,7 @@ describe("a version this build does not read is refused, by name", () => {
       ledger.append(
         makeEvent({ taskId, transitionId: "two", fromState: "DISCOVERED", toState: "DISCOVERED" }),
       );
+      seedModelVersions(ledger);
       ledger.appendRegistryEvent(makeRegistryDocument());
       ledger.close();
 
@@ -7566,7 +7707,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -7575,11 +7716,13 @@ describe("a version this build does not read is refused, by name", () => {
       expect(migrated.verifyIntegrity().ok, version).toBe(true);
       const rebuilt = migrated.rebuildReadModel();
       expect(rebuilt.replayedEvents, version).toBe(2);
-      expect(rebuilt.replayedRegistryEvents, version).toBe(1);
+      expect(rebuilt.replayedRegistryEvents, version).toBe(3);
+      // Migration 17 re-applied over the two documents and folded them (N-P14A-15).
+      expect(rebuilt.modelVersionRows, version).toBe(2);
       expect(migrated.verifyIntegrity().ok, version).toBe(true);
 
       const intended = migrated.appendArtifactEvent(publicationIntended());
-      expect(intended.record.sequence, version).toBe(2);
+      expect(intended.record.sequence, version).toBe(4);
       expect(intended.record.event.contractVersion, version).toBe(CONTRACT_VERSION);
       expect(migrated.rebuildReadModel().artifactBlobRows, version).toBe(1);
       expect(migrated.verifyIntegrity().ok, version).toBe(true);
@@ -7713,7 +7856,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -12839,20 +12982,27 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
       makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
     );
     const documentId = routingDocumentId();
-    const first = ledger.appendRegistryEvent(makeRegistryDocument({ documentId }), {
+    // The model version first, since P-14 A: the two assignment versions below
+    // name it, and the door refuses an assignment naming a version nobody
+    // registered. It is the row a task event names as its cause, so the causal
+    // link still points at sequence 1. The payload is the fixed shape (M-5),
+    // where it used to be `{}`.
+    const first = ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE), {
       stream: "control_plane_events",
       sequence: cause.record.sequence,
       sha256: cause.record.eventSha256,
     });
     ledger.appendRegistryEvent(
+      makeRegistryDocument({ documentId, payload: routingPayload({ fallbacks: [] }) }),
+    );
+    ledger.appendRegistryEvent(
       makeRegistryDocument({
         documentId,
         documentVersion: 2,
         parentDocumentVersion: 1,
-        payload: routingPayload({ slot: 1 }),
+        payload: routingPayload({ slot: 1, fallbacks: [] }),
       }),
     );
-    ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "MODEL_VERSION", documentId: "mv-1", payload: {} }));
     // A task event whose cause is a registry row written before migration 15.
     ledger.append(
       makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
@@ -12891,9 +13041,9 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     expect(before.columns.map((column) => column["name"])).not.toContain("subject_kind");
 
     const migrated = open(path);
-    // Fifteen applies over the history at fourteen, and sixteen after it.
+    // Fifteen applies over the history at fourteen, and sixteen and seventeen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(MODEL_VERSION_REGISTRY_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -12917,7 +13067,7 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
 
     // The next append takes the next number: no sequence is ever reused.
     const reopened = open(path);
-    const next = reopened.appendRegistryEvent(makeRegistryDocument({ documentKind: "MODEL_VERSION", documentId: "mv-2", payload: {} }));
+    const next = reopened.appendRegistryEvent(makeModelVersionDocument("mv-2"));
     expect(next.record.sequence).toBe(4);
     expect(next.record.previousSha256).toBe(previous);
     expect(reopened.verifyIntegrity().ok).toBe(true);
@@ -13106,7 +13256,7 @@ describe("an artifact event is a registry row with a subject, an ordinal and a k
       expect(issue.path).toBe("subjectOrdinal");
       expect(issue.message).toContain("the next one is ordinal 2; this event proposes " + String(ordinal));
     }
-    expect(ledger.status().projections.length).toBe(17);
+    expect(ledger.status().projections.length).toBe(18);
     expect(ledger.appendArtifactEvent(publicationSucceeded({ ordinal: 2 })).inserted).toBe(true);
   });
 
@@ -13114,12 +13264,12 @@ describe("an artifact event is a registry row with a subject, an ordinal and a k
     const ledger = open(temporaryDatabase());
     ledger.appendArtifactEvent(publicationIntended());
     const documentOverArtifact = onlyIssue(
-      caught(() => ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "MODEL_VERSION", documentId: CONTENT_A, payload: {} }))),
+      caught(() => ledger.appendRegistryEvent(makeModelVersionDocument(CONTENT_A))),
     );
     expect(documentOverArtifact.path).toBe("documentId");
     expect(documentOverArtifact.message).toContain("is recorded as an ARTIFACT subject");
 
-    ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "MODEL_VERSION", documentId: "mv-1", payload: {} }));
+    ledger.appendRegistryEvent(makeModelVersionDocument("mv-1"));
     ledger.appendArtifactEvent(publicationSucceeded());
     const artifactOverDocument = onlyIssue(caught(() => ledger.appendArtifactEvent(pinAcquired({ pinId: "mv-1" }))));
     expect(artifactOverDocument.path).toBe("payload.artifactPinId");
@@ -13166,6 +13316,7 @@ describe("an artifact event is a registry row with a subject, an ordinal and a k
       ["artifact_pin_read_model", 2, 2],
       ["artifact_reference_read_model", 2, 2],
       ["artifact_tombstone_read_model", 2, 2],
+      ["model_version_read_model", 2, 2],
       ["routing_assignment_read_model", 2, 2],
     ]);
   });
@@ -13542,7 +13693,10 @@ describe("the artifact fold follows artifacts §8.1, at the door and in the rebu
 describe("the artifact plane rebuilds from the stream alone (N-P36-19, N-P36A-17)", () => {
   function fullHistory(path: string): void {
     const ledger = open(path);
-    ledger.appendRegistryEvent(makeRegistryDocument());
+    // One document row among the artifact rows. A model version since P-14 A: an
+    // assignment would need two registered versions first, and this history is
+    // about the plane, not the gate.
+    ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE));
     publishContentA(ledger);
     ledger.appendArtifactEvent(referenceRecorded());
     ledger.appendArtifactEvent(pinAcquired());
@@ -13638,7 +13792,10 @@ describe("the artifact plane rebuilds from the stream alone (N-P36-19, N-P36A-17
 describe("the artifact plane is read through the fold's own view, and a read moves nothing (H-1, N-P36C-13)", () => {
   function planeHistory(path: string): void {
     const ledger = open(path);
-    ledger.appendRegistryEvent(makeRegistryDocument());
+    // One document row among the artifact rows. A model version since P-14 A: an
+    // assignment would need two registered versions first, and this history is
+    // about the plane, not the gate.
+    ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE));
     publishContentA(ledger);
     ledger.appendArtifactEvent(referenceRecorded());
     ledger.appendArtifactEvent(pinAcquired());
@@ -14063,7 +14220,11 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
       });
 
       const migrated = open(path);
-      expect(migrated.status().migrations.at(-1)?.version, version).toBe(TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION);
+      // Sixteen re-applies, and seventeen after it: the tail is everything past the rewind.
+      expect(migrated.status().migrations.map((migration) => migration.version), version).toContain(
+        TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
+      );
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(MODEL_VERSION_REGISTRY_MIGRATION);
       expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
         [version, null],
         [version, null],
@@ -14180,5 +14341,377 @@ describe("an intention's intended reference earns the stream's rules at the door
     expect((verified as LedgerValidationError).message).toContain(doorWords);
     expect(artifactTables(path)["blobs"]).toHaveLength(1);
     reopened.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-14 escalón A — the model version registry and the GLOBAL assignment gate
+//
+// ADR 0085. The door refuses what it can see — an unknown, retired or deprecated
+// version and an ineligible role, for the version and each fallback — and a
+// `MODEL_VERSION` outside its fixed payload; nothing is appended. The fold stays
+// total over history. Two read verbs return the answer with the vector of
+// watermarks it was read at, from one read transaction.
+// ---------------------------------------------------------------------------
+
+describe("a GLOBAL assignment passes the registry at the door, or nothing is appended (P-14 A)", () => {
+  /** Every durable effect of a registry append, so "nothing appended" is one comparison. */
+  function registryFootprint(path: string): unknown {
+    return {
+      meta: [...readRegistryMeta(path).entries()].sort(),
+      rows: readRows(path, "SELECT sequence FROM registry_events ORDER BY sequence"),
+      routing: readRouting(path),
+      modelVersions: readModelVersionTables(path),
+      watermarks: readWatermarks(path).filter((row) => row.source_stream === "registry_events"),
+    };
+  }
+
+  function refusedPaths(error: unknown): string[] {
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    return (error as LedgerValidationError).issues.map((issue) => issue.path + " " + (issue.message.split(":")[0] ?? ""));
+  }
+
+  it("N-P14A-1..4: refuses an unknown, retired or deprecated version and an ineligible role, and appends nothing", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_TWO));
+    ledger.appendRegistryEvent(makeModelVersionDocument("retired", { payload: modelVersionPayload({ status: "RETIRED", deprecatedAt: REGISTRY_AT }) }));
+    ledger.appendRegistryEvent(makeModelVersionDocument("deprecated", { payload: modelVersionPayload({ status: "DEPRECATED", deprecatedAt: REGISTRY_AT }) }));
+    ledger.appendRegistryEvent(makeModelVersionDocument("reviewers-only", { payload: modelVersionPayload({ eligibleRoles: ["reviewer"] }) }));
+    const before = registryFootprint(path);
+
+    const cases: readonly [string, string, string][] = [
+      ["N-P14A-1", MODEL_ONE, "payload.modelVersionId MODEL_VERSION_UNKNOWN"],
+      ["N-P14A-2", "retired", "payload.modelVersionId MODEL_VERSION_RETIRED"],
+      ["N-P14A-3", "deprecated", "payload.modelVersionId MODEL_VERSION_DEPRECATED"],
+      ["N-P14A-4", "reviewers-only", "payload.role ROLE_NOT_ELIGIBLE"],
+    ];
+    for (const [label, modelVersionId, refusal] of cases) {
+      const error = caught(() =>
+        ledger.appendRegistryEvent(makeRegistryDocument({ payload: routingPayload({ modelVersionId }) })),
+      );
+      expect(refusedPaths(error), label).toEqual([refusal]);
+      expect(registryFootprint(path), label).toEqual(before);
+    }
+    const retired = caught(() =>
+      ledger.appendRegistryEvent(makeRegistryDocument({ payload: routingPayload({ modelVersionId: "retired" }) })),
+    );
+    expect((retired as Error).message).toContain("migrate the assignment to an ACTIVE model version");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P14A-5: holds each fallback to the same rule, at its own path", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.appendRegistryEvent(makeModelVersionDocument("retired", { payload: modelVersionPayload({ status: "RETIRED", deprecatedAt: REGISTRY_AT }) }));
+    const before = registryFootprint(path);
+    const error = caught(() =>
+      ledger.appendRegistryEvent(makeRegistryDocument({ payload: routingPayload({ fallbacks: [MODEL_TWO, "retired", "ghost"] }) })),
+    );
+    expect(refusedPaths(error)).toEqual([
+      "payload.fallbacks[1] MODEL_VERSION_RETIRED",
+      "payload.fallbacks[2] MODEL_VERSION_UNKNOWN",
+    ]);
+    expect(registryFootprint(path)).toEqual(before);
+  });
+
+  it("N-P14A-9: refuses a MODEL_VERSION outside its fixed payload by name, and a RETIRE written wrong never lands", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE));
+    const before = registryFootprint(path);
+    const cases: readonly [string, Record<string, unknown>, string][] = [
+      ["an empty payload", {}, "payload.provider"],
+      ["a RETIRE with no instant", modelVersionPayload({ status: "RETIRED" }), "payload.deprecatedAt"],
+      ["ACTIVE with an instant (N-P14A-8)", modelVersionPayload({ deprecatedAt: REGISTRY_AT }), "payload.deprecatedAt"],
+      ["a key outside the nine", modelVersionPayload({ qualityScore: 1 }), "payload.qualityScore"],
+    ];
+    for (const [label, payload, path0] of cases) {
+      const error = caught(() =>
+        ledger.appendRegistryEvent(
+          makeModelVersionDocument(MODEL_ONE, { documentVersion: 2, parentDocumentVersion: 1, payload }),
+        ),
+      );
+      expect(error, label).toBeInstanceOf(LedgerValidationError);
+      expect((error as LedgerValidationError).issues.map((issue) => issue.path), label).toContain(path0);
+      expect(registryFootprint(path), label).toEqual(before);
+    }
+    expect(ledger.getModelVersion(MODEL_ONE).modelVersion?.row.status).toBe("ACTIVE");
+  });
+
+  it("N-P14A-8: a later version replaces the row and its children whole, and the pair CHECK holds", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendRegistryEvent(
+      makeModelVersionDocument(MODEL_ONE, { payload: modelVersionPayload({ transports: ["CLI_SUBSCRIPTION", "API_KEY"] }) }),
+    );
+    const retired = ledger.appendRegistryEvent(
+      makeModelVersionDocument(MODEL_ONE, {
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        contentDigest: CONTENT_TWO,
+        payload: modelVersionPayload({ status: "RETIRED", deprecatedAt: REGISTRY_AT, eligibleRoles: ["reviewer"], transports: [] }),
+      }),
+    );
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+
+    const tables = readModelVersionTables(path);
+    expect(tables.versions).toEqual([
+      {
+        model_version_id: MODEL_ONE,
+        provider: "claude",
+        model: "claude-opus-5",
+        release: "2026-06-01",
+        status: "RETIRED",
+        context_tokens: 200000,
+        latest_performance_window: null,
+        policy_version: "2026.09.0",
+        deprecated_at: REGISTRY_AT,
+        document_version: 2,
+        sequence: retired.record.sequence,
+      },
+    ]);
+    expect(tables.roles).toEqual([{ model_version_id: MODEL_ONE, ordinal: 0, role: "reviewer" }]);
+    expect(tables.transports).toEqual([]);
+
+    // The base holds the pair for a writer past the door.
+    withRawDatabase(path, (raw) => {
+      expect(
+        refusalMessage(caught(() => raw.prepare("UPDATE model_version_read_model SET deprecated_at = NULL").run()), "pair"),
+      ).toContain("ck_model_version_read_model__deprecated_pair");
+    });
+  });
+
+  it("N-P14A-6: an exact replay of an assignment whose model retired since is a replay; another body under its key is a conflict", () => {
+    const ledger = open(temporaryDatabase());
+    seedModelVersions(ledger);
+    const document = makeRegistryDocument();
+    const first = ledger.appendRegistryEvent(document);
+    ledger.appendRegistryEvent(
+      makeModelVersionDocument(MODEL_ONE, {
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        payload: modelVersionPayload({ status: "RETIRED", deprecatedAt: REGISTRY_AT }),
+      }),
+    );
+
+    const replay = ledger.appendRegistryEvent(document);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(first.record.sequence);
+    expect(
+      caught(() => ledger.appendRegistryEvent({ ...document, contentDigest: CONTENT_TWO })),
+    ).toBeInstanceOf(LedgerIdempotencyConflictError);
+    // And a new version naming the retired model is refused, as N-P14A-2 says.
+    expect(
+      refusedPaths(
+        caught(() =>
+          ledger.appendRegistryEvent(makeRegistryDocument({ documentVersion: 2, parentDocumentVersion: 1 })),
+        ),
+      ),
+    ).toEqual(["payload.modelVersionId MODEL_VERSION_RETIRED"]);
+  });
+
+  it("N-P14A-7: a rebuild folds an assignment whose model was retired afterwards, and verifies clean", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.appendRegistryEvent(
+      makeModelVersionDocument(MODEL_ONE, {
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        payload: modelVersionPayload({ status: "RETIRED", deprecatedAt: REGISTRY_AT }),
+      }),
+    );
+    const live = { routing: readRouting(path), modelVersions: readModelVersionTables(path) };
+    const result = ledger.rebuildReadModel();
+    expect(result.routingAssignmentRows).toBe(1);
+    expect(result.modelVersionRows).toBe(2);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+    expect({ routing: readRouting(path), modelVersions: readModelVersionTables(path) }).toEqual(live);
+  });
+
+  it("N-P14A-9: an unreadable version planted in history removes the row on rebuild, and the door then reads it as unknown", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.close();
+    plantRegistryRow(
+      path,
+      {
+        subjectKind: "DOCUMENT",
+        documentKind: "MODEL_VERSION",
+        artifactEventKind: null,
+        documentId: MODEL_ONE,
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        contentDigest: CONTENT_TWO,
+      },
+      makeModelVersionDocument(MODEL_ONE, { documentVersion: 2, parentDocumentVersion: 1, contentDigest: CONTENT_TWO, payload: { status: "RETIRED" } }),
+    );
+
+    const reopened = open(path);
+    // The stored row still says ACTIVE, and a replay says there is no row: the
+    // integrity report names it before anything repairs it.
+    expect(detailsOf(reopened.verifyIntegrity().problems)).toContain("model_version_read_model holds the row");
+    const result = reopened.rebuildReadModel();
+    expect(result.modelVersionRows).toBe(1);
+    expect(reopened.getModelVersion(MODEL_ONE).modelVersion).toBeNull();
+    expect(
+      refusedPaths(caught(() => reopened.appendRegistryEvent(makeRegistryDocument()))),
+    ).toEqual(["payload.modelVersionId MODEL_VERSION_UNKNOWN"]);
+  });
+});
+
+describe("the GLOBAL assignment is read with the vector it was read at (P-14 A, E4, N-P14-3)", () => {
+  it("N-P14A-10: no assignment in force is an answer with a vector, never a default", () => {
+    const ledger = open(temporaryDatabase());
+    seedModelVersions(ledger);
+    const reading = ledger.getGlobalRoutingAssignment({ role: "implementer", slot: 0 });
+    expect(reading.assignment).toBeNull();
+    expect(reading.fallbacks).toEqual([]);
+    expect(reading.modelVersion).toBeNull();
+    expect(reading.watermarks.map((row) => [row.projectionName, row.sourceStream, row.appliedThroughSequence])).toEqual([
+      ["model_version_read_model", "registry_events", 2],
+      ["routing_assignment_read_model", "initiative_events", 0],
+      ["routing_assignment_read_model", "registry_events", 2],
+    ]);
+  });
+
+  it("N-P14A-11: returns the assignment, its fallbacks and its model version level with the heads, and a later append leaves the vector one behind", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    const recorded = ledger.appendRegistryEvent(makeRegistryDocument());
+
+    const reading = ledger.getGlobalRoutingAssignment({ role: "implementer", slot: 0 });
+    expect(reading.assignment?.modelVersionId).toBe(MODEL_ONE);
+    expect(reading.assignment?.supersededBy).toBeNull();
+    expect(reading.fallbacks).toEqual([MODEL_TWO]);
+    expect(reading.modelVersion?.row.status).toBe("ACTIVE");
+    expect(reading.modelVersion?.eligibleRoles).toEqual(["coordinator", "implementer", "reviewer", "consultant", "verifier"]);
+    expect(reading.modelVersion?.transports).toEqual(["CLI_SUBSCRIPTION"]);
+    const registry = reading.watermarks.filter((row) => row.sourceStream === "registry_events");
+    for (const row of registry) {
+      expect(row.appliedThroughSequence, row.projectionName).toBe(recorded.record.sequence);
+      expect(row.sourceHeadSha256, row.projectionName).toBe(recorded.record.eventSha256);
+      expect(row.eventCount, row.projectionName).toBe(3);
+    }
+
+    // The registry moves on between the read and a decision: the reading the
+    // caller holds is still the vector it read, exactly one position behind.
+    const next = ledger.appendRegistryEvent(
+      makeRegistryDocument({ documentVersion: 2, parentDocumentVersion: 1, payload: routingPayload({ modelVersionId: MODEL_TWO, fallbacks: [] }) }),
+    );
+    const later = ledger.getGlobalRoutingAssignment({ role: "implementer", slot: 0 });
+    for (const row of reading.watermarks.filter((entry) => entry.sourceStream === "registry_events")) {
+      const moved = later.watermarks.find((entry) => entry.projectionName === row.projectionName && entry.sourceStream === row.sourceStream);
+      expect(moved?.appliedThroughSequence, row.projectionName).toBe(row.appliedThroughSequence + 1);
+      expect(moved?.sourceHeadSha256, row.projectionName).toBe(next.record.eventSha256);
+    }
+    expect(reading.assignment?.modelVersionId).toBe(MODEL_ONE);
+    expect(later.assignment?.modelVersionId).toBe(MODEL_TWO);
+    expect(later.fallbacks).toEqual([]);
+  });
+
+  it("reads on a read-only handle, from one read transaction, and moves nothing", () => {
+    const path = temporaryDatabase();
+    const writer = open(path);
+    seedModelVersions(writer);
+    writer.appendRegistryEvent(makeRegistryDocument());
+    writer.close();
+    const before = { meta: [...readRegistryMeta(path).entries()], watermarks: readWatermarks(path), tables: readModelVersionTables(path) };
+
+    const reader = open(path, { readOnly: true });
+    expect(reader.getGlobalRoutingAssignment({ role: "implementer", slot: 0 }).assignment).not.toBeNull();
+    expect(reader.getModelVersion(MODEL_TWO)).toEqual({
+      modelVersion: {
+        row: expect.objectContaining({ modelVersionId: MODEL_TWO, status: "ACTIVE", documentVersion: 1, sequence: 2 }) as unknown,
+        eligibleRoles: ["coordinator", "implementer", "reviewer", "consultant", "verifier"],
+        transports: ["CLI_SUBSCRIPTION"],
+      },
+      watermarks: [expect.objectContaining({ projectionName: "model_version_read_model", appliedThroughSequence: 3 }) as unknown],
+    });
+    expect(reader.getModelVersion("ghost").modelVersion).toBeNull();
+    reader.close();
+    expect({ meta: [...readRegistryMeta(path).entries()], watermarks: readWatermarks(path), tables: readModelVersionTables(path) }).toEqual(before);
+  });
+
+  it("refuses a question it cannot answer: a role or slot outside the domain, and two assignments in force for one coordinate", () => {
+    const ledger = open(temporaryDatabase());
+    seedModelVersions(ledger);
+    expect(caught(() => ledger.getGlobalRoutingAssignment({ role: "wizard", slot: 0 }))).toBeInstanceOf(LedgerQueryError);
+    expect(caught(() => ledger.getGlobalRoutingAssignment({ role: "implementer", slot: -1 }))).toBeInstanceOf(LedgerQueryError);
+    expect(caught(() => ledger.getModelVersion(""))).toBeInstanceOf(LedgerQueryError);
+
+    // Two branches of one document, both in force: nothing picks one.
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.appendRegistryEvent(makeRegistryDocument({ documentVersion: 3, parentDocumentVersion: 1 }));
+    ledger.appendRegistryEvent(makeRegistryDocument({ documentVersion: 2, parentDocumentVersion: 1, contentDigest: CONTENT_TWO }));
+    const ambiguous = caught(() => ledger.getGlobalRoutingAssignment({ role: "implementer", slot: 0 }));
+    expect(ambiguous).toBeInstanceOf(LedgerQueryError);
+    expect((ambiguous as Error).message).toContain("nothing resolves until one supersedes the others");
+  });
+});
+
+describe("migration 17 lands whole over a registry that already holds model versions (P-14 A, N-P14A-15)", () => {
+  it("N-P14A-15: re-applied over existing documents, it folds them, seeds its watermark at the head and verifies", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    ledger.close();
+    const before = { tables: readModelVersionTables(path), watermarks: readWatermarks(path) };
+    expect(before.tables.versions).toHaveLength(2);
+
+    withRawDatabase(path, (raw) => {
+      dropModelVersionRegistry(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(MODEL_VERSION_REGISTRY_MIGRATION);
+    });
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(MODEL_VERSION_REGISTRY_MIGRATION);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+
+    const after = { tables: readModelVersionTables(path), watermarks: readWatermarks(path) };
+    expect(after.tables).toEqual(before.tables);
+    // The seed's instant is the epoch, as migration 15's is; everything else is
+    // what the door had left.
+    const level = (rows: readonly WatermarkRow[]): unknown =>
+      rows
+        .filter((row) => row.projection_name === "model_version_read_model")
+        .map((row) => [row.source_stream, row.applied_sequence, row.event_count, row.source_head_sha256]);
+    expect(level(after.watermarks)).toEqual(level(before.watermarks));
+    expect(level(after.watermarks)).toEqual([["registry_events", 3, 3, readRegistryMeta(path).get("registry_head_event_sha256")]]);
+  });
+
+  it("applies nothing when it fails part way through, and the next open applies it whole", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.close();
+    withRawDatabase(path, (raw) => {
+      dropModelVersionRegistry(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(MODEL_VERSION_REGISTRY_MIGRATION);
+      const seventeenth = MIGRATIONS.filter((migration) => migration.version === MODEL_VERSION_REGISTRY_MIGRATION);
+      const run = raw.transaction((): void => {
+        applyMigrations(raw, seventeenth, REGISTRY_AT, {
+          afterSql: () => {
+            throw new Error("induced failure after the SQL and before the row");
+          },
+        });
+      });
+      expect(() => {
+        run.immediate();
+      }).toThrow("induced failure");
+      expect(raw.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%model_version_%'").all()).toEqual([]);
+      expect(raw.prepare("SELECT projection_name FROM projection_watermark WHERE projection_name = 'model_version_read_model'").all()).toEqual([]);
+    });
+    const reopened = open(path);
+    expect(reopened.getModelVersion(MODEL_ONE).modelVersion?.row.status).toBe("ACTIVE");
+    expect(reopened.verifyIntegrity().ok).toBe(true);
   });
 });

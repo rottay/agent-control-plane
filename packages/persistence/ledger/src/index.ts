@@ -330,7 +330,12 @@ export type {
   IntegrityProblem,
   IntegrityProblemKind,
   IntegrityReport,
+  GlobalRoutingAssignmentReading,
   ModelResolutionStatus,
+  ModelVersionEntry,
+  ModelVersionReadModel,
+  ModelVersionReading,
+  ModelVersionStatus,
   OutboxCommandReadModel,
   OutboxFailureCode,
   PromptOccurrenceReadModel,
@@ -348,6 +353,7 @@ export type {
   RegistryAppendResult,
   RegistryDocument,
   RegistryEventRecord,
+  RegistryWatermarkReading,
   RoadmapVersionReadModel,
   RoutingAssignmentFallbackRow,
   RoutingAssignmentReadModel,
@@ -372,6 +378,16 @@ export type {
  * package imports it today.
  */
 export { DOCUMENT_KINDS } from "./types/index.js";
+
+/**
+ * The model version registry's two closed sets (P-14 A, ADR 0085).
+ *
+ * The lifecycle words and the nine payload keys a `MODEL_VERSION` document is
+ * held to at the door. Exported beside `DOCUMENT_KINDS` for its reason: the
+ * vocabulary lives where the door that imposes it lives, and a producer that
+ * restated either list would be a second authority on the payload's shape.
+ */
+export { MODEL_VERSION_PAYLOAD_KEYS, MODEL_VERSION_STATUSES } from "./types/index.js";
 
 /**
  * The artifact plane's two closed sets (P-36/local A, ADR 0081).

@@ -9922,6 +9922,74 @@ const P36D_WRITE_SET = [
   "packages/domains/runtime/test/core/coordinates/index.test.ts",
   "packages/domains/runtime/README.md",
 ];
+/**
+ * P-14, escalón A — a role resolves from the registry alone, or not at all (ADR
+ * 0085, decisions 70-73). Brief `.acp-local/evidence/p14/acp-p14a-writer-brief-v2.md`,
+ * which absorbed the Fable preaudit's ACCEPT_WITH_CORRECTIONS (H-1..H-3,
+ * M-4..M-8) with the DT's adjudications, over the map and adjudication of P-14
+ * (Q1-Q5).
+ *
+ * **What lands.** Migration 17: `model_version_read_model`,
+ * `model_version_eligible_role` and `model_version_transport` (accounts §6), three
+ * indexes, one watermark at the registry head, and the retroactive fold of the
+ * `MODEL_VERSION` documents a ledger already holds, in the same transaction. The
+ * registry door holds a `MODEL_VERSION` to its fixed nine-key payload and a
+ * `ROUTING_ASSIGNMENT_GLOBAL` to the registry — `MODEL_VERSION_UNKNOWN`,
+ * `_RETIRED`, `_DEPRECATED`, `ROLE_NOT_ELIGIBLE`, for the version and each
+ * fallback — as `LedgerValidationError`. The fold stays total. Two read verbs,
+ * `getGlobalRoutingAssignment` and `getModelVersion`, answer from one read
+ * transaction with the watermark rows they read at. `@acp/accounts` gains the pure
+ * `resolveAssignment`: transport, a version retired since, provider agreement, and
+ * no default.
+ *
+ * **What does NOT land, declared.** No product door: no CLI verb, no gateway
+ * route, no protocol schema (B/C). No task intake (C). No `INITIATIVE`/`STEP`
+ * partition (Q4). `resolveRoute` and the policy file are untouched (Q5). No
+ * contracts change and no new error class.
+ *
+ * **Pins that move.** `MIGRATIONS` 16 → 17; `EXPECTED_SCHEMA_OBJECTS` gains three
+ * tables and three indexes (`tr_` stays 9); `DERIVED_TABLES` gains three, children
+ * first; `REGISTRY_PROJECTION_NAMES` 4 → 5; `PROJECTION_SOURCES` 18 → 19, with
+ * `WATERMARK_KEYS`, `status()` and `verifyIntegrity` following it.
+ * `ACCOUNTS_PUBLIC_EXPORTS` 85 → 97. The ADR corpus 84 → 85; the decision register
+ * 69 → 73. The ledger README gains the registry's section, its three tables and
+ * two verbs; the accounts README gains the resolver.
+ *
+ * **Pins that do NOT move.** `PROJECTOR_VERSION` (1), `CONTRACT_VERSION`
+ * (`"2.5.0"`) and `SUPPORTED_CONTRACT_VERSIONS`, `CONTRACTS_SCHEMA_EXPORTS`,
+ * `API_CONTRACT_VERSION`: nothing in `@acp/contracts` changes and no identity or
+ * cohort is added (ADR 0076, decision 41). `PATH_SCOPED_LAWS` (138): ADR 0085 coins
+ * no law. The ledger README's `### Errors` bijection. `COORDINATION_STORES` (4).
+ * L-P12-1 (the payload-key projection's one owner) stays unmoved: the door's
+ * closed-grammar check on a `MODEL_VERSION` payload goes through the fold's
+ * existing `undeclaredKey`, as the occurrence records' does, and builds no DTO.
+ *
+ * **Nineteen paths; three are new to the fence** — the resolver, its suite and ADR
+ * 0085 (`grep -Fc` over this file, each 0 before this block). The other sixteen are
+ * admitted by historical blocks. The CLI and gateway suites enter because their
+ * rewinds must undo migration 17 before 16 (H-3).
+ */
+const P14A_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/domains/accounts/src/assignment/index.ts",
+  "packages/domains/accounts/test/assignment/index.test.ts",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0085-a-role-resolves-from-the-registry-alone.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+];
 
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
@@ -10138,6 +10206,7 @@ const WRITE_SET = [
   ...P36B_WRITE_SET,
   ...P36C_WRITE_SET,
   ...P36D_WRITE_SET,
+  ...P14A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -18882,6 +18951,23 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "EffectiveState",
   "ACCOUNT_ACTIONS_MAX",
   "foldEffectiveState",
+  // P-14 A: the GLOBAL assignment resolver (ADR 0085). A role resolves from the
+  // registry the ledger folds, handed in as this package's own structural reading,
+  // or it is refused by name; transport and a version retired since are decided
+  // here because the append door cannot see them. Ten types name the reading, the
+  // request and the two outcomes.
+  "AssignmentModelVersion",
+  "AssignmentOutcome",
+  "AssignmentProposal",
+  "AssignmentReading",
+  "AssignmentRefusal",
+  "AssignmentRefused",
+  "AssignmentRequest",
+  "AssignmentResolution",
+  "AssignmentWatermark",
+  "GlobalAssignment",
+  "ASSIGNMENT_REFUSALS",
+  "resolveAssignment",
 ];
 
 const accountsIndex = readIfPresent("packages/domains/accounts/src/index.ts");

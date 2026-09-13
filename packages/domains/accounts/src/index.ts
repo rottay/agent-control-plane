@@ -169,3 +169,23 @@ export { resolveRoute } from "./resolution/index.js";
 // `L-V2B1E-1` in the architecture fence is what keeps the count at one.
 export type { EffectiveState } from "./operator-state/index.js";
 export { ACCOUNT_ACTIONS_MAX, foldEffectiveState } from "./operator-state/index.js";
+
+// P-14 A: the GLOBAL assignment resolver (ADR 0085). A role resolves from the
+// registry the ledger folds, handed in as this module's own structural reading,
+// or it is refused by name: no default, no fallback to the policy file above,
+// and no import of it. Transport eligibility and a version retired after its
+// assignment was admitted are decided here, because the append door cannot see
+// either. The vector the reading was taken at travels on every outcome.
+export type {
+  AssignmentModelVersion,
+  AssignmentOutcome,
+  AssignmentProposal,
+  AssignmentReading,
+  AssignmentRefusal,
+  AssignmentRefused,
+  AssignmentRequest,
+  AssignmentResolution,
+  AssignmentWatermark,
+  GlobalAssignment,
+} from "./assignment/index.js";
+export { ASSIGNMENT_REFUSALS, resolveAssignment } from "./assignment/index.js";

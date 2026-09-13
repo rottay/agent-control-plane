@@ -603,7 +603,10 @@ describe("integrity", () => {
       });
     }
     // One registry document, so the rebuild of migration 15 has a row and a
-    // chain to conserve when the reopen re-applies it (N-P36A-16).
+    // chain to conserve when the reopen re-applies it (N-P36A-16), and migration
+    // 17 has a model version to fold when it is re-applied (N-P14A-15). Its
+    // payload is the fixed shape the door holds a MODEL_VERSION to since P-14 A,
+    // where it used to be `{}`.
     ledger.appendRegistryEvent({
       contractVersion: LEDGER_CONTRACT_VERSION,
       eventId: randomUUID(),
@@ -617,7 +620,17 @@ describe("integrity", () => {
       effectiveFrom: "2026-08-27T00:00:00.000Z",
       occurredAt: "2026-08-27T00:00:00.000Z",
       recordedAt: "2026-08-27T00:00:00.000Z",
-      payload: {},
+      payload: {
+        provider: "claude",
+        model: "claude-opus-5",
+        release: "2026-06-01",
+        status: "ACTIVE",
+        contextTokens: 200000,
+        policyVersion: "2026.09.0",
+        deprecatedAt: null,
+        eligibleRoles: ["implementer"],
+        transports: ["CLI_SUBSCRIPTION"],
+      },
     });
     ledger.close();
 
@@ -626,7 +639,7 @@ describe("integrity", () => {
     // 3 rather than at 0 — a ledger created empty and then grown has a baseline
     // of 0, and 0 is never ahead of anything.
     //
-    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15 and 16 as well, because
+    // Rewinding to before 10 means undoing 11, 12, 13, 14, 15, 16 and 17 as well, because
     // the reopen re-applies everything the row set no longer claims. `ALTER TABLE
     // ... ADD COLUMN` is not idempotent, so a re-applied 11 over a schema that
     // still carries the coordinate aborts on "duplicate column name". The order
@@ -653,8 +666,15 @@ describe("integrity", () => {
     // the column after it. The revision table is dropped further down in any
     // case; undoing 16 by name keeps the rewind an exact reverse of the set, so a
     // later escalón that stops short of 11 inherits a rewind that still works.
+    //
+    // Migration 17 goes before 16 (P-14 A, H-3): its two children name the model
+    // version table by a foreign key, so they go first, each unique index before
+    // its table, and its one watermark row with them. Nothing in `registry_events`
+    // moves; the re-applied 17 folds the document again.
     const beforeRewind = registryEvidence(path);
+    const beforeModelVersions = modelVersionEvidence(path);
     const rewind = new DatabaseSync(path);
+    rewindModelVersionRegistry(rewind);
     rewindTaskRevisionEnvelopeReference(rewind);
     rewindArtifactRegistry(rewind);
     rewind.exec("DELETE FROM ledger_meta WHERE key LIKE 'account_integrity_%'");
@@ -724,8 +744,11 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(16);
+    ).toBe(17);
     reapplied.close();
+    // N-P14A-15: and it re-applied 17 over the document already in the stream,
+    // folding it back into the same rows at a watermark level with the head.
+    expect(modelVersionEvidence(path)).toEqual(beforeModelVersions);
 
     // Now reach past the door. Both tables are append-only by trigger, which is
     // exactly why this state cannot arise through the ledger's API and has to
@@ -1406,6 +1429,43 @@ describe("the accounts clock seam", () => {
     expect(Object.keys(accepted.options).some((key) => /now|clock|instant|time/i.test(key))).toBe(false);
   });
 });
+
+/**
+ * Migration 17 undone on a raw handle (P-14 A): the model version registry's two
+ * children, each after its unique index, then the parent after its index, and the
+ * one watermark row it seeded.
+ */
+function rewindModelVersionRegistry(raw: DatabaseSync): void {
+  raw.exec(
+    "DROP INDEX ux_model_version_transport__transport;" +
+      "DROP TABLE model_version_transport;" +
+      "DROP INDEX ux_model_version_eligible_role__role;" +
+      "DROP TABLE model_version_eligible_role;" +
+      "DROP INDEX ix_model_version_read_model__status;" +
+      "DROP TABLE model_version_read_model;" +
+      "DELETE FROM projection_watermark WHERE projection_name = 'model_version_read_model';",
+  );
+}
+
+/** The model version registry and its watermark, as a raw handle sees them (P-14 A). */
+function modelVersionEvidence(path: string): unknown {
+  const raw = new DatabaseSync(path);
+  try {
+    return {
+      versions: raw.prepare("SELECT * FROM model_version_read_model ORDER BY model_version_id").all(),
+      roles: raw.prepare("SELECT * FROM model_version_eligible_role ORDER BY model_version_id, ordinal").all(),
+      transports: raw.prepare("SELECT * FROM model_version_transport ORDER BY model_version_id, ordinal").all(),
+      watermark: raw
+        .prepare(
+          "SELECT applied_sequence, event_count, source_head_sha256 FROM projection_watermark " +
+            "WHERE projection_name = 'model_version_read_model'",
+        )
+        .all(),
+    };
+  } finally {
+    raw.close();
+  }
+}
 
 /**
  * Migration 16 undone on a raw handle (P-36/local D): the envelope reference's

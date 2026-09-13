@@ -3,6 +3,7 @@ import {
   ResolvedRoute,
   RoadmapVersion,
   TERMINAL_STATES,
+  TRANSPORT_KINDS,
   WORKER_ROLES,
   parseWorkerIdentity,
   type ArtifactRegistryEvent,
@@ -39,6 +40,8 @@ import {
   DISPATCH_STATE_TRANSITIONS,
   EFFECT_OUTCOME_STATUSES,
   MODEL_RESOLUTION_STATUSES,
+  MODEL_VERSION_PAYLOAD_KEYS,
+  MODEL_VERSION_STATUSES,
   REDACTION_VERDICTS,
 } from "../types/index.js";
 import type {
@@ -55,6 +58,12 @@ import type {
   ExecutionRouteSegmentReadModel,
   ExecutionRouteReadModel,
   InitiativeReadModel,
+  ModelVersionEligibleRoleRow,
+  ModelVersionProjection,
+  ModelVersionProjectionSnapshot,
+  ModelVersionReadModel,
+  ModelVersionStatus,
+  ModelVersionTransportRow,
   OutboxCommandReadModel,
   OutboxFailureCode,
   PromptOccurrenceReadModel,
@@ -3619,12 +3628,14 @@ function readFallbacks(value: unknown): readonly string[] | null {
  * delete path, so a projection that refused an accepted document would be
  * disowning history, and replay has to remain total.
  *
- * What this fold does **not** do is check eligibility. The contract requires
- * `model_version_id` to be validated fail-closed against an ACTIVE model
- * version, and that is the write gate of the module that owns the semantics,
- * not this one: the ledger is storage, it may not import `@acp/accounts`, and
- * `model_version_read_model` does not exist. The fold projects what the
- * document recorded.
+ * What this fold does **not** do is check eligibility, and it never will: a
+ * rebuild folds history the door accepted, and history does not become
+ * inadmissible because a model was retired after it was written (N-P14A-7).
+ * The contract's fail-closed check on `model_version_id` is made where it
+ * belongs in time, at the append door, against `model_version_read_model`
+ * (ADR 0085, which amends what this comment said before that table existed):
+ * `globalAssignmentIssues` below is the decision, and the door alone calls it.
+ * The fold projects what the document recorded.
  */
 export function nextRoutingAssignmentProjection(
   document: RegistryDocument,
@@ -3748,6 +3759,345 @@ export function applyRegistryEventToSnapshot(
 ): void {
   const projected = nextRoutingAssignmentProjection(document, sequence);
   if (projected !== null) applyRoutingAssignment(snapshot, projected);
+}
+
+// ---------------------------------------------------------------------------
+// The model version registry, and the gate a GLOBAL assignment passes (P-14 A)
+// ---------------------------------------------------------------------------
+
+/** The one document kind that carries a model version (accounts §6). */
+const MODEL_VERSION = "MODEL_VERSION";
+
+/** The same bound the registry door gives an identifier. */
+const MODEL_VERSION_TEXT_MAX = 512;
+
+/**
+ * The reasons a GLOBAL routing assignment is refused at the door (ADR 0085).
+ *
+ * Words carried at the head of each issue's message, so a caller that reads the
+ * refusal reads a closed word before any prose. Three for the version the
+ * assignment names — absent, retired, deprecated are different facts and a
+ * retired one is the only one with somewhere to go — and one for the role.
+ */
+export const GLOBAL_ASSIGNMENT_REFUSALS = [
+  "MODEL_VERSION_UNKNOWN",
+  "MODEL_VERSION_RETIRED",
+  "MODEL_VERSION_DEPRECATED",
+  "ROLE_NOT_ELIGIBLE",
+] as const;
+
+export type GlobalAssignmentRefusal = (typeof GLOBAL_ASSIGNMENT_REFUSALS)[number];
+
+/** What the gate needs to know about one model version, and nothing else. */
+export interface ModelVersionEligibility {
+  readonly status: ModelVersionStatus;
+  readonly eligibleRoles: readonly string[];
+}
+
+function isBoundedText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MODEL_VERSION_TEXT_MAX;
+}
+
+function isModelVersionInstant(value: unknown): value is string {
+  if (typeof value !== "string" || !OUTBOX_INSTANT_PATTERN.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+/** A payload key, safe to put in a path. Anything else is not echoed. */
+function safePayloadKey(key: string): string {
+  return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) ? key : "<unprintable key>";
+}
+
+/**
+ * A closed list of distinct words, each drawn from `vocabulary`.
+ *
+ * Distinct because the child tables say so (`ux_model_version_eligible_role__role`,
+ * `ux_model_version_transport__transport`): a duplicate would reach the base as a
+ * uniqueness failure nobody can catch by class.
+ */
+function listIssues(
+  value: unknown,
+  path: string,
+  vocabulary: readonly string[],
+  noun: string,
+): LedgerValidationIssue[] {
+  if (!Array.isArray(value)) {
+    return [{ path, message: "a model version's " + noun + " are a list" }];
+  }
+  const issues: LedgerValidationIssue[] = [];
+  const seen = new Set<string>();
+  value.forEach((entry: unknown, index) => {
+    const at = path + "[" + String(index) + "]";
+    if (typeof entry !== "string" || !vocabulary.includes(entry)) {
+      issues.push({ path: at, message: "names one of " + vocabulary.join(", ") });
+    } else if (seen.has(entry)) {
+      issues.push({ path: at, message: "is declared twice in the model version's " + noun });
+    } else {
+      seen.add(entry);
+    }
+  });
+  return issues;
+}
+
+/**
+ * Every way a `MODEL_VERSION` payload fails its fixed shape, by name.
+ *
+ * The door's check (M-5): the payload is the camelCase mirror of accounts §6 and
+ * nothing else. Nine keys, each required; `deprecatedAt` null if and only if the
+ * status is `ACTIVE`, which is `ck_model_version_read_model__deprecated_pair`
+ * said before the row exists; eligible roles from the worker vocabulary and
+ * transports from the contract's, each list without repeats. No value is echoed.
+ */
+export function modelVersionPayloadIssues(
+  payload: Record<string, unknown>,
+): LedgerValidationIssue[] {
+  const issues: LedgerValidationIssue[] = [];
+  const known = MODEL_VERSION_PAYLOAD_KEYS as readonly string[];
+
+  // The closed-grammar check the occurrence records already make, through the
+  // same helper: the first key the grammar does not declare, named by path.
+  const undeclared = undeclaredKey(payload, known);
+  if (undeclared !== null) {
+    issues.push({
+      path: "payload." + safePayloadKey(undeclared),
+      message: "is not a key of a MODEL_VERSION payload; the payload is closed",
+    });
+  }
+
+  for (const key of ["provider", "model", "release", "policyVersion"]) {
+    if (!isBoundedText(payload[key])) {
+      issues.push({
+        path: "payload." + key,
+        message: "is a string of 1 to " + String(MODEL_VERSION_TEXT_MAX) + " characters",
+      });
+    }
+  }
+
+  const status = payload["status"];
+  const statusKnown =
+    typeof status === "string" && (MODEL_VERSION_STATUSES as readonly string[]).includes(status);
+  if (!statusKnown) {
+    issues.push({ path: "payload.status", message: "names one of " + MODEL_VERSION_STATUSES.join(", ") });
+  }
+
+  const contextTokens = payload["contextTokens"];
+  if (!Number.isSafeInteger(contextTokens) || (contextTokens as number) < 0) {
+    issues.push({ path: "payload.contextTokens", message: "is an integer of zero or greater" });
+  }
+
+  const deprecatedAt = payload["deprecatedAt"];
+  if (!("deprecatedAt" in payload)) {
+    issues.push({ path: "payload.deprecatedAt", message: "is present, as null or as an instant" });
+  } else if (deprecatedAt !== null && !isModelVersionInstant(deprecatedAt)) {
+    issues.push({
+      path: "payload.deprecatedAt",
+      message: "is null or an ISO-8601 instant in UTC with milliseconds",
+    });
+  } else if (statusKnown && (status === "ACTIVE") !== (deprecatedAt === null)) {
+    issues.push({
+      path: "payload.deprecatedAt",
+      message: "is null if and only if the status is ACTIVE",
+    });
+  }
+
+  issues.push(
+    ...listIssues(payload["eligibleRoles"], "payload.eligibleRoles", WORKER_ROLES, "eligible roles"),
+    ...listIssues(payload["transports"], "payload.transports", TRANSPORT_KINDS, "transports"),
+  );
+
+  return issues;
+}
+
+/**
+ * The model version one registry document records, if it is one.
+ *
+ * Total, for `nextRoutingAssignmentProjection`'s reason: the stream has no delete
+ * path, so a fold that refused a stored document would be disowning history.
+ * A payload this fold cannot read yields a projection with no row — the
+ * document's current version is unreadable, so the registry holds no version of
+ * it that rules, and the row an earlier version left is removed rather than left
+ * standing (see `ModelVersionProjection`). The door refuses such a payload, so
+ * only history written before migration 17 can reach that branch.
+ *
+ * Children are replaced whole with their version, as an assignment's fallbacks
+ * are: a later version with fewer roles cannot leave the extra ones behind.
+ */
+export function nextModelVersionProjection(
+  document: RegistryDocument,
+  sequence: number,
+): ModelVersionProjection | null {
+  if (document.documentKind !== MODEL_VERSION) return null;
+
+  const modelVersionId = document.documentId;
+  const payload: unknown = document.payload;
+  const readable =
+    payload !== null &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    modelVersionPayloadIssues(payload as Record<string, unknown>).length === 0;
+  if (!readable) return { modelVersionId, row: null, eligibleRoles: [], transports: [] };
+
+  const fields = payload as Record<string, unknown>;
+  const row: ModelVersionReadModel = {
+    modelVersionId,
+    provider: fields["provider"] as string,
+    model: fields["model"] as string,
+    release: fields["release"] as string,
+    status: fields["status"] as ModelVersionStatus,
+    contextTokens: fields["contextTokens"] as number,
+    // Never read from the payload, which has no such key: economy produces the
+    // snapshot this column references, and nothing in this build does.
+    latestPerformanceWindow: null,
+    policyVersion: fields["policyVersion"] as string,
+    deprecatedAt: fields["deprecatedAt"] as string | null,
+    documentVersion: document.documentVersion,
+    sequence,
+  };
+
+  return {
+    modelVersionId,
+    row,
+    eligibleRoles: (fields["eligibleRoles"] as readonly WorkerRole[]).map(
+      (role, ordinal): ModelVersionEligibleRoleRow => ({ modelVersionId, ordinal, role }),
+    ),
+    transports: (fields["transports"] as readonly string[]).map(
+      (transportKind, ordinal): ModelVersionTransportRow => ({ modelVersionId, ordinal, transportKind }),
+    ),
+  };
+}
+
+/** In-memory projection of the model version registry. */
+export function createModelVersionProjectionSnapshot(): ModelVersionProjectionSnapshot {
+  return {
+    modelVersions: new Map<string, ModelVersionReadModel>(),
+    eligibleRoles: new Map<string, readonly ModelVersionEligibleRoleRow[]>(),
+    transports: new Map<string, readonly ModelVersionTransportRow[]>(),
+  };
+}
+
+/**
+ * Write one model version projection into a snapshot.
+ *
+ * The version the fold applied last is the row, in stream order: the dictionary's
+ * `document_version` is "the last version projected for this id". A projection
+ * with no row removes the id with its children.
+ */
+export function applyModelVersionToSnapshot(
+  snapshot: ModelVersionProjectionSnapshot,
+  projected: ModelVersionProjection,
+): void {
+  const { modelVersionId, row } = projected;
+  if (row === null) {
+    snapshot.modelVersions.delete(modelVersionId);
+    snapshot.eligibleRoles.delete(modelVersionId);
+    snapshot.transports.delete(modelVersionId);
+    return;
+  }
+  snapshot.modelVersions.set(modelVersionId, row);
+  snapshot.eligibleRoles.set(modelVersionId, projected.eligibleRoles);
+  snapshot.transports.set(modelVersionId, projected.transports);
+}
+
+/** Fold one registry document into the model version snapshot, if it is one. */
+export function applyRegistryModelVersionToSnapshot(
+  snapshot: ModelVersionProjectionSnapshot,
+  document: RegistryDocument,
+  sequence: number,
+): void {
+  const projected = nextModelVersionProjection(document, sequence);
+  if (projected !== null) applyModelVersionToSnapshot(snapshot, projected);
+}
+
+/** One version the assignment names, held to the rule, at `path`. */
+function modelVersionIssue(
+  eligibility: ModelVersionEligibility | null,
+  path: string,
+  role: WorkerRole,
+): LedgerValidationIssue | null {
+  if (eligibility === null) {
+    return {
+      path,
+      message: "MODEL_VERSION_UNKNOWN: no model version with this id is registered",
+    };
+  }
+  if (eligibility.status === "RETIRED") {
+    return {
+      path,
+      message:
+        "MODEL_VERSION_RETIRED: the model version is retired and blocks the assignment; " +
+        "migrate the assignment to an ACTIVE model version",
+    };
+  }
+  if (eligibility.status === "DEPRECATED") {
+    return {
+      path,
+      message: "MODEL_VERSION_DEPRECATED: an assignment names an ACTIVE model version only",
+    };
+  }
+  if (!eligibility.eligibleRoles.includes(role)) {
+    return {
+      path: path === "payload.modelVersionId" ? "payload.role" : path,
+      message: "ROLE_NOT_ELIGIBLE: the model version does not declare the role " + role + " eligible",
+    };
+  }
+  return null;
+}
+
+/**
+ * Every reason the append door refuses one GLOBAL routing assignment (ADR 0085).
+ *
+ * The door's half of the check, and only the door's: typed lookups over a read
+ * model of the same stream (planning §6), never a score or a choice. The lookup
+ * is injected so this stays a pure decision the suite can hold.
+ *
+ * - A payload the fold could not read is refused field by field: an assignment
+ *   the fold would project no row for is not one the door admits (fail-closed).
+ * - The version it names, and each fallback at `payload.fallbacks[i]`, must be
+ *   registered and `ACTIVE`; the role must be one the version declares eligible.
+ *   A role a fallback does not admit is refused at the fallback's own path.
+ *
+ * Transport is not checked here and cannot be: the assignment names none. That
+ * half of eligibility is the resolver's, which is handed the transport.
+ */
+export function globalAssignmentIssues(
+  document: RegistryDocument,
+  lookup: (modelVersionId: string) => ModelVersionEligibility | null,
+): LedgerValidationIssue[] {
+  if (document.documentKind !== ROUTING_ASSIGNMENT_GLOBAL) return [];
+
+  const fields = document.payload;
+  const issues: LedgerValidationIssue[] = [];
+  const role = fields["role"];
+  const modelVersionId = fields["modelVersionId"];
+
+  if (!isRole(role)) {
+    issues.push({ path: "payload.role", message: "names one of " + WORKER_ROLES.join(", ") });
+  }
+  if (!isSlot(fields["slot"])) {
+    issues.push({ path: "payload.slot", message: "is an integer of zero or greater" });
+  }
+  if (!isNonEmptyString(fields["provider"])) {
+    issues.push({ path: "payload.provider", message: "is a non-empty string" });
+  }
+  if (!isNonEmptyString(modelVersionId)) {
+    issues.push({ path: "payload.modelVersionId", message: "is a non-empty string" });
+  }
+  const fallbacks = readFallbacks(fields["fallbacks"]);
+  if (fallbacks === null) {
+    issues.push({ path: "payload.fallbacks", message: "is absent, or a list of non-empty strings" });
+  }
+  if (issues.length > 0 || !isRole(role) || !isNonEmptyString(modelVersionId) || fallbacks === null) {
+    return issues;
+  }
+
+  const primary = modelVersionIssue(lookup(modelVersionId), "payload.modelVersionId", role);
+  if (primary !== null) issues.push(primary);
+  fallbacks.forEach((fallback, index) => {
+    const issue = modelVersionIssue(lookup(fallback), "payload.fallbacks[" + String(index) + "]", role);
+    if (issue !== null) issues.push(issue);
+  });
+  return issues;
 }
 
 // ---------------------------------------------------------------------------
