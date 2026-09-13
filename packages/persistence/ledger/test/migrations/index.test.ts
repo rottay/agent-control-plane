@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ARTIFACT_CLASSES,
+  ARTIFACT_CLASSIFICATIONS,
+  ARTIFACT_EVENT_KINDS,
+  BLOB_LIFECYCLE_STATES,
+  ENCRYPTION_STATUSES,
+  PIN_HOLDER_KINDS,
+  REFERENCE_SCOPE_KINDS,
+  RETENTION_CLASSES,
+} from "@acp/contracts";
+
+import {
+  ARTIFACT_BLOB_PROJECTION,
+  ARTIFACT_PIN_PROJECTION,
+  ARTIFACT_REFERENCE_PROJECTION,
+  ARTIFACT_REGISTRY_MIGRATION,
+  ARTIFACT_TOMBSTONE_PROJECTION,
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
   INITIATIVE_PROJECTION_NAMES,
@@ -8,6 +24,8 @@ import {
   MIGRATIONS,
   PROJECTION_NAMES,
   PROJECTION_SOURCES,
+  REGISTRY_PROJECTION_NAMES,
+  REGISTRY_STREAM,
   DISPATCH_ATTEMPT_PROJECTION,
   EXECUTION_OCCURRENCE_MIGRATION,
   PROMPT_OCCURRENCE_PROJECTION,
@@ -158,7 +176,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -175,13 +193,14 @@ describe("migration 7 appends the watermark table without touching the applied s
       "task_attempt_identity",
       "execution_effect_identity",
       "execution_occurrences",
+      "artifact_registry",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11, 12, 13 and 14 seed rows into it, which is what a migration
-    // that adds a projection does; none of them creates, alters or drops the
-    // table.
+    // Migrations 9, 11, 12, 13, 14 and 15 seed rows into it, which is what a
+    // migration that adds a projection does; none of them creates, alters or
+    // drops the table.
     const creating = MIGRATIONS.filter((migration) =>
       migration.sql.includes("CREATE TABLE projection_watermark"),
     );
@@ -189,7 +208,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -267,6 +286,10 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "response_occurrence_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
+      "artifact_blob_read_model@registry_events",
+      "artifact_reference_read_model@registry_events",
+      "artifact_pin_read_model@registry_events",
+      "artifact_tombstone_read_model@registry_events",
       "routing_assignment_read_model@registry_events",
       "routing_assignment_read_model@initiative_events",
     ]);
@@ -292,6 +315,7 @@ describe("the closed set of watermark rows is exactly the streams under discipli
 
     expect(singleSourceNamesOf(TASK_STREAM)).toEqual([...PROJECTION_NAMES]);
     expect(singleSourceNamesOf(INITIATIVE_STREAM)).toEqual([...INITIATIVE_PROJECTION_NAMES]);
+    expect(singleSourceNamesOf(REGISTRY_STREAM)).toEqual([...REGISTRY_PROJECTION_NAMES]);
   });
 
   it("does not claim the account stream (D3)", () => {
@@ -324,12 +348,14 @@ describe("migration 8 types causality without touching the applied seven", () =>
     expect(EIGHTH?.version).toBe(8);
     expect(EIGHTH?.name).toBe("causation_triplet");
     // Migration 9 names the columns too: its own table declares them from the
-    // start, and it recreates these two triggers to widen the vocabulary. What
-    // is asserted is that no migration BEFORE 8 could have declared them.
+    // start, and it recreates these two triggers to widen the vocabulary.
+    // Migration 15 names them again, because it rebuilds that table and
+    // recreates the same two triggers byte for byte. What is asserted is that no
+    // migration BEFORE 8 could have declared them.
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("causation_stream"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([8, 9]);
+    expect(naming.map((migration) => migration.version)).toEqual([8, 9, 15]);
     const altering = MIGRATIONS.filter((migration) =>
       migration.sql.includes("ADD COLUMN causation_stream"),
     );
@@ -475,15 +501,21 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
   });
 
   it("is the only migration that creates the registry stream", () => {
     const creating = MIGRATIONS.filter((migration) =>
-      migration.sql.includes("CREATE TABLE registry_events"),
+      migration.sql.includes("CREATE TABLE registry_events ("),
     );
     expect(creating.map((migration) => migration.version)).toEqual([9]);
+    // Migration 15 REBUILDS it, under a working name renamed into place, and is
+    // the only other migration that writes a CREATE TABLE for it at all.
+    const rebuilding = MIGRATIONS.filter((migration) =>
+      migration.sql.includes("CREATE TABLE registry_events__"),
+    );
+    expect(rebuilding.map((migration) => migration.version)).toEqual([15]);
   });
 
   it("declares the table STRICT with the contract's own constraint names", () => {
@@ -647,6 +679,8 @@ describe("migration 9 opens the registry stream without touching the applied eig
       { type: "index", name: "ux_registry_events__document_id__document_version" },
       { type: "index", name: "ix_registry_events__document_kind__document_id__document_version" },
       { type: "index", name: "ix_registry_events__document_id__effective_from" },
+      // Migration 15's one addition to the stream's own objects.
+      { type: "index", name: "ix_registry_events__subject_kind__document_id" },
       { type: "trigger", name: "tr_registry_events__deny_update" },
       { type: "trigger", name: "tr_registry_events__deny_delete" },
       { type: "trigger", name: "tr_registry_events__validate_new_rows" },
@@ -693,7 +727,7 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(14);
+    expect(PROJECTION_SOURCES).toHaveLength(18);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -982,7 +1016,7 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
     expect(FOURTEENTH?.name).toBe("execution_occurrences");
     expect(EXECUTION_OCCURRENCE_MIGRATION).toBe(14);
     expect(MIGRATIONS[EXECUTION_OCCURRENCE_MIGRATION - 1]?.name).toBe("execution_occurrences");
-    expect(MIGRATIONS).toHaveLength(14);
+    // No longer the tail: migration 15 follows it and holds the length pin.
     expect(statements).not.toContain("DROP TABLE");
     expect(statements).not.toContain("ALTER TABLE");
     // No trigger: every rule of §8 that one row can carry is a CHECK, and the
@@ -1093,5 +1127,315 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
       { type: "table", name: "response_occurrence_read_model" },
       { type: "index", name: "ux_response_occurrence_read_model__prompt" },
     ]);
+  });
+});
+
+/**
+ * Migration 15, the registry stream rebuilt with a subject kind and the four
+ * artifact read models (P-36/local escalón A, ADR 0081).
+ *
+ * The weight is on the rebuild's order, which the preaudit probed step by step
+ * (H-2): a variant that renamed the table while two triggers on OTHER tables
+ * still named it aborted, and a variant that relied on
+ * `PRAGMA legacy_alter_table` was discarded. What is asserted here is the text;
+ * `test/ledger` asserts what the text does to a ledger that already has a chain.
+ */
+describe("migration 15 rebuilds the registry stream and adds the artifact plane", () => {
+  const FIFTEENTH = MIGRATIONS[14];
+  const NINTH = MIGRATIONS[8];
+
+  /** The statements with the commentary removed, as for 11, 12 and 14. */
+  const statements = (FIFTEENTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  /** One `CREATE TRIGGER ... END;` body, sliced out of a migration's text. */
+  function triggerBody(sql: string, name: string): string {
+    const start = sql.indexOf("CREATE TRIGGER " + name + "\n");
+    const end = sql.indexOf("END;", start);
+    expect(start, name).toBeGreaterThanOrEqual(0);
+    expect(end, name).toBeGreaterThan(start);
+    return sql.slice(start, end + "END;".length);
+  }
+
+  /** The quoted words of one named CHECK, in the order the SQL lists them. */
+  function checkWords(sql: string, constraint: string): string[] {
+    const start = sql.indexOf("CONSTRAINT " + constraint + " CHECK (");
+    expect(start, constraint).toBeGreaterThanOrEqual(0);
+    const end = sql.indexOf("\n  )", start);
+    return [...sql.slice(start, end).matchAll(/'([A-Z_]+)'/g)].map((match) => match[1] ?? "");
+  }
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(FIFTEENTH?.version).toBe(15);
+    expect(FIFTEENTH?.name).toBe("artifact_registry");
+    expect(ARTIFACT_REGISTRY_MIGRATION).toBe(15);
+    expect(MIGRATIONS[ARTIFACT_REGISTRY_MIGRATION - 1]?.name).toBe("artifact_registry");
+    expect(MIGRATIONS).toHaveLength(15);
+  });
+
+  it("rebuilds in the fixed order: create, copy, drop the five triggers, drop, rename, recreate, then the children", () => {
+    const at = (fragment: string): number => {
+      const index = statements.indexOf(fragment);
+      expect(index, fragment).toBeGreaterThanOrEqual(0);
+      return index;
+    };
+    const order = [
+      at("CREATE TABLE registry_events__rebuilt ("),
+      at("INSERT INTO registry_events__rebuilt ("),
+      at("DROP TRIGGER tr_registry_events__validate_new_rows;"),
+      at("DROP TRIGGER tr_control_plane_events__validate_new_rows;"),
+      at("DROP TRIGGER tr_initiative_events__validate_new_rows;"),
+      at("DROP TABLE registry_events;"),
+      at("ALTER TABLE registry_events__rebuilt RENAME TO registry_events;"),
+      at("CREATE UNIQUE INDEX ux_registry_events__document_id__document_version"),
+      at("CREATE TRIGGER tr_registry_events__validate_new_rows"),
+      at("CREATE TRIGGER tr_control_plane_events__validate_new_rows"),
+      at("CREATE TRIGGER tr_initiative_events__validate_new_rows"),
+      at("CREATE TABLE artifact_blob_read_model ("),
+      at("CREATE TABLE artifact_reference_read_model ("),
+      at("CREATE TABLE artifact_pin_read_model ("),
+      at("CREATE TABLE artifact_tombstone_read_model ("),
+      at("INSERT INTO projection_watermark"),
+    ];
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // The three own triggers go too, before the table they sit on is dropped.
+    for (const own of ["tr_registry_events__deny_delete", "tr_registry_events__deny_update"]) {
+      expect(order[5] ?? 0).toBeGreaterThan(at("DROP TRIGGER " + own + ";"));
+    }
+  });
+
+  it("copies every row as it is, in sequence order, and marks each a document", () => {
+    expect(statements).toContain(
+      "SELECT\n  sequence, event_id, idempotency_key, 'DOCUMENT', document_kind, NULL,",
+    );
+    expect(statements).toContain("FROM registry_events\nORDER BY sequence;");
+    // The chain's two columns are copied, and nothing is recomputed or rewritten.
+    expect(statements).toContain("causation_sha256, contract_version, event_json, previous_sha256, event_sha256\nFROM");
+    expect(statements).not.toMatch(/^UPDATE /m);
+  });
+
+  it("uses no pragma and no legacy rename mode, so nothing about the connection changes", () => {
+    expect(statements).not.toMatch(/PRAGMA/i);
+    expect(statements).not.toContain("legacy_alter_table");
+    expect(statements).not.toContain("foreign_keys");
+  });
+
+  it("recreates the two foreign triggers and the stream's own three byte-identical to migration 9", () => {
+    for (const name of [
+      "tr_control_plane_events__validate_new_rows",
+      "tr_initiative_events__validate_new_rows",
+      "tr_registry_events__deny_update",
+      "tr_registry_events__deny_delete",
+      "tr_registry_events__validate_new_rows",
+    ]) {
+      expect(triggerBody(FIFTEENTH?.sql ?? "", name), name).toBe(triggerBody(NINTH?.sql ?? "", name));
+    }
+  });
+
+  it("keeps migration 9's constraint names and adds the subject kind with both mirrors", () => {
+    for (const rule of [
+      "ck_registry_events__subject_kind",
+      "ck_registry_events__document_kind",
+      "ck_registry_events__artifact_event_kind",
+      "ck_registry_events__document_kind_matches_subject",
+      "ck_registry_events__artifact_event_kind_matches_subject",
+      "ck_registry_events__document_version",
+      "ck_registry_events__parent_document_version",
+      "ck_registry_events__content_digest",
+      "ck_registry_events__causation_pair",
+      "ck_registry_events__causation_sequence",
+      "ck_registry_events__causation_sha256",
+      "ck_registry_events__previous_sha256",
+      "ck_registry_events__event_sha256",
+    ]) {
+      expect(statements, rule).toContain("CONSTRAINT " + rule + " CHECK (");
+    }
+    expect(statements).toContain("  subject_kind            TEXT    NOT NULL,\n");
+    expect(statements).toContain("  document_kind           TEXT,\n");
+    expect(statements).toContain("  artifact_event_kind     TEXT,\n");
+    // Mirrors as equalities of truth values, never as a disjunction a NULL
+    // would satisfy.
+    expect(statements).toContain("(subject_kind = 'DOCUMENT') = (document_kind IS NOT NULL)");
+    expect(statements).toContain("(subject_kind = 'ARTIFACT') = (artifact_event_kind IS NOT NULL)");
+    expect(checkWords(statements, "ck_registry_events__subject_kind")).toEqual(["DOCUMENT", "ARTIFACT"]);
+    expect(checkWords(statements, "ck_registry_events__document_kind")).toEqual([...DOCUMENT_KINDS]);
+  });
+
+  it("closes artifact_event_kind at the contract's nine names, by equality with the contract", () => {
+    // The pin ADR 0081 proposes: the CHECK and `ARTIFACT_EVENT_KINDS` are two
+    // declarations of one vocabulary, and a name added to one alone fails here
+    // instead of aborting an append.
+    expect(checkWords(statements, "ck_registry_events__artifact_event_kind")).toEqual([
+      ...ARTIFACT_EVENT_KINDS,
+    ]);
+    expect(ARTIFACT_EVENT_KINDS).toHaveLength(9);
+  });
+
+  it("adds exactly one index to the stream, and leaves migration 9's text as it was applied", () => {
+    expect(statements).toContain(
+      "CREATE INDEX ix_registry_events__subject_kind__document_id\n" +
+        "  ON registry_events (subject_kind, document_id);",
+    );
+    expect(NINTH?.sql ?? "").toContain("document_kind           TEXT    NOT NULL,");
+    expect(NINTH?.sql ?? "").not.toContain("subject_kind");
+    for (const migration of MIGRATIONS.slice(0, 14)) {
+      expect(migration.sql, migration.name).not.toContain("subject_kind");
+      expect(migration.sql, migration.name).not.toContain("artifact_blob_read_model");
+    }
+  });
+
+  it("names every constraint of the four read models literally (M-7)", () => {
+    for (const rule of [
+      "pk_artifact_blob_read_model PRIMARY KEY (content_sha256, blob_generation)",
+      "fk_artifact_blob_read_model__registry_events",
+      "ck_artifact_blob_read_model__content_sha256_hex",
+      "ck_artifact_blob_read_model__blob_generation_positive CHECK (blob_generation > 0)",
+      "ck_artifact_blob_read_model__size_bytes_non_negative CHECK (size_bytes >= 0)",
+      "ck_artifact_blob_read_model__lifecycle_state_enum",
+      "ck_artifact_blob_read_model__encryption_status_enum",
+      "ck_artifact_blob_read_model__key_reference_matches_encryption",
+      "ck_artifact_blob_read_model__first_published_pair",
+      "ck_artifact_blob_read_model__first_published_matches_state",
+      "pk_artifact_reference_read_model PRIMARY KEY (artifact_reference_id)",
+      "fk_artifact_reference_read_model__artifact_blob_read_model",
+      "fk_artifact_reference_read_model__registry_events",
+      "ck_artifact_reference_read_model__artifact_class_enum",
+      "ck_artifact_reference_read_model__classification_enum",
+      "ck_artifact_reference_read_model__scope_kind_enum",
+      "ck_artifact_reference_read_model__scope_id_matches_scope_kind",
+      "ck_artifact_reference_read_model__retention_class_enum",
+      "ck_artifact_reference_read_model__expires_at_matches_retention_class",
+      "ck_artifact_reference_read_model__tombstone_reason_matches",
+      "pk_artifact_pin_read_model PRIMARY KEY (artifact_pin_id)",
+      "fk_artifact_pin_read_model__artifact_blob_read_model",
+      "ck_artifact_pin_read_model__pin_holder_kind_enum",
+      "pk_artifact_tombstone_read_model PRIMARY KEY (artifact_reference_id)",
+      "fk_artifact_tombstone_read_model__artifact_reference_read_model",
+      "fk_artifact_tombstone_read_model__artifact_blob_read_model",
+      "fk_artifact_tombstone_read_model__registry_events",
+      "ck_artifact_tombstone_read_model__reason_enum",
+    ]) {
+      expect(statements, rule).toContain("CONSTRAINT " + rule);
+    }
+    expect(statements).toContain(
+      "CREATE UNIQUE INDEX ux_artifact_blob_read_model__content_sha256__unreclaimed\n" +
+        "  ON artifact_blob_read_model (content_sha256)\n" +
+        "  WHERE lifecycle_state <> 'RECLAIMED';",
+    );
+    expect(statements).toContain(
+      "CREATE UNIQUE INDEX ux_artifact_blob_read_model__reclaim_id\n" +
+        "  ON artifact_blob_read_model (reclaim_id)\n" +
+        "  WHERE reclaim_id IS NOT NULL;",
+    );
+    expect(statements).toContain(
+      "CREATE UNIQUE INDEX ux_artifact_reference_read_model__id_content_generation\n" +
+        "  ON artifact_reference_read_model (artifact_reference_id, content_sha256, blob_generation);",
+    );
+    expect(statements).toContain(
+      "CREATE UNIQUE INDEX ux_artifact_pin_read_model__content_sha256_holder__live\n" +
+        "  ON artifact_pin_read_model (content_sha256, blob_generation, pin_holder_kind, pin_holder_id)\n" +
+        "  WHERE released_sequence IS NULL;",
+    );
+    // Every foreign key restricts, and a rebuild clears children by order.
+    expect(statements.match(/ON DELETE RESTRICT/g)).toHaveLength(9);
+    expect(statements).not.toContain("CASCADE");
+  });
+
+  it("holds every vocabulary CHECK equal to the contract's list", () => {
+    expect(checkWords(statements, "ck_artifact_blob_read_model__lifecycle_state_enum")).toEqual([
+      ...BLOB_LIFECYCLE_STATES,
+    ]);
+    expect(checkWords(statements, "ck_artifact_blob_read_model__encryption_status_enum")).toEqual([
+      ...ENCRYPTION_STATUSES,
+    ]);
+    expect(checkWords(statements, "ck_artifact_reference_read_model__artifact_class_enum")).toEqual([
+      ...ARTIFACT_CLASSES,
+    ]);
+    expect(checkWords(statements, "ck_artifact_reference_read_model__classification_enum")).toEqual([
+      ...ARTIFACT_CLASSIFICATIONS,
+    ]);
+    expect(checkWords(statements, "ck_artifact_reference_read_model__scope_kind_enum")).toEqual([
+      ...REFERENCE_SCOPE_KINDS,
+    ]);
+    expect(checkWords(statements, "ck_artifact_reference_read_model__retention_class_enum")).toEqual([
+      ...RETENTION_CLASSES,
+    ]);
+    expect(checkWords(statements, "ck_artifact_pin_read_model__pin_holder_kind_enum")).toEqual([
+      ...PIN_HOLDER_KINDS,
+    ]);
+  });
+
+  it("gives the policy no foreign key and the scope, digest and producer no uniqueness", () => {
+    // Decision 59: the policy is an identifier closed in code, and the table §4
+    // names has no dictionary. Artifacts §1 and §4: two references to one blob
+    // from one producer in one scope are legitimate.
+    expect(statements).not.toContain("access_policy_read_model");
+    expect(statements).not.toContain("REFERENCES access_policy");
+    expect(statements).not.toMatch(/UNIQUE[^;]*producer_identity/);
+    expect(statements).not.toContain("ux_artifact_reference_read_model__scope_id_content_sha256_producer_identity");
+    // And nothing in the plane can hold bytes.
+    expect(statements).not.toContain(" BLOB");
+  });
+
+  it("seeds its four watermarks from the registry head, never from a literal zero", () => {
+    expect(statements).toContain("INSERT INTO projection_watermark");
+    expect(statements).toContain("  'registry_events',\n  1,\n  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_head_sequence') AS INTEGER),");
+    for (const key of ["registry_head_sequence", "registry_event_count", "registry_head_event_sha256"]) {
+      expect(statements, key).toContain("WHERE key = '" + key + "'");
+    }
+    for (const name of REGISTRY_PROJECTION_NAMES) {
+      expect(statements, name).toContain("SELECT '" + name + "'");
+    }
+    expect(statements).not.toContain("'registry_events',\n  1,\n  0,\n  0,");
+  });
+
+  it("declares the four projections in all four places that have to agree", () => {
+    expect(REGISTRY_PROJECTION_NAMES).toEqual([
+      ARTIFACT_BLOB_PROJECTION,
+      ARTIFACT_REFERENCE_PROJECTION,
+      ARTIFACT_PIN_PROJECTION,
+      ARTIFACT_TOMBSTONE_PROJECTION,
+    ]);
+    for (const name of REGISTRY_PROJECTION_NAMES) {
+      expect(DERIVED_TABLES, name).toContain(name);
+      expect(PROJECTION_NAMES, name).not.toContain(name);
+      expect(PROJECTION_SOURCES.filter((source) => source.projectionName === name)).toEqual([
+        { projectionName: name, sourceStream: "registry_events" },
+      ]);
+      expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "table", name });
+    }
+  });
+
+  it("clears the children before the blob they name", () => {
+    const tombstoneAt = DERIVED_TABLES.indexOf(ARTIFACT_TOMBSTONE_PROJECTION);
+    const pinAt = DERIVED_TABLES.indexOf(ARTIFACT_PIN_PROJECTION);
+    const referenceAt = DERIVED_TABLES.indexOf(ARTIFACT_REFERENCE_PROJECTION);
+    const blobAt = DERIVED_TABLES.indexOf(ARTIFACT_BLOB_PROJECTION);
+    expect(tombstoneAt).toBeGreaterThanOrEqual(0);
+    expect(tombstoneAt).toBeLessThan(referenceAt);
+    expect(pinAt).toBeLessThan(blobAt);
+    expect(referenceAt).toBeLessThan(blobAt);
+  });
+
+  it("inventories four tables and nine indexes, and still eight triggers", () => {
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("artifact_") || object.name.includes("_artifact_"))).toEqual([
+      { type: "table", name: "artifact_blob_read_model" },
+      { type: "index", name: "ix_artifact_blob_read_model__lifecycle_state" },
+      { type: "index", name: "ix_artifact_blob_read_model__first_published_sequence" },
+      { type: "index", name: "ux_artifact_blob_read_model__reclaim_id" },
+      { type: "index", name: "ux_artifact_blob_read_model__content_sha256__unreclaimed" },
+      { type: "table", name: "artifact_reference_read_model" },
+      { type: "index", name: "ix_artifact_reference_read_model__content_sha256" },
+      { type: "index", name: "ix_artifact_reference_read_model__scope_kind_scope_id" },
+      { type: "index", name: "ix_artifact_reference_read_model__expires_at" },
+      { type: "index", name: "ux_artifact_reference_read_model__id_content_generation" },
+      { type: "table", name: "artifact_pin_read_model" },
+      { type: "index", name: "ux_artifact_pin_read_model__content_sha256_holder__live" },
+      { type: "table", name: "artifact_tombstone_read_model" },
+    ]);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(8);
+    expect(statements).not.toMatch(/CREATE TRIGGER tr_artifact/);
   });
 });

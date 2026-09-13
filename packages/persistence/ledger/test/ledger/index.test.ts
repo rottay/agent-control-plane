@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  ARTIFACT_EVENT_KINDS,
   CONTRACT_VERSION,
   SUPPORTED_CONTRACT_VERSIONS,
   V2_IDEMPOTENCY_NAMESPACE,
@@ -22,6 +23,8 @@ import {
 
 import {
   GENESIS_SHA256,
+  DELIVERED_ARTIFACT_EVENT_KINDS,
+  LedgerArtifactEncryptionConflictError,
   LedgerCanonicalizationError,
   LedgerEventIdConflictError,
   LedgerIdempotencyConflictError,
@@ -52,6 +55,7 @@ import {
   type StreamIntegrityCoverage,
 } from "../../src/index.js";
 import {
+  ARTIFACT_REGISTRY_MIGRATION,
   DERIVED_TABLES,
   EXECUTION_EFFECT_MIGRATION,
   EXECUTION_OCCURRENCE_MIGRATION,
@@ -323,7 +327,7 @@ describe("open", () => {
     // record, P-05/B's revision coordinate, P-08's sidecar and the registry
     // stream, typed causal triple and watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1307,6 +1311,87 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
 }
 
 /**
+ * Migration 15 undone: the four artifact read models, and `registry_events`
+ * rebuilt back into migration 9's shape (P-36/local A, M-8 and D-3).
+ *
+ * Children first, because `foreign_keys` is ON and every artifact table names
+ * `registry_events` or the blob. Then the rebuild in reverse — which is the same
+ * procedure as the forward one, and trips on the same rename: the two triggers
+ * on OTHER tables that name `registry_events` are dropped before the rename and
+ * recreated from migration 9's own text after it. The copy leaves
+ * `subject_kind` and `artifact_event_kind` behind, which is only lawful because
+ * a fixture ledger that is rewound holds documents alone; the helper refuses to
+ * run over one that does not.
+ */
+function dropArtifactRegistry(raw: Database.Database): void {
+  const artifacts = raw
+    .prepare("SELECT COUNT(*) AS n FROM registry_events WHERE subject_kind <> 'DOCUMENT'")
+    .get() as { readonly n: number };
+  if (artifacts.n !== 0) {
+    throw new Error("a ledger holding artifact events cannot be rewound past migration 15");
+  }
+
+  raw.exec(
+    "DROP TABLE artifact_tombstone_read_model; " +
+      "DROP INDEX ux_artifact_pin_read_model__content_sha256_holder__live; " +
+      "DROP TABLE artifact_pin_read_model; " +
+      "DROP INDEX ux_artifact_reference_read_model__id_content_generation; " +
+      "DROP INDEX ix_artifact_reference_read_model__expires_at; " +
+      "DROP INDEX ix_artifact_reference_read_model__scope_kind_scope_id; " +
+      "DROP INDEX ix_artifact_reference_read_model__content_sha256; " +
+      "DROP TABLE artifact_reference_read_model; " +
+      "DROP INDEX ux_artifact_blob_read_model__content_sha256__unreclaimed; " +
+      "DROP INDEX ux_artifact_blob_read_model__reclaim_id; " +
+      "DROP INDEX ix_artifact_blob_read_model__first_published_sequence; " +
+      "DROP INDEX ix_artifact_blob_read_model__lifecycle_state; " +
+      "DROP TABLE artifact_blob_read_model;",
+  );
+  const forget = raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?");
+  for (const name of [
+    "artifact_blob_read_model",
+    "artifact_reference_read_model",
+    "artifact_pin_read_model",
+    "artifact_tombstone_read_model",
+  ]) {
+    forget.run(name);
+  }
+
+  const ninth = LEDGER_MIGRATIONS.find((migration) => migration.version === 9);
+  if (ninth === undefined) throw new Error("migration 9 is absent from this build");
+  const slice = (from: string, to: string): string => {
+    const start = ninth.sql.indexOf(from);
+    const end = ninth.sql.indexOf(to, start);
+    if (start === -1 || end === -1) throw new Error("migration 9 no longer holds " + from);
+    return ninth.sql.slice(start, end);
+  };
+  const columns =
+    "sequence, event_id, idempotency_key, document_kind, document_id, document_version, " +
+    "content_digest, parent_document_version, recorded_by, effective_from, occurred_at, " +
+    "recorded_at, causation_stream, causation_sequence, causation_sha256, contract_version, " +
+    "event_json, previous_sha256, event_sha256";
+
+  raw.exec(
+    slice("CREATE TABLE registry_events (", "-- Version identity.").replace(
+      "CREATE TABLE registry_events (",
+      "CREATE TABLE registry_events__rewound (",
+    ),
+  );
+  raw.exec(
+    "INSERT INTO registry_events__rewound (" + columns + ") " +
+      "SELECT " + columns + " FROM registry_events ORDER BY sequence; " +
+      "DROP TRIGGER tr_registry_events__validate_new_rows; " +
+      "DROP TRIGGER tr_registry_events__deny_delete; " +
+      "DROP TRIGGER tr_registry_events__deny_update; " +
+      "DROP TRIGGER tr_control_plane_events__validate_new_rows; " +
+      "DROP TRIGGER tr_initiative_events__validate_new_rows; " +
+      "DROP TABLE registry_events; " +
+      "ALTER TABLE registry_events__rewound RENAME TO registry_events;",
+  );
+  raw.exec(slice("CREATE UNIQUE INDEX ux_registry_events__document_id__document_version", "-- The causal vocabulary widens to three"));
+  raw.exec(slice("CREATE TRIGGER tr_control_plane_events__validate_new_rows", "-- The first read model fed by two streams."));
+}
+
+/**
  * Migration 14 undone: the prompt and response occurrences.
  *
  * The answer before the prompt it names, each table's indexes before the table,
@@ -1314,6 +1399,9 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
  * one rung further down.
  */
 function dropExecutionOccurrences(raw: Database.Database): void {
+  // Fifteen first: rewinding past 14 means rewinding past everything applied
+  // after it, and a re-applied 15 over its own tables aborts.
+  dropArtifactRegistry(raw);
   raw.exec(
     "DROP INDEX ux_response_occurrence_read_model__prompt; " +
       "DROP TABLE response_occurrence_read_model; " +
@@ -1846,20 +1934,20 @@ describe("projection watermark verification", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
-    // Thirteen projections since P-18/protocolo D: the two task-stream folds,
-    // the route fold, the revision fold, the attempt fold, the segment, effect
-    // and delivery folds, the prompt and response occurrence folds, the two
-    // initiative-stream folds, and the two-source routing fold. Fourteen heads,
-    // because the last one has two — every one of them at zero on a ledger that
-    // has never been appended to.
-    expect(ledger.status().projections).toHaveLength(13);
+    // Seventeen projections since P-36/local A: the two task-stream folds, the
+    // route fold, the revision fold, the attempt fold, the segment, effect and
+    // delivery folds, the prompt and response occurrence folds, the two
+    // initiative-stream folds, the four artifact folds of the registry stream,
+    // and the two-source routing fold. Eighteen heads, because the last one has
+    // two — every one of them at zero on a ledger that has never been appended to.
+    expect(ledger.status().projections).toHaveLength(17);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -2854,7 +2942,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3065,7 +3153,9 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.listEvents().events).toHaveLength(0);
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
-    expect([...appliedByName(ledger).values()]).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect([...appliedByName(ledger).values()]).toEqual([
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
     // The handle is still usable, so the rollback was clean rather than wedged.
@@ -3089,7 +3179,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(14);
+    expect(rows).toHaveLength(18);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "dispatch_attempt_read_model",
@@ -3165,7 +3255,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(14);
+    expect(before).toHaveLength(18);
 
     tamper(path, (raw) => {
       raw
@@ -3280,7 +3370,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3329,7 +3419,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(14);
+    expect(rows).toHaveLength(18);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -4256,10 +4346,14 @@ describe("two heads under one projection name advance independently (negative 2)
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     const status = ledger.status();
-    // Thirteen projections, not fourteen entries: the vector lives INSIDE the
+    // Seventeen projections, not eighteen entries: the vector lives INSIDE the
     // projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(13);
+    expect(status.projections).toHaveLength(17);
     expect(status.projections.map((projection) => projection.name)).toEqual([
+      "artifact_blob_read_model",
+      "artifact_pin_read_model",
+      "artifact_reference_read_model",
+      "artifact_tombstone_read_model",
       "dispatch_attempt_read_model",
       "effect_read_model",
       "execution_route_read_model",
@@ -4296,12 +4390,12 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Fourteen rows in the table, fourteen entries across thirteen projections.
+    // Eighteen rows in the table, eighteen entries across seventeen projections.
     // Nothing in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(14);
+    expect(readWatermarks(path)).toHaveLength(18);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(14);
+    ).toHaveLength(18);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -4491,7 +4585,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       fallbacks: readFallbacks(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(14);
+    expect(live.watermarks).toHaveLength(18);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -4564,12 +4658,14 @@ describe("the base refuses a broken registry triple with the ledger bypassed", (
       return caught(() =>
         raw
           .prepare(
+            // Migration 15 gave `subject_kind` no default, so a raw writer states
+            // which plane it writes, exactly as the door does.
             "INSERT INTO registry_events (" +
-              "event_id, idempotency_key, document_kind, document_id, document_version, " +
-              "content_digest, parent_document_version, recorded_by, effective_from, " +
-              "occurred_at, recorded_at, causation_stream, causation_sequence, " +
+              "event_id, idempotency_key, subject_kind, document_kind, document_id, " +
+              "document_version, content_digest, parent_document_version, recorded_by, " +
+              "effective_from, occurred_at, recorded_at, causation_stream, causation_sequence, " +
               "causation_sha256, contract_version, event_json, previous_sha256, event_sha256" +
-              ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              ") VALUES (?, ?, 'DOCUMENT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           )
           .run(
             randomUUID(),
@@ -5358,7 +5454,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -7161,7 +7257,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7214,7 +7310,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7236,6 +7332,51 @@ describe("a version this build does not read is refused, by name", () => {
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
+  });
+
+  it("P-36A restamp: a 2.2.0, 2.3.0 or 2.4.0 history rewound past 15 opens, migrates, verifies and rebuilds", () => {
+    // The field case for migration 15, once per version this build reads. The
+    // rebuild of `registry_events` must not care what version the OTHER streams
+    // were written under, and the ledger it leaves must take an artifact event
+    // under the version in force on top of the restamped history.
+    for (const version of SUPPORTED_CONTRACT_VERSIONS) {
+      const path = temporaryDatabase();
+      const ledger = open(path);
+      const taskId = randomUUID();
+      ledger.append(makeEvent({ taskId, transitionId: "one" }));
+      ledger.append(
+        makeEvent({ taskId, transitionId: "two", fromState: "DISCOVERED", toState: "DISCOVERED" }),
+      );
+      ledger.appendRegistryEvent(makeRegistryDocument());
+      ledger.close();
+
+      restampHistory(path, version);
+      withRawDatabase(path, (raw) => {
+        dropArtifactRegistry(raw);
+        raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(ARTIFACT_REGISTRY_MIGRATION);
+      });
+
+      const migrated = open(path);
+      expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+      ]);
+      expect(
+        migrated.listEvents().events.map((record) => record.event.contractVersion),
+        version,
+      ).toEqual([version, version]);
+      expect(migrated.verifyIntegrity().ok, version).toBe(true);
+      const rebuilt = migrated.rebuildReadModel();
+      expect(rebuilt.replayedEvents, version).toBe(2);
+      expect(rebuilt.replayedRegistryEvents, version).toBe(1);
+      expect(migrated.verifyIntegrity().ok, version).toBe(true);
+
+      const intended = migrated.appendArtifactEvent(publicationIntended());
+      expect(intended.record.sequence, version).toBe(2);
+      expect(intended.record.event.contractVersion, version).toBe(CONTRACT_VERSION);
+      expect(migrated.rebuildReadModel().artifactBlobRows, version).toBe(1);
+      expect(migrated.verifyIntegrity().ok, version).toBe(true);
+      migrated.close();
+    }
   });
 
   it("N-C-1: an exact replay of a pre-bump row is admitted, and new work is not", () => {
@@ -7363,7 +7504,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -12191,5 +12332,1064 @@ describe("the saga's first three crash boundaries leave the two files consistent
     // A reconciliation run over a finished saga changes nothing.
     reconcile(after.ledger, after.store, paths.taskId);
     assertSettled(after.ledger, after.store, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-36/local escalón A — an artifact is a subject of the registry before its
+// first byte moves
+//
+// Artifacts §1.1, §3-6 and §8.1; migration 15; ADR 0081. The negatives are the
+// preaudit's N-P36A-1..17 and the map's N-P36-7, N-P36-15 (ledger wing),
+// N-P36-17, N-P36-18 and N-P36-19. Nothing below touches a file other than the
+// ledger itself: the filesystem half of a publication is escalón C.
+// ---------------------------------------------------------------------------
+
+const ARTIFACT_AT = "2026-09-13T10:00:00.000Z";
+const ARTIFACT_LATER = "2026-09-13T11:00:00.000Z";
+const CONTENT_A = "a".repeat(64);
+const CONTENT_B = "b".repeat(64);
+const ARTIFACT_PRODUCER = "claude/opus/implementer/01";
+
+interface ArtifactEnvelopeInput {
+  readonly ordinal?: number;
+  readonly eventId?: string;
+  readonly idempotencyKey?: string;
+  readonly occurredAt?: string;
+  readonly recordedAt?: string;
+  readonly contractVersion?: string;
+}
+
+/** One artifact event of any kind, with a contiguous ordinal unless told otherwise. */
+function artifactEvent(
+  kind: string,
+  payload: Record<string, unknown>,
+  input: ArtifactEnvelopeInput = {},
+): Record<string, unknown> {
+  const ordinal = input.ordinal ?? 1;
+  const occurredAt = input.occurredAt ?? ARTIFACT_AT;
+  return {
+    contractVersion: input.contractVersion ?? CONTRACT_VERSION,
+    eventId: input.eventId ?? randomUUID(),
+    idempotencyKey: input.idempotencyKey ?? "artifact/" + randomUUID(),
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: ARTIFACT_PRODUCER,
+    occurredAt,
+    recordedAt: input.recordedAt ?? occurredAt,
+    payload,
+  };
+}
+
+interface PublicationInput extends ArtifactEnvelopeInput {
+  readonly content?: string;
+  readonly generation?: number;
+  readonly commandId?: string;
+  readonly pinId?: string;
+  readonly encryptionStatus?: string;
+  readonly keyReference?: string | null;
+  readonly encryptionProfile?: string;
+  readonly sizeBytes?: number;
+}
+
+function publicationIntended(input: PublicationInput = {}): Record<string, unknown> {
+  return artifactEvent(
+    "PUBLICATION_INTENDED",
+    {
+      commandId: input.commandId ?? "cmd-1",
+      contentSha256: input.content ?? CONTENT_A,
+      blobGeneration: input.generation ?? 1,
+      mediaType: "application/json",
+      sizeBytes: input.sizeBytes ?? 128,
+      encryptionStatus: input.encryptionStatus ?? "PLAINTEXT",
+      keyReference: input.keyReference === undefined ? null : input.keyReference,
+      encryptionProfile: input.encryptionProfile ?? "local-plaintext-v1",
+      artifactPinId: input.pinId ?? "pin-publication-1",
+    },
+    input,
+  );
+}
+
+function referenceRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    artifactReferenceId: "ref-1",
+    artifactClass: "EVIDENCE",
+    classification: "INTERNAL",
+    scopeKind: "TASK",
+    scopeId: "task-1",
+    producerIdentity: ARTIFACT_PRODUCER,
+    accessPolicyId: "SCOPE_EQUALITY_V1",
+    retentionClass: "STANDARD",
+    expiresAt: "2026-12-31T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function publicationSucceeded(
+  input: PublicationInput & { readonly reference?: Record<string, unknown> } = {},
+): Record<string, unknown> {
+  return artifactEvent(
+    "PUBLICATION_SUCCEEDED",
+    {
+      commandId: input.commandId ?? "cmd-1",
+      contentSha256: input.content ?? CONTENT_A,
+      blobGeneration: input.generation ?? 1,
+      artifactPinId: input.pinId ?? "pin-publication-1",
+      reference: input.reference ?? referenceRecord(),
+    },
+    { ordinal: 2, ...input },
+  );
+}
+
+function publicationAbandoned(input: PublicationInput = {}): Record<string, unknown> {
+  return artifactEvent(
+    "PUBLICATION_ABANDONED",
+    {
+      commandId: input.commandId ?? "cmd-1",
+      contentSha256: input.content ?? CONTENT_A,
+      blobGeneration: input.generation ?? 1,
+      artifactPinId: input.pinId ?? "pin-publication-1",
+    },
+    { ordinal: 2, ...input },
+  );
+}
+
+function referenceRecorded(
+  input: PublicationInput & { readonly reference?: Record<string, unknown> } = {},
+): Record<string, unknown> {
+  return artifactEvent(
+    "REFERENCE_RECORDED",
+    {
+      contentSha256: input.content ?? CONTENT_A,
+      blobGeneration: input.generation ?? 1,
+      reference: input.reference ?? referenceRecord({ artifactReferenceId: "ref-2" }),
+    },
+    input,
+  );
+}
+
+interface PinInput extends ArtifactEnvelopeInput {
+  readonly pinId?: string;
+  readonly content?: string;
+  readonly generation?: number;
+  readonly holderKind?: string;
+  readonly holderId?: string;
+}
+
+function pinAcquired(input: PinInput = {}): Record<string, unknown> {
+  return artifactEvent(
+    "PIN_ACQUIRED",
+    {
+      artifactPinId: input.pinId ?? "pin-task-1",
+      contentSha256: input.content ?? CONTENT_A,
+      blobGeneration: input.generation ?? 1,
+      pinHolderKind: input.holderKind ?? "TASK",
+      pinHolderId: input.holderId ?? "task-1",
+    },
+    input,
+  );
+}
+
+function pinReleased(input: PinInput = {}): Record<string, unknown> {
+  return artifactEvent(
+    "PIN_RELEASED",
+    {
+      artifactPinId: input.pinId ?? "pin-task-1",
+      contentSha256: input.content ?? CONTENT_A,
+      blobGeneration: input.generation ?? 1,
+    },
+    { ordinal: 2, ...input },
+  );
+}
+
+/** Intend and succeed one publication of `CONTENT_A`, ordinals 1 and 2. */
+function publishContentA(ledger: Ledger): void {
+  ledger.appendArtifactEvent(publicationIntended());
+  ledger.appendArtifactEvent(publicationSucceeded());
+}
+
+/** The four artifact tables of a closed ledger, each in its key order. */
+function artifactTables(path: string): Record<string, readonly Record<string, unknown>[]> {
+  return {
+    blobs: readRows(path, "SELECT * FROM artifact_blob_read_model ORDER BY content_sha256, blob_generation"),
+    references: readRows(path, "SELECT * FROM artifact_reference_read_model ORDER BY artifact_reference_id"),
+    pins: readRows(path, "SELECT * FROM artifact_pin_read_model ORDER BY artifact_pin_id"),
+    tombstones: readRows(path, "SELECT * FROM artifact_tombstone_read_model ORDER BY artifact_reference_id"),
+  };
+}
+
+/** The registry rows of a closed ledger, every column, in sequence order. */
+function registryRows(path: string): readonly Record<string, unknown>[] {
+  return readRows(path, "SELECT * FROM registry_events ORDER BY sequence");
+}
+
+/** The one issue of a `LedgerValidationError`, or a failed expectation. */
+function onlyIssue(error: unknown): { readonly path: string; readonly message: string } {
+  expect(error).toBeInstanceOf(LedgerValidationError);
+  const issues = (error as LedgerValidationError).issues;
+  expect(issues).toHaveLength(1);
+  const issue = issues[0];
+  if (issue === undefined) throw new Error("no issue");
+  return issue;
+}
+
+/**
+ * Plant one registry row past the door, chained correctly, so a rebuild meets a
+ * history the door would have refused and has to refuse it itself. The head and
+ * count move with it; the watermarks do not, which only `verifyIntegrity` reads.
+ */
+function plantRegistryRow(
+  path: string,
+  columns: {
+    readonly subjectKind: string;
+    readonly documentKind: string | null;
+    readonly artifactEventKind: string | null;
+    readonly documentId: string;
+    readonly documentVersion: number;
+    readonly parentDocumentVersion: number | null;
+    readonly contentDigest: string;
+  },
+  body: Record<string, unknown>,
+): void {
+  withRawDatabase(path, (raw) => {
+    const meta = new Map(
+      (raw.prepare("SELECT key, value FROM ledger_meta WHERE key LIKE 'registry_%'").all() as {
+        key: string;
+        value: string;
+      }[]).map((row) => [row.key, row.value]),
+    );
+    const previous = meta.get("registry_head_sequence") === "0" ? GENESIS_SHA256 : (meta.get("registry_head_event_sha256") ?? "");
+    const canonical = canonicalJsonStringify(body);
+    const digest = chainDigest(previous, canonical);
+    const info = raw
+      .prepare(
+        "INSERT INTO registry_events (event_id, idempotency_key, subject_kind, document_kind, " +
+          "artifact_event_kind, document_id, document_version, content_digest, " +
+          "parent_document_version, recorded_by, effective_from, occurred_at, recorded_at, " +
+          "contract_version, event_json, previous_sha256, event_sha256) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        body["eventId"],
+        body["idempotencyKey"],
+        columns.subjectKind,
+        columns.documentKind,
+        columns.artifactEventKind,
+        columns.documentId,
+        columns.documentVersion,
+        columns.contentDigest,
+        columns.parentDocumentVersion,
+        body["recordedBy"],
+        body["occurredAt"],
+        body["occurredAt"],
+        body["recordedAt"],
+        body["contractVersion"],
+        canonical,
+        previous,
+        digest,
+      );
+    const count = Number(meta.get("registry_event_count") ?? "0") + 1;
+    const update = raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?");
+    update.run(String(Number(info.lastInsertRowid)), "registry_head_sequence");
+    update.run(digest, "registry_head_event_sha256");
+    update.run(String(count), "registry_event_count");
+  });
+}
+
+describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1..4)", () => {
+  /**
+   * A ledger with a registry history and causal links in both directions,
+   * rewound to migration 14 exactly as the field has it.
+   */
+  function historyAtFourteen(): { readonly path: string; readonly taskCause: string } {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const cause = ledger.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+    );
+    const documentId = routingDocumentId();
+    const first = ledger.appendRegistryEvent(makeRegistryDocument({ documentId }), {
+      stream: "control_plane_events",
+      sequence: cause.record.sequence,
+      sha256: cause.record.eventSha256,
+    });
+    ledger.appendRegistryEvent(
+      makeRegistryDocument({
+        documentId,
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        payload: routingPayload({ slot: 1 }),
+      }),
+    );
+    ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "MODEL_VERSION", documentId: "mv-1", payload: {} }));
+    // A task event whose cause is a registry row written before migration 15.
+    ledger.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+      { stream: "registry_events", sequence: first.record.sequence, sha256: first.record.eventSha256 },
+    );
+    ledger.close();
+
+    withRawDatabase(path, (raw) => {
+      dropArtifactRegistry(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(ARTIFACT_REGISTRY_MIGRATION);
+    });
+    return { path, taskCause: first.record.eventSha256 };
+  }
+
+  const NINE_COLUMNS =
+    "sequence, event_id, idempotency_key, document_kind, document_id, document_version, " +
+    "content_digest, parent_document_version, recorded_by, effective_from, occurred_at, " +
+    "recorded_at, causation_stream, causation_sequence, causation_sha256, contract_version, " +
+    "event_json, previous_sha256, event_sha256";
+
+  const FOREIGN_TRIGGERS =
+    "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN " +
+    "('tr_control_plane_events__validate_new_rows', 'tr_initiative_events__validate_new_rows') " +
+    "ORDER BY name";
+
+  it("N-P36A-1/2/3: every row, the chain, the head, sqlite_sequence and both foreign triggers survive byte for byte", () => {
+    const { path } = historyAtFourteen();
+    const before = {
+      rows: readRows(path, "SELECT " + NINE_COLUMNS + " FROM registry_events ORDER BY sequence"),
+      meta: readRows(path, "SELECT key, value FROM ledger_meta WHERE key LIKE 'registry_%' ORDER BY key"),
+      sequence: readRows(path, "SELECT seq FROM sqlite_sequence WHERE name = 'registry_events'"),
+      triggers: readRows(path, FOREIGN_TRIGGERS),
+      columns: readRows(path, "SELECT name FROM pragma_table_info('registry_events')"),
+    };
+    expect(before.rows).toHaveLength(3);
+    expect(before.columns.map((column) => column["name"])).not.toContain("subject_kind");
+
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ARTIFACT_REGISTRY_MIGRATION);
+    const report = migrated.verifyIntegrity();
+    expect(report.problems).toEqual([]);
+    expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
+    migrated.close();
+
+    expect(readRows(path, "SELECT " + NINE_COLUMNS + " FROM registry_events ORDER BY sequence")).toEqual(before.rows);
+    expect(readRows(path, "SELECT subject_kind, artifact_event_kind FROM registry_events")).toEqual([
+      { subject_kind: "DOCUMENT", artifact_event_kind: null },
+      { subject_kind: "DOCUMENT", artifact_event_kind: null },
+      { subject_kind: "DOCUMENT", artifact_event_kind: null },
+    ]);
+    let previous = GENESIS_SHA256;
+    for (const row of registryRows(path)) {
+      expect(row["previous_sha256"]).toBe(previous);
+      expect(chainDigest(String(row["previous_sha256"]), String(row["event_json"]))).toBe(row["event_sha256"]);
+      previous = String(row["event_sha256"]);
+    }
+    expect(readRows(path, "SELECT key, value FROM ledger_meta WHERE key LIKE 'registry_%' ORDER BY key")).toEqual(before.meta);
+    expect(readRows(path, "SELECT seq FROM sqlite_sequence WHERE name = 'registry_events'")).toEqual(before.sequence);
+    expect(readRows(path, FOREIGN_TRIGGERS)).toEqual(before.triggers);
+
+    // The next append takes the next number: no sequence is ever reused.
+    const reopened = open(path);
+    const next = reopened.appendRegistryEvent(makeRegistryDocument({ documentKind: "MODEL_VERSION", documentId: "mv-2", payload: {} }));
+    expect(next.record.sequence).toBe(4);
+    expect(next.record.previousSha256).toBe(previous);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    reopened.close();
+  });
+
+  it("N-P36A-3: a causal reference to a pre-15 registry row still resolves, and one that does not is refused in migration 9's words", () => {
+    const { path, taskCause } = historyAtFourteen();
+    const migrated = open(path);
+    const resolved = migrated.append(
+      makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }),
+      { stream: "registry_events", sequence: 1, sha256: taskCause },
+    );
+    expect(resolved.record.causation).toEqual({ stream: "registry_events", sequence: 1, sha256: taskCause });
+    migrated.close();
+
+    expect(
+      refusalMessage(
+        rawTaskInsert(path, { stream: "registry_events", sequence: 1, sha256: "d".repeat(64) }),
+        "past the door",
+      ),
+    ).toContain("control_plane_events causal reference does not resolve to the event it names");
+    expect(
+      rawTaskInsert(path, { stream: "registry_events", sequence: 1, sha256: taskCause }),
+    ).toBeUndefined();
+  });
+
+  it("N-P36A-4: the rebuilt table is still append-only, and the schema conforms", () => {
+    const { path } = historyAtFourteen();
+    open(path).close();
+
+    withRawDatabase(path, (raw) => {
+      expect(refusalMessage(caught(() => raw.prepare("UPDATE registry_events SET recorded_by = 'x' WHERE sequence = 1").run()), "update")).toContain(
+        "registry_events is append-only: UPDATE is denied",
+      );
+      expect(refusalMessage(caught(() => raw.prepare("DELETE FROM registry_events WHERE sequence = 1").run()), "delete")).toContain(
+        "registry_events is append-only: DELETE is denied",
+      );
+    });
+    const report = open(path).verifyIntegrity();
+    expect(report.problems.filter((problem) => problem.kind === "SCHEMA_SHAPE")).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("N-P36A-4: a failure part way through applies nothing, and the stream keeps migration 9's shape", () => {
+    const { path } = historyAtFourteen();
+    withRawDatabase(path, (raw) => {
+      const fifteenth = MIGRATIONS.filter((migration) => migration.version === ARTIFACT_REGISTRY_MIGRATION);
+      expect(fifteenth).toHaveLength(1);
+      const run = raw.transaction((): void => {
+        applyMigrations(raw, fifteenth, ARTIFACT_AT, {
+          afterSql: () => {
+            throw new Error("induced failure after the SQL and before the row");
+          },
+        });
+      });
+      expect(() => {
+        run.immediate();
+      }).toThrow("induced failure");
+
+      expect(raw.prepare("SELECT version FROM schema_migrations WHERE version = ?").all(ARTIFACT_REGISTRY_MIGRATION)).toEqual([]);
+      expect(
+        (raw.prepare("SELECT name FROM pragma_table_info('registry_events')").all() as { name: string }[]).map((row) => row.name),
+      ).not.toContain("subject_kind");
+      expect(raw.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'artifact_%' OR name LIKE 'registry_events__%'").all()).toEqual([]);
+      expect(raw.prepare("SELECT projection_name FROM projection_watermark WHERE projection_name LIKE 'artifact_%'").all()).toEqual([]);
+      expect(raw.prepare("SELECT COUNT(*) AS n FROM registry_events").get()).toEqual({ n: 3 });
+    });
+
+    const reopened = open(path);
+    expect(reopened.status().migrations.map((migration) => migration.version)).toContain(15);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P36A-8: over N documents the four watermarks are born at the registry head, and a rebuild changes nothing", () => {
+    const { path } = historyAtFourteen();
+    const migrated = open(path);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    migrated.close();
+
+    expect(
+      readRows(
+        path,
+        "SELECT projection_name, applied_sequence, event_count FROM projection_watermark " +
+          "WHERE projection_name LIKE 'artifact_%' ORDER BY projection_name",
+      ),
+    ).toEqual([
+      { projection_name: "artifact_blob_read_model", applied_sequence: 3, event_count: 3 },
+      { projection_name: "artifact_pin_read_model", applied_sequence: 3, event_count: 3 },
+      { projection_name: "artifact_reference_read_model", applied_sequence: 3, event_count: 3 },
+      { projection_name: "artifact_tombstone_read_model", applied_sequence: 3, event_count: 3 },
+    ]);
+
+    const routing = readRouting(path);
+    expect(routing.length).toBeGreaterThan(0);
+    const reopened = open(path);
+    const result = reopened.rebuildReadModel();
+    expect([result.artifactBlobRows, result.artifactReferenceRows, result.artifactPinRows, result.artifactTombstoneRows]).toEqual([0, 0, 0, 0]);
+    reopened.close();
+    expect(readRouting(path)).toEqual(routing);
+    expect(artifactTables(path)).toEqual({ blobs: [], references: [], pins: [], tombstones: [] });
+  });
+});
+
+describe("an artifact event is a registry row with a subject, an ordinal and a kind (H-3)", () => {
+  it("records a publication as two rows on one subject, and every column agrees with the body", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const intended = ledger.appendArtifactEvent(publicationIntended({ occurredAt: ARTIFACT_AT }));
+    const succeeded = ledger.appendArtifactEvent(publicationSucceeded({ occurredAt: ARTIFACT_LATER }));
+    expect(intended.inserted).toBe(true);
+    expect([intended.record.sequence, succeeded.record.sequence]).toEqual([1, 2]);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+
+    const rows = registryRows(path);
+    expect(
+      rows.map((row) => ({
+        subject_kind: row["subject_kind"],
+        document_kind: row["document_kind"],
+        artifact_event_kind: row["artifact_event_kind"],
+        document_id: row["document_id"],
+        document_version: row["document_version"],
+        parent_document_version: row["parent_document_version"],
+        content_digest: row["content_digest"],
+        recorded_by: row["recorded_by"],
+        effective_from: row["effective_from"],
+      })),
+    ).toEqual([
+      {
+        subject_kind: "ARTIFACT",
+        document_kind: null,
+        artifact_event_kind: "PUBLICATION_INTENDED",
+        document_id: CONTENT_A,
+        document_version: 1,
+        parent_document_version: null,
+        content_digest: CONTENT_A,
+        recorded_by: ARTIFACT_PRODUCER,
+        effective_from: ARTIFACT_AT,
+      },
+      {
+        subject_kind: "ARTIFACT",
+        document_kind: null,
+        artifact_event_kind: "PUBLICATION_SUCCEEDED",
+        document_id: CONTENT_A,
+        document_version: 2,
+        parent_document_version: 1,
+        content_digest: CONTENT_A,
+        recorded_by: ARTIFACT_PRODUCER,
+        effective_from: ARTIFACT_LATER,
+      },
+    ]);
+    // The two columns outside the preimage are inside the body, and equal.
+    for (const row of rows) {
+      const body = JSON.parse(String(row["event_json"])) as Record<string, unknown>;
+      expect(body["subjectKind"]).toBe(row["subject_kind"]);
+      expect(body["artifactEventKind"]).toBe(row["artifact_event_kind"]);
+      expect(body["subjectOrdinal"]).toBe(row["document_version"]);
+    }
+  });
+
+  it("takes the subject from the resource: the reference for REFERENCE_RECORDED, the pin for the pin events", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    publishContentA(ledger);
+    ledger.appendArtifactEvent(referenceRecorded());
+    ledger.appendArtifactEvent(pinAcquired());
+    ledger.appendArtifactEvent(pinReleased());
+    ledger.close();
+    expect(
+      registryRows(path).map((row) => [row["artifact_event_kind"], row["document_id"], row["document_version"], row["content_digest"]]),
+    ).toEqual([
+      ["PUBLICATION_INTENDED", CONTENT_A, 1, CONTENT_A],
+      ["PUBLICATION_SUCCEEDED", CONTENT_A, 2, CONTENT_A],
+      ["REFERENCE_RECORDED", "ref-2", 1, CONTENT_A],
+      ["PIN_ACQUIRED", "pin-task-1", 1, CONTENT_A],
+      ["PIN_RELEASED", "pin-task-1", 2, CONTENT_A],
+    ]);
+  });
+
+  it("N-P36A-7: the ordinal is one past the subject's highest, proposed and verified", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendArtifactEvent(publicationIntended());
+    for (const ordinal of [1, 3]) {
+      const issue = onlyIssue(caught(() => ledger.appendArtifactEvent(publicationSucceeded({ ordinal }))));
+      expect(issue.path).toBe("subjectOrdinal");
+      expect(issue.message).toContain("the next one is ordinal 2; this event proposes " + String(ordinal));
+    }
+    expect(ledger.status().projections.length).toBe(17);
+    expect(ledger.appendArtifactEvent(publicationSucceeded({ ordinal: 2 })).inserted).toBe(true);
+  });
+
+  it("N-P36A-7: a subject keeps its kind across its events, in both directions", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendArtifactEvent(publicationIntended());
+    const documentOverArtifact = onlyIssue(
+      caught(() => ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "MODEL_VERSION", documentId: CONTENT_A, payload: {} }))),
+    );
+    expect(documentOverArtifact.path).toBe("documentId");
+    expect(documentOverArtifact.message).toContain("is recorded as an ARTIFACT subject");
+
+    ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "MODEL_VERSION", documentId: "mv-1", payload: {} }));
+    ledger.appendArtifactEvent(publicationSucceeded());
+    const artifactOverDocument = onlyIssue(caught(() => ledger.appendArtifactEvent(pinAcquired({ pinId: "mv-1" }))));
+    expect(artifactOverDocument.path).toBe("payload.artifactPinId");
+    expect(artifactOverDocument.message).toContain("is recorded as a DOCUMENT subject");
+  });
+
+  it("replays an exact duplicate, refuses a changed body under the key, and refuses new work under a version not in force", () => {
+    const ledger = open(temporaryDatabase());
+    const event = publicationIntended({ idempotencyKey: "publish/a/1" });
+    expect(ledger.appendArtifactEvent(event).inserted).toBe(true);
+    const replay = ledger.appendArtifactEvent(event);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(1);
+    expect(
+      caught(() => ledger.appendArtifactEvent({ ...event, recordedAt: ARTIFACT_LATER })),
+    ).toBeInstanceOf(LedgerIdempotencyConflictError);
+    expect(
+      caught(() => ledger.appendArtifactEvent({ ...publicationSucceeded(), eventId: event["eventId"] })),
+    ).toBeInstanceOf(LedgerEventIdConflictError);
+
+    const stale = onlyIssue(caught(() => ledger.appendArtifactEvent(publicationSucceeded({ contractVersion: "2.3.0" }))));
+    expect(stale.path).toBe("contractVersion");
+    expect(ledger.status().headSequence).toBe(0);
+  });
+
+  it("resolves a causal reference to a task event, and refuses one that does not resolve", () => {
+    const ledger = open(temporaryDatabase());
+    const cause = ledger.append(makeEvent({ taskId: randomUUID(), transitionId: "discover", emittedBy: KIMI }));
+    const reference = { stream: "control_plane_events" as const, sequence: cause.record.sequence, sha256: cause.record.eventSha256 };
+    expect(ledger.appendArtifactEvent(publicationIntended(), reference).record.causation).toEqual(reference);
+    expect(
+      caught(() => ledger.appendArtifactEvent(publicationSucceeded(), { ...reference, sha256: "d".repeat(64) })),
+    ).toBeInstanceOf(LedgerValidationError);
+  });
+
+  it("moves every watermark of the registry stream, the routing projection's registry row included", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    publishContentA(ledger);
+    ledger.close();
+    const registry = readWatermarks(path).filter((row) => row.source_stream === "registry_events");
+    expect(registry.map((row) => [row.projection_name, row.applied_sequence, row.event_count])).toEqual([
+      ["artifact_blob_read_model", 2, 2],
+      ["artifact_pin_read_model", 2, 2],
+      ["artifact_reference_read_model", 2, 2],
+      ["artifact_tombstone_read_model", 2, 2],
+      ["routing_assignment_read_model", 2, 2],
+    ]);
+  });
+
+  it("reads and writes no file but the ledger's own: the filesystem half is escalón C", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const before = readdirSync(dirname(path)).sort();
+    publishContentA(ledger);
+    ledger.appendArtifactEvent(pinAcquired());
+    ledger.rebuildReadModel();
+    expect(readdirSync(dirname(path)).sort()).toEqual(before);
+  });
+});
+
+describe("the base refuses what an artifact row may not be (N-P36A-5, N-P36A-13)", () => {
+  function rawRegistryRow(path: string, subjectKind: string, documentKind: string | null, artifactEventKind: string | null): unknown {
+    const raw = new Database(path);
+    try {
+      return caught(() =>
+        raw
+          .prepare(
+            "INSERT INTO registry_events (event_id, idempotency_key, subject_kind, document_kind, " +
+              "artifact_event_kind, document_id, document_version, content_digest, recorded_by, " +
+              "effective_from, occurred_at, recorded_at, contract_version, event_json, " +
+              "previous_sha256, event_sha256) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, '{}', ?, ?)",
+          )
+          .run(
+            randomUUID(),
+            randomUUID(),
+            subjectKind,
+            documentKind,
+            artifactEventKind,
+            "raw-" + randomUUID(),
+            CONTENT_A,
+            KIMI,
+            ARTIFACT_AT,
+            ARTIFACT_AT,
+            ARTIFACT_AT,
+            CONTRACT_VERSION,
+            GENESIS_SHA256,
+            // A distinct digest per row, so only the constraint under test can refuse it.
+            randomUUID().replace(/-/g, "").padEnd(64, "0"),
+          ),
+      );
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("N-P36A-5: both mirrors, the subject vocabulary and the nine-word artifact vocabulary", () => {
+    const path = temporaryDatabase();
+    open(path).close();
+    const cases: readonly [string, string | null, string | null, string][] = [
+      ["ARTIFACT", "MODEL_VERSION", "PIN_ACQUIRED", "ck_registry_events__document_kind_matches_subject"],
+      ["DOCUMENT", null, null, "ck_registry_events__document_kind_matches_subject"],
+      ["ARTIFACT", null, null, "ck_registry_events__artifact_event_kind_matches_subject"],
+      ["DOCUMENT", "MODEL_VERSION", "PIN_ACQUIRED", "ck_registry_events__artifact_event_kind_matches_subject"],
+      ["REFERENCE", null, "PIN_ACQUIRED", "ck_registry_events__subject_kind"],
+      ["ARTIFACT", null, "RECLAIMED", "ck_registry_events__artifact_event_kind"],
+    ];
+    for (const [subject, documentKind, artifactKind, constraint] of cases) {
+      const label = [subject, documentKind, artifactKind].join("/");
+      expect(refusalMessage(rawRegistryRow(path, subject, documentKind, artifactKind), label), label).toContain(constraint);
+    }
+    // The three words this build does not record are still words of the base:
+    // the refusal of those is the door's, by name.
+    for (const word of ["RECLAIM_INTENDED", "RECLAIM_COMPLETED", "REFERENCE_TOMBSTONED"]) {
+      expect(rawRegistryRow(path, "ARTIFACT", null, word), word).toBeUndefined();
+    }
+  });
+
+  it("N-P36A-13 and N-P36-15: scope, expiry, key reference, tombstone pair, first-publication pair and pin order", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    publishContentA(ledger);
+    ledger.appendArtifactEvent(pinAcquired());
+    ledger.close();
+
+    const refusals: readonly [string, string][] = [
+      ["UPDATE artifact_reference_read_model SET scope_id = NULL", "ck_artifact_reference_read_model__scope_id_matches_scope_kind"],
+      ["UPDATE artifact_reference_read_model SET expires_at = NULL", "ck_artifact_reference_read_model__expires_at_matches_retention_class"],
+      ["UPDATE artifact_reference_read_model SET tombstone_reason = 'CORRUPTION'", "ck_artifact_reference_read_model__tombstone_reason_matches"],
+      ["UPDATE artifact_blob_read_model SET key_reference = 'keychain://acp/artifacts'", "ck_artifact_blob_read_model__key_reference_matches_encryption"],
+      ["UPDATE artifact_blob_read_model SET first_published_at = NULL", "ck_artifact_blob_read_model__first_published_pair"],
+      ["UPDATE artifact_blob_read_model SET lifecycle_state = 'STAGED'", "ck_artifact_blob_read_model__first_published_matches_state"],
+      ["UPDATE artifact_blob_read_model SET reclaim_id = 'r-1'", "ck_artifact_blob_read_model__reclaim_id_matches_state"],
+      ["UPDATE artifact_pin_read_model SET released_sequence = 2 WHERE artifact_pin_id = 'pin-task-1'", "ck_artifact_pin_read_model__released_after_acquired"],
+    ];
+    withRawDatabase(path, (raw) => {
+      for (const [sql, constraint] of refusals) {
+        expect(refusalMessage(caught(() => raw.prepare(sql).run()), sql), sql).toContain(constraint);
+      }
+      // One unreclaimed generation per content, in the base.
+      expect(
+        refusalMessage(
+          caught(() =>
+            raw
+              .prepare(
+                "INSERT INTO artifact_blob_read_model (content_sha256, blob_generation, media_type, size_bytes, " +
+                  "lifecycle_state, encryption_status, key_reference, grace_started_at, encryption_profile, applied_sequence) " +
+                  "VALUES (?, 2, 'application/json', 1, 'PUBLICATION_ABANDONED', 'PLAINTEXT', NULL, ?, 'p', 1)",
+              )
+              .run(CONTENT_A, ARTIFACT_AT),
+          ),
+          "second generation",
+        ),
+      ).toContain("UNIQUE constraint failed");
+    });
+  });
+});
+
+describe("the door refuses by name what the stream never records (N-P36-17, N-P36-18, N-P36A-6, N-P36A-14, N-P36A-15)", () => {
+  it("N-P36A-6: RECLAIM_INTENDED, RECLAIM_COMPLETED and REFERENCE_TOMBSTONED are refused at artifactEventKind, and nothing is written", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    publishContentA(ledger);
+    const undelivered = ARTIFACT_EVENT_KINDS.filter(
+      (kind) => !(DELIVERED_ARTIFACT_EVENT_KINDS as readonly string[]).includes(kind),
+    );
+    expect(undelivered).toEqual(["RECLAIM_INTENDED", "RECLAIM_COMPLETED", "REFERENCE_TOMBSTONED"]);
+    for (const kind of undelivered) {
+      const issue = onlyIssue(caught(() => ledger.appendArtifactEvent(artifactEvent(kind, { contentSha256: CONTENT_A }, { ordinal: 3 }))));
+      expect(issue.path, kind).toBe("artifactEventKind");
+      expect(issue.message, kind).toContain(kind + " is a word of the contract this build does not record");
+    }
+    expect(ledger.status().headSequence).toBe(0);
+    ledger.close();
+    expect(registryRows(path)).toHaveLength(2);
+  });
+
+  it("N-P36A-6: a planted reclamation fails the rebuild and the integrity check in the door's own words", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    publishContentA(ledger);
+    const refused = caught(() =>
+      ledger.appendArtifactEvent(artifactEvent("RECLAIM_INTENDED", { contentSha256: CONTENT_A }, { ordinal: 3 })),
+    );
+    const doorWords = onlyIssue(refused).message;
+    ledger.close();
+
+    plantRegistryRow(
+      path,
+      {
+        subjectKind: "ARTIFACT",
+        documentKind: null,
+        artifactEventKind: "RECLAIM_INTENDED",
+        documentId: CONTENT_A,
+        documentVersion: 3,
+        parentDocumentVersion: 2,
+        contentDigest: CONTENT_A,
+      },
+      artifactEvent("RECLAIM_INTENDED", { contentSha256: CONTENT_A }, { ordinal: 3 }),
+    );
+
+    const reopened = open(path);
+    const rebuild = caught(() => reopened.rebuildReadModel());
+    expect(rebuild).toBeInstanceOf(LedgerIntegrityError);
+    expect((rebuild as LedgerIntegrityError).message).toContain(doorWords);
+    expect(reopened.verifyIntegrity().problems.map((problem) => problem.detail).join("\n")).toContain(doorWords);
+  });
+
+  it("N-P36A-14 and N-P36-17: SECRET_BEARING is refused by name, and a credential sentinel reaches neither the error nor the stream", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendArtifactEvent(publicationIntended());
+
+    const secret = onlyIssue(
+      caught(() => ledger.appendArtifactEvent(publicationSucceeded({ reference: referenceRecord({ classification: "SECRET_BEARING" }) }))),
+    );
+    expect(secret.path).toBe("payload.reference.classification");
+    expect(secret.message).toContain("never published in the stream");
+
+    const sentinel = "sk-ant-api03-SENTINELSENTINELSENTINEL";
+    for (const candidate of [
+      publicationSucceeded({ reference: referenceRecord({ scopeId: sentinel }) }),
+      { ...publicationSucceeded(), payload: { ...(publicationSucceeded()["payload"] as Record<string, unknown>), password: sentinel } },
+    ]) {
+      const error = caught(() => ledger.appendArtifactEvent(candidate));
+      expect(error).toBeInstanceOf(LedgerValidationError);
+      expect((error as Error).message).not.toContain(sentinel);
+      expect(JSON.stringify((error as LedgerValidationError).issues)).not.toContain(sentinel);
+    }
+    ledger.close();
+    expect(registryRows(path)).toHaveLength(1);
+    expect(registryRows(path).map((row) => String(row["event_json"])).join("")).not.toContain(sentinel);
+  });
+
+  it("N-P36A-15: the only access policy is SCOPE_EQUALITY_V1, and a body carries facts, never content", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendArtifactEvent(publicationIntended());
+    const policy = onlyIssue(
+      caught(() => ledger.appendArtifactEvent(publicationSucceeded({ reference: referenceRecord({ accessPolicyId: "OWNER_ONLY_V1" }) }))),
+    );
+    expect(policy.path).toBe("payload.reference.accessPolicyId");
+    expect(policy.message).toContain("the closed set is SCOPE_EQUALITY_V1");
+    ledger.appendArtifactEvent(publicationSucceeded());
+    ledger.close();
+
+    const body = JSON.parse(String(registryRows(path)[1]?.["event_json"])) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual([
+      "artifactEventKind", "contractVersion", "eventId", "idempotencyKey", "occurredAt",
+      "parentSubjectOrdinal", "payload", "recordedAt", "recordedBy", "subjectKind", "subjectOrdinal",
+    ]);
+    expect(Object.keys(body["payload"] as Record<string, unknown>).sort()).toEqual([
+      "artifactPinId", "blobGeneration", "commandId", "contentSha256", "reference",
+    ]);
+    for (const row of registryRows(path)) {
+      expect(Buffer.byteLength(String(row["event_json"]), "utf8")).toBeLessThanOrEqual(64 * 1024);
+    }
+  });
+
+  it("refuses a publication pin taken or released by hand", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendArtifactEvent(publicationIntended());
+    const byHand = onlyIssue(caught(() => ledger.appendArtifactEvent(pinAcquired({ holderKind: "PUBLICATION" }))));
+    expect(byHand.path).toBe("payload.pinHolderKind");
+    const released = onlyIssue(caught(() => ledger.appendArtifactEvent(pinReleased({ pinId: "pin-publication-1", ordinal: 1 }))));
+    expect(released.message).toContain("is a PUBLICATION pin");
+  });
+});
+
+describe("the artifact fold follows artifacts §8.1, at the door and in the rebuild (N-P36A-9..12)", () => {
+  it("N-P36-7 and N-P36A-10: a STAGED blob has no reference, the first success fixes the publication pair once", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendArtifactEvent(publicationIntended({ occurredAt: ARTIFACT_AT }));
+    const staged = artifactTables(path);
+    expect(staged["blobs"]).toEqual([
+      expect.objectContaining({ lifecycle_state: "STAGED", first_published_sequence: null, first_published_at: null, grace_started_at: ARTIFACT_AT, applied_sequence: 1 }),
+    ]);
+    expect(staged["references"]).toEqual([]);
+    expect(staged["pins"]).toEqual([
+      expect.objectContaining({ artifact_pin_id: "pin-publication-1", pin_holder_kind: "PUBLICATION", pin_holder_id: "cmd-1", acquired_sequence: 1, released_sequence: null }),
+    ]);
+
+    ledger.appendArtifactEvent(publicationSucceeded({ occurredAt: ARTIFACT_LATER }));
+    // A second, deduplicated publication of the same bytes by another command.
+    ledger.appendArtifactEvent(publicationIntended({ ordinal: 3, commandId: "cmd-2", pinId: "pin-publication-2", occurredAt: "2026-09-13T12:00:00.000Z" }));
+    ledger.appendArtifactEvent(publicationSucceeded({ ordinal: 4, commandId: "cmd-2", pinId: "pin-publication-2", reference: referenceRecord({ artifactReferenceId: "ref-3" }), occurredAt: "2026-09-13T13:00:00.000Z" }));
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+
+    const published = artifactTables(path);
+    expect(published["blobs"]).toEqual([
+      expect.objectContaining({ lifecycle_state: "PUBLISHED", first_published_sequence: 2, first_published_at: ARTIFACT_LATER, grace_started_at: ARTIFACT_AT, applied_sequence: 2 }),
+    ]);
+    expect(published["references"]?.map((row) => [row["artifact_reference_id"], row["created_sequence"]])).toEqual([
+      ["ref-1", 2],
+      ["ref-3", 4],
+    ]);
+    expect(published["pins"]?.map((row) => [row["artifact_pin_id"], row["acquired_sequence"], row["released_sequence"]])).toEqual([
+      ["pin-publication-1", 1, 2],
+      ["pin-publication-2", 3, 4],
+    ]);
+  });
+
+  it("N-P36A-9: a success with no intention, a reference over a STAGED blob, and a release with no live pin are refused", () => {
+    const ledger = open(temporaryDatabase());
+    const noIntention = onlyIssue(caught(() => ledger.appendArtifactEvent(publicationSucceeded({ ordinal: 1 }))));
+    expect(noIntention.path).toBe("payload.blobGeneration");
+
+    ledger.appendArtifactEvent(publicationIntended());
+    const otherCommand = onlyIssue(caught(() => ledger.appendArtifactEvent(publicationSucceeded({ commandId: "cmd-9" }))));
+    expect(otherCommand.path).toBe("payload.artifactPinId");
+    expect(otherCommand.message).toContain("a publication ends only after its own intention");
+
+    const overStaged = onlyIssue(caught(() => ledger.appendArtifactEvent(referenceRecorded())));
+    expect(overStaged.message).toContain("is STAGED, and a reference is recorded only over a PUBLISHED generation");
+
+    const noPin = onlyIssue(caught(() => ledger.appendArtifactEvent(pinReleased({ ordinal: 1 }))));
+    expect(noPin.message).toContain("there is no pin pin-task-1 to release");
+    expect(ledger.status().headSequence).toBe(0);
+  });
+
+  it("N-P36A-9: taking the same pin again is idempotent, one live row; a second id for the holder is refused; a released id is not reused", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    publishContentA(ledger);
+    ledger.appendArtifactEvent(pinAcquired({ ordinal: 1 }));
+    expect(ledger.appendArtifactEvent(pinAcquired({ ordinal: 2 })).inserted).toBe(true);
+    const secondId = onlyIssue(caught(() => ledger.appendArtifactEvent(pinAcquired({ pinId: "pin-task-2" }))));
+    expect(secondId.path).toBe("payload.pinHolderId");
+    ledger.appendArtifactEvent(pinReleased({ ordinal: 3 }));
+    const reused = onlyIssue(caught(() => ledger.appendArtifactEvent(pinAcquired({ ordinal: 4 }))));
+    expect(reused.message).toContain("a new protection takes a new pin id");
+    const again = onlyIssue(caught(() => ledger.appendArtifactEvent(pinReleased({ ordinal: 4 }))));
+    expect(again.message).toContain("was already released at sequence 5");
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+
+    expect(readRows(path, "SELECT artifact_pin_id, acquired_sequence, released_sequence, applied_sequence FROM artifact_pin_read_model WHERE pin_holder_kind = 'TASK'")).toEqual([
+      { artifact_pin_id: "pin-task-1", acquired_sequence: 3, released_sequence: 5, applied_sequence: 5 },
+    ]);
+  });
+
+  it("N-P36A-11: an abandoned generation is staged again, never doubled, and its grace instant is conserved", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendArtifactEvent(publicationIntended({ occurredAt: ARTIFACT_AT }));
+    ledger.appendArtifactEvent(publicationAbandoned({ occurredAt: ARTIFACT_LATER }));
+    expect(artifactTables(path)["blobs"]).toEqual([
+      expect.objectContaining({ blob_generation: 1, lifecycle_state: "PUBLICATION_ABANDONED", grace_started_at: ARTIFACT_AT }),
+    ]);
+
+    const newGeneration = onlyIssue(caught(() => ledger.appendArtifactEvent(publicationIntended({ ordinal: 3, generation: 2, commandId: "cmd-2", pinId: "pin-publication-2" }))));
+    expect(newGeneration.message).toContain("is held at generation 1, which a new intention reuses");
+
+    ledger.appendArtifactEvent(publicationIntended({ ordinal: 3, commandId: "cmd-2", pinId: "pin-publication-2", occurredAt: "2026-09-13T12:00:00.000Z" }));
+    const inFlight = onlyIssue(caught(() => ledger.appendArtifactEvent(publicationIntended({ ordinal: 4, commandId: "cmd-3", pinId: "pin-publication-3" }))));
+    expect(inFlight.message).toContain("is already in flight");
+    ledger.close();
+
+    expect(artifactTables(path)["blobs"]).toEqual([
+      expect.objectContaining({ blob_generation: 1, lifecycle_state: "STAGED", grace_started_at: ARTIFACT_AT, first_published_sequence: null, applied_sequence: 3 }),
+    ]);
+  });
+
+  it("N-P36A-11 and N-P36-15: a deduplication under another encryption policy is a named error, and the rows are intact", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    publishContentA(ledger);
+    ledger.close();
+    const before = { tables: artifactTables(path), registry: registryRows(path), watermarks: readWatermarks(path) };
+
+    const reopened = open(path);
+    for (const [change, fields] of [
+      [{ encryptionProfile: "local-plaintext-v2" }, ["encryptionProfile"]],
+      [{ encryptionStatus: "ENCRYPTED_AT_REST", keyReference: "keychain://acp/artifacts" }, ["encryptionStatus", "keyReference"]],
+    ] as const) {
+      const error = caught(() => reopened.appendArtifactEvent(publicationIntended({ ordinal: 3, commandId: "cmd-2", pinId: "pin-publication-2", ...change })));
+      expect(error).toBeInstanceOf(LedgerArtifactEncryptionConflictError);
+      expect((error as LedgerArtifactEncryptionConflictError).fields).toEqual(fields);
+      expect((error as Error).message).not.toContain("keychain://");
+      expect((error as Error).message).not.toContain("local-plaintext-v2");
+    }
+    reopened.close();
+    expect({ tables: artifactTables(path), registry: registryRows(path), watermarks: readWatermarks(path) }).toEqual(before);
+  });
+
+  it("N-P36A-12: two references to one blob from one producer in one scope, under different retentions, are both recorded", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    publishContentA(ledger);
+    ledger.appendArtifactEvent(referenceRecorded({ reference: referenceRecord({ artifactReferenceId: "ref-permanent", retentionClass: "PERMANENT", expiresAt: null }) }));
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+    expect(readRows(path, "SELECT artifact_reference_id, scope_kind, scope_id, producer_identity, retention_class FROM artifact_reference_read_model ORDER BY artifact_reference_id")).toEqual([
+      { artifact_reference_id: "ref-1", scope_kind: "TASK", scope_id: "task-1", producer_identity: ARTIFACT_PRODUCER, retention_class: "STANDARD" },
+      { artifact_reference_id: "ref-permanent", scope_kind: "TASK", scope_id: "task-1", producer_identity: ARTIFACT_PRODUCER, retention_class: "PERMANENT" },
+    ]);
+  });
+
+  it("N-P36A-9: a planted success with no intention fails the rebuild in the door's words", () => {
+    const path = temporaryDatabase();
+    const door = open(path);
+    const words = onlyIssue(caught(() => door.appendArtifactEvent(publicationSucceeded({ ordinal: 1, content: CONTENT_B })))).message;
+    door.close();
+
+    const body = publicationSucceeded({ ordinal: 1, content: CONTENT_B });
+    plantRegistryRow(
+      path,
+      { subjectKind: "ARTIFACT", documentKind: null, artifactEventKind: "PUBLICATION_SUCCEEDED", documentId: CONTENT_B, documentVersion: 1, parentDocumentVersion: null, contentDigest: CONTENT_B },
+      body,
+    );
+    const reopened = open(path);
+    const refused = caught(() => reopened.rebuildReadModel());
+    expect(refused).toBeInstanceOf(LedgerValidationError);
+    expect((refused as Error).message).toContain(words);
+  });
+});
+
+describe("the artifact plane rebuilds from the stream alone (N-P36-19, N-P36A-17)", () => {
+  function fullHistory(path: string): void {
+    const ledger = open(path);
+    ledger.appendRegistryEvent(makeRegistryDocument());
+    publishContentA(ledger);
+    ledger.appendArtifactEvent(referenceRecorded());
+    ledger.appendArtifactEvent(pinAcquired());
+    ledger.appendArtifactEvent(publicationIntended({ content: CONTENT_B, commandId: "cmd-b", pinId: "pin-publication-b" }));
+    ledger.appendArtifactEvent(publicationAbandoned({ content: CONTENT_B, commandId: "cmd-b", pinId: "pin-publication-b" }));
+    ledger.close();
+  }
+
+  it("N-P36-19: a rebuild reproduces the four read models row for row, twice identically, with no file and no clock", () => {
+    const path = temporaryDatabase();
+    fullHistory(path);
+    const live = { tables: artifactTables(path), watermarks: readWatermarks(path) };
+    expect(live.tables["blobs"]).toHaveLength(2);
+    expect(live.tables["references"]).toHaveLength(2);
+    expect(live.tables["pins"]).toHaveLength(3);
+
+    const first = open(path);
+    const result = first.rebuildReadModel();
+    expect([result.replayedRegistryEvents, result.artifactBlobRows, result.artifactReferenceRows, result.artifactPinRows, result.artifactTombstoneRows]).toEqual([7, 2, 2, 3, 0]);
+    first.close();
+    const afterFirst = artifactTables(path);
+    const second = open(path);
+    second.rebuildReadModel();
+    expect(second.verifyIntegrity().problems).toEqual([]);
+    second.close();
+
+    expect(afterFirst).toEqual(live.tables);
+    expect(artifactTables(path)).toEqual(afterFirst);
+    expect(readWatermarks(path).filter((row) => row.projection_name.startsWith("artifact_")).map((row) => row.applied_sequence)).toEqual([7, 7, 7, 7]);
+  });
+
+  it("reports a tampered artifact row as a disagreement with a replay, and a rebuild repairs it", () => {
+    const path = temporaryDatabase();
+    fullHistory(path);
+    withRawDatabase(path, (raw) => {
+      raw.prepare("UPDATE artifact_reference_read_model SET retention_class = 'EXTENDED' WHERE artifact_reference_id = 'ref-2'").run();
+      raw.prepare("DELETE FROM artifact_pin_read_model WHERE artifact_pin_id = 'pin-task-1'").run();
+    });
+    const ledger = open(path);
+    const details = ledger.verifyIntegrity().problems.map((problem) => problem.detail);
+    expect(details).toContain("artifact_reference_read_model row for ref-2 disagrees with a replay");
+    expect(details).toContain("artifact_pin_read_model is missing the row pin-task-1");
+    ledger.rebuildReadModel();
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P36A-17: a failure before the projection or before the commit leaves no row, no read model, no head and no watermark", () => {
+    for (const fault of ["beforeProjection", "beforeAppendCommit"] as const) {
+      const path = temporaryDatabase();
+      const seeded = open(path);
+      seeded.appendArtifactEvent(publicationIntended());
+      seeded.close();
+      const before = {
+        registry: registryRows(path),
+        tables: artifactTables(path),
+        watermarks: readWatermarks(path),
+        meta: readRows(path, "SELECT key, value FROM ledger_meta WHERE key LIKE 'registry_%' ORDER BY key"),
+      };
+
+      const faulty = open(path, {
+        __testFaults: {
+          [fault]: () => {
+            throw new Error("injected " + fault);
+          },
+        },
+      });
+      expect(caught(() => faulty.appendArtifactEvent(publicationSucceeded())), fault).toBeInstanceOf(Error);
+      faulty.close();
+
+      expect(
+        {
+          registry: registryRows(path),
+          tables: artifactTables(path),
+          watermarks: readWatermarks(path),
+          meta: readRows(path, "SELECT key, value FROM ledger_meta WHERE key LIKE 'registry_%' ORDER BY key"),
+        },
+        fault,
+      ).toEqual(before);
+    }
   });
 });

@@ -178,3 +178,22 @@ export type {
   ExecutionSession,
   ModelExecutionPort,
 } from "./execution-boundary/index.js";
+export {
+  ARTIFACT_CLASSES,
+  ArtifactClass,
+  ARTIFACT_CLASSIFICATIONS,
+  ArtifactClassification,
+  ENCRYPTION_STATUSES,
+  EncryptionStatus,
+  RETENTION_CLASSES,
+  RetentionClass,
+  REFERENCE_SCOPE_KINDS,
+  ReferenceScopeKind,
+  BLOB_LIFECYCLE_STATES,
+  BlobLifecycleState,
+  ARTIFACT_EVENT_KINDS,
+  ArtifactEventKind,
+  PIN_HOLDER_KINDS,
+  PinHolderKind,
+  ArtifactRegistryEvent,
+} from "./artifact-record/index.js";

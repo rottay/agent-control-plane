@@ -41,7 +41,7 @@ import {
   WorkerPageResponse,
   surfaceDefects,
 } from "@acp/protocol";
-import { openLedger } from "@acp/ledger";
+import { LEDGER_MIGRATIONS, openLedger } from "@acp/ledger";
 import { ToolCallExecuteRequest } from "@acp/protocol";
 import {
   DEFAULT_ROUTING_CONFIG,
@@ -1122,14 +1122,31 @@ describe("integrity", () => {
         recordedAt: "2026-08-27T00:00:00.000Z",
       });
     }
+    // One registry document, so the rebuild of migration 15 has a row and a
+    // chain to conserve when the reopen re-applies it (N-P36A-16).
+    ledger.appendRegistryEvent({
+      contractVersion: LEDGER_CONTRACT_VERSION,
+      eventId: randomUUID(),
+      idempotencyKey: "mv-rewind/1",
+      documentKind: "MODEL_VERSION",
+      documentId: "mv-rewind",
+      documentVersion: 1,
+      parentDocumentVersion: null,
+      contentDigest: "1".repeat(64),
+      recordedBy: B1E_ACTOR,
+      effectiveFrom: "2026-08-27T00:00:00.000Z",
+      occurredAt: "2026-08-27T00:00:00.000Z",
+      recordedAt: "2026-08-27T00:00:00.000Z",
+      payload: {},
+    });
     ledger.close();
 
     // Rewind past migration 10 and reopen, so the sidecar activates over a
     // stream that already holds three rows. A ledger created empty and then
     // grown has a baseline of 0, and 0 is never ahead of anything.
     //
-    // Rewinding to before 10 means undoing 11, 12, 13 and 14 as well, because the
-    // reopen re-applies everything the row set no longer claims. `ALTER TABLE
+    // Rewinding to before 10 means undoing 11, 12, 13, 14 and 15 as well, because
+    // the reopen re-applies everything the row set no longer claims. `ALTER TABLE
     // ... ADD COLUMN` is not idempotent, so a re-applied 11 over a schema that
     // still carries the coordinate aborts on "duplicate column name". The order
     // is forced rather than stylistic, twice over: SQLite refuses `DROP COLUMN`
@@ -1138,7 +1155,19 @@ describe("integrity", () => {
     // parent it names — migration 14's answers, then its prompts, then
     // migration 13's deliveries, then its effects, then its segments, then
     // migration 12's attempt table, then the revision table.
+    //
+    // Migration 15 goes first, and it is a reconstruction, not a drop (P-36/local
+    // A, M-8 and D-3): its four artifact tables name `registry_events` by a
+    // foreign key, so they go before the stream is touched; then the stream is
+    // rebuilt back into migration 9's shape by the same procedure that rebuilt
+    // it forward, and trips on the same rename — the two triggers on OTHER
+    // tables that name it are dropped before the rename and recreated from
+    // migration 9's own text after it. The copy leaves `subject_kind` and
+    // `artifact_event_kind` behind, which is lawful because this ledger holds no
+    // artifact event at all.
+    const beforeRewind = registryEvidence(path);
     const rewind = new DatabaseSync(path);
+    rewindArtifactRegistry(rewind);
     rewind.exec("DELETE FROM ledger_meta WHERE key LIKE 'account_integrity_%'");
     rewind.exec(
       "DROP TRIGGER tr_account_event_integrity__deny_delete;" +
@@ -1186,6 +1215,11 @@ describe("integrity", () => {
     rewind.exec("DELETE FROM schema_migrations WHERE version >= 10");
     rewind.close();
     openLedger(path).close();
+
+    // N-P36A-16: the reopen re-applied 15 without aborting, and what 15 must
+    // preserve is preserved — the rows and their chain, the sequence counter,
+    // and both foreign triggers byte for byte.
+    expect(registryEvidence(path)).toEqual(beforeRewind);
 
     const raw = new DatabaseSync(path);
     raw.exec(
@@ -2987,3 +3021,94 @@ describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => 
     expect(Object.keys(EXIT_CODE_BY_API_ERROR_CODE).sort()).toEqual([...API_ERROR_CODES].sort());
   });
 });
+
+/**
+ * Migration 15 undone on a raw handle (P-36/local A): the four artifact tables,
+ * children first, their watermarks, and `registry_events` rebuilt back into
+ * migration 9's shape — E3 in reverse, with migration 9's own text for the
+ * table, its indexes and triggers, and the two foreign triggers.
+ */
+function rewindArtifactRegistry(raw: DatabaseSync): void {
+  const artifacts = raw
+    .prepare("SELECT COUNT(*) AS n FROM registry_events WHERE subject_kind <> 'DOCUMENT'")
+    .get() as { readonly n: number };
+  if (artifacts.n !== 0) throw new Error("a ledger holding artifact events cannot be rewound past 15");
+  raw.exec(
+    "DROP TABLE artifact_tombstone_read_model;" +
+      "DROP INDEX ux_artifact_pin_read_model__content_sha256_holder__live;" +
+      "DROP TABLE artifact_pin_read_model;" +
+      "DROP INDEX ux_artifact_reference_read_model__id_content_generation;" +
+      "DROP INDEX ix_artifact_reference_read_model__expires_at;" +
+      "DROP INDEX ix_artifact_reference_read_model__scope_kind_scope_id;" +
+      "DROP INDEX ix_artifact_reference_read_model__content_sha256;" +
+      "DROP TABLE artifact_reference_read_model;" +
+      "DROP INDEX ux_artifact_blob_read_model__content_sha256__unreclaimed;" +
+      "DROP INDEX ux_artifact_blob_read_model__reclaim_id;" +
+      "DROP INDEX ix_artifact_blob_read_model__first_published_sequence;" +
+      "DROP INDEX ix_artifact_blob_read_model__lifecycle_state;" +
+      "DROP TABLE artifact_blob_read_model;" +
+      "DELETE FROM projection_watermark WHERE projection_name IN ('artifact_blob_read_model', " +
+      "'artifact_reference_read_model', 'artifact_pin_read_model', 'artifact_tombstone_read_model');",
+  );
+
+  const ninth = LEDGER_MIGRATIONS.find((migration) => migration.version === 9);
+  if (ninth === undefined) throw new Error("migration 9 is absent from this build");
+  const slice = (from: string, to: string): string => {
+    const start = ninth.sql.indexOf(from);
+    const end = ninth.sql.indexOf(to, start);
+    if (start === -1 || end === -1) throw new Error("migration 9 no longer holds " + from);
+    return ninth.sql.slice(start, end);
+  };
+  const columns =
+    "sequence, event_id, idempotency_key, document_kind, document_id, document_version, " +
+    "content_digest, parent_document_version, recorded_by, effective_from, occurred_at, " +
+    "recorded_at, causation_stream, causation_sequence, causation_sha256, contract_version, " +
+    "event_json, previous_sha256, event_sha256";
+  raw.exec(
+    slice("CREATE TABLE registry_events (", "-- Version identity.").replace(
+      "CREATE TABLE registry_events (",
+      "CREATE TABLE registry_events__rewound (",
+    ),
+  );
+  raw.exec(
+    "INSERT INTO registry_events__rewound (" + columns + ") " +
+      "SELECT " + columns + " FROM registry_events ORDER BY sequence;" +
+      "DROP TRIGGER tr_registry_events__validate_new_rows;" +
+      "DROP TRIGGER tr_registry_events__deny_delete;" +
+      "DROP TRIGGER tr_registry_events__deny_update;" +
+      "DROP TRIGGER tr_control_plane_events__validate_new_rows;" +
+      "DROP TRIGGER tr_initiative_events__validate_new_rows;" +
+      "DROP TABLE registry_events;" +
+      "ALTER TABLE registry_events__rewound RENAME TO registry_events;",
+  );
+  raw.exec(slice("CREATE UNIQUE INDEX ux_registry_events__document_id__document_version", "-- The causal vocabulary widens to three"));
+  raw.exec(slice("CREATE TRIGGER tr_control_plane_events__validate_new_rows", "-- The first read model fed by two streams."));
+}
+
+/** What migration 15 must conserve across a rebuild, read past the ledger. */
+function registryEvidence(path: string): unknown {
+  const raw = new DatabaseSync(path);
+  try {
+    return {
+      rows: raw
+        .prepare(
+          "SELECT sequence, event_id, document_id, document_version, event_json, previous_sha256, " +
+            "event_sha256 FROM registry_events ORDER BY sequence",
+        )
+        .all(),
+      sequence: raw.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'registry_events'").all(),
+      triggers: raw
+        .prepare(
+          "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN " +
+            "('tr_control_plane_events__validate_new_rows', 'tr_initiative_events__validate_new_rows') " +
+            "ORDER BY name",
+        )
+        .all(),
+      subjectColumn: raw
+        .prepare("SELECT COUNT(*) AS n FROM pragma_table_info('registry_events') WHERE name = 'subject_kind'")
+        .get(),
+    };
+  } finally {
+    raw.close();
+  }
+}

@@ -2859,3 +2859,15 @@ describe("three outbox types, a command id grammar and a bump (P-18/protocolo F,
     ).toBe(false);
   });
 });
+
+describe("the artifact record lands without a bump (P-36/local A, ADR 0081)", () => {
+  it("adds no event type to the task stream and moves no version", () => {
+    // Artifact events live in `registry_events`, never in the task stream, so the
+    // 33 names of `CONTROL_PLANE_EVENT_TYPES` do not move. And the DT's ruling
+    // (H-4) closes the version question: the escalón defines no preimage and no
+    // derived key, which is ADR 0076's criterion for carrying one.
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(33);
+    expect(CONTRACT_VERSION).toBe("2.4.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0"]);
+  });
+});

@@ -36,6 +36,7 @@ export {
   LedgerSequenceError,
   LedgerIntegrityError,
   LedgerQueryError,
+  LedgerArtifactEncryptionConflictError,
 } from "./errors/index.js";
 
 // P8-8D-pre: the content-addressed artifact store. The Checkpoint law's twin —
@@ -229,6 +230,12 @@ export type {
   AppendBatchResult,
   AppendResult,
   AppliedMigration,
+  ArtifactAppendResult,
+  ArtifactBlobReadModel,
+  ArtifactEventRecord,
+  ArtifactPinReadModel,
+  ArtifactReferenceReadModel,
+  ArtifactTombstoneReadModel,
   CausationRef,
   CausationStream,
   CoverageKind,
@@ -294,6 +301,17 @@ export type {
  * package imports it today.
  */
 export { DOCUMENT_KINDS } from "./types/index.js";
+
+/**
+ * The artifact plane's two closed sets (P-36/local A, ADR 0081).
+ *
+ * Which six of the contract's nine artifact event words this build records, and
+ * the one access policy a reference may name. Both are facts about this build
+ * rather than about the contract — decision 45's class — so they are exported
+ * from here, where the door that imposes them lives, and not from
+ * `@acp/contracts`, which owns the vocabulary itself.
+ */
+export { ARTIFACT_ACCESS_POLICY_IDS, DELIVERED_ARTIFACT_EVENT_KINDS } from "./types/index.js";
 
 /**
  * The execution vocabularies of P-18/protocolo C.

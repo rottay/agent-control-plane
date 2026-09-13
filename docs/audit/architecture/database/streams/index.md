@@ -289,23 +289,28 @@ rechaza antes de mutar. No se reinterpretan eventos LEGACY con estos schemas.
 
 ## 4. `registry_events`
 
-**Nuevo.** Sujeto: un documento de configuración versionado. Almacenamiento; la
-semántica de cada `document_kind` la poseen `planning`, `accounts` y `economy` (§4
-canónico punto 2). No decide elegibilidad, no puntúa modelos, no fija precios: sólo
-persiste versiones con digest, autor y vigencia.
+**Nuevo.** Sujeto: un documento de configuración versionado (`subject_kind =
+'DOCUMENT'`) o, desde la migración 15, un artefacto (`subject_kind = 'ARTIFACT'`,
+[artefactos §1.1](../artifacts/index.md)). Almacenamiento; la semántica de cada
+`document_kind` la poseen `planning`, `accounts` y `economy` (§4 canónico punto 2),
+y la de cada `artifact_event_kind` la hoja de artefactos. No decide elegibilidad, no
+puntúa modelos, no fija precios: sólo persiste versiones con digest, autor y
+vigencia, y hechos de artefactos sin sus bytes.
 
 | Columna | Tipo | Nullable | Default | Semántica |
 | --- | --- | --- | --- | --- |
 | `sequence` | INTEGER | NOT NULL | `AUTOINCREMENT` | PK. |
 | `event_id` | TEXT | NOT NULL | — | `UNIQUE`. |
 | `idempotency_key` | TEXT | NOT NULL | — | `UNIQUE`. |
-| `document_kind` | TEXT | NOT NULL | — | `CHECK IN ('CAPABILITY_POLICY','MODEL_VERSION','PRICE_TABLE','MODEL_PERFORMANCE','ROUTING_ASSIGNMENT_GLOBAL','ESTIMATION_POLICY','INTEGRATION_PROFILE','INTEGRATION_INSTALLATION','COMPOSITION_POLICY','COMPOSITION_EVIDENCE','NOTIFICATION_POLICY','APPROVAL_WAIT_POLICY','DUEL_POLICY','ANOMALY_POLICY')`. |
-| `document_id` | TEXT | NOT NULL | — | Identidad estable del documento (§7.8 canónico). Para `MODEL_VERSION` = `model_version_id`; para `PRICE_TABLE` = id del catálogo; para `ROUTING_ASSIGNMENT_GLOBAL` = `routing:GLOBAL:<role>:<slot>`; para `CAPABILITY_POLICY` y `ESTIMATION_POLICY`, identidad propia del perfil; para `MODEL_PERFORMANCE` = `performance_id` del snapshot (§4.1). |
-| `document_version` | INTEGER | NOT NULL | — | `CHECK >= 1`. |
+| `subject_kind` | TEXT | NOT NULL | — | `CHECK IN ('DOCUMENT','ARTIFACT')`, sin default: todo escritor declara su plano. Migración 15. |
+| `document_kind` | TEXT | NULL | — | `CHECK IN ('CAPABILITY_POLICY','MODEL_VERSION','PRICE_TABLE','MODEL_PERFORMANCE','ROUTING_ASSIGNMENT_GLOBAL','ESTIMATION_POLICY','INTEGRATION_PROFILE','INTEGRATION_INSTALLATION','COMPOSITION_POLICY','COMPOSITION_EVIDENCE','NOTIFICATION_POLICY','APPROVAL_WAIT_POLICY','DUEL_POLICY','ANOMALY_POLICY')`. Regla espejo `ck_registry_events__document_kind_matches_subject`: presente si y sólo si `subject_kind = 'DOCUMENT'`. NOT NULL hasta la migración 15, que lo reconstruye NULLable. |
+| `artifact_event_kind` | TEXT | NULL | — | `CHECK IN` los nueve nombres de [artefactos §2](../artifacts/index.md) (`PUBLICATION_INTENDED`, `PUBLICATION_SUCCEEDED`, `PUBLICATION_ABANDONED`, `REFERENCE_RECORDED`, `PIN_ACQUIRED`, `PIN_RELEASED`, `RECLAIM_INTENDED`, `RECLAIM_COMPLETED`, `REFERENCE_TOMBSTONED`); la puerta registra seis y rechaza por nombre los tres restantes. Regla espejo `ck_registry_events__artifact_event_kind_matches_subject`: presente si y sólo si `subject_kind = 'ARTIFACT'`. Migración 15. |
+| `document_id` | TEXT | NOT NULL | — | Identidad estable del documento (§7.8 canónico). Para `MODEL_VERSION` = `model_version_id`; para `PRICE_TABLE` = id del catálogo; para `ROUTING_ASSIGNMENT_GLOBAL` = `routing:GLOBAL:<role>:<slot>`; para `CAPABILITY_POLICY` y `ESTIMATION_POLICY`, identidad propia del perfil; para `MODEL_PERFORMANCE` = `performance_id` del snapshot (§4.1). En una fila ARTIFACT, el sujeto: `content_sha256` en los tres eventos de publicación, `artifact_reference_id` en `REFERENCE_RECORDED`, `artifact_pin_id` en los dos de pin. Un sujeto conserva su `subject_kind` entre eventos. |
+| `document_version` | INTEGER | NOT NULL | — | `CHECK >= 1`. En una fila ARTIFACT, el ordinal del evento dentro de su sujeto: `1 + MAX(document_version)` por `document_id`, propuesto por el productor y verificado por el ledger; `parent_document_version` es el ordinal previo o `NULL`. |
 | `content_digest` | TEXT | NOT NULL | — | Digest sha256 del artefacto de contenido (§0 `ck_`), ver [artifacts](../artifacts/index.md). |
 | `parent_document_version` | INTEGER | NULL | — | `NULL` en la primera versión de un `document_id`. El padre **comparte** `document_id` (no se usa `UNIQUE(document_kind, document_version)`: dos documentos distintos de la misma clase son legítimos, §7.8 canónico). |
 | `recorded_by` | TEXT | NOT NULL | — | Identidad que registró la versión; para `MODEL_PERFORMANCE` puede ser una identidad de proceso (`system:model-performance-job`), no humana. |
-| `effective_from` | TEXT | NOT NULL | — | ISO ms UTC; instante a partir del cual esta versión rige. |
+| `effective_from` | TEXT | NOT NULL | — | ISO ms UTC; instante a partir del cual esta versión rige. En una fila ARTIFACT, `occurred_at`; `content_digest` es el `content_sha256` del blob y `recorded_by` la identidad del productor. `subject_kind` y `artifact_event_kind` viajan también en `event_json`, porque las columnas quedan fuera de la preimagen. |
 | `occurred_at` | TEXT | NOT NULL | — | Perfil común. |
 | `recorded_at` | TEXT | NOT NULL | — | Perfil común. |
 | `causation_stream` | TEXT | NULL | — | Perfil común completo. |
@@ -331,8 +336,9 @@ autoridad e integridad ya definidos siguen vigentes.
 | `ux_registry_events__document_id__document_version` | `UNIQUE INDEX (document_id, document_version)` | Identidad de versión (§7.8 canónico). |
 | `ix_registry_events__document_kind__document_id__document_version` | `INDEX (document_kind, document_id, document_version)` | Resolución de "versión vigente" por clase. |
 | `ix_registry_events__document_id__effective_from` | `INDEX (document_id, effective_from)` | Resolución de precedencia por vigencia. |
+| `ix_registry_events__subject_kind__document_id` | `INDEX (subject_kind, document_id)` | Acceso por sujeto del fold de artefactos. Migración 15. |
 | `tr_registry_events__deny_update` / `tr_registry_events__deny_delete` | `TRIGGER` | Convención nueva (§3.2 canónico), no legacy. |
-| OCC | `UNIQUE(event_id)`, `UNIQUE(idempotency_key)`, `UNIQUE(event_sha256)`, `ux_registry_events__document_id__document_version` | Reintentar el registro de la misma versión con la misma clave de idempotencia no duplica. |
+| OCC | `UNIQUE(event_id)`, `UNIQUE(idempotency_key)`, `UNIQUE(event_sha256)`, `ux_registry_events__document_id__document_version` | Reintentar el registro de la misma versión con la misma clave de idempotencia no duplica. Para un sujeto ARTIFACT el mismo índice es el CAS del ordinal por sujeto. |
 | Transacción | `appendBatch`, igual patrón que §1–3. | |
 | Rebuild | No aplica: es autoridad. | |
 
@@ -618,6 +624,7 @@ los mismos campos para el mismo archivo/corte.
 | `projection_meta` | Hoy, mig. 3 | **Reemplazado** por `projection_watermark`: una fila por proyección no describe una proyección multi-stream. | §7 |
 | `schema_migrations` | Hoy, bootstrap | Sin cambios. | §6 |
 | — (no existía) | — | `registry_events` nuevo. | §4 |
+| `registry_events` (mig. 9) | Hoy, mig. 9 | Reconstruido en la migración 15 con `subject_kind`, `document_kind` NULLable y `artifact_event_kind`; filas, cadena, `sequence`, índices y triggers conservados (los dos triggers ajenos, byte-idénticos). Cuatro read models de artefactos lo referencian por FK desde entonces. | §4; [artefactos](../artifacts/index.md) |
 | — (no existía) | — | `account_event_integrity` nuevo. | §8 |
 
 El inventario completo de las migraciones 1–6 contiene **dieciocho índices y

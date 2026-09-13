@@ -1,5 +1,13 @@
 import type {
   AccountActionEvent,
+  ArtifactClass,
+  ArtifactClassification,
+  ArtifactRegistryEvent,
+  BlobLifecycleState,
+  EncryptionStatus,
+  PinHolderKind,
+  ReferenceScopeKind,
+  RetentionClass,
   ControlPlaneEvent,
   ControlPlaneEventType,
   InitiativeEvent,
@@ -984,6 +992,11 @@ export interface RebuildResult {
    */
   readonly routingAssignmentRows: number;
   readonly routingFallbackRows: number;
+  /** The four artifact read models after the replay, from the registry stream alone. */
+  readonly artifactBlobRows: number;
+  readonly artifactReferenceRows: number;
+  readonly artifactPinRows: number;
+  readonly artifactTombstoneRows: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,6 +1233,204 @@ export interface RoutingAssignmentProjection {
 export interface RegistryProjectionSnapshot {
   readonly routingAssignments: Map<string, RoutingAssignmentReadModel>;
   readonly routingFallbacks: Map<string, RoutingAssignmentFallbackRow>;
+}
+
+// ---------------------------------------------------------------------------
+// The artifact plane of the registry stream (P-36/local escalón A)
+//
+// The events live in `registry_events` with `subject_kind = 'ARTIFACT'`, their
+// shape is `@acp/contracts`' `ArtifactRegistryEvent`, and the four read models
+// below are folded from them. No filesystem is read or written by anything
+// these types describe: that is escalón C.
+// ---------------------------------------------------------------------------
+
+/**
+ * The artifact event kinds this build records, six of the contract's nine.
+ *
+ * The other three — `RECLAIM_INTENDED`, `RECLAIM_COMPLETED` and
+ * `REFERENCE_TOMBSTONED` — are words of the contract and of
+ * `ck_registry_events__artifact_event_kind`, and the door refuses each of them
+ * by name: reclamation, garbage collection and tombstoning are P-36 completo.
+ * Held here rather than in the contract for decision 45's reason: which words
+ * this build admits is a fact about this build, and the vocabulary is the
+ * contract's.
+ */
+export const DELIVERED_ARTIFACT_EVENT_KINDS = [
+  "PUBLICATION_INTENDED",
+  "PUBLICATION_SUCCEEDED",
+  "PUBLICATION_ABANDONED",
+  "REFERENCE_RECORDED",
+  "PIN_ACQUIRED",
+  "PIN_RELEASED",
+] as const;
+
+export type DeliveredArtifactEventKind = (typeof DELIVERED_ARTIFACT_EVENT_KINDS)[number];
+
+/**
+ * The access policies a reference may name — one, closed in code (decision 59).
+ *
+ * `access_policy_id` carries no foreign key and no CHECK: artifacts §4 names a
+ * `fk_..__access_policy_read_model`, and that table has no dictionary. Until its
+ * owner writes one, the policy is this identifier, and the door refuses any
+ * other by name. A CHECK would make a second policy a reconstruction of the
+ * read model; this list makes it an edit.
+ */
+export const ARTIFACT_ACCESS_POLICY_IDS = ["SCOPE_EQUALITY_V1"] as const;
+
+/** Metadata of one generation of some bytes (artifacts §3). No owner, no scope. */
+export interface ArtifactBlobReadModel {
+  readonly contentSha256: string;
+  readonly blobGeneration: number;
+  readonly mediaType: string;
+  readonly sizeBytes: number;
+  readonly lifecycleState: BlobLifecycleState;
+  readonly encryptionStatus: EncryptionStatus;
+  /** Null if and only if the blob is `PLAINTEXT`. An opaque reference, never a key. */
+  readonly keyReference: string | null;
+  /** The `registry_events` sequence that published the first reference, or null. */
+  readonly firstPublishedSequence: number | null;
+  /** That event's own instant, never a clock read. Null with the sequence. */
+  readonly firstPublishedAt: string | null;
+  /** Null in every state this build can reach. */
+  readonly reclaimId: string | null;
+  /** Null in every state this build can reach. */
+  readonly reclaimedAt: string | null;
+  /** The instant of this generation's first `PUBLICATION_INTENDED`, conserved. */
+  readonly graceStartedAt: string;
+  readonly encryptionProfile: string;
+  /** The sequence of the event that last wrote this row. */
+  readonly appliedSequence: number;
+}
+
+/** One authorized access to one blob generation (artifacts §4). Here lives the permission. */
+export interface ArtifactReferenceReadModel {
+  readonly artifactReferenceId: string;
+  readonly contentSha256: string;
+  readonly blobGeneration: number;
+  readonly artifactClass: ArtifactClass;
+  readonly classification: ArtifactClassification;
+  readonly scopeKind: ReferenceScopeKind;
+  /** Null only when `scopeKind` is `SYSTEM`. */
+  readonly scopeId: string | null;
+  readonly producerIdentity: string;
+  readonly accessPolicyId: string;
+  readonly retentionClass: RetentionClass;
+  /** Null if and only if `retentionClass` is `PERMANENT`. Expiring revokes nothing. */
+  readonly expiresAt: string | null;
+  /** Null in every state this build can reach: tombstoning is not delivered. */
+  readonly tombstonedAt: string | null;
+  readonly tombstoneReason: string | null;
+  readonly createdSequence: number;
+  readonly appliedSequence: number;
+}
+
+/** One protection of one blob generation from collection (artifacts §5). */
+export interface ArtifactPinReadModel {
+  readonly artifactPinId: string;
+  readonly contentSha256: string;
+  readonly blobGeneration: number;
+  readonly pinHolderKind: PinHolderKind;
+  readonly pinHolderId: string;
+  readonly acquiredSequence: number;
+  /** Null while the pin is live; never less than `acquiredSequence` after. */
+  readonly releasedSequence: number | null;
+  readonly appliedSequence: number;
+}
+
+/**
+ * The revocation of one reference (artifacts §6). The table exists; nothing in
+ * this build writes a row into it, because `REFERENCE_TOMBSTONED` is refused.
+ */
+export interface ArtifactTombstoneReadModel {
+  readonly artifactReferenceId: string;
+  readonly contentSha256: string;
+  readonly blobGeneration: number;
+  readonly reason: string;
+  readonly decidedBy: string;
+  readonly authoritySha256: string;
+  readonly recordedSequence: number;
+  readonly appliedSequence: number;
+}
+
+/**
+ * What one artifact event writes, decided once for the door and the fold alike.
+ *
+ * At most one row of each of three tables: a blob that is born or changes state,
+ * a reference that is born, a pin that is born or released. A null is "this
+ * event does not touch that table", and a deduplication that conserves a row is
+ * a null too, so a conserved row keeps the `appliedSequence` it had.
+ */
+export interface ArtifactProjectionWrites {
+  readonly blob: ArtifactBlobReadModel | null;
+  readonly reference: ArtifactReferenceReadModel | null;
+  readonly pin: ArtifactPinReadModel | null;
+}
+
+/**
+ * What the artifact fold reads, whether it runs over the base or over a snapshot.
+ *
+ * The door answers these from the read models inside its transaction and the
+ * rebuild answers them from the snapshot it is filling, so one decision
+ * function serves both and a planted history fails the rebuild in the door's
+ * own words (decision 56's precedent).
+ */
+export interface ArtifactFoldView {
+  blob(contentSha256: string, blobGeneration: number): ArtifactBlobReadModel | null;
+  /** The one generation of this content that is not `RECLAIMED`, or null. */
+  unreclaimedBlob(contentSha256: string): ArtifactBlobReadModel | null;
+  /** The highest generation this content ever had, or zero. */
+  highestBlobGeneration(contentSha256: string): number;
+  reference(artifactReferenceId: string): ArtifactReferenceReadModel | null;
+  pin(artifactPinId: string): ArtifactPinReadModel | null;
+  /** The live pin one holder has on one generation, or null. */
+  livePin(
+    contentSha256: string,
+    blobGeneration: number,
+    pinHolderKind: PinHolderKind,
+    pinHolderId: string,
+  ): ArtifactPinReadModel | null;
+}
+
+/**
+ * The four artifact read models of an in-memory snapshot, keyed as their tables
+ * are, and the two lookups the fold asks of them.
+ *
+ * The first four maps are what a rebuild writes and what `verifyIntegrity`
+ * compares. The last two are indexes over them and are never compared: they
+ * answer "the highest generation of this content" and "the live pin of this
+ * holder" without a scan per event, which is what the base's two indexes do for
+ * the door.
+ */
+export interface ArtifactProjectionSnapshot {
+  /** Keyed by `artifactBlobKey(contentSha256, blobGeneration)`. */
+  readonly blobs: Map<string, ArtifactBlobReadModel>;
+  readonly references: Map<string, ArtifactReferenceReadModel>;
+  readonly pins: Map<string, ArtifactPinReadModel>;
+  readonly tombstones: Map<string, ArtifactTombstoneReadModel>;
+  /** The highest generation per content. */
+  readonly highestGenerations: Map<string, number>;
+  /** Keyed by `artifactLivePinKey(...)`, holding the live pin's id. */
+  readonly livePins: Map<string, string>;
+}
+
+/** One durable artifact row of `registry_events`, with its event and chain position. */
+export interface ArtifactEventRecord {
+  readonly sequence: number;
+  readonly eventId: string;
+  readonly idempotencyKey: string;
+  readonly event: ArtifactRegistryEvent;
+  /** The exact bytes the chain digest was computed over. */
+  readonly canonicalJson: string;
+  readonly previousSha256: string;
+  readonly eventSha256: string;
+  /** The event this one was recorded as caused by, or null. See CausationRef. */
+  readonly causation: CausationRef | null;
+}
+
+export interface ArtifactAppendResult {
+  /** false means this was an exact replay and nothing new was written. */
+  readonly inserted: boolean;
+  readonly record: ArtifactEventRecord;
 }
 
 /**

@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 
 import {
   AccountActionEvent,
+  ArtifactRegistryEvent,
   CONTRACT_VERSION,
   ControlPlaneEvent,
   IdempotencyCoordinates,
@@ -49,6 +50,7 @@ import {
   PROJECTION_NAMES,
   PROJECTION_SOURCES,
   PROJECTOR_VERSION,
+  REGISTRY_PROJECTION_NAMES,
   REGISTRY_STREAM,
   ROUTING_ASSIGNMENT_PROJECTION,
   SCHEMA_MIGRATIONS_DDL,
@@ -60,8 +62,15 @@ import {
   type ProjectionSource,
 } from "../migrations/index.js";
 import {
+  applyArtifactEventToSnapshot,
   applyEventToSnapshot,
   applyInitiativeEventToSnapshot,
+  artifactBlobKey,
+  artifactEventKindRefusal,
+  artifactEventRefusal,
+  artifactSubjectOf,
+  createArtifactProjectionSnapshot,
+  nextArtifactProjection,
   applyRegistryEventToSnapshot,
   DISPATCH_INTENDED,
   DISPATCH_KEY,
@@ -140,6 +149,15 @@ import {
   type AppendBatchResult,
   type AppendResult,
   type AppliedMigration,
+  type ArtifactAppendResult,
+  type ArtifactBlobReadModel,
+  type ArtifactEventRecord,
+  type ArtifactFoldView,
+  type ArtifactPinReadModel,
+  type ArtifactProjectionSnapshot,
+  type ArtifactProjectionWrites,
+  type ArtifactReferenceReadModel,
+  type ArtifactTombstoneReadModel,
   type CausationRef,
   type CausationStream,
   type DispatchAttemptReadModel,
@@ -231,7 +249,8 @@ const INITIATIVE_HEAD_EVENT_SHA256 = "initiative_head_event_sha256";
 const INITIATIVE_EVENT_COUNT = "initiative_event_count";
 
 const REGISTRY_EVENT_COLUMNS =
-  "sequence, event_id, idempotency_key, document_kind, document_id, document_version, " +
+  "sequence, event_id, idempotency_key, subject_kind, document_kind, artifact_event_kind, " +
+  "document_id, document_version, " +
   "content_digest, parent_document_version, recorded_by, effective_from, occurred_at, " +
   "recorded_at, causation_stream, causation_sequence, causation_sha256, contract_version, " +
   "event_json, previous_sha256, event_sha256";
@@ -398,7 +417,12 @@ interface RegistryEventRow {
   readonly sequence: number;
   readonly event_id: string;
   readonly idempotency_key: string;
-  readonly document_kind: string;
+  /** `DOCUMENT` or `ARTIFACT` since migration 15, and the branch every reader takes. */
+  readonly subject_kind: string;
+  /** Null exactly on an `ARTIFACT` row. */
+  readonly document_kind: string | null;
+  /** Null exactly on a `DOCUMENT` row. */
+  readonly artifact_event_kind: string | null;
   readonly document_id: string;
   readonly document_version: number;
   readonly content_digest: string;
@@ -735,6 +759,188 @@ function assertRegistryBodyBounded(canonicalJson: string): void {
         " bytes; content belongs in the artifact store, and the document records its digest",
     },
   ]);
+}
+
+/**
+ * Parse an artifact event at the door, refusing by name what the stream refuses.
+ *
+ * Unlike a registry document, an artifact event HAS a schema in
+ * `@acp/contracts`, so this is a `safeParse` and not a hand-written check: the
+ * credential and transcript guards live in that schema, and a door that
+ * validated by hand would let a sentinel through that the contract refuses
+ * (M-6). Two refusals run around it. Before: the three words of the contract
+ * this build does not record, named at `artifactEventKind` rather than lost in a
+ * union the parser cannot match. After: the rules of the stream no row can
+ * carry — a `SECRET_BEARING` reference, a policy outside the closed set, a
+ * publication pin taken by hand.
+ *
+ * Every issue carries a path and a reason, never the rejected value.
+ */
+function normalizeArtifactEvent(candidate: unknown): ArtifactRegistryEvent {
+  if (!isPlainObject(candidate)) {
+    throw new LedgerValidationError([{ path: "<root>", message: "an artifact event is an object" }]);
+  }
+  const kindRefusal = artifactEventKindRefusal(candidate["artifactEventKind"]);
+  if (kindRefusal !== null) throw new LedgerValidationError([kindRefusal]);
+
+  const parsed = ArtifactRegistryEvent.safeParse(candidate);
+  if (!parsed.success) {
+    throw new LedgerValidationError(toValidationIssues(parsed.error.issues));
+  }
+  const refusal = artifactEventRefusal(parsed.data);
+  if (refusal !== null) throw new LedgerValidationError([refusal]);
+  return parsed.data;
+}
+
+/** The artifact twin of `assertRegistryBodyBounded`: the same budget, its own words. */
+function assertArtifactBodyBounded(canonicalJson: string): void {
+  if (Buffer.byteLength(canonicalJson, "utf8") <= REGISTRY_EVENT_JSON_MAX_BYTES) return;
+  throw new LedgerValidationError([
+    {
+      path: "payload",
+      message:
+        "an artifact event's canonical body exceeds " +
+        String(REGISTRY_EVENT_JSON_MAX_BYTES) +
+        " bytes; an event records the facts of some bytes, never the bytes",
+    },
+  ]);
+}
+
+/** The payload path that names an artifact event's subject, for a refusal. */
+function artifactSubjectPath(event: ArtifactRegistryEvent): string {
+  switch (event.artifactEventKind) {
+    case "PUBLICATION_INTENDED":
+    case "PUBLICATION_SUCCEEDED":
+    case "PUBLICATION_ABANDONED":
+      return "payload.contentSha256";
+    case "REFERENCE_RECORDED":
+      return "payload.reference.artifactReferenceId";
+    case "PIN_ACQUIRED":
+    case "PIN_RELEASED":
+      return "payload.artifactPinId";
+  }
+}
+
+interface ArtifactBlobRow {
+  readonly content_sha256: string;
+  readonly blob_generation: number;
+  readonly media_type: string;
+  readonly size_bytes: number;
+  readonly lifecycle_state: string;
+  readonly encryption_status: string;
+  readonly key_reference: string | null;
+  readonly first_published_sequence: number | null;
+  readonly first_published_at: string | null;
+  readonly reclaim_id: string | null;
+  readonly reclaimed_at: string | null;
+  readonly grace_started_at: string;
+  readonly encryption_profile: string;
+  readonly applied_sequence: number;
+}
+
+interface ArtifactReferenceRow {
+  readonly artifact_reference_id: string;
+  readonly content_sha256: string;
+  readonly blob_generation: number;
+  readonly artifact_class: string;
+  readonly classification: string;
+  readonly scope_kind: string;
+  readonly scope_id: string | null;
+  readonly producer_identity: string;
+  readonly access_policy_id: string;
+  readonly retention_class: string;
+  readonly expires_at: string | null;
+  readonly tombstoned_at: string | null;
+  readonly tombstone_reason: string | null;
+  readonly created_sequence: number;
+  readonly applied_sequence: number;
+}
+
+interface ArtifactPinRow {
+  readonly artifact_pin_id: string;
+  readonly content_sha256: string;
+  readonly blob_generation: number;
+  readonly pin_holder_kind: string;
+  readonly pin_holder_id: string;
+  readonly acquired_sequence: number;
+  readonly released_sequence: number | null;
+  readonly applied_sequence: number;
+}
+
+interface ArtifactTombstoneRow {
+  readonly artifact_reference_id: string;
+  readonly content_sha256: string;
+  readonly blob_generation: number;
+  readonly reason: string;
+  readonly decided_by: string;
+  readonly authority_sha256: string;
+  readonly recorded_sequence: number;
+  readonly applied_sequence: number;
+}
+
+function artifactBlobRowToModel(row: ArtifactBlobRow): ArtifactBlobReadModel {
+  return {
+    contentSha256: row.content_sha256,
+    blobGeneration: row.blob_generation,
+    mediaType: row.media_type,
+    sizeBytes: row.size_bytes,
+    lifecycleState: row.lifecycle_state as ArtifactBlobReadModel["lifecycleState"],
+    encryptionStatus: row.encryption_status as ArtifactBlobReadModel["encryptionStatus"],
+    keyReference: row.key_reference,
+    firstPublishedSequence: row.first_published_sequence,
+    firstPublishedAt: row.first_published_at,
+    reclaimId: row.reclaim_id,
+    reclaimedAt: row.reclaimed_at,
+    graceStartedAt: row.grace_started_at,
+    encryptionProfile: row.encryption_profile,
+    appliedSequence: row.applied_sequence,
+  };
+}
+
+function artifactReferenceRowToModel(row: ArtifactReferenceRow): ArtifactReferenceReadModel {
+  return {
+    artifactReferenceId: row.artifact_reference_id,
+    contentSha256: row.content_sha256,
+    blobGeneration: row.blob_generation,
+    artifactClass: row.artifact_class as ArtifactReferenceReadModel["artifactClass"],
+    classification: row.classification as ArtifactReferenceReadModel["classification"],
+    scopeKind: row.scope_kind as ArtifactReferenceReadModel["scopeKind"],
+    scopeId: row.scope_id,
+    producerIdentity: row.producer_identity,
+    accessPolicyId: row.access_policy_id,
+    retentionClass: row.retention_class as ArtifactReferenceReadModel["retentionClass"],
+    expiresAt: row.expires_at,
+    tombstonedAt: row.tombstoned_at,
+    tombstoneReason: row.tombstone_reason,
+    createdSequence: row.created_sequence,
+    appliedSequence: row.applied_sequence,
+  };
+}
+
+function artifactPinRowToModel(row: ArtifactPinRow): ArtifactPinReadModel {
+  return {
+    artifactPinId: row.artifact_pin_id,
+    contentSha256: row.content_sha256,
+    blobGeneration: row.blob_generation,
+    pinHolderKind: row.pin_holder_kind as ArtifactPinReadModel["pinHolderKind"],
+    pinHolderId: row.pin_holder_id,
+    acquiredSequence: row.acquired_sequence,
+    releasedSequence: row.released_sequence,
+    appliedSequence: row.applied_sequence,
+  };
+}
+
+function artifactTombstoneRowToModel(row: ArtifactTombstoneRow): ArtifactTombstoneReadModel {
+  return {
+    artifactReferenceId: row.artifact_reference_id,
+    contentSha256: row.content_sha256,
+    blobGeneration: row.blob_generation,
+    reason: row.reason,
+    decidedBy: row.decided_by,
+    authoritySha256: row.authority_sha256,
+    recordedSequence: row.recorded_sequence,
+    appliedSequence: row.applied_sequence,
+  };
 }
 
 interface RoutingAssignmentRow {
@@ -1315,6 +1521,8 @@ const PROJECTION_NAME_SET: ReadonlySet<string> = new Set([
   // Neither list, deliberately: this projection is level with two chains and
   // belongs to neither stream's roster. Membership is still one question.
   ROUTING_ASSIGNMENT_PROJECTION,
+  // The registry stream's own roster (P-36/local A).
+  ...REGISTRY_PROJECTION_NAMES,
 ]);
 
 // Which stream a projection follows used to be a second name set here. It is
@@ -5402,12 +5610,14 @@ export class Ledger {
     const expectedSequence = head.sequence + 1;
 
     const info = this.#stmt(
+      // `subject_kind` is stated, never defaulted: migration 15 gives the column
+      // no default, so a writer that forgot which plane it writes is refused.
       "INSERT INTO registry_events (" +
-        "event_id, idempotency_key, document_kind, document_id, document_version, " +
+        "event_id, idempotency_key, subject_kind, document_kind, document_id, document_version, " +
         "content_digest, parent_document_version, recorded_by, effective_from, " +
         "occurred_at, recorded_at, causation_stream, causation_sequence, causation_sha256, " +
         "contract_version, event_json, previous_sha256, event_sha256" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ") VALUES (?, ?, 'DOCUMENT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       document.eventId,
       document.idempotencyKey,
@@ -5478,8 +5688,26 @@ export class Ledger {
    */
   #assertDocumentLineage(document: RegistryDocument): void {
     const anyVersion = this.#stmt(
-      "SELECT document_kind FROM registry_events WHERE document_id = ? LIMIT 1",
-    ).get(document.documentId) as { readonly document_kind: string } | undefined;
+      "SELECT subject_kind, document_kind FROM registry_events WHERE document_id = ? LIMIT 1",
+    ).get(document.documentId) as
+      | { readonly subject_kind: string; readonly document_kind: string | null }
+      | undefined;
+
+    // A subject keeps its kind across its events, in both directions (P-36/local
+    // A): an identifier the artifact plane already uses is not a document id,
+    // and asking for its `document_kind` would read the NULL an artifact row
+    // carries.
+    if (anyVersion !== undefined && anyVersion.subject_kind !== "DOCUMENT") {
+      throw new LedgerValidationError([
+        {
+          path: "documentId",
+          message:
+            "subject " +
+            safeRowIdentifier(document.documentId) +
+            " is recorded as an ARTIFACT subject, and a subject keeps its kind across its events",
+        },
+      ]);
+    }
 
     if (anyVersion !== undefined && anyVersion.document_kind !== document.documentKind) {
       throw new LedgerValidationError([
@@ -5489,7 +5717,7 @@ export class Ledger {
             "document " +
             document.documentId +
             " is recorded as " +
-            safeIdentifier(anyVersion.document_kind) +
+            safeIdentifier(anyVersion.document_kind ?? "") +
             " and a document keeps its kind across its versions",
         },
       ]);
@@ -5642,6 +5870,390 @@ export class Ledger {
       eventId: row.event_id,
       idempotencyKey: row.idempotency_key,
       document,
+      canonicalJson: row.event_json,
+      previousSha256: row.previous_sha256,
+      eventSha256: row.event_sha256,
+      causation: causationFromRow(row, row.sequence),
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // The artifact plane of the registry stream (P-36/local escalón A)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record one artifact event in `registry_events` (artifacts §1.1, §8.1).
+   *
+   * The registry stream's second door, on its chain, its head and its
+   * watermarks, under the same transaction discipline: one `BEGIN IMMEDIATE`
+   * covers the row, the four read models, the head and the watermarks, and a
+   * failure anywhere leaves the ledger exactly as it was.
+   *
+   * **Facts of the bytes, never the bytes.** Nothing here opens, writes,
+   * renames or synchronizes a file. The events say that a publication was
+   * intended, succeeded or was abandoned, that a reference or a pin exists; the
+   * filesystem half of each is escalón C, and this door neither performs it nor
+   * checks it. A rebuild of what these events fold into reads no file and no
+   * clock.
+   *
+   * What it refuses is what it alone can see: a replayed key with different
+   * content, a reused event id, a version not in force, a subject already
+   * recorded as a document, an ordinal that is not one past the subject's
+   * highest, a causal reference that does not resolve — and, through the fold,
+   * every transition artifacts §8.1 does not allow. The encryption of a reused
+   * generation is refused with its own named error.
+   */
+  appendArtifactEvent(candidate: unknown, causation?: CausationRef | null): ArtifactAppendResult {
+    this.#assertOpen("appendArtifactEvent");
+    this.#assertWritable("appendArtifactEvent");
+
+    const event = normalizeArtifactEvent(candidate);
+    const canonicalJson = canonicalJsonStringify(event);
+    assertArtifactBodyBounded(canonicalJson);
+    const reference = normalizeCausation(causation, "causation");
+
+    const run = this.#db.transaction(
+      (): ArtifactAppendResult => this.#appendArtifactInTransaction(event, canonicalJson, reference),
+    );
+    return run.immediate();
+  }
+
+  #appendArtifactInTransaction(
+    event: ArtifactRegistryEvent,
+    canonicalJson: string,
+    causation: CausationRef | null,
+  ): ArtifactAppendResult {
+    const existingByKey = this.#stmt(
+      "SELECT " + REGISTRY_EVENT_COLUMNS + " FROM registry_events WHERE idempotency_key = ?",
+    ).get(event.idempotencyKey) as RegistryEventRow | undefined;
+
+    if (existingByKey !== undefined) {
+      const stored = causationFromRow(existingByKey, existingByKey.sequence);
+      if (existingByKey.event_json === canonicalJson && causationEquals(stored, causation)) {
+        return { inserted: false, record: this.#artifactRowToRecord(existingByKey) };
+      }
+      throw new LedgerIdempotencyConflictError(
+        event.idempotencyKey,
+        appendContentDigest(existingByKey.event_json, stored),
+        appendContentDigest(canonicalJson, causation),
+      );
+    }
+
+    const existingById = this.#stmt(
+      "SELECT idempotency_key FROM registry_events WHERE event_id = ?",
+    ).get(event.eventId) as { readonly idempotency_key: string } | undefined;
+
+    if (existingById !== undefined) {
+      throw new LedgerEventIdConflictError(
+        event.eventId,
+        existingById.idempotency_key,
+        event.idempotencyKey,
+      );
+    }
+
+    // The version in force, for a new insertion only, after the exact replay
+    // has returned: the append door's rule (ADR 0072's debt, paid by 0076).
+    if (event.contractVersion !== CONTRACT_VERSION) {
+      throw new LedgerValidationError([
+        {
+          path: "contractVersion",
+          message:
+            "a new event is recorded under the contract version in force, which is " +
+            CONTRACT_VERSION +
+            "; this event carries " +
+            event.contractVersion +
+            ", which this build reads (the supported set is " +
+            supportedVersionList() +
+            ") but no longer emits",
+        },
+      ]);
+    }
+
+    const subject = artifactSubjectOf(event);
+    this.#assertArtifactLineage(event, subject.documentId);
+    this.#assertCausationResolves(causation);
+
+    const head = this.#readRegistryHead();
+    const expectedSequence = head.sequence + 1;
+
+    // Decided BEFORE the row is written, against the read models as they stand,
+    // so a refusal leaves no row, no projection and no head behind. The
+    // sequence it stamps is the one the insert below must then be assigned.
+    const writes = nextArtifactProjection(this.#artifactBaseView(), event, expectedSequence);
+
+    const previousSha256 = head.sha256;
+    const eventSha256 = chainDigest(previousSha256, canonicalJson);
+
+    const info = this.#stmt(
+      "INSERT INTO registry_events (" +
+        "event_id, idempotency_key, subject_kind, document_kind, artifact_event_kind, " +
+        "document_id, document_version, content_digest, parent_document_version, recorded_by, " +
+        "effective_from, occurred_at, recorded_at, causation_stream, causation_sequence, " +
+        "causation_sha256, contract_version, event_json, previous_sha256, event_sha256" +
+        ") VALUES (?, ?, 'ARTIFACT', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      event.eventId,
+      event.idempotencyKey,
+      event.artifactEventKind,
+      subject.documentId,
+      event.subjectOrdinal,
+      subject.contentDigest,
+      event.parentSubjectOrdinal,
+      event.recordedBy,
+      // An artifact event rules from the instant it occurred; it has no other
+      // validity instant to carry.
+      event.occurredAt,
+      event.occurredAt,
+      event.recordedAt,
+      causation === null ? null : causation.stream,
+      causation === null ? null : causation.sequence,
+      causation === null ? null : causation.sha256,
+      event.contractVersion,
+      canonicalJson,
+      previousSha256,
+      eventSha256,
+    );
+
+    const sequence = Number(info.lastInsertRowid);
+    if (sequence !== expectedSequence) {
+      throw new LedgerSequenceError(expectedSequence, sequence);
+    }
+
+    this.#faults.beforeProjection?.();
+
+    this.#writeArtifactProjection(writes);
+    this.#writeRegistryHead(sequence, eventSha256, head.count + 1);
+    // Every projection of this stream, the routing projection's registry row
+    // among them: an artifact event is a registry event, and a watermark says
+    // how far along the STREAM a projection is, not how many of its rows moved.
+    this.#writeWatermarks(REGISTRY_WATERMARKS, {
+      sequence,
+      count: head.count + 1,
+      sha256: eventSha256,
+      updatedAt: event.recordedAt,
+    });
+
+    this.#faults.beforeAppendCommit?.();
+
+    return {
+      inserted: true,
+      record: {
+        sequence,
+        eventId: event.eventId,
+        idempotencyKey: event.idempotencyKey,
+        event,
+        canonicalJson,
+        previousSha256,
+        eventSha256,
+        causation,
+      },
+    };
+  }
+
+  /**
+   * An artifact subject's kind and ordinal, checked against the stream.
+   *
+   * The ordinal is `1 + MAX(document_version)` over the subject, proposed by the
+   * producer — the chain digests the body before the write lock is taken, so the
+   * ledger cannot write the number in — and verified here, where a mismatch is a
+   * refusal naming the expected value. The parent ordinal is tied to it by the
+   * contract. `ux_registry_events__document_id__document_version` is the
+   * backstop, as it is for a document's version.
+   */
+  #assertArtifactLineage(event: ArtifactRegistryEvent, documentId: string): void {
+    const recorded = this.#stmt(
+      "SELECT subject_kind FROM registry_events WHERE document_id = ? LIMIT 1",
+    ).get(documentId) as { readonly subject_kind: string } | undefined;
+
+    if (recorded !== undefined && recorded.subject_kind !== "ARTIFACT") {
+      throw new LedgerValidationError([
+        {
+          path: artifactSubjectPath(event),
+          message:
+            "subject " +
+            safeRowIdentifier(documentId) +
+            " is recorded as a DOCUMENT subject, and a subject keeps its kind across its events",
+        },
+      ]);
+    }
+
+    const highest = (
+      this.#stmt(
+        "SELECT COALESCE(MAX(document_version), 0) AS highest FROM registry_events WHERE document_id = ?",
+      ).get(documentId) as { readonly highest: number }
+    ).highest;
+
+    if (event.subjectOrdinal !== highest + 1) {
+      throw new LedgerValidationError([
+        {
+          path: "subjectOrdinal",
+          message:
+            "artifact subject " +
+            safeRowIdentifier(documentId) +
+            " holds " +
+            String(highest) +
+            " event(s), so the next one is ordinal " +
+            String(highest + 1) +
+            "; this event proposes " +
+            String(event.subjectOrdinal),
+        },
+      ]);
+    }
+  }
+
+  /** The artifact fold's view over the base, inside the caller's transaction. */
+  #artifactBaseView(): ArtifactFoldView {
+    return {
+      blob: (contentSha256, blobGeneration) => {
+        const row = this.#stmt(
+          "SELECT * FROM artifact_blob_read_model WHERE content_sha256 = ? AND blob_generation = ?",
+        ).get(contentSha256, blobGeneration) as ArtifactBlobRow | undefined;
+        return row === undefined ? null : artifactBlobRowToModel(row);
+      },
+      unreclaimedBlob: (contentSha256) => {
+        // At most one row, by `ux_artifact_blob_read_model__content_sha256__unreclaimed`.
+        const row = this.#stmt(
+          "SELECT * FROM artifact_blob_read_model " +
+            "WHERE content_sha256 = ? AND lifecycle_state <> 'RECLAIMED'",
+        ).get(contentSha256) as ArtifactBlobRow | undefined;
+        return row === undefined ? null : artifactBlobRowToModel(row);
+      },
+      highestBlobGeneration: (contentSha256) =>
+        (
+          this.#stmt(
+            "SELECT COALESCE(MAX(blob_generation), 0) AS highest FROM artifact_blob_read_model " +
+              "WHERE content_sha256 = ?",
+          ).get(contentSha256) as { readonly highest: number }
+        ).highest,
+      reference: (artifactReferenceId) => {
+        const row = this.#stmt(
+          "SELECT * FROM artifact_reference_read_model WHERE artifact_reference_id = ?",
+        ).get(artifactReferenceId) as ArtifactReferenceRow | undefined;
+        return row === undefined ? null : artifactReferenceRowToModel(row);
+      },
+      pin: (artifactPinId) => {
+        const row = this.#stmt(
+          "SELECT * FROM artifact_pin_read_model WHERE artifact_pin_id = ?",
+        ).get(artifactPinId) as ArtifactPinRow | undefined;
+        return row === undefined ? null : artifactPinRowToModel(row);
+      },
+      livePin: (contentSha256, blobGeneration, pinHolderKind, pinHolderId) => {
+        // At most one row, by `ux_artifact_pin_read_model__content_sha256_holder__live`.
+        const row = this.#stmt(
+          "SELECT * FROM artifact_pin_read_model WHERE content_sha256 = ? AND blob_generation = ? " +
+            "AND pin_holder_kind = ? AND pin_holder_id = ? AND released_sequence IS NULL",
+        ).get(contentSha256, blobGeneration, pinHolderKind, pinHolderId) as ArtifactPinRow | undefined;
+        return row === undefined ? null : artifactPinRowToModel(row);
+      },
+    };
+  }
+
+  /**
+   * Write what the fold decided. The blob first, because the reference and the
+   * pin each carry a foreign key onto it and `foreign_keys` is ON.
+   */
+  #writeArtifactProjection(writes: ArtifactProjectionWrites): void {
+    if (writes.blob !== null) this.#upsertArtifactBlob(writes.blob);
+    if (writes.reference !== null) this.#insertArtifactReference(writes.reference);
+    if (writes.pin !== null) this.#upsertArtifactPin(writes.pin);
+  }
+
+  #upsertArtifactBlob(blob: ArtifactBlobReadModel): void {
+    this.#stmt(
+      "INSERT INTO artifact_blob_read_model (" +
+        "content_sha256, blob_generation, media_type, size_bytes, lifecycle_state, " +
+        "encryption_status, key_reference, first_published_sequence, first_published_at, " +
+        "reclaim_id, reclaimed_at, grace_started_at, encryption_profile, applied_sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (content_sha256, blob_generation) DO UPDATE SET " +
+        "media_type = excluded.media_type, size_bytes = excluded.size_bytes, " +
+        "lifecycle_state = excluded.lifecycle_state, " +
+        "encryption_status = excluded.encryption_status, key_reference = excluded.key_reference, " +
+        "first_published_sequence = excluded.first_published_sequence, " +
+        "first_published_at = excluded.first_published_at, reclaim_id = excluded.reclaim_id, " +
+        "reclaimed_at = excluded.reclaimed_at, grace_started_at = excluded.grace_started_at, " +
+        "encryption_profile = excluded.encryption_profile, " +
+        "applied_sequence = excluded.applied_sequence",
+    ).run(
+      blob.contentSha256,
+      blob.blobGeneration,
+      blob.mediaType,
+      blob.sizeBytes,
+      blob.lifecycleState,
+      blob.encryptionStatus,
+      blob.keyReference,
+      blob.firstPublishedSequence,
+      blob.firstPublishedAt,
+      blob.reclaimId,
+      blob.reclaimedAt,
+      blob.graceStartedAt,
+      blob.encryptionProfile,
+      blob.appliedSequence,
+    );
+  }
+
+  /** A reference is recorded once; the fold refused a second one by name. */
+  #insertArtifactReference(reference: ArtifactReferenceReadModel): void {
+    this.#stmt(
+      "INSERT INTO artifact_reference_read_model (" +
+        "artifact_reference_id, content_sha256, blob_generation, artifact_class, classification, " +
+        "scope_kind, scope_id, producer_identity, access_policy_id, retention_class, expires_at, " +
+        "tombstoned_at, tombstone_reason, created_sequence, applied_sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      reference.artifactReferenceId,
+      reference.contentSha256,
+      reference.blobGeneration,
+      reference.artifactClass,
+      reference.classification,
+      reference.scopeKind,
+      reference.scopeId,
+      reference.producerIdentity,
+      reference.accessPolicyId,
+      reference.retentionClass,
+      reference.expiresAt,
+      reference.tombstonedAt,
+      reference.tombstoneReason,
+      reference.createdSequence,
+      reference.appliedSequence,
+    );
+  }
+
+  #upsertArtifactPin(pin: ArtifactPinReadModel): void {
+    this.#stmt(
+      "INSERT INTO artifact_pin_read_model (" +
+        "artifact_pin_id, content_sha256, blob_generation, pin_holder_kind, pin_holder_id, " +
+        "acquired_sequence, released_sequence, applied_sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT (artifact_pin_id) DO UPDATE SET " +
+        "released_sequence = excluded.released_sequence, " +
+        "applied_sequence = excluded.applied_sequence",
+    ).run(
+      pin.artifactPinId,
+      pin.contentSha256,
+      pin.blobGeneration,
+      pin.pinHolderKind,
+      pin.pinHolderId,
+      pin.acquiredSequence,
+      pin.releasedSequence,
+      pin.appliedSequence,
+    );
+  }
+
+  #artifactRowToRecord(row: RegistryEventRow): ArtifactEventRecord {
+    const parsed = ArtifactRegistryEvent.safeParse(JSON.parse(row.event_json));
+    if (row.subject_kind !== "ARTIFACT" || !parsed.success) {
+      throw new LedgerIntegrityError([
+        "artifact event at sequence " +
+          String(row.sequence) +
+          " no longer satisfies the artifact event contract",
+      ]);
+    }
+    return {
+      sequence: row.sequence,
+      eventId: row.event_id,
+      idempotencyKey: row.idempotency_key,
+      event: parsed.data,
       canonicalJson: row.event_json,
       previousSha256: row.previous_sha256,
       eventSha256: row.event_sha256,
@@ -5933,6 +6545,7 @@ export class Ledger {
    */
   #replayRegistry(
     onDocument: (document: RegistryDocument, row: RegistryEventRow) => void,
+    onArtifact: (event: ArtifactRegistryEvent, row: RegistryEventRow) => void,
   ): ReplayOutcome {
     const problems: IntegrityProblem[] = [];
     let checked = 0;
@@ -6004,8 +6617,15 @@ export class Ledger {
         previous = row.event_sha256;
 
         if (shapeProblems.length === 0) {
-          const document = tryNormalizeRegistryDocument(JSON.parse(row.event_json));
-          if (document !== null) onDocument(document, row);
+          // The column decides the plane, and the shape check above has already
+          // held the body to the same plane (P-36/local A).
+          if (row.subject_kind === "ARTIFACT") {
+            const parsed = ArtifactRegistryEvent.safeParse(JSON.parse(row.event_json));
+            if (parsed.success) onArtifact(parsed.data, row);
+          } else {
+            const document = tryNormalizeRegistryDocument(JSON.parse(row.event_json));
+            if (document !== null) onDocument(document, row);
+          }
         }
       }
     }
@@ -6055,6 +6675,11 @@ export class Ledger {
       });
     }
 
+    if (row.subject_kind === "ARTIFACT") {
+      problems.push(...this.#validateArtifactRowShape(row, decoded));
+      return problems;
+    }
+
     const document = tryNormalizeRegistryDocument(decoded);
     if (document === null) {
       problems.push({
@@ -6071,7 +6696,9 @@ export class Ledger {
     const mismatches: string[] = [];
     if (document.eventId !== row.event_id) mismatches.push("event_id");
     if (document.idempotencyKey !== row.idempotency_key) mismatches.push("idempotency_key");
+    if (row.subject_kind !== "DOCUMENT") mismatches.push("subject_kind");
     if (document.documentKind !== row.document_kind) mismatches.push("document_kind");
+    if (row.artifact_event_kind !== null) mismatches.push("artifact_event_kind");
     if (document.documentId !== row.document_id) mismatches.push("document_id");
     if (document.documentVersion !== row.document_version) mismatches.push("document_version");
     if (document.contentDigest !== row.content_digest) mismatches.push("content_digest");
@@ -6097,6 +6724,91 @@ export class Ledger {
     }
 
     return problems;
+  }
+
+  /**
+   * The artifact half of a registry row's shape check (P-36/local A).
+   *
+   * The door's refusal of an undelivered kind first, in the door's words, so a
+   * planted reclamation or tombstone fails a rebuild saying what the door would
+   * have said. Then the contract, then every indexed column against the body it
+   * was derived from — `subject_kind` and `artifact_event_kind` included,
+   * because both columns sit outside the preimage the chain digests.
+   */
+  #validateArtifactRowShape(row: RegistryEventRow, decoded: unknown): IntegrityProblem[] {
+    const kindRefusal = isPlainObject(decoded)
+      ? artifactEventKindRefusal(decoded["artifactEventKind"])
+      : null;
+    if (kindRefusal !== null) {
+      return [
+        {
+          kind: "EVENT_CONTRACT",
+          detail:
+            "registry sequence " +
+            String(row.sequence) +
+            " holds an artifact event this build refuses: " +
+            kindRefusal.path +
+            ": " +
+            kindRefusal.message,
+          sequence: row.sequence,
+        },
+      ];
+    }
+
+    const parsed = ArtifactRegistryEvent.safeParse(decoded);
+    if (!parsed.success) {
+      const version = unsupportedContractVersion(decoded);
+      return [
+        {
+          kind: "EVENT_CONTRACT",
+          detail:
+            version === null
+              ? "registry sequence " +
+                String(row.sequence) +
+                " holds an artifact event that no longer satisfies the artifact event contract"
+              : "registry sequence " +
+                String(row.sequence) +
+                " is stamped contract version " +
+                version +
+                ", which this build does not read; the supported versions are " +
+                supportedVersionList(),
+          sequence: row.sequence,
+        },
+      ];
+    }
+
+    const event = parsed.data;
+    const subject = artifactSubjectOf(event);
+    const mismatches: string[] = [];
+    if (event.eventId !== row.event_id) mismatches.push("event_id");
+    if (event.idempotencyKey !== row.idempotency_key) mismatches.push("idempotency_key");
+    if (event.subjectKind !== row.subject_kind) mismatches.push("subject_kind");
+    if (row.document_kind !== null) mismatches.push("document_kind");
+    if (event.artifactEventKind !== row.artifact_event_kind) mismatches.push("artifact_event_kind");
+    if (subject.documentId !== row.document_id) mismatches.push("document_id");
+    if (event.subjectOrdinal !== row.document_version) mismatches.push("document_version");
+    if (subject.contentDigest !== row.content_digest) mismatches.push("content_digest");
+    if (event.parentSubjectOrdinal !== row.parent_document_version) {
+      mismatches.push("parent_document_version");
+    }
+    if (event.recordedBy !== row.recorded_by) mismatches.push("recorded_by");
+    if (event.occurredAt !== row.effective_from) mismatches.push("effective_from");
+    if (event.occurredAt !== row.occurred_at) mismatches.push("occurred_at");
+    if (event.recordedAt !== row.recorded_at) mismatches.push("recorded_at");
+    if (event.contractVersion !== row.contract_version) mismatches.push("contract_version");
+
+    if (mismatches.length === 0) return [];
+    return [
+      {
+        kind: "EVENT_COORDINATES",
+        detail:
+          "registry sequence " +
+          String(row.sequence) +
+          " has indexed columns that disagree with its stored artifact event: " +
+          mismatches.join(", "),
+        sequence: row.sequence,
+      },
+    ];
   }
 
   // -------------------------------------------------------------------------
@@ -6157,12 +6869,21 @@ export class Ledger {
       // VECTOR of heads: all three chains are replayed before anything is
       // cleared, and any one of them being unsound refuses the rebuild.
       const registrySnapshot = createRegistryProjectionSnapshot();
+      // The registry stream's artifact plane, folded in the same walk: one chain,
+      // two planes, and the order of the rows is the order of the fold.
+      const artifactSnapshot = createArtifactProjectionSnapshot();
       let lastRegistryRecordedAt = EPOCH_TIMESTAMP;
 
-      const registryReplay = this.#replayRegistry((document, row) => {
-        applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
-        lastRegistryRecordedAt = document.recordedAt;
-      });
+      const registryReplay = this.#replayRegistry(
+        (document, row) => {
+          applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
+          lastRegistryRecordedAt = document.recordedAt;
+        },
+        (event, row) => {
+          applyArtifactEventToSnapshot(artifactSnapshot, event, row.sequence);
+          lastRegistryRecordedAt = event.recordedAt;
+        },
+      );
 
       const problems = [
         ...replay.problems,
@@ -6320,6 +7041,16 @@ export class Ledger {
       }
       for (const fallback of routingFallbacks.values()) this.#insertRoutingFallback(fallback);
 
+      // The artifact plane, parents first: every blob before the references and
+      // pins that name it. `DERIVED_TABLES` cleared the four tables children
+      // first, so each insert lands on an empty key; the tombstone table stays
+      // empty because nothing in this build folds a row into it.
+      for (const blob of artifactSnapshot.blobs.values()) this.#upsertArtifactBlob(blob);
+      for (const reference of artifactSnapshot.references.values()) {
+        this.#insertArtifactReference(reference);
+      }
+      for (const pin of artifactSnapshot.pins.values()) this.#upsertArtifactPin(pin);
+
       // The watermark rows are deleted and written back, not updated in place.
       // A rebuild regenerates the derived tables from the log, so there is no
       // partial watermark worth keeping, and a row belonging to a projection
@@ -6362,6 +7093,10 @@ export class Ledger {
         registryThroughSequence: registryReplay.lastSequence,
         routingAssignmentRows: routingAssignments.size,
         routingFallbackRows: routingFallbacks.size,
+        artifactBlobRows: artifactSnapshot.blobs.size,
+        artifactReferenceRows: artifactSnapshot.references.size,
+        artifactPinRows: artifactSnapshot.pins.size,
+        artifactTombstoneRows: artifactSnapshot.tombstones.size,
       };
     });
 
@@ -6447,9 +7182,15 @@ export class Ledger {
     problems.push(...initiativeReplay.problems);
 
     const registrySnapshot = createRegistryProjectionSnapshot();
-    const registryReplay = this.#replayRegistry((document, row) => {
-      applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
-    });
+    const artifactSnapshot = createArtifactProjectionSnapshot();
+    const registryReplay = this.#replayRegistry(
+      (document, row) => {
+        applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
+      },
+      (event, row) => {
+        applyArtifactEventToSnapshot(artifactSnapshot, event, row.sequence);
+      },
+    );
     problems.push(...registryReplay.problems);
 
     try {
@@ -6779,6 +7520,7 @@ export class Ledger {
     problems.push(...this.#compareProjections(snapshot));
     problems.push(...this.#compareInitiativeProjections(initiativeSnapshot));
     problems.push(...this.#compareRoutingProjection(registrySnapshot, initiativeSnapshot));
+    problems.push(...this.#compareArtifactProjections(artifactSnapshot));
 
     return {
       ok: problems.length === 0,
@@ -7301,6 +8043,88 @@ export class Ledger {
         });
       }
     }
+
+    return problems;
+  }
+
+  /**
+   * Compare the four artifact read models against a fresh replay (P-36/local A).
+   *
+   * Row for row, in canonical form, both directions: a missing row, a row that
+   * disagrees and a row no event accounts for are three different findings.
+   */
+  #compareArtifactProjections(snapshot: ArtifactProjectionSnapshot): IntegrityProblem[] {
+    const problems: IntegrityProblem[] = [];
+    const compare = <T>(
+      table: string,
+      expected: ReadonlyMap<string, T>,
+      stored: ReadonlyMap<string, T>,
+    ): void => {
+      for (const [key, row] of expected) {
+        const found = stored.get(key);
+        if (found === undefined) {
+          problems.push({
+            kind: "PROJECTION",
+            detail: table + " is missing the row " + safeRowIdentifier(key),
+            sequence: null,
+          });
+        } else if (canonicalJsonStringify(found) !== canonicalJsonStringify(row)) {
+          problems.push({
+            kind: "PROJECTION",
+            detail: table + " row for " + safeRowIdentifier(key) + " disagrees with a replay",
+            sequence: null,
+          });
+        }
+      }
+      for (const key of stored.keys()) {
+        if (!expected.has(key)) {
+          problems.push({
+            kind: "PROJECTION",
+            detail: table + " holds the row " + safeRowIdentifier(key) + " which no event accounts for",
+            sequence: null,
+          });
+        }
+      }
+    };
+
+    compare(
+      "artifact_blob_read_model",
+      snapshot.blobs,
+      new Map(
+        (this.#stmt("SELECT * FROM artifact_blob_read_model").all() as ArtifactBlobRow[]).map((row) => [
+          artifactBlobKey(row.content_sha256, row.blob_generation),
+          artifactBlobRowToModel(row),
+        ]),
+      ),
+    );
+    compare(
+      "artifact_reference_read_model",
+      snapshot.references,
+      new Map(
+        (this.#stmt("SELECT * FROM artifact_reference_read_model").all() as ArtifactReferenceRow[]).map(
+          (row) => [row.artifact_reference_id, artifactReferenceRowToModel(row)],
+        ),
+      ),
+    );
+    compare(
+      "artifact_pin_read_model",
+      snapshot.pins,
+      new Map(
+        (this.#stmt("SELECT * FROM artifact_pin_read_model").all() as ArtifactPinRow[]).map((row) => [
+          row.artifact_pin_id,
+          artifactPinRowToModel(row),
+        ]),
+      ),
+    );
+    compare(
+      "artifact_tombstone_read_model",
+      snapshot.tombstones,
+      new Map(
+        (this.#stmt("SELECT * FROM artifact_tombstone_read_model").all() as ArtifactTombstoneRow[]).map(
+          (row) => [row.artifact_reference_id, artifactTombstoneRowToModel(row)],
+        ),
+      ),
+    );
 
     return problems;
   }

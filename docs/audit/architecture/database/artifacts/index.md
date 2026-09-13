@@ -140,6 +140,8 @@ FK compuesta. No impide crear otras referencias al mismo contenido.
 dos referencias al mismo blob, del mismo productor y en el mismo scope, con
 políticas o retenciones distintas, son legítimas.
 
+> **Errata (P-36/local A, [decisión 59](../../../decisions/index.md)).** `fk_..__access_policy_read_model` queda sin efecto: `access_policy_read_model` no tiene diccionario y `access_policy_id` es un identificador cerrado en código (`SCOPE_EQUALITY_V1`), sin FK ni CHECK, hasta que su dueño lo diccione; y de los nueve eventos de §8.1 el escalón A entrega seis, con `RECLAIM_INTENDED`, `RECLAIM_COMPLETED` y `REFERENCE_TOMBSTONED` rechazados por nombre.
+
 **Compartir un digest no concede permiso.** El acceso se resuelve por
 `artifact_reference_id` y su política; conocer el digest no habilita nada. Un
 envelope privado se lee por referencia autorizada, no por su `envelope_sha256`.

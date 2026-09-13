@@ -53,6 +53,7 @@ this table against the barrel.
 | `usage-limits` | the bounds a quota estimate is computed against |
 | `exit-codes` | the process exit convention, declared here because it is shared |
 | `bounded-identifier` | the one grammar a configured name must satisfy, shared by the tool edge and the recorder |
+| `artifact-record` | artifacts §2's vocabularies and the six strict shapes of an artifact event in the registry stream |
 
 ## The laws these shapes carry
 

@@ -1692,6 +1692,588 @@ FROM (
 );
 `,
   },
+  {
+    version: 15,
+    name: "artifact_registry",
+    sql: `
+-- An artifact is a subject of the registry before its first byte moves
+-- (P-36/local escalón A, ADR 0081).
+--
+-- Artifacts §1.1 puts every artifact event in \`registry_events\`, with
+-- \`subject_kind = 'ARTIFACT'\` and the resource as the subject. Migration 9
+-- created that stream for documents alone: \`document_kind\` is NOT NULL and
+-- closed by a CHECK, and a CHECK cannot be widened in place. So the stream is
+-- REBUILT here, once, and the four read models the events fold into are
+-- created after it.
+--
+-- **The rebuild changes no row.** Every column of every existing row is copied
+-- as it is, \`sequence\` included, and every row gets \`subject_kind =
+-- 'DOCUMENT'\` and a NULL \`artifact_event_kind\` beside it. The chain is
+-- \`chainDigest(previous_sha256, event_json)\`: both are copied columns, and no
+-- new column enters the preimage, so every \`event_sha256\` still verifies and
+-- the registry head in \`ledger_meta\` does not move. \`sqlite_sequence\` follows
+-- the copied rows, so the next append takes the next number.
+--
+-- **The order below is fixed, and each step is load-bearing.** It is SQLite's
+-- documented twelve-step procedure for a schema change ALTER TABLE cannot
+-- make, reduced to the steps this table needs:
+--
+--   1. create the new table beside the old one;
+--   2. copy every row, in sequence order;
+--   3. drop the three triggers on the old table AND the two triggers on OTHER
+--      tables whose bodies name it. \`ALTER TABLE ... RENAME\` re-parses the
+--      whole schema, and at step 4 a trigger naming \`registry_events\` names a
+--      table that does not exist — the rename aborts. Migration 9's
+--      DROP/CREATE of those same two triggers is the precedent in this file;
+--   4. drop the old table and rename the new one into its place;
+--   5. recreate the indexes and the five triggers, the two foreign ones
+--      byte-identical to migration 9's;
+--   6. and only then the four read models, because each of them carries a
+--      foreign key INTO this table.
+--
+-- The migration runs inside the one transaction that applies every pending
+-- migration, with \`foreign_keys\` ON. Nothing references \`registry_events\` by
+-- a foreign key before this migration, which is why the table can be dropped
+-- and renamed at all. **After it, four tables do**: a future rebuild of
+-- \`registry_events\` must drop those children first, and it cannot be done by
+-- \`PRAGMA foreign_keys = OFF\`, which is a no-op inside a transaction.
+CREATE TABLE registry_events__rebuilt (
+  sequence                INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id                TEXT    NOT NULL UNIQUE,
+  idempotency_key         TEXT    NOT NULL UNIQUE,
+  subject_kind            TEXT    NOT NULL,
+  document_kind           TEXT,
+  artifact_event_kind     TEXT,
+  document_id             TEXT    NOT NULL,
+  document_version        INTEGER NOT NULL,
+  content_digest          TEXT    NOT NULL,
+  parent_document_version INTEGER,
+  recorded_by             TEXT    NOT NULL,
+  effective_from          TEXT    NOT NULL,
+  occurred_at             TEXT    NOT NULL,
+  recorded_at             TEXT    NOT NULL,
+  causation_stream        TEXT,
+  causation_sequence      INTEGER,
+  causation_sha256        TEXT,
+  contract_version        TEXT    NOT NULL,
+  event_json              TEXT    NOT NULL,
+  previous_sha256         TEXT    NOT NULL,
+  event_sha256            TEXT    NOT NULL UNIQUE,
+  CONSTRAINT ck_registry_events__subject_kind CHECK (
+    subject_kind IN ('DOCUMENT', 'ARTIFACT')
+  ),
+  -- Migration 9's fourteen names, under migration 9's constraint name. NULL
+  -- passes an IN test, so the kind may be absent here; whether it MUST be is
+  -- the mirror below.
+  CONSTRAINT ck_registry_events__document_kind CHECK (
+    document_kind IN (
+      'CAPABILITY_POLICY',
+      'MODEL_VERSION',
+      'PRICE_TABLE',
+      'MODEL_PERFORMANCE',
+      'ROUTING_ASSIGNMENT_GLOBAL',
+      'ESTIMATION_POLICY',
+      'INTEGRATION_PROFILE',
+      'INTEGRATION_INSTALLATION',
+      'COMPOSITION_POLICY',
+      'COMPOSITION_EVIDENCE',
+      'NOTIFICATION_POLICY',
+      'APPROVAL_WAIT_POLICY',
+      'DUEL_POLICY',
+      'ANOMALY_POLICY'
+    )
+  ),
+  -- The contract's closed artifact vocabulary, all NINE names, although this
+  -- build records six. The other three are refused by name at the door, and
+  -- naming them here means P-36 completo does not rebuild this table again —
+  -- after this migration a rebuild is no longer cheap. Migration 7's
+  -- \`ck_projection_watermark__source_stream\` is the precedent: the CHECK
+  -- names the contract's domain, and the code's closed set decides the subset.
+  CONSTRAINT ck_registry_events__artifact_event_kind CHECK (
+    artifact_event_kind IN (
+      'PUBLICATION_INTENDED',
+      'PUBLICATION_SUCCEEDED',
+      'PUBLICATION_ABANDONED',
+      'REFERENCE_RECORDED',
+      'PIN_ACQUIRED',
+      'PIN_RELEASED',
+      'RECLAIM_INTENDED',
+      'RECLAIM_COMPLETED',
+      'REFERENCE_TOMBSTONED'
+    )
+  ),
+  -- The two mirrors, each written as an equality of truth values rather than a
+  -- disjunction of lawful shapes: \`subject_kind\` is NOT NULL, so neither side
+  -- can be NULL, and a NULL CHECK is a CHECK that passes.
+  CONSTRAINT ck_registry_events__document_kind_matches_subject CHECK (
+    (subject_kind = 'DOCUMENT') = (document_kind IS NOT NULL)
+  ),
+  CONSTRAINT ck_registry_events__artifact_event_kind_matches_subject CHECK (
+    (subject_kind = 'ARTIFACT') = (artifact_event_kind IS NOT NULL)
+  ),
+  CONSTRAINT ck_registry_events__document_version CHECK (document_version >= 1),
+  CONSTRAINT ck_registry_events__parent_document_version CHECK (
+    parent_document_version IS NULL
+      OR (parent_document_version >= 1 AND parent_document_version < document_version)
+  ),
+  CONSTRAINT ck_registry_events__content_digest CHECK (
+    length(content_digest) = 64 AND content_digest NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT ck_registry_events__causation_pair CHECK (
+    (causation_stream IS NULL) = (causation_sequence IS NULL)
+      AND (causation_stream IS NULL) = (causation_sha256 IS NULL)
+  ),
+  CONSTRAINT ck_registry_events__causation_sequence CHECK (
+    causation_sequence IS NULL OR causation_sequence >= 1
+  ),
+  CONSTRAINT ck_registry_events__causation_sha256 CHECK (
+    causation_sha256 IS NULL
+      OR (length(causation_sha256) = 64 AND causation_sha256 NOT GLOB '*[^0-9a-f]*')
+  ),
+  CONSTRAINT ck_registry_events__previous_sha256 CHECK (
+    length(previous_sha256) = 64 AND previous_sha256 NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT ck_registry_events__event_sha256 CHECK (
+    length(event_sha256) = 64 AND event_sha256 NOT GLOB '*[^0-9a-f]*'
+  )
+) STRICT;
+
+-- Every row that exists is a document, and it is copied byte for byte.
+INSERT INTO registry_events__rebuilt (
+  sequence, event_id, idempotency_key, subject_kind, document_kind, artifact_event_kind,
+  document_id, document_version, content_digest, parent_document_version, recorded_by,
+  effective_from, occurred_at, recorded_at, causation_stream, causation_sequence,
+  causation_sha256, contract_version, event_json, previous_sha256, event_sha256
+)
+SELECT
+  sequence, event_id, idempotency_key, 'DOCUMENT', document_kind, NULL,
+  document_id, document_version, content_digest, parent_document_version, recorded_by,
+  effective_from, occurred_at, recorded_at, causation_stream, causation_sequence,
+  causation_sha256, contract_version, event_json, previous_sha256, event_sha256
+FROM registry_events
+ORDER BY sequence;
+
+DROP TRIGGER tr_registry_events__validate_new_rows;
+DROP TRIGGER tr_registry_events__deny_delete;
+DROP TRIGGER tr_registry_events__deny_update;
+DROP TRIGGER tr_control_plane_events__validate_new_rows;
+DROP TRIGGER tr_initiative_events__validate_new_rows;
+
+DROP TABLE registry_events;
+ALTER TABLE registry_events__rebuilt RENAME TO registry_events;
+
+-- Migration 9's three indexes, under its names.
+CREATE UNIQUE INDEX ux_registry_events__document_id__document_version
+  ON registry_events (document_id, document_version);
+
+CREATE INDEX ix_registry_events__document_kind__document_id__document_version
+  ON registry_events (document_kind, document_id, document_version);
+
+CREATE INDEX ix_registry_events__document_id__effective_from
+  ON registry_events (document_id, effective_from);
+
+-- The fold's access path per subject. The unique index above is still the
+-- ordinal's compare-and-set: an artifact subject's ordinal is its
+-- \`document_version\`, one past its highest.
+CREATE INDEX ix_registry_events__subject_kind__document_id
+  ON registry_events (subject_kind, document_id);
+
+CREATE TRIGGER tr_registry_events__deny_update
+BEFORE UPDATE ON registry_events
+BEGIN
+  SELECT RAISE(ABORT, 'registry_events is append-only: UPDATE is denied');
+END;
+
+CREATE TRIGGER tr_registry_events__deny_delete
+BEFORE DELETE ON registry_events
+BEGIN
+  SELECT RAISE(ABORT, 'registry_events is append-only: DELETE is denied');
+END;
+
+CREATE TRIGGER tr_registry_events__validate_new_rows
+BEFORE INSERT ON registry_events
+BEGIN
+  SELECT RAISE(ABORT, 'registry_events causal reference names a stream with no verifiable digest')
+  WHERE NEW.causation_stream IS NOT NULL
+    AND NEW.causation_stream NOT IN ('control_plane_events', 'initiative_events', 'registry_events');
+
+  SELECT RAISE(ABORT, 'registry_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'control_plane_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM control_plane_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'registry_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'initiative_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM initiative_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'registry_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'registry_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM registry_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+END;
+
+-- The two foreign triggers, recreated with migration 9's bodies exactly. They
+-- were dropped only so the rename could run; nothing about them changes.
+CREATE TRIGGER tr_control_plane_events__validate_new_rows
+BEFORE INSERT ON control_plane_events
+BEGIN
+  SELECT RAISE(ABORT, 'control_plane_events.event_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.event_sha256) <> 64 OR NEW.event_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'control_plane_events.previous_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.previous_sha256) <> 64 OR NEW.previous_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference is all three columns or none')
+  WHERE (NEW.causation_stream IS NULL) <> (NEW.causation_sequence IS NULL)
+     OR (NEW.causation_stream IS NULL) <> (NEW.causation_sha256 IS NULL);
+
+  SELECT RAISE(ABORT, 'control_plane_events.causation_sha256 is not 64 lowercase hex characters')
+  WHERE NEW.causation_sha256 IS NOT NULL
+    AND (length(NEW.causation_sha256) <> 64 OR NEW.causation_sha256 GLOB '*[^0-9a-f]*');
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference names a stream with no verifiable digest')
+  WHERE NEW.causation_stream IS NOT NULL
+    AND NEW.causation_stream NOT IN ('control_plane_events', 'initiative_events', 'registry_events');
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference needs a positive position')
+  WHERE NEW.causation_sequence IS NOT NULL AND NEW.causation_sequence < 1;
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'control_plane_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM control_plane_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'initiative_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM initiative_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'control_plane_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'registry_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM registry_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+END;
+
+CREATE TRIGGER tr_initiative_events__validate_new_rows
+BEFORE INSERT ON initiative_events
+BEGIN
+  SELECT RAISE(ABORT, 'initiative_events.event_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.event_sha256) <> 64 OR NEW.event_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'initiative_events.previous_sha256 is not 64 lowercase hex characters')
+  WHERE length(NEW.previous_sha256) <> 64 OR NEW.previous_sha256 GLOB '*[^0-9a-f]*';
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference is all three columns or none')
+  WHERE (NEW.causation_stream IS NULL) <> (NEW.causation_sequence IS NULL)
+     OR (NEW.causation_stream IS NULL) <> (NEW.causation_sha256 IS NULL);
+
+  SELECT RAISE(ABORT, 'initiative_events.causation_sha256 is not 64 lowercase hex characters')
+  WHERE NEW.causation_sha256 IS NOT NULL
+    AND (length(NEW.causation_sha256) <> 64 OR NEW.causation_sha256 GLOB '*[^0-9a-f]*');
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference names a stream with no verifiable digest')
+  WHERE NEW.causation_stream IS NOT NULL
+    AND NEW.causation_stream NOT IN ('control_plane_events', 'initiative_events', 'registry_events');
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference needs a positive position')
+  WHERE NEW.causation_sequence IS NOT NULL AND NEW.causation_sequence < 1;
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'control_plane_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM control_plane_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'initiative_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM initiative_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+
+  SELECT RAISE(ABORT, 'initiative_events causal reference does not resolve to the event it names')
+  WHERE NEW.causation_stream = 'registry_events'
+    AND NOT EXISTS (
+      SELECT 1 FROM registry_events
+      WHERE sequence = NEW.causation_sequence AND event_sha256 = NEW.causation_sha256
+    );
+END;
+
+-- Metadata of the bytes, and nothing about who may read them (artifacts §3).
+--
+-- \`(content_sha256, blob_generation)\` is the identity: the same content
+-- published, reclaimed and published again is two generations, and their
+-- histories never mix. A foreign key names the pair, never the digest alone.
+--
+-- The two \`first_published_*\` rules are §8.1's fold, held in the base as
+-- well: a pair that is both NULL or both present, and a presence that follows
+-- the state. The two \`reclaim\` rules are the same §8.1 sentence for the
+-- states this build never reaches; they cost nothing and keep a raw writer from
+-- inventing a reclamation.
+CREATE TABLE artifact_blob_read_model (
+  content_sha256           TEXT    NOT NULL,
+  blob_generation          INTEGER NOT NULL DEFAULT 1,
+  media_type               TEXT    NOT NULL,
+  size_bytes               INTEGER NOT NULL,
+  lifecycle_state          TEXT    NOT NULL,
+  encryption_status        TEXT    NOT NULL,
+  key_reference            TEXT,
+  first_published_sequence INTEGER,
+  first_published_at       TEXT,
+  reclaim_id               TEXT,
+  reclaimed_at             TEXT,
+  grace_started_at         TEXT    NOT NULL,
+  encryption_profile       TEXT    NOT NULL,
+  applied_sequence         INTEGER NOT NULL,
+  CONSTRAINT pk_artifact_blob_read_model PRIMARY KEY (content_sha256, blob_generation),
+  CONSTRAINT fk_artifact_blob_read_model__registry_events
+    FOREIGN KEY (first_published_sequence) REFERENCES registry_events (sequence)
+    ON DELETE RESTRICT,
+  CONSTRAINT ck_artifact_blob_read_model__content_sha256_hex CHECK (
+    length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT ck_artifact_blob_read_model__blob_generation_positive CHECK (blob_generation > 0),
+  CONSTRAINT ck_artifact_blob_read_model__size_bytes_non_negative CHECK (size_bytes >= 0),
+  CONSTRAINT ck_artifact_blob_read_model__lifecycle_state_enum CHECK (
+    lifecycle_state IN (
+      'STAGED', 'PUBLISHED', 'PUBLICATION_ABANDONED', 'RECLAIM_INTENDED', 'RECLAIMED'
+    )
+  ),
+  CONSTRAINT ck_artifact_blob_read_model__encryption_status_enum CHECK (
+    encryption_status IN ('PLAINTEXT', 'ENCRYPTED_AT_REST')
+  ),
+  CONSTRAINT ck_artifact_blob_read_model__key_reference_matches_encryption CHECK (
+    (key_reference IS NULL) = (encryption_status = 'PLAINTEXT')
+  ),
+  CONSTRAINT ck_artifact_blob_read_model__first_published_pair CHECK (
+    (first_published_sequence IS NULL) = (first_published_at IS NULL)
+  ),
+  CONSTRAINT ck_artifact_blob_read_model__first_published_matches_state CHECK (
+    lifecycle_state IN ('RECLAIM_INTENDED', 'RECLAIMED')
+      OR (lifecycle_state = 'PUBLISHED') = (first_published_sequence IS NOT NULL)
+  ),
+  CONSTRAINT ck_artifact_blob_read_model__reclaim_id_matches_state CHECK (
+    (reclaim_id IS NOT NULL) = (lifecycle_state IN ('RECLAIM_INTENDED', 'RECLAIMED'))
+  ),
+  CONSTRAINT ck_artifact_blob_read_model__reclaimed_at_matches_state CHECK (
+    (reclaimed_at IS NOT NULL) = (lifecycle_state = 'RECLAIMED')
+  ),
+  CONSTRAINT ck_artifact_blob_read_model__applied_sequence_non_negative CHECK (
+    applied_sequence >= 0
+  )
+) STRICT;
+
+CREATE INDEX ix_artifact_blob_read_model__lifecycle_state
+  ON artifact_blob_read_model (lifecycle_state);
+
+CREATE INDEX ix_artifact_blob_read_model__first_published_sequence
+  ON artifact_blob_read_model (first_published_sequence);
+
+CREATE UNIQUE INDEX ux_artifact_blob_read_model__reclaim_id
+  ON artifact_blob_read_model (reclaim_id)
+  WHERE reclaim_id IS NOT NULL;
+
+-- One physical generation not yet reclaimed, per content. No uniqueness on the
+-- digest alone: the reclaimed generations are history and stay.
+CREATE UNIQUE INDEX ux_artifact_blob_read_model__content_sha256__unreclaimed
+  ON artifact_blob_read_model (content_sha256)
+  WHERE lifecycle_state <> 'RECLAIMED';
+
+-- The access, and the permission with it (artifacts §4).
+--
+-- \`access_policy_id\` carries no foreign key. Artifacts §4 names
+-- \`fk_..__access_policy_read_model\`, and that table has no dictionary; the
+-- policy is an identifier closed in code until its owner writes one (decision
+-- 59). And there is no uniqueness over \`(scope, digest, producer)\`: two
+-- references to one blob from one producer in one scope, under different
+-- policies or retentions, are both legitimate.
+CREATE TABLE artifact_reference_read_model (
+  artifact_reference_id TEXT    NOT NULL,
+  content_sha256        TEXT    NOT NULL,
+  blob_generation       INTEGER NOT NULL,
+  artifact_class        TEXT    NOT NULL,
+  classification        TEXT    NOT NULL,
+  scope_kind            TEXT    NOT NULL,
+  scope_id              TEXT,
+  producer_identity     TEXT    NOT NULL,
+  access_policy_id      TEXT    NOT NULL,
+  retention_class       TEXT    NOT NULL,
+  expires_at            TEXT,
+  tombstoned_at         TEXT,
+  tombstone_reason      TEXT,
+  created_sequence      INTEGER NOT NULL,
+  applied_sequence      INTEGER NOT NULL,
+  CONSTRAINT pk_artifact_reference_read_model PRIMARY KEY (artifact_reference_id),
+  CONSTRAINT fk_artifact_reference_read_model__artifact_blob_read_model
+    FOREIGN KEY (content_sha256, blob_generation)
+    REFERENCES artifact_blob_read_model (content_sha256, blob_generation)
+    ON DELETE RESTRICT,
+  CONSTRAINT fk_artifact_reference_read_model__registry_events
+    FOREIGN KEY (created_sequence) REFERENCES registry_events (sequence)
+    ON DELETE RESTRICT,
+  CONSTRAINT ck_artifact_reference_read_model__artifact_class_enum CHECK (
+    artifact_class IN (
+      'TASK_ENVELOPE', 'PROMPT', 'RESPONSE', 'TOOL_ARGUMENT', 'TOOL_RESULT', 'CHECKPOINT',
+      'RECEIPT', 'EVIDENCE', 'PLAN_DOCUMENT', 'POLICY_DOCUMENT', 'PRICE_CATALOG', 'EXPORT'
+    )
+  ),
+  CONSTRAINT ck_artifact_reference_read_model__classification_enum CHECK (
+    classification IN ('PUBLIC_SAFE', 'INTERNAL', 'SENSITIVE', 'SECRET_BEARING')
+  ),
+  CONSTRAINT ck_artifact_reference_read_model__scope_kind_enum CHECK (
+    scope_kind IN ('INITIATIVE', 'TASK', 'ACCOUNT', 'SYSTEM')
+  ),
+  -- NULL only for SYSTEM, in the one direction the dictionary writes.
+  CONSTRAINT ck_artifact_reference_read_model__scope_id_matches_scope_kind CHECK (
+    scope_id IS NOT NULL OR scope_kind = 'SYSTEM'
+  ),
+  CONSTRAINT ck_artifact_reference_read_model__retention_class_enum CHECK (
+    retention_class IN ('EPHEMERAL', 'STANDARD', 'EXTENDED', 'PERMANENT')
+  ),
+  CONSTRAINT ck_artifact_reference_read_model__expires_at_matches_retention_class CHECK (
+    (expires_at IS NULL) = (retention_class = 'PERMANENT')
+  ),
+  CONSTRAINT ck_artifact_reference_read_model__tombstone_reason_matches CHECK (
+    (tombstone_reason IS NULL) = (tombstoned_at IS NULL)
+      AND (
+        tombstone_reason IS NULL
+          OR tombstone_reason IN (
+            'POLICY_EXPIRY', 'OWNER_REQUEST', 'LEGAL_HOLD_RELEASE', 'CORRUPTION'
+          )
+      )
+  ),
+  CONSTRAINT ck_artifact_reference_read_model__applied_sequence_non_negative CHECK (
+    applied_sequence >= 0
+  )
+) STRICT;
+
+CREATE INDEX ix_artifact_reference_read_model__content_sha256
+  ON artifact_reference_read_model (content_sha256);
+
+CREATE INDEX ix_artifact_reference_read_model__scope_kind_scope_id
+  ON artifact_reference_read_model (scope_kind, scope_id);
+
+CREATE INDEX ix_artifact_reference_read_model__expires_at
+  ON artifact_reference_read_model (expires_at);
+
+-- The auxiliary key the tombstone's composite foreign key names. It does not
+-- stop a second reference to the same content.
+CREATE UNIQUE INDEX ux_artifact_reference_read_model__id_content_generation
+  ON artifact_reference_read_model (artifact_reference_id, content_sha256, blob_generation);
+
+-- A protection from collection, for as long as an operation or an obligation
+-- lasts (artifacts §5).
+CREATE TABLE artifact_pin_read_model (
+  artifact_pin_id   TEXT    NOT NULL,
+  content_sha256    TEXT    NOT NULL,
+  blob_generation   INTEGER NOT NULL,
+  pin_holder_kind   TEXT    NOT NULL,
+  pin_holder_id     TEXT    NOT NULL,
+  acquired_sequence INTEGER NOT NULL,
+  released_sequence INTEGER,
+  applied_sequence  INTEGER NOT NULL,
+  CONSTRAINT pk_artifact_pin_read_model PRIMARY KEY (artifact_pin_id),
+  CONSTRAINT fk_artifact_pin_read_model__artifact_blob_read_model
+    FOREIGN KEY (content_sha256, blob_generation)
+    REFERENCES artifact_blob_read_model (content_sha256, blob_generation)
+    ON DELETE RESTRICT,
+  CONSTRAINT fk_artifact_pin_read_model__registry_events__acquired_sequence
+    FOREIGN KEY (acquired_sequence) REFERENCES registry_events (sequence)
+    ON DELETE RESTRICT,
+  CONSTRAINT fk_artifact_pin_read_model__registry_events__released_sequence
+    FOREIGN KEY (released_sequence) REFERENCES registry_events (sequence)
+    ON DELETE RESTRICT,
+  CONSTRAINT ck_artifact_pin_read_model__pin_holder_kind_enum CHECK (
+    pin_holder_kind IN ('PUBLICATION', 'TASK', 'BACKUP', 'LEGAL_HOLD')
+  ),
+  CONSTRAINT ck_artifact_pin_read_model__released_after_acquired CHECK (
+    released_sequence IS NULL OR released_sequence >= acquired_sequence
+  ),
+  CONSTRAINT ck_artifact_pin_read_model__applied_sequence_non_negative CHECK (
+    applied_sequence >= 0
+  )
+) STRICT;
+
+-- One live pin per holder per generation. Partial, because a released pin is
+-- history and a holder may take the blob again later under a new pin.
+CREATE UNIQUE INDEX ux_artifact_pin_read_model__content_sha256_holder__live
+  ON artifact_pin_read_model (content_sha256, blob_generation, pin_holder_kind, pin_holder_id)
+  WHERE released_sequence IS NULL;
+
+-- The revocation of a reference, irreversible (artifacts §6). The table exists
+-- so the shape stops drifting from the dictionary; nothing in this build writes
+-- into it, because \`REFERENCE_TOMBSTONED\` is refused by name at the door.
+CREATE TABLE artifact_tombstone_read_model (
+  artifact_reference_id TEXT    NOT NULL,
+  content_sha256        TEXT    NOT NULL,
+  blob_generation       INTEGER NOT NULL,
+  reason                TEXT    NOT NULL,
+  decided_by            TEXT    NOT NULL,
+  authority_sha256      TEXT    NOT NULL,
+  recorded_sequence     INTEGER NOT NULL,
+  applied_sequence      INTEGER NOT NULL,
+  CONSTRAINT pk_artifact_tombstone_read_model PRIMARY KEY (artifact_reference_id),
+  CONSTRAINT fk_artifact_tombstone_read_model__artifact_reference_read_model
+    FOREIGN KEY (artifact_reference_id, content_sha256, blob_generation)
+    REFERENCES artifact_reference_read_model (artifact_reference_id, content_sha256, blob_generation)
+    ON DELETE RESTRICT,
+  CONSTRAINT fk_artifact_tombstone_read_model__artifact_blob_read_model
+    FOREIGN KEY (content_sha256, blob_generation)
+    REFERENCES artifact_blob_read_model (content_sha256, blob_generation)
+    ON DELETE RESTRICT,
+  CONSTRAINT fk_artifact_tombstone_read_model__registry_events
+    FOREIGN KEY (recorded_sequence) REFERENCES registry_events (sequence)
+    ON DELETE RESTRICT,
+  CONSTRAINT ck_artifact_tombstone_read_model__reason_enum CHECK (
+    reason IN ('POLICY_EXPIRY', 'OWNER_REQUEST', 'LEGAL_HOLD_RELEASE', 'CORRUPTION')
+  ),
+  CONSTRAINT ck_artifact_tombstone_read_model__authority_sha256_hex CHECK (
+    length(authority_sha256) = 64 AND authority_sha256 NOT GLOB '*[^0-9a-f]*'
+  ),
+  CONSTRAINT ck_artifact_tombstone_read_model__applied_sequence_non_negative CHECK (
+    applied_sequence >= 0
+  )
+) STRICT;
+
+-- Four watermarks, seeded from the head of the REGISTRY stream, in migration
+-- 13's form and for its reason. The stream may already hold documents, and the
+-- fold of the artifact plane over every one of them is empty by construction —
+-- no document is an artifact event — so the four projections are level with
+-- that head the moment their tables exist. A literal zero would fail every
+-- ledger in the field's own integrity check after a routine upgrade.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  name,
+  'registry_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'registry_head_event_sha256'),
+  '1970-01-01T00:00:00.000Z'
+FROM (
+  SELECT 'artifact_blob_read_model' AS name
+  UNION ALL SELECT 'artifact_reference_read_model'
+  UNION ALL SELECT 'artifact_pin_read_model'
+  UNION ALL SELECT 'artifact_tombstone_read_model'
+);
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -1712,6 +2294,14 @@ export const MIGRATIONS: readonly Migration[] = SOURCES.map((source) => ({
  * reason: `fk_task_attempt_read_model__task_revision_read_model` points at it.
  */
 export const DERIVED_TABLES: readonly string[] = [
+  // The P-36/local A cohort, children first: a tombstone names a reference and
+  // a blob, a pin and a reference each name a blob. Immediate foreign keys, so a
+  // wrong order here aborts the DELETE that caused it. Their other foreign keys
+  // point into `registry_events`, which a rebuild never clears.
+  "artifact_tombstone_read_model",
+  "artifact_pin_read_model",
+  "artifact_reference_read_model",
+  "artifact_blob_read_model",
   "worker_task_read_model",
   // The P-18/protocolo D pair, before C's cohort and children first for its
   // reason: an answer names a prompt, and a prompt names a delivery, an effect
@@ -1774,6 +2364,23 @@ export const PROJECTION_NAMES: readonly string[] = [
 export const INITIATIVE_PROJECTION_NAMES: readonly string[] = [
   "initiative_read_model",
   "roadmap_version_read_model",
+];
+
+/**
+ * Projection names tracked in projection_watermark, for the registry stream
+ * alone (P-36/local A).
+ *
+ * The third stream's own roster, kept apart from the other two for their
+ * reason. The two-source routing projection is in none of the three lists: it
+ * is level with two chains and belongs to neither stream. Spelled out as
+ * literals, like the lists above, and asserted equal to the named constants
+ * below by the suite.
+ */
+export const REGISTRY_PROJECTION_NAMES: readonly string[] = [
+  "artifact_blob_read_model",
+  "artifact_reference_read_model",
+  "artifact_pin_read_model",
+  "artifact_tombstone_read_model",
 ];
 
 /** The task stream's table name, as `projection_watermark.source_stream` spells it. */
@@ -1858,6 +2465,27 @@ export const RESPONSE_OCCURRENCE_PROJECTION = "response_occurrence_read_model";
  */
 export const EXECUTION_OCCURRENCE_MIGRATION = 14;
 
+/** Metadata of one generation of some bytes (P-36/local A, artifacts §3). */
+export const ARTIFACT_BLOB_PROJECTION = "artifact_blob_read_model";
+
+/** One authorized access to one blob generation (P-36/local A, artifacts §4). */
+export const ARTIFACT_REFERENCE_PROJECTION = "artifact_reference_read_model";
+
+/** One protection of one blob generation from collection (P-36/local A, artifacts §5). */
+export const ARTIFACT_PIN_PROJECTION = "artifact_pin_read_model";
+
+/** The revocation of one reference; written by nothing in this build (artifacts §6). */
+export const ARTIFACT_TOMBSTONE_PROJECTION = "artifact_tombstone_read_model";
+
+/**
+ * The migration that rebuilds `registry_events` with a subject kind and adds the
+ * four artifact read models.
+ *
+ * Named for `EXECUTION_OCCURRENCE_MIGRATION`'s reason: the suite and the rewind
+ * fixtures hold the number against where the SQL actually sits.
+ */
+export const ARTIFACT_REGISTRY_MIGRATION = 15;
+
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
@@ -1935,6 +2563,10 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: RESPONSE_OCCURRENCE_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
+  { projectionName: ARTIFACT_BLOB_PROJECTION, sourceStream: REGISTRY_STREAM },
+  { projectionName: ARTIFACT_REFERENCE_PROJECTION, sourceStream: REGISTRY_STREAM },
+  { projectionName: ARTIFACT_PIN_PROJECTION, sourceStream: REGISTRY_STREAM },
+  { projectionName: ARTIFACT_TOMBSTONE_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: INITIATIVE_STREAM },
 ];
@@ -2037,6 +2669,10 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "ux_registry_events__document_id__document_version" },
   { type: "index", name: "ix_registry_events__document_kind__document_id__document_version" },
   { type: "index", name: "ix_registry_events__document_id__effective_from" },
+  // P-36/local A. Migration 15 rebuilds the table under the same name and
+  // recreates every object above and below under the same names, so the
+  // inventory moves by exactly this one index.
+  { type: "index", name: "ix_registry_events__subject_kind__document_id" },
   { type: "trigger", name: "tr_registry_events__deny_update" },
   { type: "trigger", name: "tr_registry_events__deny_delete" },
   { type: "trigger", name: "tr_registry_events__validate_new_rows" },
@@ -2101,6 +2737,24 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "ix_prompt_occurrence_read_model__sha256" },
   { type: "table", name: "response_occurrence_read_model" },
   { type: "index", name: "ux_response_occurrence_read_model__prompt" },
+  // P-36/local A. Four tables, nine indexes and no trigger: every rule a row can
+  // carry is a CHECK, and the rules spanning two tables are the fold's and the
+  // door's. The partial unique indexes are the invariants — one unreclaimed
+  // generation per content, one live pin per holder — and are inventoried by
+  // name for the reason every other unique index is.
+  { type: "table", name: "artifact_blob_read_model" },
+  { type: "index", name: "ix_artifact_blob_read_model__lifecycle_state" },
+  { type: "index", name: "ix_artifact_blob_read_model__first_published_sequence" },
+  { type: "index", name: "ux_artifact_blob_read_model__reclaim_id" },
+  { type: "index", name: "ux_artifact_blob_read_model__content_sha256__unreclaimed" },
+  { type: "table", name: "artifact_reference_read_model" },
+  { type: "index", name: "ix_artifact_reference_read_model__content_sha256" },
+  { type: "index", name: "ix_artifact_reference_read_model__scope_kind_scope_id" },
+  { type: "index", name: "ix_artifact_reference_read_model__expires_at" },
+  { type: "index", name: "ux_artifact_reference_read_model__id_content_generation" },
+  { type: "table", name: "artifact_pin_read_model" },
+  { type: "index", name: "ux_artifact_pin_read_model__content_sha256_holder__live" },
+  { type: "table", name: "artifact_tombstone_read_model" },
 ];
 
 export interface MigrationConformance {

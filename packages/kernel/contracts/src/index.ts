@@ -112,6 +112,23 @@ export {
   findCredentialViolations,
   findTranscriptViolations,
   serializedByteLength,
+  ARTIFACT_CLASSES,
+  ArtifactClass,
+  ARTIFACT_CLASSIFICATIONS,
+  ArtifactClassification,
+  ENCRYPTION_STATUSES,
+  EncryptionStatus,
+  RETENTION_CLASSES,
+  RetentionClass,
+  REFERENCE_SCOPE_KINDS,
+  ReferenceScopeKind,
+  BLOB_LIFECYCLE_STATES,
+  BlobLifecycleState,
+  ARTIFACT_EVENT_KINDS,
+  ArtifactEventKind,
+  PIN_HOLDER_KINDS,
+  PinHolderKind,
+  ArtifactRegistryEvent,
 } from "./schemas/index.js";
 
 export type { GuardViolation } from "./schemas/index.js";

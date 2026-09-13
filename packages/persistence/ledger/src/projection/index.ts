@@ -1,9 +1,11 @@
 import {
+  ARTIFACT_EVENT_KINDS,
   ResolvedRoute,
   RoadmapVersion,
   TERMINAL_STATES,
   WORKER_ROLES,
   parseWorkerIdentity,
+  type ArtifactRegistryEvent,
   type ControlPlaneEvent,
   type InitiativeEvent,
   type WorkerRole,
@@ -17,7 +19,11 @@ import {
 } from "@acp/contracts";
 
 import { canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
-import { LedgerValidationError } from "../errors/index.js";
+import {
+  LedgerArtifactEncryptionConflictError,
+  LedgerValidationError,
+  type LedgerValidationIssue,
+} from "../errors/index.js";
 import {
   OUTBOX_COMMAND_KINDS,
   OUTBOX_STATES,
@@ -27,6 +33,8 @@ import {
 } from "../outbox-store/index.js";
 import type { OutboxCommandKind, OutboxState, OutboxStream } from "../outbox-store/index.js";
 import {
+  ARTIFACT_ACCESS_POLICY_IDS,
+  DELIVERED_ARTIFACT_EVENT_KINDS,
   DISPATCH_STATES,
   DISPATCH_STATE_TRANSITIONS,
   EFFECT_OUTCOME_STATUSES,
@@ -34,6 +42,12 @@ import {
   REDACTION_VERDICTS,
 } from "../types/index.js";
 import type {
+  ArtifactBlobReadModel,
+  ArtifactFoldView,
+  ArtifactPinReadModel,
+  ArtifactProjectionSnapshot,
+  ArtifactProjectionWrites,
+  ArtifactReferenceReadModel,
   CausationRef,
   DispatchAttemptReadModel,
   DispatchState,
@@ -3631,4 +3645,738 @@ export function applyRegistryEventToSnapshot(
 ): void {
   const projected = nextRoutingAssignmentProjection(document, sequence);
   if (projected !== null) applyRoutingAssignment(snapshot, projected);
+}
+
+// ---------------------------------------------------------------------------
+// The artifact plane of the registry stream (P-36/local escalón A)
+// ---------------------------------------------------------------------------
+
+/**
+ * The key of one blob generation in a snapshot.
+ *
+ * A digest is sixty-four hex characters and a generation is a decimal count, so
+ * the separator cannot make two pairs collide.
+ */
+export function artifactBlobKey(contentSha256: string, blobGeneration: number): string {
+  return contentSha256 + "#" + String(blobGeneration);
+}
+
+/** The key of one holder's live pin on one generation, in a snapshot. */
+export function artifactLivePinKey(
+  contentSha256: string,
+  blobGeneration: number,
+  pinHolderKind: string,
+  pinHolderId: string,
+): string {
+  return canonicalJsonStringify([contentSha256, blobGeneration, pinHolderKind, pinHolderId]);
+}
+
+/**
+ * The refusal of an artifact event kind this build does not record, or null.
+ *
+ * Asked BEFORE the contract's schema, so `RECLAIM_INTENDED`,
+ * `RECLAIM_COMPLETED` and `REFERENCE_TOMBSTONED` are refused by their names at
+ * `artifactEventKind` rather than as a union the parser could not match. A
+ * value that is not one of the contract's nine is left to the schema, whose
+ * issue is the right one for it. The replay of a stored row asks the same
+ * question, so a planted reclamation fails a rebuild in these words.
+ */
+export function artifactEventKindRefusal(kind: unknown): LedgerValidationIssue | null {
+  if (typeof kind !== "string") return null;
+  if (!(ARTIFACT_EVENT_KINDS as readonly string[]).includes(kind)) return null;
+  if ((DELIVERED_ARTIFACT_EVENT_KINDS as readonly string[]).includes(kind)) return null;
+  return {
+    path: "artifactEventKind",
+    message:
+      "artifact event kind " +
+      kind +
+      " is a word of the contract this build does not record: reclamation, collection and" +
+      " tombstoning are refused by name until P-36 completo delivers them",
+  };
+}
+
+/**
+ * The refusals an artifact event earns on its own, before any state is read.
+ *
+ * Three, and each is a rule of the stream rather than of a row: a
+ * `SECRET_BEARING` reference never enters the stream (artifacts §2, §10); a
+ * reference names the one access policy this build defines (decision 59); and a
+ * `PUBLICATION` pin is born and released by its publication's own events, never
+ * by `PIN_ACQUIRED` or `PIN_RELEASED` — which is what lets a publication's
+ * success find exactly the pin its intention took.
+ */
+export function artifactEventRefusal(event: ArtifactRegistryEvent): LedgerValidationIssue | null {
+  if (
+    event.artifactEventKind === "PUBLICATION_SUCCEEDED" ||
+    event.artifactEventKind === "REFERENCE_RECORDED"
+  ) {
+    const reference = event.payload.reference;
+    if (reference.classification === "SECRET_BEARING") {
+      return {
+        path: "payload.reference.classification",
+        message:
+          "a SECRET_BEARING artifact is never published in the stream: it designates material" +
+          " that demands review and blocking, and it is not a permission to store credentials",
+      };
+    }
+    if (!(ARTIFACT_ACCESS_POLICY_IDS as readonly string[]).includes(reference.accessPolicyId)) {
+      return {
+        path: "payload.reference.accessPolicyId",
+        message:
+          "access policy " +
+          printable(reference.accessPolicyId) +
+          " is not one this build defines; the closed set is " +
+          ARTIFACT_ACCESS_POLICY_IDS.join(", "),
+      };
+    }
+  }
+  if (event.artifactEventKind === "PIN_ACQUIRED" && event.payload.pinHolderKind === "PUBLICATION") {
+    return {
+      path: "payload.pinHolderKind",
+      message:
+        "a PUBLICATION pin is taken by its PUBLICATION_INTENDED and released by that publication's" +
+        " success or abandonment, never by PIN_ACQUIRED",
+    };
+  }
+  return null;
+}
+
+/**
+ * Where an artifact event lands in `registry_events`, derived from its payload.
+ *
+ * The subject is the resource the event is about (H-3, adjudicated): the
+ * content digest for the three publication events, the reference for
+ * `REFERENCE_RECORDED`, the pin for the two pin events. `content_digest` is the
+ * content digest in all six. A derivation by rule, not by hash — nothing here
+ * is a preimage.
+ */
+export function artifactSubjectOf(event: ArtifactRegistryEvent): {
+  readonly documentId: string;
+  readonly contentDigest: string;
+} {
+  switch (event.artifactEventKind) {
+    case "PUBLICATION_INTENDED":
+    case "PUBLICATION_SUCCEEDED":
+    case "PUBLICATION_ABANDONED":
+      return { documentId: event.payload.contentSha256, contentDigest: event.payload.contentSha256 };
+    case "REFERENCE_RECORDED":
+      return {
+        documentId: event.payload.reference.artifactReferenceId,
+        contentDigest: event.payload.contentSha256,
+      };
+    case "PIN_ACQUIRED":
+    case "PIN_RELEASED":
+      return { documentId: event.payload.artifactPinId, contentDigest: event.payload.contentSha256 };
+  }
+}
+
+function artifactRefused(path: string, message: string): never {
+  throw new LedgerValidationError([{ path, message }]);
+}
+
+function generationLabel(contentSha256: string, blobGeneration: number): string {
+  return "content " + contentSha256 + " generation " + String(blobGeneration);
+}
+
+/**
+ * What one artifact event writes, decided against a view of the four tables.
+ *
+ * One function for the door and the fold: the door hands it a view over the
+ * base inside its transaction, the rebuild a view over the snapshot it is
+ * filling, and both throw the same refusal for the same history. Artifacts
+ * §8.1 is the table this implements, and every sequence it writes is the
+ * `registry_events` sequence of the event itself. Nothing here reads a clock or
+ * a file: the instants are the event's own.
+ */
+export function nextArtifactProjection(
+  view: ArtifactFoldView,
+  event: ArtifactRegistryEvent,
+  sequence: number,
+): ArtifactProjectionWrites {
+  switch (event.artifactEventKind) {
+    case "PUBLICATION_INTENDED":
+      return foldPublicationIntended(view, event, sequence);
+    case "PUBLICATION_SUCCEEDED":
+      return foldPublicationSucceeded(view, event, sequence);
+    case "PUBLICATION_ABANDONED":
+      return foldPublicationAbandoned(view, event, sequence);
+    case "REFERENCE_RECORDED":
+      return foldReferenceRecorded(view, event, sequence);
+    case "PIN_ACQUIRED":
+      return foldPinAcquired(view, event, sequence);
+    case "PIN_RELEASED":
+      return foldPinReleased(view, event, sequence);
+  }
+}
+
+type ArtifactEventOf<K extends ArtifactRegistryEvent["artifactEventKind"]> = Extract<
+  ArtifactRegistryEvent,
+  { readonly artifactEventKind: K }
+>;
+
+/**
+ * `PUBLICATION_INTENDED`: a generation is born STAGED, or an existing one is
+ * reused, and the publication's pin is taken on the exact generation.
+ *
+ * The generation is the producer's proposal and the ledger's verification. No
+ * generation that is not reclaimed → the next one, `1 + highest`. A generation
+ * `PUBLISHED` → deduplicated: its row is conserved whole and is not rewritten.
+ * A generation `PUBLICATION_ABANDONED` → back to STAGED, keeping the grace
+ * instant of its first intention, so the collector's clock never restarts. A
+ * generation already `STAGED` → refused: a publication of that content is in
+ * flight, and it ends before another begins.
+ *
+ * A reused generation keeps the encryption it was born with. An intention that
+ * disagrees is refused with `LedgerArtifactEncryptionConflictError` before
+ * anything is written.
+ */
+function foldPublicationIntended(
+  view: ArtifactFoldView,
+  event: ArtifactEventOf<"PUBLICATION_INTENDED">,
+  sequence: number,
+): ArtifactProjectionWrites {
+  const intended = event.payload;
+  const current = view.unreclaimedBlob(intended.contentSha256);
+  let blob: ArtifactBlobReadModel | null;
+
+  if (current === null) {
+    const expected = view.highestBlobGeneration(intended.contentSha256) + 1;
+    if (intended.blobGeneration !== expected) {
+      artifactRefused(
+        "payload.blobGeneration",
+        "content " +
+          intended.contentSha256 +
+          " has no generation that is not reclaimed, so a new publication opens generation " +
+          String(expected) +
+          ", not " +
+          String(intended.blobGeneration),
+      );
+    }
+    blob = {
+      contentSha256: intended.contentSha256,
+      blobGeneration: intended.blobGeneration,
+      mediaType: intended.mediaType,
+      sizeBytes: intended.sizeBytes,
+      lifecycleState: "STAGED",
+      encryptionStatus: intended.encryptionStatus,
+      keyReference: intended.keyReference,
+      firstPublishedSequence: null,
+      firstPublishedAt: null,
+      reclaimId: null,
+      reclaimedAt: null,
+      graceStartedAt: event.occurredAt,
+      encryptionProfile: intended.encryptionProfile,
+      appliedSequence: sequence,
+    };
+  } else {
+    if (intended.blobGeneration !== current.blobGeneration) {
+      artifactRefused(
+        "payload.blobGeneration",
+        "content " +
+          intended.contentSha256 +
+          " is held at generation " +
+          String(current.blobGeneration) +
+          ", which a new intention reuses; this one names generation " +
+          String(intended.blobGeneration),
+      );
+    }
+    if (current.lifecycleState === "STAGED") {
+      artifactRefused(
+        "payload.contentSha256",
+        "a publication of " +
+          generationLabel(current.contentSha256, current.blobGeneration) +
+          " is already in flight; it succeeds or is abandoned before another intention is recorded",
+      );
+    }
+    if (current.lifecycleState === "RECLAIM_INTENDED") {
+      artifactRefused(
+        "payload.contentSha256",
+        generationLabel(current.contentSha256, current.blobGeneration) +
+          " is under reclamation, and no publication reuses it",
+      );
+    }
+
+    const conflicts: string[] = [];
+    if (current.encryptionStatus !== intended.encryptionStatus) conflicts.push("encryptionStatus");
+    if (current.keyReference !== intended.keyReference) conflicts.push("keyReference");
+    if (current.encryptionProfile !== intended.encryptionProfile) conflicts.push("encryptionProfile");
+    if (conflicts.length > 0) {
+      throw new LedgerArtifactEncryptionConflictError(
+        current.contentSha256,
+        current.blobGeneration,
+        conflicts,
+      );
+    }
+    if (current.sizeBytes !== intended.sizeBytes) {
+      artifactRefused(
+        "payload.sizeBytes",
+        generationLabel(current.contentSha256, current.blobGeneration) +
+          " is " +
+          String(current.sizeBytes) +
+          " bytes, and one digest does not name two sizes",
+      );
+    }
+
+    blob =
+      current.lifecycleState === "PUBLICATION_ABANDONED"
+        ? { ...current, lifecycleState: "STAGED", appliedSequence: sequence }
+        : null;
+  }
+
+  if (view.pin(intended.artifactPinId) !== null) {
+    artifactRefused(
+      "payload.artifactPinId",
+      "pin " +
+        printable(intended.artifactPinId) +
+        " already exists, and a publication pin is born with its own intention",
+    );
+  }
+  if (
+    view.livePin(intended.contentSha256, intended.blobGeneration, "PUBLICATION", intended.commandId) !==
+    null
+  ) {
+    artifactRefused(
+      "payload.commandId",
+      "command " +
+        printable(intended.commandId) +
+        " already holds a live publication pin on " +
+        generationLabel(intended.contentSha256, intended.blobGeneration),
+    );
+  }
+
+  return {
+    blob,
+    reference: null,
+    pin: {
+      artifactPinId: intended.artifactPinId,
+      contentSha256: intended.contentSha256,
+      blobGeneration: intended.blobGeneration,
+      pinHolderKind: "PUBLICATION",
+      pinHolderId: intended.commandId,
+      acquiredSequence: sequence,
+      releasedSequence: null,
+      appliedSequence: sequence,
+    },
+  };
+}
+
+/**
+ * The live publication pin a publication's outcome releases, or a refusal.
+ *
+ * The outcome names the pin its intention took, and the pin must be exactly
+ * that one: a `PUBLICATION` pin, held by the same command, on the same
+ * generation, and still live. This is what makes a success or an abandonment
+ * with no intention before it a refusal rather than a fold.
+ */
+function livePublicationPin(
+  view: ArtifactFoldView,
+  payload: {
+    readonly commandId: string;
+    readonly contentSha256: string;
+    readonly blobGeneration: number;
+    readonly artifactPinId: string;
+  },
+): ArtifactPinReadModel {
+  const pin = view.pin(payload.artifactPinId);
+  const theIntentionsPin =
+    pin !== null &&
+    pin.pinHolderKind === "PUBLICATION" &&
+    pin.pinHolderId === payload.commandId &&
+    pin.contentSha256 === payload.contentSha256 &&
+    pin.blobGeneration === payload.blobGeneration;
+  if (pin === null || !theIntentionsPin) {
+    return artifactRefused(
+      "payload.artifactPinId",
+      "no intention of command " +
+        printable(payload.commandId) +
+        " holds publication pin " +
+        printable(payload.artifactPinId) +
+        " on " +
+        generationLabel(payload.contentSha256, payload.blobGeneration) +
+        "; a publication ends only after its own intention",
+    );
+  }
+  if (pin.releasedSequence !== null) {
+    return artifactRefused(
+      "payload.artifactPinId",
+      "publication pin " +
+        printable(pin.artifactPinId) +
+        " was released at sequence " +
+        String(pin.releasedSequence) +
+        ", so its publication has already ended",
+    );
+  }
+  return pin;
+}
+
+function releasedPin(pin: ArtifactPinReadModel, sequence: number): ArtifactPinReadModel {
+  return { ...pin, releasedSequence: sequence, appliedSequence: sequence };
+}
+
+function referenceRow(
+  record: Extract<ArtifactRegistryEvent, { readonly artifactEventKind: "REFERENCE_RECORDED" }>["payload"]["reference"],
+  contentSha256: string,
+  blobGeneration: number,
+  sequence: number,
+): ArtifactReferenceReadModel {
+  return {
+    artifactReferenceId: record.artifactReferenceId,
+    contentSha256,
+    blobGeneration,
+    artifactClass: record.artifactClass,
+    classification: record.classification,
+    scopeKind: record.scopeKind,
+    scopeId: record.scopeId,
+    producerIdentity: record.producerIdentity,
+    accessPolicyId: record.accessPolicyId,
+    retentionClass: record.retentionClass,
+    expiresAt: record.expiresAt,
+    tombstonedAt: null,
+    tombstoneReason: null,
+    createdSequence: sequence,
+    appliedSequence: sequence,
+  };
+}
+
+function assertReferenceIsNew(view: ArtifactFoldView, artifactReferenceId: string): void {
+  if (view.reference(artifactReferenceId) !== null) {
+    artifactRefused(
+      "payload.reference.artifactReferenceId",
+      "reference " + printable(artifactReferenceId) + " already exists, and a reference is recorded once",
+    );
+  }
+}
+
+function existingBlob(
+  view: ArtifactFoldView,
+  contentSha256: string,
+  blobGeneration: number,
+): ArtifactBlobReadModel {
+  const blob = view.blob(contentSha256, blobGeneration);
+  if (blob === null) {
+    return artifactRefused(
+      "payload.blobGeneration",
+      "content " + contentSha256 + " has no generation " + String(blobGeneration),
+    );
+  }
+  return blob;
+}
+
+/**
+ * `PUBLICATION_SUCCEEDED`: the reference is recorded and the publication pin
+ * released, in the same append (artifacts §8, step 4).
+ *
+ * A STAGED generation becomes PUBLISHED, and this event's sequence and instant
+ * become its `first_published_*` pair. A PUBLISHED generation — a deduplicated
+ * publication — is conserved: the first success fixed the pair and no later
+ * event moves it.
+ */
+function foldPublicationSucceeded(
+  view: ArtifactFoldView,
+  event: ArtifactEventOf<"PUBLICATION_SUCCEEDED">,
+  sequence: number,
+): ArtifactProjectionWrites {
+  const succeeded = event.payload;
+  const blob = existingBlob(view, succeeded.contentSha256, succeeded.blobGeneration);
+  const pin = livePublicationPin(view, succeeded);
+  if (blob.lifecycleState !== "STAGED" && blob.lifecycleState !== "PUBLISHED") {
+    artifactRefused(
+      "payload.blobGeneration",
+      generationLabel(blob.contentSha256, blob.blobGeneration) +
+        " is " +
+        blob.lifecycleState +
+        ", and a publication succeeds over a STAGED or a PUBLISHED generation",
+    );
+  }
+  assertReferenceIsNew(view, succeeded.reference.artifactReferenceId);
+
+  return {
+    blob:
+      blob.lifecycleState === "STAGED"
+        ? {
+            ...blob,
+            lifecycleState: "PUBLISHED",
+            firstPublishedSequence: sequence,
+            firstPublishedAt: event.occurredAt,
+            appliedSequence: sequence,
+          }
+        : null,
+    reference: referenceRow(
+      succeeded.reference,
+      succeeded.contentSha256,
+      succeeded.blobGeneration,
+      sequence,
+    ),
+    pin: releasedPin(pin, sequence),
+  };
+}
+
+/**
+ * `PUBLICATION_ABANDONED`: the publication pin is released, and a generation
+ * that never published becomes `PUBLICATION_ABANDONED` with its grace instant
+ * conserved. A PUBLISHED generation — a deduplicated publication that did not
+ * complete — keeps its state.
+ */
+function foldPublicationAbandoned(
+  view: ArtifactFoldView,
+  event: ArtifactEventOf<"PUBLICATION_ABANDONED">,
+  sequence: number,
+): ArtifactProjectionWrites {
+  const abandoned = event.payload;
+  const blob = existingBlob(view, abandoned.contentSha256, abandoned.blobGeneration);
+  const pin = livePublicationPin(view, abandoned);
+  if (blob.lifecycleState !== "STAGED" && blob.lifecycleState !== "PUBLISHED") {
+    artifactRefused(
+      "payload.blobGeneration",
+      generationLabel(blob.contentSha256, blob.blobGeneration) +
+        " is " +
+        blob.lifecycleState +
+        ", and a publication is abandoned over a STAGED or a PUBLISHED generation",
+    );
+  }
+  return {
+    blob:
+      blob.lifecycleState === "STAGED"
+        ? { ...blob, lifecycleState: "PUBLICATION_ABANDONED", appliedSequence: sequence }
+        : null,
+    reference: null,
+    pin: releasedPin(pin, sequence),
+  };
+}
+
+/**
+ * `REFERENCE_RECORDED`: one more authorized access to a PUBLISHED generation.
+ *
+ * Never over a STAGED one: a reference is written after its bytes are
+ * published, never before (artifacts §8). Two references to one blob from one
+ * producer in one scope, under different policies or retentions, are both
+ * recorded — nothing here or in the base is unique over that triple.
+ */
+function foldReferenceRecorded(
+  view: ArtifactFoldView,
+  event: ArtifactEventOf<"REFERENCE_RECORDED">,
+  sequence: number,
+): ArtifactProjectionWrites {
+  const recorded = event.payload;
+  const blob = existingBlob(view, recorded.contentSha256, recorded.blobGeneration);
+  if (blob.lifecycleState !== "PUBLISHED") {
+    artifactRefused(
+      "payload.blobGeneration",
+      generationLabel(blob.contentSha256, blob.blobGeneration) +
+        " is " +
+        blob.lifecycleState +
+        ", and a reference is recorded only over a PUBLISHED generation",
+    );
+  }
+  assertReferenceIsNew(view, recorded.reference.artifactReferenceId);
+  return {
+    blob: null,
+    reference: referenceRow(recorded.reference, recorded.contentSha256, recorded.blobGeneration, sequence),
+    pin: null,
+  };
+}
+
+/**
+ * `PIN_ACQUIRED`: a protection of one generation, one live pin per holder.
+ *
+ * Taking the same pin again — same id, same holder, same generation, still
+ * live — is idempotent: the event is recorded and the row is not rewritten
+ * (artifacts §5). A second live pin for the same holder under another id is
+ * refused, and so is reusing the id of a pin already released: a new
+ * protection takes a new id.
+ */
+function foldPinAcquired(
+  view: ArtifactFoldView,
+  event: ArtifactEventOf<"PIN_ACQUIRED">,
+  sequence: number,
+): ArtifactProjectionWrites {
+  const acquired = event.payload;
+  const blob = existingBlob(view, acquired.contentSha256, acquired.blobGeneration);
+  if (blob.lifecycleState === "RECLAIM_INTENDED" || blob.lifecycleState === "RECLAIMED") {
+    artifactRefused(
+      "payload.blobGeneration",
+      generationLabel(blob.contentSha256, blob.blobGeneration) +
+        " is " +
+        blob.lifecycleState +
+        ", and a pin protects only a generation that is not being reclaimed",
+    );
+  }
+
+  const existing = view.pin(acquired.artifactPinId);
+  if (existing !== null) {
+    if (existing.releasedSequence !== null) {
+      artifactRefused(
+        "payload.artifactPinId",
+        "pin " +
+          printable(existing.artifactPinId) +
+          " was released at sequence " +
+          String(existing.releasedSequence) +
+          ", and a new protection takes a new pin id",
+      );
+    }
+    const same =
+      existing.contentSha256 === acquired.contentSha256 &&
+      existing.blobGeneration === acquired.blobGeneration &&
+      existing.pinHolderKind === acquired.pinHolderKind &&
+      existing.pinHolderId === acquired.pinHolderId;
+    if (!same) {
+      artifactRefused(
+        "payload.artifactPinId",
+        "pin " +
+          printable(existing.artifactPinId) +
+          " is live for another holder or another generation",
+      );
+    }
+    return { blob: null, reference: null, pin: null };
+  }
+
+  const live = view.livePin(
+    acquired.contentSha256,
+    acquired.blobGeneration,
+    acquired.pinHolderKind,
+    acquired.pinHolderId,
+  );
+  if (live !== null) {
+    artifactRefused(
+      "payload.pinHolderId",
+      "holder " +
+        printable(acquired.pinHolderId) +
+        " already holds live pin " +
+        printable(live.artifactPinId) +
+        " on " +
+        generationLabel(acquired.contentSha256, acquired.blobGeneration) +
+        "; taking it again is the same pin id",
+    );
+  }
+
+  return {
+    blob: null,
+    reference: null,
+    pin: {
+      artifactPinId: acquired.artifactPinId,
+      contentSha256: acquired.contentSha256,
+      blobGeneration: acquired.blobGeneration,
+      pinHolderKind: acquired.pinHolderKind,
+      pinHolderId: acquired.pinHolderId,
+      acquiredSequence: sequence,
+      releasedSequence: null,
+      appliedSequence: sequence,
+    },
+  };
+}
+
+/** `PIN_RELEASED`: a live, non-publication pin on the named generation ends. */
+function foldPinReleased(
+  view: ArtifactFoldView,
+  event: ArtifactEventOf<"PIN_RELEASED">,
+  sequence: number,
+): ArtifactProjectionWrites {
+  const released = event.payload;
+  const pin = view.pin(released.artifactPinId);
+  if (pin === null) {
+    return artifactRefused(
+      "payload.artifactPinId",
+      "there is no pin " + printable(released.artifactPinId) + " to release",
+    );
+  }
+  if (pin.contentSha256 !== released.contentSha256 || pin.blobGeneration !== released.blobGeneration) {
+    artifactRefused(
+      "payload.artifactPinId",
+      "pin " +
+        printable(pin.artifactPinId) +
+        " protects another generation than " +
+        generationLabel(released.contentSha256, released.blobGeneration),
+    );
+  }
+  if (pin.pinHolderKind === "PUBLICATION") {
+    artifactRefused(
+      "payload.artifactPinId",
+      "pin " +
+        printable(pin.artifactPinId) +
+        " is a PUBLICATION pin, released by its publication's success or abandonment, never by PIN_RELEASED",
+    );
+  }
+  if (pin.releasedSequence !== null) {
+    artifactRefused(
+      "payload.artifactPinId",
+      "pin " +
+        printable(pin.artifactPinId) +
+        " was already released at sequence " +
+        String(pin.releasedSequence),
+    );
+  }
+  return { blob: null, reference: null, pin: releasedPin(pin, sequence) };
+}
+
+/** In-memory projection of the artifact plane of the registry stream. */
+export function createArtifactProjectionSnapshot(): ArtifactProjectionSnapshot {
+  return {
+    blobs: new Map(),
+    references: new Map(),
+    pins: new Map(),
+    tombstones: new Map(),
+    highestGenerations: new Map(),
+    livePins: new Map(),
+  };
+}
+
+/** The fold's view over a snapshot, answering what the door answers from the base. */
+export function artifactSnapshotView(snapshot: ArtifactProjectionSnapshot): ArtifactFoldView {
+  return {
+    blob: (contentSha256, blobGeneration) =>
+      snapshot.blobs.get(artifactBlobKey(contentSha256, blobGeneration)) ?? null,
+    unreclaimedBlob: (contentSha256) => {
+      const highest = snapshot.highestGenerations.get(contentSha256) ?? 0;
+      for (let generation = highest; generation >= 1; generation -= 1) {
+        const blob = snapshot.blobs.get(artifactBlobKey(contentSha256, generation));
+        if (blob !== undefined && blob.lifecycleState !== "RECLAIMED") return blob;
+      }
+      return null;
+    },
+    highestBlobGeneration: (contentSha256) => snapshot.highestGenerations.get(contentSha256) ?? 0,
+    reference: (artifactReferenceId) => snapshot.references.get(artifactReferenceId) ?? null,
+    pin: (artifactPinId) => snapshot.pins.get(artifactPinId) ?? null,
+    livePin: (contentSha256, blobGeneration, pinHolderKind, pinHolderId) => {
+      const id = snapshot.livePins.get(
+        artifactLivePinKey(contentSha256, blobGeneration, pinHolderKind, pinHolderId),
+      );
+      return id === undefined ? null : (snapshot.pins.get(id) ?? null);
+    },
+  };
+}
+
+/**
+ * Fold one artifact event into a snapshot, refusing exactly what the door would.
+ *
+ * The stateless refusals first, then the stateful decision against the snapshot
+ * itself, then the writes. A history the door could never have accepted fails a
+ * rebuild here, at the event that caused it, in the door's own words.
+ */
+export function applyArtifactEventToSnapshot(
+  snapshot: ArtifactProjectionSnapshot,
+  event: ArtifactRegistryEvent,
+  sequence: number,
+): void {
+  const refusal = artifactEventRefusal(event);
+  if (refusal !== null) throw new LedgerValidationError([refusal]);
+
+  const writes = nextArtifactProjection(artifactSnapshotView(snapshot), event, sequence);
+  if (writes.blob !== null) {
+    const blob = writes.blob;
+    snapshot.blobs.set(artifactBlobKey(blob.contentSha256, blob.blobGeneration), blob);
+    const highest = snapshot.highestGenerations.get(blob.contentSha256) ?? 0;
+    if (blob.blobGeneration > highest) {
+      snapshot.highestGenerations.set(blob.contentSha256, blob.blobGeneration);
+    }
+  }
+  if (writes.reference !== null) {
+    snapshot.references.set(writes.reference.artifactReferenceId, writes.reference);
+  }
+  if (writes.pin !== null) {
+    const pin = writes.pin;
+    snapshot.pins.set(pin.artifactPinId, pin);
+    const key = artifactLivePinKey(pin.contentSha256, pin.blobGeneration, pin.pinHolderKind, pin.pinHolderId);
+    if (pin.releasedSequence === null) snapshot.livePins.set(key, pin.artifactPinId);
+    else snapshot.livePins.delete(key);
+  }
 }

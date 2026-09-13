@@ -23,7 +23,8 @@ export type LedgerErrorCode =
   | "LEDGER_LIFECYCLE_CONFLICT"
   | "LEDGER_SEQUENCE"
   | "LEDGER_INTEGRITY"
-  | "LEDGER_QUERY";
+  | "LEDGER_QUERY"
+  | "LEDGER_ARTIFACT_ENCRYPTION_CONFLICT";
 
 /** Base class for everything this package throws deliberately. */
 export class LedgerError extends Error {
@@ -243,6 +244,41 @@ export class LedgerIntegrityError extends LedgerError {
     super("LEDGER_INTEGRITY", "stored event stream is not trustworthy: " + problems.join("; "));
     this.name = "LedgerIntegrityError";
     this.problems = problems;
+  }
+}
+
+/**
+ * A publication would reuse a blob generation under another encryption policy
+ * (P-36/local A, artifacts §3 and §10.1).
+ *
+ * A deduplication never changes how a blob is encrypted: the generation keeps
+ * the `encryption_status`, `key_reference` and `encryption_profile` it was born
+ * with, and an intention that disagrees is refused with this named error rather
+ * than folded silently. Changing the policy is an explicit encryption migration,
+ * which no build has yet. The message names the content, the generation and
+ * which fields differ; it never carries a key reference or a profile, because a
+ * refusal is exactly where a value that must not be logged would travel.
+ */
+export class LedgerArtifactEncryptionConflictError extends LedgerError {
+  readonly contentSha256: string;
+  readonly blobGeneration: number;
+  readonly fields: readonly string[];
+
+  constructor(contentSha256: string, blobGeneration: number, fields: readonly string[]) {
+    super(
+      "LEDGER_ARTIFACT_ENCRYPTION_CONFLICT",
+      "artifact content " +
+        contentSha256 +
+        " generation " +
+        String(blobGeneration) +
+        " is recorded under a different encryption policy (" +
+        fields.join(", ") +
+        "); a deduplication never changes a blob's encryption, and changing it is an explicit migration",
+    );
+    this.name = "LedgerArtifactEncryptionConflictError";
+    this.contentSha256 = contentSha256;
+    this.blobGeneration = blobGeneration;
+    this.fields = fields;
   }
 }
 

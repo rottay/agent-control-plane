@@ -96,6 +96,7 @@ new records from `_template.md`, which carries the required fields.
 | 0078 | [A command intention commits with its quarantine, and the contract grows a version to say so](0078-a-command-intention-commits-with-its-quarantine.md) | accepted |
 | 0079 | [A known outcome is reused, never redelivered, and a present-invalid word is refused by name](0079-a-known-outcome-is-reused-and-a-present-invalid-word-is-refused-by-name.md) | accepted |
 | 0080 | [The producer speaks the V2 coordinate, and the protocol half is delivered](0080-the-producer-speaks-the-v2-coordinate.md) | accepted |
+| 0081 | [An artifact is a subject of the registry before its first byte moves](0081-an-artifact-is-a-subject-of-the-registry.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

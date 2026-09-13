@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import {
+  ARTIFACT_EVENT_KINDS,
+  ArtifactRegistryEvent,
   CONTRACT_VERSION,
   EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1,
   EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
@@ -14,6 +16,14 @@ import type { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
+  applyArtifactEventToSnapshot,
+  artifactBlobKey,
+  artifactEventKindRefusal,
+  artifactEventRefusal,
+  artifactSnapshotView,
+  artifactSubjectOf,
+  createArtifactProjectionSnapshot,
+  nextArtifactProjection,
   applyEventToSnapshot,
   canonicalAttempt,
   canonicalRevision,
@@ -54,8 +64,15 @@ import {
   readOutboxEvent,
   type OutboxEventEntry,
 } from "../../src/projection/index.js";
-import { LedgerValidationError } from "../../src/errors/index.js";
-import { DISPATCH_STATES } from "../../src/types/index.js";
+import {
+  LedgerArtifactEncryptionConflictError,
+  LedgerValidationError,
+} from "../../src/errors/index.js";
+import {
+  ARTIFACT_ACCESS_POLICY_IDS,
+  DELIVERED_ARTIFACT_EVENT_KINDS,
+  DISPATCH_STATES,
+} from "../../src/types/index.js";
 import type { RegistryDocument, TaskReadModel } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 
@@ -2470,3 +2487,268 @@ function readSourceCode(relativePath: string): string {
   const source = readFileSync(new URL("../../" + relativePath, import.meta.url), "utf8");
   return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
+
+// ---------------------------------------------------------------------------
+// P-36/local escalón A — the artifact fold, as a pure function (ADR 0081)
+//
+// The ledger suite drives the fold through the door and the rebuild; this one
+// drives the one decision function both of them call, against a snapshot, so a
+// transition of artifacts §8.1 is asserted without a database in the way.
+// ---------------------------------------------------------------------------
+
+const FOLD_AT = "2026-09-13T10:00:00.000Z";
+const FOLD_CONTENT = "e".repeat(64);
+
+function foldEvent(
+  kind: string,
+  payload: Record<string, unknown>,
+  ordinal = 1,
+  occurredAt = FOLD_AT,
+): ArtifactRegistryEvent {
+  return ArtifactRegistryEvent.parse({
+    contractVersion: CONTRACT_VERSION,
+    eventId: "00000000-0000-4000-8000-" + String(ordinal).padStart(12, "0"),
+    idempotencyKey: kind + "/" + String(ordinal),
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: "claude/opus/implementer/01",
+    occurredAt,
+    recordedAt: occurredAt,
+    payload,
+  });
+}
+
+function foldIntention(overrides: Record<string, unknown> = {}, ordinal = 1, occurredAt = FOLD_AT): ArtifactRegistryEvent {
+  return foldEvent(
+    "PUBLICATION_INTENDED",
+    {
+      commandId: "cmd-1",
+      contentSha256: FOLD_CONTENT,
+      blobGeneration: 1,
+      mediaType: "text/plain",
+      sizeBytes: 5,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+      artifactPinId: "pin-p-1",
+      ...overrides,
+    },
+    ordinal,
+    occurredAt,
+  );
+}
+
+function foldReference(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    artifactReferenceId: "ref-1",
+    artifactClass: "PLAN_DOCUMENT",
+    classification: "INTERNAL",
+    scopeKind: "SYSTEM",
+    scopeId: null,
+    producerIdentity: "claude/opus/implementer/01",
+    accessPolicyId: "SCOPE_EQUALITY_V1",
+    retentionClass: "PERMANENT",
+    expiresAt: null,
+    ...overrides,
+  };
+}
+
+function foldSuccess(overrides: Record<string, unknown> = {}, ordinal = 2, occurredAt = FOLD_AT): ArtifactRegistryEvent {
+  return foldEvent(
+    "PUBLICATION_SUCCEEDED",
+    {
+      commandId: "cmd-1",
+      contentSha256: FOLD_CONTENT,
+      blobGeneration: 1,
+      artifactPinId: "pin-p-1",
+      reference: foldReference(),
+      ...overrides,
+    },
+    ordinal,
+    occurredAt,
+  );
+}
+
+function refusedWith(action: () => unknown): { readonly path: string; readonly message: string } {
+  let caughtError: unknown = null;
+  try {
+    action();
+  } catch (error: unknown) {
+    caughtError = error;
+  }
+  expect(caughtError).toBeInstanceOf(LedgerValidationError);
+  const issue = (caughtError as LedgerValidationError).issues[0];
+  if (issue === undefined) throw new Error("no issue");
+  return issue;
+}
+
+describe("the artifact vocabularies this build admits (P-36/local A)", () => {
+  it("records six of the contract's nine words, and refuses the other three by name", () => {
+    expect(DELIVERED_ARTIFACT_EVENT_KINDS).toEqual([
+      "PUBLICATION_INTENDED",
+      "PUBLICATION_SUCCEEDED",
+      "PUBLICATION_ABANDONED",
+      "REFERENCE_RECORDED",
+      "PIN_ACQUIRED",
+      "PIN_RELEASED",
+    ]);
+    for (const kind of ARTIFACT_EVENT_KINDS) {
+      const refusal = artifactEventKindRefusal(kind);
+      const delivered = (DELIVERED_ARTIFACT_EVENT_KINDS as readonly string[]).includes(kind);
+      expect(refusal === null, kind).toBe(delivered);
+      if (refusal !== null) expect(refusal.path).toBe("artifactEventKind");
+    }
+    // A word outside the contract is the schema's to refuse, not this one's.
+    expect(artifactEventKindRefusal("GARBAGE_COLLECTED")).toBeNull();
+    expect(artifactEventKindRefusal(7)).toBeNull();
+  });
+
+  it("closes the access policy at one identifier", () => {
+    expect(ARTIFACT_ACCESS_POLICY_IDS).toEqual(["SCOPE_EQUALITY_V1"]);
+  });
+});
+
+describe("an artifact event names its subject by rule, never by hash (H-3, H-4)", () => {
+  it("takes the content for a publication, the reference for a recording, the pin for a pin event", () => {
+    expect(artifactSubjectOf(foldIntention())).toEqual({ documentId: FOLD_CONTENT, contentDigest: FOLD_CONTENT });
+    expect(artifactSubjectOf(foldSuccess())).toEqual({ documentId: FOLD_CONTENT, contentDigest: FOLD_CONTENT });
+    expect(
+      artifactSubjectOf(foldEvent("REFERENCE_RECORDED", { contentSha256: FOLD_CONTENT, blobGeneration: 1, reference: foldReference({ artifactReferenceId: "ref-9" }) })),
+    ).toEqual({ documentId: "ref-9", contentDigest: FOLD_CONTENT });
+    expect(
+      artifactSubjectOf(foldEvent("PIN_RELEASED", { artifactPinId: "pin-9", contentSha256: FOLD_CONTENT, blobGeneration: 1 })),
+    ).toEqual({ documentId: "pin-9", contentDigest: FOLD_CONTENT });
+  });
+
+  it("refuses SECRET_BEARING, an unknown policy and a hand-taken publication pin before any state is read", () => {
+    expect(artifactEventRefusal(foldSuccess({ reference: foldReference({ classification: "SECRET_BEARING" }) }))?.path).toBe(
+      "payload.reference.classification",
+    );
+    expect(artifactEventRefusal(foldSuccess({ reference: foldReference({ accessPolicyId: "OTHER_V1" }) }))?.path).toBe(
+      "payload.reference.accessPolicyId",
+    );
+    expect(
+      artifactEventRefusal(foldEvent("PIN_ACQUIRED", { artifactPinId: "p", contentSha256: FOLD_CONTENT, blobGeneration: 1, pinHolderKind: "PUBLICATION", pinHolderId: "c" }))?.path,
+    ).toBe("payload.pinHolderKind");
+    expect(artifactEventRefusal(foldSuccess())).toBeNull();
+  });
+});
+
+describe("the artifact fold decides artifacts §8.1 once, for the door and the rebuild", () => {
+  it("births a STAGED generation with its publication pin, and publishes it with the pair fixed at the success", () => {
+    const snapshot = createArtifactProjectionSnapshot();
+    const intended = nextArtifactProjection(artifactSnapshotView(snapshot), foldIntention(), 1);
+    expect(intended.blob).toMatchObject({ blobGeneration: 1, lifecycleState: "STAGED", graceStartedAt: FOLD_AT, firstPublishedSequence: null, appliedSequence: 1 });
+    expect(intended.reference).toBeNull();
+    expect(intended.pin).toMatchObject({ pinHolderKind: "PUBLICATION", pinHolderId: "cmd-1", acquiredSequence: 1, releasedSequence: null });
+    applyArtifactEventToSnapshot(snapshot, foldIntention(), 1);
+
+    const later = "2026-09-13T10:05:00.000Z";
+    const succeeded = nextArtifactProjection(artifactSnapshotView(snapshot), foldSuccess({}, 2, later), 2);
+    expect(succeeded.blob).toMatchObject({ lifecycleState: "PUBLISHED", firstPublishedSequence: 2, firstPublishedAt: later, graceStartedAt: FOLD_AT });
+    expect(succeeded.reference).toMatchObject({ artifactReferenceId: "ref-1", createdSequence: 2, tombstonedAt: null });
+    expect(succeeded.pin).toMatchObject({ acquiredSequence: 1, releasedSequence: 2, appliedSequence: 2 });
+  });
+
+  it("conserves a PUBLISHED generation whole on a deduplicated intention, and refuses another encryption with its named error", () => {
+    const snapshot = createArtifactProjectionSnapshot();
+    applyArtifactEventToSnapshot(snapshot, foldIntention(), 1);
+    applyArtifactEventToSnapshot(snapshot, foldSuccess(), 2);
+    const dedup = nextArtifactProjection(artifactSnapshotView(snapshot), foldIntention({ commandId: "cmd-2", artifactPinId: "pin-p-2" }, 3), 3);
+    expect(dedup.blob).toBeNull();
+    expect(dedup.pin).toMatchObject({ pinHolderId: "cmd-2", blobGeneration: 1 });
+
+    expect(() =>
+      nextArtifactProjection(artifactSnapshotView(snapshot), foldIntention({ commandId: "cmd-2", artifactPinId: "pin-p-2", encryptionProfile: "other" }, 3), 3),
+    ).toThrow(LedgerArtifactEncryptionConflictError);
+    expect(
+      refusedWith(() => nextArtifactProjection(artifactSnapshotView(snapshot), foldIntention({ commandId: "cmd-2", artifactPinId: "pin-p-2", sizeBytes: 6 }, 3), 3)).path,
+    ).toBe("payload.sizeBytes");
+  });
+
+  it("proposes the generation and verifies it: the next one for new content, the held one for reuse", () => {
+    const snapshot = createArtifactProjectionSnapshot();
+    expect(refusedWith(() => nextArtifactProjection(artifactSnapshotView(snapshot), foldIntention({ blobGeneration: 2 }), 1)).message).toContain(
+      "opens generation 1, not 2",
+    );
+    applyArtifactEventToSnapshot(snapshot, foldIntention(), 1);
+    expect(snapshot.highestGenerations.get(FOLD_CONTENT)).toBe(1);
+    expect(artifactSnapshotView(snapshot).unreclaimedBlob(FOLD_CONTENT)?.blobGeneration).toBe(1);
+  });
+
+  it("stages an abandoned generation again with its grace instant, and refuses an intention while one is in flight", () => {
+    const snapshot = createArtifactProjectionSnapshot();
+    applyArtifactEventToSnapshot(snapshot, foldIntention(), 1);
+    expect(refusedWith(() => nextArtifactProjection(artifactSnapshotView(snapshot), foldIntention({ commandId: "cmd-2", artifactPinId: "pin-p-2" }, 2), 2)).message).toContain(
+      "already in flight",
+    );
+    applyArtifactEventToSnapshot(
+      snapshot,
+      foldEvent("PUBLICATION_ABANDONED", { commandId: "cmd-1", contentSha256: FOLD_CONTENT, blobGeneration: 1, artifactPinId: "pin-p-1" }, 2),
+      2,
+    );
+    expect(snapshot.blobs.get(artifactBlobKey(FOLD_CONTENT, 1))?.lifecycleState).toBe("PUBLICATION_ABANDONED");
+    expect(snapshot.livePins.size).toBe(0);
+
+    const again = nextArtifactProjection(
+      artifactSnapshotView(snapshot),
+      foldIntention({ commandId: "cmd-2", artifactPinId: "pin-p-2" }, 3, "2026-09-14T00:00:00.000Z"),
+      3,
+    );
+    expect(again.blob).toMatchObject({ blobGeneration: 1, lifecycleState: "STAGED", graceStartedAt: FOLD_AT, appliedSequence: 3 });
+  });
+
+  it("keeps the live-pin index in step with the pins, so one holder holds one live pin", () => {
+    const snapshot = createArtifactProjectionSnapshot();
+    applyArtifactEventToSnapshot(snapshot, foldIntention(), 1);
+    applyArtifactEventToSnapshot(snapshot, foldSuccess(), 2);
+    const acquire = foldEvent("PIN_ACQUIRED", { artifactPinId: "pin-b", contentSha256: FOLD_CONTENT, blobGeneration: 1, pinHolderKind: "BACKUP", pinHolderId: "backup-1" });
+    applyArtifactEventToSnapshot(snapshot, acquire, 3);
+    expect(nextArtifactProjection(artifactSnapshotView(snapshot), foldEvent("PIN_ACQUIRED", { artifactPinId: "pin-b", contentSha256: FOLD_CONTENT, blobGeneration: 1, pinHolderKind: "BACKUP", pinHolderId: "backup-1" }, 2), 4)).toEqual({
+      blob: null,
+      reference: null,
+      pin: null,
+    });
+    expect(artifactSnapshotView(snapshot).livePin(FOLD_CONTENT, 1, "BACKUP", "backup-1")?.artifactPinId).toBe("pin-b");
+    applyArtifactEventToSnapshot(snapshot, foldEvent("PIN_RELEASED", { artifactPinId: "pin-b", contentSha256: FOLD_CONTENT, blobGeneration: 1 }, 2), 4);
+    expect(artifactSnapshotView(snapshot).livePin(FOLD_CONTENT, 1, "BACKUP", "backup-1")).toBeNull();
+    expect(snapshot.pins.get("pin-b")).toMatchObject({ acquiredSequence: 3, releasedSequence: 4 });
+  });
+
+  it("is a function of the events alone: the same history folds to the same snapshot, every time", () => {
+    const history: readonly [ArtifactRegistryEvent, number][] = [
+      [foldIntention(), 1],
+      [foldSuccess(), 2],
+      [foldEvent("REFERENCE_RECORDED", { contentSha256: FOLD_CONTENT, blobGeneration: 1, reference: foldReference({ artifactReferenceId: "ref-2" }) }), 3],
+      [foldEvent("PIN_ACQUIRED", { artifactPinId: "pin-t", contentSha256: FOLD_CONTENT, blobGeneration: 1, pinHolderKind: "TASK", pinHolderId: "t-1" }), 4],
+    ];
+    const fold = (): string => {
+      const snapshot = createArtifactProjectionSnapshot();
+      for (const [event, sequence] of history) applyArtifactEventToSnapshot(snapshot, event, sequence);
+      return JSON.stringify({
+        blobs: [...snapshot.blobs.entries()],
+        references: [...snapshot.references.entries()],
+        pins: [...snapshot.pins.entries()],
+        tombstones: [...snapshot.tombstones.entries()],
+      });
+    };
+    expect(fold()).toBe(fold());
+    // And the tombstone map is empty by construction: nothing in this build folds one.
+    const snapshot = createArtifactProjectionSnapshot();
+    for (const [event, sequence] of history) applyArtifactEventToSnapshot(snapshot, event, sequence);
+    expect(snapshot.tombstones.size).toBe(0);
+  });
+
+  it("refuses in the fold what the door refuses before its lock, so a planted history cannot slip past", () => {
+    const snapshot = createArtifactProjectionSnapshot();
+    applyArtifactEventToSnapshot(snapshot, foldIntention(), 1);
+    expect(
+      refusedWith(() => {
+        applyArtifactEventToSnapshot(snapshot, foldSuccess({ reference: foldReference({ classification: "SECRET_BEARING" }) }), 2);
+      }).path,
+    ).toBe("payload.reference.classification");
+    expect(snapshot.references.size).toBe(0);
+  });
+});

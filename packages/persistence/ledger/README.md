@@ -45,6 +45,7 @@ ledger.close();
 | `getOutboxCommand(commandId)` / `listOutboxCommands()` | An outbox command folded from its own events, or every one in intention order: what a lost outbox cache is rebuilt to. No table holds it. |
 | `appendInitiativeEvent(event, causation?)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
 | `appendRegistryEvent(document, causation?)` | The same pipeline on the registry stream: one version of one configuration document, on its own chain. A unit door; there is no registry batch. |
+| `appendArtifactEvent(event, causation?)` | The registry stream's second door: one artifact event, `subject_kind = 'ARTIFACT'`, parsed by `@acp/contracts`' `ArtifactRegistryEvent` and folded into the four artifact read models in the same transaction. Facts of the bytes, never the bytes, and no file is touched. |
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
@@ -133,9 +134,9 @@ way to notice.
 Every error is typed and carries a `code`. None of them embeds event content,
 so all of them are safe to log or attach to a checkpoint.
 
-Thirteen classes are exported, and this is the complete list — the
+Fourteen classes are exported, and this is the complete list — the
 architecture fence asserts it against the barrel in both directions, so a
-fourteenth class cannot arrive without appearing here.
+fifteenth class cannot arrive without appearing here.
 
 | Class | Raised when |
 | --- | --- |
@@ -152,6 +153,7 @@ fourteenth class cannot arrive without appearing here.
 | `LedgerSequenceError` | the sequence is not contiguous, or the chain does not link |
 | `LedgerIntegrityError` | an integrity check finds the stored state inconsistent |
 | `LedgerQueryError` | a query is malformed — a bad cursor, an out-of-range limit |
+| `LedgerArtifactEncryptionConflictError` | a publication would reuse a blob generation under another encryption status, key reference or profile; a deduplication never changes a blob's encryption |
 
 ## Tables
 
@@ -160,7 +162,7 @@ fourteenth class cannot arrive without appearing here.
 | `schema_migrations` | authority | applied version, name, SHA-256, timestamp |
 | `control_plane_events` | authority | the append-only log, with `previous_sha256` and `event_sha256`, and the nullable causal triple |
 | `initiative_events` | authority | the sibling append-only stream, on its own hash chain, with the same triple |
-| `registry_events` | authority | versioned configuration documents, on a third hash chain, with the common field profile complete from its first migration |
+| `registry_events` | authority | versioned configuration documents and artifact events, on a third hash chain, with the common field profile complete from its first migration; `subject_kind` says which, since migration 15 |
 | `account_event_integrity` | authority | the account stream's hash chain, one link per row from sequence 1. Evidence, not a projection: a rebuild never touches it |
 | `ledger_meta` | authority | head sequence, head digest and event count, one set per stream; plus this file's own identity: `instance_id`, `restore_id`, `restore_epoch` |
 | `task_read_model` | derived | current state, attempt, counts, first and last position, and the initiative the discovery named (nullable) |
@@ -178,6 +180,10 @@ fourteenth class cannot arrive without appearing here.
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
 | `routing_assignment_fallback` | derived | one row per fallback of one assignment, in attempt order |
+| `artifact_blob_read_model` | derived | one row per generation of some bytes, keyed `(content_sha256, blob_generation)`: size, media type, lifecycle state, encryption, and the event that first published it. No owner and no scope |
+| `artifact_reference_read_model` | derived | one row per authorized access to one generation: class, classification, scope, producer, policy, retention. Here lives the permission |
+| `artifact_pin_read_model` | derived | one row per protection of one generation from collection, with the sequences that took and released it |
+| `artifact_tombstone_read_model` | derived | the revocation of a reference. The table exists; nothing in this build writes a row |
 | `projection_watermark` | derived | one row per `(projection, source stream)`: projector version, applied sequence, event count, and the source digest at that sequence |
 | `projection_meta` | legacy | frozen at the values migration 7 found. Not written, and not read for truth. |
 
@@ -697,6 +703,78 @@ No occurrence is derived from an intention or a resolution, and a delivery that
 resolves with no prompt leaves both tables empty. Nothing emits either type:
 execution §8 `:421` — no occurrence for a call a transport does not make
 observable — is a guarantee the producer of escalón G owes.
+
+## An artifact is a subject of the registry before its first byte moves
+
+Migration 15 (artifacts §1.1, §3-6 and §8.1; P-36/local escalón A; ADR 0081).
+Artifact events live in `registry_events`, not in a fifth stream, and not on a
+task: a price catalog or a policy document has no task to hang off.
+
+### The stream, rebuilt once and changed in no row
+
+Migration 9 made the stream for documents alone — `document_kind` NOT NULL and
+closed by a CHECK — and a CHECK cannot be widened in place. So migration 15
+rebuilds the table: a new table beside it, every row copied with its
+`sequence`, `event_json`, `previous_sha256` and `event_sha256`, the three own
+triggers **and the two triggers on the task and initiative streams that name it**
+dropped, the old table dropped, the new one renamed into place, and every index
+and trigger recreated under its name — the two foreign triggers byte-identical to
+migration 9's. The rename re-parses the whole schema, and a trigger naming a table
+that does not exist at that instant aborts it; that is why the foreign pair goes
+too. No pragma is set. The chain digests `previous_sha256` and `event_json`, both
+copied, so every row still verifies, the head does not move and the next append
+takes the next sequence.
+
+Each row now says `subject_kind` — `DOCUMENT` or `ARTIFACT` — with two mirrors:
+`document_kind` is present exactly on a document, `artifact_event_kind` exactly on
+an artifact. The artifact CHECK names all **nine** words of the contract though
+this build records six, so P-36 completo does not rebuild the stream again. And
+after this migration four tables carry a foreign key into `registry_events`: a
+future rebuild of it drops those children first.
+
+### One row per event, on one subject
+
+An artifact event's subject is the resource it is about: the content digest for
+the three publication events, the reference for `REFERENCE_RECORDED`, the pin for
+the two pin events. `document_id` is that subject, `document_version` its ordinal
+— one past the subject's highest, proposed in the body and verified at the door —
+`content_digest` the content digest, `effective_from` the event's own instant.
+`subject_kind` and `artifact_event_kind` are also inside the body, because the
+chain digests the body and not the columns, and replay holds every column to it.
+A subject keeps its kind: an identifier used by one plane is refused by the other.
+
+### The four read models, and the fold both doors share
+
+`nextArtifactProjection` decides what an event writes against a view of the four
+tables, and the door and the rebuild each hand it their own view — the base
+inside the transaction, the snapshot being filled — so a planted history fails a
+rebuild in the door's words. A `PUBLICATION_INTENDED` opens the next generation,
+or reuses the one that is not reclaimed: a `PUBLISHED` one is conserved whole, a
+`PUBLICATION_ABANDONED` one is staged again with its grace instant, a `STAGED` one
+is refused because a publication is in flight. A reused generation keeps its
+encryption, and an intention that disagrees is `LedgerArtifactEncryptionConflictError`.
+The intention takes a `PUBLICATION` pin on the exact generation; its success
+records the reference and releases the pin in one append, and its abandonment
+releases the pin. A reference is recorded only over a `PUBLISHED` generation, a
+`PUBLICATION` pin is never taken or released by hand, and taking the same pin
+again is idempotent.
+
+### What the door refuses by name
+
+`RECLAIM_INTENDED`, `RECLAIM_COMPLETED` and `REFERENCE_TOMBSTONED` at
+`artifactEventKind`: reclamation, collection and tombstoning are P-36 completo. A
+`SECRET_BEARING` reference, which never enters the stream. An access policy other
+than `SCOPE_EQUALITY_V1`, the one identifier closed in code while the policy table
+has no dictionary (decision 59). And every credential key or secret-shaped value,
+by the contract's guards — the refusal names the path, never the value.
+
+### What this escalón does not do
+
+No filesystem: nothing opens, writes, synchronizes or renames a file, and no
+read path resolves an artifact. No lease store, no publisher, no reconciler —
+escalones B and C. No producer: nothing outside the suite appends an artifact
+event. No contract bump: the escalón defines no preimage and no derived key.
+`artifact-store` above is untouched and stays the legacy digest store it was.
 
 ## The command intention, and the quarantine it commits with
 

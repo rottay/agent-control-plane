@@ -9646,6 +9646,85 @@ const P18G_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-36/local, escalón A — an artifact is a subject of the registry before its
+ * first byte moves (ADR 0081, decisions 58-61). Brief
+ * `.acp-local/evidence/p36/acp-p36a-writer-brief-v2.md`, which absorbed the Fable
+ * preaudit's REJECT of v1 (H-1..H-4, M-5..M-9, L-10..L-13) and the delta's D-1..D-4.
+ *
+ * **What lands.**
+ *   1. Migration 15, `artifact_registry`: `registry_events` rebuilt in the E3
+ *      order the preaudit verified — new table, ordered copy, drop of the three
+ *      own triggers and the two foreign ones, drop, rename, indexes and triggers
+ *      recreated under their names (the foreign pair byte-identical to migration
+ *      9's) — with `subject_kind`, a nullable `document_kind`, `artifact_event_kind`
+ *      over the contract's nine words and the two mirrors; then the four artifact
+ *      read models with every constraint name of M-7, and four watermarks seeded
+ *      at the registry head.
+ *   2. `@acp/contracts`' `artifact-record` module: artifacts §2's vocabularies and
+ *      `ArtifactRegistryEvent`, six strict shapes under the credential and
+ *      transcript guards.
+ *   3. `appendArtifactEvent` and one fold shared by the door and the rebuild:
+ *      subject by rule, ordinal proposed and verified, §8.1's transitions, the
+ *      three undelivered words, `SECRET_BEARING` and any policy but
+ *      `SCOPE_EQUALITY_V1` refused by name, and
+ *      `LedgerArtifactEncryptionConflictError` for a reused generation under
+ *      another encryption.
+ *   4. The register's correction: the credential resolver of `P-36/local` is a
+ *      negative here and a port of P-19, not something that exists.
+ *
+ * **What does NOT land, declared.** No filesystem, no lease store, no publisher,
+ * no reconciler, no decision 41 — escalones B, C and D. No producer. No bump: the
+ * DT's ruling H-4 fixes that the escalón defines no preimage and no derived key.
+ * `artifact-store/index.ts` is byte-stable and its P8 pins do not move.
+ *
+ * **Pins that move.** `MIGRATIONS` 14 → 15. `PROJECTION_SOURCES` 14 → 18,
+ * `DERIVED_TABLES` 15 → 19 (the four children first), `status().projections`
+ * 13 → 17 and its watermark rows 14 → 18. `EXPECTED_SCHEMA_OBJECTS` gains
+ * fourteen entries — one registry index, four tables, nine indexes — and the `tr_`
+ * inventory stays at eight. `CONTRACTS_SCHEMA_EXPORTS` 115 → **132**. The ledger
+ * README's `### Errors` grows to fourteen classes. The ADR corpus 80 → 81 and the
+ * decision register gains rows 58-61.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (`"2.4.0"`),
+ * `SUPPORTED_CONTRACT_VERSIONS`, `API_CONTRACT_VERSION`,
+ * `CONTROL_PLANE_EVENT_TYPES` (33) and the channel map: artifact events are
+ * registry rows, never task events. `DOCUMENT_KINDS` (14). No `PATH_SCOPED_LAWS`
+ * row. The P8 pins of `artifact-store`.
+ *
+ * **Twenty-five paths; three are new to the fence** — the contracts module, its
+ * mirrored test and ADR 0081 (`grep -Fc` over this file, each 0 before this
+ * block). The other twenty-two are admitted by historical blocks. Two are admitted
+ * and, if untouched, left so on precedent C-7.
+ */
+const P36A_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/errors/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/src/schemas/artifact-record/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/test/schemas/artifact-record/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0081-an-artifact-is-a-subject-of-the-registry.md",
+  "docs/architecture/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/architecture/database/streams/index.md",
+  "docs/audit/architecture/database/artifacts/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9857,6 +9936,7 @@ const WRITE_SET = [
   ...P18F_WRITE_SET,
   ...CORR2_WRITE_SET,
   ...P18G_WRITE_SET,
+  ...P36A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -18677,6 +18757,29 @@ if (accountsIndex === null) {
   // standing precedent: the rule is the contract's and the computation is the
   // ledger's, because this package may reach no `node:` builtin at all.
   "AdmittedContractVersion",
+  // P-36/local A. Seventeen names: artifacts §2's vocabularies, each as its list
+  // and its schema — class, classification, encryption status, retention class,
+  // reference scope kind, blob lifecycle state, the nine artifact event kinds —
+  // the pin holder kind of §5, and the one event schema. Vocabulary and payload
+  // grammar, which is this package's; which six kinds a build records and which
+  // policy it admits are the ledger's (ADR 0081).
+  "ARTIFACT_CLASSES",
+  "ARTIFACT_CLASSIFICATIONS",
+  "ARTIFACT_EVENT_KINDS",
+  "ArtifactClass",
+  "ArtifactClassification",
+  "ArtifactEventKind",
+  "ArtifactRegistryEvent",
+  "BLOB_LIFECYCLE_STATES",
+  "BlobLifecycleState",
+  "ENCRYPTION_STATUSES",
+  "EncryptionStatus",
+  "PIN_HOLDER_KINDS",
+  "PinHolderKind",
+  "REFERENCE_SCOPE_KINDS",
+  "ReferenceScopeKind",
+  "RETENTION_CLASSES",
+  "RetentionClass",
   "EXECUTION_EFFECT_ID_PREIMAGE_PREFIX_V1",
   "EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1",
   // P-18/protocolo F. Two names, for C's reason: the versioned preimage of
