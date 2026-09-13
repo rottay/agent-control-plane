@@ -1,10 +1,20 @@
-import { ControlPlaneEvent, findCredentialViolations, findTranscriptViolations } from "@acp/contracts";
+import { createHash } from "node:crypto";
+
+import {
+  ControlPlaneEvent,
+  buildIdempotencyKey,
+  buildV2IdempotencyKey,
+  findCredentialViolations,
+  findTranscriptViolations,
+} from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../../src/contracts/index.js";
-import { buildEvent, operationForStep } from "../../../src/core/events/index.js";
-import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP } from "../../../src/core/lifecycle/index.js";
+import { ATTEMPT_OPENING_STEP, buildEvent, causalPredecessorOf, operationForStep } from "../../../src/core/events/index.js";
+import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, READ_ONLY_PLAN, planStep } from "../../../src/core/lifecycle/index.js";
+import type { PlanStep } from "../../../src/core/lifecycle/index.js";
+import { LifecyclePlanError } from "../../../src/errors/index.js";
 import { deterministicUuid } from "../../../src/core/coordinates/index.js";
 
 
@@ -329,5 +339,172 @@ describe("the admitted route rides the INTENT beat", () => {
     });
     expect(b.idempotencyKey).toBe(a.idempotencyKey);
     expect(JSON.stringify(b)).not.toBe(JSON.stringify(a));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo G — the producer speaks the V2 coordinate (ADR 0080)
+// ---------------------------------------------------------------------------
+
+const REVISION = Object.freeze({
+  revisionId: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f01",
+  revisionNumber: 1,
+  attemptNumber: 1,
+  envelopeSha256: "e".repeat(64),
+});
+
+const V2_INVOCATION: DurableInvocation = { ...INVOCATION, revision: REVISION };
+
+function buildWith(invocation: DurableInvocation, step: PlanStep, plan: readonly PlanStep[] = LIFECYCLE_PLAN): ReturnType<typeof buildEvent> {
+  return buildEvent({ invocation, step, emittedBy: EMITTED_BY, initiativeId: TEST_INITIATIVE_ID, plan, route: TEST_ROUTE });
+}
+
+/** The whole walk's bytes, in order, as one digest. */
+function walkDigest(invocation: DurableInvocation, plan: readonly PlanStep[]): string {
+  const bytes = plan.map((step) => JSON.stringify(buildWith(invocation, step, plan))).join("\n");
+  return createHash("sha256").update(bytes, "utf8").digest("hex");
+}
+
+describe("N-G-1: an invocation without a revision builds exactly the bytes it built before G", () => {
+  it("matches both plans' byte vectors lifted from HEAD a6ed7c3", () => {
+    // Literals computed by running HEAD's own `buildEvent` (git archive of
+    // a6ed7c3) over this file's fixture, never by calling the function under
+    // test: a re-derivation would agree with any change at all. A mismatch here
+    // means V1 moved, and the repair is to stop, not to re-pin.
+    expect(walkDigest(INVOCATION, LIFECYCLE_PLAN)).toBe(
+      "5c8e92f22adcb75867c79bfa353bf4dc90c57028532c06253640b4437cc2291f",
+    );
+    expect(walkDigest(INVOCATION, READ_ONLY_PLAN)).toBe(
+      "52a198c05201c7d6da21d2bafd9b91f87f2498f6ddf76eb104e2d415d6118148",
+    );
+  });
+
+  it("threads no opening into a V1 walk and has none to build", () => {
+    expect(causalPredecessorOf(INVOCATION, LIFECYCLE_PLAN, planStep(0))).toBeNull();
+    expect(() => buildWith(INVOCATION, ATTEMPT_OPENING_STEP)).toThrow(LifecyclePlanError);
+  });
+});
+
+describe("N-G-2: every event of a revision-bearing walk carries the coordinate and its V2 key", () => {
+  it("keys the opening and every plan step by the imported composer", () => {
+    for (const step of [ATTEMPT_OPENING_STEP, ...LIFECYCLE_PLAN]) {
+      const event = buildWith(V2_INVOCATION, step);
+      expect({ step: step.transitionId, revisionNumber: event.payload["revisionNumber"], attemptNumber: event.payload["attemptNumber"] }).toEqual({
+        step: step.transitionId,
+        revisionNumber: 1,
+        attemptNumber: 1,
+      });
+      expect(event.idempotencyKey).toBe(
+        buildV2IdempotencyKey({
+          stream: "control_plane_events",
+          taskId: V2_INVOCATION.taskId,
+          revisionNumber: 1,
+          attemptNumber: 1,
+          transitionId: step.transitionId,
+        }),
+      );
+      // The flat attempt is the invocation's on every event: the ledger
+      // requires every event of a coordinate to repeat its assignment.
+      expect(event.attempt).toBe(V2_INVOCATION.attempt);
+    }
+  });
+
+  it("is refused by the contract before any append when the key is composed another way", () => {
+    // N-P18-20 at the producer: the payload decides the namespace, so a V2
+    // payload under the flat key is not an admissible event at all.
+    const event = buildWith(V2_INVOCATION, INTENT_STEP);
+    const flatKeyed = {
+      ...event,
+      idempotencyKey: buildIdempotencyKey({ taskId: event.taskId, attempt: event.attempt, transitionId: event.transitionId }),
+    };
+    expect(ControlPlaneEvent.safeParse(flatKeyed).success).toBe(false);
+    expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
+  });
+});
+
+describe("N-G-7: the opening is B's payload, field by field, and nothing more", () => {
+  it("builds exactly the six keys an opening without a restored revision carries", () => {
+    const opening = buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP);
+    expect(Object.keys(opening.payload).sort()).toEqual([
+      "attemptNumber",
+      "envelopeSha256",
+      "invocationId",
+      "legacyAttemptNumber",
+      "revisionId",
+      "revisionNumber",
+    ]);
+    expect(opening.payload).toEqual({
+      revisionId: REVISION.revisionId,
+      revisionNumber: 1,
+      attemptNumber: 1,
+      envelopeSha256: REVISION.envelopeSha256,
+      invocationId: V2_INVOCATION.invocationId,
+      legacyAttemptNumber: V2_INVOCATION.attempt,
+    });
+    // No route, no digest of the submission, no initiative: those bind at the
+    // discovery that follows.
+    expect(JSON.stringify(opening.payload)).not.toContain(TEST_ROUTE.accountId);
+    expect(findCredentialViolations(opening.payload)).toHaveLength(0);
+    expect(findTranscriptViolations(opening.payload)).toHaveLength(0);
+  });
+
+  it("cannot be widened by a wider revision handed in", () => {
+    const wider = { ...REVISION, cwd: "/Users/someone", transcript: "a conversation" };
+    const opening = buildWith({ ...INVOCATION, revision: wider }, ATTEMPT_OPENING_STEP);
+    expect(JSON.stringify(opening.payload)).not.toContain("/Users/");
+    expect(Object.keys(opening.payload)).toHaveLength(6);
+  });
+
+  it("opens from no state into DISCOVERED, uncaused, at the submission instant", () => {
+    const opening = buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP);
+    expect({
+      type: opening.type,
+      transitionId: opening.transitionId,
+      fromState: opening.fromState,
+      toState: opening.toState,
+      causationId: opening.causationId,
+      correlationId: opening.correlationId,
+      occurredAt: opening.occurredAt,
+      recordedAt: opening.recordedAt,
+    }).toEqual({
+      type: "TASK_ATTEMPT_OPENED",
+      transitionId: "attempt.opened",
+      fromState: null,
+      toState: "DISCOVERED",
+      causationId: null,
+      correlationId: V2_INVOCATION.invocationId,
+      occurredAt: V2_INVOCATION.submittedAt,
+      recordedAt: V2_INVOCATION.submittedAt,
+    });
+  });
+});
+
+describe("the V2 causal thread starts at the opening", () => {
+  it("makes the discovery a same-state event caused by the opening, and leaves the rest of the chain as it was", () => {
+    const opening = buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP);
+    const events = LIFECYCLE_PLAN.map((step) => buildWith(V2_INVOCATION, step));
+    expect(events[0]?.fromState).toBe("DISCOVERED");
+    expect(events[0]?.toState).toBe("DISCOVERED");
+    expect(events[0]?.causationId).toBe(opening.eventId);
+    expect(events[0]?.payload["initiativeId"]).toBe(TEST_INITIATIVE_ID);
+    expect(events[0]?.payload["submissionDigest"]).toBe(V2_INVOCATION.submissionDigest);
+    for (let index = 1; index < events.length; index += 1) {
+      expect({ index, causationId: events[index]?.causationId, fromState: events[index]?.fromState }).toEqual({
+        index,
+        causationId: events[index - 1]?.eventId,
+        fromState: LIFECYCLE_PLAN[index]?.fromState,
+      });
+    }
+  });
+
+  it("N-G-9: is byte-identical across rebuilds and reads nothing ambient", () => {
+    const before = walkDigest(V2_INVOCATION, LIFECYCLE_PLAN) + JSON.stringify(buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP));
+    process.env["ACP_EVENT_PROBE"] = String(Date.now());
+    const after = walkDigest({ ...V2_INVOCATION, revision: { ...REVISION } }, LIFECYCLE_PLAN) +
+      JSON.stringify(buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP));
+    delete process.env["ACP_EVENT_PROBE"];
+    expect(after).toBe(before);
+    // And the two walks really are different walks.
+    expect(walkDigest(V2_INVOCATION, LIFECYCLE_PLAN)).not.toBe(walkDigest(INVOCATION, LIFECYCLE_PLAN));
   });
 });

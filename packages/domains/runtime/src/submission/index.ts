@@ -3,7 +3,7 @@ import type { PolicyRegistry, PolicyRouteRequest } from "@acp/accounts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { canonicalJsonStringify, sha256Hex } from "@acp/ledger";
 
-import type { DurableInvocation } from "../contracts/index.js";
+import type { DurableInvocation, InvocationRevision } from "../contracts/index.js";
 import { deterministicUuid } from "../core/coordinates/index.js";
 
 /**
@@ -147,19 +147,40 @@ export function canonicalSubmissionDigest(submission: DaemonSubmission): string 
  * coordinates for different content is a caller defect, and it is not silent.
  * Drilled by "the invocation identity says what it refuses" in
  * `test/submission/index.test.ts`.
+ *
+ * **The revision is carried, not identified** (P-18/protocolo G, ADR 0080). An
+ * optional fifth argument binds the revision the attempt runs under, and the
+ * walk then speaks the V2 coordinate. It does not enter the preimage: the flat
+ * attempt is already one per coordinate, so the id is already one per attempt,
+ * and a preimage that grew a revision would give an existing run a second
+ * identity. Omitted, the returned value has no `revision` member at all — not
+ * an `undefined` one — so every V1 caller receives exactly the object it
+ * received before G. The four fields are projected one by one, so a wider
+ * value handed in cannot widen what the walk carries.
  */
 export function deriveInvocation(
   taskId: string,
   attempt: number,
   submittedAt: string,
   submissionDigest: string,
+  revision?: InvocationRevision,
 ): DurableInvocation {
-  return {
+  const invocation = {
     taskId,
     attempt,
     invocationId: deterministicUuid("invocation/" + taskId + "/" + String(attempt)),
     submittedAt,
     submissionDigest,
+  };
+  if (revision === undefined) return invocation;
+  return {
+    ...invocation,
+    revision: Object.freeze({
+      revisionId: revision.revisionId,
+      revisionNumber: revision.revisionNumber,
+      attemptNumber: revision.attemptNumber,
+      envelopeSha256: revision.envelopeSha256,
+    }),
   };
 }
 

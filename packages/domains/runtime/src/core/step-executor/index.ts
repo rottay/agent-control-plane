@@ -8,9 +8,8 @@ import type {
 } from "../../contracts/index.js";
 import type { CheckpointPort } from "../../checkpoint/index.js";
 import { deriveEventCoordinate } from "../coordinates/index.js";
-import { buildIdempotencyKey } from "@acp/contracts";
 
-import { buildEvent, operationForStep } from "../events/index.js";
+import { ATTEMPT_OPENING_STEP, buildEvent, causalPredecessorOf, operationForStep } from "../events/index.js";
 import { INTENT_STEP, OUTCOME_STEP, planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
 import { LifecyclePlanError, PostconditionUnknownError, SupervisorError } from "../../errors/index.js";
@@ -172,11 +171,31 @@ export function assertInvocationContinuity(context: BeatContext): void {
   // also why a route substituted before the INTENT append is not refused here
   // yet: step 0 carries nothing that would differ. Binding the route into the
   // submission is a separate, later change.
-  const rebuilt = buildEvent({ invocation, step: planStep(0), emittedBy, initiativeId, plan, route });
+  //
+  // Under a revision the task's first event is the attempt's opening (ADR
+  // 0080), so that is what is rebuilt; it carries the revision record and the
+  // invocation, so a resume under another revision or another invocation
+  // refuses here. The opening carries no submission digest and no initiative,
+  // so the discovery is rebuilt too once it exists: that is where a V2 walk
+  // binds what was asked for, and a foreign submission resuming past it
+  // refuses exactly as a V1 one does at step 0.
+  const first = invocation.revision === undefined ? planStep(0) : ATTEMPT_OPENING_STEP;
+  const rebuilt = buildEvent({ invocation, step: first, emittedBy, initiativeId, plan, route });
   if (recorded.canonicalJson !== canonicalJsonStringify(rebuilt)) {
     throw new SupervisorError(
       "refusing to resume: these coordinates were begun by a different" +
         " invocation, and continuing would finish one request's work under" +
+        " another request's identity",
+    );
+  }
+  if (invocation.revision === undefined) return;
+
+  const discovery = buildEvent({ invocation, step: planStep(0), emittedBy, initiativeId, plan, route });
+  const recordedDiscovery = ledger.getEventByIdempotencyKey(discovery.idempotencyKey);
+  if (recordedDiscovery !== null && recordedDiscovery.canonicalJson !== canonicalJsonStringify(discovery)) {
+    throw new SupervisorError(
+      "refusing to resume: this attempt was discovered under a different" +
+        " submission, and continuing would finish one request's work under" +
         " another request's identity",
     );
   }
@@ -228,6 +247,25 @@ export function currentState(context: BeatContext): TaskState | null {
  * exists, which is evidence rather than memory.
  */
 export function nextStep(context: BeatContext, current: TaskState | null): PlanStep {
+  // A revision-bearing walk opens its attempt before anything else, and then
+  // discovers out of the state the opening left (P-18/protocolo G). Both are
+  // read from ledger evidence like every other branch here: no task means no
+  // opening yet, and `DISCOVERED` without the discovery under its own key
+  // means the opening landed and the discovery did not. A V1 walk never enters
+  // this block, so its navigation is exactly what it was.
+  if (context.invocation.revision !== undefined) {
+    if (current === null) return ATTEMPT_OPENING_STEP;
+    const discovery = stepFrom(context.plan, null);
+    if (current === discovery.toState) {
+      const key = deriveEventCoordinate(
+        context.invocation,
+        discovery.transitionId,
+        discovery.index,
+      ).idempotencyKey;
+      if (context.ledger.getEventByIdempotencyKey(key) === null) return discovery;
+    }
+  }
+
   if (current === null) return stepFrom(context.plan, null);
 
   if (current === "RUNNING") {
@@ -288,6 +326,12 @@ export function appendPlanStep(context: BeatContext, step: PlanStep): BeatResult
     plan: context.plan,
     route: context.route,
   });
+
+  if (step.eventType === ATTEMPT_OPENING_STEP.eventType) {
+    assertOpeningProposal(context, event.idempotencyKey);
+  } else if (context.invocation.revision !== undefined) {
+    assertAttemptOpened(context);
+  }
 
   assertCausalPredecessor(context, step, event.causationId);
 
@@ -386,18 +430,18 @@ function assertCausalPredecessor(
 ): void {
   if (causationId === null) return;
 
-  const previousStep = context.plan[step.index - 1];
-  if (previousStep === undefined) {
+  const previousStep = causalPredecessorOf(context.invocation, context.plan, step);
+  if (previousStep === null) {
     throw new LifecyclePlanError(
-      "the plan has no step before index " + String(step.index) + "; the causal thread cannot be verified",
+      "step " + step.transitionId + " states a causation but has no predecessor; the causal thread cannot be verified",
     );
   }
 
-  const key = buildIdempotencyKey({
-    taskId: context.invocation.taskId,
-    attempt: context.invocation.attempt,
-    transitionId: previousStep.transitionId,
-  });
+  // The predecessor's key is derived by the same function that keyed it, so a
+  // V2 walk looks its predecessor up under the V2 key (N-G-8). Composing the V1
+  // key here directly — as this guard did before G — would find nothing under
+  // a revision and refuse every step after the first.
+  const key = deriveEventCoordinate(context.invocation, previousStep.transitionId, previousStep.index).idempotencyKey;
   const recorded = context.ledger.getEventByIdempotencyKey(key);
   if (recorded === null) {
     throw new SupervisorError(
@@ -420,6 +464,80 @@ function assertCausalPredecessor(
         step.transitionId +
         ": the row under its predecessor's coordinates is a different event," +
         " so the causal link would point at work this attempt did not do",
+    );
+  }
+}
+
+/**
+ * Refuse, before the append, an opening the ledger would assign differently
+ * (P-18/protocolo G, ADR 0080).
+ *
+ * The producer proposes and the ledger verifies (ADR 0073): the door computes
+ * `1 + MAX(attempt)` over the task and refuses a disagreeing proposal by name.
+ * That refusal is correct and stays the authority. This check exists because
+ * every later beat of the walk stamps `invocation.attempt`, so an opening that
+ * proposed any other number would open an attempt the rest of the walk could
+ * not inhabit; refusing here names the walk's mistake with zero delta instead
+ * of leaving it to surface one event later.
+ *
+ * The value is read from the `LedgerPort` — `latestAttempt`, which is the
+ * task's `MAX(attempt)`, or nothing for a task with no events — and never from
+ * a counter of this module's or a clock. An opening already recorded under its
+ * own key is a replay: the ledger compares its bytes, so the arithmetic, which
+ * that opening itself has since moved, is not asked again.
+ */
+function assertOpeningProposal(context: BeatContext, openingKey: string): void {
+  if (context.ledger.getEventByIdempotencyKey(openingKey) !== null) return;
+
+  const task = context.ledger.getTask(context.invocation.taskId);
+  const assigned = (task === null ? 0 : task.latestAttempt) + 1;
+  if (assigned !== context.invocation.attempt) {
+    throw new SupervisorError(
+      "refusing to open this attempt: the ledger would assign it the flat attempt " +
+        String(assigned) +
+        " and this invocation runs under " +
+        String(context.invocation.attempt) +
+        "; every event of the walk repeats the flat attempt, so an opening under" +
+        " any other number opens an attempt the walk cannot inhabit",
+    );
+  }
+}
+
+/**
+ * Refuse any V2 beat whose attempt has not been opened (N-G-3).
+ *
+ * B's door is tolerant: a V2 event whose coordinate has no attempt row is
+ * admitted, and O-2 of B's postaudit showed the consequence — a coordinate that
+ * received events before its opening can never be opened at a flat attempt
+ * that matches them. ADR 0073 left narrowing that to G, and G narrows it here,
+ * in the producer, without touching the ledger: every step of a revision-bearing
+ * walk other than the opening requires the opening to be in the ledger under
+ * its V2 key, and to be this invocation's opening rather than an event that
+ * merely sits there.
+ */
+function assertAttemptOpened(context: BeatContext): void {
+  const opening = deriveEventCoordinate(
+    context.invocation,
+    ATTEMPT_OPENING_STEP.transitionId,
+    ATTEMPT_OPENING_STEP.index,
+  );
+  const recorded = context.ledger.getEventByIdempotencyKey(opening.idempotencyKey);
+  if (recorded === null) {
+    throw new SupervisorError(
+      "refusing to append: this attempt has not been opened, and nothing of a" +
+        " coordinate may reach the ledger before its " +
+        ATTEMPT_OPENING_STEP.transitionId,
+    );
+  }
+  const parsed: unknown = JSON.parse(recorded.canonicalJson);
+  const recordedId =
+    typeof parsed === "object" && parsed !== null && "eventId" in parsed
+      ? (parsed as { readonly eventId: unknown }).eventId
+      : undefined;
+  if (recordedId !== opening.eventId) {
+    throw new SupervisorError(
+      "refusing to append: the row under this attempt's opening is a different" +
+        " event, so the attempt was opened by work this invocation did not do",
     );
   }
 }

@@ -152,6 +152,7 @@ export type {
   DeriveEventCoordinate,
   DurableInvocation,
   EventCoordinate,
+  InvocationRevision,
   OperationCoordinate,
   OrchestrationDriver,
   PostconditionProbe,
@@ -185,7 +186,15 @@ export {
   operationName,
 } from "./core/coordinates/index.js";
 
-export { buildEvent, operationForStep } from "./core/events/index.js";
+// P-18/protocolo G: the attempt's opening, a beat outside the plan that a
+// revision-bearing walk appends first, and the one answer both the builder and
+// the producer guard give to "which event does this step follow from".
+export {
+  ATTEMPT_OPENING_STEP,
+  buildEvent,
+  causalPredecessorOf,
+  operationForStep,
+} from "./core/events/index.js";
 export type { BuildEventInput } from "./core/events/index.js";
 
 // P7P: one step table, one plan per commit policy. `READ_ONLY_PLAN` is the

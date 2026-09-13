@@ -810,6 +810,44 @@ describe("the invocation identity survived its relocation byte for byte", () => 
     expect(invocation.submissionDigest).toBe(digest);
   });
 
+  it("carries a revision without moving the identity, and without one returns the pre-G object (P-18/G)", () => {
+    // The same pinned literal as attempt 1 above: the revision is carried on
+    // the invocation, never folded into its preimage (ADR 0080).
+    const revision = {
+      revisionId: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f01",
+      revisionNumber: 2,
+      attemptNumber: 1,
+      envelopeSha256: "e".repeat(64),
+    };
+    const carried = deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64), revision);
+    expect(carried.invocationId).toBe("3cea5666-4abb-5bdf-8089-3f961124f281");
+    expect(carried.revision).toEqual(revision);
+    expect(Object.isFrozen(carried.revision)).toBe(true);
+
+    // Absent means absent: no `revision` member at all, so a V1 caller holds
+    // exactly the five-key object it held before G.
+    const flat = deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64));
+    expect(Object.keys(flat).sort()).toEqual(["attempt", "invocationId", "submissionDigest", "submittedAt", "taskId"]);
+    expect("revision" in flat).toBe(false);
+  });
+
+  it("projects the revision field by field, so a wider value cannot widen the walk", () => {
+    const wider = {
+      revisionId: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f02",
+      revisionNumber: 1,
+      attemptNumber: 1,
+      envelopeSha256: "e".repeat(64),
+      credentialRef: "secret://nope",
+    };
+    const carried = deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64), wider);
+    expect(Object.keys(carried.revision ?? {}).sort()).toEqual([
+      "attemptNumber",
+      "envelopeSha256",
+      "revisionId",
+      "revisionNumber",
+    ]);
+  });
+
   it("depends on the task and the attempt, and on nothing else", () => {
     const one = deriveInvocation(MOVED_TASK, 1, SUBMITTED_AT, "a".repeat(64));
     const again = deriveInvocation(MOVED_TASK, 1, "2026-01-01T00:00:00.000Z", "b".repeat(64));

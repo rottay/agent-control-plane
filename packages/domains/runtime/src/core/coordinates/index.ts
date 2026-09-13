@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { buildIdempotencyKey } from "@acp/contracts";
+import { buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
 
 import type { DurableInvocation, EventCoordinate, OperationCoordinate } from "../../contracts/index.js";
 
@@ -121,12 +121,41 @@ export function deriveEventCoordinate(
     eventId: deterministicUuid(eventName(invocation, transitionId)),
     occurredAt: invocation.submittedAt,
     recordedAt: invocation.submittedAt,
-    idempotencyKey: buildIdempotencyKey({
+    idempotencyKey: idempotencyKeyFor(invocation, transitionId),
+  };
+}
+
+/**
+ * The key one event of this invocation is unique on (P-18/protocolo G).
+ *
+ * Two forms and no third, chosen by the invocation rather than by the caller:
+ * an invocation with a revision keys by the V2 coordinate, one without keys by
+ * the flat attempt exactly as before G. The V2 key is **composed by
+ * `buildV2IdempotencyKey`, imported** — this module never restates the
+ * namespace or the join (streams §1.1, N-P18-20), so a producer that met a
+ * conflict has no second spelling of the same fact to reach for.
+ *
+ * `eventName` and `operationName` stay over the flat attempt on purpose. The
+ * flat attempt is monotone per task and the invocation id is derived from it,
+ * so the event id is already unique per coordinate; recomputing it over the
+ * revision would be a new identity formula for an event that already has one.
+ */
+function idempotencyKeyFor(invocation: DurableInvocation, transitionId: string): string {
+  const revision = invocation.revision;
+  if (revision === undefined) {
+    return buildIdempotencyKey({
       taskId: invocation.taskId,
       attempt: invocation.attempt,
       transitionId,
-    }),
-  };
+    });
+  }
+  return buildV2IdempotencyKey({
+    stream: "control_plane_events",
+    taskId: invocation.taskId,
+    revisionNumber: revision.revisionNumber,
+    attemptNumber: revision.attemptNumber,
+    transitionId,
+  });
 }
 
 /** Derive the addressable identity of one side effect. */

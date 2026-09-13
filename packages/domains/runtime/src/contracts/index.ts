@@ -89,6 +89,43 @@ export interface DurableInvocation {
   readonly submittedAt: string;
   /** Digest of the canonical submission payload. Pins what was asked for. */
   readonly submissionDigest: string;
+  /**
+   * The revision this attempt runs under, when the producer speaks the V2
+   * coordinate (P-18/protocolo G, ADR 0080).
+   *
+   * **Optional, and absence is the V1 path byte for byte.** An invocation
+   * without this member derives exactly the keys, ids and payloads it derived
+   * before G, so every ledger written before G resumes unchanged and every
+   * construction outside this domain — the daemon's two, durability's, the
+   * CLI's and the gateway's — keeps compiling and keeps walking V1. Binding a
+   * revision in those compositions is adoption, which "no partial cutover"
+   * blocks; making the member required would have forced it.
+   *
+   * With it, every event the walk builds carries the full coordinate and keys
+   * by `buildV2IdempotencyKey`, and the walk opens its attempt with a
+   * `TASK_ATTEMPT_OPENED` before anything else. `invocationId` keeps its
+   * preimage over the flat attempt: the flat attempt is monotone per task, so
+   * the id is already one per coordinate, and a second formula would be a
+   * second identity for one run.
+   */
+  readonly revision?: InvocationRevision;
+}
+
+/**
+ * The revision record an attempt opening carries (P-18/protocolo B's grammar).
+ *
+ * `SUBMISSION`-origin: captured before ingress and carried on the invocation,
+ * never looked up by the handler. The four fields are the ones the opening's
+ * payload needs to fold `task_revision_read_model` from the same event that
+ * opens the attempt. `restoredFromRevisionId` is deliberately absent: a restored
+ * revision is recovery's to produce, and a member no producer can fill is
+ * stocking.
+ */
+export interface InvocationRevision {
+  readonly revisionId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly envelopeSha256: string;
 }
 
 /** One side effect within an attempt, addressable and therefore probeable. */
@@ -107,7 +144,11 @@ export interface EventCoordinate extends Provenanced {
   readonly eventId: string;
   readonly occurredAt: string;
   readonly recordedAt: string;
-  /** Must equal taskId/attempt/transitionId, as the ledger contract requires. */
+  /**
+   * Must equal taskId/attempt/transitionId, as the ledger contract requires —
+   * or, for an invocation that carries a revision, the V2 key of its coordinate.
+   * The payload decides which, never the producer (N-P18-20).
+   */
   readonly idempotencyKey: string;
 }
 

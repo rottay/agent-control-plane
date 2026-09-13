@@ -2,9 +2,21 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
 import type { Checkpoint, ResolvedRoute } from "@acp/contracts";
-import { artifactRootFor, createCheckpointStore, hasArtifact, readArtifact, openLedger } from "@acp/ledger";
+import {
+  LedgerIdempotencyConflictError,
+  LedgerValidationError,
+  artifactRootFor,
+  createCheckpointStore,
+  effectIdV1,
+  effectIdempotencyKeyV1,
+  hasArtifact,
+  logicalOperationSha256,
+  readArtifact,
+  openLedger,
+  requestSha256,
+} from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -18,7 +30,11 @@ import {
   probeEffect,
 } from "../../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
-import { operationForStep } from "../../../src/core/events/index.js";
+import { ATTEMPT_OPENING_STEP, buildEvent, operationForStep } from "../../../src/core/events/index.js";
+import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
+import { deriveInvocation } from "../../../src/submission/index.js";
+import { settleFailure } from "../../../src/failure/index.js";
+import { restateInvocation } from "../../../src/lifecycle-operation/index.js";
 import {
   INTENT_STEP,
   LIFECYCLE_PLAN,
@@ -167,12 +183,11 @@ function createDrillCheckpointSource(input: {
   const { ledger, invocation, worktree } = input;
   return {
     assemble(step): Checkpoint | CheckpointRefused {
+      // Keyed by the walk's own derivation, so a revision-bearing walk finds
+      // its outcome under the V2 key and a V1 walk under exactly the key it
+      // always did (P-18/protocolo G).
       const recorded = ledger.getEventByIdempotencyKey(
-        buildIdempotencyKey({
-          taskId: invocation.taskId,
-          attempt: invocation.attempt,
-          transitionId: OUTCOME_STEP.transitionId,
-        }),
+        deriveEventCoordinate(invocation, OUTCOME_STEP.transitionId, OUTCOME_STEP.index).idempotencyKey,
       );
       if (recorded === null) {
         return { ok: false, reason: "CHECKPOINT_INVALID", at: "lastAtomicStep" };
@@ -709,5 +724,692 @@ describe("N10: no checkpoint content reaches an event payload", () => {
     expect(serialized).not.toContain("worktreePath");
     expect(serialized).not.toContain("nextSafeAction");
     expect(serialized).not.toContain("Await the next owner-authorized action.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-18/protocolo G — the producer speaks the V2 coordinate (ADR 0080)
+// ---------------------------------------------------------------------------
+
+const SUBMITTED_AT = "2026-08-27T12:00:00.000Z";
+
+/** The revision every G fixture runs under unless it says otherwise. */
+function revisionFor(taskId: string, revisionNumber = 1): NonNullable<DurableInvocation["revision"]> {
+  return {
+    revisionId: deterministicUuid("revision/" + taskId + "/" + String(revisionNumber)),
+    revisionNumber,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+  };
+}
+
+/** A revision-bearing invocation, derived by the submission path's own producer. */
+function v2InvocationFor(taskId: string, attempt = 1, revisionNumber = 1): DurableInvocation {
+  return deriveInvocation(taskId, attempt, SUBMITTED_AT, "a".repeat(64), revisionFor(taskId, revisionNumber));
+}
+
+/** A beat context over a revision-bearing invocation, on a fresh scenario ledger. */
+function v2ContextFor(name: string, taskId: string): {
+  context: BeatContext;
+  ledger: Ledger;
+  root: ScenarioRoot;
+  invocation: DurableInvocation;
+} {
+  const base = contextFor(name, taskId, []);
+  const invocation = v2InvocationFor(taskId);
+  return {
+    ...base,
+    invocation,
+    context: {
+      ...base.context,
+      invocation,
+      checkpoints: drillCheckpoints({
+        ledger: base.ledger,
+        invocation,
+        emittedBy: EMITTED_BY,
+        ledgerPath: scenarioLedgerPath(base.root),
+        worktree: base.root,
+      }),
+    },
+  };
+}
+
+/** Walk the real navigation until the task stands in `state`. */
+function walkUntil(context: BeatContext, state: string): void {
+  for (let guard = 0; guard <= context.plan.length + 1; guard += 1) {
+    const current = currentState(context);
+    if (current === state) return;
+    appendPlanStep(context, nextStep(context, current));
+  }
+  throw new Error("the walk did not reach " + state);
+}
+
+/** The error an action raises, or null. */
+function caught(action: () => unknown): unknown {
+  try {
+    action();
+  } catch (error: unknown) {
+    return error;
+  }
+  return null;
+}
+
+describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
+  it("runs a revision-bearing invocation to CHECKPOINTED through the supervisor, opening first", async () => {
+    const taskId = "40404040-4040-4040-8040-404040404001";
+    const root = scenario("p18g-walk");
+    const ledgerPath = scenarioLedgerPath(root);
+    const ledger = openLedger(ledgerPath);
+    ledgers.push(ledger);
+    const invocation = v2InvocationFor(taskId);
+
+    const supervisor = new SqliteSupervisor({
+      ledger,
+      invocation,
+      effects: recordingEffects(root, []),
+      checkpoints: drillCheckpoints({ ledger, invocation, emittedBy: EMITTED_BY, ledgerPath, worktree: root }),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: TEST_ROUTE,
+    });
+    const run = await supervisor.runToCheckpoint();
+
+    // One more append than a V1 walk: the opening, and nothing else.
+    expect(run).toEqual({ finalState: "CHECKPOINTED", appended: LIFECYCLE_PLAN.length + 1, replayed: 0 });
+
+    const events = ledger.listEvents({ taskId }).events;
+    expect(events.map((entry) => entry.event.transitionId)).toEqual([
+      ATTEMPT_OPENING_STEP.transitionId,
+      ...LIFECYCLE_PLAN.map((step) => step.transitionId),
+    ]);
+    // The task's first event is the opening, which is what continuity rebuilds.
+    expect(ledger.getTask(taskId)?.firstSequence).toBe(events[0]?.sequence);
+
+    // Every event keys V2 through the imported composer and repeats the flat
+    // assignment the opening received; no V1 key exists for this task at all.
+    for (const entry of events) {
+      expect(entry.idempotencyKey).toBe(
+        buildV2IdempotencyKey({
+          stream: "control_plane_events",
+          taskId,
+          revisionNumber: 1,
+          attemptNumber: 1,
+          transitionId: entry.event.transitionId,
+        }),
+      );
+      expect(entry.event.attempt).toBe(1);
+      expect(
+        ledger.getEventByIdempotencyKey(
+          buildIdempotencyKey({ taskId, attempt: 1, transitionId: entry.event.transitionId }),
+        ),
+      ).toBeNull();
+    }
+
+    const task = ledger.getTask(taskId);
+    expect({
+      currentState: task?.currentState,
+      latestAttempt: task?.latestAttempt,
+      latestRevisionNumber: task?.latestRevisionNumber,
+      latestAttemptNumber: task?.latestAttemptNumber,
+      initiativeId: task?.initiativeId,
+    }).toEqual({
+      currentState: "CHECKPOINTED",
+      latestAttempt: 1,
+      latestRevisionNumber: 1,
+      latestAttemptNumber: 1,
+      initiativeId: TEST_INITIATIVE_ID,
+    });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+
+    // Resuming the finished walk is a no-op: continuity rebuilds the opening
+    // and the discovery byte for byte.
+    expect(() => { assertInvocationContinuity(supervisorlessContext(ledger, root, invocation)); }).not.toThrow();
+  });
+
+  it("fits the read-only plan's V2 walk inside the supervisor's own bound", async () => {
+    // The loop allows `plan.length + 2` iterations. A V2 walk spends
+    // `plan.length + 1` appends and one terminal check, so the bound is met
+    // exactly; the shorter plan is the one where an off-by-one would show.
+    const taskId = "40404040-4040-4040-8040-404040404011";
+    const root = scenario("p18g-walk-read-only");
+    const ledgerPath = scenarioLedgerPath(root);
+    const ledger = openLedger(ledgerPath);
+    ledgers.push(ledger);
+    const invocation = v2InvocationFor(taskId);
+    const supervisor = new SqliteSupervisor({
+      ledger,
+      invocation,
+      effects: recordingEffects(root, []),
+      checkpoints: drillCheckpoints({ ledger, invocation, emittedBy: EMITTED_BY, ledgerPath, worktree: root }),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "NO_COMMIT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: TEST_ROUTE,
+    });
+    expect(await supervisor.runToCheckpoint()).toEqual({
+      finalState: "CHECKPOINTED",
+      appended: READ_ONLY_PLAN.length + 1,
+      replayed: 0,
+    });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("navigates opening, then discovery, then the plan, from ledger evidence alone", () => {
+    const { context } = v2ContextFor("p18g-navigate", "40404040-4040-4040-8040-404040404002");
+    expect(nextStep(context, null)).toBe(ATTEMPT_OPENING_STEP);
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    // DISCOVERED without the discovery: the plan's own step 0, not a copy.
+    expect(nextStep(context, "DISCOVERED")).toBe(planStep(0));
+    appendPlanStep(context, planStep(0));
+    expect(nextStep(context, "DISCOVERED")).toBe(planStep(1));
+  });
+});
+
+/** A context over an existing ledger, for the guards that need no supervisor. */
+function supervisorlessContext(ledger: Ledger, root: ScenarioRoot, invocation: DurableInvocation): BeatContext {
+  return {
+    ledger,
+    effects: recordingEffects(root, []),
+    invocation,
+    emittedBy: EMITTED_BY,
+    plan: LIFECYCLE_PLAN,
+    route: TEST_ROUTE,
+    initiativeId: TEST_INITIATIVE_ID,
+  };
+}
+
+describe("N-G-3: nothing of a coordinate reaches the ledger before its opening", () => {
+  it("refuses the discovery, a plain step and the INTENT of an unopened attempt, with zero delta", () => {
+    const { context, ledger } = v2ContextFor("p18g-n3", "40404040-4040-4040-8040-404040404003");
+    for (const step of [planStep(0), planStep(1), INTENT_STEP]) {
+      const refusal = caught(() => appendPlanStep(context, step));
+      expect({ step: step.transitionId, refused: refusal instanceof SupervisorError }).toEqual({
+        step: step.transitionId,
+        refused: true,
+      });
+      expect((refusal as Error).message).toContain("has not been opened");
+    }
+    expect(ledger.status().eventCount).toBe(0);
+  });
+
+  it("refuses when the row under the opening's key is not this invocation's opening", () => {
+    const { context, ledger } = v2ContextFor("p18g-n3-forged", "40404040-4040-4040-8040-404040404004");
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    const forged: BeatContext = {
+      ...context,
+      ledger: {
+        append: context.ledger.append.bind(context.ledger),
+        getTask: context.ledger.getTask.bind(context.ledger),
+        getEventBySequence: context.ledger.getEventBySequence.bind(context.ledger),
+        getEventByIdempotencyKey: () => ({
+          canonicalJson: JSON.stringify({ eventId: "00000000-0000-4000-8000-0000000000fe" }),
+        }),
+      },
+    };
+    const before = ledger.status().eventCount;
+    expect(() => appendPlanStep(forged, planStep(0))).toThrow(SupervisorError);
+    expect(ledger.status().eventCount).toBe(before);
+  });
+});
+
+describe("N-G-4: an opening replays exactly", () => {
+  it("returns inserted:false with the head, the task and the attempt unmoved", () => {
+    const { context, ledger, invocation } = v2ContextFor("p18g-n4", "40404040-4040-4040-8040-404040404005");
+    const first = appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    expect(first.inserted).toBe(true);
+    const head = ledger.status().headEventSha256;
+    const task = ledger.getTask(invocation.taskId);
+
+    // The arithmetic the opening moved (latestAttempt is now 1) is not asked
+    // again: a recorded opening is a replay, and the ledger compares its bytes.
+    const replay = appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    expect(replay.inserted).toBe(false);
+    expect(ledger.status().headEventSha256).toBe(head);
+    expect(ledger.getTask(invocation.taskId)).toEqual(task);
+    const recorded = ledger.getEventByIdempotencyKey(first.event?.idempotencyKey ?? "");
+    const payload = (JSON.parse(recorded?.canonicalJson ?? "{}") as { payload: Record<string, unknown> }).payload;
+    expect({ legacyAttemptNumber: payload["legacyAttemptNumber"], invocationId: payload["invocationId"] }).toEqual({
+      legacyAttemptNumber: 1,
+      invocationId: invocation.invocationId,
+    });
+  });
+});
+
+describe("N-G-5: the flat attempt is proposed, verified, and refused by name", () => {
+  it("the producer refuses an opening the ledger would assign differently, before the append", () => {
+    const taskId = "40404040-4040-4040-8040-404040404006";
+    const { context, ledger } = v2ContextFor("p18g-n5-producer", taskId);
+    const wrong: BeatContext = { ...context, invocation: v2InvocationFor(taskId, 2) };
+    const refusal = caught(() => appendPlanStep(wrong, ATTEMPT_OPENING_STEP));
+    expect(refusal).toBeInstanceOf(SupervisorError);
+    expect((refusal as Error).message).toContain("would assign it the flat attempt 1");
+    expect(ledger.status().eventCount).toBe(0);
+  });
+
+  it("the ledger refuses the same proposal by name when a producer skips its own check", () => {
+    // A port that hides the task, so the producer's arithmetic agrees with a
+    // wrong proposal and the append reaches the door. The door is the authority
+    // and says so in its own words; the walk appends nothing more.
+    const taskId = "40404040-4040-4040-8040-404040404007";
+    const { context, ledger } = v2ContextFor("p18g-n5-door", taskId);
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    const second = v2InvocationFor(taskId, 3, 2);
+    const blind: BeatContext = {
+      ...context,
+      invocation: second,
+      ledger: {
+        append: context.ledger.append.bind(context.ledger),
+        getTask: () => ({ currentState: "DISCOVERED", latestAttempt: 2, firstSequence: 1 }),
+        getEventBySequence: context.ledger.getEventBySequence.bind(context.ledger),
+        getEventByIdempotencyKey: context.ledger.getEventByIdempotencyKey.bind(context.ledger),
+      },
+    };
+    const before = ledger.status();
+    const refusal = caught(() => appendPlanStep(blind, { ...ATTEMPT_OPENING_STEP, fromState: "DISCOVERED" }));
+    expect(refusal).toBeInstanceOf(LedgerValidationError);
+    const issue = (refusal as LedgerValidationError).issues[0];
+    expect(issue?.path).toBe("attempt");
+    expect(issue?.message).toContain("is assigned the flat attempt 2");
+    expect(issue?.message).toContain("this event proposes 3");
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+  });
+
+  it("a second invocation for an open coordinate is refused, with zero delta", () => {
+    const taskId = "40404040-4040-4040-8040-404040404008";
+    const { context, ledger, invocation } = v2ContextFor("p18g-n5-invocation", taskId);
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    const before = ledger.status();
+
+    // The same coordinate, the same flat attempt, another invocation.
+    const intruder: DurableInvocation = { ...invocation, invocationId: deterministicUuid("intruder/" + taskId) };
+    const opening = buildEvent({
+      invocation: intruder,
+      step: ATTEMPT_OPENING_STEP,
+      emittedBy: EMITTED_BY,
+      initiativeId: TEST_INITIATIVE_ID,
+      plan: LIFECYCLE_PLAN,
+      route: TEST_ROUTE,
+    });
+    expect(opening.idempotencyKey).toBe(
+      ledger.listEvents({ taskId }).events[0]?.idempotencyKey,
+    );
+    // Under the same key the ledger's idempotency refuses first: same key,
+    // different bytes.
+    expect(caught(() => ledger.append(opening))).toBeInstanceOf(LedgerIdempotencyConflictError);
+
+    // Under another transition of the same coordinate the key differs, and the
+    // attempt's own identity refuses the second invocation by name.
+    const reopening = buildEvent({
+      invocation: intruder,
+      step: { ...ATTEMPT_OPENING_STEP, transitionId: "attempt.reopened", fromState: "DISCOVERED" },
+      emittedBy: EMITTED_BY,
+      initiativeId: TEST_INITIATIVE_ID,
+      plan: LIFECYCLE_PLAN,
+      route: TEST_ROUTE,
+    });
+    const issue = (caught(() => ledger.append(reopening)) as LedgerValidationError).issues[0];
+    expect(issue?.path).toBe("payload.invocationId");
+    expect(issue?.message).toContain("is already open under invocation");
+
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+  });
+});
+
+describe("N-G-6: a second revision of the same task is a second coordinate", () => {
+  it("opens revision 2 attempt 1 beside revision 1 attempt 1, with flat assignments 1 and 2", () => {
+    const taskId = "40404040-4040-4040-8040-404040404009";
+    const { context, ledger } = v2ContextFor("p18g-n6", taskId);
+    const first = appendPlanStep(context, ATTEMPT_OPENING_STEP);
+
+    // The walk refuses a second attempt on an existing task (continuity), so
+    // the second opening is exercised at the beat, out of the state the first
+    // left.
+    const later: BeatContext = { ...context, invocation: v2InvocationFor(taskId, 2, 2) };
+    expect(() => { assertInvocationContinuity(later); }).toThrow(SupervisorError);
+    const second = appendPlanStep(later, { ...ATTEMPT_OPENING_STEP, fromState: "DISCOVERED" });
+    expect(second.inserted).toBe(true);
+
+    expect(first.event?.idempotencyKey).not.toBe(second.event?.idempotencyKey);
+    expect([first.event?.payload["legacyAttemptNumber"], second.event?.payload["legacyAttemptNumber"]]).toEqual([1, 2]);
+    expect(first.event?.payload["invocationId"]).not.toBe(second.event?.payload["invocationId"]);
+    expect(
+      ledger.getEventByIdempotencyKey(
+        buildIdempotencyKey({ taskId, attempt: 1, transitionId: ATTEMPT_OPENING_STEP.transitionId }),
+      ),
+    ).toBeNull();
+    const task = ledger.getTask(taskId);
+    expect({ latestAttempt: task?.latestAttempt, revision: task?.latestRevisionNumber, attempt: task?.latestAttemptNumber }).toEqual({
+      latestAttempt: 2,
+      revision: 2,
+      attempt: 1,
+    });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+describe("N-G-8: the V2 chain resolves its predecessors under the V2 key", () => {
+  it("refuses a skipped step before the append, exactly as a V1 walk does", () => {
+    const { context, ledger } = v2ContextFor("p18g-n8", "40404040-4040-4040-8040-40404040400a");
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    appendPlanStep(context, planStep(0));
+    expect(appendPlanStep(context, planStep(1)).inserted).toBe(true);
+    const before = ledger.status().eventCount;
+    const refusal = caught(() => appendPlanStep(context, planStep(3)));
+    expect(refusal).toBeInstanceOf(SupervisorError);
+    expect((refusal as Error).message).toContain("its causal predecessor ready is not in the ledger");
+    expect(ledger.status().eventCount).toBe(before);
+  });
+});
+
+describe("V2 continuity binds the revision at the opening and the submission at the discovery", () => {
+  it("refuses a resume under another revision, another submission, or over a V1 history", () => {
+    const taskId = "40404040-4040-4040-8040-40404040400b";
+    const { context } = v2ContextFor("p18g-continuity", taskId);
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+
+    // Past the opening only: another revision identity is refused already.
+    const otherRevision: BeatContext = {
+      ...context,
+      invocation: { ...context.invocation, revision: { ...revisionFor(taskId), revisionId: deterministicUuid("elsewhere") } },
+    };
+    expect(() => { assertInvocationContinuity(otherRevision); }).toThrow(SupervisorError);
+
+    // Past the discovery: another submission is refused too.
+    appendPlanStep(context, planStep(0));
+    const otherSubmission: BeatContext = {
+      ...context,
+      invocation: { ...context.invocation, submissionDigest: "b".repeat(64) },
+    };
+    const refusal = caught(() => { assertInvocationContinuity(otherSubmission); });
+    expect(refusal).toBeInstanceOf(SupervisorError);
+    expect((refusal as Error).message).toContain("discovered under a different submission");
+    expect(() => { assertInvocationContinuity(context); }).not.toThrow();
+
+    // A V1 history is never resumed by a V2 invocation: its first event is a
+    // discovery, not an opening.
+    const legacyTask = "40404040-4040-4040-8040-40404040400c";
+    const legacy = contextFor("p18g-continuity-legacy", legacyTask, []);
+    appendPlanStep(legacy.context, planStep(0));
+    const upgraded: BeatContext = {
+      ...legacy.context,
+      invocation: { ...legacy.invocation, revision: revisionFor(legacyTask) },
+    };
+    expect(() => { assertInvocationContinuity(upgraded); }).toThrow(SupervisorError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// N-G-10 — ack, handoff, replay, on the coordinate the real walk opened
+// ---------------------------------------------------------------------------
+
+const EFFECT_AT = "2026-08-27T12:05:00.000Z";
+const SCOPE = "run";
+const STEP_KEY = "compose-answer";
+const NEUTRAL_REQUEST = { operation: "compose", inputs: ["a", "b"] };
+
+/** One segment record, in the nested shape the ledger's door reads. */
+function segmentRecord(segmentNumber: number, accountId: string): Record<string, unknown> {
+  return {
+    routeSegmentId: "seg-" + String(segmentNumber),
+    segmentNumber,
+    ...(segmentNumber === 1 ? {} : { predecessorSegmentId: "seg-" + String(segmentNumber - 1), handoffReason: "QUOTA_EXHAUSTED" }),
+    provider: "anthropic",
+    model: "claude-opus-5",
+    modelResolutionStatus: "RESOLVED",
+    modelVersionId: "claude-opus-5-20260101",
+    accountId,
+    transportKind: "cli",
+    capabilityPolicyVersion: "policy-1",
+  };
+}
+
+/**
+ * An execution event on the walk's own coordinate.
+ *
+ * No producer of effects, deliveries or occurrences ships in G — ADR 0080
+ * reassigns them by name — so these are appended through the ledger's real
+ * door, as C's drills are. What is NOT fabricated is the coordinate: the task,
+ * the revision, the attempt, the flat assignment, the invocation, the key and
+ * the state all come from the invocation the walk ran and from the ledger it
+ * wrote.
+ */
+function executionEvent(
+  context: BeatContext,
+  transitionId: string,
+  type: "EFFECT_INTENDED" | "DISPATCH_INTENDED" | "DISPATCH_OUTCOME_RECORDED",
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const { invocation } = context;
+  const revision = invocation.revision;
+  if (revision === undefined) throw new Error("an execution event needs the walk's revision");
+  const coordinate = deriveEventCoordinate(invocation, transitionId, 0);
+  const state = currentState(context);
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: coordinate.eventId,
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    transitionId,
+    idempotencyKey: coordinate.idempotencyKey,
+    type,
+    fromState: state,
+    toState: state,
+    emittedBy: EMITTED_BY,
+    occurredAt: EFFECT_AT,
+    recordedAt: EFFECT_AT,
+    correlationId: invocation.invocationId,
+    causationId: null,
+    payload: { revisionNumber: revision.revisionNumber, attemptNumber: revision.attemptNumber, ...record },
+  };
+}
+
+function effectCoordinate(context: BeatContext, segmentNumber: number, operationOrdinal: number): {
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly segmentNumber: number;
+  readonly operationOrdinal: number;
+} {
+  const revision = context.invocation.revision;
+  if (revision === undefined) throw new Error("no revision");
+  return {
+    taskId: context.invocation.taskId,
+    revisionNumber: revision.revisionNumber,
+    attemptNumber: revision.attemptNumber,
+    segmentNumber,
+    operationOrdinal,
+  };
+}
+
+function requestDigest(context: BeatContext): string {
+  return requestSha256({
+    effectKind: "model_execution",
+    requestContractVersion: "1",
+    envelopeSha256: context.invocation.revision?.envelopeSha256 ?? "",
+    neutralRequest: NEUTRAL_REQUEST,
+  });
+}
+
+function effectIntention(context: BeatContext, transitionId: string, segmentNumber: number, operationOrdinal: number, accountId: string): Record<string, unknown> {
+  const coordinate = effectCoordinate(context, segmentNumber, operationOrdinal);
+  return executionEvent(context, transitionId, "EFFECT_INTENDED", {
+    segment: segmentRecord(segmentNumber, accountId),
+    effect: {
+      effectId: effectIdV1(coordinate),
+      operationOrdinal,
+      effectKind: "model_execution",
+      semanticScopeKey: SCOPE,
+      localOperationKey: STEP_KEY,
+      // Over the walk's own invocation: the door recomputes it from the
+      // attempt row the walk's opening wrote.
+      logicalOperationSha256: logicalOperationSha256({
+        invocationId: context.invocation.invocationId,
+        semanticScopeKey: SCOPE,
+        localOperationKey: STEP_KEY,
+      }),
+      requestContractVersion: "1",
+      requestSha256: requestDigest(context),
+      idempotencyKey: effectIdempotencyKeyV1({
+        ...coordinate,
+        effectKind: "model_execution",
+        envelopeSha256: context.invocation.revision?.envelopeSha256 ?? "",
+      }),
+    },
+  });
+}
+
+function dispatchIntention(context: BeatContext, transitionId: string, effectId: string, attemptOrdinal: number, segmentNumber: number, accountId: string): Record<string, unknown> {
+  return executionEvent(context, transitionId, "DISPATCH_INTENDED", {
+    segment: segmentRecord(segmentNumber, accountId),
+    dispatch: { dispatchAttemptId: "dsp-" + String(attemptOrdinal), effectId, attemptOrdinal },
+  });
+}
+
+function dispatchOutcome(context: BeatContext, transitionId: string, dispatchAttemptId: string, outcome: Record<string, unknown>): Record<string, unknown> {
+  return executionEvent(context, transitionId, "DISPATCH_OUTCOME_RECORDED", {
+    outcome: { dispatchAttemptId, ...outcome },
+  });
+}
+
+/** Open the attempt and walk the real plan into RUNNING, with the effect performed. */
+async function walkIntoRun(name: string, taskId: string): Promise<{ context: BeatContext; ledger: Ledger }> {
+  const { context, ledger } = v2ContextFor(name, taskId);
+  walkUntil(context, "RUNNING");
+  await applyIntentEffect(context, INTENT_STEP);
+  expect(ledger.getTask(taskId)?.latestAttemptNumber).toBe(1);
+  return { context, ledger };
+}
+
+function refusalOf(action: () => unknown): { readonly path: string; readonly message: string } {
+  const error = caught(action);
+  expect(error).toBeInstanceOf(LedgerValidationError);
+  return (error as LedgerValidationError).issues[0] as { readonly path: string; readonly message: string };
+}
+
+describe("N-G-10: losing an acknowledgement, handing off and replaying, on the walk's coordinate", () => {
+  it("returns the original effect, demands reconciliation, and admits no new intention and no new send", async () => {
+    const taskId = "40404040-4040-4040-8040-40404040400d";
+    const { context, ledger } = await walkIntoRun("p18g-n10-unknown", taskId);
+    const effectId = effectIdV1(effectCoordinate(context, 1, 0));
+
+    // 1. The effect is intended on segment 1 and dispatched.
+    const intention = effectIntention(context, "effect-1", 1, 0, "acct-1");
+    const landed = ledger.append(intention);
+    expect(landed.inserted).toBe(true);
+    ledger.append(dispatchIntention(context, "dispatch-1", effectId, 1, 1, "acct-1"));
+
+    // 2. The acknowledgement is lost: INFLIGHT, then abandoned as uncertain.
+    ledger.append(dispatchOutcome(context, "inflight-1", "dsp-1", { dispatchState: "INFLIGHT", acceptedAt: EFFECT_AT }));
+    ledger.append(
+      dispatchOutcome(context, "abandon-1", "dsp-1", {
+        dispatchState: "ABANDONED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "OUTCOME_UNKNOWN",
+      }),
+    );
+    const settled = ledger.status();
+
+    // 3. The replay after the handoff: the lookup by logical key returns the
+    //    original effect id and says reconciliation is required.
+    const lookup = ledger.lookUpEffect({
+      taskId,
+      revisionNumber: 1,
+      attemptNumber: 1,
+      semanticScopeKey: SCOPE,
+      localOperationKey: STEP_KEY,
+      effectKind: "model_execution",
+      requestContractVersion: "1",
+      requestSha256: requestDigest(context),
+    });
+    expect(lookup?.effect.effectId).toBe(effectId);
+    expect(lookup?.reconciliationRequired).toBe(true);
+
+    //    The exact intention again is a replay of the same event.
+    const replay = ledger.append(intention);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(landed.record.sequence);
+
+    // 4. An honest retry on the handed-off segment is told to reuse — not
+    //    CONFLICT — and names the effect it already has.
+    const repeated = refusalOf(() => ledger.append(effectIntention(context, "effect-2", 2, 1, "acct-2")));
+    expect(repeated.path).toBe("payload.effect.logicalOperationSha256");
+    expect(repeated.message).not.toContain("CONFLICT");
+    expect(repeated.message).toContain(effectId);
+    expect(repeated.message).toContain("reconciliation");
+
+    // 5. And no new send: the uncertain outcome blocks another delivery.
+    expect(() => ledger.append(dispatchIntention(context, "dispatch-2", effectId, 2, 2, "acct-2"))).toThrow(
+      LedgerValidationError,
+    );
+
+    expect(ledger.status().eventCount).toBe(settled.eventCount);
+    expect(ledger.status().headEventSha256).toBe(settled.headEventSha256);
+    expect(ledger.listDispatchAttempts(effectId)).toHaveLength(1);
+    expect(ledger.listRouteSegments(taskId, 1, 1)).toHaveLength(1);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("refuses to redeliver a known outcome by name, and the first delivery still replays", async () => {
+    const taskId = "40404040-4040-4040-8040-40404040400e";
+    const { context, ledger } = await walkIntoRun("p18g-n10-known", taskId);
+    const effectId = effectIdV1(effectCoordinate(context, 1, 0));
+
+    ledger.append(effectIntention(context, "effect-1", 1, 0, "acct-1"));
+    const delivery = dispatchIntention(context, "dispatch-1", effectId, 1, 1, "acct-1");
+    const delivered = ledger.append(delivery);
+    ledger.append(
+      dispatchOutcome(context, "settle-1", "dsp-1", {
+        dispatchState: "SETTLED",
+        terminalAt: EFFECT_AT,
+        effectOutcomeStatus: "SUCCEEDED",
+      }),
+    );
+    const settled = ledger.status();
+
+    // The reuse instruction (decision 55): a second delivery after a handoff is
+    // refused on `payload.dispatch.effectId`, with the words that say reuse.
+    const refusal = refusalOf(() => ledger.append(dispatchIntention(context, "dispatch-2", effectId, 2, 2, "acct-2")));
+    expect(refusal.path).toBe("payload.dispatch.effectId");
+    expect(refusal.message).toContain("already ended SUCCEEDED at " + EFFECT_AT);
+    expect(refusal.message).toContain("a known outcome is reused, never redelivered");
+    expect(refusal.message).not.toContain("CONFLICT");
+
+    const replay = ledger.append(delivery);
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(delivered.record.sequence);
+    expect(ledger.status().eventCount).toBe(settled.eventCount);
+    expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchAttemptId)).toEqual(["dsp-1"]);
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+describe("what does not speak V2 yet fails closed, by name or by contract (ADR 0080)", () => {
+  it("a settlement for a revision-bearing walk is refused by the contract, and nothing is appended", async () => {
+    const taskId = "40404040-4040-4040-8040-40404040400f";
+    const { context, ledger } = v2ContextFor("p18g-settlement", taskId);
+    walkUntil(context, "RESERVED");
+    const before = ledger.status();
+
+    // The settlement builds its payload without the coordinate while its key is
+    // derived V2: the contract refuses the mismatch instead of recording a
+    // legacy-shaped event on a V2 attempt.
+    await expect(settleFailure(context, "BOUND_EXHAUSTED")).rejects.toThrow(
+      "idempotencyKey must be exactly taskId/attempt/transitionId",
+    );
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    expect(ledger.getTask(taskId)?.currentState).toBe("RESERVED");
+  });
+
+  it("restateInvocation refuses a task whose first event is an opening", () => {
+    const taskId = "40404040-4040-4040-8040-404040404010";
+    const { context, ledger } = v2ContextFor("p18g-restate", taskId);
+    walkUntil(context, "RESERVED");
+    const outcome = restateInvocation(ledger, taskId, 1);
+    expect(outcome).toEqual({ ok: false, refusal: "DISCOVERY_UNREADABLE", at: "task.firstSequence" });
   });
 });

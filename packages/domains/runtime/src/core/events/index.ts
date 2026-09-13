@@ -5,6 +5,7 @@ import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts"
 
 import type { DurableInvocation, OperationCoordinate } from "../../contracts/index.js";
 import { deriveEventCoordinate, deriveOperationCoordinate, operationDigest } from "../coordinates/index.js";
+import { planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
 import { LifecyclePlanError } from "../../errors/index.js";
 
@@ -107,7 +108,21 @@ function payloadFor(
   initiativeId: string,
   route: ResolvedRoute,
 ): Record<string, unknown> {
-  const base = { submissionDigest: invocation.submissionDigest };
+  // The V2 coordinate rides the base, so every event of a revision-bearing walk
+  // carries it and none can forget it (P-18/protocolo G, N-G-2). The contract
+  // reads these two keys to decide which idempotency key the event must have,
+  // so the key `deriveEventCoordinate` composed and the payload built here move
+  // together or `ControlPlaneEvent.parse` below refuses. Without a revision the
+  // base is exactly what it was before G, which is what keeps V1 byte-identical.
+  const revision = invocation.revision;
+  const base =
+    revision === undefined
+      ? { submissionDigest: invocation.submissionDigest }
+      : {
+          submissionDigest: invocation.submissionDigest,
+          revisionNumber: revision.revisionNumber,
+          attemptNumber: revision.attemptNumber,
+        };
 
   // The discovery step opens the task, so it is the one place the initiative
   // can be stated. Carrying it on every event would put the same fact in N
@@ -176,6 +191,10 @@ export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
   // makes this the earliest point a run can fail closed with zero delta.
   const route = ResolvedRoute.parse(input.route);
 
+  if (step.eventType === ATTEMPT_OPENING_STEP.eventType) {
+    return buildAttemptOpening(invocation, step, emittedBy);
+  }
+
   // The INTENT and OUTCOME beats address the SAME effect, so both derive the
   // operation from the intent step's index. An outcome that addressed its own
   // index would name an operation nothing ever performed.
@@ -202,18 +221,104 @@ export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
   // gone, but `deriveEventCoordinate` is pure over the invocation and the
   // transition id, so a resumed step threads to exactly the event the ledger
   // already durably holds. Step 0 has no predecessor and is honestly null --
-  // nothing causes a task's discovery.
-  const previousStep = step.index === 0 ? undefined : input.plan[step.index - 1];
-  if (step.index > 0 && previousStep === undefined) {
-    throw new LifecyclePlanError(
-      "the plan has no step before index " + String(step.index) + "; the causal thread cannot be derived",
-    );
-  }
+  // nothing causes a task's discovery. Under a revision step 0 follows the
+  // attempt's opening, and threads to it (P-18/protocolo G).
+  const previousStep = causalPredecessorOf(invocation, input.plan, step);
   const causationId =
-    previousStep === undefined
+    previousStep === null
       ? null
       : deriveEventCoordinate(invocation, previousStep.transitionId, previousStep.index).eventId;
 
+  return ControlPlaneEvent.parse({
+    contractVersion: CONTRACT_VERSION,
+    eventId: coordinate.eventId,
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    transitionId: step.transitionId,
+    idempotencyKey: coordinate.idempotencyKey,
+    type: step.eventType,
+    fromState: discoveryFromState(invocation, step),
+    toState: step.toState,
+    emittedBy,
+    occurredAt: coordinate.occurredAt,
+    recordedAt: coordinate.recordedAt,
+    correlationId: invocation.invocationId,
+    causationId,
+    payload: payloadFor(invocation, step, operation, initiativeId, route),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The attempt's opening (P-18/protocolo G, ADR 0080)
+// ---------------------------------------------------------------------------
+
+/**
+ * The step that opens a revision-bearing attempt: a beat outside the plan.
+ *
+ * **Outside the plan, because inside it would rewrite history.** `planIndex`
+ * travels in the payload of every PLAIN beat, so inserting a step into
+ * `LIFECYCLE_PLAN` would change the bytes of every V1 event after it and make
+ * `assertInvocationContinuity` refuse every ledger written before G. The plan's
+ * frozen objects are therefore untouched, and this step is navigated to by
+ * `nextStep` only for an invocation that carries a revision.
+ *
+ * **First, because the ledger's arithmetic says so** (Q-G1, adjudicated option
+ * (c)). The ledger assigns a new opening `1 + MAX(attempt)` over every event of
+ * the task, and every later V2 event of that coordinate must repeat it. A
+ * discovery appended first would already hold the flat attempt the walk runs
+ * under, pushing the opening one past it — and a walk has one invocation with
+ * one flat attempt. So the opening goes from no state to `DISCOVERED` on a task
+ * with no events, which is execution §3's "no events: 1", and the discovery
+ * follows it as a same-state V2 event. That order also narrows B's tolerant
+ * door in the producer (O-2 of B's postaudit): nothing of a coordinate reaches
+ * the ledger before its opening.
+ *
+ * `index` is `-1` because the step has no position in any plan. It enters no
+ * payload and no operation identity — the opening performs no effect — and
+ * `deriveEventCoordinate` voids its plan index, so the value is never read as a
+ * position; it only keeps the step from being mistaken for step 0.
+ */
+export const ATTEMPT_OPENING_STEP: PlanStep = Object.freeze({
+  index: -1,
+  transitionId: "attempt.opened",
+  fromState: null,
+  toState: planStep(0).toState,
+  eventType: "TASK_ATTEMPT_OPENED",
+  beat: "PLAIN",
+});
+
+/**
+ * Build the attempt's opening, field by field.
+ *
+ * The payload is B's grammar and nothing else: the revision record, the
+ * coordinate, the invocation it names and the flat assignment it proposes.
+ * Projected one by one from named members, so a wider invocation cannot widen
+ * the payload — the ledger's door reads the two identity keys and does **not**
+ * refuse a stray one, which makes this builder the only thing that keeps an
+ * eighth key out (the contract's own comment says as much). No
+ * `submissionDigest`, no route, no initiative: those bind at the discovery that
+ * follows, one event later than a V1 walk binds them, and the window between
+ * the two holds no work.
+ *
+ * `legacyAttemptNumber` is the invocation's flat attempt. The producer
+ * proposes; the ledger computes `1 + MAX(attempt)` and refuses a disagreement
+ * by name (ADR 0073). `appendPlanStep` checks the same arithmetic against the
+ * ledger before it appends, so a walk that would be refused never reaches the
+ * door. Both instants are the submission's, like every other event of the walk.
+ */
+function buildAttemptOpening(
+  invocation: DurableInvocation,
+  step: PlanStep,
+  emittedBy: string,
+): ControlPlaneEventType {
+  const revision = invocation.revision;
+  if (revision === undefined) {
+    throw new LifecyclePlanError(
+      "an attempt opening states the revision its attempt runs under, and this" +
+        " invocation carries none; a walk without a revision has no opening",
+    );
+  }
+  const coordinate = deriveEventCoordinate(invocation, step.transitionId, step.index);
   return ControlPlaneEvent.parse({
     contractVersion: CONTRACT_VERSION,
     eventId: coordinate.eventId,
@@ -228,9 +333,60 @@ export function buildEvent(input: BuildEventInput): ControlPlaneEventType {
     occurredAt: coordinate.occurredAt,
     recordedAt: coordinate.recordedAt,
     correlationId: invocation.invocationId,
-    causationId,
-    payload: payloadFor(invocation, step, operation, initiativeId, route),
+    // Nothing causes an attempt's opening, exactly as nothing causes a V1
+    // task's discovery.
+    causationId: null,
+    payload: {
+      revisionId: revision.revisionId,
+      revisionNumber: revision.revisionNumber,
+      attemptNumber: revision.attemptNumber,
+      envelopeSha256: revision.envelopeSha256,
+      invocationId: invocation.invocationId,
+      legacyAttemptNumber: invocation.attempt,
+    },
   });
+}
+
+/**
+ * The step a plan step's causation names, or `null` where nothing caused it.
+ *
+ * One answer for the builder and for the producer guard in the step executor,
+ * so the link an event states and the link the guard verifies cannot come
+ * apart. The opening has no predecessor; step 0 has none in a V1 walk and the
+ * opening in a V2 one; every other step names the plan's previous step.
+ */
+export function causalPredecessorOf(
+  invocation: DurableInvocation,
+  plan: readonly PlanStep[],
+  step: PlanStep,
+): PlanStep | null {
+  if (step.eventType === ATTEMPT_OPENING_STEP.eventType) return null;
+  if (step.index === 0) {
+    return invocation.revision === undefined ? null : ATTEMPT_OPENING_STEP;
+  }
+  const previous = plan[step.index - 1];
+  if (previous === undefined) {
+    throw new LifecyclePlanError(
+      "the plan has no step before index " + String(step.index) + "; the causal thread cannot be derived",
+    );
+  }
+  return previous;
+}
+
+/**
+ * The state a step leaves, as the ledger will see it.
+ *
+ * The plan's step 0 declares `fromState: null` because in a V1 walk it creates
+ * the task. Under a revision the opening created it, so the discovery is a
+ * same-state passthrough out of the opening's own `toState`. Decided here, in
+ * the builder, and nowhere else: the plan's frozen objects are not copied or
+ * edited, so `nextStep` still returns `planStep(0)` itself in both walks.
+ */
+function discoveryFromState(invocation: DurableInvocation, step: PlanStep): PlanStep["fromState"] {
+  if (invocation.revision === undefined || step.index !== 0 || step.fromState !== null) {
+    return step.fromState;
+  }
+  return ATTEMPT_OPENING_STEP.toState;
 }
 
 /**

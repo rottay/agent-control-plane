@@ -9590,6 +9590,62 @@ const CORR2_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-18/protocolo, escalón G — the producer speaks the V2 coordinate, and the
+ * protocol half is delivered (ADR 0080).
+ *
+ * **What lands.** An optional `revision` on `DurableInvocation`, carried by
+ * `deriveInvocation` without entering its preimage. `deriveEventCoordinate`
+ * keys a revision-bearing invocation by the imported `buildV2IdempotencyKey`;
+ * `buildEvent` puts `revisionNumber`/`attemptNumber` on every payload and builds
+ * `TASK_ATTEMPT_OPENED` field by field from `ATTEMPT_OPENING_STEP`, a beat
+ * outside the plan. Q-G1, adjudicated option (c): the opening is the task's
+ * first event, the discovery follows it same-state. The step executor navigates
+ * to both, refuses an opening whose `1 + latestAttempt` differs from the
+ * invocation's, refuses any V2 step before its opening (N-G-3, O-2 of B
+ * narrowed in the producer), resolves causal predecessors by the derivation that
+ * keyed them, and rebuilds the opening and the discovery on resume. Without a
+ * revision every byte is HEAD's, pinned by two vectors lifted from `a6ed7c3`.
+ *
+ * **What does NOT land, declared.** No producer of effects, deliveries or
+ * occurrences (reassigned to adoption/recovery). No daemon, durability, CLI or
+ * gateway change: they derive V1 until adoption. The exceptional producers and
+ * `restateInvocation` fail closed on a V2 task and are drilled doing so.
+ *
+ * **Pins that move.** `RUNTIME_PUBLIC_EXPORTS` gains three names
+ * (`ATTEMPT_OPENING_STEP`, `InvocationRevision`, `causalPredecessorOf`). The ADR
+ * corpus 79 → 80 is counted by `assertAdrNumbering()`; the decision register
+ * gains row 57. The packet register's `P-18/protocolo` row is marked delivered
+ * once (Q7).
+ *
+ * **Pins that do NOT move.** No migration (`MIGRATIONS` 14), no event type
+ * (vocabulary 33, `execution` 15), no `CONTRACT_VERSION` (`"2.4.0"`), no
+ * `CONTRACTS_SCHEMA_EXPORTS`, no `API_CONTRACT_VERSION`, no `PATH_SCOPED_LAWS`
+ * row, no ledger or contracts source.
+ *
+ * **Sixteen paths; one is new to the fence** — ADR 0080 (`grep -Fc` over this
+ * file, 0 before this block). The other fifteen are admitted by historical
+ * blocks.
+ */
+const P18G_WRITE_SET = [
+  "packages/domains/runtime/src/contracts/index.ts",
+  "packages/domains/runtime/src/core/coordinates/index.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/submission/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/README.md",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/coordinates/index.test.ts",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/audit/implementation/packets/index.md",
+  "docs/architecture/0080-the-producer-speaks-the-v2-coordinate.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -9800,6 +9856,7 @@ const WRITE_SET = [
   ...P18D_WRITE_SET,
   ...P18F_WRITE_SET,
   ...CORR2_WRITE_SET,
+  ...P18G_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -17994,6 +18051,7 @@ if (tracked.status === 0) {
  */
 const RUNTIME_PUBLIC_EXPORTS = [
   "ACP_UUID_NAMESPACE",
+  "ATTEMPT_OPENING_STEP",
   "AUTHORIZATION_REFUSALS",
   "CHECKPOINT_REFUSALS",
   "CheckpointPort",
@@ -18059,6 +18117,7 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "GraphRefusal",
   "GraphRefused",
   "INTENT_STEP",
+  "InvocationRevision",
   "LIFECYCLE_PLAN",
   "LOOPBACK_HOST",
   "LeaseGranted",
@@ -18127,6 +18186,7 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "buildConflictGraph",
   "buildEvent",
   "cancellationPrecheck",
+  "causalPredecessorOf",
   "checkAdmission",
   "checkWriteSetConformance",
   "closeIntent",

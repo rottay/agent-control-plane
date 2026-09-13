@@ -1,3 +1,4 @@
+import { V2_IDEMPOTENCY_NAMESPACE, buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../../src/contracts/index.js";
@@ -84,6 +85,58 @@ describe("event coordinates", () => {
     const after = deriveEventCoordinate(INVOCATION, "committed", 9);
     delete process.env["ACP_COORDINATE_PROBE"];
     expect(after).toEqual(before);
+  });
+});
+
+/**
+ * The V2 coordinate in the producer (P-18/protocolo G, ADR 0080).
+ *
+ * The key is compared against a call to `buildV2IdempotencyKey` imported from
+ * `@acp/contracts`, the one composer streams §1.1 admits, rather than against a
+ * string spelled here: a literal would agree with a producer that restated the
+ * namespace, and the claim is that this module restates nothing.
+ */
+describe("the V2 coordinate (P-18/protocolo G)", () => {
+  const REVISION = {
+    revisionId: "rev-0001",
+    revisionNumber: 1,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+  };
+  const FLAT: DurableInvocation = { ...INVOCATION, taskId: "11111111-1111-4111-8111-111111111112" };
+  const V2: DurableInvocation = { ...FLAT, revision: REVISION };
+
+  it("N-G-2: keys a revision-bearing invocation by the imported V2 composer, and moves nothing else", () => {
+    const coordinate = deriveEventCoordinate(V2, "run.started", 4);
+    expect(coordinate.idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: V2.taskId,
+        revisionNumber: REVISION.revisionNumber,
+        attemptNumber: REVISION.attemptNumber,
+        transitionId: "run.started",
+      }),
+    );
+    expect(coordinate.idempotencyKey.startsWith(V2_IDEMPOTENCY_NAMESPACE)).toBe(true);
+
+    // The id and the instants are not a new formula: the same name over the
+    // flat attempt, the same submission instant.
+    const flat = deriveEventCoordinate(FLAT, "run.started", 4);
+    expect(coordinate.eventId).toBe(flat.eventId);
+    expect(coordinate.occurredAt).toBe(V2.submittedAt);
+    expect(coordinate.recordedAt).toBe(V2.submittedAt);
+    expect(flat.idempotencyKey).toBe(buildIdempotencyKey({ taskId: V2.taskId, attempt: 1, transitionId: "run.started" }));
+  });
+
+  it("N-G-6: revision 1 attempt 1 and revision 2 attempt 1 never share a key, with each other or with V1", () => {
+    const first = deriveEventCoordinate(V2, "attempt.opened", -1);
+    const second = deriveEventCoordinate(
+      { ...V2, attempt: 2, revision: { ...REVISION, revisionNumber: 2 } },
+      "attempt.opened",
+      -1,
+    );
+    const legacy = deriveEventCoordinate(FLAT, "attempt.opened", -1);
+    expect(new Set([first.idempotencyKey, second.idempotencyKey, legacy.idempotencyKey]).size).toBe(3);
   });
 });
 

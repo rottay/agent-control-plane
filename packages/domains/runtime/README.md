@@ -203,6 +203,33 @@ failure occurred between a successful run and persisting the result." A
 coordinate built from `Date.now()` in that window comes back different, and a
 benign replay becomes a hard conflict at the exact moment recovery is running.
 
+The V2 coordinate follows the same law (P-18/protocolo G, ADR 0080). A
+`DurableInvocation` may carry an optional `revision` — `revisionId`,
+`revisionNumber`, `attemptNumber`, `envelopeSha256` — captured at submission.
+Without it, every key, id and payload is byte-identical to what the walk built
+before G. With it:
+
+- every event carries `revisionNumber` and `attemptNumber` and keys by
+  `buildV2IdempotencyKey`, imported from `@acp/contracts` and never restated
+  here; the contract refuses a V2 payload under any other key;
+- the walk's first event is `TASK_ATTEMPT_OPENED` (`attempt.opened`, outside the
+  plan, from no state into `DISCOVERED`), and the discovery follows it as a
+  same-state event caused by it. The producer proposes the flat attempt as
+  `1 + latestAttempt` read from the ledger port, refuses before the append when
+  that differs from the invocation's, and refuses any other V2 step whose
+  opening is not in the ledger;
+- event ids, operation ids and `invocationId` stay over the flat attempt, which
+  is already one per coordinate: no identity formula is new.
+
+What does not speak V2 yet is declared, not hidden. The daemon, durability, the
+CLI and the gateway derive V1 invocations until the adoption binds a revision.
+The exceptional producers (settlement, cancellation, usage, tool receipts,
+pressure, switches) build their payloads without the coordinate, so a
+revision-bearing invocation that reaches one is refused by the contract rather
+than recorded as legacy, and `restateInvocation` refuses a task whose first
+event is an opening. No producer of effects, deliveries or occurrences ships
+here: those are adoption and recovery.
+
 ### Loopback and data roots
 
 Every address is loopback and constant: Restate ingress `127.0.0.1:8080`, admin
