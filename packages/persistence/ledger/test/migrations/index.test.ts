@@ -40,6 +40,12 @@ import {
   TASK_REVISION_PROJECTION,
   TASK_SUBMISSION_MIGRATION,
   TASK_SUBMISSION_PROJECTION,
+  USAGE_CAPTURE_MIGRATION,
+  USAGE_MEASUREMENT_STREAM_PROJECTION,
+  USAGE_OBSERVATION_PROJECTION,
+  USAGE_SETTLEMENT_OBSERVATION_PROJECTION,
+  USAGE_SETTLEMENT_PROJECTION,
+  USAGE_SETTLEMENT_SOURCE_HEAD_PROJECTION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
@@ -183,7 +189,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -205,11 +211,12 @@ describe("migration 7 appends the watermark table without touching the applied s
       "model_version_registry",
       "initiative_registration_detail",
       "task_submission",
+      "usage_capture",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11, 12, 13, 14, 15, 17 and 19 seed rows into it, which is what a
+    // Migrations 9, 11, 12, 13, 14, 15, 17, 19 and 20 seed rows into it, which is what a
     // migration that adds a projection does; none of them creates, alters or
     // drops the table.
     const creating = MIGRATIONS.filter((migration) =>
@@ -219,7 +226,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -296,6 +303,11 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "prompt_occurrence_read_model@control_plane_events",
       "response_occurrence_read_model@control_plane_events",
       "task_submission_read_model@control_plane_events",
+      "usage_measurement_stream_read_model@control_plane_events",
+      "usage_observation_read_model@control_plane_events",
+      "usage_settlement_read_model@control_plane_events",
+      "usage_settlement_source_head_read_model@control_plane_events",
+      "usage_settlement_observation_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
       "artifact_blob_read_model@registry_events",
@@ -518,7 +530,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
   });
 
@@ -744,7 +756,7 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(20);
+    expect(PROJECTION_SOURCES).toHaveLength(25);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -1125,8 +1137,9 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
       ).toEqual([{ projectionName: name, sourceStream: "control_plane_events" }]);
       expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "table", name });
     }
-    // Ten when this migration landed; the eleventh is P-14 C's client key.
-    expect(PROJECTION_NAMES).toHaveLength(11);
+    // Ten when this migration landed; the eleventh is P-14 C's client key, and
+    // the five after it are P-32/captura B's usage cohort.
+    expect(PROJECTION_NAMES).toHaveLength(16);
   });
 
   it("clears the answers before the prompts, and the prompts before the deliveries", () => {
@@ -1493,8 +1506,8 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
       "task_revision_envelope_reference",
     );
     // Sixteen when this migration landed; the seventeenth is P-14 A's, the
-    // eighteenth P-14 B's and the nineteenth P-14 C's.
-    expect(MIGRATIONS).toHaveLength(19);
+    // eighteenth P-14 B's, the nineteenth P-14 C's and the twentieth P-32/captura B's.
+    expect(MIGRATIONS).toHaveLength(20);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1589,9 +1602,9 @@ describe("migration 17 folds the model version registry from the registry stream
     expect(SEVENTEENTH?.name).toBe("model_version_registry");
     expect(MODEL_VERSION_REGISTRY_MIGRATION).toBe(17);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION - 1]?.name).toBe("model_version_registry");
-    // Seventeen when this migration landed; the eighteenth is P-14 B's and the
-    // nineteenth P-14 C's.
-    expect(MIGRATIONS).toHaveLength(19);
+    // Seventeen when this migration landed; the eighteenth is P-14 B's, the
+    // nineteenth P-14 C's and the twentieth P-32/captura B's.
+    expect(MIGRATIONS).toHaveLength(20);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1711,8 +1724,9 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     expect(EIGHTEENTH?.name).toBe("initiative_registration_detail");
     expect(INITIATIVE_REGISTRATION_MIGRATION).toBe(18);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION - 1]?.name).toBe("initiative_registration_detail");
-    // Eighteen when this migration landed; the nineteenth is P-14 C's.
-    expect(MIGRATIONS).toHaveLength(19);
+    // Eighteen when this migration landed; the nineteenth is P-14 C's and the
+    // twentieth P-32/captura B's.
+    expect(MIGRATIONS).toHaveLength(20);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
@@ -1755,12 +1769,14 @@ describe("migration 19 gives a task's client key its one home", () => {
     .filter((line) => !line.trimStart().startsWith("--"))
     .join("\n");
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(NINETEENTH?.version).toBe(19);
     expect(NINETEENTH?.name).toBe("task_submission");
     expect(TASK_SUBMISSION_MIGRATION).toBe(19);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
-    expect(MIGRATIONS).toHaveLength(19);
+    // Nineteen when this migration landed; the twentieth is P-32/captura B's.
+    expect(MIGRATIONS).toHaveLength(20);
+    expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION]?.name).toBe("usage_capture");
   });
 
   it("creates the table STRICT, unique on the client key and on nothing else", () => {
@@ -1802,5 +1818,165 @@ describe("migration 19 gives a task's client key its one home", () => {
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes(TASK_SUBMISSION_PROJECTION))).toEqual([
       { type: "table", name: TASK_SUBMISSION_PROJECTION },
     ]);
+  });
+});
+
+/**
+ * Migration 20, the usage capture cohort (P-32/captura B, economy §1.1-§2.3, ADR
+ * 0089).
+ *
+ * The text: five STRICT tables with the dictionary's CHECK, UNIQUE and INDEX under
+ * the names it gives them, every foreign key it names and deferred, no trigger,
+ * and five watermarks seeded at the task head. `test/ledger` asserts what the
+ * door, the fold, the rebuild and the retroactive fold do with them.
+ */
+describe("migration 20 gives usage its stream, its observation and its settlement", () => {
+  const TWENTIETH = MIGRATIONS[19];
+
+  const statements = (TWENTIETH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+  const USAGE_TABLES = [
+    USAGE_MEASUREMENT_STREAM_PROJECTION,
+    USAGE_OBSERVATION_PROJECTION,
+    USAGE_SETTLEMENT_PROJECTION,
+    USAGE_SETTLEMENT_SOURCE_HEAD_PROJECTION,
+    USAGE_SETTLEMENT_OBSERVATION_PROJECTION,
+  ];
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(TWENTIETH?.version).toBe(20);
+    expect(TWENTIETH?.name).toBe("usage_capture");
+    expect(USAGE_CAPTURE_MIGRATION).toBe(20);
+    expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION - 1]?.name).toBe("usage_capture");
+    expect(MIGRATIONS).toHaveLength(20);
+  });
+
+  it("creates economy's five tables STRICT, and nothing else is created, altered or dropped", () => {
+    expect([...statements.matchAll(/CREATE TABLE (\w+) \(/g)].map((match) => match[1])).toEqual(USAGE_TABLES);
+    expect(statements.match(/\) STRICT;/g)).toHaveLength(5);
+    expect(statements).not.toMatch(/ALTER TABLE|DROP |CREATE TRIGGER|RENAME|UPDATE /);
+  });
+
+  it("carries the dictionary's unique and plain indexes literally", () => {
+    for (const index of [
+      "CREATE UNIQUE INDEX ux_usage_measurement_stream__identity\n  ON usage_measurement_stream_read_model (source, account_id, route_segment_id, source_epoch);",
+      "CREATE UNIQUE INDEX ux_usage_observation__stream_ordinal\n  ON usage_observation_read_model (measurement_stream_id, ordinal);",
+      "CREATE UNIQUE INDEX ux_usage_observation__source_report\n  ON usage_observation_read_model (measurement_stream_id, source_observation_id);",
+      "CREATE INDEX ix_usage_observation__effect\n  ON usage_observation_read_model (effect_id, sequence);",
+      "CREATE INDEX ix_usage_observation__corrects\n  ON usage_observation_read_model (corrects_observation_id);",
+      "CREATE INDEX ix_usage_settlement__latest\n  ON usage_settlement_read_model (effect_id, settlement_revision DESC);",
+    ]) {
+      expect(statements, index).toContain(index);
+    }
+    expect(statements.match(/CREATE (UNIQUE )?INDEX/g)).toHaveLength(6);
+  });
+
+  it("N-P32B-5/17: carries the report shape and the five nullity checks in the dictionary's words", () => {
+    expect(statements).toContain(
+      "CONSTRAINT ck_usage_observation__report_shape\n    CHECK ((report_kind IN ('DELTA','CUMULATIVE') AND corrects_observation_id IS NULL AND range_from_counter IS NOT NULL AND range_to_counter IS NOT NULL AND range_from_counter < range_to_counter) OR (report_kind = 'CORRECTION' AND corrects_observation_id IS NOT NULL AND range_from_counter IS NULL AND range_to_counter IS NULL))",
+    );
+    for (const column of ["input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens", "total_tokens"]) {
+      expect(statements, column).toContain(
+        "CHECK ((settlement_status IN ('UNKNOWN','DISPUTED') AND " +
+          column +
+          " IS NULL) OR (settlement_status IN ('FINAL','PARTIAL') AND " +
+          column +
+          " IS NOT NULL AND " +
+          column +
+          " >= 0))",
+      );
+    }
+    for (const rule of [
+      "CHECK (source_epoch >= 0)",
+      "CHECK (source_class IN ('PROVIDER_AUTHORITATIVE','WRAPPER_MEASURED','ESTIMATE'))",
+      "CHECK (report_kind IN ('DELTA','CUMULATIVE','CORRECTION'))",
+      "CHECK (range_from_counter IS NULL OR range_from_counter >= 0)",
+      "CHECK (is_final IN (0,1))",
+      "CHECK (settlement_revision >= 1)",
+      "CHECK (settlement_status IN ('FINAL','PARTIAL','UNKNOWN','DISPUTED'))",
+      "CHECK (fold_version >= 1)",
+      "CHECK (had_late_arrival IN (0,1))",
+      "CHECK (source_stream IN ('control_plane_events','registry_events'))",
+      "CHECK (source_sequence >= 0)",
+      "CONSTRAINT pk_usage_settlement PRIMARY KEY (effect_id, settlement_revision)",
+      "CONSTRAINT pk_usage_settlement_source_head PRIMARY KEY (effect_id, settlement_revision, source_stream)",
+      "CONSTRAINT pk_usage_settlement_observation PRIMARY KEY (effect_id, settlement_revision, observation_id)",
+    ]) {
+      expect(statements, rule).toContain(rule);
+    }
+    // Every digest column carries datos §3.4's shape, the one migration 13 gave the effect.
+    for (const digest of [
+      "measurement_stream_id",
+      "normalization_policy_sha256",
+      "source_policy_sha256",
+      "source_sha256",
+    ]) {
+      expect(statements, digest).toMatch(new RegExp("length\\(" + digest + "\\) = 64\\s+AND " + digest + " NOT GLOB '\\*\\[\\^0-9a-f\\]\\*'"));
+    }
+  });
+
+  it("names every foreign key the dictionary names, deferred, and the self-reference without RESTRICT", () => {
+    const references = [...statements.matchAll(/REFERENCES (\w+) \(/g)].map((match) => match[1]);
+    expect(references).toEqual([
+      "usage_measurement_stream_read_model",
+      "usage_observation_read_model",
+      "effect_read_model",
+      "effect_read_model",
+      "usage_observation_read_model",
+      "usage_settlement_read_model",
+      "usage_settlement_read_model",
+      "usage_observation_read_model",
+    ]);
+    expect(statements.match(/DEFERRABLE INITIALLY DEFERRED/g)).toHaveLength(8);
+    expect(statements.match(/ON DELETE RESTRICT/g)).toHaveLength(7);
+    expect(statements).toContain(
+      "CONSTRAINT fk_usage_observation__usage_observation\n    FOREIGN KEY (corrects_observation_id)\n" +
+        "    REFERENCES usage_observation_read_model (observation_id)\n    DEFERRABLE INITIALLY DEFERRED,",
+    );
+    // No foreign key into the segment: economy §1.1 names none, and the door names the segment.
+    expect(statements).not.toContain("REFERENCES execution_route_segment_read_model");
+  });
+
+  it("seeds its five watermarks from the task head, never from a literal zero", () => {
+    expect(statements.match(/INSERT INTO projection_watermark/g)).toHaveLength(1);
+    for (const name of USAGE_TABLES) expect(statements, name).toContain("'" + name + "'");
+    for (const key of ["head_sequence", "event_count", "head_event_sha256"]) {
+      expect(statements, key).toContain("WHERE key = '" + key + "'");
+    }
+  });
+
+  it("N-P32B-31: declares the cohort in all four places that have to agree, children cleared first", () => {
+    for (const name of USAGE_TABLES) {
+      expect(DERIVED_TABLES, name).toContain(name);
+      expect(PROJECTION_NAMES, name).toContain(name);
+      expect(PROJECTION_SOURCES.filter((source) => source.projectionName === name)).toEqual([
+        { projectionName: name, sourceStream: "control_plane_events" },
+      ]);
+    }
+    const at = (name: string): number => DERIVED_TABLES.indexOf(name);
+    expect(at(USAGE_SETTLEMENT_OBSERVATION_PROJECTION)).toBeLessThan(at(USAGE_SETTLEMENT_PROJECTION));
+    expect(at(USAGE_SETTLEMENT_SOURCE_HEAD_PROJECTION)).toBeLessThan(at(USAGE_SETTLEMENT_PROJECTION));
+    expect(at(USAGE_SETTLEMENT_PROJECTION)).toBeLessThan(at(USAGE_OBSERVATION_PROJECTION));
+    expect(at(USAGE_OBSERVATION_PROJECTION)).toBeLessThan(at(USAGE_MEASUREMENT_STREAM_PROJECTION));
+    expect(at(USAGE_MEASUREMENT_STREAM_PROJECTION)).toBeLessThan(at("effect_read_model"));
+    expect(at(USAGE_OBSERVATION_PROJECTION)).toBeLessThan(at(DISPATCH_ATTEMPT_PROJECTION));
+    expect(PROJECTION_NAMES).toHaveLength(16);
+    expect(PROJECTION_SOURCES).toHaveLength(25);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("usage_"))).toEqual([
+      { type: "table", name: "usage_measurement_stream_read_model" },
+      { type: "index", name: "ux_usage_measurement_stream__identity" },
+      { type: "table", name: "usage_observation_read_model" },
+      { type: "index", name: "ux_usage_observation__stream_ordinal" },
+      { type: "index", name: "ux_usage_observation__source_report" },
+      { type: "index", name: "ix_usage_observation__effect" },
+      { type: "index", name: "ix_usage_observation__corrects" },
+      { type: "table", name: "usage_settlement_read_model" },
+      { type: "index", name: "ix_usage_settlement__latest" },
+      { type: "table", name: "usage_settlement_source_head_read_model" },
+      { type: "table", name: "usage_settlement_observation_read_model" },
+    ]);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
   });
 });

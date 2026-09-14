@@ -70,7 +70,7 @@ ledger.close();
 | `computeOutboxCommandId(input)` / `outboxCommandIdPreimageV1(input)` | Pure. The id of one command, over `(sagaId, phase, targetKind, targetId)` under the contract's prefix; the door recomputes it. |
 | `foldOutboxCommands(entries)` | Pure. Every command a sequence of stream events folds to, refusing what the append door refuses. |
 | `measurementStreamIdV1(coordinate)` / `measurementStreamPreimageV1(coordinate)` | Pure. The id of one usage measurement stream, over `(source, accountId, routeSegmentId, sourceEpoch)` under its versioned prefix; refuses a malformed field by name before hashing. |
-| `foldUsageSettlement(request)` | Pure and inert. One effect's observations, at one cut, into one settlement revision — header, control-head vector, considered list and per-segment election — or one refusal from `USAGE_SETTLEMENT_REFUSALS`. No door calls it yet. |
+| `foldUsageSettlement(request)` | Pure. One effect's observations, at one cut, into one settlement revision — header, control-head vector, considered list and per-segment election — or one refusal from `USAGE_SETTLEMENT_REFUSALS`. The append door and the rebuild call it for every usage observation and every first delivery (P-32/captura B). |
 
 Options are `{ readOnly?, busyTimeoutMs? }`. Pages are bounded: default 100,
 maximum 1000, and cursors are exclusive.
@@ -188,6 +188,11 @@ fifteenth class cannot arrive without appearing here.
 | `dispatch_attempt_read_model` | derived | one row per concrete external delivery of one effect, in the five states of execution §7 |
 | `prompt_occurrence_read_model` | derived | one row per prompt a delivery sent: digests and counts, the effective segment and account, never the bytes |
 | `response_occurrence_read_model` | derived | the one answer to one prompt occurrence, attributed through that prompt and nothing else |
+| `usage_measurement_stream_read_model` | derived | one row per declared measurement stream, since migration 20: its recomputed id, source, account, segment, epoch, source class and normalization policy, and the event that first declared it |
+| `usage_observation_read_model` | derived | one row per usage report on one stream for one effect: DELTA, CUMULATIVE or CORRECTION, its counter range, four exclusive token classes and their total, `is_final` as the source said it |
+| `usage_settlement_read_model` | derived | one row per settlement revision of one effect: FINAL, PARTIAL, UNKNOWN or DISPUTED, the five counts (NULL iff UNKNOWN or DISPUTED, read as `bigint`), the policy digest and fold version, the last observation considered and whether one arrived after a FINAL. Insert-only: the highest revision is in force |
+| `usage_settlement_source_head_read_model` | derived | the cut each revision was folded at: the control stream's sequence and digest of its own trigger |
+| `usage_settlement_observation_read_model` | derived | every observation each revision considered, winners, losers and corrected alike |
 | `initiative_read_model` | derived | current status, counts, first and last position; since migration 18, the `title` and `objective_sha256` a registration recorded in the closed payload (`NULL` otherwise), and `repository_sha256`, which nothing produces |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
 | `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
@@ -400,11 +405,13 @@ nullable and with no default, so every row already there reads `NULL`, and one
 | `contract_version` | `envelope_artifact_reference_id` |
 | --- | --- |
 | `2.2.0`, `2.3.0`, `2.4.0` — a closed list frozen in the migration | must be `NULL` |
-| anything else — `2.5.0` today, and every later bump without touching 16 | required, and not empty |
+| anything else — `2.5.0` and `2.6.0` today, and every later bump without touching 16 | required, and not empty |
 
-The cohort is keyed on the version, so the version had to move:
-`CONTRACT_VERSION` is `"2.5.0"`. The bump pays the cohort, not an identity
+The cohort is keyed on the version, so the version had to move: P-36/local D
+moved `CONTRACT_VERSION` to `"2.5.0"`. That bump paid the cohort, not an identity
 (ADR 0084) — a reference is a fact the fold reads, and nothing is derived from it.
+P-32/captura B moved it on to `"2.6.0"` for an identity (ADR 0089), and fell into
+the same cohort without touching migration 16.
 
 The reference travels as `payload.envelopeArtifactReferenceId` of the revision
 record. **The fold checks form and cohort**, and refuses by name: the key on a
@@ -1195,8 +1202,8 @@ P-32/captura escalón A (ADR 0088; decisions 80-82). Economy §1–2 records spe
 observations on measurement streams and folds them, per effect, into a settlement
 revision. This escalón lands the half that can be a pure function, in
 `usage-settlement/`, and nothing else: no migration, no event type, no door. The
-module is **inert** — the fence holds that no source outside it and the barrel names
-it, and escalón B retires that law when its door calls the fold.
+module was **inert** — the fence held that no source outside it and the barrel named
+it — until escalón B's door called the fold and retired that law (next section).
 
 ### The stream identity
 
@@ -1251,6 +1258,70 @@ settlement, never a refusal.
 
 No table, migration, event type, append door, rebuild or read verb (B). No recorder
 (C). `TOKEN_USAGE_RECORDED`, the rollups and the quota estimate are untouched. No
+price, cost or valuation (P-33).
+
+## Usage, declared and measured, and settled by the door
+
+P-32/captura escalón B (ADR 0089; decisions 83-85). Economy §1.2 writes a stream, an
+observation and the settlement with the append and the head in one transaction, so
+migration 20, two event types, the door and the rebuild land together, and escalón
+A's fold is what they call.
+
+### Two events, and what each carries
+
+`USAGE_STREAM_DECLARED` records a measurement stream before its first report;
+`USAGE_OBSERVATION_RECORDED` records one report on it for one effect. Both are
+same-state passthroughs — the door refuses a moved state — on the stream's
+`progress` channel, and both payloads are closed: the V2 coordinate and one record,
+`usageStream` (`USAGE_STREAM_RECORD_KEYS`) or `usageObservation`
+(`USAGE_OBSERVATION_RECORD_KEYS`), and no other key. An observation carries no source
+class, no `recordedAt` and no `sequence`: the class is the stream's and the other two
+are the event's. `CONTRACT_VERSION` is `"2.6.0"`: the door recomputes the stream's id
+and every declaration names its adapter's normalization policy (ADR 0076's criterion).
+
+### What the door refuses, by name
+
+- A stream id that is not `measurementStreamIdV1` of its coordinate
+  (`STREAM_COORDINATE_INVALID`); a segment nobody opened, or one of another attempt; a
+  stream already declared with another class or policy. The same stream restated
+  writes nothing and keeps its first `sequence`.
+- A report on a stream nobody declared (`STREAM_UNKNOWN`); an effect nobody intended;
+  an effect of another attempt than the event's, or a stream whose segment is of
+  another attempt than the effect's; an effect with no delivery yet — nothing was
+  spent, and its first delivery is what opens its settlement.
+- A shape `ck_usage_observation__report_shape` would refuse; a total that is not the
+  `BigInt` sum of the four classes (`TOTAL_MISMATCH`); a count that is not a safe
+  integer `>= 0`. The same observation restated writes nothing; the same id with
+  other bytes is a conflict; another id at a held ordinal or source report id is
+  `ORDINAL_DUPLICATE` or `SOURCE_REPORT_DUPLICATE`; a correction of a report of
+  another stream or effect, of nobody, or of itself.
+- Whatever the fold refuses once the report joins the effect's others —
+  `COVERAGE_OVERLAP`, `CORRECTIONS_FORKED`, `TOKENS_OVERFLOW` — raised as the event is
+  projected, inside the same transaction, so nothing of it commits.
+
+### The settlement, and the exposure
+
+`nextUsageCapture` is the one function the door (`#projectEvent`), the rebuild
+(`applyEventToSnapshot`) and migration 20 call. An observation writes itself and the
+effect's next revision, folded with every report of the effect at the event's own
+head: the vector's control row is the trigger's sequence and chain digest, so a
+rebuild at a later head reconsiders nothing the trigger did not see. A
+`DISPATCH_INTENDED` of an effect that has no revision writes revision 1 — `UNKNOWN`,
+five NULL counts, an empty list, no observation invented — and one of an effect that
+has a revision writes nothing, whatever its ordinal. A non-final report after a final
+one is admitted and is the late arrival: a new revision with `had_late_arrival = 1`;
+only a correction withdraws a final.
+
+Migration 20 folds the task stream through the same function as it lands, so every
+effect a ledger already delivered has its exposure at its first delivery's sequence,
+digest and instant. `verifyIntegrity` compares the five tables with a replay as text,
+every integer as its digits, so a sum past `Number.MAX_SAFE_INTEGER` is compared
+exactly.
+
+### What this escalón does not do
+
+No recorder or producer, and no read verb or route (C and later). No FINAL and no
+zero by default. `TOKEN_USAGE_RECORDED`, the rollups and quota are untouched. No
 price, cost or valuation (P-33).
 
 ## Integrity

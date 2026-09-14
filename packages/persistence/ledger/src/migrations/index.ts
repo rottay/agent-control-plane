@@ -2522,6 +2522,237 @@ SELECT
   '1970-01-01T00:00:00.000Z';
 `,
   },
+  {
+    version: 20,
+    name: "usage_capture",
+    sql: `
+-- Usage is a declared stream and a measured observation, and the door settles
+-- them in the same transaction (P-32/captura B, ADR 0089).
+--
+-- Economy §1.1, §1.2 and §2.1-§2.3, five tables, with the dictionary's CHECK,
+-- UNIQUE and INDEX under the names it gives them. Stream, observation and
+-- settlement land together because §1.2 \`:81\` writes all three with the append
+-- and the head in one transaction: none of them can be cut from the others.
+--
+-- **Foreign keys.** Every one the dictionary names, and every one
+-- \`DEFERRABLE INITIALLY DEFERRED\` for migration 13's reason: a batch may intend
+-- a delivery and record its first observation in one transaction, and a
+-- settlement names the observation its own event records. Each carries
+-- \`ON DELETE RESTRICT\` (datos §8.1) **except the observation's self-reference**,
+-- which carries no action. SQLite fires RESTRICT at once even when the key is
+-- deferred, so clearing a table whose rows correct one another in one DELETE
+-- aborts on whichever target it happens to meet before its corrector; with no
+-- action the check waits for the commit, when the table is empty.
+--
+-- **Digest shape.** Every digest column carries datos §3.4's shape CHECK, the
+-- one migration 13 gave the effect's four.
+--
+-- **No trigger.** Every rule a row can carry is a CHECK; the rules that span
+-- rows — the identity recomputed, a correction of the same stream and effect,
+-- the coverage, the precedence and the revision's successor — are the door's and
+-- the fold's, and the rebuild runs the same fold.
+CREATE TABLE usage_measurement_stream_read_model (
+  measurement_stream_id       TEXT    NOT NULL,
+  source                      TEXT    NOT NULL,
+  account_id                  TEXT    NOT NULL,
+  route_segment_id            TEXT    NOT NULL,
+  source_epoch                INTEGER NOT NULL,
+  source_class                TEXT    NOT NULL,
+  normalization_policy_sha256 TEXT    NOT NULL,
+  sequence                    INTEGER NOT NULL,
+  CONSTRAINT pk_usage_measurement_stream PRIMARY KEY (measurement_stream_id),
+  CONSTRAINT ck_usage_measurement_stream__measurement_stream_id_shape
+    CHECK (length(measurement_stream_id) = 64 AND measurement_stream_id NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_usage_measurement_stream__source_epoch
+    CHECK (source_epoch >= 0),
+  CONSTRAINT ck_usage_measurement_stream__source_class
+    CHECK (source_class IN ('PROVIDER_AUTHORITATIVE','WRAPPER_MEASURED','ESTIMATE')),
+  CONSTRAINT ck_usage_measurement_stream__normalization_policy_sha256_shape
+    CHECK (length(normalization_policy_sha256) = 64
+      AND normalization_policy_sha256 NOT GLOB '*[^0-9a-f]*')
+) STRICT;
+
+-- A stream is not recycled: one coordinate, one stream.
+CREATE UNIQUE INDEX ux_usage_measurement_stream__identity
+  ON usage_measurement_stream_read_model (source, account_id, route_segment_id, source_epoch);
+
+CREATE TABLE usage_observation_read_model (
+  observation_id          TEXT    NOT NULL,
+  measurement_stream_id   TEXT    NOT NULL,
+  ordinal                 INTEGER NOT NULL,
+  source_observation_id   TEXT    NOT NULL,
+  report_kind             TEXT    NOT NULL,
+  range_from_counter      INTEGER,
+  range_to_counter        INTEGER,
+  corrects_observation_id TEXT,
+  effect_id               TEXT    NOT NULL,
+  is_final                INTEGER NOT NULL,
+  input_tokens            INTEGER NOT NULL,
+  output_tokens           INTEGER NOT NULL,
+  cache_write_tokens      INTEGER NOT NULL,
+  cache_read_tokens       INTEGER NOT NULL,
+  total_tokens            INTEGER NOT NULL,
+  occurred_at             TEXT    NOT NULL,
+  recorded_at             TEXT    NOT NULL,
+  sequence                INTEGER NOT NULL,
+  CONSTRAINT pk_usage_observation PRIMARY KEY (observation_id),
+  CONSTRAINT fk_usage_observation__usage_measurement_stream
+    FOREIGN KEY (measurement_stream_id)
+    REFERENCES usage_measurement_stream_read_model (measurement_stream_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_usage_observation__usage_observation
+    FOREIGN KEY (corrects_observation_id)
+    REFERENCES usage_observation_read_model (observation_id)
+    DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_usage_observation__effect_read_model
+    FOREIGN KEY (effect_id) REFERENCES effect_read_model (effect_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_usage_observation__ordinal
+    CHECK (ordinal >= 0),
+  CONSTRAINT ck_usage_observation__report_kind
+    CHECK (report_kind IN ('DELTA','CUMULATIVE','CORRECTION')),
+  CONSTRAINT ck_usage_observation__range_from_counter
+    CHECK (range_from_counter IS NULL OR range_from_counter >= 0),
+  CONSTRAINT ck_usage_observation__report_shape
+    CHECK ((report_kind IN ('DELTA','CUMULATIVE') AND corrects_observation_id IS NULL AND range_from_counter IS NOT NULL AND range_to_counter IS NOT NULL AND range_from_counter < range_to_counter) OR (report_kind = 'CORRECTION' AND corrects_observation_id IS NOT NULL AND range_from_counter IS NULL AND range_to_counter IS NULL)),
+  CONSTRAINT ck_usage_observation__is_final
+    CHECK (is_final IN (0,1)),
+  CONSTRAINT ck_usage_observation__input_tokens
+    CHECK (input_tokens >= 0),
+  CONSTRAINT ck_usage_observation__output_tokens
+    CHECK (output_tokens >= 0),
+  CONSTRAINT ck_usage_observation__cache_write_tokens
+    CHECK (cache_write_tokens >= 0),
+  CONSTRAINT ck_usage_observation__cache_read_tokens
+    CHECK (cache_read_tokens >= 0),
+  CONSTRAINT ck_usage_observation__total_tokens
+    CHECK (total_tokens >= 0)
+) STRICT;
+
+CREATE UNIQUE INDEX ux_usage_observation__stream_ordinal
+  ON usage_observation_read_model (measurement_stream_id, ordinal);
+
+CREATE UNIQUE INDEX ux_usage_observation__source_report
+  ON usage_observation_read_model (measurement_stream_id, source_observation_id);
+
+CREATE INDEX ix_usage_observation__effect
+  ON usage_observation_read_model (effect_id, sequence);
+
+CREATE INDEX ix_usage_observation__corrects
+  ON usage_observation_read_model (corrects_observation_id);
+
+-- One revision of one effect's settlement. The revision in force is the highest;
+-- no earlier one is ever updated to point at its successor.
+CREATE TABLE usage_settlement_read_model (
+  effect_id            TEXT    NOT NULL,
+  settlement_revision  INTEGER NOT NULL,
+  settlement_status    TEXT    NOT NULL,
+  input_tokens         INTEGER,
+  output_tokens        INTEGER,
+  cache_write_tokens   INTEGER,
+  cache_read_tokens    INTEGER,
+  total_tokens         INTEGER,
+  source_policy_sha256 TEXT    NOT NULL,
+  fold_version         INTEGER NOT NULL,
+  last_observation_id  TEXT,
+  had_late_arrival     INTEGER NOT NULL,
+  computed_at          TEXT    NOT NULL,
+  sequence             INTEGER NOT NULL,
+  CONSTRAINT pk_usage_settlement PRIMARY KEY (effect_id, settlement_revision),
+  CONSTRAINT fk_usage_settlement__effect_read_model
+    FOREIGN KEY (effect_id) REFERENCES effect_read_model (effect_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_usage_settlement__usage_observation
+    FOREIGN KEY (last_observation_id) REFERENCES usage_observation_read_model (observation_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_usage_settlement__settlement_revision
+    CHECK (settlement_revision >= 1),
+  CONSTRAINT ck_usage_settlement__settlement_status
+    CHECK (settlement_status IN ('FINAL','PARTIAL','UNKNOWN','DISPUTED')),
+  CONSTRAINT ck_usage_settlement__input_tokens
+    CHECK ((settlement_status IN ('UNKNOWN','DISPUTED') AND input_tokens IS NULL) OR (settlement_status IN ('FINAL','PARTIAL') AND input_tokens IS NOT NULL AND input_tokens >= 0)),
+  CONSTRAINT ck_usage_settlement__output_tokens
+    CHECK ((settlement_status IN ('UNKNOWN','DISPUTED') AND output_tokens IS NULL) OR (settlement_status IN ('FINAL','PARTIAL') AND output_tokens IS NOT NULL AND output_tokens >= 0)),
+  CONSTRAINT ck_usage_settlement__cache_write_tokens
+    CHECK ((settlement_status IN ('UNKNOWN','DISPUTED') AND cache_write_tokens IS NULL) OR (settlement_status IN ('FINAL','PARTIAL') AND cache_write_tokens IS NOT NULL AND cache_write_tokens >= 0)),
+  CONSTRAINT ck_usage_settlement__cache_read_tokens
+    CHECK ((settlement_status IN ('UNKNOWN','DISPUTED') AND cache_read_tokens IS NULL) OR (settlement_status IN ('FINAL','PARTIAL') AND cache_read_tokens IS NOT NULL AND cache_read_tokens >= 0)),
+  CONSTRAINT ck_usage_settlement__total_tokens
+    CHECK ((settlement_status IN ('UNKNOWN','DISPUTED') AND total_tokens IS NULL) OR (settlement_status IN ('FINAL','PARTIAL') AND total_tokens IS NOT NULL AND total_tokens >= 0)),
+  CONSTRAINT ck_usage_settlement__source_policy_sha256_shape
+    CHECK (length(source_policy_sha256) = 64 AND source_policy_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_usage_settlement__fold_version
+    CHECK (fold_version >= 1),
+  CONSTRAINT ck_usage_settlement__had_late_arrival
+    CHECK (had_late_arrival IN (0,1))
+) STRICT;
+
+CREATE INDEX ix_usage_settlement__latest
+  ON usage_settlement_read_model (effect_id, settlement_revision DESC);
+
+-- The vector of heads a revision was computed at. The control row is the
+-- door's; a registry row appears only when a policy is read from that stream,
+-- which none is in this build (adjudication Q4).
+CREATE TABLE usage_settlement_source_head_read_model (
+  effect_id           TEXT    NOT NULL,
+  settlement_revision INTEGER NOT NULL,
+  source_stream       TEXT    NOT NULL,
+  source_sequence     INTEGER NOT NULL,
+  source_sha256       TEXT    NOT NULL,
+  CONSTRAINT pk_usage_settlement_source_head PRIMARY KEY (effect_id, settlement_revision, source_stream),
+  CONSTRAINT fk_usage_settlement_source_head__usage_settlement
+    FOREIGN KEY (effect_id, settlement_revision)
+    REFERENCES usage_settlement_read_model (effect_id, settlement_revision)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT ck_usage_settlement_source_head__source_stream
+    CHECK (source_stream IN ('control_plane_events','registry_events')),
+  CONSTRAINT ck_usage_settlement_source_head__source_sequence
+    CHECK (source_sequence >= 0),
+  CONSTRAINT ck_usage_settlement_source_head__source_sha256_shape
+    CHECK (length(source_sha256) = 64 AND source_sha256 NOT GLOB '*[^0-9a-f]*')
+) STRICT;
+
+-- Every observation a revision considered: winners, losers and corrected alike.
+CREATE TABLE usage_settlement_observation_read_model (
+  effect_id           TEXT    NOT NULL,
+  settlement_revision INTEGER NOT NULL,
+  observation_id      TEXT    NOT NULL,
+  CONSTRAINT pk_usage_settlement_observation PRIMARY KEY (effect_id, settlement_revision, observation_id),
+  CONSTRAINT fk_usage_settlement_observation__usage_settlement
+    FOREIGN KEY (effect_id, settlement_revision)
+    REFERENCES usage_settlement_read_model (effect_id, settlement_revision)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_usage_settlement_observation__usage_observation
+    FOREIGN KEY (observation_id) REFERENCES usage_observation_read_model (observation_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- Five watermarks, seeded from the head of the task stream in migration 19's
+-- form. The rows are not empty by construction: every effect a ledger already
+-- delivered is exposed, and its first delivery is the trigger of its revision 1
+-- (adjudication Q3). SQL cannot run the fold, so the code folds the task stream
+-- after this text and inside the same transaction (\`afterSql\`, migration 17's
+-- precedent), with the function the door and the rebuild use.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  name,
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  '1970-01-01T00:00:00.000Z'
+FROM (
+  SELECT 'usage_measurement_stream_read_model' AS name
+  UNION ALL SELECT 'usage_observation_read_model'
+  UNION ALL SELECT 'usage_settlement_read_model'
+  UNION ALL SELECT 'usage_settlement_source_head_read_model'
+  UNION ALL SELECT 'usage_settlement_observation_read_model'
+);
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -2556,6 +2787,16 @@ export const DERIVED_TABLES: readonly string[] = [
   "artifact_reference_read_model",
   "artifact_blob_read_model",
   "worker_task_read_model",
+  // The P-32/captura B cohort, before D's pair and C's cohort and children first:
+  // the list and the vector name a header, the list and a header name an
+  // observation, an observation names a stream and an effect, and a header names
+  // an effect. `ON DELETE RESTRICT` fires at once even on a deferred key, so a
+  // wrong order here aborts the DELETE that caused it.
+  "usage_settlement_observation_read_model",
+  "usage_settlement_source_head_read_model",
+  "usage_settlement_read_model",
+  "usage_observation_read_model",
+  "usage_measurement_stream_read_model",
   // The P-18/protocolo D pair, before C's cohort and children first for its
   // reason: an answer names a prompt, and a prompt names a delivery, an effect
   // and a segment. Deferred foreign keys again, so a wrong order would surface
@@ -2608,6 +2849,12 @@ export const PROJECTION_NAMES: readonly string[] = [
   "response_occurrence_read_model",
   // And P-14 C's client key, named `TASK_SUBMISSION_PROJECTION` below.
   "task_submission_read_model",
+  // And P-32/captura B's five, in economy's order, named below.
+  "usage_measurement_stream_read_model",
+  "usage_observation_read_model",
+  "usage_settlement_read_model",
+  "usage_settlement_source_head_read_model",
+  "usage_settlement_observation_read_model",
 ];
 
 /**
@@ -2792,6 +3039,30 @@ export const TASK_SUBMISSION_PROJECTION = "task_submission_read_model";
  */
 export const TASK_SUBMISSION_MIGRATION = 19;
 
+/** One declared measurement stream (P-32/captura B, economy §1.1). */
+export const USAGE_MEASUREMENT_STREAM_PROJECTION = "usage_measurement_stream_read_model";
+
+/** One usage observation (P-32/captura B, economy §1.2). */
+export const USAGE_OBSERVATION_PROJECTION = "usage_observation_read_model";
+
+/** One settlement revision's header (P-32/captura B, economy §2.1). */
+export const USAGE_SETTLEMENT_PROJECTION = "usage_settlement_read_model";
+
+/** The vector of heads a settlement revision was computed at (economy §2.2). */
+export const USAGE_SETTLEMENT_SOURCE_HEAD_PROJECTION = "usage_settlement_source_head_read_model";
+
+/** The observations a settlement revision considered (economy §2.3). */
+export const USAGE_SETTLEMENT_OBSERVATION_PROJECTION = "usage_settlement_observation_read_model";
+
+/**
+ * The migration that creates the usage capture cohort (P-32/captura B, ADR 0089).
+ *
+ * Named for `TASK_SUBMISSION_MIGRATION`'s reasons: the suite and the rewind
+ * fixtures hold the number against where the SQL sits, and the ledger hangs the
+ * retroactive fold of the task stream's exposures off this exact version.
+ */
+export const USAGE_CAPTURE_MIGRATION = 20;
+
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
@@ -2868,6 +3139,11 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: PROMPT_OCCURRENCE_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: RESPONSE_OCCURRENCE_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: TASK_SUBMISSION_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: USAGE_MEASUREMENT_STREAM_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: USAGE_OBSERVATION_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: USAGE_SETTLEMENT_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: USAGE_SETTLEMENT_SOURCE_HEAD_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: USAGE_SETTLEMENT_OBSERVATION_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ARTIFACT_BLOB_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -3083,6 +3359,23 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   // constraint, whose automatic index carries the reserved prefix this inventory
   // excludes, and the rule a second submission is held to is the fold's.
   { type: "table", name: "task_submission_read_model" },
+  // P-32/captura B. Five tables, six indexes and no trigger: every rule a row can
+  // carry is a CHECK, and the rules spanning rows are the door's and the fold's.
+  // Each unique index is inventoried by name for the reason every other is —
+  // dropping `ux_usage_observation__stream_ordinal` leaves `schema_migrations`
+  // intact while the table quietly admits two reports at one ordinal — and the
+  // two plain ones because they are the dictionary's access paths.
+  { type: "table", name: "usage_measurement_stream_read_model" },
+  { type: "index", name: "ux_usage_measurement_stream__identity" },
+  { type: "table", name: "usage_observation_read_model" },
+  { type: "index", name: "ux_usage_observation__stream_ordinal" },
+  { type: "index", name: "ux_usage_observation__source_report" },
+  { type: "index", name: "ix_usage_observation__effect" },
+  { type: "index", name: "ix_usage_observation__corrects" },
+  { type: "table", name: "usage_settlement_read_model" },
+  { type: "index", name: "ix_usage_settlement__latest" },
+  { type: "table", name: "usage_settlement_source_head_read_model" },
+  { type: "table", name: "usage_settlement_observation_read_model" },
 ];
 
 export interface MigrationConformance {

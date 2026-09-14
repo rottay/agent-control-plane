@@ -78,7 +78,11 @@ this table against the barrel.
   reason, stated as one: decision 41 fixes a cohort of revision records by
   `contract_version`, and a cohort keyed on a version nobody moved could not
   exist. The bump pays that cohort, not an identity; `"2.4.0"` stays readable
-  for ever beside the other two (ADR 0084).
+  for ever beside the other two (ADR 0084). **It holds five from P-32/captura
+  B**, which moved the literal to `"2.6.0"` on C's criterion again: the ledger
+  recomputes a usage stream's id from its coordinate, and every declaration
+  names its adapter's normalization policy; `"2.5.0"` stays readable for ever
+  beside the other three (ADR 0089).
 - **Only the version in force is emitted.** The other half of the pair above,
   and the debt ADR 0072 named. `AdmittedContractVersion` is `z.literal` of
   `CONTRACT_VERSION`, and it governs the three shapes that are instruments of

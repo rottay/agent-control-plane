@@ -92,6 +92,25 @@ import type {
 } from "../types/index.js";
 
 import type {
+  UsageCaptureView,
+  UsageCaptureWrites,
+  UsageMeasurementStreamReadModel,
+  UsageObservationReadModel,
+  UsageSettlementReadModel,
+  UsageSettlementRecord,
+} from "../types/index.js";
+import {
+  USAGE_FOLD_VERSION_V1,
+  USAGE_REPORT_KINDS,
+  USAGE_SOURCE_CLASSES,
+  USAGE_SOURCE_POLICY_V1,
+  foldUsageSettlement,
+  measurementStreamIdV1,
+  type UsageMeasurementStreamInput,
+  type UsageObservationInput,
+} from "../usage-settlement/index.js";
+
+import type {
   DispatchOutcomeReading,
   DispatchOutcomeRecord,
   OccurrenceOwner,
@@ -2262,6 +2281,744 @@ export function canonicalResponseOccurrence(response: ResponseOccurrenceReadMode
   });
 }
 
+// ---------------------------------------------------------------------------
+// P-32/captura B — the measurement stream, the observation and the settlement.
+// ---------------------------------------------------------------------------
+
+/**
+ * The two event types of P-32/captura B, and the payload keys their records
+ * travel under (economy §1.1-§2; ADR 0089).
+ *
+ * P-18/protocolo D's shape: the V2 coordinate and one closed record, and nothing
+ * beside them. Closed because a usage payload carries counts, identifiers and
+ * digests, and a key its grammar does not declare is the one place a provider's
+ * prose or a credential could still ride in under a name no guard has heard of.
+ */
+export const USAGE_STREAM_DECLARED: ControlPlaneEvent["type"] = "USAGE_STREAM_DECLARED";
+export const USAGE_OBSERVATION_RECORDED: ControlPlaneEvent["type"] = "USAGE_OBSERVATION_RECORDED";
+
+export const USAGE_STREAM_KEY = "usageStream";
+export const USAGE_OBSERVATION_KEY = "usageObservation";
+
+/** Every key a stream declaration carries, all required. */
+export const USAGE_STREAM_RECORD_KEYS = [
+  "measurementStreamId",
+  "source",
+  "accountId",
+  "routeSegmentId",
+  "sourceEpoch",
+  "sourceClass",
+  "normalizationPolicySha256",
+] as const;
+
+/**
+ * Every key an observation carries. `rangeFromCounter`, `rangeToCounter` and
+ * `correctsObservationId` may be absent or `null`, as report kind decides; every
+ * other key is required. No `recordedAt` and no `sequence`: both are the
+ * recording event's.
+ */
+export const USAGE_OBSERVATION_RECORD_KEYS = [
+  "observationId",
+  "measurementStreamId",
+  "ordinal",
+  "sourceObservationId",
+  "reportKind",
+  "rangeFromCounter",
+  "rangeToCounter",
+  "correctsObservationId",
+  "effectId",
+  "isFinal",
+  "inputTokens",
+  "outputTokens",
+  "cacheWriteTokens",
+  "cacheReadTokens",
+  "totalTokens",
+  "occurredAt",
+] as const;
+
+const USAGE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+const USAGE_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** A safe integer at or above zero that is not `-0`: A's `isCount`, for a payload. */
+function usageCount(record: Record<string, unknown>, key: string): number | null {
+  const value = recordCount(record, key, 0);
+  return value === null || Object.is(value, -0) ? null : value;
+}
+
+/** A nullable count: absent and `null` are absence; anything else must be a count. */
+function usageOptionalCount(
+  record: Record<string, unknown>,
+  key: string,
+): { readonly ok: true; readonly value: number | null } | { readonly ok: false } {
+  const value = record[key];
+  if (value === undefined || value === null) return { ok: true, value: null };
+  const count = usageCount(record, key);
+  return count === null ? { ok: false } : { ok: true, value: count };
+}
+
+/**
+ * The same-state rule both usage types are held to, which no earlier type of
+ * this vocabulary had the door impose: recording spend moves no task.
+ */
+function usagePassthroughRefusal(event: ControlPlaneEvent): OccurrenceRefusal | null {
+  if (event.fromState !== null && event.fromState === event.toState) return null;
+  return {
+    path: "toState",
+    message:
+      event.type +
+      " is a same-state passthrough: declaring where spend is measured and recording a measurement move no task, " +
+      "so fromState and toState are the task's current state, both",
+  };
+}
+
+/**
+ * Read one stream declaration off its event — economy §1.1.
+ *
+ * `null` for any other type. Everything one event can be wrong about is decided
+ * here, the identity included: `measurementStreamId` is recomputed from the four
+ * coordinate fields through the versioned preimage and refused by name when it
+ * is not that digest (N-P32-1). What needs the base — the segment, a stream
+ * already declared under the id — is `usageStreamLinkRefusal`'s.
+ */
+export function readUsageStreamDeclaration(
+  event: ControlPlaneEvent,
+  sequence: number,
+): OccurrenceReading<UsageMeasurementStreamReadModel> | null {
+  if (event.type !== USAGE_STREAM_DECLARED) return null;
+  const passthrough = usagePassthroughRefusal(event);
+  if (passthrough !== null) return refused(passthrough.path, passthrough.message);
+
+  const envelope = occurrenceEnvelope(event, USAGE_STREAM_KEY, USAGE_STREAM_RECORD_KEYS);
+  if (envelope.kind === "refused") return refused(envelope.path, envelope.message);
+  const record = envelope.record;
+  const at = (field: string): string => "payload." + USAGE_STREAM_KEY + "." + field;
+
+  for (const field of ["source", "accountId", "routeSegmentId"]) {
+    if (recordText(record, field) === null) {
+      return refused(at(field), "STREAM_COORDINATE_INVALID: a stream names its " + field + " as non-empty text");
+    }
+  }
+  const source = recordText(record, "source") ?? "";
+  const accountId = recordText(record, "accountId") ?? "";
+  const routeSegmentId = recordText(record, "routeSegmentId") ?? "";
+  const sourceEpoch = usageCount(record, "sourceEpoch");
+  if (sourceEpoch === null) {
+    return refused(
+      at("sourceEpoch"),
+      "STREAM_COORDINATE_INVALID: the epoch is the adapter's registered counter generation, a safe integer >= 0",
+    );
+  }
+  const sourceClass = recordWord(record, "sourceClass", USAGE_SOURCE_CLASSES);
+  if (sourceClass === null) {
+    return refused(
+      at("sourceClass"),
+      "STREAM_SOURCE_CLASS_INVALID: the source class is registered, one of " + USAGE_SOURCE_CLASSES.join(", "),
+    );
+  }
+  const normalizationPolicySha256 = recordText(record, "normalizationPolicySha256");
+  if (normalizationPolicySha256 === null || !USAGE_DIGEST_PATTERN.test(normalizationPolicySha256)) {
+    return refused(
+      at("normalizationPolicySha256"),
+      "the normalization policy is named by its lowercase sha-256 hex digest",
+    );
+  }
+  const claimed = recordText(record, "measurementStreamId");
+  const measurementStreamId = measurementStreamIdV1({ source, accountId, routeSegmentId, sourceEpoch });
+  if (claimed !== measurementStreamId) {
+    return refused(
+      at("measurementStreamId"),
+      "STREAM_COORDINATE_INVALID: a stream's id is the digest of the versioned preimage of its source, account, " +
+        "segment and epoch, recomputed here and never believed; this one is not that digest",
+    );
+  }
+
+  return {
+    kind: "row",
+    row: {
+      measurementStreamId,
+      source,
+      accountId,
+      routeSegmentId,
+      sourceEpoch,
+      sourceClass,
+      normalizationPolicySha256,
+      sequence,
+    },
+  };
+}
+
+/**
+ * Read one observation off its event — economy §1.2.
+ *
+ * `null` for any other type. The report's shape is `ck_usage_observation__report_shape`
+ * refused by name before the constraint could abort; the four classes are
+ * checked against the total with `BigInt`, so input already counted in a cache
+ * class cannot be counted again; and a correction of itself is a cycle, refused
+ * here because no stored target could ever be found for it.
+ */
+export function readUsageObservation(
+  event: ControlPlaneEvent,
+  sequence: number,
+): OccurrenceReading<UsageObservationReadModel> | null {
+  if (event.type !== USAGE_OBSERVATION_RECORDED) return null;
+  const passthrough = usagePassthroughRefusal(event);
+  if (passthrough !== null) return refused(passthrough.path, passthrough.message);
+
+  const envelope = occurrenceEnvelope(event, USAGE_OBSERVATION_KEY, USAGE_OBSERVATION_RECORD_KEYS);
+  if (envelope.kind === "refused") return refused(envelope.path, envelope.message);
+  const record = envelope.record;
+  const at = (field: string): string => "payload." + USAGE_OBSERVATION_KEY + "." + field;
+  const shape = (field: string, message: string): OccurrenceReading<UsageObservationReadModel> =>
+    refused(at(field), "OBSERVATION_SHAPE_INVALID: " + message);
+
+  for (const field of ["observationId", "measurementStreamId", "sourceObservationId", "effectId"]) {
+    if (recordText(record, field) === null) return shape(field, "an observation names its " + field + " as non-empty text");
+  }
+  const observationId = recordText(record, "observationId") ?? "";
+  const measurementStreamId = recordText(record, "measurementStreamId") ?? "";
+  const sourceObservationId = recordText(record, "sourceObservationId") ?? "";
+  const effectId = recordText(record, "effectId") ?? "";
+
+  const ordinal = usageCount(record, "ordinal");
+  if (ordinal === null) return shape("ordinal", "the ordinal is a safe integer >= 0");
+  const reportKind = recordWord(record, "reportKind", USAGE_REPORT_KINDS);
+  if (reportKind === null) return shape("reportKind", "the report kind is one of " + USAGE_REPORT_KINDS.join(", "));
+
+  const from = usageOptionalCount(record, "rangeFromCounter");
+  if (!from.ok) return shape("rangeFromCounter", "a range bound is a safe integer >= 0, or absent");
+  const to = usageOptionalCount(record, "rangeToCounter");
+  if (!to.ok) return shape("rangeToCounter", "a range bound is a safe integer >= 0, or absent");
+  const corrects = optionalText(record, "correctsObservationId");
+  if (!corrects.ok) return shape("correctsObservationId", "a corrected observation is named by non-empty text, or absent");
+
+  if (reportKind === "CORRECTION") {
+    if (corrects.value === null) {
+      return shape("correctsObservationId", "a CORRECTION names the observation it replaces");
+    }
+    if (from.value !== null) return shape("rangeFromCounter", "a CORRECTION inherits its target's coverage and declares none");
+    if (to.value !== null) return shape("rangeToCounter", "a CORRECTION inherits its target's coverage and declares none");
+    if (corrects.value === observationId) {
+      return refused(at("correctsObservationId"), "CORRECTION_CYCLE: an observation does not correct itself");
+    }
+  } else {
+    if (corrects.value !== null) return shape("correctsObservationId", "only a CORRECTION names an observation it replaces");
+    if (from.value === null) return shape("rangeFromCounter", reportKind + " covers an explicit counter range");
+    if (to.value === null || to.value <= from.value) {
+      return shape("rangeToCounter", reportKind + " covers a half-open range whose end is past its start");
+    }
+  }
+
+  const isFinal = record["isFinal"];
+  if (isFinal !== 0 && isFinal !== 1) {
+    return shape("isFinal", "is_final is 0 or 1, the source's explicit close of the measurement, never inferred");
+  }
+  const occurredAt = recordText(record, "occurredAt");
+  if (occurredAt === null || !USAGE_INSTANT_PATTERN.test(occurredAt)) {
+    return shape("occurredAt", "the source instant is ISO-8601 with milliseconds and Z");
+  }
+
+  const counts: number[] = [];
+  let sum = 0n;
+  for (const field of ["inputTokens", "outputTokens", "cacheWriteTokens", "cacheReadTokens"]) {
+    const value = usageCount(record, field);
+    if (value === null) return shape(field, "a token class is a safe integer >= 0");
+    counts.push(value);
+    sum += BigInt(value);
+  }
+  const totalTokens = usageCount(record, "totalTokens");
+  if (totalTokens === null) return shape("totalTokens", "the total is a safe integer >= 0");
+  if (BigInt(totalTokens) !== sum) {
+    return refused(
+      at("totalTokens"),
+      "TOTAL_MISMATCH: the total is the sum of the four mutually exclusive classes and nothing else",
+    );
+  }
+
+  return {
+    kind: "row",
+    row: {
+      observationId,
+      measurementStreamId,
+      ordinal,
+      sourceObservationId,
+      reportKind,
+      rangeFromCounter: from.value,
+      rangeToCounter: to.value,
+      correctsObservationId: corrects.value,
+      effectId,
+      isFinal,
+      inputTokens: counts[0] ?? 0,
+      outputTokens: counts[1] ?? 0,
+      cacheWriteTokens: counts[2] ?? 0,
+      cacheReadTokens: counts[3] ?? 0,
+      totalTokens,
+      occurredAt,
+      recordedAt: event.recordedAt,
+      sequence,
+    },
+  };
+}
+
+/** The comparable form of a stream: everything it is, and not the event that first declared it. */
+export function canonicalUsageStream(stream: UsageMeasurementStreamReadModel): string {
+  return canonicalJsonStringify({
+    measurementStreamId: stream.measurementStreamId,
+    source: stream.source,
+    accountId: stream.accountId,
+    routeSegmentId: stream.routeSegmentId,
+    sourceEpoch: stream.sourceEpoch,
+    sourceClass: stream.sourceClass,
+    normalizationPolicySha256: stream.normalizationPolicySha256,
+  });
+}
+
+/**
+ * The comparable form of an observation: everything the source reported, and
+ * neither birth attribute (`recordedAt`, `sequence`), for `canonicalSegment`'s
+ * reason. Same identity with other bytes is a conflict, never a replay (economy
+ * §1.2 `:80`).
+ */
+export function canonicalUsageObservation(observation: UsageObservationReadModel): string {
+  return canonicalJsonStringify({
+    observationId: observation.observationId,
+    measurementStreamId: observation.measurementStreamId,
+    ordinal: observation.ordinal,
+    sourceObservationId: observation.sourceObservationId,
+    reportKind: observation.reportKind,
+    rangeFromCounter: observation.rangeFromCounter,
+    rangeToCounter: observation.rangeToCounter,
+    correctsObservationId: observation.correctsObservationId,
+    effectId: observation.effectId,
+    isFinal: observation.isFinal,
+    inputTokens: observation.inputTokens,
+    outputTokens: observation.outputTokens,
+    cacheWriteTokens: observation.cacheWriteTokens,
+    cacheReadTokens: observation.cacheReadTokens,
+    totalTokens: observation.totalTokens,
+    occurredAt: observation.occurredAt,
+  });
+}
+
+/**
+ * Why a stream declaration cannot stand, or `null`.
+ *
+ *  1. **The segment exists** (H-11). §1.1 gives the column no foreign key, and a
+ *     stream attributed to a segment nobody opened attributes spend to nothing.
+ *  2. **The event is recorded at the attempt that owns the segment**, D's anchor
+ *     one table over: a segment is found by a global id, so without this a
+ *     declaration could be recorded under another task's coordinate.
+ *  3. **A stream is declared once** (N-P32-2). The id is the digest of the
+ *     coordinate, so an id already held names the same coordinate; what may still
+ *     differ is the class or the policy, and either is refused by name. The same
+ *     bytes are a restatement, which writes nothing.
+ */
+export function usageStreamLinkRefusal(
+  event: ControlPlaneEvent,
+  stream: UsageMeasurementStreamReadModel,
+  segmentOwner: OccurrenceOwner | null,
+  stored: UsageMeasurementStreamReadModel | null,
+): OccurrenceRefusal | null {
+  const at = (field: string): string => "payload." + USAGE_STREAM_KEY + "." + field;
+  if (segmentOwner === null) {
+    return {
+      path: at("routeSegmentId"),
+      message:
+        "a stream attributes spend to a route segment that has been opened, and " +
+        printable(stream.routeSegmentId) +
+        " has not been",
+    };
+  }
+  if (!recordedAtOwner(event, segmentOwner)) {
+    return {
+      path: at("routeSegmentId"),
+      message:
+        "segment " +
+        printable(stream.routeSegmentId) +
+        " belongs to attempt " +
+        taskAttemptKey(segmentOwner.taskId, segmentOwner.revisionNumber, segmentOwner.attemptNumber) +
+        " and this declaration is recorded at " +
+        eventCoordinateText(event),
+    };
+  }
+  if (stored !== null && canonicalUsageStream(stored) !== canonicalUsageStream(stream)) {
+    const field = stored.sourceClass !== stream.sourceClass ? "sourceClass" : "normalizationPolicySha256";
+    return {
+      path: at(field),
+      message:
+        "stream " +
+        stream.measurementStreamId +
+        " is already declared with another " +
+        field +
+        ", and a reused stream keeps every field it was declared with; a new generation is a new epoch",
+    };
+  }
+  return null;
+}
+
+/** What an observation's links are checked against, read off the base or off a snapshot. */
+export interface UsageObservationLinks {
+  readonly stream: UsageMeasurementStreamReadModel | null;
+  readonly streamSegmentOwner: OccurrenceOwner | null;
+  readonly effectOwner: OccurrenceOwner | null;
+  /** Whether the effect has its exposure revision, which only its first delivery writes. */
+  readonly exposed: boolean;
+  readonly stored: UsageObservationReadModel | null;
+  readonly ordinalHolder: string | null;
+  readonly sourceReportHolder: string | null;
+  readonly target: UsageObservationReadModel | null;
+}
+
+/**
+ * Why an observation cannot hang off its stream and its effect, or `null`.
+ *
+ * In the order an operator would want them:
+ *
+ *  1. **The stream is declared** — before its first report (economy §1.1 `:36`).
+ *  2. **The effect exists** (N-P32-15), refused by name and never as an abort of
+ *     `fk_usage_observation__effect_read_model`.
+ *  3. **The event is recorded at the attempt that owns the effect** (N-P32B-20).
+ *  4. **The stream's segment is of that same attempt**: spend of one attempt is
+ *     not attributed to a segment of another.
+ *  5. **The effect is exposed** (Q3, H-5). Its first delivery writes revision 1;
+ *     before it there is no spend to measure, and revision 1 is always the
+ *     exposure.
+ *  6. **One report is one report** (N-P32-4). The same id with the same bytes is a
+ *     restatement; with other bytes it is a conflict; another id at a held
+ *     ordinal or source report id is refused by name before either unique index.
+ *  7. **A correction names a recorded report of its own stream and effect** (E7).
+ */
+export function usageObservationLinkRefusal(
+  event: ControlPlaneEvent,
+  observation: UsageObservationReadModel,
+  links: UsageObservationLinks,
+): OccurrenceRefusal | null {
+  const at = (field: string): string => "payload." + USAGE_OBSERVATION_KEY + "." + field;
+  if (links.stream === null) {
+    return {
+      path: at("measurementStreamId"),
+      message:
+        "STREAM_UNKNOWN: a stream is declared before its first report, and " +
+        printable(observation.measurementStreamId) +
+        " has not been",
+    };
+  }
+  if (links.effectOwner === null) {
+    return {
+      path: at("effectId"),
+      message: "a measurement belongs to an effect, and effect " + printable(observation.effectId) + " has not been intended",
+    };
+  }
+  if (!recordedAtOwner(event, links.effectOwner)) {
+    return {
+      path: at("effectId"),
+      message:
+        "effect " +
+        printable(observation.effectId) +
+        " belongs to attempt " +
+        taskAttemptKey(links.effectOwner.taskId, links.effectOwner.revisionNumber, links.effectOwner.attemptNumber) +
+        " and this observation is recorded at " +
+        eventCoordinateText(event),
+    };
+  }
+  const segmentOwner = links.streamSegmentOwner;
+  if (
+    segmentOwner === null ||
+    segmentOwner.taskId !== links.effectOwner.taskId ||
+    segmentOwner.revisionNumber !== links.effectOwner.revisionNumber ||
+    segmentOwner.attemptNumber !== links.effectOwner.attemptNumber
+  ) {
+    return {
+      path: at("measurementStreamId"),
+      message:
+        "stream " +
+        printable(observation.measurementStreamId) +
+        " measures segment " +
+        printable(links.stream.routeSegmentId) +
+        ", which is not a segment of the attempt that owns effect " +
+        printable(observation.effectId),
+    };
+  }
+  if (!links.exposed) {
+    return {
+      path: at("effectId"),
+      message:
+        "effect " +
+        printable(observation.effectId) +
+        " has not been exposed: no delivery of it has been intended, so there is no spend to measure, and its " +
+        "first delivery is what opens its settlement",
+    };
+  }
+  if (links.stored !== null) {
+    if (canonicalUsageObservation(links.stored) === canonicalUsageObservation(observation)) return null;
+    return {
+      path: at("observationId"),
+      message:
+        "observation " +
+        printable(observation.observationId) +
+        " is already recorded with different content; the same identity with other bytes is a conflict, never a replay",
+    };
+  }
+  if (links.ordinalHolder !== null) {
+    return {
+      path: at("ordinal"),
+      message:
+        "ORDINAL_DUPLICATE: ordinal " +
+        String(observation.ordinal) +
+        " of stream " +
+        printable(observation.measurementStreamId) +
+        " is already " +
+        printable(links.ordinalHolder),
+    };
+  }
+  if (links.sourceReportHolder !== null) {
+    return {
+      path: at("sourceObservationId"),
+      message:
+        "SOURCE_REPORT_DUPLICATE: source report " +
+        printable(observation.sourceObservationId) +
+        " of stream " +
+        printable(observation.measurementStreamId) +
+        " is already " +
+        printable(links.sourceReportHolder),
+    };
+  }
+  if (observation.reportKind === "CORRECTION") {
+    const target = links.target;
+    const named = printable(observation.correctsObservationId ?? "");
+    if (target === null) {
+      return {
+        path: at("correctsObservationId"),
+        message: "CORRECTION_TARGET_UNKNOWN: a correction replaces a recorded report, and " + named + " is not one",
+      };
+    }
+    if (target.measurementStreamId !== observation.measurementStreamId) {
+      return {
+        path: at("correctsObservationId"),
+        message: "CORRECTION_CROSS_STREAM: " + named + " was reported on another stream",
+      };
+    }
+    if (target.effectId !== observation.effectId) {
+      return {
+        path: at("correctsObservationId"),
+        message: "CORRECTION_CROSS_EFFECT: " + named + " measures another effect",
+      };
+    }
+  }
+  return null;
+}
+
+/** The observation's links, read off a view. */
+function usageObservationLinksOf(view: UsageCaptureView, observation: UsageObservationReadModel): UsageObservationLinks {
+  const stream = view.stream(observation.measurementStreamId);
+  const stored = view.observation(observation.observationId);
+  const ordinalHolder = view.observationAtOrdinal(observation.measurementStreamId, observation.ordinal);
+  const sourceReportHolder = view.observationForSourceReport(
+    observation.measurementStreamId,
+    observation.sourceObservationId,
+  );
+  return {
+    stream,
+    streamSegmentOwner: stream === null ? null : view.segmentOwner(stream.routeSegmentId),
+    effectOwner: view.effectOwner(observation.effectId),
+    exposed: view.latestSettlement(observation.effectId) !== null,
+    stored,
+    ordinalHolder: ordinalHolder === observation.observationId ? null : ordinalHolder,
+    sourceReportHolder: sourceReportHolder === observation.observationId ? null : sourceReportHolder,
+    target:
+      observation.correctsObservationId === null ? null : view.observation(observation.correctsObservationId),
+  };
+}
+
+/**
+ * Refuse a usage event by name, or return; the append door calls it before the
+ * row is written (`#assertExecutionOccurrence`'s place), and `nextUsageCapture`
+ * calls it again, so the door, the rebuild and the migration refuse the same
+ * histories in the same words.
+ */
+export function assertUsageCaptureAdmissible(view: UsageCaptureView, event: ControlPlaneEvent): void {
+  const stream = readUsageStreamDeclaration(event, 0);
+  if (stream !== null) {
+    if (stream.kind === "refused") throw new LedgerValidationError([{ path: stream.path, message: stream.message }]);
+    const refusal = usageStreamLinkRefusal(
+      event,
+      stream.row,
+      view.segmentOwner(stream.row.routeSegmentId),
+      view.stream(stream.row.measurementStreamId),
+    );
+    if (refusal !== null) throw new LedgerValidationError([refusal]);
+    return;
+  }
+  const observation = readUsageObservation(event, 0);
+  if (observation !== null) {
+    if (observation.kind === "refused") {
+      throw new LedgerValidationError([{ path: observation.path, message: observation.message }]);
+    }
+    const refusal = usageObservationLinkRefusal(event, observation.row, usageObservationLinksOf(view, observation.row));
+    if (refusal !== null) throw new LedgerValidationError([refusal]);
+  }
+}
+
+/** The fold's refusal as the door speaks it: a word, the field and the effect. */
+function usageFoldRefusal(
+  reason: string,
+  foldAt: string,
+  effectId: string,
+  arriving: UsageObservationReadModel | null,
+  observations: readonly UsageObservationInput[],
+): LedgerValidationError {
+  const recordPath = arriving === null ? "payload." + DISPATCH_KEY + ".effectId" : "payload." + USAGE_OBSERVATION_KEY;
+  const indexed = /^observations\[(\d+)\](?:\.(\w+))?$/.exec(foldAt);
+  let path = arriving === null ? recordPath : recordPath + ".observationId";
+  let detail = foldAt;
+  if (indexed !== null && arriving !== null) {
+    const position = Number(indexed[1]);
+    const field = indexed[2] ?? "observationId";
+    const named = observations[position];
+    if (named?.observationId === arriving.observationId) {
+      path = recordPath + "." + field;
+    } else if (named !== undefined) {
+      detail = "observation " + printable(named.observationId) + (indexed[2] === undefined ? "" : "." + field);
+    }
+  } else if (arriving !== null && /^(?:segments\[\d+\]|header)\./.test(foldAt)) {
+    path = recordPath + ".totalTokens";
+  }
+  return new LedgerValidationError([
+    {
+      path,
+      message:
+        reason +
+        ": the settlement fold of effect " +
+        printable(effectId) +
+        " refuses the history this event would make, at " +
+        detail,
+    },
+  ]);
+}
+
+/**
+ * Fold one effect's settlement revision at the trigger, through escalón A's fold.
+ *
+ * The cut is the trigger's own head (F-2, H-4): its sequence and its own chain
+ * digest, so a rebuild at any later head reconsiders nothing the trigger did not
+ * see. `arriving` is the observation this event records, folded with those
+ * already recorded and not yet written.
+ */
+function settleUsage(
+  view: UsageCaptureView,
+  effectId: string,
+  arriving: UsageObservationReadModel | null,
+  trigger: { readonly sequence: number; readonly sha256: string; readonly recordedAt: string },
+): UsageSettlementRecord {
+  const recorded = view.effectObservations(effectId);
+  const observations: UsageObservationInput[] = [...recorded, ...(arriving === null ? [] : [arriving])];
+  const streams: UsageMeasurementStreamInput[] = [];
+  const seen = new Set<string>();
+  for (const observation of observations) {
+    if (seen.has(observation.measurementStreamId)) continue;
+    seen.add(observation.measurementStreamId);
+    const stream = view.stream(observation.measurementStreamId);
+    if (stream !== null) streams.push(stream);
+  }
+  const outcome = foldUsageSettlement({
+    cut: { effectId, controlHead: { sequence: trigger.sequence, sha256: trigger.sha256 } },
+    trigger: { sequence: trigger.sequence, recordedAt: trigger.recordedAt },
+    streams,
+    observations,
+    previous: view.latestSettlement(effectId),
+    lastFinalSequence: view.lastFinalSequence(effectId),
+    policy: USAGE_SOURCE_POLICY_V1,
+    foldVersion: USAGE_FOLD_VERSION_V1,
+  });
+  if (!outcome.ok) throw usageFoldRefusal(outcome.reason, outcome.at, effectId, arriving, observations);
+  const { header, sourceHeads, observationIds } = outcome.settlement;
+  const row: UsageSettlementReadModel = { ...header };
+  return {
+    header: row,
+    sourceHeads: sourceHeads.map((head) => ({
+      effectId,
+      settlementRevision: header.settlementRevision,
+      sourceStream: head.sourceStream,
+      sourceSequence: head.sourceSequence,
+      sourceSha256: head.sourceSha256,
+    })),
+    observations: observationIds.map((observationId) => ({
+      effectId,
+      settlementRevision: header.settlementRevision,
+      observationId,
+    })),
+  };
+}
+
+/**
+ * What one event writes to the five usage tables, or `null` when it writes none
+ * — the one function the append door, the rebuild and migration 20 use.
+ *
+ * - A **stream declaration** writes its stream, once.
+ * - An **observation** writes itself and the effect's next settlement revision,
+ *   folded in this transaction (economy §1.2 `:81`, E8). A restatement writes
+ *   nothing and opens no revision.
+ * - A **delivery's intention** writes revision 1 of its effect when the effect
+ *   has none (Q3, H-5): the exposure, `UNKNOWN`, with an empty list and no
+ *   observation invented for it. Whether it has one is the only question —
+ *   never the delivery's ordinal — so a second delivery after an abandoned first
+ *   writes nothing.
+ *
+ * `sha256` is the event's own chain digest: in the door the one it is about to
+ * be written with, in a replay the one it was.
+ */
+export function nextUsageCapture(
+  view: UsageCaptureView,
+  event: ControlPlaneEvent,
+  sequence: number,
+  sha256: string,
+): UsageCaptureWrites | null {
+  const trigger = { sequence, sha256, recordedAt: event.recordedAt };
+
+  if (event.type === DISPATCH_INTENDED) {
+    const dispatch = nextDispatchAttemptProjection(event, sequence);
+    if (dispatch === null || view.latestSettlement(dispatch.effectId) !== null) return null;
+    return { stream: null, observation: null, settlement: settleUsage(view, dispatch.effectId, null, trigger) };
+  }
+
+  if (event.type !== USAGE_STREAM_DECLARED && event.type !== USAGE_OBSERVATION_RECORDED) return null;
+  assertUsageCaptureAdmissible(view, event);
+
+  const stream = readUsageStreamDeclaration(event, sequence);
+  if (stream?.kind === "row") {
+    if (view.stream(stream.row.measurementStreamId) !== null) return null;
+    return { stream: stream.row, observation: null, settlement: null };
+  }
+  const observation = readUsageObservation(event, sequence);
+  if (observation?.kind !== "row") return null;
+  if (view.observation(observation.row.observationId) !== null) return null;
+  return {
+    stream: null,
+    observation: observation.row,
+    settlement: settleUsage(view, observation.row.effectId, observation.row, trigger),
+  };
+}
+
+/** The key of one settlement revision in a snapshot. An effect id is hex, so a space cannot collide. */
+export function usageSettlementKey(effectId: string, settlementRevision: number): string {
+  return effectId + " " + String(settlementRevision);
+}
+
+/**
+ * The comparable text of a usage row, for `verifyIntegrity`.
+ *
+ * `canonicalJsonStringify` refuses a `bigint`, and a settlement's counts are one,
+ * while a stored row read with `safeIntegers` holds every integer as one. So both
+ * sides are brought to the same text: every integer, `number` or `bigint`, as its
+ * decimal digits. A count is never compared through `number`.
+ */
+export function usageRowText(row: object): string {
+  const textual: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    textual[key] = typeof value === "bigint" || typeof value === "number" ? String(value) : value;
+  }
+  return canonicalJsonStringify(textual);
+}
+
 /**
  * In-memory projection of an entire event stream.
  *
@@ -2320,6 +3077,23 @@ export interface ProjectionSnapshot {
    * event that caused it, through the comparison the append door uses.
    */
   readonly taskSubmissions: Map<string, TaskSubmissionReadModel>;
+  /**
+   * The P-32/captura B cohort: the five tables, keyed as their primary keys are,
+   * insert-only — a later revision is a row beside the earlier one, never over it.
+   *
+   * `usageObservationClaims` holds the two unique indexes of the observation
+   * table in memory, and the two maps after it are indexes over the rows above:
+   * an effect's observations and its revision in force. Neither is ever
+   * compared; they answer the view's questions without a scan per event.
+   */
+  readonly usageStreams: Map<string, UsageMeasurementStreamReadModel>;
+  readonly usageObservations: Map<string, UsageObservationReadModel>;
+  readonly usageSettlements: Map<string, UsageSettlementReadModel>;
+  readonly usageSettlementSourceHeads: Map<string, UsageSettlementRecord["sourceHeads"][number]>;
+  readonly usageSettlementObservations: Map<string, UsageSettlementRecord["observations"][number]>;
+  readonly usageObservationClaims: Map<string, string>;
+  readonly usageEffectObservations: Map<string, UsageObservationReadModel[]>;
+  readonly usageEffectSettlements: Map<string, UsageSettlementReadModel[]>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -2341,7 +3115,107 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     responseOccurrences: new Map<string, ResponseOccurrenceReadModel>(),
     responseOccurrenceClaims: new Map<string, string>(),
     taskSubmissions: new Map<string, TaskSubmissionReadModel>(),
+    usageStreams: new Map<string, UsageMeasurementStreamReadModel>(),
+    usageObservations: new Map<string, UsageObservationReadModel>(),
+    usageSettlements: new Map<string, UsageSettlementReadModel>(),
+    usageSettlementSourceHeads: new Map<string, UsageSettlementRecord["sourceHeads"][number]>(),
+    usageSettlementObservations: new Map<string, UsageSettlementRecord["observations"][number]>(),
+    usageObservationClaims: new Map<string, string>(),
+    usageEffectObservations: new Map<string, UsageObservationReadModel[]>(),
+    usageEffectSettlements: new Map<string, UsageSettlementReadModel[]>(),
   };
+}
+
+/** A claim to one of the observation table's two unique indexes. */
+function usageObservationClaim(measurementStreamId: string, kind: "ordinal" | "source", value: string | number): string {
+  return canonicalJsonStringify([measurementStreamId, kind, value]);
+}
+
+/** The key of one head of one revision's cut. */
+export function usageSettlementSourceHeadKey(effectId: string, settlementRevision: number, sourceStream: string): string {
+  return usageSettlementKey(effectId, settlementRevision) + " " + sourceStream;
+}
+
+/** The key of one observation one revision considered. An observation id is free text, so this one is JSON. */
+export function usageSettlementObservationKey(
+  effectId: string,
+  settlementRevision: number,
+  observationId: string,
+): string {
+  return canonicalJsonStringify([effectId, settlementRevision, observationId]);
+}
+
+/**
+ * The usage fold's view over a snapshot — the rebuild's and `verifyIntegrity`'s
+ * answers to `UsageCaptureView`, read off the maps the replay is filling.
+ */
+export function usageSnapshotView(snapshot: ProjectionSnapshot): UsageCaptureView {
+  const ownerOf = (
+    row: { readonly taskId: string; readonly revisionNumber: number; readonly attemptNumber: number } | undefined,
+  ): OccurrenceOwner | null =>
+    row === undefined ? null : { taskId: row.taskId, revisionNumber: row.revisionNumber, attemptNumber: row.attemptNumber };
+  return {
+    stream: (id) => snapshot.usageStreams.get(id) ?? null,
+    observation: (id) => snapshot.usageObservations.get(id) ?? null,
+    observationAtOrdinal: (streamId, ordinal) =>
+      snapshot.usageObservationClaims.get(usageObservationClaim(streamId, "ordinal", ordinal)) ?? null,
+    observationForSourceReport: (streamId, sourceObservationId) =>
+      snapshot.usageObservationClaims.get(usageObservationClaim(streamId, "source", sourceObservationId)) ?? null,
+    effectObservations: (effectId) => snapshot.usageEffectObservations.get(effectId) ?? [],
+    segmentOwner: (routeSegmentId) => ownerOf(snapshot.routeSegments.get(routeSegmentId)),
+    effectOwner: (effectId) => ownerOf(snapshot.effects.get(effectId)),
+    latestSettlement: (effectId) => {
+      const latest = snapshot.usageEffectSettlements.get(effectId)?.at(-1);
+      return latest === undefined
+        ? null
+        : { settlementRevision: latest.settlementRevision, status: latest.settlementStatus, sequence: latest.sequence };
+    },
+    lastFinalSequence: (effectId) =>
+      snapshot.usageEffectSettlements
+        .get(effectId)
+        ?.filter((revision) => revision.settlementStatus === "FINAL")
+        .at(-1)?.sequence ?? null,
+  };
+}
+
+/** Put what `nextUsageCapture` decided into a snapshot, parents first, indexes with the rows. */
+function applyUsageWritesToSnapshot(snapshot: ProjectionSnapshot, writes: UsageCaptureWrites): void {
+  if (writes.stream !== null) snapshot.usageStreams.set(writes.stream.measurementStreamId, writes.stream);
+  const observation = writes.observation;
+  if (observation !== null) {
+    snapshot.usageObservations.set(observation.observationId, observation);
+    snapshot.usageObservationClaims.set(
+      usageObservationClaim(observation.measurementStreamId, "ordinal", observation.ordinal),
+      observation.observationId,
+    );
+    snapshot.usageObservationClaims.set(
+      usageObservationClaim(observation.measurementStreamId, "source", observation.sourceObservationId),
+      observation.observationId,
+    );
+    const ofEffect = snapshot.usageEffectObservations.get(observation.effectId) ?? [];
+    ofEffect.push(observation);
+    snapshot.usageEffectObservations.set(observation.effectId, ofEffect);
+  }
+  const settlement = writes.settlement;
+  if (settlement !== null) {
+    const { header } = settlement;
+    snapshot.usageSettlements.set(usageSettlementKey(header.effectId, header.settlementRevision), header);
+    const revisions = snapshot.usageEffectSettlements.get(header.effectId) ?? [];
+    revisions.push(header);
+    snapshot.usageEffectSettlements.set(header.effectId, revisions);
+    for (const head of settlement.sourceHeads) {
+      snapshot.usageSettlementSourceHeads.set(
+        usageSettlementSourceHeadKey(head.effectId, head.settlementRevision, head.sourceStream),
+        head,
+      );
+    }
+    for (const considered of settlement.observations) {
+      snapshot.usageSettlementObservations.set(
+        usageSettlementObservationKey(considered.effectId, considered.settlementRevision, considered.observationId),
+        considered,
+      );
+    }
+  }
 }
 
 export function workerTaskKey(identity: string, taskId: string): string {
@@ -2360,11 +3234,18 @@ export function executionRouteKey(taskId: string, attempt: number): string {
   return taskId + " " + String(attempt);
 }
 
-/** Fold one event into an in-memory snapshot. */
+/**
+ * Fold one event into an in-memory snapshot.
+ *
+ * `sha256` is the event's own chain digest, the one its row was written with.
+ * Only the usage settlement reads it (P-32/captura B, H-4): a revision's cut is
+ * its trigger's head, and a replay has to stamp the digest the door stamped.
+ */
 export function applyEventToSnapshot(
   snapshot: ProjectionSnapshot,
   event: ControlPlaneEvent,
   sequence: number,
+  sha256: string,
 ): void {
   snapshot.tasks.set(
     event.taskId,
@@ -2571,6 +3452,13 @@ export function applyEventToSnapshot(
       snapshot.dispatchAttempts.set(dispatch.dispatchAttemptId, dispatch);
     }
   }
+
+  // The P-32/captura B cohort, after the delivery — whose first one exposes its
+  // effect — and through the function the append door calls in `#projectEvent`
+  // at the same place, so the stream, the observation and the settlement a
+  // rebuild writes are the ones the door wrote, refused in the door's words.
+  const usage = nextUsageCapture(usageSnapshotView(snapshot), event, sequence, sha256);
+  if (usage !== null) applyUsageWritesToSnapshot(snapshot, usage);
 
   // The resolution, last, because it reads rows the three folds above may have
   // written in this same event. Unlike them it is a reduce: it replaces a

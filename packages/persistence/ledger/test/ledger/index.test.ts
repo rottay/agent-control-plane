@@ -46,12 +46,15 @@ import {
   openLeaseStore,
   openLedger,
   requestSha256,
+  measurementStreamIdV1,
+  USAGE_SOURCE_POLICY_SHA256_V1,
   type CausationRef,
   type LeaseRow,
   type LeaseStore,
   type OutboxCommandReadModel,
   type IntegrityReport,
   type Ledger,
+  type LedgerEventRecord,
   type StreamIntegrityCoverage,
 } from "../../src/index.js";
 import {
@@ -61,6 +64,7 @@ import {
   EXECUTION_OCCURRENCE_MIGRATION,
   INITIATIVE_REGISTRATION_MIGRATION,
   TASK_SUBMISSION_MIGRATION,
+  USAGE_CAPTURE_MIGRATION,
   MIGRATIONS,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
@@ -326,14 +330,14 @@ describe("open", () => {
     expect(status.headSequence).toBe(0);
     expect(status.headEventSha256).toBe(GENESIS_SHA256);
     expect(status.eventCount).toBe(0);
-    // Eighteen since P-14 B added the initiative projection's three columns,
-    // beside P-14 A's model version registry, P-36/local's artifact registry and
+    // Twenty since P-32/captura B added the usage capture cohort, beside P-14 C's
+    // client key, P-14 B's initiative projection columns, P-14 A's model version registry, P-36/local's artifact registry and
     // envelope reference, P-18/protocolo D's prompt and response occurrences, C's
     // effect, deliveries and route segment, B's attempt record, P-05/B's revision
     // coordinate, P-08's sidecar and the registry stream, typed causal triple and
     // watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1317,6 +1321,44 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
 }
 
 /**
+ * Migration 20 undone: the usage capture cohort (P-32/captura B).
+ *
+ * Children first, because `ON DELETE RESTRICT` fires at once and each child names
+ * its parent: the list and the vector before their header, a header before the
+ * observation it names, an observation before its stream. Each table's indexes
+ * before the table, and the five watermark rows with them, or the reopen would
+ * find rows for projections whose tables it is about to create. Nothing in
+ * `control_plane_events` moves: the re-applied 20 folds the exposures, and any
+ * usage the stream holds, back into the same rows.
+ */
+function dropUsageCapture(raw: Database.Database): void {
+  raw.exec(
+    "DROP TABLE usage_settlement_observation_read_model; " +
+      "DROP TABLE usage_settlement_source_head_read_model; " +
+      "DROP INDEX ix_usage_settlement__latest; " +
+      "DROP TABLE usage_settlement_read_model; " +
+      "DROP INDEX ix_usage_observation__corrects; " +
+      "DROP INDEX ix_usage_observation__effect; " +
+      "DROP INDEX ux_usage_observation__source_report; " +
+      "DROP INDEX ux_usage_observation__stream_ordinal; " +
+      "DROP TABLE usage_observation_read_model; " +
+      "DROP INDEX ux_usage_measurement_stream__identity; " +
+      "DROP TABLE usage_measurement_stream_read_model;",
+  );
+  const forget = raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?");
+  for (const name of USAGE_CAPTURE_PROJECTIONS) forget.run(name);
+}
+
+/** The five projections migration 20 adds, in the order it seeds their watermarks. */
+const USAGE_CAPTURE_PROJECTIONS = [
+  "usage_measurement_stream_read_model",
+  "usage_observation_read_model",
+  "usage_settlement_read_model",
+  "usage_settlement_source_head_read_model",
+  "usage_settlement_observation_read_model",
+] as const;
+
+/**
  * Migration 19 undone: the client key table and its one watermark row (P-14 C).
  *
  * The table carries no index or trigger of its own name, so it goes alone; the
@@ -1325,6 +1367,9 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
  * belong to migration 11 and stay: the re-applied 19 folds them again.
  */
 function dropTaskSubmission(raw: Database.Database): void {
+  // Twenty first (P-32/captura B): rewinding past 19 means rewinding past
+  // everything applied after it, and a re-applied 20 over its own tables aborts.
+  dropUsageCapture(raw);
   raw.exec("DROP TABLE task_submission_read_model;");
   raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?").run("task_submission_read_model");
 }
@@ -2019,21 +2064,21 @@ describe("projection watermark verification", () => {
 
     expect(report.problems).toEqual([]);
     expect(report.headSequence).toBe(0);
-    // Nineteen projections since P-14 C: the two task-stream folds, the
+    // Twenty-four projections since P-32/captura B: the two task-stream folds, the
     // route fold, the revision fold, the attempt fold, the segment, effect and
     // delivery folds, the prompt and response occurrence folds, the client key
-    // fold, the two initiative-stream folds, the four artifact folds and the
-    // model version fold of the registry stream, and the two-source routing
-    // fold. Twenty heads, because the last one has two — every one of them at
-    // zero on a ledger that has never been appended to.
-    expect(ledger.status().projections).toHaveLength(19);
+    // fold, B's five usage folds, the two initiative-stream folds, the four
+    // artifact folds and the model version fold of the registry stream, and the
+    // two-source routing fold. Twenty-five heads, because the last one has two —
+    // every one of them at zero on a ledger that has never been appended to.
+    expect(ledger.status().projections).toHaveLength(24);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -3028,7 +3073,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3240,7 +3285,7 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
     expect([...appliedByName(ledger).values()]).toEqual([
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
@@ -3265,7 +3310,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(20);
+    expect(rows).toHaveLength(25);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "dispatch_attempt_read_model",
@@ -3278,17 +3323,23 @@ describe("the watermark advances with every door that moves a head", () => {
       "task_read_model",
       "task_revision_read_model",
       "task_submission_read_model",
+      "usage_measurement_stream_read_model",
+      "usage_observation_read_model",
+      "usage_settlement_observation_read_model",
+      "usage_settlement_read_model",
+      "usage_settlement_source_head_read_model",
       "worker_read_model",
     ]);
     // The revision projection moves with the stream exactly as its siblings do,
     // and it is level at five having folded no row at all: none of the seeded
     // events carries a V2 coordinate. The three P-18/protocolo C projections and
     // D's two are level at five having folded nothing either, for the same
-    // reason, and so is P-14 C's client key: no seeded event is an intake. A
-    // watermark tracks the cut a projection has SEEN, not the rows it chose to
+    // reason, and so is P-14 C's client key: no seeded event is an intake. So are
+    // P-32/captura B's five: no seeded event delivers an effect or reports usage.
+    // A watermark tracks the cut a projection has SEEN, not the rows it chose to
     // write.
-    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]);
-    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]);
+    expect(taskRows.map((row) => row.applied_sequence)).toEqual([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]);
+    expect(taskRows.map((row) => row.event_count)).toEqual([5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]);
     expect(new Set(taskRows.map((row) => row.projector_version))).toEqual(new Set([1]));
 
     // The sibling stream stayed where it was. A single shared number is exactly
@@ -3343,7 +3394,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(20);
+    expect(before).toHaveLength(25);
 
     tamper(path, (raw) => {
       raw
@@ -3458,7 +3509,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3507,7 +3558,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(20);
+    expect(rows).toHaveLength(25);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -4522,9 +4573,9 @@ describe("two heads under one projection name advance independently (negative 2)
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     const status = ledger.status();
-    // Nineteen projections, not twenty entries: the vector lives INSIDE the
-    // projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(19);
+    // Twenty-four projections, not twenty-five entries: the vector lives INSIDE
+    // the projection, so a projection with two heads is still one projection.
+    expect(status.projections).toHaveLength(24);
     expect(status.projections.map((projection) => projection.name)).toEqual([
       "artifact_blob_read_model",
       "artifact_pin_read_model",
@@ -4544,6 +4595,11 @@ describe("two heads under one projection name advance independently (negative 2)
       "task_read_model",
       "task_revision_read_model",
       "task_submission_read_model",
+      "usage_measurement_stream_read_model",
+      "usage_observation_read_model",
+      "usage_settlement_observation_read_model",
+      "usage_settlement_read_model",
+      "usage_settlement_source_head_read_model",
       "worker_read_model",
     ]);
 
@@ -4568,12 +4624,12 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Twenty rows in the table, twenty entries across nineteen projections.
-    // Nothing in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(20);
+    // Twenty-five rows in the table, twenty-five entries across twenty-four
+    // projections. Nothing in the table is omitted from the DTO any more.
+    expect(readWatermarks(path)).toHaveLength(25);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(20);
+    ).toHaveLength(25);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -4768,7 +4824,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       modelVersions: readModelVersionTables(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(20);
+    expect(live.watermarks).toHaveLength(25);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -5653,7 +5709,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -6488,7 +6544,7 @@ function plantEnvelopeReference(
  * take both away first, or it rewinds a ledger that never existed — and
  * `dropArtifactRegistry` refuses it.
  *
- * What moves: every `2.5.0` task event is restamped `version` — `2.4.0` unless
+ * What moves: every task event under the version in force is restamped `version` — `2.4.0` unless
  * a drill asks for an older member of the cohort — without the key,
  * the chain is recomputed from genesis and the head and watermarks follow it;
  * the planted registry rows and their three read-model rows are removed and the
@@ -7565,8 +7621,10 @@ describe("a version this build does not read is refused, by name", () => {
     // two supported-but-not-current members; the loop at the end walks all three.
     // P-36/local D moved it once more (ADR 0084), for a cohort rather than an
     // identity: three supported-but-not-current members, four in the loop.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", CONTRACT_VERSION]);
-    expect(CONTRACT_VERSION).toBe("2.5.0");
+    // P-32/captura B moved it again (ADR 0089), for an identity: four
+    // supported-but-not-current members, five in the loop.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.6.0");
 
     // The history is fabricated with `restampVersion` rather than taken from a
     // fixture, and the correction matters: there is no recorded `"2.2.0"`
@@ -7638,7 +7696,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7670,7 +7728,7 @@ describe("a version this build does not read is refused, by name", () => {
     // this build, which applies 14 over both cohorts, and must then read, verify,
     // rebuild and record a prompt and its answer on top. D carried no bump; the
     // newer cohort was stamped with the version in force at 13, which is
-    // `"2.4.0"` — seeded under today's `"2.5.0"` and demoted to that shape,
+    // `"2.4.0"` — seeded under today's `"2.6.0"` and demoted to that shape,
     // because P-36/local D moved the version and a build at 13 knew no envelope
     // reference.
     const path = temporaryDatabase();
@@ -7697,7 +7755,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7715,7 +7773,7 @@ describe("a version this build does not read is refused, by name", () => {
     migrated.append(
       responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
     );
-    expect(CONTRACT_VERSION).toBe("2.5.0");
+    expect(CONTRACT_VERSION).toBe("2.6.0");
     expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
     expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
@@ -7748,7 +7806,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -7858,7 +7916,8 @@ describe("a version this build does not read is refused, by name", () => {
       reopened.appendBatch(quarantineBatch(taskId).map((event) => ({ ...event, contractVersion: "2.3.0" }))),
     );
     expect(stale.path).toBe("contractVersion");
-    // The version in force, which P-36/local D moved on to 2.5.0 (ADR 0084).
+    // The version in force, which P-36/local D moved on to 2.5.0 (ADR 0084) and
+    // P-32/captura B to 2.6.0 (ADR 0089).
     expect(stale.message).toContain(CONTRACT_VERSION);
 
     expect(reopened.appendBatch(quarantineBatch(taskId)).insertedCount).toBe(3);
@@ -7897,7 +7956,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -12383,9 +12442,11 @@ describe("a present-invalid word is refused by name, never read as absent (CORR-
       const atDoor = refusalOf(() => ledger.append(event));
 
       const snapshot = createProjectionSnapshot();
-      for (const record of stored) applyEventToSnapshot(snapshot, record.event, record.sequence);
+      for (const record of stored) {
+        applyEventToSnapshot(snapshot, record.event, record.sequence, record.eventSha256);
+      }
       const folded = caught(() => {
-        applyEventToSnapshot(snapshot, event as unknown as ControlPlaneEvent, stored.length + 1);
+        applyEventToSnapshot(snapshot, event as unknown as ControlPlaneEvent, stored.length + 1, "e".repeat(64));
       });
       expect(folded, label).toBeInstanceOf(LedgerValidationError);
       expect((folded as LedgerValidationError).issues, label).toEqual([atDoor]);
@@ -13084,7 +13145,7 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     const migrated = open(path);
     // Fifteen applies over the history at fourteen, and sixteen through nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_SUBMISSION_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -13297,7 +13358,7 @@ describe("an artifact event is a registry row with a subject, an ordinal and a k
       expect(issue.path).toBe("subjectOrdinal");
       expect(issue.message).toContain("the next one is ordinal 2; this event proposes " + String(ordinal));
     }
-    expect(ledger.status().projections.length).toBe(19);
+    expect(ledger.status().projections.length).toBe(24);
     expect(ledger.appendArtifactEvent(publicationSucceeded({ ordinal: 2 })).inserted).toBe(true);
   });
 
@@ -14183,7 +14244,7 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
 
   it("Q-D2: a second attempt stamped after the upgrade reaches a revision of the cohort before, and its row stays NULL", () => {
     // A revision in flight at the upgrade: recorded under 2.4.0, row NULL for
-    // ever. Its second attempt is new work, so it is stamped 2.5.0 and carries
+    // ever. Its second attempt is new work, so it is stamped 2.5.0 or later and carries
     // the reference its version requires. The comparison is the three facts; the
     // reference stays in the log, not in the row.
     const path = temporaryDatabase();
@@ -14236,7 +14297,7 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
         expect(row(version, ENVELOPE_REFERENCE), version).toThrow(/must be NULL on a revision of contract version 2\.2\.0, 2\.3\.0 or 2\.4\.0/);
         expect(row(version, null), version).not.toThrow();
       }
-      for (const version of [CONTRACT_VERSION, "2.6.0", "3.0.0"]) {
+      for (const version of [CONTRACT_VERSION, "2.7.0", "3.0.0"]) {
         expect(row(version, null), version).toThrow(/is required on a revision of every later contract version/);
         expect(row(version, ""), version).toThrow(/is required on a revision of every later contract version/);
         expect(row(version, ENVELOPE_REFERENCE), version).not.toThrow();
@@ -14265,7 +14326,7 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
       expect(migrated.status().migrations.map((migration) => migration.version), version).toContain(
         TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
       );
-      expect(migrated.status().migrations.at(-1)?.version, version).toBe(TASK_SUBMISSION_MIGRATION);
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(USAGE_CAPTURE_MIGRATION);
       expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
         [version, null],
         [version, null],
@@ -14298,8 +14359,10 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
     expect(stale.path).toBe("contractVersion");
     expect(stale.message).toContain(CONTRACT_VERSION);
     expect(stale.message).toContain("2.4.0");
-    expect(CONTRACT_VERSION).toBe("2.5.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0"]);
+    // P-32/captura B moved the version in force on to 2.6.0 (ADR 0089); the
+    // cohort's rule reads every version after the closed list the same way.
+    expect(CONTRACT_VERSION).toBe("2.6.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0"]);
     ledger.close();
   });
 });
@@ -14715,7 +14778,7 @@ describe("migration 17 lands whole over a registry that already holds model vers
     const migrated = open(path);
     // Seventeen re-applies, and eighteen and nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(MODEL_VERSION_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_SUBMISSION_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -14853,7 +14916,7 @@ describe("migration 18 gives the initiative projection its registration columns 
 
     const migrated = open(path);
     // Nineteen re-applied after it (P-14 C): the rewind undid both.
-    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_SUBMISSION_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(readInitiativeColumns(path)).toEqual(before.rows);
@@ -15098,7 +15161,7 @@ describe("a task's client key has one home, folded from its intake (P-14 C)", ()
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_SUBMISSION_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
     expect(readSubmissionRows(path)).toEqual(rows);
     expect(migrated.getTask(taskId)).toEqual(task);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
@@ -15132,5 +15195,1013 @@ describe("a task's client key has one home, folded from its intake (P-14 C)", ()
     expect(verifier.status().eventCount).toBe(1);
     expect(readSubmissionRows(path)).toHaveLength(1);
     expect(verifier.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-32/captura B — usage is a declared stream and a measured observation, and
+// the door settles them in the same transaction
+//
+// Economy §1.1-§2.3 through the append door, the rebuild and migration 20. The
+// negatives are the preaudit's N-P32B-1..32 in their door form; the fold's own
+// arithmetic is escalón A's suite, and what is asserted here is that the door
+// calls it, at the trigger's own head, in the trigger's transaction.
+// ---------------------------------------------------------------------------
+
+const USAGE_AT = "2026-09-13T09:00:00.000Z";
+const USAGE_SOURCE = "claude-code/stream-json";
+const USAGE_POLICY = "c".repeat(64);
+
+interface UsageStreamFixture {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly source?: string;
+  readonly accountId?: string;
+  readonly routeSegmentId?: string;
+  readonly sourceEpoch?: number;
+  readonly sourceClass?: string;
+  readonly normalizationPolicySha256?: string;
+  readonly revisionNumber?: number;
+  readonly attemptNumber?: number;
+  readonly overrides?: Record<string, unknown>;
+  readonly payloadExtras?: Record<string, unknown>;
+  readonly fromState?: TaskState;
+}
+
+/** The id the door recomputes for a fixture's coordinate. */
+function usageStreamId(input: Partial<UsageStreamFixture> = {}): string {
+  return measurementStreamIdV1({
+    source: input.source ?? USAGE_SOURCE,
+    accountId: input.accountId ?? "acct-1",
+    routeSegmentId: input.routeSegmentId ?? "seg-1",
+    sourceEpoch: input.sourceEpoch ?? 0,
+  });
+}
+
+/** One `USAGE_STREAM_DECLARED`, well formed unless the input says otherwise. */
+function usageStream(input: UsageStreamFixture): Record<string, unknown> {
+  return makeEvent({
+    taskId: input.taskId,
+    transitionId: input.transitionId,
+    type: "USAGE_STREAM_DECLARED",
+    fromState: input.fromState ?? ATTEMPT_TASK_STATE,
+    toState: ATTEMPT_TASK_STATE,
+    occurredAt: USAGE_AT,
+    payload: {
+      revisionNumber: input.revisionNumber ?? 1,
+      attemptNumber: input.attemptNumber ?? 1,
+      usageStream: {
+        measurementStreamId: usageStreamId(input),
+        source: input.source ?? USAGE_SOURCE,
+        accountId: input.accountId ?? "acct-1",
+        routeSegmentId: input.routeSegmentId ?? "seg-1",
+        sourceEpoch: input.sourceEpoch ?? 0,
+        sourceClass: input.sourceClass ?? "PROVIDER_AUTHORITATIVE",
+        normalizationPolicySha256: input.normalizationPolicySha256 ?? USAGE_POLICY,
+        ...(input.overrides ?? {}),
+      },
+      ...(input.payloadExtras ?? {}),
+    },
+  });
+}
+
+interface UsageObservationFixture {
+  readonly taskId: string;
+  readonly transitionId: string;
+  readonly effectId: string;
+  readonly streamId?: string;
+  readonly observationId?: string;
+  readonly ordinal?: number;
+  readonly sourceObservationId?: string;
+  readonly reportKind?: string;
+  readonly from?: number | null;
+  readonly to?: number | null;
+  readonly corrects?: string | null;
+  readonly isFinal?: number;
+  /** The four classes; the total follows unless `total` says otherwise. */
+  readonly counts?: readonly [number, number, number, number];
+  readonly total?: number;
+  readonly occurredAt?: string;
+  readonly revisionNumber?: number;
+  readonly attemptNumber?: number;
+  readonly overrides?: Record<string, unknown>;
+  readonly payloadExtras?: Record<string, unknown>;
+}
+
+/** One `USAGE_OBSERVATION_RECORDED`: a DELTA over `[0, 100)` of 60 in and 40 out, unless told otherwise. */
+function usageObservation(input: UsageObservationFixture): Record<string, unknown> {
+  const ordinal = input.ordinal ?? 0;
+  const reportKind = input.reportKind ?? "DELTA";
+  const correction = reportKind === "CORRECTION";
+  const counts = input.counts ?? [60, 40, 0, 0];
+  return makeEvent({
+    taskId: input.taskId,
+    transitionId: input.transitionId,
+    type: "USAGE_OBSERVATION_RECORDED",
+    fromState: ATTEMPT_TASK_STATE,
+    toState: ATTEMPT_TASK_STATE,
+    occurredAt: input.occurredAt ?? USAGE_AT,
+    payload: {
+      revisionNumber: input.revisionNumber ?? 1,
+      attemptNumber: input.attemptNumber ?? 1,
+      usageObservation: {
+        observationId: input.observationId ?? "obs-" + String(ordinal),
+        measurementStreamId: input.streamId ?? usageStreamId(),
+        ordinal,
+        sourceObservationId: input.sourceObservationId ?? "src-" + String(ordinal),
+        reportKind,
+        rangeFromCounter: input.from === undefined ? (correction ? null : 0) : input.from,
+        rangeToCounter: input.to === undefined ? (correction ? null : 100) : input.to,
+        correctsObservationId: input.corrects ?? null,
+        effectId: input.effectId,
+        isFinal: input.isFinal ?? 0,
+        inputTokens: counts[0],
+        outputTokens: counts[1],
+        cacheWriteTokens: counts[2],
+        cacheReadTokens: counts[3],
+        totalTokens: input.total ?? counts[0] + counts[1] + counts[2] + counts[3],
+        occurredAt: input.occurredAt ?? USAGE_AT,
+        ...(input.overrides ?? {}),
+      },
+      ...(input.payloadExtras ?? {}),
+    },
+  });
+}
+
+/** Rows of one usage table, every integer read exactly. */
+function usageRows(path: string, sql: string, ...parameters: unknown[]): Record<string, unknown>[] {
+  const raw = new Database(path, { readonly: true });
+  try {
+    return raw.prepare(sql).safeIntegers(true).all(...parameters) as Record<string, unknown>[];
+  } finally {
+    raw.close();
+  }
+}
+
+interface SettlementRow {
+  readonly revision: number;
+  readonly status: string;
+  readonly input: bigint | null;
+  readonly output: bigint | null;
+  readonly cacheWrite: bigint | null;
+  readonly cacheRead: bigint | null;
+  readonly total: bigint | null;
+  readonly last: string | null;
+  readonly late: number;
+  readonly sequence: number;
+  readonly computedAt: string;
+}
+
+/** One effect's revisions, oldest first. */
+function settlementsOf(path: string, effectId: string): SettlementRow[] {
+  return usageRows(
+    path,
+    "SELECT * FROM usage_settlement_read_model WHERE effect_id = ? ORDER BY settlement_revision",
+    effectId,
+  ).map((row) => ({
+    revision: Number(row["settlement_revision"]),
+    status: row["settlement_status"] as string,
+    input: row["input_tokens"] as bigint | null,
+    output: row["output_tokens"] as bigint | null,
+    cacheWrite: row["cache_write_tokens"] as bigint | null,
+    cacheRead: row["cache_read_tokens"] as bigint | null,
+    total: row["total_tokens"] as bigint | null,
+    last: row["last_observation_id"] as string | null,
+    late: Number(row["had_late_arrival"]),
+    sequence: Number(row["sequence"]),
+    computedAt: row["computed_at"] as string,
+  }));
+}
+
+/** The observations one revision considered, by id. */
+function settlementListOf(path: string, effectId: string, revision: number): string[] {
+  return usageRows(
+    path,
+    "SELECT observation_id FROM usage_settlement_observation_read_model " +
+      "WHERE effect_id = ? AND settlement_revision = ? ORDER BY observation_id",
+    effectId,
+    revision,
+  ).map((row) => row["observation_id"] as string);
+}
+
+/** Every row of all five tables, as text, for byte-identity across a rebuild or a migration. */
+function usageDump(path: string): string {
+  const tables = [
+    "usage_measurement_stream_read_model ORDER BY measurement_stream_id",
+    "usage_observation_read_model ORDER BY observation_id",
+    "usage_settlement_read_model ORDER BY effect_id, settlement_revision",
+    "usage_settlement_source_head_read_model ORDER BY effect_id, settlement_revision, source_stream",
+    "usage_settlement_observation_read_model ORDER BY effect_id, settlement_revision, observation_id",
+  ];
+  return JSON.stringify(
+    tables.map((table) =>
+      usageRows(path, "SELECT * FROM " + table).map((row) =>
+        Object.fromEntries(Object.entries(row).map(([key, value]) => [key, typeof value === "bigint" ? String(value) : value])),
+      ),
+    ),
+  );
+}
+
+/** The delivery event of a seeded ledger, by transition. */
+function eventAt(ledger: Ledger, transitionId: string): LedgerEventRecord {
+  const found = ledger.listEvents({ limit: 1000 }).events.find((record) => record.event.transitionId === transitionId);
+  if (found === undefined) throw new Error("no event under transition " + transitionId);
+  return found;
+}
+
+/** A second effect of the same attempt, delivered: `(effectId)`. */
+function seedSecondDelivery(ledger: Ledger, taskId: string): string {
+  ledger.append(
+    effectIntention({
+      taskId,
+      transitionId: "effect-2",
+      invocationId: "inv-1",
+      operationOrdinal: 1,
+      localOperationKey: "second-step",
+    }),
+  );
+  const effectId = firstEffectId(taskId, 1, 1);
+  ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-2", effectId, dispatchAttemptId: "dsp-e2" }));
+  return effectId;
+}
+
+describe("usage is a declared stream and a measured observation, and the door settles them in one transaction (P-32/captura B)", () => {
+  it("N-P32B-12, H-4: a first delivery exposes its effect — revision 1 UNKNOWN, no count, no list, cut at its own head", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const dispatch = eventAt(ledger, "dispatch-1");
+
+    expect(settlementsOf(path, effectId)).toEqual([
+      {
+        revision: 1,
+        status: "UNKNOWN",
+        input: null,
+        output: null,
+        cacheWrite: null,
+        cacheRead: null,
+        total: null,
+        last: null,
+        late: 0,
+        sequence: dispatch.sequence,
+        computedAt: dispatch.event.recordedAt,
+      },
+    ]);
+    expect(settlementListOf(path, effectId, 1)).toEqual([]);
+    expect(
+      usageRows(path, "SELECT source_stream, source_sequence, source_sha256 FROM usage_settlement_source_head_read_model"),
+    ).toEqual([
+      { source_stream: "control_plane_events", source_sequence: BigInt(dispatch.sequence), source_sha256: dispatch.eventSha256 },
+    ]);
+    const header = usageRows(path, "SELECT source_policy_sha256, fold_version FROM usage_settlement_read_model")[0];
+    expect(header).toEqual({ source_policy_sha256: USAGE_SOURCE_POLICY_SHA256_V1, fold_version: 1n });
+    // No observation was invented for the absence.
+    expect(usageRows(path, "SELECT * FROM usage_observation_read_model")).toEqual([]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("P-P32B-1, N-P32B-11, H-4: a declared stream and its reports fold a revision per report, each cut at its trigger", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+
+    expect(ledger.append(usageStream({ taskId, transitionId: "stream-1" })).inserted).toBe(true);
+    // N-P32B-32: a stream with no report is a row, and no revision.
+    expect(usageRows(path, "SELECT measurement_stream_id FROM usage_measurement_stream_read_model")).toEqual([
+      { measurement_stream_id: usageStreamId() },
+    ]);
+    expect(settlementsOf(path, effectId)).toHaveLength(1);
+
+    ledger.append(usageObservation({ taskId, transitionId: "obs-0", effectId }));
+    ledger.append(
+      usageObservation({ taskId, transitionId: "obs-1", effectId, ordinal: 1, from: 100, to: 150, counts: [20, 10, 5, 15] }),
+    );
+
+    const revisions = settlementsOf(path, effectId);
+    // The process ended and no source said `is_final`: PARTIAL, never FINAL.
+    expect(revisions.map((row) => [row.revision, row.status, row.total, row.last])).toEqual([
+      [1, "UNKNOWN", null, null],
+      [2, "PARTIAL", 100n, "obs-0"],
+      [3, "PARTIAL", 150n, "obs-1"],
+    ]);
+    expect(revisions[2]).toMatchObject({ input: 80n, output: 50n, cacheWrite: 5n, cacheRead: 15n });
+    expect(settlementListOf(path, effectId, 3)).toEqual(["obs-0", "obs-1"]);
+
+    // Every revision's vector is exactly its trigger: sequence and chain digest.
+    const heads = usageRows(
+      path,
+      "SELECT h.source_sequence AS head, h.source_sha256 AS sha, s.sequence AS trigger " +
+        "FROM usage_settlement_source_head_read_model h JOIN usage_settlement_read_model s " +
+        "USING (effect_id, settlement_revision) ORDER BY settlement_revision",
+    );
+    expect(heads).toHaveLength(3);
+    for (const row of heads) {
+      expect(row["head"]).toBe(row["trigger"]);
+      expect(row["sha"]).toBe(ledger.getEventBySequence(Number(row["trigger"]))?.eventSha256);
+    }
+
+    const observation = usageRows(path, "SELECT recorded_at, sequence FROM usage_observation_read_model WHERE observation_id = 'obs-1'");
+    expect(observation).toEqual([{ recorded_at: USAGE_AT, sequence: BigInt(eventAt(ledger, "obs-1").sequence) }]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P32B-16: rebuilds all five tables twice, identically, and the rebuild refolds at the stored digests", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-0", effectId, isFinal: 1 }));
+    const live = usageDump(path);
+
+    ledger.rebuildReadModel();
+    expect(usageDump(path)).toBe(live);
+    ledger.rebuildReadModel();
+    expect(usageDump(path)).toBe(live);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P32B-1: a stream whose id is not the digest of its coordinate is refused by name, and leaves nothing", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedDelivery(ledger, taskId);
+    const head = ledger.status().headSequence;
+
+    const wrong = refusalOf(() =>
+      ledger.append(usageStream({ taskId, transitionId: "stream-1", overrides: { measurementStreamId: "d".repeat(64) } })),
+    );
+    expect(wrong).toEqual({
+      path: "payload.usageStream.measurementStreamId",
+      message: expect.stringContaining("STREAM_COORDINATE_INVALID") as unknown as string,
+    });
+    // The provider's reusable connection id is not an identity either.
+    const recycled = refusalOf(() =>
+      ledger.append(usageStream({ taskId, transitionId: "stream-2", overrides: { measurementStreamId: "conn-42" } })),
+    );
+    expect(recycled.path).toBe("payload.usageStream.measurementStreamId");
+    expect(ledger.status().headSequence).toBe(head);
+    expect(usageRows(path, "SELECT * FROM usage_measurement_stream_read_model")).toEqual([]);
+  });
+
+  it("N-P32B-2, N-P32B-21: a stream is declared once — a replay is nothing, a restatement is nothing, another class or policy is refused", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedDelivery(ledger, taskId);
+    const declaration = usageStream({ taskId, transitionId: "stream-1" });
+    const first = ledger.append(declaration);
+
+    // The same bytes under the same key: a replay by idempotency, no row.
+    expect(ledger.append(declaration).inserted).toBe(false);
+    // The same stream restated by a later event: the event enters, the row keeps its first sequence.
+    expect(ledger.append(usageStream({ taskId, transitionId: "stream-again" })).inserted).toBe(true);
+    expect(usageRows(path, "SELECT sequence FROM usage_measurement_stream_read_model")).toEqual([
+      { sequence: BigInt(first.record.sequence) },
+    ]);
+
+    expect(
+      refusalOf(() => ledger.append(usageStream({ taskId, transitionId: "stream-class", sourceClass: "ESTIMATE" }))).path,
+    ).toBe("payload.usageStream.sourceClass");
+    expect(
+      refusalOf(() =>
+        ledger.append(usageStream({ taskId, transitionId: "stream-policy", normalizationPolicySha256: "d".repeat(64) })),
+      ).path,
+    ).toBe("payload.usageStream.normalizationPolicySha256");
+    expect(usageRows(path, "SELECT source_class FROM usage_measurement_stream_read_model")).toEqual([
+      { source_class: "PROVIDER_AUTHORITATIVE" },
+    ]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P32B-3: a new epoch restarts the counter at ordinal 0 as a new stream, and the old epoch's rows do not move", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-0" }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-e0", effectId, observationId: "e0-0" }));
+    const epochZero = usageRows(path, "SELECT * FROM usage_observation_read_model");
+    const streamZero = usageRows(path, "SELECT * FROM usage_measurement_stream_read_model");
+
+    ledger.append(usageStream({ taskId, transitionId: "stream-1", sourceEpoch: 1 }));
+    ledger.append(
+      usageObservation({
+        taskId,
+        transitionId: "obs-e1",
+        effectId,
+        observationId: "e1-0",
+        streamId: usageStreamId({ sourceEpoch: 1 }),
+        sourceObservationId: "src-0",
+      }),
+    );
+
+    expect(usageStreamId({ sourceEpoch: 1 })).not.toBe(usageStreamId());
+    expect(usageRows(path, "SELECT * FROM usage_observation_read_model WHERE observation_id = 'e0-0'")).toEqual(epochZero);
+    expect(
+      usageRows(path, "SELECT * FROM usage_measurement_stream_read_model WHERE source_epoch = 0"),
+    ).toEqual(streamZero);
+    // Two stretches of one lineage sum.
+    expect(settlementsOf(path, effectId).at(-1)?.total).toBe(200n);
+  });
+
+  it("N-P32B-4: one report is one report — a restatement writes nothing, other bytes are a conflict, a held ordinal or source id is refused", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-0", effectId }));
+    const before = usageDump(path);
+
+    // The same observation, restated by another event: it enters, and nothing moves.
+    expect(ledger.append(usageObservation({ taskId, transitionId: "obs-0-again", effectId })).inserted).toBe(true);
+    expect(usageDump(path)).toBe(before);
+
+    expect(
+      refusalOf(() => ledger.append(usageObservation({ taskId, transitionId: "obs-0-other", effectId, counts: [61, 40, 0, 0] })))
+        .path,
+    ).toBe("payload.usageObservation.observationId");
+    const ordinal = refusalOf(() =>
+      ledger.append(
+        usageObservation({ taskId, transitionId: "obs-x", effectId, observationId: "obs-x", sourceObservationId: "src-x", from: 100, to: 200 }),
+      ),
+    );
+    expect(ordinal.path).toBe("payload.usageObservation.ordinal");
+    expect(ordinal.message).toContain("ORDINAL_DUPLICATE");
+    const report = refusalOf(() =>
+      ledger.append(usageObservation({ taskId, transitionId: "obs-y", effectId, observationId: "obs-y", ordinal: 1, sourceObservationId: "src-0", from: 100, to: 200 })),
+    );
+    expect(report.path).toBe("payload.usageObservation.sourceObservationId");
+    expect(report.message).toContain("SOURCE_REPORT_DUPLICATE");
+    expect(usageDump(path)).toBe(before);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P32B-5: a broken report shape is refused by the door by name, and by the table's CHECK underneath", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+
+    const cases: readonly [Partial<UsageObservationFixture>, string][] = [
+      [{ from: null }, "rangeFromCounter"],
+      [{ from: 100, to: 100 }, "rangeToCounter"],
+      [{ from: 100, to: 50 }, "rangeToCounter"],
+      [{ reportKind: "CORRECTION", corrects: "obs-9", from: 0, to: 10 }, "rangeFromCounter"],
+      [{ reportKind: "CORRECTION" }, "correctsObservationId"],
+      [{ corrects: "obs-9" }, "correctsObservationId"],
+      [{ reportKind: "SNAPSHOT" }, "reportKind"],
+      [{ isFinal: 2 }, "isFinal"],
+    ];
+    for (const [shape, field] of cases) {
+      const issue = refusalOf(() => ledger.append(usageObservation({ taskId, transitionId: "bad-" + field, effectId, ...shape })));
+      expect(issue.path, JSON.stringify(shape)).toBe("payload.usageObservation." + field);
+    }
+    expect(usageRows(path, "SELECT * FROM usage_observation_read_model")).toEqual([]);
+
+    const raw = new Database(path);
+    try {
+      raw.pragma("foreign_keys = OFF");
+      const insert = raw.prepare(
+        "INSERT INTO usage_observation_read_model VALUES (?, ?, 0, 'src', ?, ?, ?, ?, ?, 0, 1, 0, 0, 0, 1, ?, ?, 1)",
+      );
+      const planted = (kind: string, from: number | null, to: number | null, corrects: string | null) => () =>
+        insert.run("raw-" + kind, usageStreamId(), kind, from, to, corrects, effectId, USAGE_AT, USAGE_AT);
+      expect(planted("DELTA", null, null, null)).toThrow(/ck_usage_observation__report_shape/);
+      expect(planted("DELTA", 10, 10, null)).toThrow(/ck_usage_observation__report_shape/);
+      expect(planted("CUMULATIVE", 0, 10, "obs-9")).toThrow(/ck_usage_observation__report_shape/);
+      expect(planted("CORRECTION", 0, 10, "obs-9")).toThrow(/ck_usage_observation__report_shape/);
+      expect(planted("CORRECTION", null, null, null)).toThrow(/ck_usage_observation__report_shape/);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it("N-P32B-6: a total that is not the sum of four classes, or a count past the safe integers, is refused by name", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+
+    // Cached input counted a second time inside the total is exactly a mismatch.
+    const mismatch = refusalOf(() =>
+      ledger.append(usageObservation({ taskId, transitionId: "obs-sum", effectId, counts: [60, 40, 0, 30], total: 130 + 30 })),
+    );
+    expect(mismatch).toEqual({ path: "payload.usageObservation.totalTokens", message: expect.stringContaining("TOTAL_MISMATCH") as unknown as string });
+    const unsafe = refusalOf(() =>
+      ledger.append(usageObservation({ taskId, transitionId: "obs-big", effectId, counts: [2 ** 53, 0, 0, 0] })),
+    );
+    expect(unsafe.path).toBe("payload.usageObservation.inputTokens");
+    expect(refusalOf(() => ledger.append(usageObservation({ taskId, transitionId: "obs-neg", effectId, counts: [-1, 0, 0, 0], total: 0 }))).path).toBe(
+      "payload.usageObservation.inputTokens",
+    );
+  });
+
+  it("N-P32B-7: a correction names a recorded report of its own stream and effect, and never itself", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const secondEffect = seedSecondDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-a" }));
+    ledger.append(usageStream({ taskId, transitionId: "stream-b", accountId: "acct-2" }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-a", effectId, observationId: "a-0" }));
+    ledger.append(
+      usageObservation({ taskId, transitionId: "obs-b", effectId, observationId: "b-0", streamId: usageStreamId({ accountId: "acct-2" }) }),
+    );
+    ledger.append(
+      usageObservation({ taskId, transitionId: "obs-e2", effectId: secondEffect, observationId: "e2-0", ordinal: 1, sourceObservationId: "src-e2", from: 500, to: 600 }),
+    );
+    const before = usageDump(path);
+
+    const correction = (overrides: Partial<UsageObservationFixture>): { path: string; message: string } =>
+      refusalOf(() =>
+        ledger.append(
+          usageObservation({
+            taskId,
+            transitionId: "fix-" + String(overrides.observationId),
+            effectId,
+            reportKind: "CORRECTION",
+            ordinal: 7,
+            sourceObservationId: "fix-" + String(overrides.observationId),
+            ...overrides,
+          }),
+        ),
+      );
+    expect(correction({ observationId: "x1", corrects: "b-0" }).message).toContain("CORRECTION_CROSS_STREAM");
+    expect(correction({ observationId: "x2", corrects: "e2-0" }).message).toContain("CORRECTION_CROSS_EFFECT");
+    expect(correction({ observationId: "x3", corrects: "x3" }).message).toContain("CORRECTION_CYCLE");
+    expect(correction({ observationId: "x4", corrects: "nobody" }).message).toContain("CORRECTION_TARGET_UNKNOWN");
+    for (const id of ["x1", "x2", "x3", "x4"]) {
+      expect(correction({ observationId: id + "-path", corrects: id === "x3" ? id + "-path" : "b-0" }).path).toBe(
+        "payload.usageObservation.correctsObservationId",
+      );
+    }
+    expect(usageDump(path)).toBe(before);
+  });
+
+  it("N-P32B-8, N-P32B-9: a partial overlap and a forked correction are refused by name, and no revision is written for either", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-0", effectId }));
+    ledger.append(usageObservation({ taskId, transitionId: "fix-1", effectId, observationId: "fix-1", ordinal: 1, sourceObservationId: "fix-1", reportKind: "CORRECTION", corrects: "obs-0", counts: [70, 40, 0, 0] }));
+    const before = usageDump(path);
+
+    const delta = refusalOf(() =>
+      ledger.append(usageObservation({ taskId, transitionId: "obs-2", effectId, observationId: "obs-2", ordinal: 2, sourceObservationId: "src-2", from: 50, to: 150 })),
+    );
+    expect(delta.message).toContain("COVERAGE_OVERLAP");
+    expect(delta.path).toBe("payload.usageObservation.rangeFromCounter");
+    const cumulative = refusalOf(() =>
+      ledger.append(usageObservation({ taskId, transitionId: "obs-3", effectId, observationId: "obs-3", ordinal: 3, sourceObservationId: "src-3", reportKind: "CUMULATIVE", from: 50, to: 150 })),
+    );
+    expect(cumulative.message).toContain("COVERAGE_OVERLAP");
+    const forked = refusalOf(() =>
+      ledger.append(usageObservation({ taskId, transitionId: "fix-2", effectId, observationId: "fix-2", ordinal: 4, sourceObservationId: "fix-2", reportKind: "CORRECTION", corrects: "obs-0", counts: [80, 40, 0, 0] })),
+    );
+    expect(forked.message).toContain("CORRECTIONS_FORKED");
+    expect(forked.path).toBe("payload.usageObservation.correctsObservationId");
+    expect(usageDump(path)).toBe(before);
+    expect(settlementsOf(path, effectId).map((row) => row.total)).toEqual([null, 100n, 110n]);
+  });
+
+  it("N-P32B-10: alternatives never sum — the higher class wins, and equal classes that disagree are DISPUTED with five NULL", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "provider" }));
+    ledger.append(usageStream({ taskId, transitionId: "wrapper", source: "wrapper/meter", sourceClass: "WRAPPER_MEASURED" }));
+    ledger.append(usageObservation({ taskId, transitionId: "p-0", effectId, observationId: "p-0" }));
+    ledger.append(
+      usageObservation({ taskId, transitionId: "w-0", effectId, observationId: "w-0", streamId: usageStreamId({ source: "wrapper/meter" }), counts: [90, 40, 0, 0] }),
+    );
+    // The same spend from two sources: the provider's, never 100 + 130.
+    expect(settlementsOf(path, effectId).at(-1)).toMatchObject({ status: "PARTIAL", total: 100n });
+
+    ledger.append(usageStream({ taskId, transitionId: "second-provider", source: "provider/two" }));
+    ledger.append(
+      usageObservation({ taskId, transitionId: "p2-0", effectId, observationId: "p2-0", streamId: usageStreamId({ source: "provider/two" }), counts: [99, 40, 0, 0] }),
+    );
+    expect(settlementsOf(path, effectId).at(-1)).toEqual(
+      expect.objectContaining({ status: "DISPUTED", input: null, output: null, cacheWrite: null, cacheRead: null, total: null }),
+    );
+    expect(settlementListOf(path, effectId, 4)).toEqual(["p-0", "p2-0", "w-0"]);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P32B-11: a gap is PARTIAL even with is_final, and a gapless stream with an explicit final is FINAL", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-0", effectId, from: 0, to: 100 }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-2", effectId, observationId: "obs-2", ordinal: 2, sourceObservationId: "src-2", from: 200, to: 300, isFinal: 1 }));
+    expect(settlementsOf(path, effectId).at(-1)?.status).toBe("PARTIAL");
+    ledger.append(usageObservation({ taskId, transitionId: "obs-1", effectId, observationId: "obs-1", ordinal: 1, sourceObservationId: "src-1", from: 100, to: 200 }));
+    expect(settlementsOf(path, effectId).at(-1)).toMatchObject({ status: "FINAL", total: 300n });
+  });
+
+  it("E16, N-P32B-13, H-7: partial, cumulative, a correction and a late arrival — one settlement per trigger, no double count, the lateness visible", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    ledger.append(usageObservation({ taskId, transitionId: "d-0", effectId, observationId: "d-0" }));
+    ledger.append(
+      usageObservation({ taskId, transitionId: "c-1", effectId, observationId: "c-1", ordinal: 1, sourceObservationId: "c-1", reportKind: "CUMULATIVE", from: 0, to: 200, counts: [120, 80, 0, 0] }),
+    );
+    ledger.append(
+      usageObservation({ taskId, transitionId: "f-2", effectId, observationId: "f-2", ordinal: 2, sourceObservationId: "f-2", reportKind: "CORRECTION", corrects: "c-1", counts: [125, 80, 0, 0], isFinal: 1 }),
+    );
+    const beforeLate = settlementsOf(path, effectId);
+
+    // H-7: a non-final report after a final one is admitted — it is the late arrival.
+    ledger.append(
+      usageObservation({ taskId, transitionId: "late-3", effectId, observationId: "late-3", ordinal: 3, sourceObservationId: "late-3", from: 200, to: 215, counts: [10, 5, 0, 0], occurredAt: "1999-01-01T00:00:00.000Z" }),
+    );
+    const revisions = settlementsOf(path, effectId);
+    expect(revisions.map((row) => [row.revision, row.status, row.total, row.late, row.last])).toEqual([
+      [1, "UNKNOWN", null, 0, null],
+      [2, "PARTIAL", 100n, 0, "d-0"],
+      [3, "PARTIAL", 200n, 0, "c-1"],
+      [4, "FINAL", 205n, 0, "f-2"],
+      [5, "FINAL", 220n, 1, "late-3"],
+    ]);
+    // The earlier revisions are not touched by the later one.
+    expect(revisions.slice(0, 4)).toEqual(beforeLate);
+    expect(settlementListOf(path, effectId, 5)).toEqual(["c-1", "d-0", "f-2", "late-3"]);
+
+    // Only a CORRECTION retires the flag: the final correction is itself corrected to non-final, and the lineage is PARTIAL.
+    ledger.append(
+      usageObservation({ taskId, transitionId: "unfinal", effectId, observationId: "unfinal", ordinal: 4, sourceObservationId: "unfinal", reportKind: "CORRECTION", corrects: "f-2", counts: [125, 80, 0, 0], isFinal: 0 }),
+    );
+    expect(settlementsOf(path, effectId).at(-1)).toMatchObject({ revision: 6, status: "PARTIAL", total: 220n, late: 1 });
+
+    const live = usageDump(path);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.rebuildReadModel();
+    expect(usageDump(path)).toBe(live);
+  });
+
+  it("N-P32B-14: a historical revision is rebuilt from its own list and its own cut, not from the observations recorded since", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-0", effectId }));
+    const second = usageRows(path, "SELECT * FROM usage_settlement_read_model WHERE settlement_revision = 2");
+    const secondCut = usageRows(path, "SELECT * FROM usage_settlement_source_head_read_model WHERE settlement_revision = 2");
+
+    ledger.append(usageObservation({ taskId, transitionId: "obs-1", effectId, observationId: "obs-1", ordinal: 1, sourceObservationId: "src-1", from: 100, to: 300 }));
+    ledger.rebuildReadModel();
+
+    expect(usageRows(path, "SELECT * FROM usage_settlement_read_model WHERE settlement_revision = 2")).toEqual(second);
+    expect(usageRows(path, "SELECT * FROM usage_settlement_source_head_read_model WHERE settlement_revision = 2")).toEqual(secondCut);
+    expect(settlementListOf(path, effectId, 2)).toEqual(["obs-0"]);
+  });
+
+  it("N-P32B-15, N-P32B-20, H-11: an unknown effect, an effect of another attempt and an unopened segment are refused by name, never by a foreign key", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const otherTask = randomUUID();
+    seedOpenAttempt(ledger, otherTask, "inv-2");
+    ledger.append(
+      effectIntention({ taskId: otherTask, transitionId: "effect-o", invocationId: "inv-2", segment: segmentRecord({ routeSegmentId: "seg-other" }) }),
+    );
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    const before = usageDump(path);
+
+    const unknown = refusalOf(() => ledger.append(usageObservation({ taskId, transitionId: "obs-u", effectId: "f".repeat(64) })));
+    expect(unknown.path).toBe("payload.usageObservation.effectId");
+    expect(unknown.message).toContain("has not been intended");
+    expect(unknown.message).not.toMatch(/FOREIGN KEY/i);
+
+    const foreign = refusalOf(() => ledger.append(usageObservation({ taskId: otherTask, transitionId: "obs-f", effectId })));
+    expect(foreign.path).toBe("payload.usageObservation.effectId");
+    expect(foreign.message).toContain("belongs to attempt " + taskId);
+
+    const unopened = refusalOf(() => ledger.append(usageStream({ taskId, transitionId: "stream-x", routeSegmentId: "seg-nowhere" })));
+    expect(unopened.path).toBe("payload.usageStream.routeSegmentId");
+    expect(unopened.message).toContain("has not been");
+    const elsewhere = refusalOf(() => ledger.append(usageStream({ taskId, transitionId: "stream-y", routeSegmentId: "seg-other" })));
+    expect(elsewhere.path).toBe("payload.usageStream.routeSegmentId");
+    expect(elsewhere.message).toContain("belongs to attempt " + otherTask);
+
+    // And a stream of the other attempt's segment cannot measure this attempt's effect.
+    ledger.append(usageStream({ taskId: otherTask, transitionId: "stream-o", routeSegmentId: "seg-other" }));
+    const crossed = refusalOf(() =>
+      ledger.append(usageObservation({ taskId, transitionId: "obs-c", effectId, streamId: usageStreamId({ routeSegmentId: "seg-other" }) })),
+    );
+    expect(crossed.path).toBe("payload.usageObservation.measurementStreamId");
+    expect(usageRows(path, "SELECT * FROM usage_observation_read_model")).toEqual([]);
+    expect((JSON.parse(usageDump(path)) as unknown[])[1]).toEqual((JSON.parse(before) as unknown[])[1]);
+    // A report on a stream nobody declared is refused before its first report too.
+    expect(
+      refusalOf(() => ledger.append(usageObservation({ taskId, transitionId: "obs-s", effectId, streamId: usageStreamId({ sourceEpoch: 9 }) }))).message,
+    ).toContain("STREAM_UNKNOWN");
+  });
+
+  it("N-P32B-16: a failure part way through leaves no stream, observation or revision behind, and a batch is whole or nothing", () => {
+    const path = temporaryDatabase();
+    let fault: "none" | "projection" | "commit" = "none";
+    const ledger = open(path, {
+      __testFaults: {
+        beforeProjection: () => {
+          if (fault === "projection") throw new Error("injected projection failure");
+        },
+        beforeAppendCommit: () => {
+          if (fault === "commit") throw new Error("injected commit failure");
+        },
+      },
+    });
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    const before = usageDump(path);
+    const head = ledger.status().headSequence;
+
+    for (const which of ["projection", "commit"] as const) {
+      fault = which;
+      expect(caught(() => ledger.append(usageObservation({ taskId, transitionId: "obs-" + which, effectId })))).toBeInstanceOf(Error);
+      expect(usageDump(path), which).toBe(before);
+      expect(ledger.status().headSequence, which).toBe(head);
+    }
+    fault = "none";
+
+    // A batch whose third event the fold refuses takes the first two back with it.
+    const refused = caught(() =>
+      ledger.appendBatch([
+        usageStream({ taskId, transitionId: "stream-2", accountId: "acct-2" }),
+        usageObservation({ taskId, transitionId: "b-0", effectId }),
+        usageObservation({ taskId, transitionId: "b-1", effectId, observationId: "b-1", ordinal: 1, sourceObservationId: "b-1", from: 50, to: 150 }),
+      ]),
+    );
+    expect(refused).toBeInstanceOf(LedgerValidationError);
+    expect(usageDump(path)).toBe(before);
+    expect(ledger.status().headSequence).toBe(head);
+
+    // And a delivery and its first report may land in one batch.
+    const secondEffect = firstEffectId(taskId, 1, 1);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-2", invocationId: "inv-1", operationOrdinal: 1, localOperationKey: "second-step" }));
+    expect(
+      ledger.appendBatch([
+        dispatchIntention({ taskId, transitionId: "dispatch-2", effectId: secondEffect, dispatchAttemptId: "dsp-e2" }),
+        usageObservation({ taskId, transitionId: "e2-0", effectId: secondEffect, observationId: "e2-0" , ordinal: 5, sourceObservationId: "e2-0", from: 500, to: 600 }),
+      ]).insertedCount,
+    ).toBe(2);
+    expect(settlementsOf(path, secondEffect).map((row) => row.status)).toEqual(["UNKNOWN", "PARTIAL"]);
+
+    const live = usageDump(path);
+    ledger.rebuildReadModel();
+    ledger.rebuildReadModel();
+    expect(usageDump(path)).toBe(live);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P32B-17: the five counts are NULL exactly when the status is UNKNOWN or DISPUTED, by the table's own CHECK", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const effectId = seedDelivery(ledger, randomUUID());
+    ledger.close();
+
+    const raw = new Database(path);
+    try {
+      const insert = raw.prepare(
+        "INSERT INTO usage_settlement_read_model VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 0, ?, 99)",
+      );
+      const header = (revision: number, status: string, counts: readonly (number | null)[]) => () =>
+        insert.run(effectId, revision, status, ...counts, USAGE_SOURCE_POLICY_SHA256_V1, USAGE_AT);
+      for (const column of [0, 1, 2, 3, 4]) {
+        const one = [null, null, null, null, null].map((value, index) => (index === column ? 5 : value));
+        expect(header(10 + column, "UNKNOWN", one), "UNKNOWN " + String(column)).toThrow(/CHECK constraint failed/);
+        expect(header(20 + column, "DISPUTED", one), "DISPUTED " + String(column)).toThrow(/CHECK constraint failed/);
+        const missing = [5, 5, 5, 5, 5].map((value, index) => (index === column ? null : value));
+        expect(header(30 + column, "FINAL", missing), "FINAL " + String(column)).toThrow(/CHECK constraint failed/);
+        expect(header(40 + column, "PARTIAL", missing), "PARTIAL " + String(column)).toThrow(/CHECK constraint failed/);
+      }
+      expect(header(50, "PARTIAL", [1, 1, 1, 1, -1])).toThrow(/CHECK constraint failed/);
+      expect(header(51, "FINAL", [1, 1, 1, 1, 4])).not.toThrow();
+    } finally {
+      raw.close();
+    }
+  });
+
+  it("N-P32B-18: a second delivery after an abandoned first writes no second exposure", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(dispatchOutcome({ taskId, transitionId: "abandon-1", dispatchAttemptId: "dsp-1", dispatchState: "ABANDONED", terminalAt: EFFECT_AT }));
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-2", effectId, dispatchAttemptId: "dsp-2", attemptOrdinal: 2 }));
+
+    expect(ledger.listDispatchAttempts(effectId)).toHaveLength(2);
+    expect(settlementsOf(path, effectId).map((row) => [row.revision, row.sequence])).toEqual([
+      [1, eventAt(ledger, "dispatch-1").sequence],
+    ]);
+    const live = usageDump(path);
+    ledger.rebuildReadModel();
+    expect(usageDump(path)).toBe(live);
+  });
+
+  it("N-P32B-19: an observation of an effect nobody delivered is refused by name, at the door and by a rebuild, in the same words", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    const effectId = firstEffectId(taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    const event = usageObservation({ taskId, transitionId: "obs-0", effectId });
+
+    const atDoor = refusalOf(() => ledger.append(event));
+    expect(atDoor.path).toBe("payload.usageObservation.effectId");
+    expect(atDoor.message).toContain("has not been exposed");
+    expect(settlementsOf(path, effectId)).toEqual([]);
+
+    const stored = ledger.listEvents({ limit: 1000 }).events;
+    const snapshot = createProjectionSnapshot();
+    for (const record of stored) {
+      applyEventToSnapshot(snapshot, record.event, record.sequence, record.eventSha256);
+    }
+    const folded = caught(() => {
+      applyEventToSnapshot(snapshot, event as unknown as ControlPlaneEvent, stored.length + 1, "e".repeat(64));
+    });
+    expect(folded).toBeInstanceOf(LedgerValidationError);
+    expect((folded as LedgerValidationError).issues).toEqual([atDoor]);
+  });
+
+  it("N-P32B-22: migration 20 over a ledger that already delivered writes each exposure at its delivery, and refolds recorded usage into the same rows", () => {
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(seeded, taskId);
+    const secondEffect = seedSecondDelivery(seeded, taskId);
+    seeded.append(usageStream({ taskId, transitionId: "stream-1" }));
+    seeded.append(usageObservation({ taskId, transitionId: "obs-0", effectId, isFinal: 1 }));
+    const live = usageDump(path);
+    const dispatch = eventAt(seeded, "dispatch-2");
+    seeded.close();
+
+    withRawDatabase(path, (raw) => {
+      dropUsageCapture(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(USAGE_CAPTURE_MIGRATION);
+    });
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
+    expect(usageDump(path)).toBe(live);
+    expect(settlementsOf(path, secondEffect)).toEqual([
+      expect.objectContaining({ revision: 1, status: "UNKNOWN", sequence: dispatch.sequence, computedAt: dispatch.event.recordedAt }),
+    ]);
+    expect(
+      usageRows(path, "SELECT source_sha256 FROM usage_settlement_source_head_read_model WHERE effect_id = ?", secondEffect),
+    ).toEqual([{ source_sha256: dispatch.eventSha256 }]);
+    // Five watermarks level with the head.
+    const head = migrated.status().headSequence;
+    expect(
+      usageRows(path, "SELECT applied_sequence FROM projection_watermark WHERE projection_name LIKE 'usage_%'").map((row) =>
+        Number(row["applied_sequence"]),
+      ),
+    ).toEqual([head, head, head, head, head]);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+    migrated.rebuildReadModel();
+    expect(usageDump(path)).toBe(live);
+    expect(migrated.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P32B-25: new usage stamped 2.5.0 is refused naming both versions, and an exact replay of a 2.5.0 row is still admitted", () => {
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    const taskId = randomUUID();
+    const discovered = makeEvent({ taskId, transitionId: "discover" });
+    seeded.append(discovered);
+    seeded.close();
+    demoteEnvelopeCohort(path, "2.5.0");
+
+    const reopened = open(path);
+    expect(reopened.append({ ...discovered, contractVersion: "2.5.0" }).inserted).toBe(false);
+    const effectId = seedDelivery(reopened, randomUUID());
+    const stale = refusalOf(() =>
+      reopened.append({ ...usageStream({ taskId: randomUUID(), transitionId: "stale" }), contractVersion: "2.5.0" }),
+    );
+    expect(stale.path).toBe("contractVersion");
+    expect(stale.message).toContain("2.6.0");
+    expect(stale.message).toContain("2.5.0");
+    expect(CONTRACT_VERSION).toBe("2.6.0");
+    expect(settlementsOf(path, effectId)).toHaveLength(1);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P32B-26, N-P32B-31: verifyIntegrity names a rewritten count, a missing list row, an orphan header and a dropped index", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    ledger.append(usageObservation({ taskId, transitionId: "obs-0", effectId }));
+    ledger.close();
+
+    tamper(path, (raw) => {
+      raw.pragma("foreign_keys = OFF");
+      raw.prepare("UPDATE usage_settlement_read_model SET total_tokens = 101 WHERE settlement_revision = 2").run();
+      raw.prepare("DELETE FROM usage_settlement_observation_read_model WHERE settlement_revision = 2").run();
+      raw
+        .prepare("INSERT INTO usage_settlement_read_model VALUES (?, 9, 'UNKNOWN', NULL, NULL, NULL, NULL, NULL, ?, 1, NULL, 0, ?, 3)")
+        .run(effectId, USAGE_SOURCE_POLICY_SHA256_V1, USAGE_AT);
+      raw.exec("DROP INDEX ix_usage_settlement__latest");
+    });
+    const report = open(path, { readOnly: true }).verifyIntegrity();
+    expect(report.ok).toBe(false);
+    const details = report.problems.map((problem) => problem.kind + " " + problem.detail);
+    expect(details).toContain("PROJECTION usage_settlement_read_model row for " + effectId + " 2 disagrees with a replay");
+    expect(details).toContain(
+      "PROJECTION usage_settlement_observation_read_model is missing the row for " + JSON.stringify([effectId, 2, "obs-0"]),
+    );
+    expect(details).toContain(
+      "PROJECTION usage_settlement_read_model holds the row for " + effectId + " 9 which no event accounts for",
+    );
+    expect(details).toContain(
+      "SCHEMA_SHAPE the index ix_usage_settlement__latest was created by a migration but is no longer present",
+    );
+  });
+
+  it("N-P32B-27: a sum past 2^53 is exact through the door, the table and a rebuild, and one past int64 is refused", { timeout: 180_000 }, () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    const max = Number.MAX_SAFE_INTEGER;
+    ledger.append(usageObservation({ taskId, transitionId: "big-0", effectId, observationId: "big-0", counts: [max, 0, 0, 0], from: 0, to: 1 }));
+    ledger.append(
+      usageObservation({ taskId, transitionId: "big-1", effectId, observationId: "big-1", ordinal: 1, sourceObservationId: "big-1", counts: [2, 0, 0, 0], from: 1, to: 2 }),
+    );
+    expect(settlementsOf(path, effectId).at(-1)).toMatchObject({ input: 2n ** 53n + 1n, total: 9007199254740993n });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    const live = usageDump(path);
+    ledger.rebuildReadModel();
+    expect(usageDump(path)).toBe(live);
+
+    // 1023 more reports of the largest safe count, and one of 1021, reach 2^63 - 1 exactly.
+    const reports: Record<string, unknown>[] = [];
+    for (let ordinal = 2; ordinal <= 1024; ordinal += 1) {
+      reports.push(
+        usageObservation({ taskId, transitionId: "big-" + String(ordinal), effectId, observationId: "big-" + String(ordinal), ordinal, sourceObservationId: "big-" + String(ordinal), counts: [max, 0, 0, 0], from: ordinal, to: ordinal + 1 }),
+      );
+    }
+    reports.push(
+      usageObservation({ taskId, transitionId: "big-1025", effectId, observationId: "big-1025", ordinal: 1025, sourceObservationId: "big-1025", counts: [1021, 0, 0, 0], from: 1025, to: 1026 }),
+    );
+    for (let at = 0; at < reports.length; at += 256) ledger.appendBatch(reports.slice(at, at + 256));
+    expect(settlementsOf(path, effectId).at(-1)?.total).toBe(2n ** 63n - 1n);
+
+    const overflow = refusalOf(() =>
+      ledger.append(
+        usageObservation({ taskId, transitionId: "big-1026", effectId, observationId: "big-1026", ordinal: 1026, sourceObservationId: "big-1026", counts: [1, 0, 0, 0], from: 1026, to: 1027 }),
+      ),
+    );
+    expect(overflow.message).toContain("TOKENS_OVERFLOW");
+    expect(overflow.path).toBe("payload.usageObservation.totalTokens");
+    expect(settlementsOf(path, effectId).at(-1)?.total).toBe(2n ** 63n - 1n);
+  });
+
+  it("N-P32B-28, N-P32B-30: a closed payload, a same-state passthrough, and not one byte of content", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+
+    expect(refusalOf(() => ledger.append(usageStream({ taskId, transitionId: "s-extra", payloadExtras: { note: "x" } }))).path).toBe(
+      "payload.note",
+    );
+    expect(refusalOf(() => ledger.append(usageStream({ taskId, transitionId: "s-field", overrides: { providerConnectionId: "c" } }))).path).toBe(
+      "payload.usageStream.providerConnectionId",
+    );
+    expect(
+      refusalOf(() => ledger.append(usageObservation({ taskId, transitionId: "o-field", effectId, overrides: { sourceClass: "ESTIMATE" } }))).path,
+    ).toBe("payload.usageObservation.sourceClass");
+    expect(
+      refusalOf(() => ledger.append(usageObservation({ taskId, transitionId: "o-extra", effectId, payloadExtras: { accountId: "acct-9" } }))).path,
+    ).toBe("payload.accountId");
+    const moved = refusalOf(() =>
+      ledger.append({ ...usageObservation({ taskId, transitionId: "o-move", effectId }), toState: "READY" }),
+    );
+    expect(moved.path).toBe("toState");
+    expect(refusalOf(() => ledger.append(usageStream({ taskId, transitionId: "s-v1", revisionNumber: 0 }))).path).toBe(
+      "payload.revisionNumber",
+    );
+    expect(usageRows(ledger.path, "SELECT COUNT(*) AS n FROM usage_observation_read_model")).toEqual([{ n: 0n }]);
   });
 });

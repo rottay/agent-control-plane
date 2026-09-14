@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.5.0" as const;
+export const CONTRACT_VERSION = "2.6.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -71,8 +71,15 @@ export const CONTRACT_VERSION = "2.5.0" as const;
  * producer never moved could not tell a revision recorded before migration 16
  * from one recorded after it. The bump pays the cohort, not an identity.
  * `"2.4.0"` joins the other two here for ever.
+ *
+ * **Five members from P-32/captura B (ADR 0089), on ADR 0076's criterion again.**
+ * Its two usage types carry an identity the door recomputes rather than believes
+ * — `measurement_stream_id`, the digest of a versioned preimage of the stream's
+ * coordinate — and a per-payload version of the adapter that normalized them,
+ * `normalization_policy_sha256`. That is C's class and F's, not D's. `"2.5.0"`
+ * joins the other three here for ever.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0", "2.4.0", "2.5.0"] as const;
+export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0"] as const;
 
 /**
  * The UTF-8 byte length of a string, browser-safe.

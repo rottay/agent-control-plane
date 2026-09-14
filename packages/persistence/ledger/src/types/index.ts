@@ -785,6 +785,159 @@ export interface ResponseOccurrenceReadModel {
   readonly sequence: number;
 }
 
+/**
+ * One declared measurement stream — economy §1.1 (P-32/captura B, ADR 0089).
+ *
+ * `measurementStreamId` is the digest of the versioned preimage of the four
+ * coordinate fields and is recomputed by the door, never believed. `sequence` is
+ * the first event that declared the stream: a restatement of the same stream by a
+ * later event writes nothing, and a restatement with another class or policy is
+ * refused by name.
+ *
+ * The three vocabularies of these rows are spelled as literals here rather than
+ * imported from the settlement module, because that module is reached only by
+ * the door and the fold (L-P32B-1); the fold's own types are assigned to and read
+ * from these, so a word that drifted would not compile.
+ */
+export interface UsageMeasurementStreamReadModel {
+  readonly measurementStreamId: string;
+  readonly source: string;
+  readonly accountId: string;
+  readonly routeSegmentId: string;
+  readonly sourceEpoch: number;
+  readonly sourceClass: "PROVIDER_AUTHORITATIVE" | "WRAPPER_MEASURED" | "ESTIMATE";
+  readonly normalizationPolicySha256: string;
+  readonly sequence: number;
+}
+
+/**
+ * One usage observation — economy §1.2 (P-32/captura B).
+ *
+ * Every count is a safe integer here: a single report is held to the payload's
+ * JSON numbers, and the four classes and their total each fit. What can exceed
+ * `Number.MAX_SAFE_INTEGER` is a settlement's sum, which is why the settlement's
+ * counts are `bigint`.
+ */
+export interface UsageObservationReadModel {
+  readonly observationId: string;
+  readonly measurementStreamId: string;
+  readonly ordinal: number;
+  readonly sourceObservationId: string;
+  readonly reportKind: "DELTA" | "CUMULATIVE" | "CORRECTION";
+  readonly rangeFromCounter: number | null;
+  readonly rangeToCounter: number | null;
+  readonly correctsObservationId: string | null;
+  readonly effectId: string;
+  readonly isFinal: 0 | 1;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheWriteTokens: number;
+  readonly cacheReadTokens: number;
+  readonly totalTokens: number;
+  readonly occurredAt: string;
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
+/**
+ * One settlement revision's header — economy §2.1 (P-32/captura B).
+ *
+ * The five counts are `bigint | null`, `null` iff the status is `UNKNOWN` or
+ * `DISPUTED`, and are read back with `safeIntegers` so a sum past
+ * `Number.MAX_SAFE_INTEGER` is exact. The revision in force is the highest; no
+ * earlier revision is ever rewritten.
+ */
+export interface UsageSettlementReadModel {
+  readonly effectId: string;
+  readonly settlementRevision: number;
+  readonly settlementStatus: "FINAL" | "PARTIAL" | "UNKNOWN" | "DISPUTED";
+  readonly inputTokens: bigint | null;
+  readonly outputTokens: bigint | null;
+  readonly cacheWriteTokens: bigint | null;
+  readonly cacheReadTokens: bigint | null;
+  readonly totalTokens: bigint | null;
+  readonly sourcePolicySha256: string;
+  readonly foldVersion: number;
+  readonly lastObservationId: string | null;
+  readonly hadLateArrival: 0 | 1;
+  readonly computedAt: string;
+  readonly sequence: number;
+}
+
+/** One head of a settlement revision's cut — economy §2.2. Only the control row in this build (Q4). */
+export interface UsageSettlementSourceHeadReadModel {
+  readonly effectId: string;
+  readonly settlementRevision: number;
+  readonly sourceStream: "control_plane_events" | "registry_events";
+  readonly sourceSequence: number;
+  readonly sourceSha256: string;
+}
+
+/** One observation a settlement revision considered — economy §2.3. */
+export interface UsageSettlementObservationReadModel {
+  readonly effectId: string;
+  readonly settlementRevision: number;
+  readonly observationId: string;
+}
+
+/** One settlement revision whole: its header, its cut and its list, written in the trigger's transaction. */
+export interface UsageSettlementRecord {
+  readonly header: UsageSettlementReadModel;
+  readonly sourceHeads: readonly UsageSettlementSourceHeadReadModel[];
+  readonly observations: readonly UsageSettlementObservationReadModel[];
+}
+
+/**
+ * What one event does to the five usage tables (P-32/captura B).
+ *
+ * `null` in a field means that table is not written: a restated stream or
+ * observation writes nothing, a declaration writes no settlement, and a delivery
+ * of an effect that already has a revision writes none either.
+ */
+export interface UsageCaptureWrites {
+  readonly stream: UsageMeasurementStreamReadModel | null;
+  readonly observation: UsageObservationReadModel | null;
+  readonly settlement: UsageSettlementRecord | null;
+}
+
+/**
+ * What the usage fold reads, whether it runs over the base or over a snapshot.
+ *
+ * `ArtifactFoldView`'s allocation: the door and the migration answer these from
+ * the tables inside their transaction, the rebuild answers them from the
+ * snapshot it is filling, and one decision function serves all three.
+ */
+export interface UsageCaptureView {
+  stream(measurementStreamId: string): UsageMeasurementStreamReadModel | null;
+  observation(observationId: string): UsageObservationReadModel | null;
+  /** The observation that holds this ordinal of this stream, or null. */
+  observationAtOrdinal(measurementStreamId: string, ordinal: number): string | null;
+  /** The observation that holds this source report id of this stream, or null. */
+  observationForSourceReport(measurementStreamId: string, sourceObservationId: string): string | null;
+  /** Every observation recorded for one effect. */
+  effectObservations(effectId: string): readonly UsageObservationReadModel[];
+  /** The attempt that owns a route segment, or null when no segment has that id. */
+  segmentOwner(routeSegmentId: string): {
+    readonly taskId: string;
+    readonly revisionNumber: number;
+    readonly attemptNumber: number;
+  } | null;
+  /** The attempt that owns an effect, or null when no effect has that id. */
+  effectOwner(effectId: string): {
+    readonly taskId: string;
+    readonly revisionNumber: number;
+    readonly attemptNumber: number;
+  } | null;
+  /** The effect's revision in force, or null when it has none. */
+  latestSettlement(effectId: string): {
+    readonly settlementRevision: number;
+    readonly status: UsageSettlementReadModel["settlementStatus"];
+    readonly sequence: number;
+  } | null;
+  /** The trigger sequence of the effect's latest FINAL revision, or null. */
+  lastFinalSequence(effectId: string): number | null;
+}
+
 /** A word of `OUTBOX_FAILURE_CODES`, the vocabulary the door imposes when it writes. */
 export type OutboxFailureCode = (typeof OUTBOX_FAILURE_CODES)[number];
 

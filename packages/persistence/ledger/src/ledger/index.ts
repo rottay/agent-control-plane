@@ -48,6 +48,7 @@ import {
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_MIGRATION,
   TASK_SUBMISSION_MIGRATION,
+  USAGE_CAPTURE_MIGRATION,
   ACCOUNT_STREAM,
   DERIVED_TABLES,
   EXPECTED_SCHEMA_OBJECTS,
@@ -156,6 +157,12 @@ import {
   readOutboxEvent,
   type OutboxAttemptRecord,
   type OutboxPredecessor,
+  assertUsageCaptureAdmissible,
+  nextUsageCapture,
+  usageRowText,
+  usageSettlementKey,
+  usageSettlementObservationKey,
+  usageSettlementSourceHeadKey,
 } from "../projection/index.js";
 import {
   DISPATCH_STATE_TRANSITIONS,
@@ -240,6 +247,14 @@ import {
   type AccountActionRecordRow,
   type AccountEventRow,
   type AccountIntegrityState,
+  type UsageCaptureView,
+  type UsageCaptureWrites,
+  type UsageMeasurementStreamReadModel,
+  type UsageObservationReadModel,
+  type UsageSettlementObservationReadModel,
+  type UsageSettlementReadModel,
+  type UsageSettlementRecord,
+  type UsageSettlementSourceHeadReadModel,
 } from "../types/index.js";
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
@@ -2256,6 +2271,311 @@ function foldTaskSubmissionsAtMigration(db: Database.Database): void {
   }
 }
 
+interface UsageStreamRow {
+  readonly measurement_stream_id: string;
+  readonly source: string;
+  readonly account_id: string;
+  readonly route_segment_id: string;
+  readonly source_epoch: number;
+  readonly source_class: string;
+  readonly normalization_policy_sha256: string;
+  readonly sequence: number;
+}
+
+interface UsageObservationRow {
+  readonly observation_id: string;
+  readonly measurement_stream_id: string;
+  readonly ordinal: number;
+  readonly source_observation_id: string;
+  readonly report_kind: string;
+  readonly range_from_counter: number | null;
+  readonly range_to_counter: number | null;
+  readonly corrects_observation_id: string | null;
+  readonly effect_id: string;
+  readonly is_final: number;
+  readonly input_tokens: number;
+  readonly output_tokens: number;
+  readonly cache_write_tokens: number;
+  readonly cache_read_tokens: number;
+  readonly total_tokens: number;
+  readonly occurred_at: string;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
+/** The attempt coordinate of a segment or an effect row, as the usage view reads it. */
+interface UsageOwnerRow {
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly attempt_number: number;
+}
+
+function usageStreamRowToModel(row: UsageStreamRow): UsageMeasurementStreamReadModel {
+  return {
+    measurementStreamId: row.measurement_stream_id,
+    source: row.source,
+    accountId: row.account_id,
+    routeSegmentId: row.route_segment_id,
+    sourceEpoch: row.source_epoch,
+    sourceClass: row.source_class as UsageMeasurementStreamReadModel["sourceClass"],
+    normalizationPolicySha256: row.normalization_policy_sha256,
+    sequence: row.sequence,
+  };
+}
+
+function usageObservationRowToModel(row: UsageObservationRow): UsageObservationReadModel {
+  return {
+    observationId: row.observation_id,
+    measurementStreamId: row.measurement_stream_id,
+    ordinal: row.ordinal,
+    sourceObservationId: row.source_observation_id,
+    reportKind: row.report_kind as UsageObservationReadModel["reportKind"],
+    rangeFromCounter: row.range_from_counter,
+    rangeToCounter: row.range_to_counter,
+    correctsObservationId: row.corrects_observation_id,
+    effectId: row.effect_id,
+    isFinal: row.is_final === 1 ? 1 : 0,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheWriteTokens: row.cache_write_tokens,
+    cacheReadTokens: row.cache_read_tokens,
+    totalTokens: row.total_tokens,
+    occurredAt: row.occurred_at,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
+}
+
+/**
+ * The usage fold's view over the base (P-32/captura B), for the append door and
+ * for migration 20's retroactive fold.
+ *
+ * A module function over a statement factory rather than a method, for
+ * `writeModelVersionProjection`'s reason: the migration runs before a `Ledger`
+ * exists, and the door and it must ask the tables the same questions.
+ */
+function usageBaseView(prepare: (sql: string) => Database.Statement): UsageCaptureView {
+  const owner = (
+    row: UsageOwnerRow | undefined,
+  ): { readonly taskId: string; readonly revisionNumber: number; readonly attemptNumber: number } | null =>
+    row === undefined
+      ? null
+      : { taskId: row.task_id, revisionNumber: row.revision_number, attemptNumber: row.attempt_number };
+  return {
+    stream: (id) => {
+      const row = prepare("SELECT * FROM usage_measurement_stream_read_model WHERE measurement_stream_id = ?").get(
+        id,
+      ) as UsageStreamRow | undefined;
+      return row === undefined ? null : usageStreamRowToModel(row);
+    },
+    observation: (id) => {
+      const row = prepare("SELECT * FROM usage_observation_read_model WHERE observation_id = ?").get(id) as
+        | UsageObservationRow
+        | undefined;
+      return row === undefined ? null : usageObservationRowToModel(row);
+    },
+    observationAtOrdinal: (streamId, ordinal) =>
+      (
+        prepare(
+          "SELECT observation_id FROM usage_observation_read_model WHERE measurement_stream_id = ? AND ordinal = ?",
+        ).get(streamId, ordinal) as { readonly observation_id: string } | undefined
+      )?.observation_id ?? null,
+    observationForSourceReport: (streamId, sourceObservationId) =>
+      (
+        prepare(
+          "SELECT observation_id FROM usage_observation_read_model " +
+            "WHERE measurement_stream_id = ? AND source_observation_id = ?",
+        ).get(streamId, sourceObservationId) as { readonly observation_id: string } | undefined
+      )?.observation_id ?? null,
+    effectObservations: (effectId) =>
+      (
+        prepare("SELECT * FROM usage_observation_read_model WHERE effect_id = ? ORDER BY sequence ASC").all(
+          effectId,
+        ) as UsageObservationRow[]
+      ).map(usageObservationRowToModel),
+    segmentOwner: (routeSegmentId) =>
+      owner(
+        prepare(
+          "SELECT task_id, revision_number, attempt_number FROM execution_route_segment_read_model " +
+            "WHERE route_segment_id = ?",
+        ).get(routeSegmentId) as UsageOwnerRow | undefined,
+      ),
+    effectOwner: (effectId) =>
+      owner(
+        prepare("SELECT task_id, revision_number, attempt_number FROM effect_read_model WHERE effect_id = ?").get(
+          effectId,
+        ) as UsageOwnerRow | undefined,
+      ),
+    latestSettlement: (effectId) => {
+      const row = prepare(
+        "SELECT settlement_revision, settlement_status, sequence FROM usage_settlement_read_model " +
+          "WHERE effect_id = ? ORDER BY settlement_revision DESC LIMIT 1",
+      ).get(effectId) as
+        | { readonly settlement_revision: number; readonly settlement_status: string; readonly sequence: number }
+        | undefined;
+      return row === undefined
+        ? null
+        : {
+            settlementRevision: row.settlement_revision,
+            status: row.settlement_status as UsageSettlementReadModel["settlementStatus"],
+            sequence: row.sequence,
+          };
+    },
+    lastFinalSequence: (effectId) =>
+      (
+        prepare(
+          "SELECT sequence FROM usage_settlement_read_model WHERE effect_id = ? AND settlement_status = 'FINAL' " +
+            "ORDER BY settlement_revision DESC LIMIT 1",
+        ).get(effectId) as { readonly sequence: number } | undefined
+      )?.sequence ?? null,
+  };
+}
+
+/**
+ * Write what `nextUsageCapture` decided, parents first: the stream, the
+ * observation, then the revision's header, its cut and its list. Every foreign
+ * key is deferred, so the order is the dictionary's rather than the engine's.
+ * Insert-only: a revision is a row beside the earlier ones, and the fold already
+ * refused anything these statements could conflict on.
+ */
+function writeUsageCapture(prepare: (sql: string) => Database.Statement, writes: UsageCaptureWrites): void {
+  const stream = writes.stream;
+  if (stream !== null) {
+    prepare(
+      "INSERT INTO usage_measurement_stream_read_model (" +
+        "measurement_stream_id, source, account_id, route_segment_id, source_epoch, source_class, " +
+        "normalization_policy_sha256, sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      stream.measurementStreamId,
+      stream.source,
+      stream.accountId,
+      stream.routeSegmentId,
+      stream.sourceEpoch,
+      stream.sourceClass,
+      stream.normalizationPolicySha256,
+      stream.sequence,
+    );
+  }
+  const observation = writes.observation;
+  if (observation !== null) {
+    prepare(
+      "INSERT INTO usage_observation_read_model (" +
+        "observation_id, measurement_stream_id, ordinal, source_observation_id, report_kind, " +
+        "range_from_counter, range_to_counter, corrects_observation_id, effect_id, is_final, " +
+        "input_tokens, output_tokens, cache_write_tokens, cache_read_tokens, total_tokens, " +
+        "occurred_at, recorded_at, sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      observation.observationId,
+      observation.measurementStreamId,
+      observation.ordinal,
+      observation.sourceObservationId,
+      observation.reportKind,
+      observation.rangeFromCounter,
+      observation.rangeToCounter,
+      observation.correctsObservationId,
+      observation.effectId,
+      observation.isFinal,
+      observation.inputTokens,
+      observation.outputTokens,
+      observation.cacheWriteTokens,
+      observation.cacheReadTokens,
+      observation.totalTokens,
+      observation.occurredAt,
+      observation.recordedAt,
+      observation.sequence,
+    );
+  }
+  const settlement = writes.settlement;
+  if (settlement !== null) writeUsageSettlement(prepare, settlement);
+}
+
+/** One settlement revision whole: header, cut, list. */
+function writeUsageSettlement(prepare: (sql: string) => Database.Statement, settlement: UsageSettlementRecord): void {
+  const header = settlement.header;
+  prepare(
+    "INSERT INTO usage_settlement_read_model (" +
+      "effect_id, settlement_revision, settlement_status, input_tokens, output_tokens, cache_write_tokens, " +
+      "cache_read_tokens, total_tokens, source_policy_sha256, fold_version, last_observation_id, " +
+      "had_late_arrival, computed_at, sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    header.effectId,
+    header.settlementRevision,
+    header.settlementStatus,
+    header.inputTokens,
+    header.outputTokens,
+    header.cacheWriteTokens,
+    header.cacheReadTokens,
+    header.totalTokens,
+    header.sourcePolicySha256,
+    header.foldVersion,
+    header.lastObservationId,
+    header.hadLateArrival,
+    header.computedAt,
+    header.sequence,
+  );
+  for (const head of settlement.sourceHeads) writeUsageSettlementSourceHead(prepare, head);
+  for (const considered of settlement.observations) writeUsageSettlementObservation(prepare, considered);
+}
+
+function writeUsageSettlementSourceHead(
+  prepare: (sql: string) => Database.Statement,
+  head: UsageSettlementSourceHeadReadModel,
+): void {
+  prepare(
+    "INSERT INTO usage_settlement_source_head_read_model (" +
+      "effect_id, settlement_revision, source_stream, source_sequence, source_sha256) VALUES (?, ?, ?, ?, ?)",
+  ).run(head.effectId, head.settlementRevision, head.sourceStream, head.sourceSequence, head.sourceSha256);
+}
+
+function writeUsageSettlementObservation(
+  prepare: (sql: string) => Database.Statement,
+  considered: UsageSettlementObservationReadModel,
+): void {
+  prepare(
+    "INSERT INTO usage_settlement_observation_read_model (effect_id, settlement_revision, observation_id) " +
+      "VALUES (?, ?, ?)",
+  ).run(considered.effectId, considered.settlementRevision, considered.observationId);
+}
+
+/**
+ * Fold the task stream a ledger already holds for its usage capture, once, as
+ * migration 20 lands (P-32/captura B, H-1, ADR 0089).
+ *
+ * `foldTaskSubmissionsAtMigration`'s shape. The migration creates the five tables
+ * empty and seeds their watermarks at the head, and a ledger that already
+ * delivered an effect would then hold rows a rebuild writes and these tables do
+ * not: the first delivery of every effect is its exposure, revision 1, `UNKNOWN`.
+ * So the stream is folded again inside the transaction that applies the
+ * migration, through `nextUsageCapture` over the base and the door's own writer,
+ * in sequence order and at each event's own digest. A usage event is folded too,
+ * so a ledger rewound past 20 over usage it already holds folds back into the
+ * same rows. A row that no longer reads as an event is skipped rather than
+ * refused, for `foldModelVersionsAtMigration`'s reason.
+ */
+function foldUsageCaptureAtMigration(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      "SELECT sequence, event_json, event_sha256 FROM control_plane_events " +
+        "WHERE type IN ('DISPATCH_INTENDED', 'USAGE_STREAM_DECLARED', 'USAGE_OBSERVATION_RECORDED') " +
+        "ORDER BY sequence ASC",
+    )
+    .all() as { readonly sequence: number; readonly event_json: string; readonly event_sha256: string }[];
+  const prepare = (sql: string): Database.Statement => db.prepare(sql);
+  const view = usageBaseView(prepare);
+  for (const row of rows) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(row.event_json);
+    } catch {
+      continue;
+    }
+    const parsed = ControlPlaneEvent.safeParse(decoded);
+    if (!parsed.success) continue;
+    const writes = nextUsageCapture(view, parsed.data, row.sequence, row.event_sha256);
+    if (writes !== null) writeUsageCapture(prepare, writes);
+  }
+}
+
 function activateAccountIntegrity(db: Database.Database, activatedAt: string): void {
   const rows = db
     .prepare("SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC")
@@ -2531,6 +2851,11 @@ export class Ledger {
               // its rows, and the three task columns an intake names, level with it.
               if (migration.version === TASK_SUBMISSION_MIGRATION) {
                 foldTaskSubmissionsAtMigration(db);
+              }
+              // Migration 20 seeded five watermarks at the task head; this writes
+              // the exposure of every effect already delivered, level with it.
+              if (migration.version === USAGE_CAPTURE_MIGRATION) {
+                foldUsageCaptureAtMigration(db);
               }
             },
           });
@@ -3459,6 +3784,14 @@ export class Ledger {
     // anchored by exactly that reference.
     this.#assertOutboxEvent(event, causation, predecessor);
 
+    // The measurement stream and the observation (P-32/captura B). After the
+    // effect's identity, because an observation hangs off an effect that check
+    // either found or refused, and through the function the fold calls, so a
+    // rebuild refuses the same histories in the same words. What only the
+    // settlement fold can see — a coverage overlap, a forked correction, the int64
+    // ceiling — is refused as `#projectEvent` folds it, inside this transaction.
+    assertUsageCaptureAdmissible(usageBaseView((sql) => this.#stmt(sql)), event);
+
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
         "event_id, idempotency_key, task_id, attempt, revision_number, attempt_number, " +
@@ -3501,7 +3834,7 @@ export class Ledger {
 
     this.#faults.beforeProjection?.();
 
-    this.#projectEvent(event, sequence);
+    this.#projectEvent(event, sequence, eventSha256);
     this.#writeHead(sequence, eventSha256, head.count + 1);
 
     return {
@@ -4971,7 +5304,7 @@ export class Ledger {
   }
 
   /** Incremental projection. Same rules as replay, applied to one event. */
-  #projectEvent(event: ControlPlaneEvent, sequence: number): void {
+  #projectEvent(event: ControlPlaneEvent, sequence: number, sha256: string): void {
     const currentTask = this.#stmt(
       "SELECT * FROM task_read_model WHERE task_id = ?",
     ).get(event.taskId) as TaskRow | undefined;
@@ -5054,6 +5387,14 @@ export class Ledger {
 
     const dispatch = nextDispatchAttemptProjection(event, sequence);
     if (dispatch !== null) this.#insertDispatchAttempt(dispatch);
+
+    // The P-32/captura B cohort, after the delivery, for `applyEventToSnapshot`'s
+    // order: a stream, an observation, and the settlement revision escalón A's
+    // fold computes at this event's own head — written with the append and the
+    // head in this one transaction (economy §1.2 `:81`), or not at all. A
+    // delivery of an effect with no revision yet writes its exposure.
+    const usage = nextUsageCapture(usageBaseView((sql) => this.#stmt(sql)), event, sequence, sha256);
+    if (usage !== null) writeUsageCapture((sql) => this.#stmt(sql), usage);
 
     // `#assertDispatchOutcome` has already refused a present-invalid field in
     // this transaction; the refusal is thrown again here only so this write can
@@ -7620,7 +7961,7 @@ export class Ledger {
       let lastRecordedAt = EPOCH_TIMESTAMP;
 
       const replay = this.#replay((event, row) => {
-        applyEventToSnapshot(snapshot, event, row.sequence);
+        applyEventToSnapshot(snapshot, event, row.sequence, row.event_sha256);
         applyEventToOutboxFold(outbox, {
           event,
           sequence: row.sequence,
@@ -7805,6 +8146,27 @@ export class Ledger {
       for (const response of snapshot.responseOccurrences.values()) {
         this.#insertResponseOccurrence(response);
       }
+      // The P-32/captura B cohort, after the effects and the deliveries it hangs
+      // off, parents first: the streams, the observations in the order the replay
+      // recorded them — a correction after its target — and each revision's
+      // header before its cut and its list, through the door's own writer. Cleared
+      // above children-first; every insert lands on an empty key.
+      const writeUsage = (sql: string): Database.Statement => this.#stmt(sql);
+      for (const stream of snapshot.usageStreams.values()) {
+        writeUsageCapture(writeUsage, { stream, observation: null, settlement: null });
+      }
+      for (const observation of snapshot.usageObservations.values()) {
+        writeUsageCapture(writeUsage, { stream: null, observation, settlement: null });
+      }
+      for (const header of snapshot.usageSettlements.values()) {
+        writeUsageSettlement(writeUsage, { header, sourceHeads: [], observations: [] });
+      }
+      for (const head of snapshot.usageSettlementSourceHeads.values()) {
+        writeUsageSettlementSourceHead(writeUsage, head);
+      }
+      for (const considered of snapshot.usageSettlementObservations.values()) {
+        writeUsageSettlementObservation(writeUsage, considered);
+      }
 
       for (const initiative of initiativeSnapshot.initiatives.values()) {
         this.#upsertInitiative(initiative);
@@ -7974,7 +8336,7 @@ export class Ledger {
     const snapshot = createProjectionSnapshot();
     const outbox = createOutboxFold();
     const replay = this.#replay((event, row) => {
-      applyEventToSnapshot(snapshot, event, row.sequence);
+      applyEventToSnapshot(snapshot, event, row.sequence, row.event_sha256);
       applyEventToOutboxFold(outbox, {
         event,
         sequence: row.sequence,
@@ -9401,7 +9763,83 @@ export class Ledger {
       ),
     );
 
+    this.#compareUsageProjections(snapshot, problems);
+
     return problems;
+  }
+
+  /**
+   * The P-32/captura B cohort against a replay, all five tables, as exact sets
+   * both ways (H-3).
+   *
+   * Read with `safeIntegers`, so a settlement's sum past
+   * `Number.MAX_SAFE_INTEGER` is compared exactly, and compared as text: every
+   * integer on both sides becomes its decimal digits (`usageRowText`), because
+   * `canonicalJsonStringify` refuses a `bigint` and a count compared through
+   * `number` could agree with a row it does not equal.
+   */
+  #compareUsageProjections(snapshot: ProjectionSnapshot, problems: IntegrityProblem[]): void {
+    const stored = (sql: string): Record<string, unknown>[] =>
+      this.#db.prepare(sql).safeIntegers(true).all() as Record<string, unknown>[];
+    const camel = (row: Record<string, unknown>): Record<string, unknown> =>
+      Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()), value]),
+      );
+    const texts = <T extends object>(rows: Iterable<[string, T]>): Map<string, string> =>
+      new Map([...rows].map(([key, row]) => [key, usageRowText(row)]));
+    const storedTexts = (sql: string, keyOf: (row: Record<string, unknown>) => string): Map<string, string> =>
+      new Map(
+        stored(sql).map((row) => {
+          const model = camel(row);
+          return [keyOf(model), usageRowText(model)];
+        }),
+      );
+    const text = (value: unknown): string => (typeof value === "string" ? value : String(value));
+
+    this.#compareRowSet(
+      problems,
+      "usage_measurement_stream_read_model",
+      texts(snapshot.usageStreams),
+      storedTexts("SELECT * FROM usage_measurement_stream_read_model", (row) => text(row["measurementStreamId"])),
+    );
+    this.#compareRowSet(
+      problems,
+      "usage_observation_read_model",
+      texts(snapshot.usageObservations),
+      storedTexts("SELECT * FROM usage_observation_read_model", (row) => text(row["observationId"])),
+    );
+    this.#compareRowSet(
+      problems,
+      "usage_settlement_read_model",
+      texts(snapshot.usageSettlements),
+      storedTexts("SELECT * FROM usage_settlement_read_model", (row) =>
+        usageSettlementKey(text(row["effectId"]), Number(row["settlementRevision"])),
+      ),
+    );
+    this.#compareRowSet(
+      problems,
+      "usage_settlement_source_head_read_model",
+      texts(snapshot.usageSettlementSourceHeads),
+      storedTexts("SELECT * FROM usage_settlement_source_head_read_model", (row) =>
+        usageSettlementSourceHeadKey(
+          text(row["effectId"]),
+          Number(row["settlementRevision"]),
+          text(row["sourceStream"]),
+        ),
+      ),
+    );
+    this.#compareRowSet(
+      problems,
+      "usage_settlement_observation_read_model",
+      texts(snapshot.usageSettlementObservations),
+      storedTexts("SELECT * FROM usage_settlement_observation_read_model", (row) =>
+        usageSettlementObservationKey(
+          text(row["effectId"]),
+          Number(row["settlementRevision"]),
+          text(row["observationId"]),
+        ),
+      ),
+    );
   }
 
   /**

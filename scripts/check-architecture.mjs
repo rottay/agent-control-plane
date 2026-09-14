@@ -10224,6 +10224,78 @@ const P32A_WRITE_SET = [
 ];
 
 // Owner-authorized static README artwork; exact paths, no directory exemption.
+/**
+ * P-32/captura escalón B — usage is a declared stream and a measured observation,
+ * and the door settles them in the same transaction (ADR 0089; writer brief v2:
+ * v1 + Fable preaudit H-1..H-12 + the DT's adjudications of H-5, H-6, H-7 and
+ * H-11).
+ *
+ * **What lands.** Migration 20: economy §1.1, §1.2 and §2.1-§2.3, five STRICT
+ * tables with the dictionary's CHECK, UNIQUE and INDEX, every foreign key deferred
+ * (the observation's self-reference without RESTRICT), five watermarks at the task
+ * head and a retroactive fold of the task stream's exposures (H-1). Two event
+ * types, `USAGE_STREAM_DECLARED` and `USAGE_OBSERVATION_RECORDED`, same-state
+ * passthroughs on `progress` (H-6). The door: closed payloads, the stream id
+ * recomputed, a stream declared once, the segment and the effect of the event's
+ * own attempt, an effect exposed before it is measured (H-5), one report one
+ * report, a correction of its own stream and effect — and escalón A's fold,
+ * called through one capture function in `#projectEvent` and in
+ * `applyEventToSnapshot`, at the trigger's own head (H-4). A delivery of an effect
+ * with no revision writes its exposure. `verifyIntegrity` compares the five tables
+ * as text (H-3). `CONTRACT_VERSION` 2.5.0 -> 2.6.0 on ADR 0076's criterion (H-8).
+ *
+ * **What does NOT land, declared.** No recorder or producer (C). No change to
+ * `TOKEN_USAGE_RECORDED`, the rollups or quota: L-V2B1D-1 is quiet. No FINAL and
+ * no zero by default. No read verb and no API route.
+ *
+ * **Pins that move.** `MIGRATIONS` 19 -> 20; `DERIVED_TABLES`, `PROJECTION_NAMES`
+ * (11 -> 16), `PROJECTION_SOURCES` (20 -> 25), status projections 19 -> 24 and
+ * watermark rows 20 -> 25; `EXPECTED_SCHEMA_OBJECTS` +11.
+ * `CONTROL_PLANE_EVENT_TYPES` 33 -> 35; the channel partition's `progress` 2 -> 4.
+ * `CONTRACT_VERSION` 2.5.0 -> 2.6.0 and `SUPPORTED_CONTRACT_VERSIONS` four -> five;
+ * the three envelope-identity vectors, computed twice. L-P32A-1 is retired and
+ * L-P32B-1 takes its row: `PATH_SCOPED_LAWS` stays **142**. The ADR corpus 88 ->
+ * 89; the decision register 82 -> 85.
+ *
+ * **Pins that do NOT move.** `API_CONTRACT_VERSION` (`"0.17.0"`),
+ * `LEDGER_CONTRACT_VERSION` (derived), `PROJECTOR_VERSION` (1), L-V2B1D-1,
+ * `USAGE_TOKENS_MAX`, `ROLLUP_TOKENS_MAX`, the `tr_` inventory (nine), the
+ * telemetry fixture's `"2.2.0"`. The historical `"2.5.0"` narration of this file's
+ * P36D, P14A, P14B and P14C blocks is a record and is not edited.
+ *
+ * **Twenty-six paths; one is new to the fence** — ADR 0089 (`grep -Fc` over this
+ * file, 0 before this block). The other twenty-five are admitted by historical
+ * blocks.
+ */
+const P32B_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/kernel/contracts/src/schemas/control-plane-event/index.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/edges/telemetry/test/testing/index.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0089-usage-is-a-declared-stream-and-a-measured-observation.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10442,6 +10514,7 @@ const WRITE_SET = [
   ...P14B_WRITE_SET,
   ...P14C_WRITE_SET,
   ...P32A_WRITE_SET,
+  ...P32B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -11813,9 +11886,11 @@ const PATH_SCOPED_LAWS = [
     scope: "packages/*/*/src/**",
   },
   // P-32/captura A. Two new path-shaped surfaces, so two new rows: the register
-  // and the `requireScope` call sites both move 140 -> 142.
+  // and the `requireScope` call sites both move 140 -> 142. P-32/captura B retires
+  // the first (L-P32A-1) and puts L-P32B-1 in its row: one law out, one in, and
+  // the register and the call sites both stay at 142.
   {
-    law: "nothing outside the settlement module and the ledger barrel names the settlement fold",
+    law: "the settlement fold is reached by the ledger's door and projection, and by nothing else",
     scope: "packages/*/*/src/**",
   },
   {
@@ -26152,17 +26227,28 @@ const TASK_INTAKE_SITE = "packages/domains/runtime/src/intake/index.ts";
   notes.push("no production source mints a task id, and one module builds the intake event");
 }
 
-// L-P32A-1 -- nothing outside the settlement module and the ledger barrel names
-// the settlement fold (P-32/captura A, H-8, ADR 0088).
+// L-P32A-1 -- RETIRED by P-32/captura B (ADR 0089), as ADR 0088 §Ten said it
+// would be. It held the fold inert while no door called it; B's door calls it,
+// so "nothing outside the module and the barrel" is no longer the law. L-P32B-1
+// below takes its place and its register row, and `PATH_SCOPED_LAWS` stays 142.
 //
-// The fold is inert until escalón B's door calls it inside the trigger's
-// transaction. The barrel exports it, which makes it reachable from every
-// dependent of `@acp/ledger`, so "inert" is held here rather than described: no
-// `src/` outside the module and the barrel imports the module's path or names the
-// fold or either identity step. Its own suite is the only caller. B retires this
-// law in the packet that wires the door, and names the retirement.
+// L-P32B-1 -- the settlement fold is reached by the ledger's append door and its
+// projection, and by nothing else (P-32/captura B, H-2, ADR 0089).
+//
+// Economy §1.2 `:81` writes a stream, an observation and the settlement with the
+// append and the head in one transaction. A second caller of the fold anywhere
+// else in `src/` — a recorder, a gateway, a quota reader — would compute a
+// settlement no door verified and no rebuild reproduces. So no `src/` outside the
+// module, the package barrel, the ledger (the door and migration 20's retroactive
+// fold) and the projection (the one capture function the door and the rebuild
+// share) imports the module's path or names the fold or either identity step.
+// The suites are outside `src/` and outside the law.
 const USAGE_SETTLEMENT_SITE = "packages/persistence/ledger/src/usage-settlement/index.ts";
 const USAGE_SETTLEMENT_BARREL = "packages/persistence/ledger/src/index.ts";
+const USAGE_SETTLEMENT_CALLERS = [
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+];
 {
   let settlementScanned = 0;
   if (tracked.status === 0) {
@@ -26171,6 +26257,7 @@ const USAGE_SETTLEMENT_BARREL = "packages/persistence/ledger/src/index.ts";
       if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
       if (!/\.tsx?$/.test(relativePath)) continue;
       if (relativePath === USAGE_SETTLEMENT_SITE || relativePath === USAGE_SETTLEMENT_BARREL) continue;
+      if (USAGE_SETTLEMENT_CALLERS.includes(relativePath)) continue;
       const content = readIfPresent(relativePath);
       if (content === null) continue;
       settlementScanned += 1;
@@ -26181,17 +26268,17 @@ const USAGE_SETTLEMENT_BARREL = "packages/persistence/ledger/src/index.ts";
       ) {
         fail(
           relativePath +
-            " reaches the settlement fold; it is inert until escalón B's door calls it inside the trigger's" +
-            " transaction, and a caller before then would record a settlement no door verified",
+            " reaches the settlement fold; only the ledger's append door and its projection call it, inside the" +
+            " trigger's transaction, and a caller anywhere else would record a settlement no door verified",
         );
       }
     }
   }
   requireScope(
-    "nothing outside the settlement module and the ledger barrel names the settlement fold",
+    "the settlement fold is reached by the ledger's door and projection, and by nothing else",
     settlementScanned,
   );
-  notes.push("no production source outside the module and the ledger barrel names the settlement fold");
+  notes.push("no production source outside the module, the ledger barrel, the door and the projection names the settlement fold");
 }
 
 // L-P32A-2 -- the settlement fold reads no clock, no environment and no

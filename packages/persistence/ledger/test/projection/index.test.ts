@@ -80,7 +80,15 @@ import {
   outboxCommandIdPreimageV1,
   readOutboxEvent,
   type OutboxEventEntry,
+  USAGE_OBSERVATION_RECORD_KEYS,
+  USAGE_STREAM_RECORD_KEYS,
+  nextUsageCapture,
+  readUsageObservation,
+  readUsageStreamDeclaration,
+  usageRowText,
+  usageSnapshotView,
 } from "../../src/projection/index.js";
+import { measurementStreamIdV1 } from "../../src/usage-settlement/index.js";
 import {
   LedgerArtifactEncryptionConflictError,
   LedgerIdempotencyConflictError,
@@ -115,6 +123,15 @@ import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
  */
 
 const ITERATIONS = 150;
+
+/**
+ * The chain digest a snapshot fold is handed for an event (P-32/captura B, H-4).
+ *
+ * Only the usage settlement reads it, as its trigger's head; every fold asserted
+ * in this file before B ignores it, so one lowercase hex value stands in for
+ * each event's own.
+ */
+const EVENT_SHA256 = "e".repeat(64);
 
 const TASK_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01";
 const INITIATIVE_A = "5b5b5b5b-5b5b-4b5b-8b5b-5b5b5b5b5b01";
@@ -919,7 +936,7 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
 
     // A later bump falls into the same cohort without anyone editing the list.
     const later = refusedWith(() =>
-      nextTaskRevisionProjection(revisionEvent(RECORD, { contractVersion: "2.6.0" }), 7),
+      nextTaskRevisionProjection(revisionEvent(RECORD, { contractVersion: "2.7.0" }), 7),
     );
     expect(later.path).toBe("payload." + ENVELOPE_ARTIFACT_REFERENCE_KEY);
 
@@ -1190,17 +1207,18 @@ describe("the revision fold reads a coordinate, or reads nothing", () => {
     // In the snapshot, which is the rebuild's fold: the same answers.
     const key = taskRevisionKey(REVISION_TASK, 2);
     const snapshot = createProjectionSnapshot();
-    applyEventToSnapshot(snapshot, revisionEvent(RECORD, { contractVersion: "2.4.0" }), 1);
-    applyEventToSnapshot(snapshot, revisionEvent(COMPLETE), 2);
+    applyEventToSnapshot(snapshot, revisionEvent(RECORD, { contractVersion: "2.4.0" }), 1, EVENT_SHA256);
+    applyEventToSnapshot(snapshot, revisionEvent(COMPLETE), 2, EVENT_SHA256);
     expect(snapshot.taskRevisions.get(key)?.envelopeArtifactReferenceId).toBeNull();
     const renamed = createProjectionSnapshot();
-    applyEventToSnapshot(renamed, revisionEvent(COMPLETE), 1);
-    applyEventToSnapshot(renamed, revisionEvent(COMPLETE), 2);
+    applyEventToSnapshot(renamed, revisionEvent(COMPLETE), 1, EVENT_SHA256);
+    applyEventToSnapshot(renamed, revisionEvent(COMPLETE), 2, EVENT_SHA256);
     expect(() => {
       applyEventToSnapshot(
         renamed,
         revisionEvent({ ...COMPLETE, envelopeArtifactReferenceId: "ref-envelope-other" }),
         3,
+        EVENT_SHA256,
       );
     }).toThrow(/already recorded with different content/);
   });
@@ -1393,13 +1411,14 @@ describe("the attempt fold reads an opening, or reads nothing", () => {
 
     // Two invocations at one coordinate.
     const first = createProjectionSnapshot();
-    applyEventToSnapshot(first, attemptEvent(OPENING), 1);
+    applyEventToSnapshot(first, attemptEvent(OPENING), 1, EVENT_SHA256);
     expect(first.taskAttempts.get(key)?.invocationId).toBe("inv-0001");
     expect(() => {
       applyEventToSnapshot(
         first,
         attemptEvent({ ...OPENING, invocationId: "inv-0002" }, { transitionId: "again" }),
         2,
+        EVENT_SHA256,
       );
     }).toThrow(/already recorded with a different identity/);
 
@@ -1407,7 +1426,7 @@ describe("the attempt fold reads an opening, or reads nothing", () => {
     // legacy_attempt_number)` would abort on it in the base; the snapshot
     // refuses it first and names the coordinate that already holds the claim.
     const second = createProjectionSnapshot();
-    applyEventToSnapshot(second, attemptEvent(OPENING), 1);
+    applyEventToSnapshot(second, attemptEvent(OPENING), 1, EVENT_SHA256);
     expect(() => {
       applyEventToSnapshot(
         second,
@@ -1416,13 +1435,14 @@ describe("the attempt fold reads an opening, or reads nothing", () => {
           { transitionId: "a2" },
         ),
         2,
+        EVENT_SHA256,
       );
     }).toThrow(new RegExp("claims legacy " + ATTEMPT_TASK + " 4, which attempt " + key));
 
     // One invocation across two coordinates, which is the other half of the
     // bijection and the other unique index.
     const third = createProjectionSnapshot();
-    applyEventToSnapshot(third, attemptEvent(OPENING), 1);
+    applyEventToSnapshot(third, attemptEvent(OPENING), 1, EVENT_SHA256);
     expect(() => {
       applyEventToSnapshot(
         third,
@@ -1431,6 +1451,7 @@ describe("the attempt fold reads an opening, or reads nothing", () => {
           { transitionId: "a2" },
         ),
         2,
+        EVENT_SHA256,
       );
     }).toThrow(/claims invocation inv-0001/);
   });
@@ -1439,8 +1460,8 @@ describe("the attempt fold reads an opening, or reads nothing", () => {
     // The branch the refusals above are measured against: without it, every
     // assertion there would be satisfied by a fold that refused everything.
     const snapshot = createProjectionSnapshot();
-    applyEventToSnapshot(snapshot, attemptEvent(OPENING), 1);
-    applyEventToSnapshot(snapshot, attemptEvent(OPENING, { transitionId: "replay" }), 2);
+    applyEventToSnapshot(snapshot, attemptEvent(OPENING), 1, EVENT_SHA256);
+    applyEventToSnapshot(snapshot, attemptEvent(OPENING, { transitionId: "replay" }), 2, EVENT_SHA256);
     expect(snapshot.taskAttempts.size).toBe(1);
     // The FIRST arrival's row is kept, birth attributes and all.
     expect(snapshot.taskAttempts.get(taskAttemptKey(ATTEMPT_TASK, 2, 1))?.sequence).toBe(1);
@@ -1452,6 +1473,7 @@ describe("the attempt fold reads an opening, or reads nothing", () => {
         { transitionId: "a2", attempt: 5 },
       ),
       3,
+      EVENT_SHA256,
     );
     expect(snapshot.taskAttempts.size).toBe(2);
     expect([...snapshot.taskAttempts.values()].map((row) => row.legacyAttemptNumber)).toEqual([
@@ -1907,7 +1929,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution ยง4, ย
         idempotencyKey: "d".repeat(64),
       },
     };
-    applyEventToSnapshot(snapshot, executionEvent("EFFECT_INTENDED", effectPayload), 1);
+    applyEventToSnapshot(snapshot, executionEvent("EFFECT_INTENDED", effectPayload), 1, EVENT_SHA256);
     expect(snapshot.routeSegments.size).toBe(1);
     expect(snapshot.effects.size).toBe(1);
 
@@ -1921,7 +1943,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution ยง4, ย
       effect: { ...effectPayload.effect, effectId: "e".repeat(64), operationOrdinal: 1 },
     };
     expect(() => {
-      applyEventToSnapshot(snapshot, executionEvent("EFFECT_INTENDED", twin), 2);
+      applyEventToSnapshot(snapshot, executionEvent("EFFECT_INTENDED", twin), 2, EVENT_SHA256);
     }).toThrow(LedgerValidationError);
 
     // A resolution for a delivery nobody intended is refused too, which is what
@@ -1935,6 +1957,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution ยง4, ย
           outcome: { dispatchAttemptId: "nowhere", dispatchState: "CLAIMED" },
         }),
         3,
+        EVENT_SHA256,
       );
     }).toThrow(LedgerValidationError);
   });
@@ -1965,6 +1988,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution ยง4, ย
         },
       }),
       1,
+      EVENT_SHA256,
     );
     applyEventToSnapshot(
       snapshot,
@@ -1975,6 +1999,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution ยง4, ย
         dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1 },
       }),
       2,
+      EVENT_SHA256,
     );
 
     const settle = (payload: Record<string, unknown>): Record<string, unknown> => ({
@@ -2017,7 +2042,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution ยง4, ย
     for (const [label, event, recordedAt] of cases) {
       let issue: { readonly path: string; readonly message: string } | undefined;
       try {
-        applyEventToSnapshot(snapshot, event, 3);
+        applyEventToSnapshot(snapshot, event, 3, EVENT_SHA256);
       } catch (error) {
         issue = (error as LedgerValidationError).issues[0];
       }
@@ -2037,6 +2062,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution ยง4, ย
       snapshot,
       executionEvent("DISPATCH_OUTCOME_RECORDED", settle({ revisionNumber: 1, attemptNumber: 1 })),
       3,
+      EVENT_SHA256,
     );
     expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState).toBe("SETTLED");
     expect(snapshot.effects.get(effectId)?.outcomeStatus).toBe("SUCCEEDED");
@@ -2110,6 +2136,7 @@ function snapshotWithDelivery(): ReturnType<typeof createProjectionSnapshot> {
       },
     }),
     1,
+    EVENT_SHA256,
   );
   applyEventToSnapshot(
     snapshot,
@@ -2120,6 +2147,7 @@ function snapshotWithDelivery(): ReturnType<typeof createProjectionSnapshot> {
       dispatch: { dispatchAttemptId: "dsp-1", effectId: OCCURRENCE_EFFECT, attemptOrdinal: 1 },
     }),
     2,
+    EVENT_SHA256,
   );
   return snapshot;
 }
@@ -2258,25 +2286,26 @@ describe("the occurrence folds refuse what the door refuses (execution ยง8)", ()
           snapshot,
           executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload({ [field]: value })),
           3,
+          EVENT_SHA256,
         );
       }, field).toThrow(LedgerValidationError);
     }
     expect(snapshot.promptOccurrences.size).toBe(0);
 
-    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3);
+    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3, EVENT_SHA256);
     expect(snapshot.promptOccurrences.get("po-1")?.routeSegmentId).toBe("seg-1");
   });
 
   it("N-D-2 and N-D-3: one answer per prompt, and none to a prompt nobody recorded", () => {
     const snapshot = snapshotWithDelivery();
     expect(() => {
-      applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 3);
+      applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 3, EVENT_SHA256);
     }).toThrow(LedgerValidationError);
 
-    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3);
-    applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 4);
+    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3, EVENT_SHA256);
+    applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 4, EVENT_SHA256);
     // The identical answer again is a replay and changes nothing.
-    applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 5);
+    applyEventToSnapshot(snapshot, executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload()), 5, EVENT_SHA256);
     expect(snapshot.responseOccurrences.size).toBe(1);
 
     let issue: { readonly path: string; readonly message: string } | undefined;
@@ -2285,6 +2314,7 @@ describe("the occurrence folds refuse what the door refuses (execution ยง8)", ()
         snapshot,
         executionEvent("RESPONSE_OCCURRENCE_RECORDED", responsePayload({ occurrenceId: "ro-2" })),
         6,
+        EVENT_SHA256,
       );
     } catch (error) {
       issue = (error as LedgerValidationError).issues[0];
@@ -2296,13 +2326,14 @@ describe("the occurrence folds refuse what the door refuses (execution ยง8)", ()
 
   it("N-D-4: an answer recorded at another coordinate than its prompt's is refused", () => {
     const snapshot = snapshotWithDelivery();
-    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3);
+    applyEventToSnapshot(snapshot, executionEvent("PROMPT_OCCURRENCE_RECORDED", promptPayload()), 3, EVENT_SHA256);
     let issue: { readonly path: string; readonly message: string } | undefined;
     try {
       applyEventToSnapshot(
         snapshot,
         executionEvent("RESPONSE_OCCURRENCE_RECORDED", { ...responsePayload(), attemptNumber: 2 }),
         4,
+        EVENT_SHA256,
       );
     } catch (error) {
       issue = (error as LedgerValidationError).issues[0];
@@ -2327,6 +2358,7 @@ describe("the occurrence folds refuse what the door refuses (execution ยง8)", ()
         },
       }),
       3,
+      EVENT_SHA256,
     );
     expect(snapshot.promptOccurrences.size).toBe(0);
     expect(snapshot.responseOccurrences.size).toBe(0);
@@ -2796,7 +2828,7 @@ describe("a resolution reads three ways, and present-invalid is not absent (CORR
       const reading = dispatchOutcomeRecord(event, 3);
       let issue: unknown = null;
       try {
-        applyEventToSnapshot(snapshot, event, 3);
+        applyEventToSnapshot(snapshot, event, 3, EVENT_SHA256);
       } catch (error) {
         expect(error).toBeInstanceOf(LedgerValidationError);
         issue = (error as LedgerValidationError).issues[0];
@@ -2816,6 +2848,7 @@ describe("a resolution reads three ways, and present-invalid is not absent (CORR
       snapshot,
       outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, effectOutcomeStatus: "SUCCEEDED" }),
       3,
+      EVENT_SHA256,
     );
     expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState).toBe("SETTLED");
     expect(snapshot.effects.get(OCCURRENCE_EFFECT)?.outcomeStatus).toBe("SUCCEEDED");
@@ -3361,11 +3394,11 @@ describe("the client key row and the three task columns fold from one intake (P-
 
   it("refuses a second row under one key that names another task, by name, in the snapshot as at the door", () => {
     const snapshot = createProjectionSnapshot();
-    applyEventToSnapshot(snapshot, intakeEvent(), 1);
+    applyEventToSnapshot(snapshot, intakeEvent(), 1, EVENT_SHA256);
     expect(snapshot.taskSubmissions.size).toBe(1);
     let thrown: unknown;
     try {
-      applyEventToSnapshot(snapshot, intakeEvent(intakePayload(), { taskId: OTHER_INTAKE_TASK }), 2);
+      applyEventToSnapshot(snapshot, intakeEvent(intakePayload(), { taskId: OTHER_INTAKE_TASK }), 2, EVENT_SHA256);
     } catch (error: unknown) {
       thrown = error;
     }
@@ -3378,5 +3411,154 @@ describe("the client key row and the three task columns fold from one intake (P-
     expect(() => {
       assertSameTaskSubmission(one, again);
     }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-32/captura B โ€” the usage readers and the one capture function
+// ---------------------------------------------------------------------------
+
+/** A lawful stream declaration payload for `seg-1` at attempt 1 of revision 1. */
+function usageStreamPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const coordinate = { source: "claude-code/stream-json", accountId: "acct-1", routeSegmentId: "seg-1", sourceEpoch: 0 };
+  return {
+    revisionNumber: 1,
+    attemptNumber: 1,
+    usageStream: {
+      measurementStreamId: measurementStreamIdV1(coordinate),
+      ...coordinate,
+      sourceClass: "WRAPPER_MEASURED",
+      normalizationPolicySha256: "c".repeat(64),
+      ...overrides,
+    },
+  };
+}
+
+/** A lawful DELTA over `[0, 10)` on that stream, for the delivered effect. */
+function usageObservationPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    revisionNumber: 1,
+    attemptNumber: 1,
+    usageObservation: {
+      observationId: "obs-0",
+      measurementStreamId: measurementStreamIdV1({
+        source: "claude-code/stream-json",
+        accountId: "acct-1",
+        routeSegmentId: "seg-1",
+        sourceEpoch: 0,
+      }),
+      ordinal: 0,
+      sourceObservationId: "src-0",
+      reportKind: "DELTA",
+      rangeFromCounter: 0,
+      rangeToCounter: 10,
+      effectId: OCCURRENCE_EFFECT,
+      isFinal: 1,
+      inputTokens: 6,
+      outputTokens: 4,
+      cacheWriteTokens: 0,
+      cacheReadTokens: 0,
+      totalTokens: 10,
+      occurredAt: "2026-09-13T09:00:00.000Z",
+      ...overrides,
+    },
+  };
+}
+
+describe("the usage readers are gated, closed and recompute the stream's identity (P-32/captura B)", () => {
+  it("reads nothing for any other type, and closes both records at their declared keys", () => {
+    expect(readUsageStreamDeclaration(executionEvent("TOKEN_USAGE_RECORDED", usageStreamPayload()), 1)).toBeNull();
+    expect(readUsageObservation(executionEvent("TOKEN_USAGE_RECORDED", usageObservationPayload()), 1)).toBeNull();
+    expect([...USAGE_STREAM_RECORD_KEYS].sort()).toEqual(
+      Object.keys((usageStreamPayload()["usageStream"] as Record<string, unknown>)).sort(),
+    );
+    expect(USAGE_OBSERVATION_RECORD_KEYS).toHaveLength(16);
+    expect(USAGE_OBSERVATION_RECORD_KEYS).not.toContain("recordedAt");
+    expect(USAGE_OBSERVATION_RECORD_KEYS).not.toContain("sourceClass");
+
+    const stream = readUsageStreamDeclaration(executionEvent("USAGE_STREAM_DECLARED", usageStreamPayload()), 7);
+    expect(stream?.kind === "row" ? stream.row.sequence : null).toBe(7);
+    const observation = readUsageObservation(executionEvent("USAGE_OBSERVATION_RECORDED", usageObservationPayload()), 8);
+    expect(observation?.kind === "row" ? [observation.row.recordedAt, observation.row.sequence] : null).toEqual([
+      "2026-09-12T09:00:01.000Z",
+      8,
+    ]);
+  });
+
+  it("N-P32B-1: refuses an id that is not the digest of the coordinate, whatever else is right", () => {
+    for (const change of [{ sourceEpoch: 1 }, { accountId: "acct-2" }, { measurementStreamId: "a".repeat(64) }]) {
+      const reading = readUsageStreamDeclaration(executionEvent("USAGE_STREAM_DECLARED", usageStreamPayload(change)), 1);
+      expect(reading?.kind, JSON.stringify(change)).toBe("refused");
+      expect(reading?.kind === "refused" ? reading.path : "", JSON.stringify(change)).toBe(
+        "payload.usageStream.measurementStreamId",
+      );
+    }
+  });
+
+  it("N-P32B-28, N-P32B-30: refuses a stray key, a moved state and a count that is not a safe integer", () => {
+    const refusedAt = (event: ControlPlaneEvent): string => {
+      const reading = readUsageObservation(event, 1);
+      return reading?.kind === "refused" ? reading.path : "not refused";
+    };
+    expect(refusedAt(executionEvent("USAGE_OBSERVATION_RECORDED", { ...usageObservationPayload(), prompt: "x" }))).toBe(
+      "payload.prompt",
+    );
+    expect(refusedAt(executionEvent("USAGE_OBSERVATION_RECORDED", usageObservationPayload({ provider: "x" })))).toBe(
+      "payload.usageObservation.provider",
+    );
+    expect(
+      refusedAt(executionEvent("USAGE_OBSERVATION_RECORDED", usageObservationPayload(), { toState: "READY" })),
+    ).toBe("toState");
+    expect(refusedAt(executionEvent("USAGE_OBSERVATION_RECORDED", usageObservationPayload({ inputTokens: 1.5 })))).toBe(
+      "payload.usageObservation.inputTokens",
+    );
+    expect(refusedAt(executionEvent("USAGE_OBSERVATION_RECORDED", usageObservationPayload({ totalTokens: 11 })))).toBe(
+      "payload.usageObservation.totalTokens",
+    );
+  });
+});
+
+describe("one capture function folds usage for the door, the rebuild and the migration (P-32/captura B)", () => {
+  it("H-5: the first delivery exposes its effect once, cut at the digest it is handed, and a later delivery writes nothing", () => {
+    const snapshot = snapshotWithDelivery();
+    expect([...snapshot.usageSettlements.values()]).toEqual([
+      expect.objectContaining({ settlementRevision: 1, settlementStatus: "UNKNOWN", totalTokens: null, sequence: 2 }),
+    ]);
+    expect([...snapshot.usageSettlementSourceHeads.values()]).toEqual([
+      { effectId: OCCURRENCE_EFFECT, settlementRevision: 1, sourceStream: "control_plane_events", sourceSequence: 2, sourceSha256: EVENT_SHA256 },
+    ]);
+    const second = executionEvent("DISPATCH_INTENDED", {
+      revisionNumber: 1,
+      attemptNumber: 1,
+      segment: segment(),
+      dispatch: { dispatchAttemptId: "dsp-2", effectId: OCCURRENCE_EFFECT, attemptOrdinal: 2 },
+    });
+    // Never by the ordinal: the question is whether the effect has a revision.
+    expect(nextUsageCapture(usageSnapshotView(snapshot), second, 3, "f".repeat(64))).toBeNull();
+  });
+
+  it("folds a stream, then a report into revision 2 with its own cut, and a restatement of either into nothing", () => {
+    const snapshot = snapshotWithDelivery();
+    applyEventToSnapshot(snapshot, executionEvent("USAGE_STREAM_DECLARED", usageStreamPayload()), 3, EVENT_SHA256);
+    const report = executionEvent("USAGE_OBSERVATION_RECORDED", usageObservationPayload());
+    const writes = nextUsageCapture(usageSnapshotView(snapshot), report, 4, "9".repeat(64));
+    expect(writes?.settlement?.header).toEqual(
+      expect.objectContaining({ settlementRevision: 2, settlementStatus: "FINAL", totalTokens: 10n, lastObservationId: "obs-0", sequence: 4 }),
+    );
+    expect(writes?.settlement?.sourceHeads).toEqual([
+      { effectId: OCCURRENCE_EFFECT, settlementRevision: 2, sourceStream: "control_plane_events", sourceSequence: 4, sourceSha256: "9".repeat(64) },
+    ]);
+    applyEventToSnapshot(snapshot, report, 4, "9".repeat(64));
+    expect(nextUsageCapture(usageSnapshotView(snapshot), report, 5, "8".repeat(64))).toBeNull();
+    expect(
+      nextUsageCapture(usageSnapshotView(snapshot), executionEvent("USAGE_STREAM_DECLARED", usageStreamPayload()), 6, "7".repeat(64)),
+    ).toBeNull();
+    expect(snapshot.usageSettlements.size).toBe(2);
+  });
+
+  it("compares a count as text, so a bigint row and its stored integer agree and 2^53 + 1 is not 2^53", () => {
+    expect(usageRowText({ total: 9007199254740993n, sequence: 4 })).toBe(usageRowText({ total: 9007199254740993n, sequence: 4n }));
+    expect(usageRowText({ total: 9007199254740993n })).not.toBe(usageRowText({ total: 9007199254740992n }));
+    expect(usageRowText({ total: null })).toBe('{"total":null}');
   });
 });

@@ -60,8 +60,14 @@ import {
  * encoding did not move, and a revision's envelope reference is a key of the
  * revision record's payload, never a field of the envelope. Computed twice
  * again, the same two ways, and the two agree on all three.
+ *
+ * P-32/captura B moved the version to `"2.6.0"` (ADR 0089) and the three vectors
+ * moved with it again, for the same reason and with the same consequence
+ * declared — and for no other: the usage types B adds are task events, never
+ * fields of the envelope, and the schema, the prefix and the encoding did not
+ * move. Computed twice, the same two ways, and the two agree on all three.
  */
-const CONTRACT = "2.5.0";
+const CONTRACT = "2.6.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -400,10 +406,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "0a5f6cc3efbac459892314227f49ff46171370e93f5cb63f7ea701fe9de3a1d4"],
+      [envelope(), "e545359fc245ffb0b30fe4a4e11da45a442462700fb411a0996bc5fd5e51137d"],
       [
         withObjective("Delete the production ledger."),
-        "38e513e9e367d269ee26090a6e3d3e3ce7fd7a54bec5c6df8c556bc338d501cf",
+        "fc8a46e7a566cc37d5fb119e7888ff386afeb03dbbd118c8b34e4e58aab0e5ec",
       ],
       [
         envelope({
@@ -413,7 +419,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "3d8782377524e1bf9f2e4a1349b1dc9fca53352a30df1e5eb94bad9c1ec84cea",
+        "dc973b768e0186523e51e1103f61b8bf807947638c4686912777fc9835e00daf",
       ],
     ];
 

@@ -149,6 +149,28 @@ export const CONTROL_PLANE_EVENT_TYPES = [
   "OUTBOX_COMMAND_INTENDED",
   "OUTBOX_DELIVERY_INTENDED",
   "OUTBOX_DELIVERY_OBSERVED",
+  // The two of P-32/captura B (economy §1.1–§2; ADR 0089). Same-state
+  // passthroughs, for the reason every usage type above is: declaring where
+  // spend is measured and recording one measurement move no lifecycle state.
+  //
+  // **Two, and not one** (adjudication Q1). The declaration of a measurement
+  // stream is the durable fact that keeps a restarted adapter from inventing a
+  // new counter generation for a report already recorded (economy §1.1
+  // `:36-38`), so it has to be recorded before the first report and cannot ride
+  // one. The observation names the stream it was measured on and the effect it
+  // belongs to.
+  //
+  // **Not `TOKEN_USAGE_RECORDED`, and nothing is extended from it.** That type is
+  // one total with no classes, no range, no stream and no effect, and the
+  // rollups sum it; these carry four mutually exclusive classes over a declared
+  // coverage, and the ledger folds them into a settlement in which alternatives
+  // never sum. The legacy type is untouched.
+  //
+  // The payload grammar is the ledger door's, not this contract's, on C's terms;
+  // the door recomputes the stream's identity from its coordinate rather than
+  // believing it, and folds the settlement in the same transaction.
+  "USAGE_STREAM_DECLARED",
+  "USAGE_OBSERVATION_RECORDED",
 ] as const;
 
 export const ControlPlaneEventType = z.enum(CONTROL_PLANE_EVENT_TYPES);

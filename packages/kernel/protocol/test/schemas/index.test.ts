@@ -2428,7 +2428,8 @@ describe("the task intake's wire contract (P-14/C)", () => {
     expect(API_WRITE_ROUTES).toHaveLength(6);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(15);
-    expect(LEDGER_CONTRACT_VERSION).toBe("2.5.0");
+    // Derived from `CONTRACT_VERSION`, which P-32/captura B moved to 2.6.0 (ADR 0089).
+    expect(LEDGER_CONTRACT_VERSION).toBe("2.6.0");
   });
 });
 
@@ -2532,9 +2533,22 @@ describe("the stream channel map is total over the ledger's own vocabulary", () 
     for (const channel of Object.values(STREAM_CHANNEL_BY_EVENT_TYPE)) {
       sizes[channel] = (sizes[channel] ?? 0) + 1;
     }
-    expect(sizes).toEqual({ lifecycle: 7, execution: 15, steps: 2, state: 7, progress: 2 });
+    // `progress` 2 -> 4 with P-32/captura B's two usage types (H-6); `execution`
+    // stays at fifteen.
+    expect(sizes).toEqual({ lifecycle: 7, execution: 15, steps: 2, state: 7, progress: 4 });
     const total = Object.values(sizes).reduce((sum, count) => sum + count, 0);
     expect(total).toBe(CONTROL_PLANE_EVENT_TYPES.length);
+  });
+
+  it("N-P32B-30: puts the two usage types on progress, by name (P-32/captura B)", () => {
+    // Asserted separately for the reason below. `progress` is usage attribution,
+    // and an observation's counts are spend attributed through its stream to an
+    // account and a segment — unlike D's occurrences, whose byte counts are part
+    // of what the occurrence is. The declaration names where that attribution
+    // goes, so it sits beside it; neither is "what it took to run it".
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.USAGE_STREAM_DECLARED).toBe("progress");
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.USAGE_OBSERVATION_RECORDED).toBe("progress");
+    expect(STREAM_CHANNEL_BY_EVENT_TYPE.TOKEN_USAGE_RECORDED).toBe("progress");
   });
 
   it("puts the tool-call receipt on execution, by name (V2-B4b stage 2)", () => {

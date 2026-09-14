@@ -1231,6 +1231,13 @@ describe("integrity", () => {
     // which is an artifact event, and 15's reverse rebuild above requires a
     // stream with none — so the re-applied 19 folds no row; the retroactive fold
     // over a real intake is the ledger suite's.
+    //
+    // Migration 20 goes before 19 (P-32/captura B, H-10): its five tables, children
+    // first because `ON DELETE RESTRICT` fires at once, each index before its
+    // table, and its five watermark rows, or the re-applied 20 aborts on a table
+    // that already exists. This fixture delivers no effect, so the re-applied 20
+    // folds no exposure; the retroactive fold over a real delivery is the ledger
+    // suite's.
     const beforeRewind = registryEvidence(path);
     const beforeModelVersions = modelVersionEvidence(path);
     const beforeInitiatives = initiativeColumnEvidence(path);
@@ -1238,6 +1245,7 @@ describe("integrity", () => {
       { title: "The rewind initiative", objective_sha256: "2".repeat(64), repository_sha256: null },
     ]);
     const rewind = new DatabaseSync(path);
+    rewindUsageCapture(rewind);
     rewindTaskSubmission(rewind);
     rewindInitiativeRegistrationDetail(rewind);
     rewindModelVersionRegistry(rewind);
@@ -1310,11 +1318,36 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(19);
+    ).toBe(20);
     // P-14 C: and it re-applied 19 without aborting — the client key table is back.
     expect(
       reapplied.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").all("task_submission_read_model"),
     ).toHaveLength(1);
+    // N-P32B-23: and it re-applied 20 without aborting — the five usage tables,
+    // their six indexes and their five watermark rows are back.
+    expect(
+      reapplied
+        .prepare(
+          "SELECT type, name FROM sqlite_master WHERE name LIKE '%usage_%' AND name NOT LIKE 'sqlite_%' " +
+            "ORDER BY type, name",
+        )
+        .all(),
+    ).toEqual([
+      { type: "index", name: "ix_usage_observation__corrects" },
+      { type: "index", name: "ix_usage_observation__effect" },
+      { type: "index", name: "ix_usage_settlement__latest" },
+      { type: "index", name: "ux_usage_measurement_stream__identity" },
+      { type: "index", name: "ux_usage_observation__source_report" },
+      { type: "index", name: "ux_usage_observation__stream_ordinal" },
+      { type: "table", name: "usage_measurement_stream_read_model" },
+      { type: "table", name: "usage_observation_read_model" },
+      { type: "table", name: "usage_settlement_observation_read_model" },
+      { type: "table", name: "usage_settlement_read_model" },
+      { type: "table", name: "usage_settlement_source_head_read_model" },
+    ]);
+    expect(
+      reapplied.prepare("SELECT COUNT(*) AS n FROM projection_watermark WHERE projection_name LIKE 'usage_%'").get(),
+    ).toEqual({ n: 5 });
     reapplied.close();
     // N-P14A-15: and it re-applied 17 over the document already in the stream,
     // folding it back into the same rows at a watermark level with the head.
@@ -3126,6 +3159,28 @@ describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => 
 
 /** The initiative the rewind fixtures register in the closed payload (P-14 B). */
 const REWIND_INITIATIVE = "77777777-7777-4777-8777-777777777777";
+
+/**
+ * Migration 20 undone on a raw handle (P-32/captura B): the five usage tables,
+ * children first, each index before its table, and the five watermark rows. The
+ * 20 goes before the 19, as every later migration goes before the one it follows.
+ */
+function rewindUsageCapture(raw: DatabaseSync): void {
+  raw.exec(
+    "DROP TABLE usage_settlement_observation_read_model;" +
+      "DROP TABLE usage_settlement_source_head_read_model;" +
+      "DROP INDEX ix_usage_settlement__latest;" +
+      "DROP TABLE usage_settlement_read_model;" +
+      "DROP INDEX ix_usage_observation__corrects;" +
+      "DROP INDEX ix_usage_observation__effect;" +
+      "DROP INDEX ux_usage_observation__source_report;" +
+      "DROP INDEX ux_usage_observation__stream_ordinal;" +
+      "DROP TABLE usage_observation_read_model;" +
+      "DROP INDEX ux_usage_measurement_stream__identity;" +
+      "DROP TABLE usage_measurement_stream_read_model;" +
+      "DELETE FROM projection_watermark WHERE projection_name LIKE 'usage_%';",
+  );
+}
 
 /**
  * Migration 19 undone on a raw handle (P-14 C): the client key table and its one

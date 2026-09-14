@@ -300,10 +300,10 @@ export type {
 /**
  * P-32/captura escalón A: the usage settlement fold and the stream identity.
  *
- * Pure and inert. Exported so escalón B's door and its suite compute the one
- * stream id and the one fold, and so the rows B declares are typed from these
- * shapes rather than restated; until B lands, the fence holds that no source
- * outside the module and this barrel names them (ADR 0088).
+ * Pure. Exported so a producer and a suite compute the one stream id the door
+ * recomputes. Escalón B's append door and its rebuild are the fold's only
+ * callers: the fence holds that no source outside the module, this barrel, the
+ * ledger and the projection names them (L-P32B-1, ADR 0089).
  */
 export {
   USAGE_FOLD_VERSION_V1,
@@ -450,6 +450,11 @@ export type {
   TaskReadModel,
   TaskRevisionReadModel,
   TaskSubmissionReadModel,
+  UsageMeasurementStreamReadModel,
+  UsageObservationReadModel,
+  UsageSettlementObservationReadModel,
+  UsageSettlementReadModel,
+  UsageSettlementSourceHeadReadModel,
   WorkerPage,
   WorkerQuery,
   WorkerReadModel,

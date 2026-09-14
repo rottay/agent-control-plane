@@ -1574,6 +1574,14 @@ export const STREAM_CHANNEL_BY_EVENT_TYPE: Readonly<
   // fact even though it rides the task stream.
   TOKEN_USAGE_RECORDED: "progress",
   TOKEN_RESERVATION_RECORDED: "progress",
+  // The two of P-32/captura B, for the definition above and against D's note.
+  // D kept its occurrences off `progress` because a byte count there is part of
+  // what the occurrence *is*. A usage observation is the other case: its counts
+  // are spend, attributed through its stream to an account and a segment, which
+  // is exactly "usage attribution". The stream's declaration names where that
+  // attribution goes, so it sits beside it.
+  USAGE_STREAM_DECLARED: "progress",
+  USAGE_OBSERVATION_RECORDED: "progress",
 });
 
 /**
