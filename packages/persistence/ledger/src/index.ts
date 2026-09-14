@@ -298,6 +298,50 @@ export type {
 } from "./roadmap-version/index.js";
 
 /**
+ * P-32/captura escalón A: the usage settlement fold and the stream identity.
+ *
+ * Pure and inert. Exported so escalón B's door and its suite compute the one
+ * stream id and the one fold, and so the rows B declares are typed from these
+ * shapes rather than restated; until B lands, the fence holds that no source
+ * outside the module and this barrel names them (ADR 0088).
+ */
+export {
+  USAGE_FOLD_VERSION_V1,
+  USAGE_MEASUREMENT_STREAM_PREIMAGE_PREFIX_V1,
+  USAGE_REPORT_KINDS,
+  USAGE_SETTLEMENT_REFUSALS,
+  USAGE_SETTLEMENT_STATUSES,
+  USAGE_SETTLEMENT_TOKENS_MAX,
+  USAGE_SOURCE_CLASSES,
+  USAGE_SOURCE_POLICY_SHA256_V1,
+  USAGE_SOURCE_POLICY_V1,
+  foldUsageSettlement,
+  measurementStreamIdV1,
+  measurementStreamPreimageV1,
+} from "./usage-settlement/index.js";
+
+export type {
+  UsageMeasurementStreamCoordinate,
+  UsageMeasurementStreamInput,
+  UsageObservationInput,
+  UsageReportKind,
+  UsageSettlement,
+  UsageSettlementCut,
+  UsageSettlementGranted,
+  UsageSettlementHeader,
+  UsageSettlementOutcome,
+  UsageSettlementPrevious,
+  UsageSettlementRefusal,
+  UsageSettlementRefused,
+  UsageSettlementRequest,
+  UsageSettlementSegment,
+  UsageSettlementSourceHead,
+  UsageSettlementStatus,
+  UsageSettlementTrigger,
+  UsageSourceClass,
+} from "./usage-settlement/index.js";
+
+/**
  * P-14 escalón B: the initiative registration, by command and by API.
  *
  * One orchestration both doors call: the decision over `Initiative`, the

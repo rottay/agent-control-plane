@@ -69,6 +69,8 @@ ledger.close();
 | `envelopeIdentityPreimageV1(value)` | Pure. The bytes that digest is taken over. |
 | `computeOutboxCommandId(input)` / `outboxCommandIdPreimageV1(input)` | Pure. The id of one command, over `(sagaId, phase, targetKind, targetId)` under the contract's prefix; the door recomputes it. |
 | `foldOutboxCommands(entries)` | Pure. Every command a sequence of stream events folds to, refusing what the append door refuses. |
+| `measurementStreamIdV1(coordinate)` / `measurementStreamPreimageV1(coordinate)` | Pure. The id of one usage measurement stream, over `(source, accountId, routeSegmentId, sourceEpoch)` under its versioned prefix; refuses a malformed field by name before hashing. |
+| `foldUsageSettlement(request)` | Pure and inert. One effect's observations, at one cut, into one settlement revision — header, control-head vector, considered list and per-segment election — or one refusal from `USAGE_SETTLEMENT_REFUSALS`. No door calls it yet. |
 
 Options are `{ readOnly?, busyTimeoutMs? }`. Pages are bounded: default 100,
 maximum 1000, and cursors are exclusive.
@@ -1186,6 +1188,70 @@ naming anything else is refused by `assertSameTaskSubmission` with
 `LedgerIdempotencyConflictError` — at the append door and in `applyEventToSnapshot`,
 by one comparison — so a door that lost a race reads the class and decides again, and
 never meets a `SqliteError`. `verifyIntegrity` compares the rows both ways.
+
+## A usage settlement, folded before anything records one
+
+P-32/captura escalón A (ADR 0088; decisions 80-82). Economy §1–2 records spend as
+observations on measurement streams and folds them, per effect, into a settlement
+revision. This escalón lands the half that can be a pure function, in
+`usage-settlement/`, and nothing else: no migration, no event type, no door. The
+module is **inert** — the fence holds that no source outside it and the barrel names
+it, and escalón B retires that law when its door calls the fold.
+
+### The stream identity
+
+`measurementStreamIdV1(coordinate)` is the SHA-256 of
+`USAGE_MEASUREMENT_STREAM_PREIMAGE_PREFIX_V1` (`acp/usage-measurement-stream/v1` and one
+LF) followed by the canonical JSON of the positional array `[source, accountId,
+routeSegmentId, sourceEpoch]`, with no separator; `measurementStreamPreimageV1` is the
+first step, exported so a vector pins each. It takes the coordinate, never a preimage,
+and refuses a field by name before hashing — three non-empty texts and a safe epoch
+`>= 0` — as a `LedgerValidationError` opening with `STREAM_COORDINATE_INVALID`. The
+provider's reusable connection id never enters; a restarted counter is a new epoch and
+so a new id.
+
+### The policy and the version
+
+`USAGE_SOURCE_POLICY_V1` is the precedence and coverage policy as a frozen literal
+document; `USAGE_SOURCE_POLICY_SHA256_V1` is its canonical digest, and a test pins the
+hex. `USAGE_FOLD_VERSION_V1` is `1`. The fold refuses a request whose policy digest or
+fold version is not the one it runs (`POLICY_UNSUPPORTED`, `FOLD_VERSION_UNSUPPORTED`):
+a header never stamps a version that did not execute.
+
+### The fold
+
+`foldUsageSettlement(request)` takes the cut (effect and control head), the trigger
+(sequence and instant), the effect's streams with their class, its observations, the
+previous revision and the trigger sequence of the last FINAL one, the policy and the
+fold version. It returns `{ ok: true, settlement }` — the §2.1 header with the five
+counts as `bigint | null`, the vector with the control row only, every considered
+observation id by sequence, and the per-segment election — or `{ ok: false, reason,
+at }` with a word from the sorted, closed `USAGE_SETTLEMENT_REFUSALS`. DISPUTED is a
+settlement, never a refusal.
+
+- Inside a stream, reports are read by ordinal. A chain of corrections ends in one
+  effective report that takes the last correction's values and the root's coverage; two
+  corrections of one report are `CORRECTIONS_FORKED`. A DELTA overlapping an effective
+  range, a partial overlap, and a CUMULATIVE strictly inside an earlier one are
+  `COVERAGE_OVERLAP`; a CUMULATIVE containing earlier ranges whole replaces them.
+- The four token classes are exclusive; a total that is not their sum is
+  `TOTAL_MISMATCH`, sums run in `BigInt`, and a published count above
+  `USAGE_SETTLEMENT_TOKENS_MAX` (int64) is `TOKENS_OVERFLOW`.
+- A lineage `(source, account, segment)` sums its epochs and carries one class. Inside a
+  segment lineages compete: the highest class wins; equal-class winners that agree on
+  all four sums yield the least stream id, and ones that disagree make the settlement
+  DISPUTED with five NULL. Across segments the elected coverages sum.
+- FINAL needs every elected stream gapless and with an effective `is_final = 1`;
+  otherwise PARTIAL; with no observation, UNKNOWN. `had_late_arrival` is 1 iff an
+  observation arrived, by ledger sequence, after the last FINAL revision's trigger —
+  never by `occurred_at` or ordinal. The revision is the previous one plus one;
+  `computed_at` and `sequence` are the trigger's.
+
+### What this escalón does not do
+
+No table, migration, event type, append door, rebuild or read verb (B). No recorder
+(C). `TOKEN_USAGE_RECORDED`, the rollups and the quota estimate are untouched. No
+price, cost or valuation (P-33).
 
 ## Integrity
 

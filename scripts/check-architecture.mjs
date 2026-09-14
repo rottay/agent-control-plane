@@ -10174,6 +10174,55 @@ const P14C_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-32/captura escalón A — a settlement fold never invents a number, and a late
+ * report revises, never rewrites (ADR 0088; writer brief v2: v1 + Fable preaudit
+ * H-1..H-12 + the DT's adjudication of the map, Q1-Q5).
+ *
+ * **What lands.** `packages/persistence/ledger/src/usage-settlement/`, pure and
+ * inert: `measurementStreamPreimageV1` / `measurementStreamIdV1` over the versioned
+ * prefix and the positional coordinate; `USAGE_SOURCE_POLICY_V1`, its derived
+ * digest and `USAGE_FOLD_VERSION_V1`; and `foldUsageSettlement`, economy §1.3 and
+ * §2 whole — correction chains, ordinal-ordered coverage, lineages that sum their
+ * epochs and compete inside a segment, DISPUTED with five NULL, FINAL/PARTIAL/
+ * UNKNOWN, `had_late_arrival` by arrival order — answering a settlement or one word
+ * of the closed `USAGE_SETTLEMENT_REFUSALS`. Two laws hold the inertness:
+ * L-P32A-1 (nothing outside the module and the barrel names it) and L-P32A-2 (the
+ * module reads no clock, no environment and no randomness, and hashes through the
+ * one canonicalizer).
+ *
+ * **What does NOT land, declared.** No migration, table, event type, append door,
+ * rebuild or read verb (B); no recorder (C). `TOKEN_USAGE_RECORDED`, the rollups and
+ * quota are untouched. No contracts change.
+ *
+ * **Pins that move.** The ledger barrel gains the module's twelve values and
+ * eighteen types. `PATH_SCOPED_LAWS` 140 -> **142** for L-P32A-1 and L-P32A-2. The
+ * ADR corpus 87 -> 88; the decision register 79 -> 82. The ledger README gains the
+ * module's section and two API rows.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (`"2.5.0"`),
+ * `CONTROL_PLANE_EVENT_TYPES` (33), `MIGRATIONS` (19), `EXPECTED_SCHEMA_OBJECTS`,
+ * `DERIVED_TABLES`, `PROJECTION_SOURCES`, `API_CONTRACT_VERSION` (`"0.17.0"`),
+ * `LEDGER_CONTRACT_VERSION`, `PROJECTOR_VERSION` (1), L-V2B1D-1, `USAGE_TOKENS_MAX`
+ * and `ROLLUP_TOKENS_MAX`. The ledger README's `### Errors` bijection: no error
+ * class is added.
+ *
+ * **Eight paths; three are new to the fence** — the module, its suite and ADR 0088
+ * (`grep -Fc` over this file, each 0 before this block). The other five are
+ * admitted by historical blocks. B retires L-P32A-1 when its door calls the fold,
+ * and its brief must name that retirement.
+ */
+const P32A_WRITE_SET = [
+  "packages/persistence/ledger/src/usage-settlement/index.ts",
+  "packages/persistence/ledger/test/usage-settlement/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0088-a-settlement-fold-never-invents-a-number.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 // Owner-authorized static README artwork; exact paths, no directory exemption.
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
@@ -10392,6 +10441,7 @@ const WRITE_SET = [
   ...P14A_WRITE_SET,
   ...P14B_WRITE_SET,
   ...P14C_WRITE_SET,
+  ...P32A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -11761,6 +11811,16 @@ const PATH_SCOPED_LAWS = [
   {
     law: "no production source mints a task, and one module builds its intake",
     scope: "packages/*/*/src/**",
+  },
+  // P-32/captura A. Two new path-shaped surfaces, so two new rows: the register
+  // and the `requireScope` call sites both move 140 -> 142.
+  {
+    law: "nothing outside the settlement module and the ledger barrel names the settlement fold",
+    scope: "packages/*/*/src/**",
+  },
+  {
+    law: "the settlement fold reads no clock, no environment and no randomness, and hashes through the one canonicalizer",
+    scope: "packages/persistence/ledger/src/usage-settlement/index.ts",
   },
 ];
 
@@ -26090,6 +26150,83 @@ const TASK_INTAKE_SITE = "packages/domains/runtime/src/intake/index.ts";
   }
   requireScope("no production source mints a task, and one module builds its intake", intakeScanned);
   notes.push("no production source mints a task id, and one module builds the intake event");
+}
+
+// L-P32A-1 -- nothing outside the settlement module and the ledger barrel names
+// the settlement fold (P-32/captura A, H-8, ADR 0088).
+//
+// The fold is inert until escalón B's door calls it inside the trigger's
+// transaction. The barrel exports it, which makes it reachable from every
+// dependent of `@acp/ledger`, so "inert" is held here rather than described: no
+// `src/` outside the module and the barrel imports the module's path or names the
+// fold or either identity step. Its own suite is the only caller. B retires this
+// law in the packet that wires the door, and names the retirement.
+const USAGE_SETTLEMENT_SITE = "packages/persistence/ledger/src/usage-settlement/index.ts";
+const USAGE_SETTLEMENT_BARREL = "packages/persistence/ledger/src/index.ts";
+{
+  let settlementScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (relativePath === USAGE_SETTLEMENT_SITE || relativePath === USAGE_SETTLEMENT_BARREL) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      settlementScanned += 1;
+      const code = stripComments(content);
+      if (
+        code.includes("usage-settlement/index.js") ||
+        /\b(?:foldUsageSettlement|measurementStreamIdV1|measurementStreamPreimageV1)\b/.test(code)
+      ) {
+        fail(
+          relativePath +
+            " reaches the settlement fold; it is inert until escalón B's door calls it inside the trigger's" +
+            " transaction, and a caller before then would record a settlement no door verified",
+        );
+      }
+    }
+  }
+  requireScope(
+    "nothing outside the settlement module and the ledger barrel names the settlement fold",
+    settlementScanned,
+  );
+  notes.push("no production source outside the module and the ledger barrel names the settlement fold");
+}
+
+// L-P32A-2 -- the settlement fold reads no clock, no environment and no
+// randomness, and hashes through the one canonicalizer (P-32/captura A, H-1, H-8).
+//
+// `computed_at` is the trigger's instant and a rebuild must reproduce every row
+// byte for byte, so a clock read anywhere in the module would be a second instant
+// the header could silently carry. The identity and the policy digest go through
+// the package's one canonicalizer and one sha-256; a module that reached for
+// `node:crypto` itself would be a second encoder one vector away from drifting.
+{
+  const settlementSource = readIfPresent(USAGE_SETTLEMENT_SITE);
+  if (settlementSource === null) {
+    fail(USAGE_SETTLEMENT_SITE + " is missing; the settlement fold's purity law would stand over nothing");
+  } else {
+    const code = stripComments(settlementSource);
+    for (const forbidden of ["Date.now(", "new Date(", "process.env", "Math.random(", "node:crypto", "createHash("]) {
+      if (code.includes(forbidden)) {
+        fail(
+          USAGE_SETTLEMENT_SITE +
+            " names " +
+            forbidden +
+            "; every instant is the trigger's and every digest goes through ../canonical-json/index.js",
+        );
+      }
+    }
+    if (!code.includes('from "../canonical-json/index.js"')) {
+      fail(USAGE_SETTLEMENT_SITE + " does not hash through ../canonical-json/index.js");
+    }
+  }
+  requireScope(
+    "the settlement fold reads no clock, no environment and no randomness, and hashes through the one canonicalizer",
+    settlementSource === null ? 0 : 1,
+  );
+  notes.push("the settlement fold reads no clock, environment or randomness and hashes through the one canonicalizer");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------
